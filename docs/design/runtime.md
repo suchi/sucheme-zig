@@ -1,0 +1,340 @@
+# ランタイム設計
+
+値表現、ガベージコレクション、環境、CEK機械、継続、動的状態、例外を扱う。実装時に最も参照されるドキュメント。
+
+対応する決定: [ADR-0002](../adr/0002-value-representation.md)、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)、[ADR-0004](../adr/0004-cek-machine-evaluator.md)、[ADR-0008](../adr/0008-string-representation.md)。
+
+## 値表現
+
+`Value` は Zig のタグ付き union とする。即値はインラインに持ち、複合型は GC ヒープ上のオブジェクトへのポインタを持つ。サイズは16バイト(ペイロード8バイト+タグ)。
+
+```zig
+pub const Value = union(enum) {
+    // 即値
+    nil,                      // 空リスト
+    unspecified,              // 未規定値
+    eof,
+    boolean: bool,
+    fixnum: i64,
+    flonum: f64,
+    char: u21,                // Unicode スカラ値
+    symbol: Symbol,           // インターン済みID
+
+    // ヒープオブジェクト
+    pair: *Pair,
+    string: *Str,
+    vector: *Vector,
+    bytevector: *Bytevector,
+    closure: *Closure,
+    primitive: *Primitive,
+    continuation: *Continuation,
+    promise: *Promise,
+    record: *Record,
+    record_type: *RecordType,
+    port: *Port,
+    parameter: *Parameter,
+    environment: *REnvironment,
+    transformer: *Transformer,
+    bignum: *Bignum,
+    ratnum: *Ratnum,
+    compnum: *Compnum,
+    condition: *Condition,
+    multiple_values: *MultipleValues,
+};
+```
+
+段階1で必要なのは `nil` から `primitive` までで、残りは段階が進むにつれて追加する。タグを増やすと `switch` の網羅性検査が既存コードの修正箇所を教えてくれる。これが表現の選択理由の一つである。
+
+他モジュールはタグに直接依存せず、`value.zig` のアクセサを使う。
+
+```zig
+pub inline fn isPair(v: Value) bool {
+    return v == .pair;
+}
+
+pub fn asFixnum(v: Value) ?i64 {
+    return switch (v) {
+        .fixnum => |n| n,
+        else => null,
+    };
+}
+```
+
+`#f` 以外のすべての値は真である(R7RS 6.3)。真偽判定は `isTruthy` 一箇所に閉じる。
+
+### ヒープオブジェクトのヘッダ
+
+GC は `Value` のタグを知らない状態でオブジェクトを辿る必要があるため、全ヒープオブジェクトは先頭に共通ヘッダを持つ。
+
+```zig
+pub const Kind = enum(u8) { pair, string, vector, bytevector, closure, /* ... */ };
+
+pub const Header = struct {
+    kind: Kind,
+    mark: bool,
+    next: ?*Header, // 確保済み全オブジェクトのリンクリスト。sweep で使う
+};
+
+pub const Pair = struct {
+    header: Header,
+    car: Value,
+    cdr: Value,
+};
+```
+
+`Value` のタグと `Header.kind` は冗長だが、GC が型を判別するために必要である。両者の対応表は `value.zig` に1箇所だけ置く。
+
+### 文字列
+
+文字列は UTF-8 バイト列として保持し、全文字が ASCII かどうかのフラグを持つ。
+
+```zig
+pub const Str = struct {
+    header: Header,
+    bytes: []u8,       // GC ヒープ外のアロケータから確保し、sweep 時に解放
+    len: u32,          // 文字数
+    ascii_only: bool,
+};
+```
+
+ASCII のみなら `string-ref` と `string-set!` は定数時間、そうでなければ先頭からの走査になる。R7RS は `string-ref` の計算量を規定していない(R7RS 6.7)ため準拠上の問題はない。UTF-8 を選ぶのはポートと WASM ホスト境界で変換が不要になるためである。幅の変わる `string-set!` はバイト列の再確保を伴う。詳細は [ADR-0008](../adr/0008-string-representation.md)。
+
+シンボルはインターンして32ビットの ID で表す。ID から名前への表は GC 対象外の永続テーブルに置く。`string->symbol` で生成されたシンボルも同じ表に入る。
+
+## ガベージコレクション
+
+非移動型のマーク・スイープGCとする。停止型で、確保量が閾値を超えたときに動作する。
+
+非移動型を選ぶ理由は2つある。第一に、`*Pair` などの生ポインタが収集後も有効なままなので、ルート登録は到達可能性の保証だけを意味し、Zig のローカル変数を書き換える必要がない。第二に、ハンドル経由の間接参照が不要なのでコードが読みやすい。代償は断片化とスイープのコストである。
+
+保守的スタック走査は採用しない。wasm の関数ローカル変数は線形メモリ上に存在せず走査できないため、ネイティブと WASM で GC の正しさが変わってしまう。
+
+### ルート集合
+
+```mermaid
+flowchart LR
+    subgraph roots[ルート]
+        reg["機械レジスタ<br/>control / env / kont / value"]
+        dyn["dynamic_point<br/>wind・handler・parameter"]
+        glob["グローバル環境<br/>ライブラリごとのエクスポート表"]
+        tmp["一時ルートスタック"]
+        exp["展開器の作業状態"]
+    end
+    roots --> heap[(ヒープ)]
+```
+
+機械の状態が4レジスタと `dynamic_point` に集約されているため、ルートは少数で済む。これが CEK 機械を選んだ理由の一つである。
+
+### 一時ルートの書き方
+
+ヒープ確保をまたいで `Value` を保持する場合は、スコープ単位でルート枠を使う。
+
+```zig
+pub fn makeList2(h: *Heap, a: Value, b: Value) !Value {
+    var frame = h.rootFrame();
+    defer frame.pop();
+    frame.add(a);
+    frame.add(b);
+
+    const tail = try h.cons(b, .nil); // ここで GC が走りうる
+    frame.add(tail);
+    return try h.cons(a, tail);
+}
+```
+
+非移動型なので `frame.add(a)` の後も `a` をそのまま使える。`frame.add` は到達可能性のみを保証する。
+
+次の書き方は誤りである。
+
+```zig
+// 誤り: 2回目の cons で GC が走ると first が回収されうる
+const first = try h.cons(.nil, .nil);
+const second = try h.cons(.nil, .nil);
+return try h.cons(first, second);
+```
+
+判断に迷ったら登録する。過剰な登録は性能を落とすだけだが、不足はメモリ破壊を招く。
+
+### 収集の起動点
+
+GC は `heap.allocate` の内部でのみ走る。したがって確保を行う可能性のある呼び出しを見分けることが実装上の要点になる。`heap.zig` の公開APIのうち確保を行うものは、ドキュメンテーションコメントの先頭に `GCを起動しうる` と書く規約とする。
+
+機械のステップ関数の境界では、レジスタだけがルートであることが保証される。したがってステップの先頭で GC を走らせる安全点方式も将来の選択肢として残す。
+
+## 環境
+
+### 局所環境
+
+展開器が字句アドレスを解決するため、局所変数の参照は深さと添字によるポインタ辿りだけになる。
+
+```zig
+pub const Rib = struct {
+    header: Header,
+    parent: ?*Rib,
+    slots: []Value, // 固定長。可変長引数は最後のスロットにリストで入る
+};
+```
+
+内部 `define` は `letrec*` 意味論に従う(R7RS 5.3.2)。展開器は本体をすべて走査して内部定義を集め、`Rib` のスロットを事前に確保し、未初期化を表す内部値で埋める。未初期化スロットの参照はエラーとする。
+
+### グローバル環境
+
+グローバル変数は束縛セルを経由する。
+
+```zig
+pub const GlobalCell = struct {
+    header: Header,
+    name: Symbol,
+    value: Value, // 未束縛を表す内部値で初期化
+};
+```
+
+セルを介することで、前方参照、相互再帰、`set!`、REPL での再定義がすべて自然に扱える。ライブラリごとにシンボルからセルへの表を持ち、`import` はセルを共有する(値をコピーしない)。これによりエクスポート元での再定義がインポート側にも反映される。
+
+## コアIR
+
+展開器の出力。R7RS 7.1.3 の基本式に対応する。
+
+```zig
+pub const Node = union(enum) {
+    constant: Value,
+    local_ref: struct { depth: u16, index: u16 },
+    global_ref: *GlobalCell,
+    local_set: struct { depth: u16, index: u16, value: *Node },
+    global_set: struct { cell: *GlobalCell, value: *Node },
+    branch: struct { test_: *Node, consequent: *Node, alternative: ?*Node },
+    lambda: *LambdaInfo,
+    seq: []*Node,
+    call: struct { operator: *Node, operands: []*Node, tail: bool },
+};
+```
+
+`call` の `tail` は展開器が付ける。機械はこの印を信用して、真なら継続フレームを積まない。末尾位置の判定を機械側に持たせないのは、判定の責任を1箇所にまとめるためである。
+
+コアIRの節点は GC ヒープに置く。`constant` が `Value` を持ち、`lambda` が実行時にクロージャとして参照されるため、プログラム本体も収集対象にする必要がある(REPL で再定義を繰り返すとコードも捨てられる)。
+
+## CEK機械
+
+### 状態
+
+```zig
+pub const Machine = struct {
+    heap: *Heap,
+    control: ?*Node,    // 次に評価する式。null なら value を継続に渡す
+    env: ?*Rib,
+    kont: ?*Frame,      // 継続。null なら実行完了
+    value: Value,       // 直前の結果
+    dynamic_point: ?*DynPoint,
+    step_budget: u64,   // WASM で制御を戻すための歩数制限
+};
+```
+
+ステップ関数は `control` が非 null なら式を1段分解して進み、null なら `value` を `kont` に渡して1フレーム取り崩す。実行ループはこれを繰り返すだけである。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Eval
+    Eval --> Eval: 部分式を取り出しフレームを積む
+    Eval --> Eval: 末尾呼び出しはフレームを積まない
+    Eval --> Apply: 定数・変数参照・呼び出しが完了した
+    Apply --> Eval: フレームを取り崩し次の式へ
+    Apply --> [*]: kont が null
+```
+
+### 継続フレーム
+
+継続フレームは不変とする。一度作ったフレームの内容を書き換えてはならない。
+
+```zig
+pub const Frame = struct {
+    header: Header,
+    parent: ?*Frame,
+    env: ?*Rib,
+    kind: union(enum) {
+        if_branch: struct { consequent: *Node, alternative: ?*Node },
+        seq_rest: struct { nodes: []*Node, index: u32 },
+        set_local: struct { depth: u16, index: u16 },
+        set_global: *GlobalCell,
+        eval_operator: struct { operands: []*Node, tail: bool },
+        eval_operand: struct {
+            operands: []*Node,
+            index: u32,
+            operator: Value,
+            done: Value, // 評価済み引数の逆順リスト
+            tail: bool,
+        },
+        // 段階2以降で追加
+        wind_exit: struct { after: Value },
+        receive_values: struct { consumer: Value },
+        handler_result: struct { continuable: bool },
+    },
+};
+```
+
+引数の蓄積を可変配列ではなく不変の逆順リストで行うのは、継続の多重起動に対する正しさのためである。引数を評価している途中で `call/cc` で継続を捕捉し、その継続を2回起動した場合、可変配列を共有していると2回目が1回目の書き込みを観測してしまう。不変リストなら各起動が独立した状態から再開する。
+
+この選択は確保回数を増やす。段階6以降の最適化候補として、捕捉時にコピーするスタックセグメント方式を検討する。最適化は準拠テストが通った後に行う。
+
+### 完全な継続
+
+```zig
+pub const Continuation = struct {
+    header: Header,
+    kont: ?*Frame,
+    dynamic_point: ?*DynPoint,
+};
+```
+
+`call/cc` は現在の `kont` と `dynamic_point` を保存した `Continuation` を作り、引数の手続きに渡す。起動時は `kont` を復元し、`dynamic_point` を現在のものから目標のものへ巻き戻す。フレームが不変なので捕捉は定数時間であり、多重起動も再入も成立する。
+
+### 動的状態
+
+`dynamic-wind`、`with-exception-handler`、`parameterize` の3つは、いずれも動的範囲に対する束縛である。1つの不変リストで統一して表す。
+
+```zig
+pub const DynPoint = struct {
+    header: Header,
+    parent: ?*DynPoint,
+    depth: u32, // 共通祖先の計算用
+    kind: union(enum) {
+        wind: struct { before: Value, after: Value },
+        handler: Value,
+        parameter: struct { param: *Parameter, value: Value },
+    },
+};
+```
+
+継続の起動時は、現在の点と目標の点の共通祖先を `depth` を使って求め、現在側を祖先まで `after` を呼びながら降り、目標側を `before` を呼びながら登る(R7RS 6.10)。ハンドラとパラメータの束縛は呼び出しを伴わないので、復元は参照の差し替えだけで済む。
+
+3つを1つの機構で表すことで、`call/cc` との相互作用を1箇所で正しくすれば全体が正しくなる。
+
+### 例外
+
+`raise` は `dynamic_point` を遡って最も内側の `handler` を探し、その `handler` より外側の動的環境を設定してからハンドラを呼ぶ(R7RS 6.11)。これによりハンドラ自身が例外を起こしても無限ループにならない。
+
+- `raise`: ハンドラが戻った場合は二次例外を起こす。
+- `raise-continuable`: ハンドラの戻り値が `raise-continuable` の値になる。
+- `with-exception-handler`: `handler` 種別の `DynPoint` を1つ積む。
+- `guard`: Scheme 側で `call/cc` と `with-exception-handler` を用いて実装する(R7RS 7.3 の派生式に対応)。
+- `error`: 条件オブジェクトを作って `raise` する。
+
+条件オブジェクトは R7RS が要求する述語を区別できる構造を持つ。
+
+```zig
+pub const Condition = struct {
+    header: Header,
+    tag: enum { error_object, read_error, file_error },
+    message: Value,  // 文字列
+    irritants: Value, // リスト
+};
+```
+
+### 複数値
+
+`values` は引数が1個なら値をそのまま返し、それ以外なら `MultipleValues` を返す。これを受け取れるのは `receive_values` フレームと最外の REPL だけである。1個を期待するフレームが複数値を受け取った場合はエラーとする。R7RS はこの場合を未規定としている(R7RS 6.10)ため、検出してエラーにする方が実装の誤りを見つけやすい。
+
+### 歩数制限とWASM
+
+ブラウザではメインスレッドを長時間占有できない。機械のループは `step_budget` 歩で制御を呼び出し元に返す。WASM のエクスポート関数は続きがあるかどうかを返し、JS 側が再開する。この構造はネイティブ側でも割り込み処理に使える。
+
+深い再帰はヒープフレームを消費するだけなので Zig のスタックは溢れない。ただし無限再帰でヒープを食い潰す前に Scheme のエラーにするため、フレーム数の上限を設定可能にする。

@@ -28,3 +28,17 @@
 | 番号 | タイトル | ステータス | 日付 |
 | --- | --- | --- | --- |
 | [0000](0000-template.md) | テンプレート | - | - |
+| [0001](0001-zig-version-pinning.md) | Zig 0.17.0 への固定と API ノートの整備 | 採用 | 2026-10-04 |
+| [0002](0002-value-representation.md) | Scheme値は Zig のタグ付き union で表現する | 採用 | 2026-10-04 |
+| [0003](0003-precise-mark-sweep-gc.md) | 非移動型の精密マーク・スイープGCを採用する | 採用 | 2026-10-04 |
+| [0004](0004-cek-machine-evaluator.md) | 評価器は明示的な継続を持つCEK機械とする | 採用 | 2026-10-04 |
+| [0005](0005-hygienic-expander-by-renaming.md) | 衛生性は構文環境と別名による改名で実現する | 採用 | 2026-10-04 |
+| [0006](0006-library-system-and-scheme-level-stdlib.md) | 標準ライブラリは可能な限り Scheme で書く | 採用 | 2026-10-04 |
+| [0007](0007-numeric-tower-scope.md) | 完全な数値塔を実装する | 採用 | 2026-10-04 |
+| [0008](0008-string-representation.md) | 文字列は UTF-8 バイト列と ASCII 判定フラグで表現する | 採用 | 2026-10-04 |
+| [0009](0009-wasm-freestanding-and-zero-dependency-web-ui.md) | WASM は freestanding とし、Web UI は依存パッケージを持たない | 採用 | 2026-10-04 |
+| [0010](0010-ci-cd-and-release-strategy.md) | CIのテストは Linux と Windows に限り、macOS はビルド保証のみとする | 採用 | 2026-10-04 |
+| [0011](0011-github-pages-pr-preview.md) | GitHub Pages は gh-pages ブランチ方式とし、PRごとのプレビューを配置する | 採用 | 2026-10-04 |
+| [0012](0012-repository-visibility-public.md) | リポジトリを public にする | 採用 | 2026-10-04 |
+| [0013](0013-testing-strategy-and-conformance-suite.md) | テストは3層構成とし、外部の準拠スイートをベンダリングする | 採用 | 2026-10-04 |
+| [0014](0014-repl-line-editor-boundary.md) | 行編集は抽象境界のみ先に定め、実装方式は段階7で決める | 採用 | 2026-10-04 |
