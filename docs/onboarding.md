@@ -50,7 +50,8 @@ flowchart TB
 3. [roadmap.md](roadmap.md): いまどの段階にいて、次に何をするのか。
 4. [design/architecture.md](design/architecture.md): 全体構成と、守るべき横断的な不変条件。この節は必読。
 5. 担当する領域の設計ドキュメント。[design/README.md](design/README.md) に一覧がある。
-6. 関係する ADR。「なぜこうなっているのか」はここにある。
+6. [design/open-questions.md](design/open-questions.md): 設計で決めていないこと。担当領域の行は実装時に自分が決める対象である。
+7. 関係する ADR。「なぜこうなっているのか」はここにある。
 
 ### ディレクトリ
 
@@ -89,7 +90,9 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 
 ### 設計判断をした
 
-[adr/README.md](adr/README.md) の運用ルールに従って ADR を書く。既存 ADR の決定内容の書き換えは禁止で、決定が変わったら非推奨化して新しい番号で書く。`/adr` スキルが手順を案内する。
+設計ドキュメントに書くか、実装の中で決めるかを先に分ける。複数のモジュールにまたがる構造とインタフェースは設計ドキュメントに書き、1つのモジュールに閉じたものは実装の中で決める。線引きは [ADR-0018](adr/0018-incremental-vertical-slices.md) にある。実装の中で決めたことが他の段階に影響するなら [design/open-questions.md](design/open-questions.md) の該当行を消して記録する。
+
+技術選択そのものについては、[adr/README.md](adr/README.md) の運用ルールに従って ADR を書く。既存 ADR の決定内容の書き換えは禁止で、決定が変わったら非推奨化して新しい番号で書く。`/adr` スキルが手順を案内する。
 
 レビュー指摘を技術的理由で採用しない場合も ADR に残す。該当コードには ADR 番号を引いた `Why:` コメントを書く。
 
@@ -97,8 +100,9 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 
 1. 段階の完了条件([roadmap.md](roadmap.md))を満たしたことをテストで示す。
 2. 準拠マトリクス(`docs/status/`)を生成し直す。CI が同期を検査する。README には数値を置かないので対象外である。
-3. `roadmap.md` のチェックを入れ、「現在地」を更新する。
-4. リリースタグを打つ。
+3. `roadmap.md` のチェックを入れ、「現在地」を更新する。段階の節の「残していること」を、実際に残ったものに合わせる。
+4. その段階で確定したことを、該当する設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す([ADR-0018](adr/0018-incremental-vertical-slices.md))。
+5. リリースタグを打つ。
 
 ## 落とし穴
 

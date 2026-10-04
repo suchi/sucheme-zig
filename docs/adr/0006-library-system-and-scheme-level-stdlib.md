@@ -24,6 +24,7 @@ Zig で書くのは次の族に限る。族の中の個々の手続きは「な�
 - レコード型の生成と操作のプリミティブ。`define-record-type` は Scheme 側の `syntax-rules` で定義するが、その展開先が必要とする
 - 条件オブジェクトの生成と `error` `error-object?` `error-object-message` `error-object-irritants` `read-error?` `file-error?`
 - `environment` と `interaction-environment`
+- ホスト環境との境界にある手続き。`exit` `emergency-exit`、`command-line`、`features`、`file-exists?` `delete-file` とファイルを開く手続き、`current-second` `current-jiffy` `jiffies-per-second`、`get-environment-variable` `get-environment-variables`。いずれも OS の機能を呼ぶため Scheme では書けない
 - Unicode のテーブルと数値の表示・解析
 
 これ以外は Scheme で書く。`map` と `for-each` も Scheme で書く。Scheme で書けば末尾呼び出しと継続の相互作用が自動的に正しくなるためである。

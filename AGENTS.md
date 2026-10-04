@@ -17,21 +17,23 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 ## 検証コマンド
 
 
-| 用途 | コマンド | 使えるようになる段階 |
-| --- | --- | --- |
-| セットアップ | `scoop install zig`(`.zigversion` の値と一致することを確認する) | - |
-| テスト(単体) | `zig build test` | 0 |
-| テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 |
-| テスト(準拠スイート) | `zig build test-conformance` | 6 |
-| テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 |
-| リント・フォーマット | `zig fmt --check .` | 0 |
-| 型チェック | `zig build test`(コンパイルに含まれる) | 0 |
-| ビルド | `zig build` | 0 |
-| ビルド(WASM) | `zig build wasm` | 1 |
-| 進捗の生成 | `zig build report` | 1 |
-| ドキュメントの検査 | `zig build check-docs` | 0 |
+| 用途 | コマンド | 使えるようになる段階 | CIで実行 |
+| --- | --- | --- | --- |
+| セットアップ | `scoop install zig`(`.zigversion` の値と一致することを確認する) | - | - |
+| テスト(単体) | `zig build test` | 0 | 全コミット |
+| テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 | 全コミット |
+| テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
+| テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 | 手動と定期実行のみ |
+| リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
+| 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
+| ビルド | `zig build` | 0 | 全コミット |
+| ビルド(WASM) | `zig build wasm` | 1 | 全コミット |
+| 進捗の生成 | `zig build report` | 1 | 全コミット |
+| ドキュメントの検査 | `zig build check-docs` | 0 | 全コミット |
 
 コミット前に必ずテスト・リントを実行する。この表が正であり、他の文書はコマンド名を列挙せずここを参照する。新しいコマンドを足したらこの表に追加する。表にないコマンドは検証とレビューの対象外になる。
+
+ファジングを全コミットの CI に入れないのは、`--fuzz` が自律的に停止せず、時間切れまで走り続けるためである。全コミットの CI に入れると毎回タイムアウトする。手動実行と定期実行(スケジュール起動)に限る。
 
 ## 進め方(Agentic Coding)
 

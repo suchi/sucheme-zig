@@ -18,12 +18,18 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 | プラットフォーム | ビルド | 自動テストによる動作保証 |
 | --- | --- | --- |
-| Linux (x86_64, aarch64) | あり | あり |
-| Windows (x86_64, aarch64) | あり | あり |
+| Linux (x86_64) | あり | あり |
+| Windows (x86_64) | あり | あり |
+| Linux (aarch64) | あり(クロスコンパイル) | なし |
+| Windows (aarch64) | あり(クロスコンパイル) | なし |
 | macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし |
-| WebAssembly | あり | あり |
+| WebAssembly | あり | あり(Node.js 上でのエクスポート呼び出し) |
 
-macOS 向けのバイナリはクロスコンパイルで生成し、自動テストを実行していません。GitHub Actions の macOS ランナーの課金単位が他の10倍であるためです([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。署名と公証も行っていません。macOS で問題が出た場合は issue でお知らせください。
+自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS のバイナリはクロスコンパイルで生成し、自動テストを実行していません。GitHub Actions の macOS ランナーの課金単位が他の10倍であるためです([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。macOS の署名と公証も行っていません。
+
+WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行っていないため、ブラウザ固有の問題は検出されません。
+
+これらの環境で問題が出た場合は issue でお知らせください。
 
 ## 特徴として目指すもの
 
