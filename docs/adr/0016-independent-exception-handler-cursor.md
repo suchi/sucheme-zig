@@ -26,18 +26,20 @@ PR #1 のレビューで、この表現では R7RS 6.11 の例外ハンドラの
 
 1本の `DynPoint` のリストを維持したまま、「現在の例外ハンドラ」の位置を指す `handler_cursor` を機械の独立したレジスタとして追加する。機械のレジスタは、制御、環境、継続、直前の値、動的状態のリスト、ハンドラの位置となる。
 
-- `handler` 種別の `DynPoint` は、インストール時点のカーソル位置を `outer` として保持する。R7RS の「the one that was in place when the handler being called was installed」を親の探索ではなく保存した値で表すため、常に正確である。
-- `raise` と `raise-continuable` は `dynamic_point` を変えず、`handler_cursor` を `outer` に差し替えてハンドラを呼ぶ。
+- 種別によらず全ての `DynPoint` が `outer_handler_cursor` を持つ。その点を積む直前の `handler_cursor` の値であり、生成時に決まって以後変わらない。
+- `handler` 種別の点では、この値が R7RS の「the one that was in place when the handler being called was installed」そのものである。`raise` と `raise-continuable` は `dynamic_point` を変えず、`handler_cursor` をこの値に差し替えてハンドラを呼ぶ。
 - `raise-continuable` のハンドラが戻った場合はカーソルを元の点に戻す。
-- `DynPoint` は生成時に `nearest_handler`(自身が `handler` なら自身、そうでなければ親の `nearest_handler`)を持つ。継続起動時の巻き戻しでは、`dynamic_point` を動かすたびに `handler_cursor` をその点の `nearest_handler` に同期する。これにより、巻き戻し中に呼ばれる `before` と `after` がその動的点で本来有効なハンドラを見る。
-- 遷移の完了時は `nearest_handler` ではなく、継続に保存した値を復元する。ハンドラ実行中に捕捉された継続では両者が一致しないためである。
+- `wind` 種別の点では、この値がその `dynamic-wind` に入った時点のカーソルであり、`after` を呼ぶときに復元すべき値である。`parameter` 種別の点では、`parameterize` がカーソルを変えないため外側の値と一致する。
+- 退出するときは `outer_handler_cursor` を復元し、進入するときは `handler` 種別なら点自身、それ以外は `outer_handler_cursor` にする。この規則を通常実行と継続起動時の巻き戻しの両方で使う。
+- カーソルを現在の `dynamic_point` から導出してはならない。導出すると、ハンドラ実行中にカーソルが最内ハンドラと一致しない状態が失われる。ハンドラの中の `dynamic-wind` から継続で脱出した場合、通常終了なら `after` は外側のカーソルのもとで走るのに、導出すると実行中のハンドラへ戻してしまい、`after` の中の例外が同じハンドラに再入する。
+- 遷移の完了時は、継続に保存した `target_handler_cursor` を復元する。ハンドラ実行中に捕捉された継続では、点から導出できる値と一致しないためである。
 
 `Continuation` は `kont` と `dynamic_point` に加えて `handler_cursor` を保存する。GC のルート集合に `handler_cursor` を加える。これが [ADR-0003](0003-precise-mark-sweep-gc.md) のルート集合の列挙に対する訂正である。
 
 ## 結果
 
-- メリット: R7RS 6.11 の規定を正確に満たせる。`dynamic-wind` と `parameterize` については1本のリストによる統一が保たれ、共通祖先の計算も1箇所で済む。`nearest_handler` が不変なので巻き戻し中の同期が定数時間で行える。
-- デメリット・受け入れたトレードオフ: レジスタが1つ増え、`call/cc`、巻き戻し、動的範囲の通常終了のすべてで保存と復元の対象が2つになる。ADR-0004 で挙げた「動的状態の機構が1つ」という利点が部分的に失われる。`DynPoint` が `nearest_handler` のフィールド分だけ大きくなる。
+- メリット: R7RS 6.11 の規定を正確に満たせる。`dynamic-wind` と `parameterize` については1本のリストによる統一が保たれ、共通祖先の計算も1箇所で済む。`outer_handler_cursor` が不変なので、通常実行と巻き戻しでカーソルの復元規則が同一になり、定数時間で行える。
+- デメリット・受け入れたトレードオフ: レジスタが1つ増え、`call/cc`、巻き戻し、動的範囲の通常終了のすべてで保存と復元の対象が2つになる。ADR-0004 で挙げた「動的状態の機構が1つ」という利点が部分的に失われる。`DynPoint` が `outer_handler_cursor` のフィールド分だけ大きくなる。
 - 将来の見直し条件: ハンドラ鎖を完全に分離したほうが実装が読みやすいと判明した場合に再検討する。その場合は本ADRを非推奨にして新ADRを書く。
 
 ## 補足対象の扱いについて

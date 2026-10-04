@@ -77,7 +77,8 @@ pub const Kind = enum(u8) { pair, string, vector, bytevector, closure, /* ... */
 pub const Header = struct {
     kind: Kind,
     mark: bool,
-    next: ?*Header, // 確保済み全オブジェクトのリンクリスト。sweep で使う
+    immutable: bool, // リテラル由来。破壊的操作を拒否する(後述)
+    next: ?*Header,  // 確保済み全オブジェクトのリンクリスト。sweep で使う
 };
 
 pub const Pair = struct {
@@ -88,6 +89,25 @@ pub const Pair = struct {
 ```
 
 `Value` のタグと `Header.kind` は冗長だが、GC が型を判別するために必要である。両者の対応表は `value.zig` に1箇所だけ置く。
+
+`Header` のフィールドはいずれも GC のメタデータであり、マークの辺として辿ってはならない。特に `next` は確保済み全オブジェクトを繋ぐリンクであり、1つでも辿ると到達可能な1オブジェクトからヒープ全体が生存扱いになって何も回収されなくなる。走査関数を生成する仕組みは `Header` を必ず除外する。到達不能なオブジェクトが実際に回収されることを確かめるテストを置き、この誤りが入った時点で落ちるようにする。
+
+### リテラルの不変性
+
+R7RS 4.1.2 は次のように規定している。
+
+> As noted in section 3.4, it is an error to attempt to alter a constant (i.e. the value of a literal expression) using a mutation procedure like set-car! or string-set!.
+
+リテラルかどうかを区別する状態がないと、`set-car!` や `string-set!` が通常の可変オブジェクトと同じように通ってしまう。`Header.immutable` がこの区別を担う。
+
+構築の規則は次のとおり。
+
+- リーダが作るオブジェクトは可変である。`cons` や `make-string` が作るものも可変である。
+- 展開器がデータをコアIRの定数にする時点で、そこから到達可能なオブジェクトグラフ全体に `immutable` を立てる。対象は `quote` されたデータと、自己評価するリテラル(文字列、ベクタ、バイトベクタ)の両方である。R7RS 4.1.2 はこれらを引用しなくても定数とすると規定している。
+- グラフ走査は循環を含みうるので、訪問済み集合を使う。別名の剥離と同じ走査で行える([frontend.md](frontend.md) の quote による剥離)。
+- 埋め込んだ Scheme の標準ライブラリに現れるリテラルも同じ経路を通るため、自動的に不変になる。
+
+破壊的操作はすべて `immutable` を検査し、立っていれば Scheme のエラーにする。対象は `set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!` `vector-set!` `vector-fill!` `vector-copy!` `vector-fill!` `bytevector-u8-set!` `bytevector-copy!` である。検査を1つの補助関数に集め、新しい破壊的操作を足したときに検査を忘れないようにする。
 
 ### 文字列
 
@@ -127,6 +147,7 @@ pub const SymbolTable = struct {
 - マーク段階では、オブジェクトを辿る過程でシンボル ID に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
 - 記録の対象は `Value` の `.symbol` だけではない。`Symbol` 型の生のフィールドもすべて対象にする。`GlobalCell.name`、`Binding.id`、`Primitive.name`、`RecordType` のフィールド名、`LambdaInfo` の引数名などが該当する。これらを漏らすと、所有オブジェクトが生存中でも ID が回収・再利用され、既存のセルや構文束縛が別のシンボルを指すという最悪の形の破壊が起きる。
 - ヒープ上のオブジェクトだけでは足りない。Zig のローカル変数や、展開器がヒープ外に持つ作業表が保持している生の ID も対象にする。これらは次の確保で GC が走ると回収されうる。一時ルート枠は `Value` と `Symbol` の両方を登録できるものとし(`frame.add` と `frame.addSymbol`)、ヒープ外のルート走査も自分が持つ `Symbol` をマークする責任を持つ。
+- マーク段階の開始前に `live` を全消去する。消去を忘れると、一度でも参照された ID が以後ずっと生存扱いになり、弱い表として機能しない。
 - スイープ段階で、`live` にも `pinned` にもない ID の名前を解放し、ID を `free` に戻す。
 - `pinned` には、起動時に Zig 側が登録する既知のシンボル(`quote` `if` `lambda` など)を入れる。これらは Zig のコードが ID を定数として保持するため回収してはならない。
 - ID の再利用は、その ID への生きた参照が存在しないことを `live` が保証した後にのみ行う。
@@ -376,22 +397,23 @@ pub const Continuation = struct {
 pub const DynPoint = struct {
     header: Header,
     parent: ?*DynPoint,
-    depth: u32,                     // 共通祖先の計算用
-    nearest_handler: ?*DynPoint,    // この点から外側で最も内側の handler 点
+    depth: u32,                         // 共通祖先の計算用
+    outer_handler_cursor: ?*DynPoint,   // この点の直外側で有効だったハンドラの位置
     kind: union(enum) {
         wind: struct { before: Value, after: Value },
-        handler: struct {
-            proc: Value,
-            outer: ?*DynPoint, // インストール時に現在だったハンドラの位置
-        },
+        handler: Value,
         parameter: struct { param: *Parameter, value: Value },
     },
 };
 ```
 
-`handler` が `outer` を持つのは、R7RS 6.11 の「the one that was in place when the handler being called was installed」をそのまま表すためである。親をたどって次の `handler` を探す方式でも多くの場合は一致するが、インストール時点の値を保存しておけば常に正確である。
+`outer_handler_cursor` は生成時に、その点を積む直前の `handler_cursor` の値を入れる。種別によらず全ての点が持つ。これが3つの役割を1つのフィールドで果たす。
 
-`nearest_handler` は生成時に決まる。自身が `handler` 種別なら自身、そうでなければ `parent.nearest_handler` とする。不変なので更新は不要で、ある動的点における「本来の」ハンドラ位置を定数時間で得られる。巻き戻し中のカーソル同期に使う。
+- `handler` 種別の点では、R7RS 6.11 の「the one that was in place when the handler being called was installed」そのものである。`raise` はこの値へカーソルを差し替える。
+- `wind` 種別の点では、その `dynamic-wind` に入った時点のカーソルである。`after` を呼ぶときに復元すべき値がこれである。
+- `parameter` 種別の点では、`parameterize` はカーソルを変えないため、その点の外側のカーソルと一致する。
+
+不変なので更新は不要である。退出するときはこの値を復元し、進入するときは `handler` 種別なら点自身、それ以外ならこの値にする。これで通常実行と巻き戻しの両方が同じ規則になる。
 
 継続の起動時は、現在の点と目標の点の共通祖先を `depth` を使って求め、現在側を祖先まで `after` を呼びながら降り、目標側を `before` を呼びながら登る(R7RS 6.10)。ハンドラとパラメータの束縛は呼び出しを伴わないので、復元は参照の差し替えだけで済む。
 
@@ -487,13 +509,17 @@ stateDiagram-v2
 
 `dynamic_point` レジスタは各 `after` の呼び出しの前に親へ、各 `before` の呼び出しの後に子へ更新する。これにより `after` と `before` の中で例外が起きた場合のハンドラ探索が、R7RS の規定どおりその時点の動的環境を見る。
 
-`handler_cursor` も同時に同期する。`dynamic_point` だけを動かすと、既に退出した `handler` のハンドラが `after` の中から呼ばれる。規則は次のとおり。
+`handler_cursor` も同時に同期する。`dynamic_point` だけを動かすと、既に退出した `handler` のハンドラが `after` の中から呼ばれる。
 
-- `dynamic_point` を更新したら、同じ段で `handler_cursor` を `dynamic_point` の `nearest_handler` にする(`dynamic_point` が null なら null)。これが、その動的点において本来有効なハンドラである。
-- 経路上の点が `handler` 種別である場合も上の規則で正しく処理される。退出時は親の `nearest_handler` になり、進入時はその点自身になる。
-- 遷移の完了時だけは `nearest_handler` を使わず、`target_handler_cursor` に保存した値を復元する。捕捉時のカーソルは、ハンドラ実行中に捕捉された場合など `nearest_handler` と一致しないことがあるためである。
+同期は、各点が持つ `outer_handler_cursor` を使う。現在の `dynamic_point` から導出してはならない。導出すると、ハンドラ実行中に `handler_cursor` が `dynamic_point` の最内ハンドラと一致しない状態が失われる。たとえばハンドラの中の `dynamic-wind` から継続で脱出した場合、通常終了なら `after` は外側のカーソルのもとで走るのに、導出すると実行中のハンドラへ戻してしまい、`after` の中の例外が同じハンドラに再入する。
 
-通常実行の `leave_dynamic` と `wind_body` は保存した値を復元するので、この派生規則は巻き戻し中にのみ適用する。
+規則は次のとおり。
+
+- 点 N を退出するとき: `dynamic_point = N.parent`、`handler_cursor = N.outer_handler_cursor` にしてから、N が `wind` なら `after` を呼ぶ。
+- 点 N へ進入するとき: まず `dynamic_point = N.parent`、`handler_cursor = N.outer_handler_cursor` にして、N が `wind` なら `before` を呼ぶ。戻ったら `dynamic_point = N` にし、`handler_cursor` は N が `handler` 種別なら N 自身、それ以外は `N.outer_handler_cursor` のままにする。
+- 遷移の完了時は `target_point` と `target_handler_cursor` に保存した値を復元する。捕捉時のカーソルは、ハンドラ実行中に捕捉された場合など点から導出できる値と一致しないためである。
+
+通常実行の `leave_dynamic` と `wind_body` も同じ値(保存した `outer_handler_cursor`)を復元するので、通常経路と巻き戻し経路で `after` が見るハンドラが一致する。
 
 ### 例外
 
@@ -507,13 +533,15 @@ R7RS 6.11 は `raise` について次のように規定している。
 
 各手続きの動作は次のとおり。
 
-- `with-exception-handler`: `handler` 種別の `DynPoint` を積む。`outer` には積む前の `handler_cursor` を入れる。`dynamic_point` と `handler_cursor` の両方を新しい点にし、`thunk` を `leave_dynamic` 継続のもとで呼ぶ。
-- `raise` と `raise-continuable`: `handler_cursor` が指す点のハンドラを呼ぶ。`dynamic_point` は変えない。`handler_cursor` をその点の `outer` に差し替える。継続は `handler_result`。`handler_cursor` が null なら未処理例外として扱う。
+- `with-exception-handler`: `handler` 種別の `DynPoint` を積む。`outer_handler_cursor` には積む前の `handler_cursor` が入る。`dynamic_point` と `handler_cursor` の両方を新しい点にし、`thunk` を `leave_dynamic` 継続のもとで呼ぶ。
+- `raise` と `raise-continuable`: `handler_cursor` が指す点のハンドラを呼ぶ。`dynamic_point` は変えない。`handler_cursor` をその点の `outer_handler_cursor` に差し替える。継続は `handler_result`。`handler_cursor` が null なら未処理例外として扱う。
 - `handler_result`: `raise-continuable` の場合は `handler_cursor` を元の点に戻し(規定の「it will again become the current exception handler」)、ハンドラの戻り値を `raise-continuable` の値として親の継続に渡す。`raise` の場合は二次例外を起こす。このときのレジスタはハンドラ実行時のままなので、規定の「in the same dynamic environment as the handler」が満たされる。
 - `guard`: Scheme 側で `call/cc` と `with-exception-handler` を用いて実装する(R7RS 7.3 の派生式に対応)。
 - `error`: 条件オブジェクトを作って `raise` する。
 
-ハンドラの中でさらに例外が起きた場合、`handler_cursor` は既に `outer` を指しているため外側のハンドラが呼ばれ、無限ループにならない。
+ハンドラの中でさらに例外が起きた場合、`handler_cursor` は既に `outer_handler_cursor` を指しているため外側のハンドラが呼ばれ、無限ループにならない。
+
+テストに含める事例を挙げる。ハンドラの中で `dynamic-wind` に入り、そこから継続で脱出したときに、`after` の中の例外が実行中のハンドラではなく外側のハンドラに届くこと。通常終了の経路と脱出の経路で `after` が見るハンドラが一致すること。
 
 条件オブジェクトは R7RS が要求する述語を区別できる構造を持つ。
 

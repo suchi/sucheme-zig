@@ -67,10 +67,12 @@ sucheme_version_len() -> u32
 出力領域は WASM 側が所有する。
 
 - `sucheme_output_ptr` と `sucheme_output_len` が返す領域は WASM 側が所有する。ホストは解放してはならない。
-- 有効期限は、次に `sucheme_*` のいずれかを呼ぶまでである。`sucheme_step` `sucheme_eval_begin` `sucheme_provide_input` `sucheme_output_clear` `sucheme_reset` はいずれも領域を無効にしうる。ホストは内容を使う前に自身の記憶域へ複製する。
+- 読み取り専用アクセサは領域を無効にしない。`sucheme_output_ptr` `sucheme_output_len` `sucheme_version_ptr` `sucheme_version_len` は状態を変えないため、ポインタを得てから長さを得る通常の手順が契約違反にならない。
+- 領域を無効にしうる関数は次に限る。`sucheme_step` `sucheme_eval_begin` `sucheme_provide_input` `sucheme_output_clear` `sucheme_reset`。ホストはこれらを呼ぶ前に、必要な内容を自身の記憶域へ複製する。
+- `sucheme_alloc` と `sucheme_free` は出力領域の内容を変えない。ただし線形メモリを拡張しうるため、後述のビューの作り直しは必要である。
 - `sucheme_version_ptr` と `sucheme_version_len` が返す領域は静的で、モジュールの寿命の間ずっと有効である。
 
-線形メモリの拡張に注意する。WASM の線形メモリが拡張されると、JS 側が保持していた `ArrayBuffer` のビューは切り離されて使えなくなる。ホストは `sucheme_*` の呼び出しのたびにビューを作り直す。これは `WebAssembly.Memory` の仕様による制約であり、本処理系の都合ではない。
+線形メモリの拡張に注意する。WASM の線形メモリが拡張されると、JS 側が保持していた `ArrayBuffer` のビューは切り離されて使えなくなる。これは領域の有効期限とは別の話である。ホストは、メモリを拡張しうる関数(`sucheme_alloc` と、上の無効化する関数)を呼んだ後にビューを作り直す。これは `WebAssembly.Memory` の仕様による制約であり、本処理系の都合ではない。
 
 この契約は `web/sucheme.js` の実装とコメントに反映し、契約に反する使い方を単体で検出できるようにする。
 
