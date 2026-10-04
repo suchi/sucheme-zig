@@ -55,23 +55,47 @@ sucheme_version_len() -> u32
 
 文字列はすべて UTF-8 とする。文字列表現に UTF-8 を選んだ理由の一つがこの境界である。
 
+### UTF-8 の妥当性検証
+
+境界で受け取ったバイト列は妥当な UTF-8 であることを検証する。検証せずに受け入れると、`char` が Unicode スカラ値であるという宣言([runtime.md](runtime.md) の値表現)に反する値が `string-ref` から得られ、文字数とバイト位置の対応も崩れる。
+
+検証する箇所は次の3つである。
+
+| 箇所 | 不正なときの扱い |
+| --- | --- |
+| `sucheme_eval_begin` と `sucheme_provide_input` が受け取るバイト列 | 状態コード `-3` を返し、出力バッファに位置を示す説明を書く |
+| ファイルから読んだバイト列(テキストポート) | `read-error?` が真になる条件オブジェクトを送出する |
+| `bytevector->string`(R7RS 6.9) | R7RS が不正なバイト列をエラーとするので条件オブジェクトを送出する |
+
+拒否するのは次のすべてである。過長符号化(`0xC0 0x80` など)、サロゲート符号位置(U+D800 から U+DFFF)の符号化、U+10FFFF を超える値、不完全な列、継続バイトの単独出現。置換文字への差し替えは行わない。黙って内容を変えると、往復しない文字列が処理系の中に入る。
+
+バイナリポートはバイト列をそのまま扱うので検証しない。`utf8->string` と `string->utf8` の境界で検証する。
+
+検証は入力時に1回だけ行う。処理系の内部で作る文字列は構成上妥当なので、`string-append` や `string-copy` のたびに再検証しない。`integer->char` はスカラ値の範囲を検査する。
+
 ### 状態コード
 
 `sucheme_alloc` `sucheme_output_ptr` `sucheme_output_len` `sucheme_version_ptr` `sucheme_version_len` を除くすべてのエクスポートは、共通の状態コードを `i32` で返す。戻り値の意味を関数ごとに変えない。
 
-| 値 | 意味 | 直後に呼べる関数 |
+`sucheme_alloc` と `sucheme_free` と読み取り専用アクセサは、初期化後ならどの状態でも呼べる。ホストが入力領域を用意する手段を状態によって奪うと、`read` への応答ができなくなる。下の表の「直後に呼べる関数」は、これら以外のどれを呼べるかを示す。
+
+| 値 | 意味 | 上記に加えて直後に呼べる関数 |
 | --- | --- | --- |
-| 0 | 成功。評価が完了した場合もこれを返す | すべて |
-| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` と読み取り専用アクセサ |
-| 2 | 入力待ち。`sucheme_provide_input` を待っている | `sucheme_provide_input` と読み取り専用アクセサ |
-| -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` と読み取り専用アクセサ |
-| -2 | 資源の上限超過。ヒープ上限に達した | `sucheme_reset` と読み取り専用アクセサ |
-| -3 | 呼び出し順序の誤り。入力待ちでないのに `sucheme_provide_input` を呼んだなど | `sucheme_reset` と読み取り専用アクセサ |
-| -4 | 初期化されていない。`sucheme_init` を呼ぶ前に他を呼んだ | `sucheme_init` |
+| 0 | 成功。評価が完了した場合もこれを返す | `sucheme_eval_begin` `sucheme_output_clear` `sucheme_reset` |
+| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_output_clear` `sucheme_reset` |
+| 2 | 入力待ち。`sucheme_provide_input` を待っている | `sucheme_provide_input` `sucheme_output_clear` `sucheme_reset` |
+| -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_output_clear` `sucheme_reset` |
+| -2 | 回復不能。送出のための予約領域を使い切った | `sucheme_reset` |
+| -3 | 呼び出し順序の誤り | `sucheme_reset` |
+| -4 | 初期化されていない | `sucheme_init` |
+
+`sucheme_init` は状態 -4 でのみ呼べる。初期化済みの状態で再び呼ぶと `-3` を返す。ヒープ全体を作り直したい場合は `sucheme_reset` を使う。
+
+ヒープ上限に達した場合は `-2` ではなく Scheme のエラーとして扱う。`guard` で捕捉できるので、捕捉されれば 0、捕捉されず最外に届けば `-1` になる。`-2` は予約領域を使い切って送出自体ができない場合に限る。詳細は [runtime.md](runtime.md) の送出のための予約領域にある。
 
 負の値を返した場合、エラーの説明は出力バッファに UTF-8 で書かれている。ホストは `sucheme_output_ptr` と `sucheme_output_len` で取得する。別のエラー文字列取得関数は設けない。経路を増やすと有効期限の契約も増えるためである。
 
-`sucheme_alloc` は成功するとポインタを返し、確保に失敗すると 0 を返す。線形メモリの先頭は使わないので 0 を失敗の表現に使える。
+`sucheme_alloc` は成功するとポインタを返し、確保に失敗すると 0 を返す。線形メモリの先頭は使わないので 0 を失敗の表現に使える。初期化前に呼んだ場合も 0 を返す。状態コードを返さない関数なので `-4` では報告できない。
 
 ### sucheme_free の引数規約
 
@@ -173,15 +197,21 @@ sequenceDiagram
     loop 歩数制限ごと
         W->>M: sucheme_step(budget)
         M-->>W: 1 (継続)
-        W->>A: postMessage(output, 部分出力)
+        W->>M: sucheme_output_ptr / sucheme_output_len
+        Note over W: 内容を自身の記憶域へ複製する
+        W->>M: sucheme_output_clear
+        W->>A: postMessage(output, 複製した部分出力)
         A->>U: 出力を追記
     end
     M-->>W: 0 (完了)
+    W->>M: 残りの出力を取得して sucheme_output_clear
     W->>A: postMessage(done, 結果)
     A->>U: 結果を表示
 ```
 
 Worker 上で動かすことで、長時間の計算中も画面が応答し、停止ボタンが機能する。
+
+各ラウンドで出力を取得したら `sucheme_output_clear` を呼ぶ。呼ばないとバッファが単調増加し、同じ内容を毎ラウンド再送するため転送量が出力長の二乗に比例する。無限ループの `display` で線形メモリを食い潰す。出力バッファも計上の対象である([runtime.md](runtime.md) の計上の対象)。
 
 ### 段階ごとの範囲
 

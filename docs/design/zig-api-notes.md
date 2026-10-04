@@ -266,8 +266,13 @@ const wasm = b.addExecutable(.{
 });
 wasm.entry = .disabled;  // エントリポイントを持たない
 wasm.rdynamic = true;    // export した関数を公開する
-b.installArtifact(wasm);
+
+// `zig build wasm` で呼べるようにする。install しただけでは step は作られない
+const wasm_step = b.step("wasm", "WASM をビルドする");
+wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 ```
+
+`b.installArtifact` は既定の step に紐づけるだけで、名前付きの step は作らない。`AGENTS.md` の検証コマンド表に挙げた `zig build wasm` と `zig build test-scheme` と `zig build report` と `zig build check-docs` は、それぞれ `b.step` で作る必要がある。作り忘れると `error: no such step: wasm` になる(実機で確認した)。
 
 WASM 側のコードでは次が使える。
 

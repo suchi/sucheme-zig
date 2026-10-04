@@ -20,7 +20,7 @@ Zig で書くのは次に限る。
 - リーダとプリンタ。`#!fold-case` 指令とポートごとのケースフォールディング状態を含む
 - 基本操作のプリミティブ(`cons` `car` `cdr` `set-car!` など、算術の核、文字列とベクタの基本操作、ポートの入出力)
 - 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)
-- `parameterize`。進入時に変換手続きを呼び復元時には呼ばないという R7RS 4.2.6 の規定をテンプレートで表せない
+- `parameterize`。`Parameter` を `Value` の独立した変種として動的点に直接結びつける表現を採ったため。R7RS 7.3 の参考実装は `syntax-rules` で書けているが、パラメータオブジェクトを Scheme のクロージャとして作り私的なマーカーを引数に渡す形を前提としており、本処理系の表現では使えない
 - Unicode のテーブルと数値の表示・解析
 
 これ以外は Scheme で書く。`map` と `for-each` も Scheme で書く。Scheme で書けば末尾呼び出しと継続の相互作用が自動的に正しくなるためである。

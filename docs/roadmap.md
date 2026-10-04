@@ -61,7 +61,7 @@
 - [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
 - [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)
 - [ ] ライブラリシステム(`define-library` `import` `export` `cond-expand` `include` `include-ci` `include-library-declarations`)
-- [ ] ファイルを開く全経路を1つのリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路の数え上げ)
+- [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路の数え上げ)
 - [ ] 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)と `parameterize`
 - [ ] `define-record-type` の基盤
 
@@ -89,6 +89,7 @@
 ### 段階5: ポートと入出力
 
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
+- [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
 - [ ] ポートごとのケースフォールディング状態と `include-ci` の意味の実現
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
@@ -124,7 +125,7 @@
 ## 横断的に続ける作業
 
 - ドキュメントとコードの整合性チェックを節目ごとに実施する。
-- PR は Copilot にレビューを依頼し、新規指摘ゼロになるまで修正する。
+- PR は自前の敵対的レビューを実行し、新規指摘ゼロになるまで修正する([ADR-0017](adr/0017-self-hosted-adversarial-review.md))。
 - 技術選択と設計判断、およびレビュー提案をあえて採用しない場合は ADR に記録する。
 - 1コミット=1論理変更を守り、節目ごとにプッシュする。
 

@@ -27,7 +27,7 @@ R7RS 4.3 は衛生的マクロを必須としている。`syntax-rules` は、�
 
 `syntax-rules` の照合器とテンプレート展開器は Zig で実装する。これらは構文環境と別名の機構と密接に結びついており、Scheme で書くには構文環境を操作するAPIを Scheme に公開する必要がある。それは実質的に `syntax-case` 相当の非標準拡張を設計し維持することになるため、採らない。
 
-派生構文(`let` `let*` `letrec` `cond` `case` `and` `or` `when` `unless` `do` `quasiquote` `delay` `guard` `define-record-type` `case-lambda` `let-values` など)は Scheme 側で `syntax-rules` を使って定義する。`parameterize` は、進入時に変換手続きを呼び復元時には呼ばないという R7RS 4.2.6 の規定をテンプレートで表せないため、コアの構文として Zig 側に置く([ADR-0006](0006-library-system-and-scheme-level-stdlib.md))。
+派生構文(`let` `let*` `letrec` `cond` `case` `and` `or` `when` `unless` `do` `quasiquote` `delay` `guard` `define-record-type` `case-lambda` `let-values` など)は Scheme 側で `syntax-rules` を使って定義する。`parameterize` は、パラメータオブジェクトの表現の選択によりコアの構文として Zig 側に置く([ADR-0006](0006-library-system-and-scheme-level-stdlib.md))。R7RS 7.3 は `syntax-rules` による参考実装を与えているので、テンプレートで表せないという理由ではない。
 
 ## 結果
 

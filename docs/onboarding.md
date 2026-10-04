@@ -14,7 +14,7 @@ Zig で書いた R7RS-small 準拠の Scheme インタプリタで、ネイテ�
 
 | 必要なもの | バージョン | 備考 |
 | --- | --- | --- |
-| Zig | `.zigversion` の値に固定 | `.zigversion` が正。バージョンが違うとビルドが通らない |
+| Zig | `.zigversion` の値に固定 | `.zigversion` が正。バージョンが違うとビルドが通らない。段階0の完了までこのファイルは存在しないので、それまでは [adr/0001-zig-version-pinning.md](adr/0001-zig-version-pinning.md) の決定を見る |
 | Git | 任意 | |
 | GitHub CLI (`gh`) | 任意 | PR 操作に使う |
 | Node.js | 任意 | Web UI の確認とローカル配信に使う。本体のビルドには不要 |
@@ -96,7 +96,7 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 ### 段階を完了させる
 
 1. 段階の完了条件([roadmap.md](roadmap.md))を満たしたことをテストで示す。
-2. 準拠マトリクスと README の数値を生成し直す。CI が同期を検査する。
+2. 準拠マトリクス(`docs/status/`)を生成し直す。CI が同期を検査する。README には数値を置かないので対象外である。
 3. `roadmap.md` のチェックを入れ、「現在地」を更新する。
 4. リリースタグを打つ。
 
@@ -112,7 +112,7 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 | `build.zig.zon` の fingerprint エラー | エラーメッセージが正しい値を教えてくれるので、それを貼る |
 | ランダムな場所でクラッシュする | GC のルート登録漏れ。確保をまたいで保持している `Value` を探す |
 | 深い再帰でスタックが溢れる(評価中) | Zig の再帰で Scheme 式を評価している。機械のフレームに載せ替える |
-| 深い再帰でスタックが溢れる(GC・リーダ・プリンタ・`equal?`) | データの構造を Zig の再帰で辿っている。明示的な作業スタックに載せ替える。長いリストや深い入れ子で起きる |
+| 深い再帰でスタックが溢れる(GC・リーダ・プリンタ・`equal?`・展開器・`syntax-rules`) | 入力の深さに比例して進む処理を Zig の再帰で書いている。明示的な作業スタックに載せ替える。対象の一覧は [design/runtime.md](design/runtime.md) にある |
 
 詳細は [design/zig-api-notes.md](design/zig-api-notes.md) にある。
 

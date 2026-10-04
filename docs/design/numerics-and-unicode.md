@@ -74,7 +74,11 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 > The error case can occur only when z is not a complex number or is a complex number with a non-rational real or imaginary part.
 
-したがって有限の浮動小数点数には、どの基数でも往復可能な表現が必ず存在する。`(number->string 0.5 2)` は `"#i1/10"` を返せばよい。基数2で `1/10` は 1/2 であり、`#i` は正確性接頭辞であって明示的な基数接頭辞ではないので、結果に基数接頭辞を含めないという制約にも反しない。
+したがって有限の浮動小数点数には、どの基数でも往復可能な表現が必ず存在する。`(number->string 0.5 2)` は `"#i1/10"` を返す。基数2で `1/10` は 1/2 であり、`#i` は正確性接頭辞であって明示的な基数接頭辞ではないので、結果に基数接頭辞を含めないという制約にも反しない。
+
+ここで解析側の規則に注意が必要である。R7RS 7.1.1 の `<prefix R>` は `<radix R> <exactness>` か `<exactness> <radix R>` で、空の派生が許されるのは `<radix 10>` だけである。したがって `"#i1/10"` は `<num 2>` から文法どおりには導出できない。`string->number` の第2引数で基数を与えられた場合、`<radix R>` の省略を許して既定基数をその値として解析する。この解釈を明示しておかないと、`(string->number "#i1/10" 2)` が `#f` を返して往復条件が成り立たなくなる。
+
+往復性のテストは基数10だけでなく2、8、16でも行う。基数10だけだとこの食い違いを検出できない。
 
 エラーにできるのは `(number->string +inf.0 2)` のように実部または虚部が有理数でない場合に限る。
 
@@ -119,6 +123,19 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 - 階層の網羅: 5種の表現の全組合せについて四則演算と比較を確認する。
 - 境界: `i64` の最大値と最小値の前後、fixnum と bignum の境界、分母が1になる約分、`0/n`、ゼロ除算。
 - 負数の整数除算: `floor` 系と `truncate` 系を符号の4通りで確認する。
+
+## パラメータオブジェクト
+
+R7RS 4.2.6 は `make-parameter` が返すものを「a newly allocated parameter object, which is a procedure that accepts zero arguments and returns the value associated with the parameter object」と規定している。つまりパラメータオブジェクトは手続きである。
+
+したがって次を満たす。
+
+- `(procedure? p)` は `#t` を返す。
+- `(p)` は現在の値を返す。引数0個の呼び出しとして機械の適用経路を通る。
+- `eval_operator` と `eval_operand` が受け付ける被適用型に `parameter` を含める。`closure` `primitive` `continuation` `parameter` の4種が適用できる。
+- `(p 1)` のような引数つきの呼び出しはエラーとする。R7RS が引数0個と規定しているためである。内部的な値の設定は `parameterize` が `Parameter` を直接操作して行い、Scheme から見える手続きとしての経路には出さない。
+
+`parameter` を `Value` の独立した変種にしているため、適用経路と `procedure?` の両方に明示的に加えないと `(p)` が「手続きでない」エラーになる。`parameterize` の中だけをテストすると見逃す。
 
 ## Unicode
 
