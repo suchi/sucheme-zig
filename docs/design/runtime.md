@@ -124,12 +124,17 @@ pub const SymbolTable = struct {
 };
 ```
 
-- マーク段階では、オブジェクトを辿る過程で `.symbol` の値に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
+- マーク段階では、オブジェクトを辿る過程でシンボル ID に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
+- 記録の対象は `Value` の `.symbol` だけではない。`Symbol` 型の生のフィールドもすべて対象にする。`GlobalCell.name`、`Binding.id`、`Primitive.name`、`RecordType` のフィールド名、`LambdaInfo` の引数名などが該当する。これらを漏らすと、所有オブジェクトが生存中でも ID が回収・再利用され、既存のセルや構文束縛が別のシンボルを指すという最悪の形の破壊が起きる。
 - スイープ段階で、`live` にも `pinned` にもない ID の名前を解放し、ID を `free` に戻す。
 - `pinned` には、起動時に Zig 側が登録する既知のシンボル(`quote` `if` `lambda` など)を入れる。これらは Zig のコードが ID を定数として保持するため回収してはならない。
 - ID の再利用は、その ID への生きた参照が存在しないことを `live` が保証した後にのみ行う。
 
 この方式により `string->symbol` で作って捨てたシンボルは回収され、ID 表現の利点も保たれる。
+
+生のフィールドの漏れは静かな破壊につながるため、走査関数を手書きしない。`heap.zig` が各オブジェクト型の宣言を `@typeInfo` で走査し、`Value`、`Symbol`、GC オブジェクトへのポインタ、それらのスライスを見分ける走査関数をコンパイル時に生成する。構造体にフィールドを足したときに走査も自動で追随するため、この種の漏れが構造的に起きない。
+
+反映で扱えない型(外部の資源を持つ `Bignum` や `Str` のバイト列など)は個別の走査関数を書く。`Kind` の全要素に走査関数が対応していることを確認するテストを置き、新しい `Kind` を足して走査を忘れた場合にコンパイル時または単体テストで落ちるようにする。
 
 ## ガベージコレクション
 
@@ -148,6 +153,7 @@ flowchart LR
     subgraph roots[ルート]
         reg["機械レジスタ<br/>control / env / kont / value"]
         dyn["dynamic_point<br/>wind・handler・parameter"]
+        hc["handler_cursor"]
         glob["グローバル環境<br/>ライブラリごとのエクスポート表"]
         tmp["一時ルートスタック"]
         exp["展開器の作業状態"]
@@ -263,10 +269,13 @@ pub const Machine = struct {
     env: ?*Rib,
     kont: ?*Frame,      // 継続。null なら実行完了
     value: Value,       // 直前の結果
-    dynamic_point: ?*DynPoint,
+    dynamic_point: ?*DynPoint,  // wind と parameter と handler の束縛列
+    handler_cursor: ?*DynPoint, // 「現在の例外ハンドラ」の位置。dynamic_point とは独立に動く
     step_budget: u64,   // WASM で制御を戻すための歩数制限
 };
 ```
+
+`handler_cursor` を `dynamic_point` と別に持つ理由は例外の節で述べる。R7RS 6.11 がハンドラの呼び出し時に「現在の例外ハンドラだけを切り替え、残りの動的環境は raise 時のまま保つ」ことを要求しているためである。
 
 ステップ関数は `control` が非 null なら式を1段分解して進み、null なら `value` を `kont` に渡して1フレーム取り崩す。実行ループはこれを繰り返すだけである。
 
@@ -304,12 +313,21 @@ pub const Frame = struct {
         },
         // 段階2以降で追加
         receive_values: struct { consumer: Value },
-        handler_result: struct { continuable: bool },
+        handler_result: struct {
+            continuable: bool,
+            restore_cursor: ?*DynPoint, // raise-continuable でハンドラの位置に戻す
+        },
 
         // dynamic-wind の通常実行経路。後述
         wind_enter: struct { thunk: Value, after: Value },
         wind_body: struct { after: Value, point: *DynPoint },
         wind_leave: struct { result: Value },
+
+        // with-exception-handler と parameterize の本体が通常終了した
+        leave_dynamic: struct {
+            point: ?*DynPoint,          // 復元する dynamic_point
+            handler_cursor: ?*DynPoint, // 復元する handler_cursor
+        },
 
         rewind: Rewind, // 継続起動時の動的状態の遷移。後述
     },
@@ -327,10 +345,11 @@ pub const Continuation = struct {
     header: Header,
     kont: ?*Frame,
     dynamic_point: ?*DynPoint,
+    handler_cursor: ?*DynPoint,
 };
 ```
 
-`call/cc` は現在の `kont` と `dynamic_point` を保存した `Continuation` を作り、引数の手続きに渡す。起動時は `kont` を復元し、`dynamic_point` を現在のものから目標のものへ巻き戻す。フレームが不変なので捕捉は定数時間であり、多重起動も再入も成立する。
+`call/cc` は現在の `kont` と `dynamic_point` と `handler_cursor` を保存した `Continuation` を作り、引数の手続きに渡す。起動時は `kont` と `handler_cursor` を復元し、`dynamic_point` を現在のものから目標のものへ巻き戻す。フレームが不変なので捕捉は定数時間であり、多重起動も再入も成立する。
 
 ### 動的状態
 
@@ -343,15 +362,22 @@ pub const DynPoint = struct {
     depth: u32, // 共通祖先の計算用
     kind: union(enum) {
         wind: struct { before: Value, after: Value },
-        handler: Value,
+        handler: struct {
+            proc: Value,
+            outer: ?*DynPoint, // インストール時に現在だったハンドラの位置
+        },
         parameter: struct { param: *Parameter, value: Value },
     },
 };
 ```
 
+`handler` が `outer` を持つのは、R7RS 6.11 の「the one that was in place when the handler being called was installed」をそのまま表すためである。親をたどって次の `handler` を探す方式でも多くの場合は一致するが、インストール時点の値を保存しておけば常に正確である。
+
 継続の起動時は、現在の点と目標の点の共通祖先を `depth` を使って求め、現在側を祖先まで `after` を呼びながら降り、目標側を `before` を呼びながら登る(R7RS 6.10)。ハンドラとパラメータの束縛は呼び出しを伴わないので、復元は参照の差し替えだけで済む。
 
 3つを1つの機構で表すことで、`call/cc` との相互作用を1箇所で正しくすれば全体が正しくなる。
+
+ただし「現在の例外ハンドラ」の位置だけは、この列とは独立に動かす必要がある。そのため `handler_cursor` を別のレジスタとして持つ。理由は例外の節で述べる。
 
 ### dynamic-wind の通常実行
 
@@ -383,6 +409,14 @@ sequenceDiagram
 
 `thunk` が例外を送出した場合や継続で脱出した場合は、この通常経路ではなく後述の巻き戻しが働く。
 
+### 動的範囲の通常終了
+
+`with-exception-handler` と `parameterize` も `DynPoint` を積むため、本体が通常終了したときに外す継続状態が必要である。非局所脱出だけを考えて専用のフレームを置かないと、ハンドラやパラメータの束縛が後続の処理へ漏れる。
+
+`leave_dynamic` フレームがこれを担う。本体を呼ぶ際に、積む前の `dynamic_point` と `handler_cursor` を保存したフレームを継続として置く。本体が値を返したらレジスタを復元し、`value` をそのまま親の継続に渡す。本体が複数値を返した場合もそのまま渡る。
+
+`dynamic-wind` は `after` の呼び出しを伴うため `wind_body` と `wind_leave` を使うが、`with-exception-handler` と `parameterize` は呼び出しを伴わないので `leave_dynamic` だけで足りる。
+
 ### 巻き戻しの進行
 
 `after` と `before` は Scheme 手続きであり、その中でさらに継続を捕捉したり起動したりできる。したがって巻き戻しを Zig の同期ループで回すことはできない。巻き戻しの途中の状態自体が継続に含まれていなければならない。
@@ -401,9 +435,10 @@ pub const Rewind = struct {
     enter_path: ?*DynPath,    // 外側から内側の順に並べた経路
     enter_index: u32,         // 次に before を呼ぶ位置
 
-    target_point: ?*DynPoint, // 目標の動的点。entering の終点
-    target_kont: ?*Frame,     // 遷移完了後に復元する継続
-    target_value: Value,      // 復元した継続に渡す値。複数値も入る
+    target_point: ?*DynPoint,          // 目標の動的点。entering の終点
+    target_handler_cursor: ?*DynPoint, // 遷移完了後に復元するハンドラの位置
+    target_kont: ?*Frame,              // 遷移完了後に復元する継続
+    target_value: Value,               // 復元した継続に渡す値。複数値も入る
 };
 
 pub const DynPath = struct {
@@ -425,7 +460,7 @@ stateDiagram-v2
     Exiting --> Entering: cursor が ancestor に到達
     Entering --> Entering: 目標側の経路を1つ進み before を呼ぶ
     Entering --> Done: target_point に到達
-    Done --> [*]: kont = target_kont、value = target_value
+    Done --> [*]: kont と handler_cursor と value を復元
 ```
 
 各 `after` と `before` の呼び出しは通常の手続き呼び出しとして機械に積む。その継続として、`exiting` なら `cursor` を親へ進め、`entering` なら `enter_index` を1つ進めた新しい `Rewind` フレームを置く。フレームは不変なので、`after` の中で捕捉した継続を後で起動しても、その時点の巻き戻し状態から正しく再開する。
@@ -434,13 +469,23 @@ stateDiagram-v2
 
 ### 例外
 
-`raise` は `dynamic_point` を遡って最も内側の `handler` を探し、その `handler` より外側の動的環境を設定してからハンドラを呼ぶ(R7RS 6.11)。これによりハンドラ自身が例外を起こしても無限ループにならない。
+R7RS 6.11 は `raise` について次のように規定している。
 
-- `raise`: ハンドラが戻った場合は二次例外を起こす。
-- `raise-continuable`: ハンドラの戻り値が `raise-continuable` の値になる。
-- `with-exception-handler`: `handler` 種別の `DynPoint` を1つ積む。
+> The handler is called with the same dynamic environment as that of the call to raise, except that the current exception handler is the one that was in place when the handler being called was installed. If the handler returns, a secondary exception is raised in the same dynamic environment as the handler.
+
+変わるのは現在の例外ハンドラだけであり、動的環境の残りは `raise` を呼んだ時点のままである。したがって `dynamic_point` 全体を外側へ戻してはならない。戻してしまうと、ハンドラのインストールより内側で有効になった `parameterize` の束縛や `dynamic-wind` の範囲までハンドラから見えなくなる。
+
+これが `handler_cursor` を `dynamic_point` と別のレジスタにしている理由である。1本のリストでは「ハンドラだけを切り替える」ことを表せない。
+
+各手続きの動作は次のとおり。
+
+- `with-exception-handler`: `handler` 種別の `DynPoint` を積む。`outer` には積む前の `handler_cursor` を入れる。`dynamic_point` と `handler_cursor` の両方を新しい点にし、`thunk` を `leave_dynamic` 継続のもとで呼ぶ。
+- `raise` と `raise-continuable`: `handler_cursor` が指す点のハンドラを呼ぶ。`dynamic_point` は変えない。`handler_cursor` をその点の `outer` に差し替える。継続は `handler_result`。`handler_cursor` が null なら未処理例外として扱う。
+- `handler_result`: `raise-continuable` の場合は `handler_cursor` を元の点に戻し(規定の「it will again become the current exception handler」)、ハンドラの戻り値を `raise-continuable` の値として親の継続に渡す。`raise` の場合は二次例外を起こす。このときのレジスタはハンドラ実行時のままなので、規定の「in the same dynamic environment as the handler」が満たされる。
 - `guard`: Scheme 側で `call/cc` と `with-exception-handler` を用いて実装する(R7RS 7.3 の派生式に対応)。
 - `error`: 条件オブジェクトを作って `raise` する。
+
+ハンドラの中でさらに例外が起きた場合、`handler_cursor` は既に `outer` を指しているため外側のハンドラが呼ばれ、無限ループにならない。
 
 条件オブジェクトは R7RS が要求する述語を区別できる構造を持つ。
 
