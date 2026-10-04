@@ -259,7 +259,8 @@ pub const SymbolTable = struct {
 型名は Zig 0.17.0 で非推奨でないものを使う。`ArrayListUnmanaged` と `DynamicBitSetUnmanaged` は標準ライブラリが非推奨と記している別名である([zig-api-notes.md](zig-api-notes.md))。
 
 - マーク段階では、オブジェクトを辿る過程でシンボル ID に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
-- 記録の対象は `Value` の `.symbol` だけではない。`Symbol` 型の生のフィールドもすべて対象にする。`GlobalCell.name`、`Binding.id`、`Primitive.name`、`RecordType` のフィールド名、`LambdaInfo` の引数名などが該当する。これらを漏らすと、所有オブジェクトが生存中でも ID が回収・再利用され、既存のセルや構文束縛が別のシンボルを指すという最悪の形の破壊が起きる。
+- 記録の対象は `Value` の `.symbol` だけではない。`Symbol` 型の生のフィールドもすべて対象にする。`GlobalCell.name`、`Primitive.name`、`RecordType` のフィールド名、`LambdaInfo.param_names` が該当する。これらを漏らすと、所有オブジェクトが生存中でも ID が回収・再利用され、既存のセルや構文束縛が別のシンボルを指すという最悪の形の破壊が起きる。
+- `Binding.id` は `Symbol` ではなく `Identifier` である。素のシンボルか別名のどちらかを表す union なので、`.symbol` なら `live` に記録し、`.alias` なら GC ポインタとして走査する。生の `Symbol` として扱うと、別名オブジェクトが走査されずに回収され、かつポインタのビット列をシンボル ID と解釈して無関係な ID を生存扱いにする。
 - ヒープ上のオブジェクトだけでは足りない。Zig のローカル変数や、展開器がヒープ外に持つ作業表が保持している生の ID も対象にする。これらは次の確保で GC が走ると回収されうる。一時ルート枠は `Value` と `Symbol` の両方を登録できるものとし(`frame.add` と `frame.addSymbol`)、ヒープ外のルート走査も自分が持つ `Symbol` をマークする責任を持つ。
 - マーク段階の開始前に `live` を全消去する。消去を忘れると、一度でも参照された ID が以後ずっと生存扱いになり、弱い表として機能しない。
 - スイープ段階で、`live` にも `pinned` にもない ID について、先に `index` から該当項目を削除し、次に名前のバッファを解放し、最後に ID を `free` に戻す。この順序を守る。
@@ -294,8 +295,13 @@ pub const SymbolTable = struct {
 | `Header` 型のフィールド | `Pair.header` | 走査しない。`next` を辿ると全オブジェクトが生存扱いになる |
 | GC オブジェクトを指さないポインタ | `Primitive.impl.pure`(関数ポインタ) | 走査しない。`*Header` として扱うとコード領域に書き込む |
 | ヒープ外ペイロードのスライス | `Str.bytes: []u8` | 走査しない。要素が `Value` でも GC ポインタでもない |
+| 整数、`bool`、`f64`、`u21` などのスカラ | `DynPoint.depth`、`Binding.imported`、`Location.line` | 走査しない。GC オブジェクトを指さない |
+| enum | `Condition.tag`、`Library.state`、`Rewind.phase` | 走査しない |
+| `Symbol` のスライス | `LambdaInfo.param_names: []Symbol` | ポインタとしては走査しないが、各要素を `live` に記録する。ペイロードとして計上する |
 
-表のどちらにも当てはまらない形に出会った場合、生成器はコンパイルエラーにする。黙って飛ばしてはならない。飛ばす設計だと、`Frame.kind == .rewind` のときに `Rewind` の `target_kont` と `target_value` と `enter_path` が走査されず、巻き戻し中の GC で目標の継続とその値が回収される。新しい形を導入したら、意図を表の側に書いてから生成器を拡張する。
+表のどちらにも当てはまらない形に出会った場合、生成器はコンパイルエラーにする。黙って飛ばしてはならない。この既定を置くため、GC と無関係なスカラと enum を走査しない形として明示的に表に入れてある。入れないとほぼ全オブジェクトでビルドが止まる。
+
+型が成果物のどこにも宣言されていない場合もコンパイルエラーになる。`Arity`、`SpecialForm`、`MachineOp` は名前だけ現れている。いずれも GC オブジェクトを含まない値の型なので、宣言を書く段階で走査しない側に分類する。宣言は手順2の実装計画で確定させる。飛ばす設計だと、`Frame.kind == .rewind` のときに `Rewind` の `target_kont` と `target_value` と `enter_path` が走査されず、巻き戻し中の GC で目標の継続とその値が回収される。新しい形を導入したら、意図を表の側に書いてから生成器を拡張する。
 
 GC オブジェクトを指すポインタとそうでないポインタの判別は、指す型が `header: Header` フィールドを持つかどうかで行う。関数ポインタとスライスは別の分類として扱う。
 
@@ -349,19 +355,28 @@ pub const PatternVar = struct {
 };
 
 pub const Location = struct { line: u32, col: u32 }; // GC 対象でない素の構造体
+
+/// 展開時の識別子。素のシンボルか別名。
+pub const Identifier = union(enum) {
+    symbol: Symbol,
+    alias: *Alias,
+};
 ```
 
 `Export` と `Denotation` と `Binding` と `SyntaxEnv` と `Alias` と `LocalBinding` の宣言は [frontend.md](frontend.md) にある。レイアウトはすべて `value.zig` に集めるという規則([architecture.md](architecture.md))に従い、宣言の置き場所は `value.zig` とする。
 
 `Kind` の全要素について、対応するレイアウトの宣言がどこにあるかを一覧にする。宣言のない要素があってはならない。前述の検証2がこれを確かめる。
 
-| 宣言のある文書 | 型 |
-| --- | --- |
-| 本ドキュメントの値表現と各節 | `Pair` `Str` `Vector` `Bytevector` `Closure` `Primitive` `Continuation` `Promise` `Record` `RecordType` `Port` `Parameter` `REnvironment` `Transformer` `Condition` `MultipleValues` `GlobalCell` `Rib` `Node` `Frame` `DynPoint` `DynPath` `Rewind` `LambdaInfo` `ExportTable` `Macro` `PatternVar` |
-| [numerics-and-unicode.md](numerics-and-unicode.md) | `Bignum` `Ratnum` `Compnum` |
-| [frontend.md](frontend.md) | `SyntaxEnv` `Binding` `Alias` `LocalBinding` `Export` |
+`Kind` の要素になるのは `header: Header` を持つ型だけである。ヘッダを持たない型は `Kind` に入らない。両者を分けて示す。
 
-上の一覧に挙げながら本文に構造体宣言のない型は、段階に入る前の実装計画(手順2)で宣言を確定させる。`Vector` `Closure` `Promise` `Record` `RecordType` `Port` `Parameter` `REnvironment` `Transformer` `MultipleValues` がこれにあたる。宣言を書く段階は、その型が初めて必要になる段階とする。
+| 区分 | 宣言のある文書 | 型 |
+| --- | --- | --- |
+| `Kind` の要素 | 本ドキュメント | `Pair` `Str` `Vector` `Bytevector` `Closure` `Primitive` `Continuation` `Promise` `Record` `RecordType` `Port` `Parameter` `REnvironment` `Transformer` `Condition` `MultipleValues` `GlobalCell` `Rib` `Node` `Frame` `DynPoint` `DynPath` `LambdaInfo` `ExportTable` `Macro` `PatternVar` |
+| `Kind` の要素 | [numerics-and-unicode.md](numerics-and-unicode.md) | `Bignum` `Ratnum` `Compnum` |
+| `Kind` の要素 | [frontend.md](frontend.md) | `SyntaxEnv` `Alias` `LocalBinding` `Library` |
+| ヘッダを持たず他の型に埋め込まれる | 本ドキュメントと [frontend.md](frontend.md) | `Header` `Rewind` `Location` `Identifier` `Binding` `Export` `Denotation` `Arity` `SpecialForm` `MachineOp` `PrimResult` |
+
+上の一覧に挙げながら本文に構造体宣言のない型は、段階に入る前の実装計画(手順2)で宣言を確定させる。`Vector` `Closure` `Promise` `Record` `RecordType` `Port` `Parameter` `REnvironment` `Transformer` `MultipleValues` `Arity` `SpecialForm` `MachineOp` がこれにあたる。宣言を書く段階は、その型が初めて必要になる段階とする。
 
 ## ガベージコレクション
 
@@ -379,6 +394,8 @@ pub const Location = struct { line: u32, col: u32 }; // GC 対象でない素の
 | GC の作業リスト | `Gc` の worklist |
 | 走査の作業スタック | リーダ、プリンタ、`equal?`、`quote` の剥離、リテラルの不変化のそれぞれの明示的スタック |
 | 走査の対応表 | データラベルの表、剥離の訪問済み表、`equal?` の訪問済み表、位置情報の作業表 |
+| 一時ルートスタック | `heap.zig` のルート枠。展開器が入力長に比例して登録するため伸びる |
+| 展開器の作業状態 | 構文環境の作業領域、照合器のスタック、パターン変数の束縛木 |
 | ポートのバッファ | WASM の出力バッファ、ファイルポートと文字列ポートのバッファ |
 
 計上しないのは予約領域(前述)だけである。上限の外側に固定量を置く。
@@ -391,7 +408,21 @@ pub const Location = struct { line: u32, col: u32 }; // GC 対象でない素の
 
 上限に達した状態で Scheme のエラーを送出するには、条件オブジェクトと `handler_shift` 点の確保が必要である。上限内から確保しようとすると再び上限超過になり、無限後退する。
 
-初期化時に、上限とは別枠の予約領域を確保する。大きさは条件オブジェクト、`handler_shift` 点、最小の継続フレームを数十個ぶん置ける固定量とする。上限超過の送出と内部エラーの報告はこの領域から確保する。予約領域は計上の対象に含めない(上限の外側に固定量を置く)。
+初期化時に、上限とは別枠の予約領域を確保する。上限超過の送出と内部エラーの報告はこの領域から確保する。予約領域は計上の対象に含めない(上限の外側に固定量を置く)。
+
+大きさは、送出からハンドラの実行、そして `guard` による捕捉までに必要な確保を数え上げて決める。`guard` は Scheme 側で `call/cc` と `with-exception-handler` を使って実装されるため、ハンドラの呼び出しと継続による脱出の両方が起きる。
+
+| 必要なもの | 用途 |
+| --- | --- |
+| `Condition` 1個 | 条件オブジェクト |
+| `Str` 1個とそのバイト列 | `Condition.message` |
+| `Pair` 数個 | `Condition.irritants` |
+| `handler_shift` 点 1個 | `raise` が積む |
+| `Rib` 1個とそのスロット列 | ハンドラ手続きの引数を入れる |
+| 継続フレーム 数十個 | ハンドラ本体の評価 |
+| `Rewind` フレーム 1個と `DynPath` 1個(`points` のペイロードを含む) | `guard` が捕捉した継続への脱出 |
+
+この一覧を実装計画で具体的なバイト数にする。予約領域を使い切った場合は `Fatal.ReserveExhausted` として回復不能に落とす。
 
 予約領域を使い切った場合に限り、回復不能として扱う。WASM では状態コード `-2` を返し、ネイティブでは標準エラーに出力してゼロでない終了コードで終了する。
 
@@ -418,7 +449,7 @@ flowchart LR
     subgraph roots[ルート]
         reg["機械レジスタ<br/>control / env / kont / value"]
         dyn["dynamic_point<br/>wind・handler・handler_shift・parameter"]
-        glob["グローバル環境<br/>ライブラリごとのエクスポート表"]
+        glob["グローバル環境<br/>ライブラリ登録表・エクスポート表・構文環境"]
         tmp["一時ルートスタック"]
         exp["展開器の作業状態"]
     end
@@ -427,12 +458,14 @@ flowchart LR
 
 機械の状態が4レジスタと `dynamic_point` に集約されているため、ルートは少数で済む。これが CEK 機械を選んだ理由の一つである。現在の例外ハンドラを独立したレジスタにせず `dynamic_point` から導出するのも、ルートと真実の源を増やさないためである。
 
+「グローバル環境」が指すものを明示する。ライブラリ名から `*Library` への登録表、各 `Library` の `exports`、各 `Library` の `env`(構文環境)、REPL 自身の環境の4つである。登録表を漏らすと、`(define-library (a) ...)` を読み込んだ後の GC で `Library` と `Library.env` に到達する根がなくなり回収され、次の `(import (a))` が読み込み済み判定のために解放済みメモリを読む。
+
 ### 一時ルートの書き方
 
 ヒープ確保をまたいで `Value` を保持する場合は、スコープ単位でルート枠を使う。
 
 ```zig
-pub fn makeList2(h: *Heap, a: Value, b: Value) !Value {
+pub fn makeList2(h: *Heap, a: Value, b: Value) AllocError!Value {
     var frame = h.rootFrame();
     defer frame.pop();
     frame.add(a);
@@ -489,18 +522,40 @@ GC は `heap.allocate` の内部でのみ走る。したがって確保を行う
 
 ### ヒープ外ペイロードの確保 API
 
-GC オブジェクトの一部であるヒープ外のペイロード(`Str.bytes`、ベクタとバイトベクタの要素領域、`Bignum` の限界値列、`Rib.slots`、`DynPath.points`、`SyntaxEnv.bindings`、`ExportTable.entries`)も `heap.zig` の API を通す。計上を1箇所で行うためである。
+GC オブジェクトの一部であるヒープ外のペイロードも `heap.zig` の API を通す。計上を1箇所で行うためである。対象を数え上げる。
+
+| オブジェクト | ペイロード |
+| --- | --- |
+| `Str` | `bytes` |
+| `Vector` `Bytevector` | 要素領域 |
+| `Bignum` | 限界値列 |
+| `Rib` | `slots` |
+| `Node` | `body.seq`、`body.call.operands` |
+| `LambdaInfo` | `param_names` |
+| `Frame` | `kind.seq_rest.nodes`、`kind.eval_operator.operands`、`kind.eval_operand.operands`、`kind.param_convert.params`、`kind.param_convert.values` |
+| `DynPath` | `points` |
+| `SyntaxEnv` | `bindings` |
+| `ExportTable` | ハッシュ表の記憶域と外部名の文字列 |
+
+`ExportTable` の外部名は `Symbol` ではなく独立に所有した文字列のコピーとする。ハッシュ表の鍵をシンボル表のバッファと共有してはならない。シンボル表は弱い表なので、`(export (rename internal external))` の `external` はどの `Symbol` 型フィールドにも入らず、最初の GC で名前バッファが解放される。共有していると次の `(import ...)` のハッシュ探索が解放済みメモリを読む。
+
+コピーは `ExportTable` が所有し、`ExportTable` の sweep で解放する。計上の対象に含める。`Symbol` として持たないので `live` に記録する必要もない。
+| `PatternVar` | 束縛した部分木のうち配列として持つもの |
 
 ```zig
 /// GCを起動しうる。計上に加算する。
-pub fn allocPayload(h: *Heap, comptime T: type, n: usize) Fatal![]T;
+pub fn allocPayload(h: *Heap, comptime T: type, n: usize) AllocError![]T;
 pub fn freePayload(h: *Heap, slice: anytype) void; // sweep から呼ぶ。計上から減算する
 pub fn payloadAllocator(h: *Heap) std.mem.Allocator; // 計上を行うアロケータ。big.int などに渡す
 ```
 
 `std.math.big.int.Managed` のように内部で確保する型には `payloadAllocator` を渡す。これにより `Bignum` の限界値列も計上される。
 
-横断的な不変条件の「確保点の一元化」の例外は、GC 対象でない補助データ構造(シンボル表の索引、ビルド時テーブル)に限る。GC オブジェクトのペイロードは例外に当たらない。各モジュールが `std.mem.Allocator` を直接使うと計上が漏れるため、`prim/` と `number/` からの直接使用は禁止する。
+横断的な不変条件の「確保点の一元化」の例外は、GC 対象でない補助データ構造(シンボル表の索引、ビルド時テーブル)に限る。GC オブジェクトのペイロードは例外に当たらない。
+
+`std.mem.Allocator` の直接使用は、`src/` の全モジュールで禁止する。`prim/` と `number/` に限ると、`syntax/rules.zig` の照合器の作業スタックとパターン変数の束縛木、`syntax/expand.zig` と `core.zig` のコアIRのスライス、`cont.zig` のフレームのスライスが計上を通らない。これらはいずれも入力長に比例して伸びるため、上限が効かなくなる。
+
+例外を認めるのは `symbol.zig` の索引と、ビルド時にテーブルを生成する `tools/` に限る。例外を使う箇所には理由を `Why:` コメントで書く。計上の表を網羅と主張する根拠はこの禁止にあるので、禁止の範囲を狭めると主張が成り立たない。
 
 ### equal? の循環への対処
 
@@ -669,6 +724,7 @@ pub const Frame = struct {
             values: []*Node,      // 未評価の値の式
             converted: Value,     // 変換済みの値の逆順リスト
             index: u32,
+            phase: enum { value_done, convert_done },
             body: *Node,
         },
 
@@ -711,11 +767,22 @@ pub const PrimResult = union(enum) {
 
 /// 機械の外側の失敗。Zig の error はこの集合に限る。
 pub const Fatal = error{
-    OutOfMemory,    // 予約領域を使っても送出できない
+    ReserveExhausted, // 予約領域を使い切った。回復不能
     HostIoFailed,
     InternalInvariant,
 };
+
+/// 確保の失敗。上限超過は Scheme のエラーにできるので Fatal と区別する。
+pub const AllocError = error{
+    HeapLimitExceeded, // 計上量が上限を超えた。条件オブジェクトにして raise する
+} || Fatal;
 ```
+
+`HeapLimitExceeded` と `Fatal.ReserveExhausted` を別の値にするのは、前者が `guard` で捕捉できる Scheme のエラーで、後者が回復不能だからである。1つの `OutOfMemory` にまとめると、どちらに変換すべきか呼び出し元が判断できない。上限超過を回復不能として扱うと `guard` が走らず、予約枯渇を Scheme のエラーとして扱うと回復不能の状態コードが発生しなくなる。
+
+確保を行う関数はすべて `AllocError` を返す。機械のステップ関数は `HeapLimitExceeded` を受け取ったら、予約領域から条件オブジェクトを作って `raise` の処理に入る。`ReserveExhausted` を受け取ったら回復不能として報告する。
+
+`makeList2` の例のように `!Value` と書いた箇所は `AllocError!Value` を指す。`error` を使うのは確保の失敗だけで、Scheme プログラムの誤りには使わない。この区別が横断的な不変条件の意味である。
 
 `pure` の戻り値を `Fatal!Value` にしてはならない。型エラーや範囲外のような Scheme の誤りを Zig の `error` で返すと、横断的な不変条件「Zig の `error` は機械の外側の失敗にのみ使う」に反し、機械が評価を中断して現在の例外ハンドラを起動しない。`(with-exception-handler (lambda (c) 'caught) (lambda () (car 5)))` が `'caught` にならなくなる。
 
@@ -813,8 +880,6 @@ pub fn currentHandler(p: ?*DynPoint) ?*DynPoint {
 
 起動時に既定のハンドラを積む方式は採らない。R7RS 6.11 の「`H` をインストールした時点のハンドラ」の計算に実在しないインストール点が混ざり、`handler_shift` の切り替え先の意味が曖昧になるためである。`null` を未処理例外として扱う方が規定に素直である。
 
-起動時に既定のハンドラを積む方式は採らない。`with-exception-handler` を一度も通っていない状態を特別扱いせずに済む利点はあるが、R7RS 6.11 の「`H` をインストールした時点のハンドラ」の計算に実在しないインストール点が混ざるため、`handler_shift` の切り替え先の意味が曖昧になる。`null` を未処理例外として扱う方が規定に素直である。
-
 `handler_shift` は `raise` がハンドラを呼ぶ間だけ積む点である。R7RS 6.11 の「現在のハンドラだけを切り替え、残りの動的環境は `raise` 時のまま保つ」を、外側へ戻るのではなく内側へ1点積むことで表す。詳細は例外の節で述べる。
 
 この表現を選ぶまでに、独立したカーソルレジスタを持つ案を検討して捨てた。カーソルを点の生成時の値から復元する方式も、現在の `dynamic_point` から導出する方式も、継続による再入や `raise` を囲む `dynamic-wind` からの脱出で誤った値になる。レジスタと点の列という2つの真実の源を同期させようとすることが問題の根であり、源を1つにすれば同期の誤りが起こりえない。経緯は [ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md) に記録した。
@@ -868,6 +933,10 @@ sequenceDiagram
 > The ⟨body⟩ is evaluated in a dynamic environment in which calls to the parameters return the results of passing the corresponding values to the conversion procedure specified when the parameters were created. Then the previous values of the parameters are restored without passing them to the conversion procedure.
 
 進入時は各パラメータの変換手続きを呼ぶ。復元時は呼ばない。したがって `param_convert` フレームを使う。宣言は前述の `Frame.kind` にある。変換手続きの呼び出しを機械に積み、途中の状態をフレームに持つ。Zig のローカル変数に `[]*Parameter` を持つと、変換手続きの呼び出しをまたいで保持することになり GC 安全性の不変条件に反する。
+
+`phase` が必要なのは、「値の式 `values[index]` が評価されて戻った」状態と「`params[index]` の変換手続きが戻った」状態がどちらも1個の値を同じフレームに返すためである。区別しないと、変換手続きを呼ばずに値をそのまま積むか、変換手続きの戻り値をもう一度変換するかのどちらかになる。R7RS 4.2.6 の Note は変換手続きが冪等でない場合を前提にしているので、2回適用すると観測できる違いが出る。`Rewind` が同じ理由で `phase` を持っているのと同じ対処である。
+
+`value_done` なら変換手続きを呼び、継続を `phase = convert_done` の同じ添字のフレームにする。`convert_done` なら戻り値を `converted` に積んで添字を進め、`phase = value_done` で次の値の式を評価する。
 
 すべての変換が終わったら `parameter` 種別の `DynPoint` をまとめて積み、本体を `leave_dynamic` 継続のもとで呼ぶ。復元は点を外すだけで、変換手続きを呼ばない。
 

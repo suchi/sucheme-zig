@@ -11,7 +11,7 @@
 
 ## 決定
 
-Zig で書くのは次に限る。
+Zig で書くのは次の族に限る。族の中の個々の手続きは「など」で示す範囲を含む。族の一覧は閉じており、ここにない族を Zig 側に増やす場合は ADR を書く。
 
 - コアの特殊形式(`quote` `if` `lambda` `set!` `define` `begin`)と、それらのコアIRへの変換
 - 構文定義(`define-syntax` `let-syntax` `letrec-syntax`)。構文環境にマクロ束縛を追加する操作はテンプレートで表せない
@@ -21,6 +21,9 @@ Zig で書くのは次に限る。
 - 基本操作のプリミティブ(`cons` `car` `cdr` `set-car!` など、算術の核、文字列とベクタの基本操作、ポートの入出力)
 - 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)
 - `parameterize`。`Parameter` を `Value` の独立した変種として動的点に直接結びつける表現を採ったため。R7RS 7.3 の参考実装は `syntax-rules` で書けているが、パラメータオブジェクトを Scheme のクロージャとして作り私的なマーカーを引数に渡す形を前提としており、本処理系の表現では使えない
+- レコード型の生成と操作のプリミティブ。`define-record-type` は Scheme 側の `syntax-rules` で定義するが、その展開先が必要とする
+- 条件オブジェクトの生成と `error` `error-object?` `error-object-message` `error-object-irritants` `read-error?` `file-error?`
+- `environment` と `interaction-environment`
 - Unicode のテーブルと数値の表示・解析
 
 これ以外は Scheme で書く。`map` と `for-each` も Scheme で書く。Scheme で書けば末尾呼び出しと継続の相互作用が自動的に正しくなるためである。

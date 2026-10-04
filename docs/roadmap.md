@@ -29,7 +29,7 @@
 
 - [ ] `build.zig` と `build.zig.zon` と `.zigversion`
 - [ ] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
-- [ ] `AGENTS.md` の検証コマンド表を埋める
+- [x] `AGENTS.md` の検証コマンド表を埋める
 - [x] ライセンスの決定と `LICENSE` の配置([ADR-0015](adr/0015-mit-license.md))
 - [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))
 - [ ] CI ワークフロー(`zig fmt --check` と `zig build test`)
@@ -60,12 +60,13 @@
 - [ ] `values` と `call-with-values`
 - [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
 - [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)
-- [ ] ライブラリシステム(`define-library` `import` `export` `cond-expand` `include` `include-ci` `include-library-declarations`)
+- [ ] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
+- [ ] ポートごとのケースフォールディング状態と `include-ci`。リーダの `#!fold-case` 指令は段階5だが、ポートの状態と `include-ci` はここで実装する。機構がないまま `include-ci` を提供すると `include` に退化し、畳み込みを期待したファイルが未束縛識別子のエラーになる
 - [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路の数え上げ)
 - [ ] 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)と `parameterize`
 - [ ] `define-record-type` の基盤
 
-完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。リリース v0.2.0 を出す。
+完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
 
 ### 段階3: Schemeによる標準ライブラリ
 
@@ -91,11 +92,10 @@
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
-- [ ] ポートごとのケースフォールディング状態と `include-ci` の意味の実現
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 
-完了条件: 循環リストの `write` がデータラベル付きで出力される。`include-ci` が対象ファイルを畳み込んで読む。16ライブラリすべてが読み込める。リリース v0.5.0 を出す。
+完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。16ライブラリすべてが読み込める。リリース v0.5.0 を出す。
 
 ### 段階6: 準拠検証
 

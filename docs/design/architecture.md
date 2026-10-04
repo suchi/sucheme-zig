@@ -103,6 +103,7 @@ flowchart TB
 | `lib/` | Scheme で書く標準ライブラリ。ビルド時に実行ファイルへ埋め込む |
 | `web/` | Web UI サブプロジェクト。依存パッケージを持たない素の HTML/CSS/JS |
 | `tests/` | Scheme レベルのテストと、外部から持ち込んだ準拠テストスイート |
+| `tools/` | Unicode テーブルの生成器、ドキュメントの検査など補助プログラム |
 | `docs/` | 設計・ADR・計画・進捗 |
 
 `lib/` に置く Scheme コードの範囲は「コア言語で表現できるものはコア言語で書く」という方針に従う。詳細は [frontend.md](frontend.md) のライブラリ構成と [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md) にある。

@@ -14,6 +14,17 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 同じ数値を README にも書くと必ず食い違うため、ここには転記しません。
 
+## 対応プラットフォーム
+
+| プラットフォーム | ビルド | 自動テストによる動作保証 |
+| --- | --- | --- |
+| Linux (x86_64, aarch64) | あり | あり |
+| Windows (x86_64, aarch64) | あり | あり |
+| macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし |
+| WebAssembly | あり | あり |
+
+macOS 向けのバイナリはクロスコンパイルで生成し、自動テストを実行していません。GitHub Actions の macOS ランナーの課金単位が他の10倍であるためです([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。署名と公証も行っていません。macOS で問題が出た場合は issue でお知らせください。
+
 ## 特徴として目指すもの
 
 - R7RS-small の16ライブラリすべての実装

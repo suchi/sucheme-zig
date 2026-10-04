@@ -272,7 +272,7 @@ const wasm_step = b.step("wasm", "WASM をビルドする");
 wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 ```
 
-`b.installArtifact` は既定の step に紐づけるだけで、名前付きの step は作らない。`AGENTS.md` の検証コマンド表に挙げた `zig build wasm` と `zig build test-scheme` と `zig build report` と `zig build check-docs` は、それぞれ `b.step` で作る必要がある。作り忘れると `error: no such step: wasm` になる(実機で確認した)。
+`b.installArtifact` は既定の step に紐づけるだけで、名前付きの step は作らない。`AGENTS.md` の検証コマンド表の `zig build <名前>` の形のコマンドは、`build` を除いてすべて `b.step` で作る必要がある。一覧をここに複製せず表を参照する。作り忘れると `error: no such step: wasm` のようになる(実機で確認した)。
 
 WASM 側のコードでは次が使える。
 
@@ -293,7 +293,7 @@ export fn alloc(n: usize) ?[*]u8 { ... }
     .fingerprint = 0x0,                    // 後述
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
-    .paths = .{ "build.zig", "build.zig.zon", "src", "lib", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "lib", "tools", "LICENSE", "README.md" },
 }
 ```
 

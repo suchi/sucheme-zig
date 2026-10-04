@@ -17,7 +17,7 @@
 | プロセス終了 | `std.process.exit` | ホストへの通知とトラップ |
 | メモリ確保 | `std.heap.SafeAllocator` または `page_allocator` | `std.heap.wasm_allocator` |
 
-`sucheme_init` が受け取る `heap_limit_bytes` は、[runtime.md](runtime.md) の計上の対象に挙げたすべて(GC オブジェクトの本体、ヒープ外のペイロード、シンボル表、GC の作業リスト)の合計に対する上限である。オブジェクト本体だけの上限ではない。上限に達して GC を走らせても下回らない場合は状態コード `-2` を返す。
+`sucheme_init` が受け取る `heap_limit_bytes` は、[runtime.md](runtime.md) の計上の対象に挙げたすべての合計に対する上限である。オブジェクト本体だけの上限ではない。対象の一覧をここに複製せず、同文書を参照する。上限に達した場合の扱いは後述の状態コードの節で定める。
 
 選択はコンパイル時に行う。仮想関数テーブルは使わない。
 
@@ -39,16 +39,20 @@ else
 ### エクスポート
 
 ```
-sucheme_init(heap_limit_bytes: u32) -> i32      インタプリタを初期化する
-sucheme_alloc(len: u32) -> u32                  入力文字列用の領域を確保する。失敗は 0
-sucheme_free(ptr: u32, len: u32) -> i32         領域を解放する
-sucheme_eval_begin(ptr: u32, len: u32) -> i32   入力を読み取り評価を開始する
-sucheme_step(budget: u32) -> i32                実行を進める
-sucheme_output_ptr() -> u32                     出力バッファの先頭
-sucheme_output_len() -> u32                     出力バッファの長さ
-sucheme_output_clear() -> i32                   出力バッファを空にする
+// 状態コードを返す(5つ)
+sucheme_init(heap_limit_bytes: u32) -> i32       インタプリタを初期化する
+sucheme_eval_begin(ptr: u32, len: u32) -> i32    入力を読み取り評価を開始する
+sucheme_step(budget: u32) -> i32                 実行を進める
 sucheme_provide_input(ptr: u32, len: u32) -> i32 入力待ちに応答する
-sucheme_reset() -> i32                          状態を捨てて初期状態に戻す
+sucheme_reset() -> i32                           状態を捨てて初期状態に戻す
+
+// 状態を遷移させない(8つ)
+sucheme_alloc(len: u32) -> u32                   入力文字列用の領域を確保する。失敗と初期化前は 0
+sucheme_free(ptr: u32, len: u32)                 領域を解放する
+sucheme_output_ptr() -> u32                      出力バッファの先頭
+sucheme_output_len() -> u32                      出力バッファの長さ
+sucheme_output_clear()                           出力バッファを空にする
+sucheme_set_command_line(ptr: u32, len: u32)     コマンドライン引数を設定する(改行区切り)
 sucheme_version_ptr() -> u32
 sucheme_version_len() -> u32
 ```
@@ -63,13 +67,15 @@ sucheme_version_len() -> u32
 
 | 箇所 | 不正なときの扱い |
 | --- | --- |
-| `sucheme_eval_begin` と `sucheme_provide_input` が受け取るバイト列 | 状態コード `-3` を返し、出力バッファに位置を示す説明を書く |
+| `sucheme_eval_begin` と `sucheme_provide_input` が受け取るバイト列 | 状態コード `-3`(入力が不正)を返し、出力バッファに位置を示す説明を書く。インタプリタの状態は変えない |
 | ファイルから読んだバイト列(テキストポート) | `read-error?` が真になる条件オブジェクトを送出する |
-| `bytevector->string`(R7RS 6.9) | R7RS が不正なバイト列をエラーとするので条件オブジェクトを送出する |
+| `utf8->string`(R7RS 6.9) | R7RS 6.7 が「It is an error to pass such a forbidden character ... or in UTF-8 encoded form within a bytevector passed to utf8->string」とするので条件オブジェクトを送出する |
 
-拒否するのは次のすべてである。過長符号化(`0xC0 0x80` など)、サロゲート符号位置(U+D800 から U+DFFF)の符号化、U+10FFFF を超える値、不完全な列、継続バイトの単独出現。置換文字への差し替えは行わない。黙って内容を変えると、往復しない文字列が処理系の中に入る。
+妥当な UTF-8 でないものをすべて拒否する。判定は `std.unicode.utf8ValidateSlice` に委ね、自前で条件を列挙しない。列挙すると取りこぼす。実機で確認したところ、過長符号化(`0xC0 0x80`)、サロゲート符号位置の符号化、5バイト列、不完全な列、継続バイトの単独出現に加えて、`0xFE` と `0xFF` も `false` になる。後者2つは「過長」「サロゲート」「U+10FFFF 超過」のどれにも当てはまらないため、条件を数え上げる書き方では漏れる。
 
-バイナリポートはバイト列をそのまま扱うので検証しない。`utf8->string` と `string->utf8` の境界で検証する。
+置換文字への差し替えは行わない。黙って内容を変えると、往復しない文字列が処理系の中に入る。
+
+バイナリポートはバイト列をそのまま扱うので検証しない。`string->utf8` は妥当な文字列からバイト列を作るだけなので検証する対象がない。検証が必要なのはバイト列から文字列を作る向き、すなわち `utf8->string` である。
 
 検証は入力時に1回だけ行う。処理系の内部で作る文字列は構成上妥当なので、`string-append` や `string-copy` のたびに再検証しない。`integer->char` はスカラ値の範囲を検査する。
 
@@ -77,21 +83,40 @@ sucheme_version_len() -> u32
 
 `sucheme_alloc` `sucheme_output_ptr` `sucheme_output_len` `sucheme_version_ptr` `sucheme_version_len` を除くすべてのエクスポートは、共通の状態コードを `i32` で返す。戻り値の意味を関数ごとに変えない。
 
-`sucheme_alloc` と `sucheme_free` と読み取り専用アクセサは、初期化後ならどの状態でも呼べる。ホストが入力領域を用意する手段を状態によって奪うと、`read` への応答ができなくなる。下の表の「直後に呼べる関数」は、これら以外のどれを呼べるかを示す。
+状態コードを返す関数と、状態を遷移させない関数を分ける。混ぜると、成功を表す `0` がホスト側の状態を上書きして通常の手順が契約違反になる。
 
-| 値 | 意味 | 上記に加えて直後に呼べる関数 |
+状態を遷移させない関数は、初期化後ならどの状態でも呼べ、現在の状態を変えない。これらは状態コードを返さない。
+
+| 関数 | 戻り値 |
+| --- | --- |
+| `sucheme_alloc` | 確保したポインタ。失敗と初期化前は 0 |
+| `sucheme_free` | なし。`len` が確保時と一致しない場合は `Debug` ビルドで panic、それ以外のビルドでは未定義 |
+| `sucheme_output_ptr` `sucheme_output_len` `sucheme_version_ptr` `sucheme_version_len` | それぞれの値 |
+| `sucheme_output_clear` | なし |
+| `sucheme_set_command_line` | なし。入力が妥当な UTF-8 でなければ無視する |
+
+`sucheme_free` の引数の誤りを状態コードで報告しないのは、報告すると状態を遷移させる関数になり、同じ矛盾が戻るためである。契約違反はホスト側の実装の誤りなので、`Debug` ビルドの panic で開発中に検出する。
+
+状態コードを返すのは `sucheme_init` `sucheme_eval_begin` `sucheme_step` `sucheme_provide_input` `sucheme_reset` の5つに限る。下の表の「直後に呼べる関数」は、この5つのうちどれを呼べるかを示す。状態を遷移させない関数はいつでも呼べる。
+
+| 値 | 意味 | 直後に呼べる関数 |
 | --- | --- | --- |
-| 0 | 成功。評価が完了した場合もこれを返す | `sucheme_eval_begin` `sucheme_output_clear` `sucheme_reset` |
-| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_output_clear` `sucheme_reset` |
-| 2 | 入力待ち。`sucheme_provide_input` を待っている | `sucheme_provide_input` `sucheme_output_clear` `sucheme_reset` |
-| -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_output_clear` `sucheme_reset` |
+| 0 | 成功。評価が完了した場合もこれを返す | `sucheme_eval_begin` `sucheme_reset` |
+| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_reset` |
+| 2 | 入力待ち。`sucheme_provide_input` を待っている | `sucheme_provide_input` `sucheme_reset` |
+| -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` |
 | -2 | 回復不能。送出のための予約領域を使い切った | `sucheme_reset` |
-| -3 | 呼び出し順序の誤り | `sucheme_reset` |
-| -4 | 初期化されていない | `sucheme_init` |
+| -3 | 入力が不正。読み取れなかった。インタプリタの状態は変わっていない | `sucheme_eval_begin` `sucheme_provide_input` `sucheme_reset` |
+| -4 | 呼び出し順序の誤り。ホスト側の実装の誤り | `sucheme_reset` |
+| -5 | 初期化されていない | `sucheme_init` |
 
-`sucheme_init` は状態 -4 でのみ呼べる。初期化済みの状態で再び呼ぶと `-3` を返す。ヒープ全体を作り直したい場合は `sucheme_reset` を使う。
+`-3` と `-4` を分けるのは、原因と回復手段が違うためである。`-3` は利用者が与えたデータの誤り(不正な UTF-8、読み取れない入力)で、インタプリタの状態は変わらないので同じセッションで次の入力を受け付けられる。`-4` はホスト側の呼び出し順序の誤りで、状態の整合が保証できないので `sucheme_reset` を要求する。両者を同じ値にすると、Web UI が貼り付けられたバイナリ混じりの文字列1つで全定義を失う。
+
+`sucheme_init` は状態 -5 でのみ呼べる。初期化済みの状態で再び呼ぶと `-4` を返す。ヒープ全体を作り直したい場合は `sucheme_reset` を使う。
 
 ヒープ上限に達した場合は `-2` ではなく Scheme のエラーとして扱う。`guard` で捕捉できるので、捕捉されれば 0、捕捉されず最外に届けば `-1` になる。`-2` は予約領域を使い切って送出自体ができない場合に限る。詳細は [runtime.md](runtime.md) の送出のための予約領域にある。
+
+プログラムが `exit` または `emergency-exit` を呼んだ場合は `-6` を返す。終了コードは出力バッファの先頭行に `exit <整数>` の形で書く。パニックやトラップでは報告しない。正常な終了と実装の不具合をホストが区別できる必要がある。
 
 負の値を返した場合、エラーの説明は出力バッファに UTF-8 で書かれている。ホストは `sucheme_output_ptr` と `sucheme_output_len` で取得する。別のエラー文字列取得関数は設けない。経路を増やすと有効期限の契約も増えるためである。
 
@@ -136,7 +161,9 @@ env.host_write_stderr(ptr: u32, len: u32)
 env.host_now_ms() -> f64
 ```
 
-3つに限る。import 関数を通じた出力と、エクスポートの出力バッファ経由の取得の両方を用意するのは、逐次出力と一括取得の両方を使いたいためである。
+3つに限る。プロセス終了とコマンドライン引数は import で扱わない。終了は状態コード `-6` で報告し、引数はエクスポート `sucheme_set_command_line(ptr, len)` でホストが設定する(改行区切りの UTF-8)。設定されていなければ `(command-line)` は処理系の名前だけの1要素のリストを返す。R7RS 6.14 は `command-line` が「the command line passed to the process」を返すとし、先頭要素は処理系に依存するとしている。
+
+import を増やさないのは、ホスト側が用意しなければならない関数を最小に保つためである。エクスポートと状態コードで表せるものは import にしない。import 関数を通じた出力と、エクスポートの出力バッファ経由の取得の両方を用意するのは、逐次出力と一括取得の両方を使いたいためである。
 
 ホスト関数の import と、`alloc` による領域確保、文字列の往復は実機で確認した。
 

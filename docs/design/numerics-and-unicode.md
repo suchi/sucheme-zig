@@ -82,19 +82,25 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 エラーにできるのは `(number->string +inf.0 2)` のように実部または虚部が有理数でない場合に限る。
 
-不正確な数の表示は「読み戻して同じ値になる最短表現」でなければならない。Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを実機で確認した。ただしどちらも Scheme の記法とは一致しない。
+不正確な数を基数10で表示するときは、R7RS 6.2.7 が次を要求している。
+
+> If z is inexact, the radix is 10, and the above expression can be satisfied by a result that contains a decimal point, then the result contains a decimal point and is expressed using the minimum number of digits (exclusive of exponent and trailing zeroes) needed to make the above expression true; otherwise the format of the result is unspecified.
+
+要求は2つである。結果が小数点を含むこと(それで往復条件を満たせる場合)と、桁数が最小であること。基数10以外では「otherwise the format of the result is unspecified」なので、桁数の最小性も小数点も要求されない。
+
+Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを実機で確認した。ただしどちらも Scheme の記法とは一致しない。
 
 | 値 | Zig の `{d}` | Zig の `{e}` | Scheme として必要な表示 |
 | --- | --- | --- | --- |
 | 0.1 | `0.1` | `1e-1` | `0.1` |
 | 100.0 | `100` | `1e2` | `100.0` |
-| 1e300 | 301桁の十進表記 | `1e300` | `1e300` |
+| 1e300 | 301桁の十進表記 | `1e300` | `1.0e300` |
 | 1/3 を不正確にした値 | `0.3333333333333333` | `3.333333333333333e-1` | `0.3333333333333333` |
 
 したがって `printer` は Zig の最短桁列を数字の供給源として使い、小数点の配置と指数表記への切り替えを自前で行う。規則は次のとおり。
 
-- 不正確な整数値には必ず小数点と `0` を付ける(`100.0`)。
-- 指数部が一定の範囲を超える場合に指数表記へ切り替える。範囲は実装定義とし、一般的な Scheme 処理系に合わせる。
+- 小数点を必ず含める。指数表記に切り替える場合も仮数部に小数点を置く(`1.0e300`)。小数点を含む結果で往復条件を満たせる以上、R7RS 6.2.7 が小数点を要求する。不正確な整数値も同じ規則で `100.0` になる。
+- 指数部が一定の範囲を超える場合に指数表記へ切り替える。範囲は実装定義とし、一般的な Scheme 処理系に合わせる。指数表記にするかどうかは「format of the result」の一部ではなく桁数の最小性の問題なので、どちらでも往復条件と小数点の要求を満たせる。
 - `+inf.0` `-inf.0` `+nan.0` を専用に出力する。Zig は `inf` と `nan` を出すため変換が必要である。
 - 負のゼロは `-0.0` と出力する。
 
@@ -133,7 +139,9 @@ R7RS 4.2.6 は `make-parameter` が返すものを「a newly allocated parameter
 - `(procedure? p)` は `#t` を返す。
 - `(p)` は現在の値を返す。引数0個の呼び出しとして機械の適用経路を通る。
 - `eval_operator` と `eval_operand` が受け付ける被適用型に `parameter` を含める。`closure` `primitive` `continuation` `parameter` の4種が適用できる。
-- `(p 1)` のような引数つきの呼び出しはエラーとする。R7RS が引数0個と規定しているためである。内部的な値の設定は `parameterize` が `Parameter` を直接操作して行い、Scheme から見える手続きとしての経路には出さない。
+- `(p 1)` のような引数つきの呼び出しはエラーとする。R7RS 4.2.6 は「The effect of passing arguments to a parameter object is implementation-dependent」としており、処理系が決めてよい範囲である。エラーにするのは、引数を渡す用途が本処理系に存在せず、誤りを早く知らせるほうがよいという判断である。
+  同節の例は `(radix 16)` の結果を未規定(`unspecified`)と注記しており、R7RS 1.3.2 は未規定の式がエラーを送出せずに何らかのオブジェクトに評価されることを要求している。例に従えばエラーにできない。規定本文が実装依存としているので矛盾ではないが、原文の中で一貫していない箇所である。本処理系は規定本文に従う。R7RS 7.3 の参考実装も引数つきの呼び出しに `(error "bad parameter syntax")` を置いている。
+  内部的な値の設定は `parameterize` が `Parameter` を直接操作して行い、Scheme から見える手続きとしての経路には出さない。
 
 `parameter` を `Value` の独立した変種にしているため、適用経路と `procedure?` の両方に明示的に加えないと `(p)` が「手続きでない」エラーになる。`parameterize` の中だけをテストすると見逃す。
 
