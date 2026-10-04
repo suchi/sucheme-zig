@@ -10,14 +10,16 @@
 | --- | --- | --- |
 | 標準出力・標準エラーへの書き込み | `std.Io.File.Writer` | ホストが提供する import 関数 |
 | 標準入力の読み取り | `std.Io.File.Reader` | 再開可能な要求として呼び出し側に返す |
-| ファイルの開閉と読み書き | `std.fs` | 埋め込み仮想ファイルシステムのみ(読み取り専用) |
-| 現在時刻と単調時間 | `std.time` | ホストが提供する import 関数 |
+| ファイルの開閉と読み書き | `std.Io.Dir` と `std.Io.File` | 埋め込み仮想ファイルシステムのみ(読み取り専用) |
+| 現在時刻と単調時間 | `std.Io.Clock.now` | ホストが提供する import 関数 |
 | 環境変数 | `std.process` | 空として扱う |
 | コマンドライン引数 | `std.process.Init` | ホストが設定した配列 |
 | プロセス終了 | `std.process.exit` | ホストへの通知とトラップ |
 | メモリ確保 | `std.heap.SafeAllocator` または `page_allocator` | `std.heap.wasm_allocator` |
 
 選択はコンパイル時に行う。仮想関数テーブルは使わない。
+
+Zig 0.17.0 ではファイルとディレクトリの操作が `std.fs` から `std.Io.Dir` と `std.Io.File` へ移っている。`std.fs.cwd` は存在しない。時刻は `std.time` も残っているが、`Io` を引数に取る `std.Io.Clock.now` を使って入出力と同じ抽象に揃える。使用する記法は [zig-api-notes.md](zig-api-notes.md) に従う。
 
 ```zig
 pub const platform = if (@import("builtin").target.cpu.arch.isWasm())
