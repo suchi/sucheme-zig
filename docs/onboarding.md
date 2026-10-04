@@ -14,18 +14,18 @@ Zig で書いた R7RS-small 準拠の Scheme インタプリタで、ネイテ�
 
 | 必要なもの | バージョン | 備考 |
 | --- | --- | --- |
-| Zig | 0.17.0 固定 | `.zigversion` が正。バージョンが違うとビルドが通らない |
+| Zig | `.zigversion` の値に固定 | `.zigversion` が正。バージョンが違うとビルドが通らない |
 | Git | 任意 | |
 | GitHub CLI (`gh`) | 任意 | PR 操作に使う |
 | Node.js | 任意 | Web UI の確認とローカル配信に使う。本体のビルドには不要 |
 
-Zig 0.17.0 は破壊的変更が多い。[design/zig-api-notes.md](design/zig-api-notes.md) を読む前にコードを書き始めないこと。古い記法はすべてコンパイルエラーになる。
+固定している Zig は破壊的変更が多い版である。[design/zig-api-notes.md](design/zig-api-notes.md) を読む前にコードを書き始めないこと。古い記法の多くはコンパイルエラーになるが、すべてではない。管理型の `AutoHashMap` と `StringHashMap` の旧記法や、古い形の panic ハンドラはそのまま通る。コンパイラに頼りきらず対応表を参照する。
 
 導入例(Windows、scoop)。
 
 ```
 scoop install zig
-zig version   # 0.17.0 であることを確認する
+zig version   # .zigversion の値と一致することを確認する
 ```
 
 ビルドとテストのコマンドは `AGENTS.md` の検証コマンド表が正とする。本ドキュメントには転記しない。
@@ -107,11 +107,12 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 | 出力が何も出ない | `std.Io` の Writer の `flush()` を忘れている |
 | `std.fs.cwd` が無いと言われる | 0.17 では `std.Io.Dir.cwd()` |
 | `ArrayList.init` が無いと言われる | 0.17 では `var l: std.ArrayList(T) = .empty;` と `l.append(gpa, x)` |
-| `{?d}` で書式エラー | 省略可能型は `{?}` |
+| `{d}` で書式エラー | 省略可能型には `?` 接頭辞が必要。`{?}` も `{?d}` も有効 |
 | 独自の panic ハンドラが呼ばれない | 宣言名は小文字の `panic` で、値は `std.debug.FullPanic(fn)` |
 | `build.zig.zon` の fingerprint エラー | エラーメッセージが正しい値を教えてくれるので、それを貼る |
 | ランダムな場所でクラッシュする | GC のルート登録漏れ。確保をまたいで保持している `Value` を探す |
-| 深い再帰でスタックが溢れる | Zig の再帰で Scheme 式を評価している。機械のフレームに載せ替える |
+| 深い再帰でスタックが溢れる(評価中) | Zig の再帰で Scheme 式を評価している。機械のフレームに載せ替える |
+| 深い再帰でスタックが溢れる(GC・リーダ・プリンタ・`equal?`) | データの構造を Zig の再帰で辿っている。明示的な作業スタックに載せ替える。長いリストや深い入れ子で起きる |
 
 詳細は [design/zig-api-notes.md](design/zig-api-notes.md) にある。
 

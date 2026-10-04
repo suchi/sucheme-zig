@@ -41,7 +41,7 @@ pub const Compnum = struct {
 
 - bignum が `i64` に収まるなら fixnum にする。
 - ratnum の分母が1なら整数にする。約分は常に行い、分母は正にする。
-- compnum の虚部が正確な0なら実数にする。虚部が不正確な0.0の場合は複素数のまま残す(R7RS 6.2.1 の非実数複素数の扱い)。
+- compnum の虚部が正確な0なら実数にする。虚部が不正確な0.0の場合は複素数のまま残す。R7RS 6.2.6 が `(real? -2.5+0i)` を `#t`、`(real? -2.5+0.0i)` を `#f` とし、`(real? z)` は `(zero? (imag-part z))` と同値だと規定している。
 
 ### 演算の階層と伝播
 
@@ -64,7 +64,19 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 ### 表示と解析
 
-`number->string` は基数2、8、10、16に対応する。不正確な数に基数10以外を指定した場合はエラーとする。
+`number->string` は基数2、8、10、16に対応する。
+
+不正確な数に基数10以外を与えた場合をエラーにしてはならない。R7RS 6.2.7 は次のように規定している。
+
+> returns as a string an external representation of the given number in the given radix such that ... (eqv? number (string->number (number->string number radix) radix)) is true. It is an error if no possible result makes this expression true. ... The result returned by number->string never contains an explicit radix prefix.
+
+同項の Note が、エラーになる条件を限定している。
+
+> The error case can occur only when z is not a complex number or is a complex number with a non-rational real or imaginary part.
+
+したがって有限の浮動小数点数には、どの基数でも往復可能な表現が必ず存在する。`(number->string 0.5 2)` は `"#i1/10"` を返せばよい。基数2で `1/10` は 1/2 であり、`#i` は正確性接頭辞であって明示的な基数接頭辞ではないので、結果に基数接頭辞を含めないという制約にも反しない。
+
+エラーにできるのは `(number->string +inf.0 2)` のように実部または虚部が有理数でない場合に限る。
 
 不正確な数の表示は「読み戻して同じ値になる最短表現」でなければならない。Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを実機で確認した。ただしどちらも Scheme の記法とは一致しない。
 
@@ -82,7 +94,24 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 - `+inf.0` `-inf.0` `+nan.0` を専用に出力する。Zig は `inf` と `nan` を出すため変換が必要である。
 - 負のゼロは `-0.0` と出力する。
 
-`string->number` は R7RS 7.1.1 の数値文法全体を解析する。`std.fmt.parseFloat` は `1.0` `.5` `5.` `1e-5` を受理するので十進小数の解析に使えるが、`+inf.0` 形式と基数接頭辞と有理数と複素数は自前で処理する。解析に失敗した場合は `#f` を返す(エラーにしない)。
+`string->number` は R7RS 7.1.1 の数値文法全体を解析する。解析に失敗した場合は `#f` を返す(エラーにしない)。
+
+`std.fmt.parseFloat` をそのまま使ってはならない。受理集合が Scheme の数値文法より広く、Scheme では数値でないものを数値として受理する。実機で確認した結果を挙げる。
+
+| 入力 | `parseFloat` | Scheme として正しい結果 |
+| --- | --- | --- |
+| `inf` `INF` `infinity` | 受理して無限大 | `#f`。`inf` は正当な識別子であって数値表記ではない |
+| `nan` `NaN` | 受理して NaN | `#f` |
+| `0x10` `0x1p3` `+0x1p-1` | 受理して 16、8、0.5 | `#f`。16進浮動小数の記法は R7RS にない |
+| `1_000` | 受理して 1000 | `#f`。下線は数値文法にない |
+| `+inf.0` `-inf.0` `+nan.0` | 拒否 | 無限大と NaN |
+| `1/2` | 拒否 | 有理数 |
+
+したがって、まず R7RS 7.1.1 の `<number>` の生成規則に従って字句を検査し、十進小数と確定した部分文字列だけを `parseFloat` に渡す。`<infnan>` は `+inf.0` `-inf.0` `+nan.0` `-nan.0` の4つだけである。基数接頭辞、正確性接頭辞、有理数、複素数は自前で処理する。
+
+この規則はリーダにも適用する。R7RS 6.2.7 が「The rules used by a particular implementation for string->number must also be applied to read and to the routine that reads programs」と要求している。適用しないと `(define inf 1)` が数値の束縛として誤って解釈される。
+
+テストに含める: 上の表の全入力について `string->number` の結果を確認する。`(define inf 1)` と `(define nan 2)` と `(define |1_000| 3)` が識別子の束縛として通ることを確認する。
 
 ### 検証の方針
 
@@ -93,7 +122,13 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 ## Unicode
 
-R7RS は `full-unicode` フィーチャを提供する処理系に対して、文字手続きが Unicode に従うことを要求する(R7RS 6.6)。
+R7RS 6.6 は文字属性の手続きについて次のように規定している。
+
+> Specifically, they must return #t when applied to characters with the Unicode properties Alphabetic, Numeric_Type=Decimal, White_Space, Uppercase, and Lowercase respectively, and #f when applied to any other Unicode characters.
+
+この要求は `full-unicode` フィーチャの提供を条件としていない。仕様が実装依存とするのは非 Unicode 文字に対する結果だけである。付録B の `full-unicode` の定義は「All Unicode characters present in Unicode version 6.0 are supported as Scheme characters」であって、属性手続きの正しさの条件ではない。
+
+したがって `full-unicode` を下げても属性手続きの要求は免除されない。Unicode 文字を扱える以上、その属性を正しく返す必要がある。
 
 必要なデータは次の4種である。
 
@@ -122,4 +157,13 @@ Unicode Character Database のファイルから多段テーブルを生成す�
 
 ### WASM での大きさ
 
-テーブルは WASM の成果物サイズに直接影響する。多段テーブルで共通部分を共有し、`ReleaseSmall` でのサイズを計測して記録する。上限を超える場合は、Web UI 向けビルドで属性表のみを削る選択肢を残すが、その場合 `full-unicode` フィーチャを下げる必要がある。判断は段階4で計測値を見てから行う。
+テーブルは WASM の成果物サイズに直接影響する。多段テーブルで共通部分を共有し、`ReleaseSmall` でのサイズを計測して記録する。
+
+属性表のみを削って `full-unicode` を下げる退避案は採れない。前述のとおり R7RS 6.6 の要求は `full-unicode` の提供を条件としていないため、属性表を削ると `(char-alphabetic? #\x03B1)` が `#f` を返して非準拠になる。ギリシャ文字アルファは Unicode の Alphabetic 属性を持つので `#t` でなければならない。
+
+サイズが問題になった場合に採れる手段は次の2つに限る。
+
+- 表の圧縮を進める。多段テーブルの段数を増やす、属性をビット束にまとめる、連続した範囲を区間表で持つ。
+- 文字レパートリ自体を ASCII に制限する。この場合は非 ASCII 文字が Scheme の文字でなくなるため属性手続きの要求から外れるが、`#\x03BB` の読み取りと UTF-8 文字列の扱いにも波及する。準拠の範囲が大きく狭まるため、採る場合はユーザーの承認を得て ADR に記録する。
+
+判断は段階4で計測値を見てから行う。

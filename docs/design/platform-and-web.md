@@ -17,6 +17,8 @@
 | プロセス終了 | `std.process.exit` | ホストへの通知とトラップ |
 | メモリ確保 | `std.heap.SafeAllocator` または `page_allocator` | `std.heap.wasm_allocator` |
 
+`sucheme_init` が受け取る `heap_limit_bytes` は、[runtime.md](runtime.md) の計上の対象に挙げたすべて(GC オブジェクトの本体、ヒープ外のペイロード、シンボル表、GC の作業リスト)の合計に対する上限である。オブジェクト本体だけの上限ではない。上限に達して GC を走らせても下回らない場合は状態コード `-2` を返す。
+
 選択はコンパイル時に行う。仮想関数テーブルは使わない。
 
 Zig 0.17.0 ではファイルとディレクトリの操作が `std.fs` から `std.Io.Dir` と `std.Io.File` へ移っている。`std.fs.cwd` は存在しない。時刻は `std.time` も残っているが、`Io` を引数に取る `std.Io.Clock.now` を使って入出力と同じ抽象に揃える。使用する記法は [zig-api-notes.md](zig-api-notes.md) に従う。
@@ -38,20 +40,46 @@ else
 
 ```
 sucheme_init(heap_limit_bytes: u32) -> i32      インタプリタを初期化する
-sucheme_alloc(len: u32) -> u32                  入力文字列用の領域を確保する
-sucheme_free(ptr: u32, len: u32)                領域を解放する
+sucheme_alloc(len: u32) -> u32                  入力文字列用の領域を確保する。失敗は 0
+sucheme_free(ptr: u32, len: u32) -> i32         領域を解放する
 sucheme_eval_begin(ptr: u32, len: u32) -> i32   入力を読み取り評価を開始する
-sucheme_step(budget: u32) -> i32                0=完了 1=継続 2=エラー 3=入力待ち
+sucheme_step(budget: u32) -> i32                実行を進める
 sucheme_output_ptr() -> u32                     出力バッファの先頭
 sucheme_output_len() -> u32                     出力バッファの長さ
-sucheme_output_clear()                          出力バッファを空にする
-sucheme_provide_input(ptr: u32, len: u32)       入力待ちに応答する
-sucheme_reset()                                 状態を捨てて初期状態に戻す
+sucheme_output_clear() -> i32                   出力バッファを空にする
+sucheme_provide_input(ptr: u32, len: u32) -> i32 入力待ちに応答する
+sucheme_reset() -> i32                          状態を捨てて初期状態に戻す
 sucheme_version_ptr() -> u32
 sucheme_version_len() -> u32
 ```
 
 文字列はすべて UTF-8 とする。文字列表現に UTF-8 を選んだ理由の一つがこの境界である。
+
+### 状態コード
+
+`sucheme_alloc` `sucheme_output_ptr` `sucheme_output_len` `sucheme_version_ptr` `sucheme_version_len` を除くすべてのエクスポートは、共通の状態コードを `i32` で返す。戻り値の意味を関数ごとに変えない。
+
+| 値 | 意味 | 直後に呼べる関数 |
+| --- | --- | --- |
+| 0 | 成功。評価が完了した場合もこれを返す | すべて |
+| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` と読み取り専用アクセサ |
+| 2 | 入力待ち。`sucheme_provide_input` を待っている | `sucheme_provide_input` と読み取り専用アクセサ |
+| -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` と読み取り専用アクセサ |
+| -2 | 資源の上限超過。ヒープ上限に達した | `sucheme_reset` と読み取り専用アクセサ |
+| -3 | 呼び出し順序の誤り。入力待ちでないのに `sucheme_provide_input` を呼んだなど | `sucheme_reset` と読み取り専用アクセサ |
+| -4 | 初期化されていない。`sucheme_init` を呼ぶ前に他を呼んだ | `sucheme_init` |
+
+負の値を返した場合、エラーの説明は出力バッファに UTF-8 で書かれている。ホストは `sucheme_output_ptr` と `sucheme_output_len` で取得する。別のエラー文字列取得関数は設けない。経路を増やすと有効期限の契約も増えるためである。
+
+`sucheme_alloc` は成功するとポインタを返し、確保に失敗すると 0 を返す。線形メモリの先頭は使わないので 0 を失敗の表現に使える。
+
+### sucheme_free の引数規約
+
+`sucheme_free(ptr, len)` の `len` は、その `ptr` を返した `sucheme_alloc` に渡した長さと一致しなければならない。一致しない呼び出しは契約違反である。
+
+これを定めるのは、Zig のアロケータが解放時に長さを受け取り、長さからサイズクラスを決めるためである。`sucheme_alloc(100)` で得た領域に 50 バイトだけ書き込んで `sucheme_free(ptr, 50)` を呼ぶと、100 バイトの確保を別のサイズクラスとして解放し、アロケータの内部状態を壊す。`TextEncoder.encodeInto` の結果の長さをそのまま渡す形が最も踏みやすい。
+
+ホストは確保時の長さを保持し、解放時にそれを渡す。`web/sucheme.js` は確保した領域をラップするオブジェクトを返し、長さを利用者に管理させない形にする。契約違反を検出できるよう、Zig 側は確保した長さを記録して不一致を `-3` で返す検査を `Debug` ビルドで行う。
 
 ### 所有権と有効期限の契約
 
@@ -94,7 +122,7 @@ env.host_now_ms() -> f64
 
 - ブラウザのメインスレッドを長時間占有しない。
 - 実行の中断(停止ボタン)を実現できる。
-- ブラウザで `read` が実装できる。入力が必要になった時点で `3=入力待ち` を返し、ホストが `sucheme_provide_input` で応答してから `sucheme_step` を再開する。
+- ブラウザで `read` が実装できる。入力が必要になった時点で状態コード 2(入力待ち)を返し、ホストが `sucheme_provide_input` で応答してから `sucheme_step` を再開する。
 
 ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とし、GitHub Pages ではヘッダを設定できないためである。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
 
@@ -144,11 +172,11 @@ sequenceDiagram
     W->>M: sucheme_eval_begin
     loop 歩数制限ごと
         W->>M: sucheme_step(budget)
-        M-->>W: 1=継続
+        M-->>W: 1 (継続)
         W->>A: postMessage(output, 部分出力)
         A->>U: 出力を追記
     end
-    M-->>W: 0=完了
+    M-->>W: 0 (完了)
     W->>A: postMessage(done, 結果)
     A->>U: 結果を表示
 ```

@@ -21,6 +21,7 @@
 | バイトベクタ | `#u8(...)` |
 | 略記 | `'` `` ` `` `,` `,@` |
 | データラベル | `#0=` と `#0#` による循環構造 |
+| 指令 | `#!fold-case` と `#!no-fold-case` |
 
 識別子の大文字と小文字は区別する(R7RS 2.1)。
 
@@ -28,11 +29,38 @@
 
 名前付き文字は R7RS 7.1.1 の `<character name>` の生成規則どおり9種である。1つでも落とすと準拠しない。
 
-段階1で実装するのは、行コメント、真偽値、10進の整数、識別子、文字列の基本エスケープ、リスト、ベクタ、`'` の略記に限る。残りは段階4と段階5で追加する。未対応の記法は「段階Nで対応予定」と明示したエラーを返し、黙って誤読しないようにする。
+### ケースフォールディング
+
+リーダはポートごとに「識別子を畳み込むか」の状態を持つ。既定は畳み込まない(大文字小文字を区別する)。
+
+`#!fold-case` と `#!no-fold-case` はこの状態を切り替える指令である。R7RS 7.1.1 は `<directive>` を `<atmosphere>` の構成要素として定義しており、2.1 は「These directives can appear anywhere comments are permitted ... They are treated as comments, except that they affect the reading of subsequent data from the same port.」と規定している。したがってコメントが書ける場所すべてに現れうる。
+
+畳み込みの対象は識別子だけである。文字列、文字、数値は影響を受けない。畳み込みには `string-foldcase` と同じケースフォールディングを使う([numerics-and-unicode.md](numerics-and-unicode.md))。
+
+`include-ci` はこの機構の上に実装する。R7RS 4.1.7 が「include-ci reads each file as if it began with the #!fold-case directive」と規定しているため、対象ファイルを読むポートの初期状態を畳み込む側にするだけで実現できる。`include-ci` を扱うと宣言しておきながらこの機構を持たないと、`(DEFINE X 1)` を含むファイルが未束縛識別子の構文エラーになる。
+
+### 段階ごとの実装範囲
+
+| 段階 | 追加する記法 |
+| --- | --- |
+| 1 | 行コメント、真偽値、10進の整数、識別子、文字列の基本エスケープ、リスト、ベクタ、`'` の略記 |
+| 3 | `` ` `` `,` `,@` の略記、文字リテラル(`#\a` と名前付き文字9種) |
+| 4 | 基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数 |
+| 5 | ブロックコメント、`#;`、データラベル、縦棒で囲んだ識別子、`#u8`、16進エスケープ、`#!fold-case` 指令 |
+
+段階3に `` ` `` と `,` と `,@` を置くのは、段階3で `quasiquote` を `syntax-rules` で定義するためである。略記が読めないと `` `(1 ,x) `` を含むテストが書けない。文字リテラルも同じ段階で必要になる。
+
+未対応の記法は「段階Nで対応予定」と明示したエラーを返し、黙って誤読しないようにする。
 
 ### 位置情報
 
-エラーメッセージのために、ポートから読んだ各ペアの行と桁を副表(`*Pair` をキーにしたハッシュ表)に記録する。`Pair` 本体を太らせないため副表とする。マクロ展開後は対応が失われるので、展開器は展開元のフォームの位置を引き継ぐ努力をするが、完全性は求めない。
+エラーメッセージのために、ポートから読んだ各ペアの行と桁を副表(`*Pair` をキーにしたハッシュ表)に記録する。`Pair` 本体を太らせないため副表とする。
+
+この副表は1つのトップレベルフォームを読んでから展開し終えるまでの作業表である。その間はルートとして登録し、展開が終わったら破棄する。実行時にも位置が必要なものは、展開器がコアIR節点の `src` に複製する。寿命と帰属の根拠は [runtime.md](runtime.md) の位置情報の寿命にある。
+
+永続的な副表にすると、ルートとして扱えば REPL が読んだデータを恒久的に生存させ、扱わなければ回収後に鍵のアドレスが再利用されて無関係な位置を指す。どちらも避ける。
+
+マクロ展開後は対応が失われるので、展開器は展開元のフォームの位置を引き継ぐ努力をするが、完全性は求めない。
 
 ### 逐次読み取り
 
@@ -187,6 +215,9 @@ R7RS 4.3.2 の全機能を実装する。
 - 利用者指定の省略記号識別子
 - テンプレートに現れるパターン変数以外の識別子の自動別名化
 - マクロを定義するマクロ、`letrec-syntax` による再帰的マクロ
+- 定数パターン。パターンが定数のとき、入力が `equal?` の意味で等しければ照合する(R7RS 4.3.2「P is a constant and E is equal to P in the sense of the equal? procedure」)
+- `_` をリテラル一覧に置いた場合は、ワイルドカードではなくリテラルとして照合する(R7RS 4.3.2「If an underscore appears in the ⟨pattern literal⟩s list, then that takes precedence and underscores in the ⟨pattern⟩ match as literals」)
+- 省略記号の識別子をリテラル一覧に置いた場合は、繰り返しではなくリテラルとして照合する(R7RS 4.3.2「unless ⟨ellipsis⟩ appears in the ⟨pattern literal⟩s, in which case it is matched as a literal」)
 
 照合はパターン変数名から、深さと値の木への写像を作る。テンプレート展開はその写像を深さに沿って展開する。パターン変数の出現深さとテンプレート中の省略記号の深さが一致しない場合は構文エラーとする。
 
@@ -227,35 +258,41 @@ pub const Export = struct {
 
 `import` は変数についてはセルを共有する。値をコピーしないため、エクスポート元での再定義がインポート側に反映される。読み込み中のライブラリを再び読み込もうとした場合は循環インポートのエラーとする。
 
-インポート集合は `only` `except` `prefix` `rename` と、それらの入れ子に対応する(R7RS 5.6.1)。
+インポート集合は `only` `except` `prefix` `rename` と、それらの入れ子に対応する。`<import set>` の4形式は R7RS 5.2 で定義されている。5.6.1 は `define-library` の `import` 宣言が 5.2 と同じ構文と意味を持つと述べている。
 
 ### インポートした束縛への書き込みの禁止
 
 R7RS 5.2 は次を規定している。
 
-> In a program or library declaration, it is an error to import the same identifier more than once with different bindings, or to redefine or mutate an imported binding with a definition or with set!
+> In a program or library declaration, it is an error to import the same identifier more than once with different bindings, or to redefine or mutate an imported binding with a definition or with set!, or to refer to an identifier before it is imported. However, a REPL should permit these actions.
 
-したがってセルを共有するだけでは不十分である。所有している束縛とインポートした束縛を区別できる状態が必要である。
+禁止はプログラムとライブラリ宣言の中に限られ、REPL では許すべきとされている。したがってセルを共有するだけでは不十分だが、無条件に拒否するのも誤りである。所有している束縛とインポートした束縛を区別できる状態と、文脈に応じた判定の両方が必要である。
 
 区別は `Binding.imported` と `Export.imported` が担う。`Denotation` の中ではなく束縛の側に置くのは、インポートできるのが変数だけではないためである。特殊形式やマクロをインポートした場合も、それらに対する `define-syntax` を拒否できなければならない。
 
-展開器は次を構文エラーとして拒否する。
+展開器は、プログラムまたはライブラリ宣言を展開しているときに次を構文エラーとして拒否する。
 
 - `imported` が真の束縛に対する `define` `define-syntax` `set!`
 - 意味が `special` または `macro` である識別子に対する `set!`(R7RS 4.1.6 は `set!` の対象を変数に限る)
 - 同じ識別子を異なる束縛で2回インポートすること。`import` の処理時に検出する
+- インポートされる前の識別子を参照すること
+
+REPL ではこれらを許す。R7RS 5.2 が「However, a REPL should permit these actions」と規定しているためである。REPL の環境は少なくとも `(scheme base)` の束縛を持つ(R7RS 5.7)ので、`car` や `list` はインポートされた束縛である。これらを拒否すると `(define (list . xs) xs)` や `(set! car my-car)` が入力できない。R7RS 5.7 は「Top level REPL definitions ... are truly equivalent to assignments」とまで書いている。
+
+展開器は、プログラムまたはライブラリ宣言を展開しているのか REPL の入力を展開しているのかを引数で受け取る。REPL の場合、インポートした束縛への `define` はそのライブラリのセルへの代入として扱い、`set!` も許す。Web UI も同じ REPL 経路を通るため、ブラウザ上でも標準手続きを再定義できる。
 
 読み取りはセルを共有したままなので、エクスポート元での再定義がインポート側に反映されるという利点は保たれる。
 
 ### 探索とパス名への対応付け
 
-R7RS 5.6.1 はライブラリ名を「識別子と正確な非負整数のリスト」と定め、ファイルに格納する処理系は名前から位置への対応付けを文書化すべきとしている。本処理系の対応付けを次のとおり定める。
+R7RS 5.6.1 はライブラリ名を「識別子と正確な非負整数のリスト」と定めている。ファイルに格納する処理系が名前から位置への対応付けを文書化すべきとしているのは R7RS 5.1 の末尾である。本処理系の対応付けを次のとおり定める。
 
 ライブラリ名 `(foo bar)` はファイル `foo/bar.sld` に対応させる。探索パスは、ネイティブでは埋め込みの仮想ファイルシステムを先に見てから実ファイルシステム、WASM では埋め込みのみとする。
 
 識別子は縦棒で囲む記法によって任意の文字を含みうるため、名前の成分をそのままパス成分にしてはならない。`(|../../etc| passwd)` のような名前が探索ルートの外を指す経路になる。次の規則で防ぐ。
 
-1. 成分の検証: 各成分が `A` から `Z`、`a` から `z`、`0` から `9`、`-`、`_`、`+`、`.` のみからなり、`.` で始まらず、`.` または `..` に一致しないことを確認する。正確な非負整数の成分は10進表記に変換する。
+1. 成分の検証: 各成分が1文字以上であり、`A` から `Z`、`a` から `z`、`0` から `9`、`-`、`_`、`+`、`.` のみからなり、`.` で始まらず、`.` または `..` に一致しないことを確認する。正確な非負整数の成分は10進表記に変換する。
+   空の成分を明示的に拒否するのは、`||` が R7RS 2.1 が認める正当な識別子(「Note that || is a valid identifier that is different from any other identifier」)であり、空文字列の成分が文字集合の検証を空虚に満たすためである。パスの結合は空成分を取り除くので、`(|| base)` が `(base)` と同じファイルを開いてしまう。
    さらに次を拒否する。これらは上の文字集合を通過するが、通常のファイルを開くという前提を満たさない。
    - `.` または空白で終わる成分。Windows は末尾の `.` と空白を取り除いて解決するため、別の名前のファイルに当たる。
    - 最初の `.` より前の部分が Windows の予約デバイス名に一致する成分。大文字小文字を区別せずに判定する。対象は `CON` `PRN` `AUX` `NUL` `COM1` から `COM9` と `LPT1` から `LPT9`、および `CONIN$` と `CONOUT$` である。拡張子を付けてもデバイスまたはその別名に解決されうるため、`CON.scm` のような形も拒否する。
@@ -270,6 +307,29 @@ R7RS 5.6.1 はライブラリ名を「識別子と正確な非負整数のリス
 
 この検証は外部入力の取り扱いに相当する。`AGENTS.md` のセキュリティの節に従い、ファイルパスを組み立てる箇所を1つの関数に閉じ、そこで検証する。実装時に Zig 0.17.0 でリンクの追跡を禁止して開く手段を確認し、結果を [zig-api-notes.md](zig-api-notes.md) に記録する。
 
+### ファイルを開く経路の数え上げ
+
+プログラムが与えるデータからファイルを開く経路は、ライブラリ名からの経路だけではない。次の経路がすべて同じリゾルバを通ることを要求する。1つでも迂回すると、上の検証は意味を失う。
+
+| 経路 | 入力 |
+| --- | --- |
+| `import` と `define-library` のライブラリ名 | シンボルと正確な非負整数のリスト |
+| `include` | 文字列のファイル名(R7RS 4.1.7) |
+| `include-ci` | 文字列のファイル名 |
+| `include-library-declarations` | 文字列のファイル名 |
+| `load`(段階5) | 文字列のファイル名(`(scheme load)`) |
+| コマンドライン引数で与えたファイル | 文字列のパス |
+
+文字列のファイル名を受け取る経路には、ライブラリ名の成分検証に加えて次を定める。
+
+- 相対の基準: 相対パスは、その構文を含むファイルのあるディレクトリを基準に解決する。R7RS 4.1.7 は「the specified ⟨string⟩s are interpreted as in `load` so that each identifies an existing file containing Scheme source code」とするだけで基準を定めていないため、処理系が定めて文書化する。
+- 絶対パスと `..`: 絶対パスを拒否する。正規化後に探索ルートの外へ出る `..` を拒否する。
+- 仮想ファイルシステムとの優先順: 埋め込みの仮想ファイルシステムを先に見る。見つからなければ実ファイルシステムを探す。
+- リンクと再解析ポイント: ライブラリ名の経路と同じ実体の確認を行う。
+- コマンドライン引数で与えたファイルは利用者自身の指定なので、探索ルートの制約を課さない。ただし `include` の相対基準としてはそのファイルのディレクトリを使う。
+
+リゾルバの引数は「基準ディレクトリ」と「利用者由来の名前」と「名前の種別(ライブラリ名か文字列か)」の3つとし、戻り値は開いたファイルハンドルとする。パス文字列を返して呼び出し側に開かせる形にしない。検証と使用の間に対象が差し替わる余地を残さないためである。
+
 ### cond-expand のフィーチャ
 
 | フィーチャ | 条件 |
@@ -277,12 +337,15 @@ R7RS 5.6.1 はライブラリ名を「識別子と正確な非負整数のリス
 | `r7rs` | 常に真 |
 | `sucheme` | 常に真 |
 | `exact-closed` `ratios` `exact-complex` `ieee-float` `full-unicode` | 段階4の完了により真になる |
-| `windows` `linux` `macos` `posix` | ビルドターゲットに応じる |
+| `unix` `posix` `windows` `gnu-linux` `darwin` | ビルドターゲットに応じる。名前は R7RS 付録B の標準フィーチャ識別子に合わせる |
+| `linux` `macos` | 上記の別名として併せて提供する |
 | `wasm` | WASM ビルドで真 |
 | `little-endian` `big-endian` | ターゲットのエンディアンに応じる |
 | `sucheme-0.1` のようなバージョン | ビルド時のバージョンに応じる |
 
 `library` 形式による存在判定にも対応する(R7RS 4.2.1)。
+
+OS のフィーチャ名は R7RS 付録B の標準名を提供する。付録Bは「may provide」なので提供しなくても非準拠ではないが、R7RS 4.2.1 が「for portability a core set of features is given in appendix B」とするため、`(cond-expand (gnu-linux ...) (darwin ...) (windows ...) (else (error ...)))` と書いた移植可能なプログラムが else に落ちないようにする。`linux` と `macos` は本処理系独自の別名として併せて真にする。
 
 ## 標準ライブラリの起動順序
 
@@ -303,11 +366,13 @@ Scheme で書く範囲の目安は次のとおり。
 
 | Zig で書くもの | Scheme で書くもの |
 | --- | --- |
-| コア特殊形式、`syntax-rules`、リーダ、プリンタ | 派生構文(`let` `let*` `letrec` `cond` `case` `and` `or` `when` `unless` `do` `quasiquote` `delay` `guard` `parameterize` `define-record-type` `case-lambda` `let-values` など) |
+| コア特殊形式、`syntax-rules`、リーダ、プリンタ | 派生構文(`let` `let*` `letrec` `cond` `case` `and` `or` `when` `unless` `do` `quasiquote` `delay` `guard` `define-record-type` `case-lambda` `let-values` など) |
 | 算術の核、`car` `cdr` `cons` `set-car!` など基本操作 | `caar` から `cddddr` までの合成、`list-tail` `list-ref` `assoc` `member` `append` `map` `for-each` `fold` 相当 |
 | 文字列とベクタの基本操作、ポートの入出力 | `string-for-each` `vector-map` `vector-for-each` `string-map` など高階手続き |
-| `call/cc` `dynamic-wind` `values` `raise` | `call-with-values` を使う便利手続き、`guard`、`assert` |
+| 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)と `parameterize` | `call-with-values` を使う便利手続き、`guard`、`assert` |
 | Unicode 表、数値の表示と解析 | 数値手続きのうち基本演算で書けるもの |
+
+`parameterize` が Zig 側にあるのは、進入時に変換手続きを呼び、復元時には呼ばないという R7RS 4.2.6 の規定を `syntax-rules` のテンプレートで表せないためである。詳細は [runtime.md](runtime.md) の動的範囲の通常終了にある。
 
 `map` と `for-each` を Scheme で書くと末尾呼び出しと継続の相互作用が自動的に正しくなる。性能が問題になった段階で Zig 側へ移すが、その場合も継続フレームを積む形で実装し、プリミティブの中で機械を起動しないという不変条件を守る。
 

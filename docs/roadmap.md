@@ -10,7 +10,7 @@
 | --- | --- |
 | 現在の段階 | 設計フェーズ(手順1)完了。段階0 は未着手 |
 | 最新リリース | なし |
-| 固定 Zig バージョン | 0.17.0 |
+| 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
 
 ## 手順と担当モデル
@@ -51,7 +51,7 @@
 - [ ] WASM のエクスポートと Web UI の最小版
 - [ ] GitHub Pages への配置と PR プレビュー
 
-完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。100万回の末尾再帰が一定のメモリで完了する。リリース v0.1.0 を出す。
+完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 
 ### 段階2: コア言語の完成
 
@@ -60,13 +60,16 @@
 - [ ] `values` と `call-with-values`
 - [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
 - [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)
-- [ ] ライブラリシステム(`define-library` `import` `export` `cond-expand` `include`)
+- [ ] ライブラリシステム(`define-library` `import` `export` `cond-expand` `include` `include-ci` `include-library-declarations`)
+- [ ] ファイルを開く全経路を1つのリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路の数え上げ)
+- [ ] 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)と `parameterize`
 - [ ] `define-record-type` の基盤
 
 完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。リリース v0.2.0 を出す。
 
 ### 段階3: Schemeによる標準ライブラリ
 
+- [ ] リーダに `` ` `` `,` `,@` の略記と文字リテラルを追加(段階3の `quasiquote` の定義に必要)
 - [ ] 派生構文を `lib/sucheme/derived.scm` に `syntax-rules` で定義
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
@@ -86,11 +89,12 @@
 ### 段階5: ポートと入出力
 
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
-- [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ)
+- [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
+- [ ] ポートごとのケースフォールディング状態と `include-ci` の意味の実現
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 
-完了条件: 循環リストの `write` がデータラベル付きで出力される。16ライブラリすべてが読み込める。リリース v0.5.0 を出す。
+完了条件: 循環リストの `write` がデータラベル付きで出力される。`include-ci` が対象ファイルを畳み込んで読む。16ライブラリすべてが読み込める。リリース v0.5.0 を出す。
 
 ### 段階6: 準拠検証
 

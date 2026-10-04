@@ -117,6 +117,45 @@ fn trace(h: *Header, gc: *Gc) void {
 
 `@fieldParentPtr("header", h)` が結果型から親の型を推論して動作することは実機で確認した。
 
+上の `trace` は子を `gc.markValue` に渡すだけで、`markValue` は再帰しない。マーク段階は明示的な作業リストで進める。Zig の再帰で辿ると、深さがデータの構造に比例して Zig のスタックを溢れさせる。
+
+```zig
+// 誤り: データの深さに比例して Zig のスタックを消費する
+fn markValue(gc: *Gc, v: Value) void {
+    if (objectOf(v)) |h| {
+        if (h.mark) return;
+        h.mark = true;
+        trace(h, gc); // ここで再帰する
+    }
+}
+```
+
+`(build 2000000 '())` のような長いリストは、末尾再帰なので機械のフレームを増やさずに作れる。これが生存している状態で GC が走ると、上の形では200万段の Zig 再帰になる。1フレーム48バイトでも約96MB で、WASM の既定スタック(1MB前後)でもネイティブ(8MB)でも溢れる。溢れた結果は実装の不具合として扱われ、Scheme のエラーにならない。R7RS 3.5 は能動的な末尾呼び出しが無制限であることを要求しているので、長いリストの生成は正当な入力である。
+
+正しい形は次のとおり。
+
+```zig
+fn markValue(gc: *Gc, v: Value) void {
+    if (objectOf(v)) |h| gc.push(h); // 作業リストに積むだけ
+}
+
+fn markPhase(gc: *Gc) void {
+    gc.live.unsetAll();              // シンボルの生存ビットを消去する
+    gc.pushRoots();
+    while (gc.pop()) |h| {
+        if (h.mark) continue;
+        h.mark = true;
+        gc.noteSymbols(h);           // 生の Symbol フィールドを live に記録する
+        trace(h, gc);                // 子を push するだけ。再帰しない
+    }
+    while (gc.overflowed) gc.rescan();
+}
+```
+
+作業リストは GC ヒープ外のアロケータから確保し、初期化時にヒープ上限に比例した大きさを予約する。確保に失敗した場合や予約を超えた場合は溢れた印を立て、ヒープ全体を走査して「マーク済みだが子が未マークのオブジェクト」を見つけて再度積む走査を、溢れた印が消えるまで繰り返す。これにより作業リストの大きさに依存せずマークが完了する。
+
+同じ理由で、リーダ、プリンタ、`equal?`、`quote` の剥離、リテラルの不変化もデータの深さに比例した Zig の再帰で書かない。いずれも明示的な作業スタックを使う。深い入れ子(`((((...))))`)と長いリストの両方をテストに含める。
+
 `extern struct` にして C のレイアウトを強制する方法は採らない。ヒープオブジェクトはスライスやタグ付き union を持ち、`extern struct` ではこれらを扱えないためである。
 
 スイープで確保済みリストを辿るときも同じ規則に従う。アドレス計算による復元を書いた箇所は、レビューで指摘の対象とする。
@@ -132,11 +171,19 @@ R7RS 4.1.2 は次のように規定している。
 構築の規則は次のとおり。
 
 - リーダが作るオブジェクトは可変である。`cons` や `make-string` が作るものも可変である。
+- `symbol->string` が返す文字列は不変とする。R7RS 3.4 が「Literal constants, the strings returned by symbol->string, and possibly the environment returned by scheme-report-environment are immutable objects」と規定しており、6.7 の `string-set!` の例にも `(string-set! (symbol->string 'immutable) 0 #\?)` がエラーとして挙がっている。`symbol->string` はインターン表の名前を複製した `Str` を返し、`immutable` を立てる。
+  複製するのは、インターン表のバイト列を共有すると二重解放とインターン名の破壊が起きるためである。`Str.bytes` は sweep で解放され、`SymbolTable.names` も sweep で解放されるため、同じバッファを指していると二重に解放される。また `string-set!` が通ってしまった場合にインターン名自体が壊れ、`(eq? 'abc (string->symbol "abc"))` が成立しなくなる。複製の費用を払って共有しない。
 - 展開器がデータをコアIRの定数にする時点で、そこから到達可能なオブジェクトグラフ全体に `immutable` を立てる。対象は `quote` されたデータと、自己評価するリテラル(文字列、ベクタ、バイトベクタ)の両方である。R7RS 4.1.2 はこれらを引用しなくても定数とすると規定している。
 - グラフ走査は循環を含みうるので、訪問済み集合を使う。別名の剥離と同じ走査で行える([frontend.md](frontend.md) の quote による剥離)。
 - 埋め込んだ Scheme の標準ライブラリに現れるリテラルも同じ経路を通るため、自動的に不変になる。
 
-破壊的操作はすべて `immutable` を検査し、立っていれば Scheme のエラーにする。対象は `set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!` `vector-set!` `vector-fill!` `vector-copy!` `bytevector-u8-set!` `bytevector-copy!` である。検査を1つの補助関数に集め、新しい破壊的操作を足したときに検査を忘れないようにする。
+破壊的操作はすべて `immutable` を検査し、立っていれば Scheme のエラーにする。対象は R7RS 第6章の `!` 付き手続きを原文から抽出した次の12個である。
+
+`bytevector-copy!` `bytevector-u8-set!` `list-set!` `read-bytevector!` `set-car!` `set-cdr!` `string-copy!` `string-fill!` `string-set!` `vector-copy!` `vector-fill!` `vector-set!`
+
+`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。`read-bytevector!` は渡されたバイトベクタに書き込むため同じ検査が必要である。
+
+検査を1つの補助関数に集め、新しい破壊的操作を足したときに検査を忘れないようにする。この一覧は監査リストとして使うため、R7RS の `!` 付き手続きを原文から機械的に抽出した結果と一致することを `zig build report` の検査に含める。
 
 ### 文字列
 
@@ -165,13 +212,15 @@ ASCII のみなら `string-ref` と `string-set!` は定数時間、そうでな
 
 ```zig
 pub const SymbolTable = struct {
-    names: ArrayListUnmanaged([]u8),   // ID -> 名前
-    index: StringHashMapUnmanaged(Symbol), // 名前 -> ID
-    pinned: DynamicBitSetUnmanaged,    // 回収してはならない ID
-    live: DynamicBitSetUnmanaged,      // マーク中に参照された ID
-    free: ArrayListUnmanaged(Symbol),  // 再利用できる ID
+    names: std.ArrayList([]u8),              // ID -> 名前
+    index: std.StringHashMapUnmanaged(Symbol), // 名前 -> ID
+    pinned: std.bit_set.Dynamic,             // 回収してはならない ID
+    live: std.bit_set.Dynamic,               // マーク中に参照された ID
+    free: std.ArrayList(Symbol),             // 再利用できる ID
 };
 ```
+
+型名は Zig 0.17.0 で非推奨でないものを使う。`ArrayListUnmanaged` と `DynamicBitSetUnmanaged` は標準ライブラリが非推奨と記している別名である([zig-api-notes.md](zig-api-notes.md))。
 
 - マーク段階では、オブジェクトを辿る過程でシンボル ID に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
 - 記録の対象は `Value` の `.symbol` だけではない。`Symbol` 型の生のフィールドもすべて対象にする。`GlobalCell.name`、`Binding.id`、`Primitive.name`、`RecordType` のフィールド名、`LambdaInfo` の引数名などが該当する。これらを漏らすと、所有オブジェクトが生存中でも ID が回収・再利用され、既存のセルや構文束縛が別のシンボルを指すという最悪の形の破壊が起きる。
@@ -183,13 +232,73 @@ pub const SymbolTable = struct {
 
 この方式により `string->symbol` で作って捨てたシンボルは回収され、ID 表現の利点も保たれる。
 
-生のフィールドの漏れは静かな破壊につながるため、走査関数を手書きしない。`heap.zig` が各オブジェクト型の宣言を `@typeInfo` で走査し、`Value`、`Symbol`、GC オブジェクトへのポインタ、それらのスライスを見分ける走査関数をコンパイル時に生成する。構造体にフィールドを足したときに走査も自動で追随するため、この種の漏れが構造的に起きない。
+生のフィールドの漏れは静かな破壊につながるため、走査関数を手書きしない。`heap.zig` が各オブジェクト型の宣言を `@typeInfo` で再帰的に走査し、走査関数をコンパイル時に生成する。
 
-反映で扱えない型(外部の資源を持つ `Bignum` や `Str` のバイト列など)は個別の走査関数を書く。`Kind` の全要素に走査関数が対応していることを確認するテストを置き、新しい `Kind` を足して走査を忘れた場合にコンパイル時または単体テストで落ちるようにする。
+生成器が認識しなければならない形を列挙する。ヒープオブジェクトの宣言は実際にこれらを多用しているため、浅い走査では足りない。
+
+| 形 | 例 |
+| --- | --- |
+| `Value` 型のフィールド | `Pair.car` |
+| `Symbol` 型のフィールド | `GlobalCell.name` |
+| GC オブジェクトへのポインタ | `Rib.parent`、`Frame.parent` |
+| 上記のスライス | `Rib.slots: []Value`、`DynPath.points: []*DynPoint` |
+| タグ付き union のフィールド。アクティブなタグで分岐して中身を走査する | `Node.body`、`Frame.kind`、`DynPoint.kind`、`Denotation` |
+| union の変種が持つ無名構造体のフィールド | `Frame.kind.eval_operand` の `operator` と `done` |
+| 構造体のスライス。各要素を構造体として再帰的に走査する | `SyntaxEnv.bindings: []Binding` |
+| 上記の入れ子の任意の組合せ | `ExportTable` の各 `Export` が持つ `Denotation` の union |
+
+`Header` 型のフィールドは走査しない。前述のとおり `next` を辿ると全オブジェクトが生存扱いになる。
+
+生成で扱えない型は個別の走査関数を書く。対象は外部の資源を持つもの(`Bignum` の限界値列、`Str` のバイト列)と、ハッシュ表のように内部表現が反映で辿れないもの(`ExportTable`、`SymbolTable`)である。
+
+検証として次の3つを置く。`Kind` の全要素に走査関数が対応していること。到達不能なオブジェクトが実際に回収されること。各オブジェクト型について、宣言から生成した走査関数が辿るフィールドの集合と、手で列挙した期待集合が一致すること。3つ目は上の表の形を取りこぼした場合に落ちる。
+
+### 走査対象として宣言が必要な型
+
+次の型は本ドキュメントと [frontend.md](frontend.md) の本文に名前だけ現れていた。GC が走査する対象なので、`value.zig` にヘッダ付きで宣言する。
+
+```zig
+pub const LambdaInfo = struct {
+    header: Header,
+    body: *Node,
+    required: u16,          // 必須引数の数
+    has_rest: bool,         // 可変長引数を取るか
+    frame_size: u16,        // 確保する Rib のスロット数
+    param_names: []Symbol,  // エラーメッセージと重複検査に使う
+    level: u16,             // 字句アドレスの基準となる絶対深さ
+};
+
+pub const ExportTable = struct {
+    header: Header,
+    entries: std.StringHashMapUnmanaged(Export), // 外部名 -> Export
+};
+
+pub const DynPath = struct {
+    header: Header,
+    points: []*DynPoint,
+};
+```
+
+`Export` と `Denotation` の宣言は [frontend.md](frontend.md) にある。レイアウトはすべて `value.zig` に集めるという規則([architecture.md](architecture.md))に従い、宣言の置き場所は `value.zig` とする。
 
 ## ガベージコレクション
 
-非移動型のマーク・スイープGCとする。停止型で、確保量が閾値を超えたときに動作する。
+非移動型のマーク・スイープGCとする。停止型で、計上量が閾値を超えたときに動作する。
+
+### 計上の対象
+
+`sucheme_init` が受け取る上限と GC の起動条件は、同じ「計上量」を見る。計上の対象は次のすべてである。GC ヒープ上のオブジェクト本体だけを数えると、本体が小さくペイロードが大きいオブジェクトで上限がまったく効かない。
+
+| 対象 | 例 |
+| --- | --- |
+| GC オブジェクトの本体 | `Pair`、`Frame`、`DynPoint` |
+| ヒープ外から確保するペイロード | `Str.bytes`、`Vector` と `Bytevector` の要素領域、`Bignum` の限界値列 |
+| シンボルの名前とインターン表 | `SymbolTable` の全体 |
+| GC の作業リストと位置情報の作業表 | `Gc` の worklist |
+
+計上量が上限を超え、GC を走らせても下回らない場合は Scheme のエラーにする。ホストのアロケータが失敗するまで待たない。
+
+計上しない例を1つ挙げる。`(make-string 1000000)` を2000回繰り返す場合、本体の `Str` は数十バイトなので本体だけを数えると計上量は100KB未満にとどまり閾値に達しない。一方で線形メモリには2GB相当のバイト列が同時に生存する。ペイロードを計上すれば16MB の上限に達した時点でエラーになる。
 
 非移動型を選ぶ理由は2つある。第一に、`*Pair` などの生ポインタが収集後も有効なままなので、ルート登録は到達可能性の保証だけを意味し、Zig のローカル変数を書き換える必要がない。第二に、ハンドル経由の間接参照が不要なのでコードが読みやすい。代償は断片化とスイープのコストである。
 
@@ -232,6 +341,16 @@ pub fn makeList2(h: *Heap, a: Value, b: Value) !Value {
 
 非移動型なので `frame.add(a)` の後も `a` をそのまま使える。`frame.add` は到達可能性のみを保証する。
 
+ルート枠は3種の登録を受け付ける。横断的な不変条件が「生のヒープポインタや `Value`」を対象としているため、`Value` に包めない型も登録できなければならない。`*Node` `*Rib` `*Frame` `*DynPoint` `*SyntaxEnv` `*DynPath` などは `Value` の変種にないため、`frame.add` だけでは登録できない。
+
+```zig
+frame.add(v: Value);           // Value として持っているもの
+frame.addSymbol(s: Symbol);    // 生のシンボル ID
+frame.addObject(h: *Header);   // Value に包めない GC オブジェクトへの生ポインタ
+```
+
+全ヒープオブジェクトが先頭に `Header` を持つので、`frame.addObject(&node.header)` の形で型を問わず登録できる。展開器がコアIR節点を組み立てる途中や、`DynPath` を構築する途中の一時ポインタは、この経路で登録する。
+
 生のシンボル ID も同じ扱いが必要である。シンボルは弱い表で管理されるため(後述)、確保をまたいで保持する `Symbol` はルート枠に登録する。
 
 ```zig
@@ -263,7 +382,25 @@ return try h.cons(first, second);
 
 GC は `heap.allocate` の内部でのみ走る。したがって確保を行う可能性のある呼び出しを見分けることが実装上の要点になる。`heap.zig` の公開APIのうち確保を行うものは、ドキュメンテーションコメントの先頭に `GCを起動しうる` と書く規約とする。
 
-機械のステップ関数の境界では、レジスタだけがルートであることが保証される。したがってステップの先頭で GC を走らせる安全点方式も将来の選択肢として残す。
+### 位置情報の寿命
+
+リーダが記録する行と桁の副表([frontend.md](frontend.md) の位置情報)は、1つのトップレベルフォームを読んでから展開し終えるまでの間だけ存在する作業表とする。その間はルートとして登録し、展開が終わったら表ごと破棄する。
+
+永続的な副表にしない理由は2つある。ルートとして扱うと、REPL が読んだデータをすべて恒久的に生存させてしまう。ルートとして扱わないと、ペアが回収された後も項目が残り、同じアドレスに確保された別のペアが前の行桁を引き継いで無関係な位置を指すエラーメッセージを出す。どちらも受け入れられない。
+
+実行時にも位置が必要なものは、展開器がコアIR節点に複製する。
+
+```zig
+pub const Node = struct {
+    header: Header,
+    src: Location, // 行と桁。不明なら 0
+    body: union(enum) { ... },
+};
+```
+
+これにより、位置情報の生存期間はコードの生存期間と一致し、鍵の再利用の問題が起きない。
+
+機械のステップ関数の境界では、一時ルート枠が空であることが保証される。ルート集合そのものは減らない。グローバル環境、シンボル表、展開器の作業状態はステップ境界でもルートである。安全点方式を採る場合もルート集合の全体を走査する。「レジスタだけを走査すればよい」と読める書き方をしない。グローバル環境を走査から外すと、現在の式から参照されていないグローバルセルがすべて回収され、次にその変数を参照した時点で解放済みメモリを読む。
 
 ## 環境
 
@@ -299,7 +436,9 @@ pub const GlobalCell = struct {
 
 ## コアIR
 
-展開器の出力。R7RS 7.1.3 の基本式に対応する。
+展開器の出力。R7RS 4.1 の基本式(変数参照、リテラル、手続き呼び出し、`lambda`、条件式、代入)に、`begin` と定義を加えた集合に対応する。`begin` は R7RS では派生式(4.2.3)、定義は 5.3 と 5.4 に属するが、いずれも他の構文に展開できないためコアIRの節点とする。
+
+R7RS 4.1 の基本式のうち `include` と `include-ci`(4.1.7)は展開時にファイルを読んで展開するため、コアIRには現れない。
 
 ```zig
 pub const Node = struct {
@@ -400,6 +539,44 @@ pub const Frame = struct {
 
 この選択は確保回数を増やす。段階6以降の最適化候補として、捕捉時にコピーするスタックセグメント方式を検討する。最適化は準拠テストが通った後に行う。
 
+### 機械操作プリミティブと末尾呼び出し
+
+プリミティブは2種に分かれる。
+
+- 純粋プリミティブ: 引数から値を計算して返すだけ。`car` `+` `string-length` など。
+- 機械操作プリミティブ: 機械の状態(`control` `env` `kont` `dynamic_point`)を直接書き換える。`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`。
+
+```zig
+pub const Primitive = struct {
+    header: Header,
+    name: Symbol,
+    arity: Arity,
+    impl: union(enum) {
+        pure: *const fn (*Heap, []const Value) Error!Value,
+        machine: MachineOp, // ステップ関数が種別で分岐して処理する
+    },
+};
+```
+
+機械操作プリミティブの中で機械を起動することはない。ステップ関数がレジスタを書き換えて次のステップに進むだけである。したがって「プリミティブの中で機械を起動しない」という不変条件は保たれる。
+
+R7RS 3.5 は4箇所で末尾呼び出しを必須としている。
+
+> The first argument passed to apply and to call-with-current-continuation, and the second argument passed to call-with-values, must be called via a tail call. Similarly, eval must evaluate its first argument as if it were in tail position within the eval procedure.
+
+これらは継続フレームを積まず、プリミティブ自身の継続をそのまま被呼び出し側に渡す。
+
+| 手続き | 末尾呼び出しになる対象 | 実装 |
+| --- | --- | --- |
+| `apply` | 第1引数の手続き | `kont` を引き継いで適用に遷移する |
+| `call-with-current-continuation` | 第1引数の手続き | `kont` を引き継いで、捕捉した継続を引数として適用に遷移する |
+| `call-with-values` | 第2引数(消費者) | 生産者は `receive_values` フレームのもとで呼ぶ。消費者はそのフレームを取り崩した後、`kont` を引き継いで適用に遷移する |
+| `eval` | 第1引数の式 | 展開した結果を `control` に置き、`kont` を引き継ぐ |
+
+これにより `(define (loop n) (if (= n 0) 'done (apply loop (list (- n 1)))))` の `(loop 1000000)` が一定のメモリで完了する。フレームを積む実装では100万件のフレームがヒープに積まれ、フレーム数の上限に達して Scheme エラーになる。
+
+`dynamic-wind` の `thunk` と `call-with-values` の生産者は末尾呼び出しの対象ではない。`after` の呼び出しと値の受け取りが残るためである。
+
 ### 完全な継続
 
 ```zig
@@ -439,7 +616,27 @@ pub const DynPoint = struct {
 | `handler_shift` | 切り替え先の `handler` 点(`null` もありうる) |
 | `wind` と `parameter` | 親の `current_handler` |
 
-この1つのフィールドにより、ある動的点における現在の例外ハンドラが `dynamic_point.?.current_handler` で定数時間に求まる。独立したレジスタを持たず、`dynamic_point` だけが真実の源になる。
+この1つのフィールドにより、ある動的点における現在の例外ハンドラが定数時間に求まる。独立したレジスタを持たず、`dynamic_point` だけが真実の源になる。
+
+参照は必ず次の補助関数を通す。`dynamic_point` は起動直後は `null` であり、`dynamic-wind` も `with-exception-handler` も `parameterize` も通っていない状態が正常に存在する。省略可能型を直接展開すると、その状態で `(car '())` を評価しただけで安全ビルドでは panic し、WASM ではモジュールが停止する。本来は未処理例外として報告して REPL に戻らなければならない。
+
+```zig
+pub fn currentHandler(p: ?*DynPoint) ?*DynPoint {
+    return if (p) |q| q.current_handler else null;
+}
+```
+
+`H.parent` も `null` を取りうるため、切り替え先の計算も同じ関数を通す。設計の本文で `dynamic_point.?.current_handler` のような直接の展開を書かない。
+
+### 未処理例外
+
+`currentHandler` が `null` のときの `raise` を未処理例外とする。この経路は必ず定義する。
+
+- ネイティブの REPL: 条件オブジェクトを標準エラーに整形して出力し、プロンプトに戻る。式の評価は中断するが処理系は終了しない。
+- ネイティブの非対話実行(ファイルを与えた場合): 条件オブジェクトを標準エラーに出力し、ゼロでない終了コードで終了する。
+- WASM: 出力バッファに整形して書き、`sucheme_step` がエラーを表す値を返す。パニックもトラップも起こさない。
+
+起動時に既定のハンドラを積む方式は採らない。`with-exception-handler` を一度も通っていない状態を特別扱いせずに済む利点はあるが、R7RS 6.11 の「`H` をインストールした時点のハンドラ」の計算に実在しないインストール点が混ざるため、`handler_shift` の切り替え先の意味が曖昧になる。`null` を未処理例外として扱う方が規定に素直である。
 
 `handler_shift` は `raise` がハンドラを呼ぶ間だけ積む点である。R7RS 6.11 の「現在のハンドラだけを切り替え、残りの動的環境は `raise` 時のまま保つ」を、外側へ戻るのではなく内側へ1点積むことで表す。詳細は例外の節で述べる。
 
@@ -487,7 +684,27 @@ sequenceDiagram
 
 `leave_dynamic` フレームがこれを担う。本体を呼ぶ際に、積む前の `dynamic_point` を保存したフレームを継続として置く。本体が値を返したら `dynamic_point` を復元し、`value` をそのまま親の継続に渡す。本体が複数値を返した場合もそのまま渡る。現在の例外ハンドラは `dynamic_point` から導出されるため、別に復元するものはない。
 
-`dynamic-wind` は `after` の呼び出しを伴うため `wind_body` と `wind_leave` を使うが、`with-exception-handler` と `parameterize` は呼び出しを伴わないので `leave_dynamic` だけで足りる。
+`dynamic-wind` は `after` の呼び出しを伴うため `wind_body` と `wind_leave` を使う。`with-exception-handler` は呼び出しを伴わないので `leave_dynamic` だけで足りる。
+
+`parameterize` は進入時にのみ呼び出しを伴う。R7RS 4.2.6 が次のように規定している。
+
+> The ⟨body⟩ is evaluated in a dynamic environment in which calls to the parameters return the results of passing the corresponding values to the conversion procedure specified when the parameters were created. Then the previous values of the parameters are restored without passing them to the conversion procedure.
+
+進入時は各パラメータの変換手続きを呼ぶ。復元時は呼ばない。したがって `param_convert` フレームを置き、変換手続きの呼び出しを機械に積む。
+
+```zig
+param_convert: struct {
+    params: []*Parameter, // 評価済みのパラメータ
+    values: []*Node,      // 未評価の値の式
+    converted: Value,     // 変換済みの値の逆順リスト
+    index: u32,
+    body: *Node,
+},
+```
+
+すべての変換が終わったら `parameter` 種別の `DynPoint` をまとめて積み、本体を `leave_dynamic` 継続のもとで呼ぶ。復元は点を外すだけで、変換手続きを呼ばない。
+
+このため `parameterize` と `make-parameter` はコアの構文とプリミティブとして Zig 側に置く。Scheme 側の `syntax-rules` では、変換手続きの呼び出しと動的点の生成を表せない。R7RS 7.3 の参考実装は `dynamic-wind` とパラメータの破壊的更新で書かれているが、その形は継続による再入のたびに `before` と `after` の呼び出しを伴い、復元時に変換手続きを呼ばないという規定も満たしにくい。本処理系ではコアの機構として実装する。
 
 ### 巻き戻しの進行
 
@@ -566,7 +783,7 @@ flowchart RL
 各手続きの動作は次のとおり。
 
 - `with-exception-handler`: `handler` 種別の点を積み、`thunk` を `leave_dynamic` 継続のもとで呼ぶ。積んだ点の `current_handler` はその点自身になる。
-- `raise` と `raise-continuable`: `H = dynamic_point.?.current_handler` を求める。`null` なら未処理例外として扱う。`handler_shift` 種別の点を積む。切り替え先は `H.parent` の `current_handler`、すなわち `H` をインストールした時点で現在だったハンドラである。この点を積んだ状態で `H` のハンドラ手続きを呼ぶ。継続は `handler_result`。
+- `raise` と `raise-continuable`: `H = currentHandler(dynamic_point)` を求める。`null` なら未処理例外として扱う。`handler_shift` 種別の点を積む。切り替え先は `H.parent` に対する `currentHandler`、すなわち `H` をインストールした時点で現在だったハンドラである。この点を積んだ状態で `H` のハンドラ手続きを呼ぶ。継続は `handler_result`。
 - `handler_result`: `raise-continuable` の場合は積んだ `handler_shift` 点を外し(規定の「it will again become the current exception handler」)、ハンドラの戻り値を `raise-continuable` の値として親の継続に渡す。`raise` の場合は二次例外を起こす。このとき `dynamic_point` はハンドラ実行時のままなので、規定の「in the same dynamic environment as the handler」が満たされる。
 - `guard`: Scheme 側で `call/cc` と `with-exception-handler` を用いて実装する(R7RS 7.3 の派生式に対応)。
 - `error`: 条件オブジェクトを作って `raise` する。
@@ -582,6 +799,10 @@ flowchart RL
 3. 上の2つについて、通常終了の経路と脱出の経路で `after` が見るハンドラが一致する。
 4. ハンドラの内側で `parameterize` した束縛が、`raise` 時点の束縛としてハンドラから見える。
 5. `raise-continuable` のハンドラが戻った後、現在のハンドラがそのハンドラに戻っている。
+6. ハンドラの中で例外を送出すると外側のハンドラが呼ばれ、無限ループにならない。
+7. `dynamic_point` が `null` の状態で `raise` すると、未処理例外として報告され、処理系が停止しない。
+
+この一覧が正である。[ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md) は件数も項目も重複して持たず、この節を参照する。
 
 条件オブジェクトは R7RS が要求する述語を区別できる構造を持つ。
 
@@ -596,7 +817,32 @@ pub const Condition = struct {
 
 ### 複数値
 
-`values` は引数が1個なら値をそのまま返し、それ以外なら `MultipleValues` を返す。これを受け取れるのは `receive_values` フレームと最外の REPL だけである。1個を期待するフレームが複数値を受け取った場合はエラーとする。R7RS はこの場合を未規定としている(R7RS 6.10)ため、検出してエラーにする方が実装の誤りを見つけやすい。
+`values` は引数が1個なら値をそのまま返し、それ以外なら `MultipleValues` を返す。
+
+複数値を受け取れる継続の範囲は R7RS 6.10 が規定している。
+
+> The continuations of all non-final expressions within a sequence of expressions, such as in lambda, case-lambda, begin, let, let*, letrec, letrec*, let-values, let*-values, let-syntax, letrec-syntax, parameterize, guard, case, cond, when, and unless expressions, take an arbitrary number of values because they discard the values passed to them in any event. The effect of passing no values or more than one value to continuations that were not created in one of these ways is unspecified.
+
+未規定なのは「上記以外の方法で作られた継続」に限る。式の列の最後でない式の継続は、任意個の値を受け取って捨てなければならない。したがってフレームを次の3群に分ける。
+
+| 群 | フレーム | 複数値の扱い |
+| --- | --- | --- |
+| 捨てる | `seq_rest`(式の列の最後でない式の継続) | 任意個を受け取り、捨てて次へ進む。0個でもよい |
+| そのまま渡す | `wind_body` `wind_leave` `leave_dynamic` `rewind` `handler_result`(継続可能な送出) | 値をそのまま親の継続に渡す。個数を検査しない |
+| 1個を要求する | `if_branch` `set_local` `set_global` `eval_operator` `eval_operand` | 1個以外はエラーとする |
+| 受け取る | `receive_values`(`call-with-values` の受け手)、最外の REPL | 個数をそのまま消費者に渡す |
+
+`seq_rest` を「捨てる」に入れるのは規定の直接の要求である。`(begin (values 1 2) 'x)` は `'x` を返さなければならない。`(let () (values) 1)` と `(when #t (values 1 2) 3)` も同じである。
+
+`handler_result` を「そのまま渡す」に入れるのは R7RS 6.11 の `raise-continuable` の規定による。
+
+> If the handler returns, the values it returns become the values returned by the call to raise-continuable.
+
+`values` が複数の場合も `raise-continuable` の値になるため、個数を検査してはならない。
+
+「1個を要求する」群でエラーにするのは、仕様が未規定とする範囲に限られる。未規定の動作を実装の誤りの検出に使う判断であり、準拠には影響しない。
+
+テストに含める事例: `(begin (values 1 2) 'x)`、`(let () (values) 1)`、`(when #t (values 1 2) 3)`、`(call-with-values (lambda () (with-exception-handler (lambda (c) (values 1 2)) (lambda () (raise-continuable 'x)))) list)`。
 
 ### 歩数制限とWASM
 

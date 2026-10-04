@@ -48,9 +48,9 @@ kind: union(enum) {
 | `handler_shift` | 切り替え先の `handler` 点(`null` もありうる) |
 | `wind` と `parameter` | 親の `current_handler` |
 
-これにより、ある動的点における現在の例外ハンドラは `dynamic_point.?.current_handler` で定数時間に求まる。
+これにより、ある動的点における現在の例外ハンドラが定数時間に求まる。参照は `currentHandler(p)` という補助関数を通す。`dynamic_point` は起動直後は `null` であり、省略可能型を直接展開するとその状態での `raise` が panic する。`null` のときは `null` を返し、`raise` 側が未処理例外として扱う。
 
-`raise` と `raise-continuable` は、外側へ戻るのではなく内側へ1点積む。`H = dynamic_point.?.current_handler` を求め、切り替え先を `H.parent` の `current_handler`(すなわち `H` をインストールした時点で現在だったハンドラ)とする `handler_shift` 点を積んでから、`H` のハンドラ手続きを呼ぶ。`dynamic_point` は `raise` 時点のものに1点足しただけなので、`parameterize` の束縛も `dynamic-wind` の範囲も失われない。
+`raise` と `raise-continuable` は、外側へ戻るのではなく内側へ1点積む。`H = currentHandler(dynamic_point)` を求め、切り替え先を `H.parent` に対する `currentHandler`(すなわち `H` をインストールした時点で現在だったハンドラ)とする `handler_shift` 点を積んでから、`H` のハンドラ手続きを呼ぶ。`H` が `null` の場合は未処理例外として扱う。`dynamic_point` は `raise` 時点のものに1点足しただけなので、`parameterize` の束縛も `dynamic-wind` の範囲も失われない。
 
 `raise-continuable` のハンドラが戻ったら、積んだ `handler_shift` 点を外す。これが規定の「it will again become the current exception handler」に対応する。
 
@@ -64,11 +64,6 @@ kind: union(enum) {
 
 ## 検証
 
-次の事例をテストとして持つ。棄却した2案はいずれかで落ちる。
+検証項目は [runtime.md](../design/runtime.md) の例外の節に置く。件数も項目も本ADRには複製しない。同じ一覧を2箇所に持つと、項目を追加するたびにずれる。
 
-1. ハンドラの中で `dynamic-wind` に入り、そこから継続で脱出したとき、`after` の中の例外が実行中のハンドラではなく外側のハンドラに届く。
-2. `raise` を囲む `dynamic-wind` からハンドラが継続で脱出したとき、`after` が見るハンドラが、その `dynamic-wind` を呼んだ時点のハンドラと一致する。
-3. 上の2つについて、通常終了の経路と脱出の経路で `after` が見るハンドラが一致する。
-4. ハンドラの内側で `parameterize` した束縛が、`raise` 時点の束縛としてハンドラから見える。
-5. `raise-continuable` のハンドラが戻った後、現在のハンドラがそのハンドラに戻っている。
-6. ハンドラの中で例外を送出すると外側のハンドラが呼ばれ、無限ループにならない。
+棄却した2案は、その一覧のうち「ハンドラの中の `dynamic-wind` から継続で脱出したとき」と「`raise` を囲む `dynamic-wind` からハンドラが脱出したとき」のいずれかで落ちる。

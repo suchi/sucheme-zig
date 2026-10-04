@@ -14,11 +14,13 @@
 Zig で書くのは次に限る。
 
 - コアの特殊形式(`quote` `if` `lambda` `set!` `define` `begin`)と、それらのコアIRへの変換
+- 構文定義(`define-syntax` `let-syntax` `letrec-syntax`)。構文環境にマクロ束縛を追加する操作はテンプレートで表せない
 - `syntax-rules` の照合器とテンプレート展開器
-- ライブラリシステム(`define-library` `import` `export` `cond-expand` `include`)
-- リーダとプリンタ
+- ライブラリシステム(`define-library` `import` `export` `cond-expand` `include` `include-ci` `include-library-declarations`)
+- リーダとプリンタ。`#!fold-case` 指令とポートごとのケースフォールディング状態を含む
 - 基本操作のプリミティブ(`cons` `car` `cdr` `set-car!` など、算術の核、文字列とベクタの基本操作、ポートの入出力)
-- `call/cc` `dynamic-wind` `values` `raise`
+- 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)
+- `parameterize`。進入時に変換手続きを呼び復元時には呼ばないという R7RS 4.2.6 の規定をテンプレートで表せない
 - Unicode のテーブルと数値の表示・解析
 
 これ以外は Scheme で書く。`map` と `for-each` も Scheme で書く。Scheme で書けば末尾呼び出しと継続の相互作用が自動的に正しくなるためである。

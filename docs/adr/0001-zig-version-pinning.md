@@ -17,7 +17,7 @@ Zig は1.0前であり、リリースごとに標準ライブラリとビルド�
 
 ## 決定
 
-Zig 0.17.0 に固定する。バージョンは `.zigversion` と `build.zig.zon` の `minimum_zig_version` と CI のワークフローの3箇所に記録し、常に一致させる。
+Zig 0.17.0 に固定する。固定しているバージョンの正は `.zigversion` とする。版数を書いてよい場所と、取り残しを検出する仕組みは [zig-api-notes.md](../design/zig-api-notes.md) の更新手順に定める。
 
 情報不足への対策として次を行う。
 
