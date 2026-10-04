@@ -104,7 +104,32 @@ pub const Str = struct {
 
 ASCII のみなら `string-ref` と `string-set!` は定数時間、そうでなければ先頭からの走査になる。R7RS は `string-ref` の計算量を規定していない(R7RS 6.7)ため準拠上の問題はない。UTF-8 を選ぶのはポートと WASM ホスト境界で変換が不要になるためである。幅の変わる `string-set!` はバイト列の再確保を伴う。詳細は [ADR-0008](../adr/0008-string-representation.md)。
 
-シンボルはインターンして32ビットの ID で表す。ID から名前への表は GC 対象外の永続テーブルに置く。`string->symbol` で生成されたシンボルも同じ表に入る。
+### シンボルのインターン
+
+シンボルはインターンして32ビットの ID で表す。`eq?` による比較が ID の一致になり、`Value` にポインタを持たせずに済む。
+
+`string->symbol` は任意の文字列からシンボルを作れる(R7RS 6.5)。インターン表を解放しない永続表にすると、乱数で作った文字列をシンボル化し続けるだけでヒープ上限の外側でメモリを増やし続けられる。長時間稼働する REPL とブラウザでは、これは資源枯渇の経路になる。したがって次の2つを行う。
+
+名前の格納領域をヒープ上限に計上する。インターン表自身の確保も `heap.zig` の計上に含める。上限を超えたら Scheme のエラーにする。
+
+インターン表を弱い表にする。ID が `Value` の中に即値として入るため、GC はポインタを辿るだけでは生きているシンボルを判定できない。そこでマーク段階を利用する。
+
+```zig
+pub const SymbolTable = struct {
+    names: ArrayListUnmanaged([]u8),   // ID -> 名前
+    index: StringHashMapUnmanaged(Symbol), // 名前 -> ID
+    pinned: DynamicBitSetUnmanaged,    // 回収してはならない ID
+    live: DynamicBitSetUnmanaged,      // マーク中に参照された ID
+    free: ArrayListUnmanaged(Symbol),  // 再利用できる ID
+};
+```
+
+- マーク段階では、オブジェクトを辿る過程で `.symbol` の値に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
+- スイープ段階で、`live` にも `pinned` にもない ID の名前を解放し、ID を `free` に戻す。
+- `pinned` には、起動時に Zig 側が登録する既知のシンボル(`quote` `if` `lambda` など)を入れる。これらは Zig のコードが ID を定数として保持するため回収してはならない。
+- ID の再利用は、その ID への生きた参照が存在しないことを `live` が保証した後にのみ行う。
+
+この方式により `string->symbol` で作って捨てたシンボルは回収され、ID 表現の利点も保たれる。
 
 ## ガベージコレクション
 
@@ -113,6 +138,8 @@ ASCII のみなら `string-ref` と `string-set!` は定数時間、そうでな
 非移動型を選ぶ理由は2つある。第一に、`*Pair` などの生ポインタが収集後も有効なままなので、ルート登録は到達可能性の保証だけを意味し、Zig のローカル変数を書き換える必要がない。第二に、ハンドル経由の間接参照が不要なのでコードが読みやすい。代償は断片化とスイープのコストである。
 
 保守的スタック走査は採用しない。wasm の関数ローカル変数は線形メモリ上に存在せず走査できないため、ネイティブと WASM で GC の正しさが変わってしまう。
+
+マーク段階は、生きている `Value` に出会うたびに参照されたシンボル ID を記録する。スイープ段階でインターン表の未参照の項目を解放する(前述のシンボルのインターン)。これによりシンボルもヒープ上限の中で管理される。
 
 ### ルート集合
 
@@ -278,6 +305,12 @@ pub const Frame = struct {
         // 段階2以降で追加
         receive_values: struct { consumer: Value },
         handler_result: struct { continuable: bool },
+
+        // dynamic-wind の通常実行経路。後述
+        wind_enter: struct { thunk: Value, after: Value },
+        wind_body: struct { after: Value, point: *DynPoint },
+        wind_leave: struct { result: Value },
+
         rewind: Rewind, // 継続起動時の動的状態の遷移。後述
     },
 };
@@ -320,6 +353,36 @@ pub const DynPoint = struct {
 
 3つを1つの機構で表すことで、`call/cc` との相互作用を1箇所で正しくすれば全体が正しくなる。
 
+### dynamic-wind の通常実行
+
+`before`、`thunk`、`after` はいずれも Scheme 手続きである。プリミティブの中で機械を起動しないという不変条件により、3つの呼び出しはそれぞれ継続フレームを積んで機械に戻す形で実装する。
+
+```mermaid
+sequenceDiagram
+    participant M as 機械
+    participant B as before
+    participant T as thunk
+    participant A as after
+
+    M->>B: 呼び出し。継続は wind_enter{thunk, after}
+    B-->>M: 戻る
+    Note over M: wind の DynPoint を積む
+    M->>T: 呼び出し。継続は wind_body{after, point}
+    T-->>M: 戻る(値は value)
+    Note over M: DynPoint を外す
+    M->>A: 呼び出し。継続は wind_leave{result = value}
+    A-->>M: 戻る
+    Note over M: value = result として親の継続へ
+```
+
+- `wind_enter`: `before` が完了した。`wind` 種別の `DynPoint` を積み、`thunk` を呼ぶ。継続は `wind_body`。
+- `wind_body`: `thunk` が完了した。`dynamic_point` を `point` の親に戻し、`after` を呼ぶ。継続は `wind_leave { result = value }`。フレームは不変なので、`thunk` の結果はこの新しいフレームに格納する。
+- `wind_leave`: `after` が完了した。`after` の戻り値を捨て、`result` を親の継続に渡す。
+
+`after` は `DynPoint` を外した後に呼ぶ。R7RS 6.10 が `after` を `thunk` の動的範囲の外で実行すると規定しているためである。`thunk` が複数値を返した場合は `result` に `MultipleValues` が入り、そのまま親に渡る。
+
+`thunk` が例外を送出した場合や継続で脱出した場合は、この通常経路ではなく後述の巻き戻しが働く。
+
 ### 巻き戻しの進行
 
 `after` と `before` は Scheme 手続きであり、その中でさらに継続を捕捉したり起動したりできる。したがって巻き戻しを Zig の同期ループで回すことはできない。巻き戻しの途中の状態自体が継続に含まれていなければならない。
@@ -329,13 +392,29 @@ pub const DynPoint = struct {
 ```zig
 pub const Rewind = struct {
     phase: enum { exiting, entering },
-    cursor: ?*DynPoint,       // 次に処理する点
+
+    // exiting: 現在側を共通祖先まで降りる
+    cursor: ?*DynPoint,       // 次に after を呼ぶ点
     ancestor: ?*DynPoint,     // 共通祖先。exiting の終点
+
+    // entering: 目標側を共通祖先から降りる
+    enter_path: ?*DynPath,    // 外側から内側の順に並べた経路
+    enter_index: u32,         // 次に before を呼ぶ位置
+
     target_point: ?*DynPoint, // 目標の動的点。entering の終点
     target_kont: ?*Frame,     // 遷移完了後に復元する継続
     target_value: Value,      // 復元した継続に渡す値。複数値も入る
 };
+
+pub const DynPath = struct {
+    header: Header,
+    points: []*DynPoint, // ancestor の直下から target_point までを外側から内側の順に並べる
+};
 ```
+
+`DynPoint` は親へのポインタしか持たないため、目標側を外側から内側へ辿ることができない。`exiting` の完了時に `target_point` から `ancestor` まで親をたどり、順序を反転した `DynPath` を作る。この構築は Scheme 手続きの呼び出しを伴わないので同期に行える。
+
+`DynPath` は作成後に変更しない。`entering` の各段は `enter_index` を1つ進めた新しい `Rewind` フレームを作り、同じ `DynPath` を共有する。不変なので共有しても継続の多重起動で壊れない。
 
 機械の動作は次のとおり。
 
@@ -349,9 +428,7 @@ stateDiagram-v2
     Done --> [*]: kont = target_kont、value = target_value
 ```
 
-各 `after` と `before` の呼び出しは通常の手続き呼び出しとして機械に積む。その継続として、`cursor` を1つ進めた新しい `Rewind` フレームを置く。フレームは不変なので、`after` の中で捕捉した継続を後で起動しても、その時点の巻き戻し状態から正しく再開する。
-
-`entering` の経路は目標側を根から辿る必要がある。`DynPoint` は親へのポインタしか持たないため、`exiting` の完了時に `ancestor` から `target_point` までの経路をリストとして構築し、`Rewind` フレームに保持する。この経路の構築は呼び出しを伴わないので同期に行える。
+各 `after` と `before` の呼び出しは通常の手続き呼び出しとして機械に積む。その継続として、`exiting` なら `cursor` を親へ進め、`entering` なら `enter_index` を1つ進めた新しい `Rewind` フレームを置く。フレームは不変なので、`after` の中で捕捉した継続を後で起動しても、その時点の巻き戻し状態から正しく再開する。
 
 `dynamic_point` レジスタは各 `after` の呼び出しの前に親へ、各 `before` の呼び出しの後に子へ更新する。これにより `after` と `before` の中で例外が起きた場合のハンドラ探索が、R7RS の規定どおりその時点の動的環境を見る。
 
