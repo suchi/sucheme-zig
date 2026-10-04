@@ -63,7 +63,7 @@
 - [ ] ライブラリシステム(`define-library` `import` `export` `cond-expand` `include`)
 - [ ] `define-record-type` の基盤
 
-完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目7件が通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。リリース v0.2.0 を出す。
+完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。リリース v0.2.0 を出す。
 
 ### 段階3: Schemeによる標準ライブラリ
 
