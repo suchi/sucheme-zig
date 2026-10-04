@@ -6,34 +6,17 @@
 
 R7RS 6.2 の完全な数値塔を実装する。`cond-expand` のフィーチャ `exact-closed` `ratios` `exact-complex` `ieee-float` をすべて真にすることを目標とする。
 
-| 表現 | 対応する Zig の型 | 正確性 |
-| --- | --- | --- |
-| fixnum | `i64` の即値 | 正確 |
-| bignum | `std.math.big.int` を包むヒープオブジェクト | 正確 |
-| ratnum | 分子と分母(いずれも fixnum か bignum) | 正確 |
-| flonum | `f64` の即値 | 不正確 |
-| compnum | 実部と虚部(いずれも上記の実数) | 両方が正確なら正確 |
+| 表現 | 保持するもの | 正確性 | 不変条件 |
+| --- | --- | --- | --- |
+| fixnum | `i64` の即値 | 正確 | - |
+| bignum | 多倍長整数を包むヒープオブジェクト | 正確 | `i64` に収まる値は保持しない |
+| ratnum | 分子と分母。いずれも fixnum か bignum | 正確 | 分母は常に正。分子と互いに素。分母は1にならない |
+| flonum | `f64` の即値 | 不正確 | - |
+| compnum | 実部と虚部。いずれも上記の実数 | 両方が正確なら正確 | 虚部が正確な0にならない |
 
-```zig
-pub const Bignum = struct {
-    header: Header,
-    value: std.math.big.int.Managed, // sweep 時に deinit する
-};
+不変条件は正規化の規則(後述)の裏返しである。表現を作る関数が1箇所に閉じ、そこで必ず正規化する。構造体のフィールドの並びと正確な型はコードに置く([ADR-0018](../adr/0018-incremental-vertical-slices.md))。
 
-pub const Ratnum = struct {
-    header: Header,
-    numerator: Value,   // fixnum か bignum
-    denominator: Value, // fixnum か bignum。常に正で、分子と互いに素
-};
-
-pub const Compnum = struct {
-    header: Header,
-    real: Value,
-    imag: Value,
-};
-```
-
-`std.math.big.int.Managed` が Zig 0.17.0 の標準ライブラリに存在することは実機で確認した(2^100 の計算と基数10への変換が動作する)。多倍長演算を自前で書く必要はない。`Managed` は `std.mem.Allocator` で限界値列を確保するため、GC の sweep で `deinit` を呼ぶ。
+多倍長整数には `std.math.big.int.Managed` を使う。Zig 0.17.0 の標準ライブラリに存在することは実機で確認した(2^100 の計算と基数10への変換が動作する)。多倍長演算を自前で書く必要はない。`Managed` は `std.mem.Allocator` で限界値列を確保するため、GC の sweep で `deinit` を呼ぶ。ヒープ外ペイロードとして計上の対象に含める([runtime.md](runtime.md) の計上の対象)。
 
 ### 正規化の規則
 
