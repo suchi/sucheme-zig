@@ -30,8 +30,8 @@
 | [0000](0000-template.md) | テンプレート | - | - |
 | [0001](0001-zig-version-pinning.md) | Zig 0.17.0 への固定と API ノートの整備 | 採用 | 2026-10-04 |
 | [0002](0002-value-representation.md) | Scheme値は Zig のタグ付き union で表現する | 採用 | 2026-10-04 |
-| [0003](0003-precise-mark-sweep-gc.md) | 非移動型の精密マーク・スイープGCを採用する | 採用 | 2026-10-04 |
-| [0004](0004-cek-machine-evaluator.md) | 評価器は明示的な継続を持つCEK機械とする | 採用 | 2026-10-04 |
+| [0003](0003-precise-mark-sweep-gc.md) | 非移動型の精密マーク・スイープGCを採用する | 採用([0016](0016-independent-exception-handler-cursor.md)がルート集合の列挙を訂正) | 2026-10-04 |
+| [0004](0004-cek-machine-evaluator.md) | 評価器は明示的な継続を持つCEK機械とする | 採用([0016](0016-independent-exception-handler-cursor.md)がレジスタの列挙を訂正) | 2026-10-04 |
 | [0005](0005-hygienic-expander-by-renaming.md) | 衛生性は構文環境と別名による改名で実現する | 採用 | 2026-10-04 |
 | [0006](0006-library-system-and-scheme-level-stdlib.md) | 標準ライブラリは可能な限り Scheme で書く | 採用 | 2026-10-04 |
 | [0007](0007-numeric-tower-scope.md) | 完全な数値塔を実装する | 採用 | 2026-10-04 |
@@ -43,3 +43,4 @@
 | [0013](0013-testing-strategy-and-conformance-suite.md) | テストは3層構成とし、外部の準拠スイートをベンダリングする | 採用 | 2026-10-04 |
 | [0014](0014-repl-line-editor-boundary.md) | 行編集は抽象境界のみ先に定め、実装方式は段階7で決める | 採用 | 2026-10-04 |
 | [0015](0015-mit-license.md) | MIT ライセンスを採用する | 採用 | 2026-10-04 |
+| [0016](0016-independent-exception-handler-cursor.md) | 例外ハンドラの位置を独立したレジスタとして持つ | 採用 | 2026-10-04 |

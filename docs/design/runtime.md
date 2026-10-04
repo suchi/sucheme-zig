@@ -2,7 +2,7 @@
 
 値表現、ガベージコレクション、環境、CEK機械、継続、動的状態、例外を扱う。実装時に最も参照されるドキュメント。
 
-対応する決定: [ADR-0002](../adr/0002-value-representation.md)、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)、[ADR-0004](../adr/0004-cek-machine-evaluator.md)、[ADR-0008](../adr/0008-string-representation.md)。
+対応する決定: [ADR-0002](../adr/0002-value-representation.md)、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)、[ADR-0004](../adr/0004-cek-machine-evaluator.md)、[ADR-0008](../adr/0008-string-representation.md)、[ADR-0016](../adr/0016-independent-exception-handler-cursor.md)。
 
 ## 値表現
 
@@ -126,6 +126,7 @@ pub const SymbolTable = struct {
 
 - マーク段階では、オブジェクトを辿る過程でシンボル ID に出会うたびに `live` に印を付ける。GC は既に生きている全オブジェクトを訪れるので、追加の走査は発生しない。
 - 記録の対象は `Value` の `.symbol` だけではない。`Symbol` 型の生のフィールドもすべて対象にする。`GlobalCell.name`、`Binding.id`、`Primitive.name`、`RecordType` のフィールド名、`LambdaInfo` の引数名などが該当する。これらを漏らすと、所有オブジェクトが生存中でも ID が回収・再利用され、既存のセルや構文束縛が別のシンボルを指すという最悪の形の破壊が起きる。
+- ヒープ上のオブジェクトだけでは足りない。Zig のローカル変数や、展開器がヒープ外に持つ作業表が保持している生の ID も対象にする。これらは次の確保で GC が走ると回収されうる。一時ルート枠は `Value` と `Symbol` の両方を登録できるものとし(`frame.add` と `frame.addSymbol`)、ヒープ外のルート走査も自分が持つ `Symbol` をマークする責任を持つ。
 - スイープ段階で、`live` にも `pinned` にもない ID の名前を解放し、ID を `free` に戻す。
 - `pinned` には、起動時に Zig 側が登録する既知のシンボル(`quote` `if` `lambda` など)を入れる。これらは Zig のコードが ID を定数として保持するため回収してはならない。
 - ID の再利用は、その ID への生きた参照が存在しないことを `live` が保証した後にのみ行う。
@@ -181,6 +182,22 @@ pub fn makeList2(h: *Heap, a: Value, b: Value) !Value {
 ```
 
 非移動型なので `frame.add(a)` の後も `a` をそのまま使える。`frame.add` は到達可能性のみを保証する。
+
+生のシンボル ID も同じ扱いが必要である。シンボルは弱い表で管理されるため(後述)、確保をまたいで保持する `Symbol` はルート枠に登録する。
+
+```zig
+pub fn defineGlobal(h: *Heap, name_text: []const u8, v: Value) !void {
+    var frame = h.rootFrame();
+    defer frame.pop();
+    frame.add(v);
+
+    const sym = try h.intern(name_text); // ここで GC が走りうる
+    frame.addSymbol(sym);                // 登録しないと次の確保で回収されうる
+
+    const cell = try h.allocGlobalCell(sym); // ここでも GC が走りうる
+    cell.value = v;
+}
+```
 
 次の書き方は誤りである。
 
@@ -359,7 +376,8 @@ pub const Continuation = struct {
 pub const DynPoint = struct {
     header: Header,
     parent: ?*DynPoint,
-    depth: u32, // 共通祖先の計算用
+    depth: u32,                     // 共通祖先の計算用
+    nearest_handler: ?*DynPoint,    // この点から外側で最も内側の handler 点
     kind: union(enum) {
         wind: struct { before: Value, after: Value },
         handler: struct {
@@ -373,11 +391,13 @@ pub const DynPoint = struct {
 
 `handler` が `outer` を持つのは、R7RS 6.11 の「the one that was in place when the handler being called was installed」をそのまま表すためである。親をたどって次の `handler` を探す方式でも多くの場合は一致するが、インストール時点の値を保存しておけば常に正確である。
 
+`nearest_handler` は生成時に決まる。自身が `handler` 種別なら自身、そうでなければ `parent.nearest_handler` とする。不変なので更新は不要で、ある動的点における「本来の」ハンドラ位置を定数時間で得られる。巻き戻し中のカーソル同期に使う。
+
 継続の起動時は、現在の点と目標の点の共通祖先を `depth` を使って求め、現在側を祖先まで `after` を呼びながら降り、目標側を `before` を呼びながら登る(R7RS 6.10)。ハンドラとパラメータの束縛は呼び出しを伴わないので、復元は参照の差し替えだけで済む。
 
 3つを1つの機構で表すことで、`call/cc` との相互作用を1箇所で正しくすれば全体が正しくなる。
 
-ただし「現在の例外ハンドラ」の位置だけは、この列とは独立に動かす必要がある。そのため `handler_cursor` を別のレジスタとして持つ。理由は例外の節で述べる。
+ただし「現在の例外ハンドラ」の位置だけは、この列とは独立に動かす必要がある。そのため `handler_cursor` を別のレジスタとして持つ。理由は例外の節で述べる([ADR-0016](../adr/0016-independent-exception-handler-cursor.md))。
 
 ### dynamic-wind の通常実行
 
@@ -466,6 +486,14 @@ stateDiagram-v2
 各 `after` と `before` の呼び出しは通常の手続き呼び出しとして機械に積む。その継続として、`exiting` なら `cursor` を親へ進め、`entering` なら `enter_index` を1つ進めた新しい `Rewind` フレームを置く。フレームは不変なので、`after` の中で捕捉した継続を後で起動しても、その時点の巻き戻し状態から正しく再開する。
 
 `dynamic_point` レジスタは各 `after` の呼び出しの前に親へ、各 `before` の呼び出しの後に子へ更新する。これにより `after` と `before` の中で例外が起きた場合のハンドラ探索が、R7RS の規定どおりその時点の動的環境を見る。
+
+`handler_cursor` も同時に同期する。`dynamic_point` だけを動かすと、既に退出した `handler` のハンドラが `after` の中から呼ばれる。規則は次のとおり。
+
+- `dynamic_point` を更新したら、同じ段で `handler_cursor` を `dynamic_point` の `nearest_handler` にする(`dynamic_point` が null なら null)。これが、その動的点において本来有効なハンドラである。
+- 経路上の点が `handler` 種別である場合も上の規則で正しく処理される。退出時は親の `nearest_handler` になり、進入時はその点自身になる。
+- 遷移の完了時だけは `nearest_handler` を使わず、`target_handler_cursor` に保存した値を復元する。捕捉時のカーソルは、ハンドラ実行中に捕捉された場合など `nearest_handler` と一致しないことがあるためである。
+
+通常実行の `leave_dynamic` と `wind_body` は保存した値を復元するので、この派生規則は巻き戻し中にのみ適用する。
 
 ### 例外
 
