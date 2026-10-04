@@ -44,3 +44,4 @@
 | [0014](0014-repl-line-editor-boundary.md) | 行編集は抽象境界のみ先に定め、実装方式は段階7で決める | 採用 | 2026-10-04 |
 | [0015](0015-mit-license.md) | MIT ライセンスを採用する | 採用 | 2026-10-04 |
 | [0016](0016-exception-handler-as-dynamic-point.md) | 例外ハンドラの切り替えを動的状態の点として表す | 採用 | 2026-10-04 |
+| [0017](0017-self-hosted-adversarial-review.md) | レビューは自前の敵対的レビューを主とする | 採用 | 2026-10-04 |
