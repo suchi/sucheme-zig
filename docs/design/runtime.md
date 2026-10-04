@@ -40,10 +40,15 @@ pub const Value = union(enum) {
     compnum: *Compnum,
     condition: *Condition,
     multiple_values: *MultipleValues,
+
+    // 展開時にのみ現れる。CEK機械には到達しない
+    alias: *Alias,
 };
 ```
 
 段階1で必要なのは `nil` から `primitive` までで、残りは段階が進むにつれて追加する。タグを増やすと `switch` の網羅性検査が既存コードの修正箇所を教えてくれる。これが表現の選択理由の一つである。
+
+`alias` はマクロ展開の途中にデータの中に現れる識別子である([frontend.md](frontend.md) の構文環境と識別子)。マクロ展開の出力は通常のデータなので、別名もデータの一種でなければならない。別名はコアIRを作る時点で意味に解決されるか元のシンボルに剥離されるため、CEK機械には到達しない。これを不変条件とする。`Value` を受け取る実行時のプリミティブは `alias` の場合を考慮しなくてよいが、`switch` の網羅性検査を満たすために内部エラーとして扱う分岐を書く。
 
 他モジュールはタグに直接依存せず、`value.zig` のアクセサを使う。
 
@@ -191,23 +196,30 @@ pub const GlobalCell = struct {
 
 セルを介することで、前方参照、相互再帰、`set!`、REPL での再定義がすべて自然に扱える。ライブラリごとにシンボルからセルへの表を持ち、`import` はセルを共有する(値をコピーしない)。これによりエクスポート元での再定義がインポート側にも反映される。
 
+セルの共有だけでは、インポートした束縛への `define` と `set!` を拒否できない。R7RS 5.2 がこれをエラーと規定しているため、所有とインポートの区別は構文環境側の意味に持たせる([frontend.md](frontend.md) のインポートした束縛への書き込みの禁止)。実行時のセルには可否の情報を持たせず、展開時に拒否する。
+
 ## コアIR
 
 展開器の出力。R7RS 7.1.3 の基本式に対応する。
 
 ```zig
-pub const Node = union(enum) {
-    constant: Value,
-    local_ref: struct { depth: u16, index: u16 },
-    global_ref: *GlobalCell,
-    local_set: struct { depth: u16, index: u16, value: *Node },
-    global_set: struct { cell: *GlobalCell, value: *Node },
-    branch: struct { test_: *Node, consequent: *Node, alternative: ?*Node },
-    lambda: *LambdaInfo,
-    seq: []*Node,
-    call: struct { operator: *Node, operands: []*Node, tail: bool },
+pub const Node = struct {
+    header: Header, // GC が割り当てリストへの登録と種別判定とマークに使う
+    body: union(enum) {
+        constant: Value,
+        local_ref: struct { depth: u16, index: u16 },
+        global_ref: *GlobalCell,
+        local_set: struct { depth: u16, index: u16, value: *Node },
+        global_set: struct { cell: *GlobalCell, value: *Node },
+        branch: struct { test_: *Node, consequent: *Node, alternative: ?*Node },
+        lambda: *LambdaInfo,
+        seq: []*Node,
+        call: struct { operator: *Node, operands: []*Node, tail: bool },
+    },
 };
 ```
+
+`Node` も GC ヒープに置くため、他のヒープオブジェクトと同じく先頭に `Header` を持つ。ヘッダのない union にすると、割り当てリストへの登録、`Header.kind` による種別判定、マークのいずれもできない。`Header.kind` は `.core_node` の1種類とし、子の走査は `body` のタグで分岐する。
 
 `call` の `tail` は展開器が付ける。機械はこの印を信用して、真なら継続フレームを積まない。末尾位置の判定を機械側に持たせないのは、判定の責任を1箇所にまとめるためである。
 
@@ -264,9 +276,9 @@ pub const Frame = struct {
             tail: bool,
         },
         // 段階2以降で追加
-        wind_exit: struct { after: Value },
         receive_values: struct { consumer: Value },
         handler_result: struct { continuable: bool },
+        rewind: Rewind, // 継続起動時の動的状態の遷移。後述
     },
 };
 ```
@@ -307,6 +319,41 @@ pub const DynPoint = struct {
 継続の起動時は、現在の点と目標の点の共通祖先を `depth` を使って求め、現在側を祖先まで `after` を呼びながら降り、目標側を `before` を呼びながら登る(R7RS 6.10)。ハンドラとパラメータの束縛は呼び出しを伴わないので、復元は参照の差し替えだけで済む。
 
 3つを1つの機構で表すことで、`call/cc` との相互作用を1箇所で正しくすれば全体が正しくなる。
+
+### 巻き戻しの進行
+
+`after` と `before` は Scheme 手続きであり、その中でさらに継続を捕捉したり起動したりできる。したがって巻き戻しを Zig の同期ループで回すことはできない。巻き戻しの途中の状態自体が継続に含まれていなければならない。
+
+専用の不変フレームを置く。
+
+```zig
+pub const Rewind = struct {
+    phase: enum { exiting, entering },
+    cursor: ?*DynPoint,       // 次に処理する点
+    ancestor: ?*DynPoint,     // 共通祖先。exiting の終点
+    target_point: ?*DynPoint, // 目標の動的点。entering の終点
+    target_kont: ?*Frame,     // 遷移完了後に復元する継続
+    target_value: Value,      // 復元した継続に渡す値。複数値も入る
+};
+```
+
+機械の動作は次のとおり。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Exiting: 継続を起動。共通祖先を求める
+    Exiting --> Exiting: cursor の after を呼ぶ。戻ったら cursor を親へ
+    Exiting --> Entering: cursor が ancestor に到達
+    Entering --> Entering: 目標側の経路を1つ進み before を呼ぶ
+    Entering --> Done: target_point に到達
+    Done --> [*]: kont = target_kont、value = target_value
+```
+
+各 `after` と `before` の呼び出しは通常の手続き呼び出しとして機械に積む。その継続として、`cursor` を1つ進めた新しい `Rewind` フレームを置く。フレームは不変なので、`after` の中で捕捉した継続を後で起動しても、その時点の巻き戻し状態から正しく再開する。
+
+`entering` の経路は目標側を根から辿る必要がある。`DynPoint` は親へのポインタしか持たないため、`exiting` の完了時に `ancestor` から `target_point` までの経路をリストとして構築し、`Rewind` フレームに保持する。この経路の構築は呼び出しを伴わないので同期に行える。
+
+`dynamic_point` レジスタは各 `after` の呼び出しの前に親へ、各 `before` の呼び出しの後に子へ更新する。これにより `after` と `before` の中で例外が起きた場合のハンドラ探索が、R7RS の規定どおりその時点の動的環境を見る。
 
 ### 例外
 
