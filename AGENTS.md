@@ -89,7 +89,7 @@ feat: add todo filter feature      ← 1行目: 英語・命令形・50文字以
 ## PR・レビュー・マージ
 
 1. フィーチャーブランチからPRを作成する(タイトル英語・本文日本語。本文に`\n`リテラルを書かず実際の改行を使う。`--body-file`推奨)。
-2. Copilotにレビューを依頼する(`gh pr edit <番号> --add-reviewer @copilot`)。
+2. Copilotにレビューを依頼する(`gh pr edit <番号> --add-reviewer @copilot`)。指摘を小出しにせずまとめて挙げる依頼は`.github/copilot-instructions.md`に記載してある。
 3. 指摘は修正コミットで対応し、各スレッドに対応内容を返信してからresolveする。
 4. 再レビューを依頼し、新規指摘ゼロ(No New Comment)になるまで3〜4を繰り返す。
 5. レビュー完了・CI全ジョブグリーン・ユーザー承認の3つがそろってからマージする。
