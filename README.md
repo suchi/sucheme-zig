@@ -1,5 +1,43 @@
 # sucheme-zig
 
-sucheme-zigは、Zig言語で実装されたSchemeのインタプリタです。
+sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Scheme インタプリタです。衛生的マクロ、完全な継続、適切な末尾再帰、完全な数値塔までの準拠を目指します。
 
-AIコーディングエージェントへの指示は`AGENTS.md`にある。GitHub Copilot、Claude Code、Codexの共有スキルは`.agents/skills/`にある。
+単体の実行ファイルとして動作し、WebAssembly を通じてブラウザ上でも動作します。
+
+名前はリポジトリオーナーに由来しています(`scheme` の打ち間違いではありません)。
+
+## 状態
+
+設計フェーズが完了し、実装の開始を待っている段階です。段階ごとの到達点とチェックリストは [docs/roadmap.md](docs/roadmap.md) にあります。
+
+| 項目 | 状態 |
+| --- | --- |
+| 現在の段階 | 段階0 の直前 |
+| 最新リリース | なし |
+| 固定 Zig バージョン | 0.17.0 |
+
+## 特徴として目指すもの
+
+- R7RS-small の16ライブラリすべての実装
+- 衛生的マクロ(`syntax-rules`)、多重起動可能な完全な継続、適切な末尾再帰
+- 完全な数値塔(多倍長整数、有理数、浮動小数点数、複素数)と Unicode 対応
+- 複数行編集と Emacs バインディングを備えた REPL
+- ブラウザ上で動く Web UI
+- 依存パッケージを持たない構成(Zig 標準ライブラリのみ)
+
+## ドキュメント
+
+| 文書 | 内容 |
+| --- | --- |
+| [docs/onboarding.md](docs/onboarding.md) | 開発に参加するときの入口。環境の整え方とリポジトリの歩き方 |
+| [docs/roadmap.md](docs/roadmap.md) | 段階、完了条件、現在地 |
+| [docs/plans/0001-sow.md](docs/plans/0001-sow.md) | 作業範囲、成果物、進め方、リスク |
+| [docs/design/](docs/design/) | アーキテクチャと各領域の設計 |
+| [docs/adr/](docs/adr/) | 技術選択と設計判断の記録 |
+| [docs/status/](docs/status/) | R7RS 準拠マトリクス(生成物) |
+
+設計の中心となる判断は次の3つです。評価器は明示的な継続を持つ CEK 機械とし([ADR-0004](docs/adr/0004-cek-machine-evaluator.md))、GC は非移動型の精密マーク・スイープとし([ADR-0003](docs/adr/0003-precise-mark-sweep-gc.md))、コア言語で表現できるものは Scheme で書きます([ADR-0006](docs/adr/0006-library-system-and-scheme-level-stdlib.md))。いずれも WebAssembly を一級の対象とする制約から導かれています。
+
+## AIコーディングエージェントへの指示
+
+[AGENTS.md](AGENTS.md) が単一のソースです。GitHub Copilot、Claude Code、Codex の共有スキルは [.agents/skills/](.agents/skills/) にあります。
