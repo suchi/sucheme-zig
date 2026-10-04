@@ -30,7 +30,7 @@
 - [ ] `build.zig` と `build.zig.zon` と `.zigversion`
 - [ ] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
 - [ ] `AGENTS.md` の検証コマンド表を埋める
-- [ ] ライセンスの決定と `LICENSE` の配置
+- [x] ライセンスの決定と `LICENSE` の配置([ADR-0015](adr/0015-mit-license.md))
 - [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))
 - [ ] CI ワークフロー(`zig fmt --check` と `zig build test`)
 - [ ] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
@@ -128,6 +128,5 @@
 
 | 事項 | 必要な判断 | 期限 |
 | --- | --- | --- |
-| ライセンス | public 化と同時に `LICENSE` が必要。取り込む準拠スイートが BSD 3条項である点との両立を確認する | 段階0の開始前 |
 | 行編集の実装方式 | 自前実装か C ライブラリの取り込みか | 段階7の開始時 |
 | 複素数の段階 | 段階4の作業量が過大な場合に段階5以降へ繰り延べるか | 段階4の計画時 |

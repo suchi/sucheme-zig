@@ -38,6 +38,12 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 設計の中心となる判断は次の3つです。評価器は明示的な継続を持つ CEK 機械とし([ADR-0004](docs/adr/0004-cek-machine-evaluator.md))、GC は非移動型の精密マーク・スイープとし([ADR-0003](docs/adr/0003-precise-mark-sweep-gc.md))、コア言語で表現できるものは Scheme で書きます([ADR-0006](docs/adr/0006-library-system-and-scheme-level-stdlib.md))。いずれも WebAssembly を一級の対象とする制約から導かれています。
 
+## ライセンス
+
+MIT License です。詳細は [LICENSE](LICENSE) を参照してください。
+
+`tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。
+
 ## AIコーディングエージェントへの指示
 
 [AGENTS.md](AGENTS.md) が単一のソースです。GitHub Copilot、Claude Code、Codex の共有スキルは [.agents/skills/](.agents/skills/) にあります。
