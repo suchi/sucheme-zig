@@ -45,3 +45,4 @@
 | [0015](0015-mit-license.md) | MIT ライセンスを採用する | 採用 | 2026-10-04 |
 | [0016](0016-exception-handler-as-dynamic-point.md) | 例外ハンドラの切り替えを動的状態の点として表す | 採用 | 2026-10-04 |
 | [0017](0017-self-hosted-adversarial-review.md) | レビューは自前の敵対的レビューを主とする | 採用 | 2026-10-04 |
+| [0018](0018-incremental-vertical-slices.md) | 通しで動く縦切りを積み上げ、やり残しを明示して漸進的に進める | 採用 | 2026-10-05 |
