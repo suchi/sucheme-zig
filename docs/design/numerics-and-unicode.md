@@ -73,7 +73,7 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 不正確な数を基数10で表示するときは、R7RS 6.2.7 が次を要求している。
 
-> If z is inexact, the radix is 10, and the above expression can be satisfied by a result that contains a decimal point, then the result contains a decimal point and is expressed using the minimum number of digits (exclusive of exponent and trailing zeroes) needed to make the above expression true; otherwise the format of the result is unspecified.
+> If z is inexact, the radix is 10, and the above expression can be satisfied by a result that contains a decimal point, then the result contains a decimal point and is expressed using the minimum number of digits (exclusive of exponent and trailing zeroes) needed to make the above expression true [4, 5]; otherwise the format of the result is unspecified.
 
 要求は2つである。結果が小数点を含むこと(それで往復条件を満たせる場合)と、桁数が最小であること。基数10以外では「otherwise the format of the result is unspecified」なので、桁数の最小性も小数点も要求されない。
 
