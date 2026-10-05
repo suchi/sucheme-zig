@@ -32,7 +32,7 @@
 | [0002](0002-value-representation.md) | Scheme値は Zig のタグ付き union で表現する | 採用 | 2026-10-04 |
 | [0003](0003-precise-mark-sweep-gc.md) | 非移動型の精密マーク・スイープGCを採用する | 採用 | 2026-10-04 |
 | [0004](0004-cek-machine-evaluator.md) | 評価器は明示的な継続を持つCEK機械とする | 採用 | 2026-10-04 |
-| [0005](0005-hygienic-expander-by-renaming.md) | 衛生性は構文環境と別名による改名で実現する | 採用 | 2026-10-04 |
+| [0005](0005-hygienic-expander-by-renaming.md) | 衛生性は構文環境と別名による改名で実現する | 非推奨([0019](0019-denotations-and-identifier-resolution.md)に置き換え) | 2026-10-04 |
 | [0006](0006-library-system-and-scheme-level-stdlib.md) | 標準ライブラリは可能な限り Scheme で書く | 採用 | 2026-10-04 |
 | [0007](0007-numeric-tower-scope.md) | 完全な数値塔を実装する | 採用 | 2026-10-04 |
 | [0008](0008-string-representation.md) | 文字列は UTF-8 バイト列と ASCII 判定フラグで表現する | 採用 | 2026-10-04 |
@@ -46,3 +46,4 @@
 | [0016](0016-exception-handler-as-dynamic-point.md) | 例外ハンドラの切り替えを動的状態の点として表す | 採用 | 2026-10-04 |
 | [0017](0017-self-hosted-adversarial-review.md) | レビューは自前の敵対的レビューを主とする | 採用 | 2026-10-04 |
 | [0018](0018-incremental-vertical-slices.md) | 通しで動く縦切りを積み上げ、やり残しを明示して漸進的に進める | 採用 | 2026-10-05 |
+| [0019](0019-denotations-and-identifier-resolution.md) | 衛生性は構文環境と別名による改名で実現し、意味は6種とする | 採用 | 2026-10-05 |
