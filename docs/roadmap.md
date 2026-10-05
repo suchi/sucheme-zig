@@ -10,7 +10,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階0(足場)完了。段階1(通しで動く最小の縦切り)の計画待ち |
+| 現在の段階 | 段階0(足場)進行中。リポジトリの public 化のみ未了 |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
@@ -47,7 +47,7 @@
 
 確定したこと: `build.zig` の step は段階0の4つ(既定・`run`・`test`・`check-docs`)。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、16ライブラリ・557識別子を `tests/r7rs-required/` に置いた。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階0までに決める」の行。件数と内容をここに複製しない。
+残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容を下の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) に書いた。
 
 ### 段階1: 通しで動く最小の縦切り
 
@@ -106,7 +106,7 @@
 
 この段階で未実装として表れてよいのは、後の段階の機能を必要とする識別子である。数値塔を必要とするもの(`/` `exact` `inexact` `sqrt` など)は段階4、ポートを引数に取るか返すもの(`read-char` `write-string` `open-input-string` など)は段階5である。どの族にも属さず後の段階にも割り当てられない識別子が残っていれば、それは [ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md) の族の一覧の漏れである。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階3までに決める」の行。件数と内容をここに複製しない。
+残していること: なし。open-questions.md に段階3の節はない。
 
 ### 段階4: 数値塔とUnicode
 

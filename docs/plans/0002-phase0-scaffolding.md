@@ -37,7 +37,7 @@
 | `.github/workflows/ci.yml` | push と PR での検証 | 新規 |
 | `.gitignore` | `zig-out/` と `.zig-cache/` を追記 | 変更 |
 | `.gitattributes` | `*.wasm binary` を追記 | 変更 |
-| `.editorconfig` | `.scm` と `.sld` の2スペース設定を追記 | 変更 |
+| `.editorconfig` | Scheme のファイル(`.scm` `.sld` `.ss`)の2スペース設定を追記 | 変更 |
 | `.github/dependabot.yml` | 担当者の修正と `TODO(project):` の解消 | 変更 |
 | `AGENTS.md` | 検証コマンド表に3行追加(後述) | 変更 |
 | `README.md` | 段階0完了後に偽になる現在形の記述を直す | 変更 |
@@ -253,7 +253,9 @@ Zig のバージョンは `ci.yml` にリテラルで書く。`tools/check-docs`
 
 ワークフローに `permissions: contents: read` を置き、`concurrency` で同じブランチの先行実行を打ち切る。既定の権限より狭くするためと、連続プッシュで課金を無駄にしないためである。
 
-`concurrency` の group は head のリポジトリとブランチで正規化する。`github.ref` をそのまま使うと、`pull_request` では `refs/pull/<番号>/merge`、`push` では `refs/heads/<ブランチ>` になり、同じブランチへの1回のプッシュが2つの group で二重に走って打ち切りが効かない。
+二重実行はトリガのフィルタで止める。`push` を `branches: [main]` に絞ると、フィーチャーブランチへのプッシュは `pull_request` の実行だけ、`main` へのプッシュは `push` の実行だけになり、どちらも1回で済む。
+
+group の共有では解決しない。打ち切りは group 単位でイベント単位ではないので、2つの実行を同じ group に入れると片方が打ち切られるだけであり、PR のチェック一覧に打ち切られた実行が残る。「CI全ジョブグリーン」を文字どおり観測できなくなる。group は `github.workflow` と `github.ref` の組にして、同じブランチの先行実行を新しいコミットが追い越す用途に限る。
 
 ### Zig のセットアップ手段
 
