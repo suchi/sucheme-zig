@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang=en>
+<!--
+Generated from r7rs.tex by tex2page, v. 20221218
+Copyright (C) 1997-2022 Dorai Sitaram
+(running on SBCL 2.1.1.debian Linux)
+http://ds26gte.github.io/tex2page/index.html
+-->
+<head>
+<meta charset="utf-8">
+<title>
+Revised^7 Report on the Algorithmic Language Scheme
+</title>
+<link rel="stylesheet" href="r7rs-Z-S.css" />
+<meta name=robots content="index,follow">
+</head>
+<body>
+<div>
+<div class=navigation>[Go to <span><a class=hrefinternal href="r7rs.html">first</a>, <a class=hrefinternal href="r7rs-Z-H-9.html">previous</a></span><span>, <a class=hrefinternal href="r7rs-Z-H-11.html">next</a></span> page<span>; &#xa0;&#xa0;</span><span><a class=hrefinternal href="r7rs-Z-H-1.html#TAG:__tex2page_toc">contents</a></span><span><span>; &#xa0;&#xa0;</span><a class=hrefinternal href="r7rs.html#TAG:__tex2page_index_start">index</a></span>]</div>
+<p>
+</p>
+<a id="TAG:__tex2page_chap_A"></a>
+<h1 class=chapter>
+<div class=chapterheading><a class=hrefinternal href="r7rs-Z-H-1.html#TAG:__tex2page_toc_TAG:__tex2page_chap_A">Appendix A</a></div><br>
+<a class=hrefinternal href="r7rs-Z-H-1.html#TAG:__tex2page_toc_TAG:__tex2page_chap_A">Standard Libraries</a></h1>
+<p class=noindent></p>
+<p>
+This section lists the exports provided by the standard libraries.  The
+libraries are factored so as to separate features which might not be
+supported by all implementations, or which might be expensive to load.</p>
+<p>
+
+The <span style="font-family: monospace">scheme</span> library prefix is used for all standard libraries, and
+is reserved for use by future standards.</p>
+<p>
+
+<b>Base Library</b></p>
+<p>
+
+The <span style="font-family: monospace">(scheme base)</span> library exports many of the procedures and
+syntax bindings that are traditionally associated with Scheme.
+The division between the base library and the other standard libraries is
+based on use, not on construction. In particular, some facilities that are
+typically implemented as primitives by a compiler or the run-time system
+rather than in terms of other standard procedures or syntax are
+not part of the base library, but are defined in separate libraries.
+By the same token, some exports of the base library are implementable
+in terms of other exports.  They are redundant in the strict sense of
+the word, but they capture common patterns of usage, and are therefore
+provided as convenient abbreviations.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;*</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;+</span><br>
+<span style="font-family: monospace">&#xa0;-</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;...</span><br>
+<span style="font-family: monospace">&#xa0;/</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;&#x3c;</span><br>
+<span style="font-family: monospace">&#xa0;&#x3c;=</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;=</span><br>
+<span style="font-family: monospace">&#xa0;=&#x3e;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;&#x3e;</span><br>
+<span style="font-family: monospace">&#xa0;&#x3e;=</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;_</span><br>
+<span style="font-family: monospace">&#xa0;abs</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;and</span><br>
+<span style="font-family: monospace">&#xa0;append</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;apply</span><br>
+<span style="font-family: monospace">&#xa0;assoc</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;assq</span><br>
+<span style="font-family: monospace">&#xa0;assv</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;begin</span><br>
+<span style="font-family: monospace">&#xa0;binary-port?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;boolean=?</span><br>
+<span style="font-family: monospace">&#xa0;boolean?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;bytevector</span><br>
+<span style="font-family: monospace">&#xa0;bytevector-append</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;bytevector-copy</span><br>
+<span style="font-family: monospace">&#xa0;bytevector-copy!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;bytevector-length</span><br>
+<span style="font-family: monospace">&#xa0;bytevector-u8-ref</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;bytevector-u8-set!</span><br>
+<span style="font-family: monospace">&#xa0;bytevector?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caar</span><br>
+<span style="font-family: monospace">&#xa0;cadr</span><br>
+<span style="font-family: monospace">&#xa0;call-with-current-continuation</span><br>
+<span style="font-family: monospace">&#xa0;call-with-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;call-with-values</span><br>
+<span style="font-family: monospace">&#xa0;call/cc</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;car</span><br>
+<span style="font-family: monospace">&#xa0;case</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdar</span><br>
+<span style="font-family: monospace">&#xa0;cddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdr</span><br>
+<span style="font-family: monospace">&#xa0;ceiling</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-&#x3e;integer</span><br>
+<span style="font-family: monospace">&#xa0;char-ready?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char&#x3c;=?</span><br>
+<span style="font-family: monospace">&#xa0;char&#x3c;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char=?</span><br>
+<span style="font-family: monospace">&#xa0;char&#x3e;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char&#x3e;?</span><br>
+<span style="font-family: monospace">&#xa0;char?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;close-input-port</span><br>
+<span style="font-family: monospace">&#xa0;close-output-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;close-port</span><br>
+<span style="font-family: monospace">&#xa0;complex?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cond</span><br>
+<span style="font-family: monospace">&#xa0;cond-expand</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cons</span><br>
+<span style="font-family: monospace">&#xa0;current-error-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;current-input-port</span><br>
+<span style="font-family: monospace">&#xa0;current-output-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;define</span><br>
+<span style="font-family: monospace">&#xa0;define-record-type</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;define-syntax</span><br>
+<span style="font-family: monospace">&#xa0;define-values</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;denominator</span><br>
+<span style="font-family: monospace">&#xa0;do</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;dynamic-wind</span><br>
+<span style="font-family: monospace">&#xa0;else</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;eof-object</span><br>
+<span style="font-family: monospace">&#xa0;eof-object?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;eq?</span><br>
+<span style="font-family: monospace">&#xa0;equal?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;eqv?</span><br>
+<span style="font-family: monospace">&#xa0;error</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;error-object-irritants</span><br>
+<span style="font-family: monospace">&#xa0;error-object-message</span>&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;error-object?</span><br>
+<span style="font-family: monospace">&#xa0;even?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;exact</span><br>
+<span style="font-family: monospace">&#xa0;exact-integer-sqrt</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;exact-integer?</span><br>
+<span style="font-family: monospace">&#xa0;exact?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;expt</span><br>
+<span style="font-family: monospace">&#xa0;features</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;file-error?</span><br>
+<span style="font-family: monospace">&#xa0;floor</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;floor-quotient</span><br>
+<span style="font-family: monospace">&#xa0;floor-remainder</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;floor/</span><br>
+<span style="font-family: monospace">&#xa0;flush-output-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;for-each</span><br>
+<span style="font-family: monospace">&#xa0;gcd</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;get-output-bytevector</span><br>
+<span style="font-family: monospace">&#xa0;get-output-string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;guard</span><br>
+<span style="font-family: monospace">&#xa0;if</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;include</span><br>
+<span style="font-family: monospace">&#xa0;include-ci</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;inexact</span><br>
+<span style="font-family: monospace">&#xa0;inexact?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;input-port-open?</span><br>
+<span style="font-family: monospace">&#xa0;input-port?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;integer-&#x3e;char</span><br>
+<span style="font-family: monospace">&#xa0;integer?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;lambda</span><br>
+<span style="font-family: monospace">&#xa0;lcm</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;length</span><br>
+<span style="font-family: monospace">&#xa0;let</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;let*</span><br>
+<span style="font-family: monospace">&#xa0;let*-values</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;let-syntax</span><br>
+<span style="font-family: monospace">&#xa0;let-values</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;letrec</span><br>
+<span style="font-family: monospace">&#xa0;letrec*</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;letrec-syntax</span><br>
+<span style="font-family: monospace">&#xa0;list</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list-&#x3e;string</span><br>
+<span style="font-family: monospace">&#xa0;list-&#x3e;vector</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list-copy</span><br>
+<span style="font-family: monospace">&#xa0;list-ref</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list-set!</span><br>
+<span style="font-family: monospace">&#xa0;list-tail</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list?</span><br>
+<span style="font-family: monospace">&#xa0;make-bytevector</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;make-list</span><br>
+<span style="font-family: monospace">&#xa0;make-parameter</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;make-string</span><br>
+<span style="font-family: monospace">&#xa0;make-vector</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;map</span><br>
+<span style="font-family: monospace">&#xa0;max</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;member</span><br>
+<span style="font-family: monospace">&#xa0;memq</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;memv</span><br>
+<span style="font-family: monospace">&#xa0;min</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;modulo</span><br>
+<span style="font-family: monospace">&#xa0;negative?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;newline</span><br>
+<span style="font-family: monospace">&#xa0;not</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;null?</span><br>
+<span style="font-family: monospace">&#xa0;number-&#x3e;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;number?</span><br>
+<span style="font-family: monospace">&#xa0;numerator</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;odd?</span><br>
+<span style="font-family: monospace">&#xa0;open-input-bytevector</span>&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;open-input-string</span><br>
+<span style="font-family: monospace">&#xa0;open-output-bytevector</span>&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;open-output-string</span><br>
+<span style="font-family: monospace">&#xa0;or</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;output-port-open?</span><br>
+<span style="font-family: monospace">&#xa0;output-port?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;pair?</span><br>
+<span style="font-family: monospace">&#xa0;parameterize</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;peek-char</span><br>
+<span style="font-family: monospace">&#xa0;peek-u8</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;port?</span><br>
+<span style="font-family: monospace">&#xa0;positive?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;procedure?</span><br>
+<span style="font-family: monospace">&#xa0;quasiquote</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;quote</span><br>
+<span style="font-family: monospace">&#xa0;quotient</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;raise</span><br>
+<span style="font-family: monospace">&#xa0;raise-continuable</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;rational?</span><br>
+<span style="font-family: monospace">&#xa0;rationalize</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;read-bytevector</span><br>
+<span style="font-family: monospace">&#xa0;read-bytevector!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;read-char</span><br>
+<span style="font-family: monospace">&#xa0;read-error?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;read-line</span><br>
+<span style="font-family: monospace">&#xa0;read-string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;read-u8</span><br>
+<span style="font-family: monospace">&#xa0;real?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;remainder</span><br>
+<span style="font-family: monospace">&#xa0;reverse</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;round</span><br>
+<span style="font-family: monospace">&#xa0;set!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;set-car!</span><br>
+<span style="font-family: monospace">&#xa0;set-cdr!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;square</span><br>
+<span style="font-family: monospace">&#xa0;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-&#x3e;list</span><br>
+<span style="font-family: monospace">&#xa0;string-&#x3e;number</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-&#x3e;symbol</span><br>
+<span style="font-family: monospace">&#xa0;string-&#x3e;utf8</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-&#x3e;vector</span><br>
+<span style="font-family: monospace">&#xa0;string-append</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-copy</span><br>
+<span style="font-family: monospace">&#xa0;string-copy!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-fill!</span><br>
+<span style="font-family: monospace">&#xa0;string-for-each</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-length</span><br>
+<span style="font-family: monospace">&#xa0;string-map</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-ref</span><br>
+<span style="font-family: monospace">&#xa0;string-set!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string&#x3c;=?</span><br>
+<span style="font-family: monospace">&#xa0;string&#x3c;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string=?</span><br>
+<span style="font-family: monospace">&#xa0;string&#x3e;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string&#x3e;?</span><br>
+<span style="font-family: monospace">&#xa0;string?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;substring</span><br>
+<span style="font-family: monospace">&#xa0;symbol-&#x3e;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;symbol=?</span><br>
+<span style="font-family: monospace">&#xa0;symbol?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;syntax-error</span><br>
+<span style="font-family: monospace">&#xa0;syntax-rules</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;textual-port?</span><br>
+<span style="font-family: monospace">&#xa0;truncate</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;truncate-quotient</span><br>
+<span style="font-family: monospace">&#xa0;truncate-remainder</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;truncate/</span><br>
+<span style="font-family: monospace">&#xa0;u8-ready?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;unless</span><br>
+<span style="font-family: monospace">&#xa0;unquote</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;unquote-splicing</span><br>
+<span style="font-family: monospace">&#xa0;utf8-&#x3e;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;values</span><br>
+<span style="font-family: monospace">&#xa0;vector</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-&#x3e;list</span><br>
+<span style="font-family: monospace">&#xa0;vector-&#x3e;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-append</span><br>
+<span style="font-family: monospace">&#xa0;vector-copy</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-copy!</span><br>
+<span style="font-family: monospace">&#xa0;vector-fill!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-for-each</span><br>
+<span style="font-family: monospace">&#xa0;vector-length</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-map</span><br>
+<span style="font-family: monospace">&#xa0;vector-ref</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-set!</span><br>
+<span style="font-family: monospace">&#xa0;vector?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;when</span><br>
+<span style="font-family: monospace">&#xa0;with-exception-handler</span>&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;write-bytevector</span><br>
+<span style="font-family: monospace">&#xa0;write-char</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;write-string</span><br>
+<span style="font-family: monospace">&#xa0;write-u8</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;zero?</span><br>
+</span>
+<b>Case-Lambda Library</b><p>
+
+The <span style="font-family: monospace">(scheme case-lambda)</span> library exports the <span style="font-family: monospace">case-lambda</span>
+syntax.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;case-lambda</span><br>
+</span>
+<b>Char Library</b><p>
+
+The <span style="font-family: monospace">(scheme char)</span> library provides the procedures for dealing with
+characters that involve potentially large tables when supporting all of Unicode.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;char-alphabetic?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ci&#x3c;=?</span><br>
+<span style="font-family: monospace">&#xa0;char-ci&#x3c;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ci=?</span><br>
+<span style="font-family: monospace">&#xa0;char-ci&#x3e;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ci&#x3e;?</span><br>
+<span style="font-family: monospace">&#xa0;char-downcase</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-foldcase</span><br>
+<span style="font-family: monospace">&#xa0;char-lower-case?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-numeric?</span><br>
+<span style="font-family: monospace">&#xa0;char-upcase</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-upper-case?</span><br>
+<span style="font-family: monospace">&#xa0;char-whitespace?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;digit-value</span><br>
+<span style="font-family: monospace">&#xa0;string-ci&#x3c;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-ci&#x3c;?</span><br>
+<span style="font-family: monospace">&#xa0;string-ci=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-ci&#x3e;=?</span><br>
+<span style="font-family: monospace">&#xa0;string-ci&#x3e;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-downcase</span><br>
+<span style="font-family: monospace">&#xa0;string-foldcase</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-upcase</span><br>
+</span>
+<b>Complex Library</b><p>
+
+The <span style="font-family: monospace">(scheme complex)</span> library exports procedures which are
+typically only useful with non-real numbers.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;angle</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;imag-part</span><br>
+<span style="font-family: monospace">&#xa0;magnitude</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;make-polar</span><br>
+<span style="font-family: monospace">&#xa0;make-rectangular</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;real-part</span><br>
+</span>
+<b>CxR Library</b><p>
+
+The <span style="font-family: monospace">(scheme cxr)</span> library exports twenty-four procedures which
+are the compositions of from three to four <span style="font-family: monospace">car</span> and <span style="font-family: monospace">cdr</span>
+operations.  For example <span style="font-family: monospace">caddar</span> could be defined by</p>
+<p>
+
+</p>
+<span style="font-family: monospace">(define&#xa0;caddar<br>
+&#xa0;&#xa0;(lambda&#xa0;(x)&#xa0;(car&#xa0;(cdr&#xa0;(cdr&#xa0;(car&#xa0;x)))))).</span>
+The procedures <span style="font-family: monospace">car</span> and <span style="font-family: monospace">cdr</span> themselves and the four
+two-level compositions are included in the base library.  See
+section&#xa0;<a class=hrefinternal href="r7rs-Z-H-8.html#TAG:__tex2page_sec_6.4">6.4</a>.<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;caaaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caaadr</span><br>
+<span style="font-family: monospace">&#xa0;caaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caadar</span><br>
+<span style="font-family: monospace">&#xa0;caaddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caadr</span><br>
+<span style="font-family: monospace">&#xa0;cadaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cadadr</span><br>
+<span style="font-family: monospace">&#xa0;cadar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caddar</span><br>
+<span style="font-family: monospace">&#xa0;cadddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caddr</span><br>
+<span style="font-family: monospace">&#xa0;cdaaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdaadr</span><br>
+<span style="font-family: monospace">&#xa0;cdaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdadar</span><br>
+<span style="font-family: monospace">&#xa0;cdaddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdadr</span><br>
+<span style="font-family: monospace">&#xa0;cddaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cddadr</span><br>
+<span style="font-family: monospace">&#xa0;cddar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdddar</span><br>
+<span style="font-family: monospace">&#xa0;cddddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdddr</span><br>
+</span>
+<b>Eval Library</b><p>
+
+The <span style="font-family: monospace">(scheme eval)</span> library exports procedures for evaluating Scheme
+data as programs.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;environment</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;eval</span><br>
+</span>
+<b>File Library</b><p>
+
+The <span style="font-family: monospace">(scheme file)</span> library provides procedures for accessing
+files.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;call-with-input-file</span>&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;call-with-output-file</span><br>
+<span style="font-family: monospace">&#xa0;delete-file</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;file-exists?</span><br>
+<span style="font-family: monospace">&#xa0;open-binary-input-file</span>&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;open-binary-output-file</span><br>
+<span style="font-family: monospace">&#xa0;open-input-file</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;open-output-file</span><br>
+<span style="font-family: monospace">&#xa0;with-input-from-file</span>&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;with-output-to-file</span><br>
+</span>
+<b>Inexact Library</b><p>
+
+The <span style="font-family: monospace">(scheme inexact)</span> library exports procedures which are
+typically only useful with inexact values.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;acos</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;asin</span><br>
+<span style="font-family: monospace">&#xa0;atan</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cos</span><br>
+<span style="font-family: monospace">&#xa0;exp</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;finite?</span><br>
+<span style="font-family: monospace">&#xa0;infinite?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;log</span><br>
+<span style="font-family: monospace">&#xa0;nan?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;sin</span><br>
+<span style="font-family: monospace">&#xa0;sqrt</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;tan</span><br>
+</span>
+<b>Lazy Library</b><p>
+
+The <span style="font-family: monospace">(scheme lazy)</span> library exports procedures and syntax keywords for lazy evaluation.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;delay</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;delay-force</span><br>
+<span style="font-family: monospace">&#xa0;force</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;make-promise</span><br>
+<span style="font-family: monospace">&#xa0;promise?</span><br>
+</span>
+<b>Load Library</b><p>
+
+The <span style="font-family: monospace">(scheme load)</span> library exports procedures for loading
+Scheme expressions from files.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;load</span><br>
+</span>
+<b>Process-Context Library</b><p>
+
+The <span style="font-family: monospace">(scheme process-context)</span> library exports procedures for
+accessing with the program&#x2019;s calling context.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;command-line</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;emergency-exit</span><br>
+<span style="font-family: monospace">&#xa0;exit</span><br>
+<span style="font-family: monospace">&#xa0;get-environment-variable</span><br>
+<span style="font-family: monospace">&#xa0;get-environment-variables</span><br>
+</span>
+<b>Read Library</b><p>
+
+The <span style="font-family: monospace">(scheme read)</span> library provides procedures for reading
+Scheme objects.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;read</span><br>
+</span>
+<b>Repl Library</b><p>
+
+The <span style="font-family: monospace">(scheme repl)</span> library exports the <span style="font-family: monospace">
+interaction-environment</span> procedure.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;interaction-environment</span><br>
+</span>
+<b>Time Library</b><p>
+
+The <span style="font-family: monospace">(scheme time)</span> library provides access to time-related values.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;current-jiffy</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;current-second</span><br>
+<span style="font-family: monospace">&#xa0;jiffies-per-second</span><br>
+</span>
+<b>Write Library</b><p>
+
+The <span style="font-family: monospace">(scheme write)</span> library provides procedures for writing
+Scheme objects.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;display</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;write</span><br>
+<span style="font-family: monospace">&#xa0;write-shared</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;write-simple</span><br>
+</span>
+<b>R5RS Library</b><p>
+
+The <span style="font-family: monospace">(scheme r5rs)</span> library provides the identifiers defined by
+R<sup>5</sup>RS, except that
+<span style="font-family: monospace">transcript-on</span> and <span style="font-family: monospace">transcript-off</span> are not present.
+Note that
+the <span style="font-family: monospace">exact</span> and <span style="font-family: monospace">inexact</span> procedures appear under their R<sup>5</sup>RS&#x200b; &#x200b;names
+<span style="font-family: monospace">inexact-&#x3e;exact</span> and <span style="font-family: monospace">exact-&#x3e;inexact</span> respectively.
+However, if an implementation does not provide a particular library such as the
+complex library, the corresponding identifiers will not appear in this
+library either.</p>
+<p>
+
+</p>
+<span style="font-family: monospace"><span style="font-family: monospace">&#xa0;*</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;+</span><br>
+<span style="font-family: monospace">&#xa0;-</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;...</span><br>
+<span style="font-family: monospace">&#xa0;/</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;&#x3c;</span><br>
+<span style="font-family: monospace">&#xa0;&#x3c;=</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;=</span><br>
+<span style="font-family: monospace">&#xa0;=&#x3e;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;&#x3e;</span><br>
+<span style="font-family: monospace">&#xa0;&#x3e;=</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;_</span><br>
+<span style="font-family: monospace">&#xa0;abs</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;acos</span><br>
+<span style="font-family: monospace">&#xa0;and</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;angle</span><br>
+<span style="font-family: monospace">&#xa0;append</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;apply</span><br>
+<span style="font-family: monospace">&#xa0;asin</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;assoc</span><br>
+<span style="font-family: monospace">&#xa0;assq</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;assv</span><br>
+<span style="font-family: monospace">&#xa0;atan</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;begin</span><br>
+<span style="font-family: monospace">&#xa0;boolean?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caaaar</span><br>
+<span style="font-family: monospace">&#xa0;caaadr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caaar</span><br>
+<span style="font-family: monospace">&#xa0;caadar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caaddr</span><br>
+<span style="font-family: monospace">&#xa0;caadr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caar</span><br>
+<span style="font-family: monospace">&#xa0;cadaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cadadr</span><br>
+<span style="font-family: monospace">&#xa0;cadar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caddar</span><br>
+<span style="font-family: monospace">&#xa0;cadddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;caddr</span><br>
+<span style="font-family: monospace">&#xa0;cadr</span><br>
+<span style="font-family: monospace">&#xa0;call-with-current-continuation</span><br>
+<span style="font-family: monospace">&#xa0;call-with-input-file</span>&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;call-with-output-file</span><br>
+<span style="font-family: monospace">&#xa0;call-with-values</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;car</span><br>
+<span style="font-family: monospace">&#xa0;case</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdaaar</span><br>
+<span style="font-family: monospace">&#xa0;cdaadr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdaar</span><br>
+<span style="font-family: monospace">&#xa0;cdadar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdaddr</span><br>
+<span style="font-family: monospace">&#xa0;cdadr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdar</span><br>
+<span style="font-family: monospace">&#xa0;cddaar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cddadr</span><br>
+<span style="font-family: monospace">&#xa0;cddar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdddar</span><br>
+<span style="font-family: monospace">&#xa0;cddddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdddr</span><br>
+<span style="font-family: monospace">&#xa0;cddr</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cdr</span><br>
+<span style="font-family: monospace">&#xa0;ceiling</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-&#x3e;integer</span><br>
+<span style="font-family: monospace">&#xa0;char-alphabetic?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ci&#x3c;=?</span><br>
+<span style="font-family: monospace">&#xa0;char-ci&#x3c;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ci=?</span><br>
+<span style="font-family: monospace">&#xa0;char-ci&#x3e;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ci&#x3e;?</span><br>
+<span style="font-family: monospace">&#xa0;char-downcase</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-lower-case?</span><br>
+<span style="font-family: monospace">&#xa0;char-numeric?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-ready?</span><br>
+<span style="font-family: monospace">&#xa0;char-upcase</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char-upper-case?</span><br>
+<span style="font-family: monospace">&#xa0;char-whitespace?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char&#x3c;=?</span><br>
+<span style="font-family: monospace">&#xa0;char&#x3c;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char=?</span><br>
+<span style="font-family: monospace">&#xa0;char&#x3e;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;char&#x3e;?</span><br>
+<span style="font-family: monospace">&#xa0;char?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;close-input-port</span><br>
+<span style="font-family: monospace">&#xa0;close-output-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;complex?</span><br>
+<span style="font-family: monospace">&#xa0;cond</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;cons</span><br>
+<span style="font-family: monospace">&#xa0;cos</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;current-input-port</span><br>
+<span style="font-family: monospace">&#xa0;current-output-port</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;define</span><br>
+<span style="font-family: monospace">&#xa0;define-syntax</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;delay</span><br>
+<span style="font-family: monospace">&#xa0;denominator</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;display</span><br>
+<span style="font-family: monospace">&#xa0;do</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;dynamic-wind</span><br>
+<span style="font-family: monospace">&#xa0;else</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;eof-object?</span><br>
+<span style="font-family: monospace">&#xa0;eq?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;equal?</span><br>
+<span style="font-family: monospace">&#xa0;eqv?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;eval</span><br>
+<span style="font-family: monospace">&#xa0;even?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;exact-&#x3e;inexact</span><br>
+<span style="font-family: monospace">&#xa0;exact?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;exp</span><br>
+<span style="font-family: monospace">&#xa0;expt</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;floor</span><br>
+<span style="font-family: monospace">&#xa0;for-each</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;force</span><br>
+<span style="font-family: monospace">&#xa0;gcd</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;if</span><br>
+<span style="font-family: monospace">&#xa0;imag-part</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;inexact-&#x3e;exact</span><br>
+<span style="font-family: monospace">&#xa0;inexact?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;input-port?</span><br>
+<span style="font-family: monospace">&#xa0;integer-&#x3e;char</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;integer?</span><br>
+<span style="font-family: monospace">&#xa0;interaction-environment</span>&#xa0;<span style="font-family: monospace">&#xa0;lambda</span><br>
+<span style="font-family: monospace">&#xa0;lcm</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;length</span><br>
+<span style="font-family: monospace">&#xa0;let</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;let*</span><br>
+<span style="font-family: monospace">&#xa0;let-syntax</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;letrec</span><br>
+<span style="font-family: monospace">&#xa0;letrec-syntax</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list</span><br>
+<span style="font-family: monospace">&#xa0;list-&#x3e;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list-&#x3e;vector</span><br>
+<span style="font-family: monospace">&#xa0;list-ref</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;list-tail</span><br>
+<span style="font-family: monospace">&#xa0;list?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;load</span><br>
+<span style="font-family: monospace">&#xa0;log</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;magnitude</span><br>
+<span style="font-family: monospace">&#xa0;make-polar</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;make-rectangular</span><br>
+<span style="font-family: monospace">&#xa0;make-string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;make-vector</span><br>
+<span style="font-family: monospace">&#xa0;map</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;max</span><br>
+<span style="font-family: monospace">&#xa0;member</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;memq</span><br>
+<span style="font-family: monospace">&#xa0;memv</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;min</span><br>
+<span style="font-family: monospace">&#xa0;modulo</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;negative?</span><br>
+<span style="font-family: monospace">&#xa0;newline</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;not</span><br>
+<span style="font-family: monospace">&#xa0;null-environment</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;null?</span><br>
+<span style="font-family: monospace">&#xa0;number-&#x3e;string</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;number?</span><br>
+<span style="font-family: monospace">&#xa0;numerator</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;odd?</span><br>
+<span style="font-family: monospace">&#xa0;open-input-file</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;open-output-file</span><br>
+<span style="font-family: monospace">&#xa0;or</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;output-port?</span><br>
+<span style="font-family: monospace">&#xa0;pair?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;peek-char</span><br>
+<span style="font-family: monospace">&#xa0;positive?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;procedure?</span><br>
+<span style="font-family: monospace">&#xa0;quasiquote</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;quote</span><br>
+<span style="font-family: monospace">&#xa0;quotient</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;rational?</span><br>
+<span style="font-family: monospace">&#xa0;rationalize</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;read</span><br>
+<span style="font-family: monospace">&#xa0;read-char</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;real-part</span><br>
+<span style="font-family: monospace">&#xa0;real?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;remainder</span><br>
+<span style="font-family: monospace">&#xa0;reverse</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;round</span><br>
+<span style="font-family: monospace">&#xa0;scheme-report-environment</span><br>
+<span style="font-family: monospace">&#xa0;set!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;set-car!</span><br>
+<span style="font-family: monospace">&#xa0;set-cdr!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;sin</span><br>
+<span style="font-family: monospace">&#xa0;sqrt</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string</span><br>
+<span style="font-family: monospace">&#xa0;string-&#x3e;list</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-&#x3e;number</span><br>
+<span style="font-family: monospace">&#xa0;string-&#x3e;symbol</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-append</span><br>
+<span style="font-family: monospace">&#xa0;string-ci&#x3c;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-ci&#x3c;?</span><br>
+<span style="font-family: monospace">&#xa0;string-ci=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-ci&#x3e;=?</span><br>
+<span style="font-family: monospace">&#xa0;string-ci&#x3e;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-copy</span><br>
+<span style="font-family: monospace">&#xa0;string-fill!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-length</span><br>
+<span style="font-family: monospace">&#xa0;string-ref</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string-set!</span><br>
+<span style="font-family: monospace">&#xa0;string&#x3c;=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string&#x3c;?</span><br>
+<span style="font-family: monospace">&#xa0;string=?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string&#x3e;=?</span><br>
+<span style="font-family: monospace">&#xa0;string&#x3e;?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;string?</span><br>
+<span style="font-family: monospace">&#xa0;substring</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;symbol-&#x3e;string</span><br>
+<span style="font-family: monospace">&#xa0;symbol?&#x200b; &#x200b;</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;syntax-rules</span><br>
+<span style="font-family: monospace">&#xa0;tan</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;truncate</span><br>
+<span style="font-family: monospace">&#xa0;values</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector</span><br>
+<span style="font-family: monospace">&#xa0;vector-&#x3e;list</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-fill!</span><br>
+<span style="font-family: monospace">&#xa0;vector-length</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector-ref</span><br>
+<span style="font-family: monospace">&#xa0;vector-set!</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;vector?</span><br>
+<span style="font-family: monospace">&#xa0;with-input-from-file</span>&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;with-output-to-file</span><br>
+<span style="font-family: monospace">&#xa0;write</span>&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;&#xa0;<span style="font-family: monospace">&#xa0;write-char</span><br>
+<span style="font-family: monospace">&#xa0;zero?</span><br>
+</span>	<p>
+
+</p>
+<div class=smallskip></div>
+<p style="margin-top: 0pt; margin-bottom: 0pt">
+</p>
+<div class=navigation>[Go to <span><a class=hrefinternal href="r7rs.html">first</a>, <a class=hrefinternal href="r7rs-Z-H-9.html">previous</a></span><span>, <a class=hrefinternal href="r7rs-Z-H-11.html">next</a></span> page<span>; &#xa0;&#xa0;</span><span><a class=hrefinternal href="r7rs-Z-H-1.html#TAG:__tex2page_toc">contents</a></span><span><span>; &#xa0;&#xa0;</span><a class=hrefinternal href="r7rs.html#TAG:__tex2page_index_start">index</a></span>]</div>
+<p>
+</p>
+</div>
+</body>
+</html>
+
