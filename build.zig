@@ -6,10 +6,19 @@ const builtin = @import("builtin");
 /// tools/check-docs verifies, and Zig itself does not enforce it.
 const pinned_zig_version = @embedFile(".zigversion");
 
-/// Source files under src/ that must not become `addTest` targets.
-/// A wasm32-freestanding test runner does not compile: std's test runner
-/// reaches posix declarations that do not exist on that target.
-const test_excluded = [_][]const u8{"wasm.zig"};
+/// Modules whose `test` blocks `zig build test` runs. tools/check-docs is
+/// given these so that one list governs both the build and the check.
+const test_roots = [_][]const u8{ "src/sucheme.zig", "src/main.zig" };
+
+/// Repository-relative paths under src/ that must not become `addTest`
+/// targets. Full paths, not base names: `wasm.zig` alone would also exclude
+/// src/platform/wasm.zig.
+///
+/// Empty at stage 0. Stage 1 adds "src/wasm.zig": a wasm32-freestanding test
+/// runner does not compile, because std's runner reaches posix declarations
+/// absent on that target. tools/check-docs rejects an entry naming a file that
+/// does not exist, so entries are added with the file, not ahead of it.
+const test_excluded = [_][]const u8{};
 
 pub fn build(b: *std.Build) void {
     enforcePinnedZigVersion();
@@ -41,10 +50,10 @@ pub fn build(b: *std.Build) void {
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     run.addPassthruArgs();
-    b.step("run", "REPL を起動する").dependOn(&run.step);
+    b.step("run", "run the sucheme executable").dependOn(&run.step);
 
     // One addTest per module: a test binary covers a single module.
-    const test_step = b.step("test", "単体テストを実行する");
+    const test_step = b.step("test", "run the unit tests");
     for ([_]*std.Build.Module{ sucheme, exe.root_module }) |mod| {
         const t = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(t).step);
@@ -62,8 +71,15 @@ pub fn build(b: *std.Build) void {
     // Run steps inherit the directory `zig build` was started from, not the
     // build root, so a relative read would fail under --build-file.
     run_check_docs.setCwd(b.path("."));
-    for (test_excluded) |name| run_check_docs.addArg(name);
-    b.step("check-docs", "ドキュメントとビルド設定を検査する").dependOn(&run_check_docs.step);
+    for (test_roots) |path| {
+        run_check_docs.addArg("--root");
+        run_check_docs.addArg(path);
+    }
+    for (test_excluded) |path| {
+        run_check_docs.addArg("--exclude");
+        run_check_docs.addArg(path);
+    }
+    b.step("check-docs", "check the docs and build settings").dependOn(&run_check_docs.step);
 }
 
 fn enforcePinnedZigVersion() void {

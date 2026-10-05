@@ -1,7 +1,13 @@
 //! Machine checks over the repository's documentation and build settings.
 //!
-//! Run as `zig build check-docs`. build.zig passes the names of src/ files
-//! that are excluded from the `test` step (see test_excluded there).
+//! Run as `zig build check-docs`. build.zig passes the test roots and the
+//! excluded source files, so the one source of truth for the test layout stays
+//! in build.zig; hardcoding them here would let the two drift apart.
+//!
+//! Zig sources are tokenized rather than text-searched. A raw search would
+//! treat `// @import("orphan.zig")` in a comment as a real import, which would
+//! mark an unreferenced file as reachable and let its tests stay silently
+//! unrun.
 //!
 //! Every failure is reported before exiting non-zero: stopping at the first
 //! one would mean fixing a single finding per run.
@@ -17,17 +23,33 @@ const std = @import("std");
 
 var failures: usize = 0;
 
+/// Directories never walked when collecting files.
+const skipped_dirs = [_][]const u8{ ".git", ".zig-cache", "zig-out", "node_modules" };
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
     const io = init.io;
     const cwd = std.Io.Dir.cwd();
 
-    const args = try init.minimal.args.toSlice(gpa);
-    const excluded = args[1..];
+    const argv = try init.minimal.args.toSlice(gpa);
+    var roots: std.ArrayList([]const u8) = .empty;
+    var excluded: std.ArrayList([]const u8) = .empty;
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) {
+        if (std.mem.eql(u8, argv[i], "--root") and i + 1 < argv.len) {
+            i += 1;
+            try roots.append(gpa, argv[i]);
+        } else if (std.mem.eql(u8, argv[i], "--exclude") and i + 1 < argv.len) {
+            i += 1;
+            try excluded.append(gpa, argv[i]);
+        } else {
+            fail(io, "unknown argument {s}", .{argv[i]});
+        }
+    }
+    if (roots.items.len == 0) fail(io, "build.zig passed no --root", .{});
 
     try checkZigVersionAgreement(gpa, io, cwd);
-    try checkTestReachability(gpa, io, cwd, excluded);
-    try checkRefAllDecls(gpa, io, cwd);
+    try checkSources(gpa, io, cwd, roots.items, excluded.items);
     try checkMarkdown(gpa, io, cwd);
 
     var buf: [256]u8 = undefined;
@@ -49,8 +71,8 @@ fn fail(io: std.Io, comptime fmt: []const u8, args: anytype) void {
     err.interface.flush() catch return;
 }
 
-fn read(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, path: []const u8) ?[]u8 {
-    return cwd.readFileAlloc(io, path, gpa, .unlimited) catch null;
+fn read(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, path: []const u8) ?[:0]u8 {
+    return cwd.readFileAllocOptions(io, path, gpa, .unlimited, .of(u8), 0) catch null;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,24 +93,52 @@ fn checkZigVersionAgreement(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir)
         } else fail(io, "build.zig.zon has no minimum_zig_version", .{});
     } else fail(io, "build.zig.zon is missing", .{});
 
-    var workflows = cwd.openDir(io, ".github/workflows", .{ .iterate = true }) catch {
-        fail(io, ".github/workflows is missing; the CI copy of the Zig version cannot be checked", .{});
+    var workflows: std.ArrayList([]const u8) = .empty;
+    try collectFiles(gpa, io, cwd, ".github/workflows", ".yml", &workflows);
+    try collectFiles(gpa, io, cwd, ".github/workflows", ".yaml", &workflows);
+    if (workflows.items.len == 0) {
+        fail(io, ".github/workflows has no workflow file; the CI copy of the Zig version cannot be checked", .{});
         return;
-    };
-    defer workflows.close(io);
-
-    var seen: usize = 0;
-    var it = workflows.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".yml") and !std.mem.endsWith(u8, entry.name, ".yaml")) continue;
-        seen += 1;
-        const path = try std.fmt.allocPrint(gpa, ".github/workflows/{s}", .{entry.name});
-        const body = read(gpa, io, cwd, path) orelse continue;
-        if (std.mem.indexOf(u8, body, pinned) == null)
-            fail(io, "{s} does not mention the pinned Zig version {s}", .{ path, pinned });
     }
-    if (seen == 0) fail(io, ".github/workflows has no workflow file", .{});
+
+    for (workflows.items) |path| {
+        const body = read(gpa, io, cwd, path) orelse continue;
+        // Compare the `version:` value of the setup step, not any occurrence in
+        // the file: a stale version left in a comment would otherwise satisfy
+        // the check while CI installs something else.
+        const found = workflowZigVersion(body) orelse {
+            fail(io, "{s} has no `version:` under a setup-zig step", .{path});
+            continue;
+        };
+        if (!std.mem.eql(u8, found, pinned))
+            fail(io, "{s} sets up Zig {s}, .zigversion is {s}", .{ path, found, pinned });
+    }
+}
+
+/// Finds the `version:` value belonging to a `setup-zig` step, ignoring
+/// comments.
+fn workflowZigVersion(body: []const u8) ?[]const u8 {
+    var in_setup = false;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (line.len == 0 or line[0] == '#') continue;
+        if (std.mem.indexOf(u8, line, "setup-zig") != null) {
+            in_setup = true;
+            continue;
+        }
+        if (!in_setup) continue;
+        if (std.mem.startsWith(u8, line, "version:")) {
+            var value = std.mem.trim(u8, line["version:".len..], &std.ascii.whitespace);
+            if (std.mem.indexOfScalar(u8, value, '#')) |hash|
+                value = std.mem.trim(u8, value[0..hash], &std.ascii.whitespace);
+            value = std.mem.trim(u8, value, "\"'");
+            if (value.len != 0) return value;
+        }
+        // A new list item starts, so the setup step's block is over.
+        if (std.mem.startsWith(u8, line, "- ")) in_setup = false;
+    }
+    return null;
 }
 
 fn valueAfter(haystack: []const u8, key: []const u8) ?[]const u8 {
@@ -99,26 +149,33 @@ fn valueAfter(haystack: []const u8, key: []const u8) ?[]const u8 {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Every src/ file is reachable by @import from a module root.
+// 2 and 3. Every src/ file is reachable from a test root, and every file that
+// imports siblings re-establishes the reference with refAllDecls.
 //
 // Zig only analyses a file's `test` blocks when the file is reached from the
-// test root, so an unreferenced file's tests are silently skipped.
+// test root, so an unreferenced file's tests are silently skipped. refAllDecls
+// descends one level and refAllDeclsRecursive does not exist in Zig 0.17.0, so
+// the reference has to be re-established at each level.
 // ---------------------------------------------------------------------------
 
-fn checkTestReachability(
+fn checkSources(
     gpa: std.mem.Allocator,
     io: std.Io,
     cwd: std.Io.Dir,
+    roots: []const []const u8,
     excluded: []const []const u8,
 ) !void {
     var files: std.ArrayList([]const u8) = .empty;
-    try collectZig(gpa, io, cwd, "src", &files);
-
-    // Roots are the modules build.zig gives to addTest.
-    const roots = [_][]const u8{ "src/sucheme.zig", "src/main.zig" };
+    try collectFiles(gpa, io, cwd, "src", ".zig", &files);
 
     var reachable: std.StringHashMapUnmanaged(void) = .empty;
-    for (roots) |r| try reachable.put(gpa, r, {});
+    for (roots) |r| {
+        if (!pathIn(files.items, r)) fail(io, "test root {s} does not exist", .{r});
+        try reachable.put(gpa, r, {});
+    }
+    for (excluded) |e| {
+        if (!pathIn(files.items, e)) fail(io, "excluded file {s} does not exist", .{e});
+    }
 
     // Repeat until nothing new is reached: imports form a DAG of unknown depth.
     var changed = true;
@@ -128,13 +185,9 @@ fn checkTestReachability(
             if (!reachable.contains(path)) continue;
             const body = read(gpa, io, cwd, path) orelse continue;
             const dir = std.fs.path.dirnamePosix(path) orelse "src";
-            var rest = body;
-            while (std.mem.indexOf(u8, rest, "@import(\"")) |at| {
-                rest = rest[at + 9 ..];
-                const close = std.mem.indexOfScalar(u8, rest, '"') orelse break;
-                const name = rest[0..close];
-                rest = rest[close..];
-                if (!std.mem.endsWith(u8, name, ".zig")) continue;
+            var imports: std.ArrayList([]const u8) = .empty;
+            try zigImports(gpa, body, &imports);
+            for (imports.items) |name| {
                 const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, name });
                 if (!reachable.contains(joined)) {
                     try reachable.put(gpa, joined, {});
@@ -145,64 +198,62 @@ fn checkTestReachability(
     }
 
     for (files.items) |path| {
-        const base = std.fs.path.basenamePosix(path);
-        var skip = false;
-        for (excluded) |ex| if (std.mem.eql(u8, base, ex)) {
-            skip = true;
-        };
-        if (skip) continue;
+        // Exclusions are full repository-relative paths: matching on the base
+        // name alone would also exclude src/platform/wasm.zig.
+        if (pathIn(excluded, path)) continue;
+
         if (!reachable.contains(path))
             fail(io, "{s} is not reached from any test root; its tests would be skipped", .{path});
-    }
-}
 
-// ---------------------------------------------------------------------------
-// 3. Files that import siblings carry refAllDecls.
-//
-// refAllDecls only descends one level and refAllDeclsRecursive does not exist
-// in Zig 0.17.0, so the reference has to be re-established at each level.
-// ---------------------------------------------------------------------------
-
-fn checkRefAllDecls(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
-    var files: std.ArrayList([]const u8) = .empty;
-    try collectZig(gpa, io, cwd, "src", &files);
-
-    for (files.items) |path| {
         const body = read(gpa, io, cwd, path) orelse continue;
-        if (!importsAZigFile(body)) continue;
-        if (std.mem.indexOf(u8, body, "refAllDecls(@This())") == null)
-            fail(io, "{s} imports other source files but has no refAllDecls(@This()) test", .{path});
+        var imports: std.ArrayList([]const u8) = .empty;
+        try zigImports(gpa, body, &imports);
+        if (imports.items.len == 0) continue;
+        if (!callsRefAllDecls(body))
+            fail(io, "{s} imports other source files but has no refAllDecls(@This()) call", .{path});
     }
 }
 
-fn importsAZigFile(body: []const u8) bool {
-    var rest = body;
-    while (std.mem.indexOf(u8, rest, "@import(\"")) |at| {
-        rest = rest[at + 9 ..];
-        const close = std.mem.indexOfScalar(u8, rest, '"') orelse return false;
-        if (std.mem.endsWith(u8, rest[0..close], ".zig")) return true;
-        rest = rest[close..];
-    }
+fn pathIn(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |h| if (std.mem.eql(u8, h, needle)) return true;
     return false;
 }
 
-fn collectZig(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    cwd: std.Io.Dir,
-    root: []const u8,
-    out: *std.ArrayList([]const u8),
-) !void {
-    var dir = cwd.openDir(io, root, .{ .iterate = true }) catch return;
-    defer dir.close(io);
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
-        switch (entry.kind) {
-            .file => if (std.mem.endsWith(u8, entry.name, ".zig")) try out.append(gpa, path),
-            .directory => try collectZig(gpa, io, cwd, path, out),
-            else => {},
+/// Collects the `*.zig` paths named by real `@import` expressions. Tokenizing
+/// keeps commented-out and string-embedded occurrences out of the result.
+fn zigImports(gpa: std.mem.Allocator, source: [:0]const u8, out: *std.ArrayList([]const u8)) !void {
+    var tok = std.zig.Tokenizer.init(source);
+    var state: enum { idle, saw_import, saw_paren } = .idle;
+    while (true) {
+        const t = tok.next();
+        if (t.tag == .eof) break;
+        const text = source[t.loc.start..t.loc.end];
+        switch (state) {
+            .idle => if (t.tag == .builtin and std.mem.eql(u8, text, "@import")) {
+                state = .saw_import;
+            },
+            .saw_import => state = if (t.tag == .l_paren) .saw_paren else .idle,
+            .saw_paren => {
+                state = .idle;
+                if (t.tag != .string_literal or text.len < 2) continue;
+                const name = text[1 .. text.len - 1];
+                if (std.mem.endsWith(u8, name, ".zig")) try out.append(gpa, name);
+            },
         }
+    }
+}
+
+/// True when the source really calls `refAllDecls`, not merely mentions it in a
+/// comment or a string.
+fn callsRefAllDecls(source: [:0]const u8) bool {
+    var tok = std.zig.Tokenizer.init(source);
+    var prev_was_name = false;
+    while (true) {
+        const t = tok.next();
+        if (t.tag == .eof) return false;
+        const text = source[t.loc.start..t.loc.end];
+        if (prev_was_name and t.tag == .l_paren) return true;
+        prev_was_name = t.tag == .identifier and std.mem.eql(u8, text, "refAllDecls");
     }
 }
 
@@ -214,21 +265,10 @@ fn collectZig(
 // ---------------------------------------------------------------------------
 
 fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
+    // Walk the whole repository: a fixed directory list left .agents/,
+    // .claude/ and .github/ unchecked, which is a quarter of the Markdown.
     var files: std.ArrayList([]const u8) = .empty;
-    for ([_][]const u8{ ".", "docs", "docs/adr", "docs/design", "docs/plans", "docs/review", "docs/status" }) |d| {
-        var dir = cwd.openDir(io, d, .{ .iterate = true }) catch continue;
-        defer dir.close(io);
-        var it = dir.iterate();
-        while (try it.next(io)) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
-            const path = if (std.mem.eql(u8, d, "."))
-                try gpa.dupe(u8, entry.name)
-            else
-                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ d, entry.name });
-            try files.append(gpa, path);
-        }
-    }
+    try collectFiles(gpa, io, cwd, ".", ".md", &files);
 
     for (files.items) |path| {
         const body = read(gpa, io, cwd, path) orelse continue;
@@ -265,7 +305,12 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
                 const target = rest[0..close];
                 rest = rest[close..];
                 if (target.len == 0) continue;
-                if (std.mem.startsWith(u8, target, "http") or target[0] == '#') continue;
+                // Match the URI scheme, not a bare "http" prefix: a relative
+                // path such as http-guide.md would otherwise skip the check.
+                if (std.mem.startsWith(u8, target, "http://")) continue;
+                if (std.mem.startsWith(u8, target, "https://")) continue;
+                if (std.mem.startsWith(u8, target, "mailto:")) continue;
+                if (target[0] == '#') continue;
                 const file_part = std.mem.sliceTo(target, '#');
                 if (file_part.len == 0) continue;
                 const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, file_part });
@@ -273,6 +318,40 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
                     fail(io, "{s}:{d}: link target {s} does not exist", .{ path, lineno, target });
                 };
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// Recursively collects paths under `root` whose name ends with `suffix`.
+/// Paths are repository-relative and use `/` on every platform.
+fn collectFiles(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    root: []const u8,
+    suffix: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    var dir = cwd.openDir(io, root, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        const path = if (std.mem.eql(u8, root, "."))
+            try gpa.dupe(u8, entry.name)
+        else
+            try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
+        switch (entry.kind) {
+            .file => if (std.mem.endsWith(u8, entry.name, suffix)) try out.append(gpa, path),
+            .directory => {
+                var skip = false;
+                for (skipped_dirs) |s| if (std.mem.eql(u8, entry.name, s)) {
+                    skip = true;
+                };
+                if (!skip) try collectFiles(gpa, io, cwd, path, suffix, out);
+            },
+            else => {},
         }
     }
 }
