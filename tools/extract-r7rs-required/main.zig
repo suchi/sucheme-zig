@@ -20,7 +20,12 @@ const std = @import("std");
 const html_path = "tools/extract-r7rs-required/appendix-a.html";
 const out_dir_path = "tests/r7rs-required";
 const source_url = "https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html";
-const retrieved_on = "2026-10-06";
+
+/// The number of standard libraries R7RS appendix A defines. A mismatch means
+/// the parse drifted, so it is checked rather than merely reported. Update it
+/// together with the input when a new R7RS revision changes the set; SOURCE.md
+/// names this constant in its re-extraction procedure.
+const expected_library_count = 16;
 
 const lib_marker = "(scheme ";
 const id_open = "<span style=\"font-family: monospace\">&#xa0;";
@@ -69,8 +74,8 @@ pub fn main(init: std.process.Init) !void {
         scan = after;
     }
 
-    if (names.items.len != 16) {
-        try out.print("expected 16 libraries, found {d}\n", .{names.items.len});
+    if (names.items.len != expected_library_count) {
+        try out.print("expected {d} libraries, found {d}\n", .{ expected_library_count, names.items.len });
         try out.flush();
         std.process.exit(1);
     }
@@ -124,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
         const w = &fw.interface;
         try w.print("; (scheme {s}) の必須識別子。R7RS 付録A から抽出した。\n", .{name});
         try w.print("; 出典: {s}\n", .{source_url});
-        try w.print("; 取得日: {s}\n", .{retrieved_on});
+        try w.print("; 取得日と許諾: tools/extract-r7rs-required/SOURCE.md\n", .{});
         try w.print("; 抽出: zig run tools/extract-r7rs-required/main.zig\n", .{});
         try w.print("; 手で編集しない。R7RS の版が上がったら再抽出する。\n", .{});
         for (ids.items) |id| try w.print("{s}\n", .{id});

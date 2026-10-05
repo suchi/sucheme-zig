@@ -18,19 +18,25 @@
 
 name: CI
 
+# A feature-branch push with an open PR would otherwise start two runs, one per
+# event. Sharing a concurrency group does not fix that: cancellation is per
+# group, so one of the two would simply be killed and the PR would show a
+# cancelled check. Filtering the push trigger to main means a branch gets the
+# pull_request run and main gets the push run, never both.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  # head_ref is set for pull_request events, where github.ref would be
-  # refs/pull/<n>/merge and would not collapse with the push event's
-  # refs/heads/<branch>. Normalising on the head branch keeps one push from
-  # occupying two groups.
-  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  # One group per workflow and ref so a new commit supersedes the previous run
+  # on the same branch. github.ref distinguishes refs/heads/main from
+  # refs/pull/<n>/merge, which is correct here because the two triggers no
+  # longer overlap.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

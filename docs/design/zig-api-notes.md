@@ -297,9 +297,11 @@ export fn alloc(n: usize) ?[*]u8 { ... }
     .fingerprint = 0x0,                    // 後述
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
-    .paths = .{ "build.zig", "build.zig.zon", "src", "lib", "tools", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "src", "lib", "tools", "tests", "LICENSE", "README.md" },
 }
 ```
+
+`.paths` に `.zigversion` を入れるのは、`build.zig` が `@embedFile(".zigversion")` で読むためである。欠けると依存パッケージとして取得されたときにビルドが失敗する。`tests` を入れるのは、段階1の `zig build report` と段階6の `test-conformance` が `tests/r7rs-required/*.txt` を読むためである。
 
 `fingerprint` はパッケージ名と結びついた値である。誤った値を書くとビルドが失敗し、エラーメッセージが正しい値を教えてくれるので、それを貼る。この値は一度決めたら変更しない(フォークの検出に使われる)。
 
