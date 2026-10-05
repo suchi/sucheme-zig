@@ -10,7 +10,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 設計フェーズ(手順1)完了。段階0 の実装計画(手順2)完了。手順3の実装に着手 |
+| 現在の段階 | 段階0(足場)完了。段階1(通しで動く最小の縦切り)の計画待ち |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
@@ -33,17 +33,19 @@
 
 ### 段階0: 足場
 
-- [ ] `build.zig` と `build.zig.zon` と `.zigversion`
-- [ ] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
+- [x] `build.zig` と `build.zig.zon` と `.zigversion`
+- [x] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
 - [x] `AGENTS.md` の検証コマンド表を埋める
 - [x] ライセンスの決定と `LICENSE` の配置([ADR-0015](adr/0015-mit-license.md))
-- [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))
-- [ ] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
-- [ ] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
-- [ ] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
-- [ ] `.github/dependabot.yml` の担当者をテンプレート由来の値から修正
+- [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))。GitHub の設定変更なのでユーザーが実行する
+- [x] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
+- [x] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
+- [x] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
+- [x] `.github/dependabot.yml` の担当者をテンプレート由来の値から修正
 
 完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。
+
+確定したこと: `build.zig` の step は段階0の4つ(既定・`run`・`test`・`check-docs`)。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、16ライブラリ・557識別子を `tests/r7rs-required/` に置いた。
 
 残していること: [design/open-questions.md](design/open-questions.md) の「段階0までに決める」の行。件数と内容をここに複製しない。
 

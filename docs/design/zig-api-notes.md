@@ -247,6 +247,10 @@ pub fn build(b: *std.Build) void {
 
 - 実行ファイルは `root_module` を取る。`root_source_file` を直接渡す記法はない。
 - `addTest` もモジュール単位である。テスト実行ファイルは1度に1モジュールしか対象にできないため、モジュールごとに `addTest` を作る。
+- モジュールの非ルートファイルの `test` ブロックは、ルートから参照されない限り1件も実行されない。`pub const reader = @import("reader.zig");` と書くだけでは足りない。実機で、必ず失敗するテストを `reader.zig` に置いても `2/2 tests passed` で exit 0 になることを確認した。`std.testing.refAllDecls(@This())` を呼ぶ `test` ブロックを置くと実行される。
+- `std.testing.refAllDeclsRecursive` は 0.17.0 に存在しない。`refAllDecls` は1段しか辿らないので、他の `.zig` を `@import` するファイルすべてに置く。各階層に置いた場合に入れ子のディレクトリのテストまで実行されることを確認した。
+- `wasm32-freestanding` を対象とするモジュールに `addTest` を作ってはならない。テストランナーが freestanding で成立せず、`posix.system` に `getrandom` や `IOV_MAX` や `STDIN_FILENO` が無いというコンパイルエラーになる。
+- `b.addRunArtifact` の Run step の作業ディレクトリは `zig build` を起動したディレクトリであり、ビルドルートではない。リポジトリ内のファイルを相対パスで読むツールには `run.setCwd(b.path("."))` を設定する。
 - `addPassthruArgs()` が `zig build run -- args` の引数転送を行う。
 
 ## WebAssembly のビルド
@@ -315,11 +319,17 @@ export fn alloc(n: usize) ?[*]u8 { ... }
 
 版数の記述を2種に分け、扱いを変える。混ぜると更新のたびに取り残しが出る。
 
-第1種は「現在固定しているバージョンはこれである」という宣言である。正は `.zigversion` のみとする。機械が読む必要がある `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` は値を複製するが、`.zigversion` と一致することを CI が検査する。README、ロードマップ、オンボーディングの前提表、SOW には宣言を書かず、`.zigversion` を参照する。
+第1種は「現在固定しているバージョンはこれである」という宣言である。正は `.zigversion` のみとする。機械が読む必要がある `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` は値を複製するが、`.zigversion` と一致することを `tools/check-docs` が検査する。README、ロードマップ、オンボーディングの前提表、SOW には宣言を書かず、`.zigversion` を参照する。
+
+版の強制は `build.zig` が行う。`.zigversion` を `@embedFile` で読み、`builtin.zig_version` と完全一致しなければ診断を出して止める。`build.zig.zon` の `minimum_zig_version` にバージョン検査を期待してはならない。Zig 0.17.0 では検査されないことを実機で確認した。`minimum_zig_version = "0.99.0"` のまま `zig build` と `zig build test` が警告も出さずに exit 0 になる。`lib/compiler/` に `builtin.zig_version` との比較は存在しない。
 
 第2種は「このバージョンで確認した」「このバージョンの API はこうである」という検証と仕様の記録である。本ドキュメント、ADR、設計ドキュメントの実機確認の記述がこれにあたる。版数を書く。これは履歴であって、バージョンを上げたときに自動で書き換える対象ではない。新しいバージョンで再確認したら、確認した版を併記するか記述を更新する。
 
-`tools/check-docs` が検査するのは第1種だけである。`.zigversion` と `build.zig.zon` と CI の3箇所の一致、および README・ロードマップ・オンボーディングの前提表・SOW に版数の宣言が現れないことを検査する。第2種は文面の判断を要するため機械検査にしない。
+`tools/check-docs` が版について検査するのは第1種の3箇所の一致、すなわち `.zigversion` と `build.zig.zon` と CI のワークフローだけである。
+
+版数の宣言が散文に現れないことは機械検査にしない。実際に走らせると偽陽性と偽陰性が同時に出る。オンボーディングには `[0.17.0 の言語リファレンス](https://ziglang.org/documentation/0.17.0/)` という参照の URL があり、宣言ではないのに一致する。同じファイルの落とし穴の表には `0.17 では std.Io.Dir.cwd()` と書かれており、版を上げたときに古くなる記述なのに `0.17.0` には一致しない。宣言と参照と確認の記録を文字列で区別できない。下の更新手順の段で人手で確認する。
+
+`tools/check-docs` は版以外に次も検査する。`src/` の全 `.zig` がテストの根から `@import` の連鎖で到達できること、他の `.zig` を `@import` するファイルが `refAllDecls(@This())` を持つこと、Markdown の相対リンクが実在すること(コードフェンス内は対象外)、1つのファイル内に同じ見出しが2つないこと。
 
 バージョンを上げるときは次の順で行う。
 
@@ -327,7 +337,7 @@ export fn alloc(n: usize) ?[*]u8 { ... }
 2. `.zigversion`、`build.zig.zon` の `minimum_zig_version`、CI のワークフローを同時に更新する。
 3. `zig build test` と `zig build wasm` と `zig fmt --check` を通す。
 4. 本ドキュメントの表題と「前提」のバージョン表記を更新し、確認済みと未確認の印を見直す。新しい ADR を書いて ADR-0001 を非推奨にする。
-5. `tools/check-docs` を走らせ、第1種の3箇所が一致していることを確認する。
+5. `tools/check-docs` を走らせ、第1種の3箇所が一致していることを確認する。あわせて README・ロードマップ・オンボーディングの前提表・SOW に版数の宣言が入っていないことを目で確認する。機械検査の対象ではない。
 6. 第2種の記述を `grep` で洗い出し、1件ずつ再確認が必要かを判断する。機械検査の対象外なのでこの段を飛ばさない。
 
 これらを1つの PR で行い、バージョン更新だけのコミットに分ける。
