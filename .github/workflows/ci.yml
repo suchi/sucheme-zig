@@ -1,0 +1,47 @@
+# 全コミットの検証。
+#
+# 走らせる内容は AGENTS.md の検証コマンド表が正であり、「CIで実行」が
+# 「全コミット」で、かつ「使えるようになる段階」が現在の段階以下の行を実行する。
+# 段階が進んだら、その段階の計画書に従ってこのファイルに行を足す。
+# 条件分岐や「step があれば実行する」形にはしない。存在しない step を呼ぶと
+# 失敗し、失敗を無視する形にすると検証が無効になったことに気づけない。
+#
+# ファジング(`zig build test --fuzz`)はここに入れない。`--fuzz` は自律的に
+# 停止しないため全コミットで走らせるとタイムアウトする。段階1で
+# .github/workflows/fuzz.yml を作り、schedule と workflow_dispatch で動かす。
+#
+# Zig のバージョンは .zigversion が正で、ここはその複製である。
+# `zig build check-docs` が両者の一致を検査する。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      # dependabot's github-actions ecosystem keeps this current.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+      - run: zig fmt --check .
+      - run: zig build
+      - run: zig build test --summary all
+      - run: zig build check-docs
