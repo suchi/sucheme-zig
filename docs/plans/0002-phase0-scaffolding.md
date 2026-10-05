@@ -311,14 +311,21 @@ public リポジトリ([ADR-0012](../adr/0012-repository-visibility-public.md))�
 
 `.github/workflows/` と `.github/dependabot.yml` の変更はユーザーの承認を得てから行う(`AGENTS.md`)。本計画書の承認をもって、本計画に明記した内容の範囲での変更の承認とする。計画に値が書かれていない項目(Zig のセットアップ手段、dependabot の担当者)は別に確認する。
 
-## ユーザーに確認すること
+## ユーザーに確認して決めたこと
 
-実装に入る前に次の2点を確認する。どちらも計画書に値を書けない。
+計画書に値を書けなかった2点を、実装に入る前にユーザーに確認して決めた。
 
-| 事項 | 理由 |
+| 事項 | 決定 |
 | --- | --- |
-| CI での Zig のセットアップ手段 | 第三者製の GitHub Action を使うか、ziglang.org からチェックサムを検証して取得するか。依存関係の判断であり `AGENTS.md` が実行前の確認を求める |
-| `.github/dependabot.yml` の担当者 | GitHub のユーザー名を推測で書くと、dependabot が担当者を割り当てられず失敗が dependabot のログにしか出ない |
+| CI での Zig のセットアップ手段 | `mlugg/setup-zig` を使う。コミットの SHA でピン留めし、`.github/dependabot.yml` の `github-actions` エコシステムの更新対象にする |
+| `.github/dependabot.yml` の担当者 | `suchi` |
+
+`mlugg/setup-zig` を選んだのは、キャッシュとチェックサム検証を内蔵しており、ubuntu と windows で同じ記述が使えるためである。受け入れたトレードオフは、サプライチェーン上の面が1つ増えることである。これを次の2つで抑える。
+
+- バージョン参照をタグではなくコミットの SHA にする。タグは付け替えられる。
+- `dependabot.yml` の `github-actions` エコシステムの対象に含め、`cooldown` の期間を経た更新として受け取る。
+
+自前で ziglang.org から取得する案も検討した。第三者 Action への依存がなくなる代わりに、ubuntu と windows で別のコマンドを書き、キャッシュも自前で持つことになる。検証する範囲が増えるほうが面としては大きいと判断した。
 
 ## 作業の順序
 
