@@ -37,3 +37,6 @@
 *.otf binary
 *.exe binary
 *.dll binary
+
+# WebAssembly build output should not be diffed or line-ending normalized.
+*.wasm binary
