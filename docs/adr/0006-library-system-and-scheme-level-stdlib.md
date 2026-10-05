@@ -19,13 +19,21 @@ Zig で書くのは次の族に限る。族の中の個々の手続きは「な�
 - ライブラリシステム(`define-library` `import` `export` `cond-expand` `include` `include-ci` `include-library-declarations`)
 - リーダとプリンタ。`#!fold-case` 指令とポートごとのケースフォールディング状態を含む
 - 基本操作のプリミティブ(`cons` `car` `cdr` `set-car!` など、算術の核、文字列とベクタの基本操作、ポートの入出力)
+- 等価述語(`eq?` `eqv?` `equal?`)。`equal?` は循環対策の訪問済み集合を要し、GC の計上に関わる
+- 文字の操作(`char?` `char->integer` `integer->char` と比較)。スカラ値の範囲の検査を伴う
+- シンボルの操作(`symbol?` `symbol->string` `string->symbol` `symbol=?`)。インターン表が Zig 側にある
+- バイトベクタの操作(`bytevector?` `make-bytevector` `bytevector-length` `bytevector-u8-ref` `bytevector-u8-set!` `bytevector-copy` など、`utf8->string` `string->utf8`)
+- 約束の操作(`make-promise` `promise?` と `force` の本体)。約束はレコードとは別のヒープの種類である
+- `syntax-error`。展開時に誤りを送出するため展開器の中にある(R7RS 4.3.3)
 - 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)
 - `parameterize`。`Parameter` を `Value` の独立した変種として動的点に直接結びつける表現を採ったため。R7RS 7.3 の参考実装は `syntax-rules` で書けているが、パラメータオブジェクトを Scheme のクロージャとして作り私的なマーカーを引数に渡す形を前提としており、本処理系の表現では使えない
 - レコード型の生成と操作のプリミティブ。`define-record-type` は Scheme 側の `syntax-rules` で定義するが、その展開先が必要とする
 - 条件オブジェクトの生成と `error` `error-object?` `error-object-message` `error-object-irritants` `read-error?` `file-error?`
 - `environment` と `interaction-environment`
-- ホスト環境との境界にある手続き。`exit` `emergency-exit`、`command-line`、`features`、`file-exists?` `delete-file` とファイルを開く手続き、`current-second` `current-jiffy` `jiffies-per-second`、`get-environment-variable` `get-environment-variables`。いずれも OS の機能を呼ぶため Scheme では書けない
+- ホスト環境との境界にある手続き。`exit` `emergency-exit`、`command-line`、`features`、`file-exists?` `delete-file` とファイルを開く手続き、`current-second` `current-jiffy` `jiffies-per-second`、`get-environment-variable` `get-environment-variables`。いずれも OS の機能を呼ぶため Scheme では書けない。`exit` は未処理の `dynamic-wind` の `after` を実行するため機械操作プリミティブである(R7RS 6.14)
 - Unicode のテーブルと数値の表示・解析
+
+族の一覧が閉じていることは、R7RS 付録A の `(scheme base)` のエクスポート一覧と突き合わせて検査する。段階3で `(scheme base)` を構成するときに、どの族にも属さない識別子が残っていないことを確認する。確認は `zig build report` の準拠マトリクスの生成に組み込む。
 
 これ以外は Scheme で書く。`map` と `for-each` も Scheme で書く。Scheme で書けば末尾呼び出しと継続の相互作用が自動的に正しくなるためである。
 

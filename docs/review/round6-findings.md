@@ -98,6 +98,32 @@
 - 破壊的操作12個、動的点の種別4つ、R7RS 3.5 の末尾呼び出し4箇所、付録Aのライブラリ16件、エクスポート2群の5+8=13、検出器ごとの件数43件の内訳が、独立の数え上げと完全一致
 - `std.unicode.utf8ValidateSlice` の挙動、`std.heap.wasm_allocator` の動作、panic ハンドラの形、`std.Io.Clock.now` のシグネチャ、`@offsetOf` がヘッダの宣言順に依存しないこと、`parseFloat` と `{d}`/`{e}` の受理集合が、いずれも実機で記述どおり
 
+## 処理の結果
+
+ユーザーの判断により、必須44件を設計ドキュメントで直し、推奨52件と任意11件のうち設計時に決めるべきものを直し、残りを [../design/open-questions.md](../design/open-questions.md) と各段階の作業項目に移した。
+
+### 設計の決定を変えたもの
+
+| 変更 | 記録先 |
+| --- | --- |
+| 意味の種類を5種から6種にし(補助構文を追加)、局所束縛を独立したオブジェクトに、グローバル環境をライブラリごとに独立させた | [ADR-0019](../adr/0019-denotations-and-identifier-resolution.md)。[ADR-0005](../adr/0005-hygienic-expander-by-renaming.md) は非推奨 |
+| `Value` のタグ集合から、利用者が手に持てないヒープオブジェクト(構文環境、動的点、ライブラリなど)を外した | [../design/runtime.md](../design/runtime.md) の値の表現 |
+| 予約領域の使用を確保の時期ではなく確保地点で決める形にした | 同 送出のための予約領域 |
+| GC の作業リストを上限の外に出した | 同 計上の対象 |
+| 走査関数の生成の分類を2値から3値にした(シンボル ID の記録を追加) | 同 走査関数の生成 |
+| 依存の向きの例外を1つから2つにした(`eval` と `define-syntax` の経路) | [../design/architecture.md](../design/architecture.md) の横断的な不変条件 |
+| WASM の状態コードに `-7`(初期化の失敗)と `-8`(不正な (ptr, len))を追加し、エクスポートに `sucheme_provide_eof` と `sucheme_exit_code` を追加した | [../design/platform-and-web.md](../design/platform-and-web.md) の状態コード |
+| ADR-0006 の族の一覧に7族を追加した(等価述語、文字、シンボル、バイトベクタ、約束、`syntax-error`、ホスト環境との境界) | [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md) |
+| `eval` と `exit` を段階2から段階5に移した | [../roadmap.md](../roadmap.md) |
+
+### 実装時に決めることとして記録したもの
+
+別名の印の表現と周回しないことの保証、ブラウザで単調時間と絶対時刻の両方を得る import の形、Windows の引数と環境変数の不対サロゲートの扱い、リンクと reparse point の追跡を禁止して開く手段。いずれも [../design/open-questions.md](../design/open-questions.md) に決める段階と根拠を書いた。
+
+### テストで検査する形に移したもの
+
+ADR-0006 の族の一覧が閉じていることの検査を `zig build report` の準拠マトリクスの生成に組み込んだ。走査関数の生成に、記録するシンボル ID の集合とヒープ外ペイロードの解放を検査するテストを加えた。衛生性の検証項目のうち段階2で入力を書けない2つを、段階3と段階5の完了条件に移した。
+
 ## 検出器の追加候補
 
 カタログ外の探索で見つかった類型。スキルの更新候補として記録する。

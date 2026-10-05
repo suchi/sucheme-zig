@@ -39,13 +39,13 @@
 - [x] ライセンスの決定と `LICENSE` の配置([ADR-0015](adr/0015-mit-license.md))
 - [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))
 - [ ] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
-- [ ] ファジングのワークフロー(定期実行と手動起動。全コミットの CI には入れない)
+- [ ] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
 - [ ] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
 - [ ] `.github/dependabot.yml` の担当者をテンプレート由来の値から修正
 
 完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。
 
-残していること: `build.zig` の step の名前と依存関係、CI のジョブ構成([design/open-questions.md](design/open-questions.md) の段階0の行)。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階0までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階1: 通しで動く最小の縦切り
 
@@ -60,12 +60,13 @@
 - [ ] 最外の継続への脱出による未処理例外の報告(継続と条件オブジェクトの最小形)
 - [ ] プリミティブ約30個。算術は固定長整数に限る
 - [ ] REPL(素朴な行読み取り、完結判定による継続行)
-- [ ] WASM のエクスポート13個と Web UI の最小版
+- [ ] リーダのファジングのワークフロー(定期実行と手動起動)
+- [ ] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版
 - [ ] GitHub Pages への配置と PR プレビュー
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 
-残していること: 字句アドレスの幅、予約領域のバイト数、GC起動の閾値、作業リストの予約サイズ、内部値の表現([design/open-questions.md](design/open-questions.md) の段階1の行)。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階1までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階2: コア言語の完成
 
@@ -81,12 +82,14 @@
 - [ ] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
 - [ ] ポートごとのケースフォールディング状態と `include-ci`。リーダの `#!fold-case` 指令は段階5だが、ポートの状態と `include-ci` はここで実装する。機構がないまま `include-ci` を提供すると `include` に退化し、畳み込みを期待したファイルが未束縛識別子のエラーになる
 - [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路)
-- [ ] 機械操作プリミティブ(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval`)
+- [ ] 機械操作プリミティブ9個(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter`)。`eval` と `exit` は環境の値とプロセス文脈が必要なので段階5
 - [ ] `define-record-type` の基盤(レコードとレコード型のプリミティブ)
 
-完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目がすべて通る。[design/runtime.md](design/runtime.md) の例外の検証項目がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
+完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目のうち、段階2で入力を書けるものがすべて通る。[design/runtime.md](design/runtime.md) のテストに含める事例がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
 
-残していること: `syntax-rules` の照合結果の表現、構文環境の束縛の探索方法、ライブラリ探索パスの設定手段([design/open-questions.md](design/open-questions.md) の段階2の行)。
+衛生性の検証項目のうち2つは段階2では入力を書けない。`cond` のリテラル `else` の項目は `cond` が段階3の `lib/sucheme/derived.scm` で定義されるため、循環データの `quote` の項目はデータラベルの記法が段階5だからである。この2つは、それぞれ段階3と段階5の完了条件に含める。
+
+残していること: [design/open-questions.md](design/open-questions.md) の「段階2までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階3: Schemeによる標準ライブラリ
 
@@ -97,9 +100,11 @@
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
 
-完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。数値塔を必要とする識別子(`/` など)は未実装として表れてよい。リリース v0.3.0 を出す。
+完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。リリース v0.3.0 を出す。
 
-残していること: なし(この段階で新たに保留するものはない)。
+この段階で未実装として表れてよいのは、後の段階の機能を必要とする識別子である。数値塔を必要とするもの(`/` `exact` `inexact` `sqrt` など)は段階4、ポートを引数に取るか返すもの(`read-char` `write-string` `open-input-string` など)は段階5である。どの族にも属さず後の段階にも割り当てられない識別子が残っていれば、それは [ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md) の族の一覧の漏れである。
+
+残していること: [design/open-questions.md](design/open-questions.md) の「段階3までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階4: 数値塔とUnicode
 
@@ -113,7 +118,7 @@
 
 `full-unicode` は、Unicode テーブルを入れた場合に真になる。WASM のサイズが許容できず文字レパートリを ASCII に制限する退避案を採る場合は偽のままになる。判断は実測で行い、採る場合はユーザーの承認を得て ADR を書く([design/open-questions.md](design/open-questions.md) の段階4の行)。したがって `full-unicode` を完了条件に含めない。
 
-残していること: Unicode テーブルの圧縮方式、複素数を段階4に含めるか、指数表記に切り替える範囲([design/open-questions.md](design/open-questions.md) の段階4の行)。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階4までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階5: ポートと入出力
 
@@ -121,21 +126,24 @@
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
+- [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 
-完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
+完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
 
-残していること: ポートのバッファサイズ、`equal?` の訪問済み集合の実装、文字列ポートの内部表現([design/open-questions.md](design/open-questions.md) の段階5の行)。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階5までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階6: 準拠検証
 
 - [ ] `(chibi test)` 互換の最小実装
 - [ ] `r7rs-tests.scm` の取り込みと実行
 - [ ] 準拠マトリクスの生成と公開、CI による同期検査
-- [ ] リーダのファジング(定期実行のワークフローで回す)
+- [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消
 - [ ] 不合格項目の issue 化と解消
 
-完了条件: 準拠マトリクスが公開され、`r7rs-tests.scm` の不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。
+完了条件: 準拠マトリクスが公開され、`r7rs-tests.scm` の不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
+
+残していること: [design/open-questions.md](design/open-questions.md) の「段階を定めずに保留しているもの」のうち、性能測定を根拠にする行。
 
 ### 段階7: REPLの編集機能
 
@@ -144,7 +152,7 @@
 
 完了条件: 要件どおりの編集操作ができる。リリース v1.1.0 を出す。
 
-残していること: 実装方式の判断([ADR-0014](adr/0014-repl-line-editor-boundary.md)、[design/open-questions.md](design/open-questions.md) の段階7の行)。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階7までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階8: Web UIの本格化
 
@@ -153,6 +161,8 @@
 - [ ] 編集の補助とサンプルの充実
 
 完了条件: ブラウザで R7RS のサンプルが一通り動く。リリース v1.2.0 を出す。
+
+残していること: なし。ここが最終段階である。
 
 ## 横断的に続ける作業
 

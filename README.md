@@ -16,6 +16,8 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 ## 対応プラットフォーム
 
+次の表は段階0と段階1で到達する目標です。現時点では `build.zig` も CI もまだ存在しないので、どの行もまだ真ではありません。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
+
 | プラットフォーム | ビルド | 自動テストによる動作保証 |
 | --- | --- | --- |
 | Linux (x86_64) | あり | あり |
@@ -30,6 +32,8 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行っていないため、ブラウザ固有の問題は検出されません。
 
 これらの環境で問題が出た場合は issue でお知らせください。
+
+リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は GitHub Pages に配置し、GitHub Release の成果物には含めません。
 
 ## 特徴として目指すもの
 
