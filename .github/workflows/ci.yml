@@ -1,17 +1,20 @@
-# 全コミットの検証。
+# Per-commit verification.
 #
-# 走らせる内容は AGENTS.md の検証コマンド表が正であり、「CIで実行」が
-# 「全コミット」で、かつ「使えるようになる段階」が現在の段階以下の行を実行する。
-# 段階が進んだら、その段階の計画書に従ってこのファイルに行を足す。
-# 条件分岐や「step があれば実行する」形にはしない。存在しない step を呼ぶと
-# 失敗し、失敗を無視する形にすると検証が無効になったことに気づけない。
+# AGENTS.md's verification command table is the source of truth for what runs
+# here: every row whose "CIで実行" is 全コミット and whose "使えるようになる段階"
+# is at or below the current stage. Each stage's plan adds the new rows.
 #
-# ファジング(`zig build test --fuzz`)はここに入れない。`--fuzz` は自律的に
-# 停止しないため全コミットで走らせるとタイムアウトする。段階1で
-# .github/workflows/fuzz.yml を作り、schedule と workflow_dispatch で動かす。
+# No conditionals and no "run the step if it exists": calling a step that does
+# not exist fails, and tolerating that failure would hide a verification that
+# silently stopped running.
 #
-# Zig のバージョンは .zigversion が正で、ここはその複製である。
-# `zig build check-docs` が両者の一致を検査する。
+# Fuzzing (`zig build test --fuzz`) is deliberately absent. `--fuzz` does not
+# terminate on its own, so running it per commit would time out every time.
+# Stage 1 adds .github/workflows/fuzz.yml driven by schedule and
+# workflow_dispatch.
+#
+# The Zig version below is a copy; .zigversion is the source of truth and
+# `zig build check-docs` verifies that the two agree.
 
 name: CI
 
@@ -23,7 +26,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # head_ref is set for pull_request events, where github.ref would be
+  # refs/pull/<n>/merge and would not collapse with the push event's
+  # refs/heads/<branch>. Normalising on the head branch keeps one push from
+  # occupying two groups.
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

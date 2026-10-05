@@ -127,7 +127,7 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 ## src の最小構成
 
-`src/sucheme.zig` は公開 API のモジュールのルートとする。段階0では処理系の名前と、ビルドオプションから読んだバージョンを返す関数を置く。
+`src/sucheme.zig` は公開 API のモジュールのルートとする。段階0では処理系の名前と、ビルドオプションから読んだバージョンを `pub const` として公開する。関数にしない。段階0の段階では値が定数であり、関数にすると呼び出し側に無意味な括弧を書かせる。
 
 `src/main.zig` は `sucheme` モジュールをインポートし、`--version` が与えられたら版数を、それ以外なら「段階1で REPL を実装する」という案内を標準出力に書いて終わる。Zig 0.17.0 のエントリポイントは `pub fn main(init: std.process.Init)` であり、標準出力は `std.Io` 経由で取る。書き込み後に `flush()` を呼ぶ([../design/zig-api-notes.md](../design/zig-api-notes.md))。
 
@@ -247,9 +247,13 @@ step を作らない理由は2つある。`AGENTS.md` の検証コマンド表�
 
 `zig fmt --check .` は両方のランナーで走らせる。CRLF の `.zig` ファイルを `zig fmt --check` が不合格にすることを実機で確認したので、Windows で改行が壊れた場合に検出できる。
 
+ワークフローのコメントは英語で書く。`AGENTS.md` の言語ルールがコード内コメントを英語と定めており、ワークフローもコードとして保守する。`build.zig` の step の説明も英語にする。`zig build --help` に表示される UI ラベルであり、同ルールが UI ラベルを英語と定めている。
+
 Zig のバージョンは `ci.yml` にリテラルで書く。`tools/check-docs` が `.zigversion` との一致を検査する。`.zigversion` を読む形にすると、check-docs が比較対象を見つけられず、[../design/zig-api-notes.md](../design/zig-api-notes.md) が定める「3箇所の一致」が2箇所に退化する。
 
 ワークフローに `permissions: contents: read` を置き、`concurrency` で同じブランチの先行実行を打ち切る。既定の権限より狭くするためと、連続プッシュで課金を無駄にしないためである。
+
+`concurrency` の group は head のリポジトリとブランチで正規化する。`github.ref` をそのまま使うと、`pull_request` では `refs/pull/<番号>/merge`、`push` では `refs/heads/<ブランチ>` になり、同じブランチへの1回のプッシュが2つの group で二重に走って打ち切りが効かない。
 
 ### Zig のセットアップ手段
 
