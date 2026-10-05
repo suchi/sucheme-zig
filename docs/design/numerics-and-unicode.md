@@ -59,7 +59,13 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 したがって有限の浮動小数点数には、どの基数でも往復可能な表現が必ず存在する。`(number->string 0.5 2)` は `"#i1/10"` を返す。基数2で `1/10` は 1/2 であり、`#i` は正確性接頭辞であって明示的な基数接頭辞ではないので、結果に基数接頭辞を含めないという制約にも反しない。
 
-ここで解析側の規則に注意が必要である。R7RS 7.1.1 の `<prefix R>` は `<radix R> <exactness>` か `<exactness> <radix R>` で、空の派生が許されるのは `<radix 10>` だけである。したがって `"#i1/10"` は `<num 2>` から文法どおりには導出できない。`string->number` の第2引数で基数を与えられた場合、`<radix R>` の省略を許して既定基数をその値として解析する。この解釈を明示しておかないと、`(string->number "#i1/10" 2)` が `#f` を返して往復条件が成り立たなくなる。
+ここで解析側の規則に注意が必要である。R7RS 7.1.1 の `<prefix R>` は `<radix R> <exactness>` か `<exactness> <radix R>` で、空の派生が許されるのは `<radix 10>` だけである。したがって `"#i1/10"` は `<num 2>` から文法どおりには導出できない。
+
+第2引数の扱いは R7RS 6.2.7 が規定している。
+
+> If supplied, radix is a default radix that will be overridden if an explicit radix prefix is present in string (e.g. "#o177"). If radix is not supplied, then the default radix is 10.
+
+既定基数であり、文字列に明示的な基数接頭辞があればそれが優先する。したがって2つを満たす。`<radix R>` が省略された場合は第2引数の値を基数として解析するので `(string->number "#i1/10" 2)` は 1/2 を不正確にした値になり、往復条件が成り立つ。明示的な接頭辞があれば第2引数を無視するので `(string->number "#o177" 2)` は 127 になる。第2引数を固定の基数として扱うと後者が `#f` になる。
 
 往復性のテストは基数10だけでなく2、8、16でも行う。基数10だけだとこの食い違いを検出できない。
 
@@ -100,33 +106,39 @@ Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを�
 | `+inf.0` `-inf.0` `+nan.0` | 拒否 | 無限大と NaN |
 | `1/2` | 拒否 | 有理数 |
 
-したがって、まず R7RS 7.1.1 の `<number>` の生成規則に従って字句を検査し、十進小数と確定した部分文字列だけを `parseFloat` に渡す。`<infnan>` は `+inf.0` `-inf.0` `+nan.0` `-nan.0` の4つだけである。基数接頭辞、正確性接頭辞、有理数、複素数は自前で処理する。
+したがって、まず R7RS 7.1.1 の `<number>` の生成規則に従って字句を検査する。`<infnan>` は `+inf.0` `-inf.0` `+nan.0` `-nan.0` の4つで、4つすべてを自前で処理する。基数接頭辞、正確性接頭辞、有理数、複素数も自前で処理する。
+
+十進小数を `parseFloat` に渡すのは、結果が不正確数になる場合に限る。`#e` が付いている場合は渡さない。`#e` 付きの十進小数は、仮数の桁列と指数から有理数を直接組み立てる。
+
+| 入力 | 誤った結果(常に `parseFloat` を通す場合) | 正しい結果 |
+| --- | --- | --- |
+| `#e0.1` | 3602879701896397/36028797018963968 | 1/10 |
+| `#e1e400` | `(exact +inf.0)` でエラーか `#f` | 10 の400乗の正確な整数 |
+
+`parseFloat` は `1e400` を拒否せず `inf` を返すことを実機で確認した。表の2行目は、`#e` を f64 経由で適用すると表現できる値が表現できなくなる例である。本処理系は多倍長整数を持つので 10 の400乗は正確に表せる。
+
+表現できない大きさの入力はエラーにせず `#f` を返す。R7RS 6.2.7 が次を要求している。
+
+> If string is not a syntactically valid notation for a number, or would result in a number that the implementation cannot represent, then string->number returns #f. An error is never signaled due to the content of string.
+
+したがって解析は、確保の前に結果の大きさを見積もり、上限を超える場合は確保せず `#f` を返す。`(string->number "#e1e999999999")` は 10 の9億9999万9999乗の限界値列を要するので `#f` になる。見積もりをせずに確保すると上限超過の Scheme のエラーになり、「エラーを送出しない」という要求に反する。分母0の `"1/0"` も同じく `#f` を返す。正規化の経路が分母0を拒否する前に、解析側で `#f` に変換する。
 
 この規則はリーダにも適用する。R7RS 6.2.7 が「The rules used by a particular implementation for string->number must also be applied to read and to the routine that reads programs」と要求している。適用しないと `(define inf 1)` が数値の束縛として誤って解釈される。
 
-テストに含める: 上の表の全入力について `string->number` の結果を確認する。`(define inf 1)` と `(define nan 2)` と `(define |1_000| 3)` が識別子の束縛として通ることを確認する。
+テストに含める: 上の表の全入力と `<infnan>` の4つすべてについて `string->number` の結果を確認する。`-nan.0` は `parseFloat` が `InvalidCharacter` で拒否することを実機で確認したので、自前の `<infnan>` 処理に4つ全部の分岐が必要である。`(define inf 1)` と `(define nan 2)` と `(define |1_000| 3)` が識別子の束縛として通ることを確認する。
 
 ### 検証の方針
 
 - 往復性: 無作為な `f64` の値について `(string->number (number->string x))` が `x` に一致することを確認する。Zig の擬似乱数で多数の値を生成する。
 - 階層の網羅: 5種の表現の全組合せについて四則演算と比較を確認する。
 - 境界: `i64` の最大値と最小値の前後、fixnum と bignum の境界、分母が1になる約分、`0/n`、ゼロ除算。
-- 負数の整数除算: `floor` 系と `truncate` 系を符号の4通りで確認する。
+- 負数の整数除算: `floor` 系と `truncate` 系を符号の4通りで確認する。被演算子が不正確整数の場合も確認する。R7RS 6.2.6 は `(truncate/ -5.0 -2)` が 2.0 と -1.0 を返す例を挙げている。
 
 ## パラメータオブジェクト
 
-R7RS 4.2.6 は `make-parameter` が返すものを「a newly allocated parameter object, which is a procedure that accepts zero arguments and returns the value associated with the parameter object」と規定している。つまりパラメータオブジェクトは手続きである。
+パラメータオブジェクトの決定は [runtime.md](runtime.md) のパラメータオブジェクトにある。ここには複製しない。数値に関わる点だけを述べる。
 
-したがって次を満たす。
-
-- `(procedure? p)` は `#t` を返す。
-- `(p)` は現在の値を返す。引数0個の呼び出しとして機械の適用経路を通る。
-- `eval_operator` と `eval_operand` が受け付ける被適用型に `parameter` を含める。`closure` `primitive` `continuation` `parameter` の4種が適用できる。
-- `(p 1)` のような引数つきの呼び出しはエラーとする。R7RS 4.2.6 は「The effect of passing arguments to a parameter object is implementation-dependent」としており、処理系が決めてよい範囲である。エラーにするのは、引数を渡す用途が本処理系に存在せず、誤りを早く知らせるほうがよいという判断である。
-  同節の例は `(radix 16)` の結果を未規定(`unspecified`)と注記しており、R7RS 1.3.2 は未規定の式がエラーを送出せずに何らかのオブジェクトに評価されることを要求している。例に従えばエラーにできない。規定本文が実装依存としているので矛盾ではないが、原文の中で一貫していない箇所である。本処理系は規定本文に従う。R7RS 7.3 の参考実装も引数つきの呼び出しに `(error "bad parameter syntax")` を置いている。
-  内部的な値の設定は `parameterize` が `Parameter` を直接操作して行い、Scheme から見える手続きとしての経路には出さない。
-
-`parameter` を `Value` の独立した変種にしているため、適用経路と `procedure?` の両方に明示的に加えないと `(p)` が「手続きでない」エラーになる。`parameterize` の中だけをテストすると見逃す。
+`(scheme base)` の `string->number` と `number->string` は基数を引数で受け取る手続きであり、パラメータオブジェクトを使わない。R7RS 4.2.6 の `radix` の例はパラメータの使い方の説明であって、本処理系の数値手続きの設計ではない。基数の既定値を動的に切り替える機構は提供しない。
 
 ## Unicode
 
@@ -138,16 +150,31 @@ R7RS 6.6 は文字属性の手続きについて次のように規定してい�
 
 したがって `full-unicode` を下げても属性手続きの要求は免除されない。Unicode 文字を扱える以上、その属性を正しく返す必要がある。
 
-必要なデータは次の4種である。
+必要なデータは次の5種である。
 
 | 用途 | 必要なデータ |
 | --- | --- |
 | `char-upcase` `char-downcase` | 単純大文字小文字写像 |
 | `char-foldcase` `char-ci=?` `string-ci=?` | 単純ケースフォールディング |
 | `string-upcase` `string-downcase` `string-foldcase` | 完全大文字小文字写像。文字数が変わりうる |
-| `char-alphabetic?` `char-numeric?` `char-whitespace?` `char-upper-case?` `char-lower-case?` `digit-value` | 文字属性 |
+| `char-alphabetic?` `char-numeric?` `char-whitespace?` `char-upper-case?` `char-lower-case?` | 文字属性の真偽値 |
+| `digit-value` | 十進数字の数値 |
+
+`digit-value` を属性の真偽値と分けるのは、返すのが真偽値ではなく 0 から 9 の整数だからである。R7RS 6.6 は「This procedure returns the numeric value (0 to 9) of its argument if it is a numeric digit (that is, if char-numeric? returns #t), or #f on any other character」と規定し、`(digit-value #\x0664)` が 4、`(digit-value #\x0AE6)` が 0、`(digit-value #\x0EA6)` が `#f` という例を挙げている。属性の真偽値だけでは U+0664 が十進数字であることは判定できても値 4 を得られない。符号位置からブロック先頭を引く近似では U+0EA6 の例を満たせない。UCD の十進数値のフィールドから別の表を作る。
 
 Zig の `std.unicode` は UTF-8 の符号化と復号のみを提供し、文字属性と大文字小文字写像は持たない。したがって自前のテーブルが必要である。
+
+### 文字の有効範囲
+
+文字として扱う符号位置は 0 から `#xD7FF` と `#xE000` から `#x10FFFF` とする。サロゲート符号位置は含めない。
+
+R7RS 6.6 は「Given a Unicode character, char->integer returns an exact integer between 0 and #xD7FF or between #xE000 and #x10FFFF which is equal to the Unicode scalar value of that character」と規定している。非 Unicode 文字については `#x10FFFF` より大きい整数を返すとしているが、本処理系は非 Unicode 文字を持たない。
+
+`integer->char` は引数がこの範囲外なら Scheme のエラーとする。リーダの `#\x` に続く16進と文字列の `\x` に続く16進も同じ検査を通す。R7RS 7.1.1 の `<hex scalar value>` の生成規則は桁数も値域も制限していないので、`#\xD800` と `"\xD800;"` と `#\x110000` はいずれも文法上正しい字句である。縦棒で囲んだ識別子の `<symbol element>` にも同じ逃げ道がある。
+
+検査を落とすと、UTF-8 に符号化できない符号位置が文字列に入る。文字列は UTF-8 バイト列として保持すると決めているので([ADR-0008](../adr/0008-string-representation.md))、符号化の時点で破綻する。実機で確認したところ Zig 0.17.0 の `std.unicode.utf8Encode` は `error{Utf8CannotEncodeSurrogateHalf, CodepointTooLarge}` を返す。この失敗を Zig の `error` として扱うと、利用者のプログラムの誤りを機械の外側の失敗として報告することになり、[architecture.md](architecture.md) のエラー表現の区別に反する。範囲の検査を先に置き、Scheme の条件オブジェクトで報告する。
+
+検査する箇所は `integer->char` と、リーダの16進エスケープ(文字リテラル、文字列、縦棒識別子)である。[platform-and-web.md](platform-and-web.md) のバイト列が文字列になる経路の表と合わせて、文字列の不変条件を保つ経路の全体になる。
 
 ### テーブルの生成方針
 
@@ -169,9 +196,10 @@ Unicode Character Database のファイルから多段テーブルを生成す�
 
 属性表のみを削って `full-unicode` を下げる退避案は採れない。前述のとおり R7RS 6.6 の要求は `full-unicode` の提供を条件としていないため、属性表を削ると `(char-alphabetic? #\x03B1)` が `#f` を返して非準拠になる。ギリシャ文字アルファは Unicode の Alphabetic 属性を持つので `#t` でなければならない。
 
-サイズが問題になった場合に採れる手段は次の2つに限る。
+サイズが問題になった場合に採れる手段は3つある。準拠の範囲が狭まる度合いの小さい順に並べる。
 
-- 表の圧縮を進める。多段テーブルの段数を増やす、属性をビット束にまとめる、連続した範囲を区間表で持つ。
-- 文字レパートリ自体を ASCII に制限する。この場合は非 ASCII 文字が Scheme の文字でなくなるため属性手続きの要求から外れるが、`#\x03BB` の読み取りと UTF-8 文字列の扱いにも波及する。準拠の範囲が大きく狭まるため、採る場合はユーザーの承認を得て ADR に記録する。
+- 表の圧縮を進める。多段テーブルの段数を増やす、属性をビット束にまとめる、連続した範囲を区間表で持つ。準拠の範囲は狭まらない。
+- `(scheme char)` を提供しない。大きなテーブルを要する手続きは R7RS 付録A がこのライブラリに切り出しており、付録Aは「The (scheme char) library provides the procedures for dealing with characters that involve potentially large tables when supporting all of Unicode」と述べている。提供しなければそれらの識別子は未束縛になり、`(scheme base)` に残る手続きはテーブルを要しない。仕様が用意している縮小の単位をそのまま使うので、準拠の範囲の狭まりが明示的になる。
+- 文字レパートリ自体を ASCII に制限する。この場合は非 ASCII 文字が Scheme の文字でなくなるため属性手続きの要求から外れるが、`#BB` の読み取りと UTF-8 文字列の扱いにも波及する。準拠の範囲が最も大きく狭まる。
 
-判断は段階4で計測値を見てから行う。
+第2と第3を採る場合はユーザーの承認を得て ADR に記録する。判断は段階4で計測値を見てから行う。
