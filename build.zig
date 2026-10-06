@@ -24,6 +24,13 @@ const pinned_zig_version = @embedFile(".zigversion");
 /// the first real entry arrives.
 const test_excluded = [_][]const u8{};
 
+/// The stage this repository has reached, as docs/roadmap.md numbers them.
+///
+/// Passed to tools/check-docs, which uses it to decide which rows of AGENTS.md's
+/// verification command table the CI workflow must already run. Raising it makes
+/// that check demand the new rows, so it fails until the workflow is updated.
+const current_stage = 0;
+
 /// The helper programs under tools/. Each is a single-file module.
 const tool_names = [_][]const u8{ "check-docs", "extract-r7rs-required" };
 
@@ -199,6 +206,8 @@ pub fn build(b: *std.Build) void {
         run_check_docs.addArg("--exclude");
         run_check_docs.addArg(path);
     }
+    run_check_docs.addArg("--stage");
+    run_check_docs.addArg(b.fmt("{d}", .{current_stage}));
     b.step("check-docs", "check the docs and build settings").dependOn(&run_check_docs.step);
 
     // Last in `build`, so nothing can rebind a module or reconfigure a test

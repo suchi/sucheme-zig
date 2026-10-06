@@ -58,8 +58,23 @@ pub fn main(init: std.process.Init) !void {
     var roots: std.ArrayList([]const u8) = .empty;
     var excluded: std.ArrayList([]const u8) = .empty;
     var bad_args = false;
+    var stage: ?usize = null;
     var i: usize = 1;
     while (i < argv.len) : (i += 1) {
+        if (std.mem.eql(u8, argv[i], "--stage")) {
+            if (i + 1 >= argv.len or std.mem.startsWith(u8, argv[i + 1], "--")) {
+                rep.fail("--stage needs a value", .{});
+                bad_args = true;
+                break;
+            }
+            i += 1;
+            stage = std.fmt.parseInt(usize, argv[i], 10) catch {
+                rep.fail("--stage {s} is not a number", .{argv[i]});
+                bad_args = true;
+                break;
+            };
+            continue;
+        }
         const which: ?*std.ArrayList([]const u8) =
             if (std.mem.eql(u8, argv[i], "--root")) &roots else if (std.mem.eql(u8, argv[i], "--exclude")) &excluded else null;
         if (which) |list| {
@@ -83,6 +98,10 @@ pub fn main(init: std.process.Init) !void {
         rep.fail("build.zig passed no --root", .{});
         bad_args = true;
     }
+    if (stage == null and !bad_args) {
+        rep.fail("build.zig passed no --stage", .{});
+        bad_args = true;
+    }
 
     // A malformed command line makes the later checks report consequences
     // rather than causes, so stop here.
@@ -93,6 +112,7 @@ pub fn main(init: std.process.Init) !void {
         const ignore = read(gpa, io, cwd, &rep, ".gitignore") orelse "";
 
         try checkZigVersionAgreement(gpa, io, cwd, &rep, ignore);
+        try checkCiRunsTheTable(gpa, io, cwd, &rep, ignore, stage.?);
         try checkVendoredHashes(gpa, io, cwd, &rep);
         try checkGeneratedHashes(gpa, io, cwd, &rep, ignore);
         try checkRecordedCounts(gpa, io, cwd, &rep, ignore);
@@ -214,6 +234,108 @@ fn startsBlock(trimmed: []const u8) bool {
         if (n >= 3) return true;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// The CI workflow runs the rows AGENTS.md marks for every commit.
+//
+// .github/workflows/ci.yml declares that table to be the source of truth for
+// what it runs. Nothing compared the two, so deleting one `- run:` line left
+// that verification silently stopped -- the state the workflow's own comment
+// says it is written to avoid.
+// ---------------------------------------------------------------------------
+
+/// Reports a command the table requires at this stage that no workflow runs.
+///
+/// Only the commands are compared, not where they run. A row that should run on
+/// another trigger, or in a job that is skipped, is beyond what this sees.
+fn checkCiRunsTheTable(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    ignore: []const u8,
+    stage: usize,
+) !void {
+    const raw_table = read(gpa, io, cwd, rep, "AGENTS.md") orelse return;
+    const table = try visibleMarkdown(gpa, raw_table);
+
+    var workflows: std.ArrayList([]const u8) = .empty;
+    try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yml", &workflows, .flat);
+    try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yaml", &workflows, .flat);
+
+    var run_lines: std.ArrayList([]const u8) = .empty;
+    for (workflows.items) |path| {
+        const body = read(gpa, io, cwd, rep, path) orelse continue;
+        var lines = std.mem.splitScalar(u8, body, '\n');
+        while (lines.next()) |raw| {
+            var line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+            line = std.mem.trim(u8, stripComment(line), &std.ascii.whitespace);
+            if (std.mem.startsWith(u8, line, "- "))
+                line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
+            if (!std.mem.startsWith(u8, line, "run:")) continue;
+            try run_lines.append(gpa, std.mem.trim(u8, line["run:".len..], &std.ascii.whitespace));
+        }
+    }
+
+    var rows: usize = 0;
+    var lines = std.mem.splitScalar(u8, table, '\n');
+    while (lines.next()) |raw| {
+        const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (row.len == 0 or row[0] != '|') continue;
+        var cells = std.mem.splitScalar(u8, row, '|');
+        _ = cells.next(); // the empty cell before the first bar
+        _ = cells.next() orelse continue; // purpose
+        const command_cell = cells.next() orelse continue;
+        const stage_cell = cells.next() orelse continue;
+        const ci_cell = cells.next() orelse continue;
+
+        const ci = std.mem.trim(u8, ci_cell, &std.ascii.whitespace);
+        if (!std.mem.eql(u8, ci, "全コミット")) continue;
+        const needed_at = std.fmt.parseInt(
+            usize,
+            std.mem.trim(u8, stage_cell, &std.ascii.whitespace),
+            10,
+        ) catch continue;
+        if (needed_at > stage) continue;
+
+        const command = backtickedSpan(command_cell) orelse continue;
+        rows += 1;
+        var ran = false;
+        for (run_lines.items) |line| {
+            if (runsCommand(line, command)) ran = true;
+        }
+        if (!ran) rep.fail(
+            "AGENTS.md requires `{s}` on every commit at stage {d}, and no workflow runs it",
+            .{ command, stage },
+        );
+    }
+    if (rows == 0) rep.fail(
+        "AGENTS.md has no command marked for every commit at stage {d}; the table was not read",
+        .{stage},
+    );
+}
+
+/// The first text between backticks, which is where the table puts the command.
+/// A cell may carry a note after it, as the type-check row does.
+fn backtickedSpan(cell: []const u8) ?[]const u8 {
+    const open = std.mem.indexOfScalar(u8, cell, '`') orelse return null;
+    const rest = cell[open + 1 ..];
+    const close = std.mem.indexOfScalar(u8, rest, '`') orelse return null;
+    return if (close == 0) null else rest[0..close];
+}
+
+/// Whether a workflow's `run:` value runs `command`.
+///
+/// Extra text is accepted only when it begins a flag, so `zig build test
+/// --summary all` runs `zig build test` but not `zig build`. Matching on a
+/// plain prefix would have let the test line stand in for the build row.
+fn runsCommand(line: []const u8, command: []const u8) bool {
+    if (std.mem.eql(u8, line, command)) return true;
+    if (!std.mem.startsWith(u8, line, command)) return false;
+    if (line.len == command.len or line[command.len] != ' ') return false;
+    const rest = std.mem.trimStart(u8, line[command.len..], " ");
+    return rest.len != 0 and rest[0] == '-';
 }
 
 /// How deeply a line is indented, in spaces.
@@ -451,7 +573,8 @@ fn checkVendoredHashes(
 ) !void {
     for (vendored) |v| {
         const body = read(gpa, io, cwd, rep, v.path) orelse continue;
-        const doc = read(gpa, io, cwd, rep, v.provenance) orelse continue;
+        const raw_doc = read(gpa, io, cwd, rep, v.provenance) orelse continue;
+        const doc = try visibleMarkdown(gpa, raw_doc);
 
         const recorded = switch (sha256InMarkdown(doc, v.label)) {
             .one => |h| h,
@@ -480,6 +603,54 @@ fn checkVendoredHashes(
                 "{s} is {s} but {s} records {s}",
                 .{ v.path, hex[0..16], v.provenance, recorded[0..@min(16, recorded.len)] },
             );
+    }
+}
+
+/// Blanks out what a reader of the rendered document does not see: HTML
+/// comments and fenced code blocks.
+///
+/// Every record this program reads out of a document is read from the result.
+/// A record is a thing a person is told to keep up to date, so one that only
+/// exists where nobody can see it is not a record: wrapping the identifier
+/// count table in `<!--` and `-->` left the rendered page without a table while
+/// every check stayed green. Blanking rather than deleting keeps line and byte
+/// offsets, so diagnostics still point at the right place.
+fn visibleMarkdown(gpa: std.mem.Allocator, doc: []const u8) ![]u8 {
+    const out = try gpa.dupe(u8, doc);
+    var fence: ?struct { ch: u8, len: usize } = null;
+    var i: usize = 0;
+    while (i < out.len) {
+        // A line at a time, so a fence is recognised where it opens.
+        const end = std.mem.indexOfScalarPos(u8, out, i, '\n') orelse out.len;
+        const line = out[i..end];
+        const trimmed = std.mem.trimStart(u8, line, " ");
+
+        var blank_line = fence != null;
+        if (fenceRun(trimmed)) |run| {
+            if (fence) |open| {
+                if (run.bare and run.ch == open.ch and run.len >= open.len) fence = null;
+            } else {
+                fence = .{ .ch = run.ch, .len = run.len };
+            }
+            blank_line = true;
+        }
+        if (blank_line) blankExceptNewlines(line);
+        i = end + 1;
+    }
+
+    // HTML comments span lines, so they are blanked over the whole document.
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, out, from, "<!--")) |open| {
+        const close = std.mem.indexOfPos(u8, out, open, "-->") orelse out.len - 3;
+        blankExceptNewlines(out[open..@min(close + 3, out.len)]);
+        from = @min(close + 3, out.len);
+    }
+    return out;
+}
+
+fn blankExceptNewlines(span: []u8) void {
+    for (span) |*c| {
+        if (c.* != '\n' and c.* != '\r') c.* = ' ';
     }
 }
 
@@ -577,7 +748,8 @@ fn checkGeneratedHashes(
         var hex: [digest.len * 2]u8 = undefined;
         _ = std.fmt.bufPrint(&hex, "{x}", .{&digest}) catch unreachable;
 
-        const doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
+        const raw_doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
+        const doc = try visibleMarkdown(gpa, raw_doc);
         switch (sha256InMarkdown(doc, g.label)) {
             .one => |recorded| if (!std.ascii.eqlIgnoreCase(&hex, recorded)) rep.fail(
                 "{s}/*{s} hashes to {s} but {s} records {s}",
@@ -648,7 +820,8 @@ fn checkRecordedCounts(
     ignore: []const u8,
 ) !void {
     for (generated) |g| {
-        const doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
+        const raw_doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
+        const doc = try visibleMarkdown(gpa, raw_doc);
         var files: std.ArrayList([]const u8) = .empty;
         try collectFiles(gpa, io, cwd, ignore, g.dir, g.extension, &files, .flat);
 
@@ -1595,6 +1768,44 @@ test "workflowZigVersions: a name holding version: does not shadow the real one"
     , &out);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
     try std.testing.expectEqualStrings("0.17.0", out.items[0].version.?);
+}
+
+test "visibleMarkdown: a record hidden from the reader is not a record" {
+    const gpa = std.testing.allocator;
+    const doc =
+        \\| 合計 | 557 |
+        \\<!-- | 合計 | 99 | -->
+        \\```
+        \\| 合計 | 42 |
+        \\```
+    ;
+    const seen = try visibleMarkdown(gpa, doc);
+    defer gpa.free(seen);
+    // The visible row survives; the commented and fenced ones do not.
+    switch (integerAfter(seen, "| 合計 |")) {
+        .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
+        else => return error.TestExpectedOne,
+    }
+    // Line structure is kept so diagnostics still line up.
+    try std.testing.expectEqual(doc.len, seen.len);
+}
+
+test "runsCommand: extra text is accepted only as a flag" {
+    try std.testing.expect(runsCommand("zig build", "zig build"));
+    try std.testing.expect(runsCommand("zig build test --summary all", "zig build test"));
+    // The test line must not stand in for the plain build row.
+    try std.testing.expect(!runsCommand("zig build test --summary all", "zig build"));
+    try std.testing.expect(!runsCommand("zig build check-docs", "zig build check"));
+    try std.testing.expect(runsCommand("zig fmt --check .", "zig fmt --check ."));
+}
+
+test "backtickedSpan: the command, not the note beside it" {
+    try std.testing.expectEqualStrings(
+        "zig build test",
+        backtickedSpan(" `zig build test`(コンパイルに含まれる) ").?,
+    );
+    try std.testing.expect(backtickedSpan(" no backticks ") == null);
+    try std.testing.expect(backtickedSpan(" `` ") == null);
 }
 
 test "startsBlock: what interrupts a paragraph is not a quote continuation" {
