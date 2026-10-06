@@ -120,7 +120,7 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 ### 対象モジュールとパスの対応
 
-`test` step の対象モジュールと、`check-docs` に渡す `--root` のパスは1つの値(`TestTarget`)にまとめ、同じループで両方に使う。さらに `TestTarget` が、パスをモジュールの `root_source_file` から読み出し、`build` の末尾で再照合する。テストが run 段として繋がれていることも configure 段で照合する。
+`test` step の対象モジュールと、`check-docs` に渡す `--root` のパスは1つの値(`TestTarget`)にまとめ、同じループで両方に使う。さらに `TestTarget` が、パスをモジュールの `root_source_file` から読み出し、`build` の末尾で再照合する。各 target の test バイナリが `test` step の run 段の producer として現れることと、テストフィルタもカスタムの test runner も設定されていないことも、同じ場所で照合する。
 
 照合を入れるのは、struct にまとめるだけでは対応の正しさを誰も見ないためである。パスを手書きする形(`.{ .path = "src/main.zig", .mod = sucheme }`)で片方だけ取り違えた値は、構文上は1つの値でありながら `src/main.zig` のテストを1件も実行しない状態を作る。実機でこの状態を再現し、`zig fmt --check` と `zig build` と `zig build test` と `zig build check-docs` のすべてが緑になることを確認した。
 
@@ -169,7 +169,10 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 | 自身の引数 | `build.zig` から `--root` が1つ以上渡る。`--root` と `--exclude` に値が付く。知らない引数が無い |
 | バージョンの3箇所の一致 | `.zigversion` の値が `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` のリテラルに一致する |
 | ベンダリングした入力のハッシュ | 出所の文書が記録した SHA-256 と内容が一致する |
-| 生成物のハッシュ | `tests/r7rs-required/*.txt` 全体の記録と一致する。記録はラベルで引き当て、1つに定まることも検査する。ディレクトリに `*.txt` 以外が無いことも見る |
+| 生成物のハッシュ | `tests/r7rs-required/*.txt` 全体の記録と一致する。記録はラベルで引き当て、1つに定まることも検査する。ディレクトリに `*.txt` 以外が無いことも見る。`.gitignore` が無視する名前は対象外とし、無視集合の正は `.gitignore` 1箇所である |
+| 生成物の識別子数 | 出所の文書の表の各行と合計が実物と一致する。表の行とファイルが双方向に対応し、行数とファイル数も一致する |
+| テストが走ること | 各 `--root` が `test` ブロックを1つ以上持つ。`build.zig` 側では、各 target の test バイナリが `test` step の run 段の producer として現れ、テストフィルタもカスタムの test runner も設定されていないことを configure 段で照合する |
+| 引用ブロックの終わり | Markdown の引用の直後に `>` の付かない非空行が来ていない。CommonMark の lazy continuation により、自前の散文が引用の一部として描画されるのを防ぐ |
 | `--root` と `--exclude` の実在 | 渡されたパスが実在するファイルを指す |
 | テストの到達性 | `src/` と `tools/` の全 `.zig` が、`test` step の対象モジュールのルートから `@import` の連鎖で到達できる。除外リストにあるものを除く |
 | `refAllDecls` の規約 | 他の `.zig` を `@import` するファイルが `refAllDecls(@This())` を呼ぶ `test` を持つ。呼び出しは修飾され、引数は `@This()` である |
@@ -240,7 +243,7 @@ https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html
 | 補助構文 | `(scheme base)` が `...` `=>` `_` `else` `unquote` `unquote-splicing` の6個を含むこと |
 | 識別子の形 | どの識別子にも空白と U+200B が含まれないこと |
 
-識別子の総数は標準出力に報告するだけとし、閾値の検査にはしない。
+識別子の総数は標準出力に報告するだけとし、閾値の検査にはしない。ライブラリごとには1件以上を要求する。0件は markup の変化を意味し、そのライブラリが準拠マトリクスの分母から消えるためである。同じ識別子が2度現れることも拒否する。
 
 当初は「`(scheme base)` の識別子数が他のライブラリの合計より多い」ことを検査する計画だったが、これは偽である。`(scheme r5rs)` が R5RS のほぼ全体を再エクスポートするため、他15ライブラリの合計は `(scheme base)` を上回る。この検査を入れると、正しく抽出したときに必ず失敗し、実装者が正しい結果を壊すまでパーサを「修正」することになる。
 
