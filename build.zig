@@ -40,9 +40,42 @@ const TestTarget = struct {
     mod: *std.Build.Module,
     /// Read out of `mod` when the target was recorded.
     path: []const u8,
+    /// The test binary built from `mod`, filled in when the test is added.
+    /// Kept so the final check can look at how it was configured.
+    unit: ?*std.Build.Step.Compile = null,
 
     fn of(b: *std.Build, mod: *std.Build.Module) TestTarget {
         return .{ .mod = mod, .path = sourcePath(b, mod) };
+    }
+
+    /// Fails the configure step when this target's tests would not all run.
+    ///
+    /// Counting run steps is not enough. `b.addTest(.{ ..., .filters = &.{"x"}
+    /// })` is a one-field edit that leaves the run step in place and selects no
+    /// test: `zig build test` then exits 0 with a deliberately failing test in
+    /// src/sucheme.zig, all four commands stay green, and `--summary all` stops
+    /// printing a test count, so even the log holds no trace. A custom
+    /// `test_runner` can decide the same thing. Neither is needed here, so both
+    /// are refused outright rather than inspected.
+    fn checkRunsEveryTest(self: TestTarget) void {
+        const unit = self.unit orelse {
+            std.debug.print("[sucheme] test target {s} has no test binary\n", .{self.path});
+            std.process.exit(1);
+        };
+        if (unit.filters.len != 0) {
+            std.debug.print(
+                "[sucheme] test target {s} has {d} test filter(s); a filter can select no test at all\n",
+                .{ self.path, unit.filters.len },
+            );
+            std.process.exit(1);
+        }
+        if (unit.test_runner != null) {
+            std.debug.print(
+                "[sucheme] test target {s} has a custom test runner; it decides what runs\n",
+                .{self.path},
+            );
+            std.process.exit(1);
+        }
     }
 
     /// Fails the configure step when the module no longer reports the path its
@@ -152,8 +185,9 @@ pub fn build(b: *std.Build) void {
 
     // One loop, one list: the test and the path check-docs is told about come
     // from the same module, so neither can be dropped or duplicated alone.
-    for (targets.items) |t| {
+    for (targets.items) |*t| {
         const unit = b.addTest(.{ .root_module = t.mod });
+        t.unit = unit;
         test_step.dependOn(&b.addRunArtifact(unit).step);
         run_check_docs.addArg("--root");
         run_check_docs.addArg(t.path);
@@ -164,13 +198,16 @@ pub fn build(b: *std.Build) void {
     }
     b.step("check-docs", "check the docs and build settings").dependOn(&run_check_docs.step);
 
-    // Last in `build`, so nothing can rebind a module after its test was added.
-    // See TestTarget.recheck.
-    for (targets.items) |t| t.recheck(b);
+    // Last in `build`, so nothing can rebind a module or reconfigure a test
+    // after it was added. See TestTarget.recheck and checkRunsEveryTest.
+    for (targets.items) |t| {
+        t.recheck(b);
+        t.checkRunsEveryTest();
+    }
     checkTestsAreRun(test_step, targets.items.len);
 }
 
-/// Fails the configure step unless the test step runs one test per target.
+/// Fails the configure step unless the test step has one run step per target.
 ///
 /// `TestTarget` guards which file each test is built from; it says nothing about
 /// the test being executed. Writing `test_step.dependOn(&unit.step)` instead of
@@ -179,6 +216,10 @@ pub fn build(b: *std.Build) void {
 /// deliberately failing test in src/sucheme.zig, and `zig build`, `zig build
 /// check-docs` and `zig fmt --check .` stay green too. check-docs cannot see it,
 /// because it is told the paths and not whether anything ran.
+///
+/// A run step per target is necessary and not sufficient: what that step then
+/// selects is `TestTarget.checkRunsEveryTest`'s business, and that every root
+/// has a test to select at all is check-docs' business.
 fn checkTestsAreRun(test_step: *std.Build.Step, want: usize) void {
     var runs: usize = 0;
     for (test_step.dependencies.items) |dep| {
