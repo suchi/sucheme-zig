@@ -6,6 +6,13 @@ No license is granted. This software is not open source and is not licensed
 for use, copying, modification, merging, publication, distribution,
 sublicensing, or sale by anyone other than the copyright holder.
 
+This notice applies to this and later versions of the work. It does not
+withdraw anything already granted. From 2026-10-04 to 2026-10-06 this
+repository was public and carried an MIT license, and the MIT license has no
+termination clause, so a copy obtained in that window keeps the terms it was
+given. See docs/adr/0022-unlicensed-proprietary.md for what is known about that
+window.
+
 The declaration for this project is UNLICENSED, in the sense of npm's `license`
 field: "if you do not wish to grant others the right to use a private or
 unpublished package under any terms". It is not the Unlicense
@@ -18,8 +25,12 @@ its own terms:
 - `tools/extract-r7rs-required/appendix-a.html` is a verbatim copy of Appendix A
   of R7RS, which permits copying in whole or in part. See
   `tools/extract-r7rs-required/SOURCE.md`.
-- Test suites vendored under `tests/vendor/` keep their original licenses. See
-  `tests/vendor/README.md` when that directory arrives in stage 6.
+- `tests/r7rs-required/*.txt` are extracted from that copy and hold R7RS
+  content, so they rest on the same permission. Each file names its source.
+- Test suites vendored under `tests/vendor/` keep their original licenses. The
+  directory arrives in stage 6; `tests/vendor/README.md` will record each
+  suite's origin and license, and will state that this notice does not cover
+  them.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
