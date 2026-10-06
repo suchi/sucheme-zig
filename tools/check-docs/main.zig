@@ -23,9 +23,13 @@
 
 const std = @import("std");
 
-/// Directories never walked when collecting files. `_work` is the scratch
-/// directory .gitignore reserves: notes left there must not fail the checks.
-const skipped_dirs = [_][]const u8{ ".git", ".zig-cache", "zig-out", "node_modules", "_work" };
+/// Directories never walked when collecting files, beyond what `.gitignore`
+/// already excludes. `.git` is git's own, and `node_modules` belongs to a
+/// package manager; neither is named in `.gitignore`, and walking either would
+/// check files this repository does not own. Everything else that should be
+/// skipped is skipped because `.gitignore` names it, so this list does not
+/// repeat `zig-out/`, `.zig-cache/` or `_work`.
+const skipped_dirs = [_][]const u8{ ".git", "node_modules" };
 
 /// Collects diagnostics on one writer so a redirect keeps all of them.
 const Reporter = struct {
@@ -83,12 +87,17 @@ pub fn main(init: std.process.Init) !void {
     // A malformed command line makes the later checks report consequences
     // rather than causes, so stop here.
     if (!bad_args) {
-        try checkZigVersionAgreement(gpa, io, cwd, &rep);
+        // Read once, here, so a missing .gitignore is one diagnostic rather
+        // than one per check. An empty set means every entry is considered,
+        // which is the strict direction.
+        const ignore = read(gpa, io, cwd, &rep, ".gitignore") orelse "";
+
+        try checkZigVersionAgreement(gpa, io, cwd, &rep, ignore);
         try checkVendoredHashes(gpa, io, cwd, &rep);
-        try checkGeneratedHashes(gpa, io, cwd, &rep);
-        try checkRecordedCounts(gpa, io, cwd, &rep);
-        try checkSources(gpa, io, cwd, &rep, roots.items, excluded.items);
-        try checkMarkdown(gpa, io, cwd, &rep);
+        try checkGeneratedHashes(gpa, io, cwd, &rep, ignore);
+        try checkRecordedCounts(gpa, io, cwd, &rep, ignore);
+        try checkSources(gpa, io, cwd, &rep, ignore, roots.items, excluded.items);
+        try checkMarkdown(gpa, io, cwd, &rep, ignore);
     }
 
     if (rep.count == 0) {
@@ -122,6 +131,7 @@ fn checkZigVersionAgreement(
     io: std.Io,
     cwd: std.Io.Dir,
     rep: *Reporter,
+    ignore: []const u8,
 ) !void {
     // read reports the failure itself; adding a second message here turned one
     // cause into two problems.
@@ -148,8 +158,8 @@ fn checkZigVersionAgreement(
     // Only workflows at the top of .github/workflows run; a file in a
     // subdirectory is inert, so checking its version would fail on nothing.
     var workflows: std.ArrayList([]const u8) = .empty;
-    try collectFiles(gpa, io, cwd, ".github/workflows", ".yml", &workflows, .flat);
-    try collectFiles(gpa, io, cwd, ".github/workflows", ".yaml", &workflows, .flat);
+    try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yml", &workflows, .flat);
+    try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yaml", &workflows, .flat);
     if (workflows.items.len == 0) {
         rep.fail(".github/workflows has no workflow file; the CI copy of the Zig version cannot be checked", .{});
         return;
@@ -187,6 +197,17 @@ fn checkZigVersionAgreement(
     }
     if (setups == 0)
         rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
+}
+
+/// How deeply a line is indented, in spaces.
+///
+/// YAML forbids a tab in indentation, so anything but a space ends the count
+/// and a tab-indented line reads as column zero. That closes a block rather
+/// than extending one, which is the safe direction here.
+fn indentOf(raw: []const u8) usize {
+    var n: usize = 0;
+    while (n < raw.len and raw[n] == ' ') n += 1;
+    return n;
 }
 
 /// Removes a trailing YAML comment. A `#` opens a comment at the start of the
@@ -244,9 +265,12 @@ fn workflowZigVersions(
     out: *std.ArrayList([]const u8),
 ) !usize {
     var steps: usize = 0;
-    var in_setup = false;
+    // The indentation of the item holding the step whose version is being
+    // looked for, or null when outside one.
+    var step_indent: ?usize = null;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
+        const indent = indentOf(raw);
         var line = std.mem.trim(u8, raw, &std.ascii.whitespace);
         line = std.mem.trim(u8, stripComment(line), &std.ascii.whitespace);
         if (line.len == 0) continue;
@@ -254,7 +278,16 @@ fn workflowZigVersions(
         const is_item = std.mem.startsWith(u8, line, "- ");
         const body_of_item = if (is_item) std.mem.trim(u8, line[2..], &std.ascii.whitespace) else line;
 
-        if (is_item) in_setup = false;
+        // A line indented no deeper than the step's own item is outside it.
+        // Without this the search ran to the next `- ` item or `uses:` line
+        // whatever came between, so a `version:` belonging to another job was
+        // read as the step's: a `strategy.matrix` dimension named `version`
+        // supplied 0.17.0 while the step installed 0.18.1, and every check
+        // passed. The same leak failed a correct workflow from the other
+        // direction, with two versions found for one step.
+        if (step_indent) |si| if (indent <= si) {
+            step_indent = null;
+        };
         // A step counts whenever the line carries a setup-zig reference,
         // whatever YAML spelling holds it. Requiring the line to begin with
         // `uses:` missed an item-level flow mapping and a quoted key, either of
@@ -277,14 +310,15 @@ fn workflowZigVersions(
         const refs = countOccurrences(line, "setup-zig@");
         if (refs != 0) {
             steps += refs;
-            in_setup = true;
+            step_indent = indent;
             continue;
         }
+        // Another `uses:` is another step, even nested deeper than this one.
         if (std.mem.startsWith(u8, body_of_item, "uses:")) {
-            in_setup = false;
+            step_indent = null;
             continue;
         }
-        if (!in_setup) continue;
+        if (step_indent == null) continue;
         if (std.mem.startsWith(u8, body_of_item, "version:")) {
             const scalar = std.mem.trim(u8, body_of_item["version:".len..], &std.ascii.whitespace);
             const value = std.mem.trim(u8, scalar, "\"'");
@@ -463,11 +497,12 @@ fn checkGeneratedHashes(
     io: std.Io,
     cwd: std.Io.Dir,
     rep: *Reporter,
+    ignore: []const u8,
 ) !void {
     for (generated) |g| {
-        try checkNothingElseInDir(gpa, io, cwd, rep, g.dir, g.extension);
+        try checkNothingElseInDir(io, cwd, rep, ignore, g.dir, g.extension);
         var files: std.ArrayList([]const u8) = .empty;
-        try collectFiles(gpa, io, cwd, g.dir, g.extension, &files, .flat);
+        try collectFiles(gpa, io, cwd, ignore, g.dir, g.extension, &files, .flat);
         if (files.items.len == 0) {
             rep.fail("{s} holds no {s} file, so the generated lists are unchecked", .{ g.dir, g.extension });
             continue;
@@ -563,11 +598,12 @@ fn checkRecordedCounts(
     io: std.Io,
     cwd: std.Io.Dir,
     rep: *Reporter,
+    ignore: []const u8,
 ) !void {
     for (generated) |g| {
         const doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
         var files: std.ArrayList([]const u8) = .empty;
-        try collectFiles(gpa, io, cwd, g.dir, g.extension, &files, .flat);
+        try collectFiles(gpa, io, cwd, ignore, g.dir, g.extension, &files, .flat);
 
         var total: usize = 0;
         for (files.items) |path| {
@@ -592,6 +628,37 @@ fn checkRecordedCounts(
                 ),
             }
         }
+
+        // The other direction. Walking the files alone left a recorded row
+        // with no file behind it unexamined: deleting `lazy.txt`, pasting the
+        // hash the diagnostic reports and correcting the total passed every
+        // check, with the row still in the table, the prose still saying 16
+        // files, and 15 on disk. The stage 6 matrix takes this directory as its
+        // denominator, so that library's identifiers leave the denominator
+        // instead of appearing as unimplemented.
+        var rows: usize = 0;
+        var lines = std.mem.splitScalar(u8, doc, '\n');
+        while (lines.next()) |raw| {
+            const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
+            if (row.len == 0 or row[0] != '|') continue;
+            var from: usize = 0;
+            while (std.mem.indexOfPos(u8, row, from, "`(scheme ")) |at| {
+                const name_start = at + "`(scheme ".len;
+                const close = std.mem.indexOfPos(u8, row, name_start, ")`") orelse break;
+                from = close + 2;
+                const name = row[name_start..close];
+                rows += 1;
+                const want = try std.fmt.allocPrint(gpa, "{s}/{s}{s}", .{ g.dir, name, g.extension });
+                if (!pathIn(files.items, want)) rep.fail(
+                    "{s} records `(scheme {s})` but {s} does not exist",
+                    .{ g.provenance, name, want },
+                );
+            }
+        }
+        if (rows != files.items.len) rep.fail(
+            "{s} records {d} librar(ies) but {s} holds {d} *{s} file(s)",
+            .{ g.provenance, rows, g.dir, files.items.len, g.extension },
+        );
 
         switch (integerAfter(doc, g.total_label)) {
             .one => |recorded| if (recorded != total) rep.fail(
@@ -646,13 +713,14 @@ fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
 
         var i = at + label.len;
         while (i < line.len and !std.ascii.isDigit(line[i])) : (i += 1) {}
-        var value: usize = 0;
-        var digits: usize = 0;
-        while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {
-            value = value * 10 + (line[i] - '0');
-            digits += 1;
-        }
-        if (digits == 0) continue;
+        const digits_at = i;
+        while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {}
+        if (i == digits_at) continue;
+        // Parsed rather than accumulated by hand. Accumulating overflowed on a
+        // long run of digits and panicked, which lost every diagnostic gathered
+        // so far -- the failure mode this program's own header warns about. A
+        // number too large to be a count is not a count.
+        const value = std.fmt.parseInt(usize, line[digits_at..i], 10) catch continue;
 
         if (found) |first| {
             if (first != value) return .ambiguous;
@@ -669,26 +737,30 @@ fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
 /// the directory, so the directory holds nothing else.
 ///
 /// Nothing else that is part of the repository, that is. An entry `.gitignore`
-/// ignores is not tracked and so is not part of what the record covers; the
-/// alternative was a correct repository going red because macOS wrote a
-/// `.DS_Store` or an editor left a `base.txt~`. The ignore set has one home,
-/// `.gitignore`, and is read from there rather than repeated here.
+/// ignores is left out, because a correct repository should not go red when
+/// macOS writes a `.DS_Store` or an editor leaves a `base.txt~`.
+///
+/// The ignore test comes before the extension test, not after. Applying it only
+/// to entries whose extension did not match left `._base.txt` -- what macOS
+/// writes beside a tracked file, and what `.gitignore` names -- passing as a
+/// generated list: it entered the hash and the identifier counts, and a correct
+/// repository reported three problems. The same order is why `collectFiles`
+/// takes the ignore set too, so the file this check accepts and the files the
+/// hash covers are the same set.
 fn checkNothingElseInDir(
-    gpa: std.mem.Allocator,
     io: std.Io,
     cwd: std.Io.Dir,
     rep: *Reporter,
+    ignore: []const u8,
     path: []const u8,
     extension: []const u8,
 ) !void {
-    const ignore = read(gpa, io, cwd, rep, ".gitignore") orelse "";
-
     var dir = cwd.openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, extension)) continue;
         if (isIgnored(ignore, entry.name, entry.kind == .directory)) continue;
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, extension)) continue;
         rep.fail(
             "{s}/{s} is not a generated *{s} file, so the recorded hash does not cover it",
             .{ path, entry.name, extension },
@@ -704,6 +776,10 @@ fn checkNothingElseInDir(
 /// the check as strict as it was. Erring that way means a new pattern shape
 /// shows up as a check failure to be looked at, not as a silent hole in what
 /// the recorded hash covers.
+///
+/// A pattern that would match every name is one of the shapes left out. A bare
+/// `*` turned every check that consults this function off at once, which is a
+/// larger hole than any single name could open.
 ///
 /// Negations are among the shapes left out: a `!` line is skipped, which keeps
 /// a pattern it re-includes ignored. The only negation here re-includes
@@ -728,9 +804,11 @@ fn isIgnored(gitignore: []const u8, name: []const u8, is_dir: bool) bool {
         if (stars == 0) {
             if (std.mem.eql(u8, pattern, name)) return true;
         } else if (stars == 1 and pattern[0] == '*') {
-            if (std.mem.endsWith(u8, name, pattern[1..])) return true;
+            const suffix = pattern[1..];
+            if (suffix.len != 0 and std.mem.endsWith(u8, name, suffix)) return true;
         } else if (stars == 1 and pattern[pattern.len - 1] == '*') {
-            if (std.mem.startsWith(u8, name, pattern[0 .. pattern.len - 1])) return true;
+            const prefix = pattern[0 .. pattern.len - 1];
+            if (prefix.len != 0 and std.mem.startsWith(u8, name, prefix)) return true;
         }
     }
     return false;
@@ -741,6 +819,7 @@ fn checkSources(
     io: std.Io,
     cwd: std.Io.Dir,
     rep: *Reporter,
+    ignore: []const u8,
     roots: []const []const u8,
     excluded: []const []const u8,
 ) !void {
@@ -748,7 +827,7 @@ fn checkSources(
     // tools/ holds most of stage 0's logic and is verification code itself, so
     // it is subject to the same reachability and refAllDecls rules as src/.
     for ([_][]const u8{ "src", "tools" }) |root|
-        try collectFiles(gpa, io, cwd, root, ".zig", &files, .recursive);
+        try collectFiles(gpa, io, cwd, ignore, root, ".zig", &files, .recursive);
 
     var reachable: std.StringHashMapUnmanaged(void) = .empty;
     for (roots) |r| {
@@ -941,11 +1020,17 @@ fn hasRefAllDeclsTest(source: [:0]const u8) bool {
 // deprecation template whose links are placeholders by design.
 // ---------------------------------------------------------------------------
 
-fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Reporter) !void {
+fn checkMarkdown(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    ignore: []const u8,
+) !void {
     // Walk the whole repository: a fixed directory list left .agents/,
     // .claude/ and .github/ unchecked, which is a quarter of the Markdown.
     var files: std.ArrayList([]const u8) = .empty;
-    try collectFiles(gpa, io, cwd, ".", ".md", &files, .recursive);
+    try collectFiles(gpa, io, cwd, ignore, ".", ".md", &files, .recursive);
 
     for (files.items) |path| {
         const body = read(gpa, io, cwd, rep, path) orelse continue;
@@ -956,6 +1041,7 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
         // the opener, so ``` inside a ```` block does not end it.
         var fence: ?struct { ch: u8, len: usize } = null;
         var fence_line: usize = 0;
+        var quoted_line: ?usize = null;
         var lines = std.mem.splitScalar(u8, body, '\n');
         var lineno: usize = 0;
         while (lines.next()) |raw| {
@@ -983,6 +1069,22 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
                 }
             }
             if (fence != null) continue;
+
+            // CommonMark lets a block quote continue onto a line that drops the
+            // `>`, so prose written straight after a quotation joins it. Every
+            // reader of the rendered page then sees that prose as part of what
+            // was quoted. One sentence of this repository's own had been
+            // absorbed into an R7RS quotation that way, which is the failure
+            // this catches: a quotation is checked word for word against the
+            // specification, and nothing checked where it ends.
+            if (trimmed.len != 0 and trimmed[0] == '>') {
+                quoted_line = lineno;
+            } else if (trimmed.len != 0 and quoted_line == lineno - 1) {
+                rep.fail(
+                    "{s}:{d}: this line continues the block quote above it; leave a blank line, or prefix it with `>` to quote it",
+                    .{ path, lineno },
+                );
+            }
 
             // Up to three spaces of indentation are allowed before the `#`
             // run, so the heading scan uses the same trimmed line as the fence
@@ -1150,10 +1252,20 @@ const Walk = enum { flat, recursive };
 
 /// Collects paths under `root` whose name ends with `suffix`. Paths are
 /// repository-relative and use `/` on every platform.
+/// Collects the files under `root` whose name ends in `suffix`.
+///
+/// Entries `.gitignore` names are left out, files and directories alike. They
+/// are not tracked, so they are not what the checks are about: a scratch note
+/// under an ignored directory was failing the Markdown checks, and an
+/// AppleDouble file macOS writes beside a tracked one was entering the
+/// generated lists' hash. Reading the ignore set here keeps the set of files
+/// every check sees the same, and keeps `.gitignore` the one place that
+/// declares it.
 fn collectFiles(
     gpa: std.mem.Allocator,
     io: std.Io,
     cwd: std.Io.Dir,
+    ignore: []const u8,
     root: []const u8,
     suffix: []const u8,
     out: *std.ArrayList([]const u8),
@@ -1167,6 +1279,7 @@ fn collectFiles(
             try gpa.dupe(u8, entry.name)
         else
             try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
+        if (isIgnored(ignore, entry.name, entry.kind == .directory)) continue;
         switch (entry.kind) {
             .file => if (std.mem.endsWith(u8, entry.name, suffix)) try out.append(gpa, path),
             .directory => {
@@ -1175,7 +1288,7 @@ fn collectFiles(
                 for (skipped_dirs) |s| if (std.mem.eql(u8, entry.name, s)) {
                     skip = true;
                 };
-                if (!skip) try collectFiles(gpa, io, cwd, path, suffix, out, walk);
+                if (!skip) try collectFiles(gpa, io, cwd, ignore, path, suffix, out, walk);
             },
             else => {},
         }
@@ -1360,6 +1473,55 @@ test "workflowZigVersions: a comment on the uses line does not supply the versio
     try std.testing.expectEqual(@as(usize, 1), steps);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
     try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+}
+
+test "workflowZigVersions: a version outside the step is not the step's" {
+    // The defect this pins: the search ran past the end of the job, so a
+    // `strategy.matrix` dimension named `version` in a later job was read as
+    // this step's version while the step installed another.
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\jobs:
+        \\  fuzz:
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with: { version: 0.18.1 }
+        \\  matrix-job:
+        \\    strategy:
+        \\      matrix:
+        \\        version: 0.17.0
+        \\    steps:
+        \\      - run: echo hi
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "workflowZigVersions: a step at the end of a job does not reach the next" {
+    // The same leak the other way: a correct step found two versions and the
+    // caller rejected a workflow that was right.
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\jobs:
+        \\  a:
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with:
+        \\          version: 0.17.0
+        \\  b:
+        \\    strategy:
+        \\      matrix:
+        \\        version: 0.18.1
+        \\    steps:
+        \\      - run: echo hi
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqualStrings("0.17.0", out.items[0]);
 }
 
 test "workflowZigVersions: a flow mapping supplies no version at all" {
