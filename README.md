@@ -33,7 +33,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 これらの環境で問題が出た場合は issue でお知らせください。
 
-リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は GitHub Pages に配置し、GitHub Release の成果物には含めません。
+リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置せず、CI の成果物として zip で添付します。ローカルで開いて試す形になります。配置は段階8で行います([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。
 
 ## 特徴として目指すもの
 

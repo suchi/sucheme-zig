@@ -1,7 +1,9 @@
 # ADR-0012: リポジトリを public にする
 
-- ステータス: 採用
+- ステータス: ~~採用~~ 非推奨 → [ADR-0020: repository-visibility-private](0020-repository-visibility-private.md) に置き換え
 - 日付: 2026-10-04
+
+> 非推奨理由: 段階0で public にしたが、ユーザーの判断で private に戻した。公開の是非はリポジトリオーナーの判断である。
 
 ## 背景
 

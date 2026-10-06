@@ -325,9 +325,9 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 
 public リポジトリ([ADR-0012](../adr/0012-repository-visibility-public.md))の入口が自分の CI の存在を否定する状態を作らない。
 
-## リポジトリの public 化と dependabot
+## リポジトリの可視性と dependabot
 
-リポジトリの public 化は [ADR-0012](../adr/0012-repository-visibility-public.md) の決定である。GitHub の設定変更なのでコードの変更を伴わない。実行はユーザーに依頼する。エージェントがリポジトリの可視性を変更しない。
+リポジトリの可視性は GitHub の設定であり、コードの変更を伴わない。エージェントが可視性を変更しない。実行はユーザーに依頼する。段階0の作業中に public にしたのち private に戻し、現行の決定は [ADR-0020](../adr/0020-repository-visibility-private.md) が持つ。
 
 `.github/dependabot.yml` の担当者をテンプレート由来の値から修正する。修正後の値はユーザーに確認する(後述)。
 
@@ -404,7 +404,7 @@ public リポジトリ([ADR-0012](../adr/0012-repository-visibility-public.md))�
 | [../design/r7rs-coverage.md](../design/r7rs-coverage.md) | 必須識別子の一覧の扱い |
 | [ADR-0001](../adr/0001-zig-version-pinning.md) | Zig のバージョン固定と API ノートの運用 |
 | [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) | CI のジョブ構成、ランナー、WASM の往復テスト、ファジングの扱い |
-| [ADR-0012](../adr/0012-repository-visibility-public.md) | リポジトリの public 化 |
+| [ADR-0020](../adr/0020-repository-visibility-private.md) | リポジトリの可視性 |
 | [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md) | テストの3層構成、ベンダリングの規律 |
 | [ADR-0015](../adr/0015-mit-license.md) | ライセンス |
 | [ADR-0018](../adr/0018-incremental-vertical-slices.md) | 実装時に決めることの記録先 |
@@ -417,7 +417,7 @@ public リポジトリ([ADR-0012](../adr/0012-repository-visibility-public.md))�
 - WASM のビルド step と `web/`、および `test-wasm` の中身。段階1で作る。
 - `lib/` の埋め込みの仕組み。段階2のライブラリシステムとともに作る。
 - 準拠マトリクスの生成と同期検査(`report` と `check-report`)。段階1で作る。
-- リリースと Pages のワークフロー。段階1の Pages 配置と、段階1完了時の v0.1.0 のリリースで作る。
+- リリースのワークフロー。段階1完了時の v0.1.0 のリリースで作る。配置のワークフローは作らない([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。
 - ファジングのワークフロー。段階1で作る。
 
 ## 担当モデル

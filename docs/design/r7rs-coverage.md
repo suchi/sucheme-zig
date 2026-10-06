@@ -90,7 +90,7 @@ flowchart LR
     vendor["r7rs-tests.scm の結果"] --> report
     report["zig build report"] --> status["docs/status/conformance.md"]
     report --> summary["CI のジョブ要約"]
-    status --> pages["GitHub Pages"]
+    status --> publish["リポジトリ内の docs/status/"]
 ```
 
 `docs/status/conformance.md` は生成物である。CI は生成し直した結果が現在のファイルと一致するかを検査し、一致しない場合は失敗させる。これにより、進捗ドキュメントがコードから乖離しない。CI からの自動コミットは行わない(ブランチ保護と衝突し、レビューを経ない変更が入るため)。
