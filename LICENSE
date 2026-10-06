@@ -31,6 +31,8 @@ its own terms:
   directory arrives in stage 6; `tests/vendor/README.md` will record each
   suite's origin and license, and will state that this notice does not cover
   them.
+- Verbatim quotations from R7RS and other specifications appear throughout
+  `docs/`. They are quotations, not work this notice covers.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

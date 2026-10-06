@@ -35,7 +35,7 @@
 | `tools/extract-r7rs-required/SOURCE.md` | 取得元 URL、取得日、複製の許諾の根拠 | 新規 |
 | `tests/r7rs-required/*.txt` | 付録Aの識別子一覧。16ファイル | 新規 |
 | `.github/workflows/ci.yml` | push と PR での検証 | 新規 |
-| `.gitignore` | `zig-out/` と `.zig-cache/` を追記 | 変更 |
+| `.gitignore` | Zig のビルド成果物(`zig-out/` と `.zig-cache/`)と、OS とエディタが追跡ファイルの隣に作るものを追記する。後者は `check-docs` が無視集合の正として読むので仕様の一部である | 変更 |
 | `.gitattributes` | `*.wasm binary` を追記 | 変更 |
 | `.editorconfig` | Scheme のファイル(`.scm` `.sld` `.ss`)の2スペース設定を追記 | 変更 |
 | `.github/dependabot.yml` | 担当者の修正と `TODO(project):` の解消 | 変更 |
@@ -168,9 +168,10 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 | --- | --- |
 | 自身の引数 | `build.zig` から `--root` が1つ以上渡る。`--root` と `--exclude` に値が付く。知らない引数が無い |
 | バージョンの3箇所の一致 | `.zigversion` の値が `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` のリテラルに一致する |
+| CI が入れる Zig の読み取り | ワークフローのファイルが1つ以上ある。Zig を入れる段が1つ以上ある。各段が自分の `with:` の直下に `version:` を1つだけ持ち、その値が `.zigversion` と一致する |
 | ベンダリングした入力のハッシュ | 出所の文書が記録した SHA-256 と内容が一致する |
 | 生成物のハッシュ | `tests/r7rs-required/*.txt` 全体の記録と一致する。記録はラベルで引き当て、1つに定まることも検査する。ディレクトリに `*.txt` 以外が無いことも見る。`.gitignore` が無視する名前は対象外とし、無視集合の正は `.gitignore` 1箇所である |
-| 生成物の識別子数 | 出所の文書の表の各行と合計が実物と一致する。表の行とファイルが双方向に対応し、行数とファイル数も一致する |
+| 生成物の識別子数 | 出所の文書の表の各行と合計が実物と一致する。表の行とファイルが双方向に対応し、記録されたライブラリ数とファイル数も一致する |
 | テストが走ること | 各 `--root` が `test` ブロックを1つ以上持つ。`build.zig` 側では、各 target の test バイナリが `test` step の run 段の producer として現れ、テストフィルタもカスタムの test runner も設定されていないことを configure 段で照合する |
 | 引用ブロックの終わり | Markdown の引用の直後に `>` の付かない非空行が来ていない。CommonMark の lazy continuation により、自前の散文が引用の一部として描画されるのを防ぐ |
 | `--root` と `--exclude` の実在 | 渡されたパスが実在するファイルを指す |
