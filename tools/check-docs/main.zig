@@ -86,6 +86,7 @@ pub fn main(init: std.process.Init) !void {
         try checkZigVersionAgreement(gpa, io, cwd, &rep);
         try checkVendoredHashes(gpa, io, cwd, &rep);
         try checkGeneratedHashes(gpa, io, cwd, &rep);
+        try checkRecordedCounts(gpa, io, cwd, &rep);
         try checkSources(gpa, io, cwd, &rep, roots.items, excluded.items);
         try checkMarkdown(gpa, io, cwd, &rep);
     }
@@ -338,12 +339,15 @@ const generated = [_]struct {
     extension: []const u8,
     provenance: []const u8,
     label: []const u8,
+    /// The row label in `provenance` carrying the total of the per-file counts.
+    total_label: []const u8,
 }{
     .{
         .dir = "tests/r7rs-required",
         .extension = ".txt",
         .provenance = "tools/extract-r7rs-required/SOURCE.md",
         .label = "抽出結果の SHA-256",
+        .total_label = "| 合計 |",
     },
 };
 
@@ -461,7 +465,7 @@ fn checkGeneratedHashes(
     rep: *Reporter,
 ) !void {
     for (generated) |g| {
-        try checkNothingElseInDir(io, cwd, rep, g.dir, g.extension);
+        try checkNothingElseInDir(gpa, io, cwd, rep, g.dir, g.extension);
         var files: std.ArrayList([]const u8) = .empty;
         try collectFiles(gpa, io, cwd, g.dir, g.extension, &files, .flat);
         if (files.items.len == 0) {
@@ -545,29 +549,191 @@ fn hasTestBlock(source: [:0]const u8) bool {
     }
 }
 
+/// Checks the identifier counts a provenance document records against the
+/// generated files.
+///
+/// The hash says the files changed; it does not say the numbers written beside
+/// them still hold. Those numbers are updated by hand -- step 5 of the
+/// re-extraction procedure -- and nothing compared them, so a library whose
+/// export list stopped parsing could read as 1 identifier in the document and 0
+/// in the file. The stage 6 conformance matrix takes these files as its
+/// denominator, where that gap reads as full conformance.
+fn checkRecordedCounts(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+) !void {
+    for (generated) |g| {
+        const doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
+        var files: std.ArrayList([]const u8) = .empty;
+        try collectFiles(gpa, io, cwd, g.dir, g.extension, &files, .flat);
+
+        var total: usize = 0;
+        for (files.items) |path| {
+            const body = read(gpa, io, cwd, rep, path) orelse continue;
+            const count = identifierCount(body);
+            total += count;
+
+            const stem = std.fs.path.stem(path);
+            const label = try std.fmt.allocPrint(gpa, "`(scheme {s})`", .{stem});
+            switch (integerAfter(doc, label)) {
+                .one => |recorded| if (recorded != count) rep.fail(
+                    "{s} holds {d} identifier(s) but {s} records {d}",
+                    .{ path, count, g.provenance, recorded },
+                ),
+                .none => rep.fail(
+                    "{s} records no identifier count for {s}",
+                    .{ g.provenance, label },
+                ),
+                .ambiguous => rep.fail(
+                    "{s} records more than one count for {s}; leave exactly one",
+                    .{ g.provenance, label },
+                ),
+            }
+        }
+
+        switch (integerAfter(doc, g.total_label)) {
+            .one => |recorded| if (recorded != total) rep.fail(
+                "{s}/*{s} hold {d} identifier(s) in all but {s} records {d}",
+                .{ g.dir, g.extension, total, g.provenance, recorded },
+            ),
+            .none => rep.fail("{s} records no {s}", .{ g.provenance, g.total_label }),
+            .ambiguous => rep.fail(
+                "{s} records more than one {s}; leave exactly one",
+                .{ g.provenance, g.total_label },
+            ),
+        }
+    }
+}
+
+/// Counts the identifier lines of a generated list: the lines that are neither
+/// blank nor a `;` comment.
+fn identifierCount(body: []const u8) usize {
+    var found: usize = 0;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (line.len == 0 or line[0] == ';') continue;
+        found += 1;
+    }
+    return found;
+}
+
+/// What a document records as a count under `label`.
+const RecordedCount = union(enum) {
+    one: usize,
+    none,
+    /// The label appears in several rows with differing values.
+    ambiguous,
+};
+
+/// The integer recorded beside `label` in a Markdown table row.
+///
+/// Only lines that open a table row are considered. Searching the whole
+/// document found the label in prose first and read whatever number happened
+/// to follow it: the sentence explaining the hash encoding names two
+/// libraries, and one of them is followed by its own count in words. Every
+/// matching row is read and the values must agree, for the same reason
+/// `sha256InMarkdown` refuses to pick one of several.
+fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
+    var found: ?usize = null;
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (line.len == 0 or line[0] != '|') continue;
+        const at = std.mem.indexOf(u8, line, label) orelse continue;
+
+        var i = at + label.len;
+        while (i < line.len and !std.ascii.isDigit(line[i])) : (i += 1) {}
+        var value: usize = 0;
+        var digits: usize = 0;
+        while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {
+            value = value * 10 + (line[i] - '0');
+            digits += 1;
+        }
+        if (digits == 0) continue;
+
+        if (found) |first| {
+            if (first != value) return .ambiguous;
+        } else found = value;
+    }
+    return if (found) |v| .{ .one = v } else .none;
+}
+
 /// Reports anything in `dir` that the recorded hash does not cover.
 ///
 /// `collectFiles` in flat mode returns the directory's own files with the right
 /// extension, so a subdirectory or another extension would sit beside the
 /// generated lists uncovered. The provenance document claims the record fixes
 /// the directory, so the directory holds nothing else.
+///
+/// Nothing else that is part of the repository, that is. An entry `.gitignore`
+/// ignores is not tracked and so is not part of what the record covers; the
+/// alternative was a correct repository going red because macOS wrote a
+/// `.DS_Store` or an editor left a `base.txt~`. The ignore set has one home,
+/// `.gitignore`, and is read from there rather than repeated here.
 fn checkNothingElseInDir(
+    gpa: std.mem.Allocator,
     io: std.Io,
     cwd: std.Io.Dir,
     rep: *Reporter,
     path: []const u8,
     extension: []const u8,
 ) !void {
+    const ignore = read(gpa, io, cwd, rep, ".gitignore") orelse "";
+
     var dir = cwd.openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind == .file and std.mem.endsWith(u8, entry.name, extension)) continue;
+        if (isIgnored(ignore, entry.name, entry.kind == .directory)) continue;
         rep.fail(
             "{s}/{s} is not a generated *{s} file, so the recorded hash does not cover it",
             .{ path, entry.name, extension },
         );
     }
+}
+
+/// Whether `.gitignore` ignores an entry of this name.
+///
+/// Only the pattern shapes this repository writes are understood: an exact
+/// name, a trailing `/` for a directory, and a single leading or trailing `*`.
+/// A shape outside that set never matches, so an unrecognised pattern leaves
+/// the check as strict as it was. Erring that way means a new pattern shape
+/// shows up as a check failure to be looked at, not as a silent hole in what
+/// the recorded hash covers.
+///
+/// Negations are among the shapes left out: a `!` line is skipped, which keeps
+/// a pattern it re-includes ignored. The only negation here re-includes
+/// `.env.example`, which belongs in no generated directory.
+fn isIgnored(gitignore: []const u8, name: []const u8, is_dir: bool) bool {
+    var lines = std.mem.splitScalar(u8, gitignore, '\n');
+    while (lines.next()) |raw| {
+        var pattern = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (pattern.len == 0 or pattern[0] == '#' or pattern[0] == '!') continue;
+
+        // A trailing slash restricts the pattern to directories.
+        if (pattern[pattern.len - 1] == '/') {
+            if (!is_dir) continue;
+            pattern = pattern[0 .. pattern.len - 1];
+            if (pattern.len == 0) continue;
+        }
+
+        // A path-shaped pattern is anchored, and this compares one entry name.
+        if (std.mem.indexOfScalar(u8, pattern, '/') != null) continue;
+
+        const stars = countOccurrences(pattern, "*");
+        if (stars == 0) {
+            if (std.mem.eql(u8, pattern, name)) return true;
+        } else if (stars == 1 and pattern[0] == '*') {
+            if (std.mem.endsWith(u8, name, pattern[1..])) return true;
+        } else if (stars == 1 and pattern[pattern.len - 1] == '*') {
+            if (std.mem.startsWith(u8, name, pattern[0 .. pattern.len - 1])) return true;
+        }
+    }
+    return false;
 }
 
 fn checkSources(
@@ -1289,6 +1455,44 @@ test "hashLengthPrefixed: moving a boundary changes the digest" {
     // Plain concatenation gives these two the same bytes, which is how one
     // file's content moved into the file before it with the record unchanged.
     try std.testing.expect(!std.mem.eql(u8, &da, &db));
+}
+
+test "isIgnored: the shapes this repository writes" {
+    const patterns =
+        \\# a comment
+        \\_work
+        \\.env.*
+        \\!.env.example
+        \\zig-out/
+        \\.DS_Store
+        \\._*
+        \\*~
+    ;
+    try std.testing.expect(isIgnored(patterns, ".DS_Store", false));
+    try std.testing.expect(isIgnored(patterns, "._base.txt", false));
+    try std.testing.expect(isIgnored(patterns, "base.txt~", false));
+    try std.testing.expect(isIgnored(patterns, "_work", false));
+    // A trailing slash matches a directory and nothing else.
+    try std.testing.expect(isIgnored(patterns, "zig-out", true));
+    try std.testing.expect(!isIgnored(patterns, "zig-out", false));
+    // What the record must keep covering.
+    try std.testing.expect(!isIgnored(patterns, "base.txt", false));
+    try std.testing.expect(!isIgnored(patterns, "notes.md", false));
+    try std.testing.expect(!isIgnored(patterns, "sub", true));
+    // A comment is not a pattern.
+    try std.testing.expect(!isIgnored(patterns, "# a comment", false));
+    // A `!` line is skipped, so what it re-includes stays ignored. This is the
+    // recorded limit, pinned so a later fix flips it visibly. `.env.example`
+    // belongs in no generated directory, which is why the limit is acceptable.
+    try std.testing.expect(isIgnored(patterns, ".env.example", false));
+}
+
+test "isIgnored: an unrecognised shape leaves the check strict" {
+    // A pattern with a star in the middle, or more than one, is not understood.
+    // It must not match, or the record would stop covering what it names.
+    try std.testing.expect(!isIgnored("ba*.txt", "base.txt", false));
+    try std.testing.expect(!isIgnored("*ase*", "base.txt", false));
+    try std.testing.expect(!isIgnored("tests/*.txt", "base.txt", false));
 }
 
 test "countOccurrences: every non-overlapping match counts" {

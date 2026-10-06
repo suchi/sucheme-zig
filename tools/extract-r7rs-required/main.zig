@@ -27,6 +27,16 @@ const source_url = "https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html
 /// names this constant in its re-extraction procedure.
 const expected_library_count = 16;
 
+/// Closes the block that holds the export lists. Used as the upper bound of the
+/// last library's span, which has no following library marker to stop at.
+///
+/// The document opens with the same marker, and the bound is searched from the
+/// last library's start, so the trailing one is the one found. If the marker
+/// ever disappears the bound falls back to the end of the document, which is
+/// where it was before; the per-library checks are what then catch a footer
+/// span being read as an identifier.
+const list_end = "<div class=navigation>";
+
 const lib_marker = "(scheme ";
 const id_open = "<span style=\"font-family: monospace\">&#xa0;";
 
@@ -86,7 +96,15 @@ pub fn main(init: std.process.Init) !void {
     var total: usize = 0;
     for (names.items, 0..) |name, i| {
         const from = starts.items[i];
-        const to = if (i + 1 < starts.items.len) starts.items[i + 1] else html.len;
+        // The last library's span is bounded like the others. Letting it run to
+        // the end of the document made it asymmetric: any monospace span that
+        // tex2page emits in the trailing navigation or footer would be read as
+        // one of its identifiers, and neither the library count nor the
+        // auxiliary-syntax check would notice.
+        const to = if (i + 1 < starts.items.len)
+            starts.items[i + 1]
+        else
+            std.mem.indexOfPos(u8, html, from, list_end) orelse html.len;
 
         var ids: std.ArrayList([]const u8) = .empty;
         var pos = from;
@@ -102,6 +120,30 @@ pub fn main(init: std.process.Init) !void {
         for (ids.items) |id| {
             if (std.mem.indexOfAny(u8, id, " \t\r\n") != null) {
                 try out.print("{s}: identifier {s} contains whitespace\n", .{ name, id });
+                try out.flush();
+                std.process.exit(1);
+            }
+        }
+
+        // A library with no identifiers is the failure that matters most and
+        // the one nothing was watching. If R7RS changes the markup of one
+        // export list, this program still reports 16 libraries and succeeds,
+        // and the file holds only its header comments. The conformance matrix
+        // takes these files as its denominator, so that library would read as
+        // fully conformant with nothing implemented.
+        if (ids.items.len == 0) {
+            try out.print("(scheme {s}) yielded no identifier; the markup of its export list changed\n", .{name});
+            try out.flush();
+            std.process.exit(1);
+        }
+
+        // A duplicate means one span was read twice, or two spans decoded to
+        // the same name. Either way the count is wrong, and a count is what the
+        // provenance document records.
+        for (ids.items, 0..) |id, a| {
+            for (ids.items[a + 1 ..]) |other| {
+                if (!std.mem.eql(u8, id, other)) continue;
+                try out.print("(scheme {s}) lists {s} twice\n", .{ name, id });
                 try out.flush();
                 std.process.exit(1);
             }
