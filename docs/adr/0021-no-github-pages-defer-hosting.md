@@ -32,11 +32,12 @@ GitHub Pages を使わない。Web UI の配置は計画の後半まで行わな
 
 配置先は段階8(Web UI の本格化)の作業とする。段階1から段階7では配置しない。
 
-配置先のサービスは決めない。段階8の時点で選ぶ([design/open-questions.md](../design/open-questions.md))。要件は次の3つである。
+配置先のサービスは決めない。段階8の時点で選ぶ([design/open-questions.md](../design/open-questions.md))。要件は次の4つである。
 
 - private にアクセス制限できる。
 - 静的ファイルの配信だけでよい。サーバ側の実行環境を必要としない([ADR-0009](0009-wasm-freestanding-and-zero-dependency-web-ui.md) の依存ゼロの方針から、ビルド成果物は静的ファイルだけである)。
-- `application/wasm` の Content-Type を返せる。`WebAssembly.instantiateStreaming` がこれを要求する。
+- `application/wasm` の Content-Type を返せる。「If mimeType is not a byte-case-insensitive match for `application/wasm`, reject returnValue with a TypeError」([WebAssembly Web API](https://webassembly.github.io/spec/web-api/))。拡張パラメータも許されないので、`application/wasm;` では通らない。
+- `.wasm` を Web UI と同じオリジンから配れる。同じ仕様が「If response is not CORS-same-origin, reject returnValue with a TypeError」と定めている。資産を別オリジンの CDN に置く構成は、他の要件を満たしても `instantiateStreaming` が拒む。CORS ヘッダで同等にする道はあるが、要件を増やさない。
 
 シークレットを CI に持ち込む必要が生じる場合は、その時点で `AGENTS.md` のセキュリティの節に従い、扱いを決めてユーザーの承認を得る。段階7までシークレットを増やさない。
 
