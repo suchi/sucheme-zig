@@ -22,7 +22,11 @@ GitHub Pages を使わない。Web UI の配置は計画の後半まで行わな
 
 `web/` のサブプロジェクトと `wasm32-freestanding` のビルドは要件のまま残す。「いずれの段階でも簡単な Web の UI から実行できる仕組み」という要件は配置とは別のものであり、ローカルで開けることで満たす。[ADR-0009](0009-wasm-freestanding-and-zero-dependency-web-ui.md) の決定(freestanding、依存パッケージを持たない Web UI)は変えない。
 
-ローカルで開く手段は、ブラウザが `file://` から `.wasm` を取得できない制約を受ける。`fetch` が同一オリジンポリシーで拒まれるためである。手段は段階1の計画で決める([design/open-questions.md](../design/open-questions.md))。候補は、`zig build` の step でローカルの HTTP サーバを立てる形と、`.wasm` をデータ URI として HTML に埋め込む形である。
+ローカルで開く手段には制約がある。`file://` から始まる取得は Fetch の対象外である。Fetch Standard の scheme fetch(§4.3)は `"file"` の分岐に「For now, unfortunate as it is, file: URLs are left as an exercise for the reader.」「When in doubt, return a network error.」と書いている。同一オリジンポリシーで拒まれるのではない。この区別は対処の選び方を変える。Chrome の `--allow-file-access-from-files` はオリジンの扱いを変えるフラグなので、この制約を外さない。
+
+落ちるのは `.wasm` の取得だけではない。[ADR-0009](0009-wasm-freestanding-and-zero-dependency-web-ui.md) は Web UI を JavaScript モジュールで書くと決めており、[design/platform-and-web.md](../design/platform-and-web.md) の構成は `index.html`・`style.css`・`sucheme.js`・`worker.js`・`app.js` である。モジュールスクリプトの読み込みと `new Worker('worker.js')` のスクリプト取得も Fetch を経由するので、`.wasm` をデータ URI に埋め込んでも同じ理由で失敗する。したがって `file://` で直接開く道は、構成を変えない限り閉じている。
+
+手段は段階1の計画で決める([design/open-questions.md](../design/open-questions.md))。候補はローカルの HTTP サーバを立てる形に絞られる。`zig build` の step で立てる形が素直だが、下の zip には Zig もサーバも入らないので、zip を開くレビュアには別の手段が必要になる。この2つは独立に決められない。zip にサーバを同梱するか、zip を開く側にリポジトリと固定版の Zig を要求するかを、段階1の計画で一緒に決める。
 
 ### 配置は段階8で行う
 

@@ -648,9 +648,11 @@ fn zigImports(gpa: std.mem.Allocator, source: [:0]const u8, out: *std.ArrayList(
 /// one passes a bare-name check while referencing nothing.
 ///
 /// This cannot prove the call is reached. `comptime { if (false) ... }` inside a
-/// test block passes the check and has no effect. Nor can it prove the
-/// qualifier resolves to std.testing. Both are recorded as implementation-time
-/// questions in docs/design/open-questions.md.
+/// test block passes the check and has no effect. Nor can it prove the qualifier
+/// resolves to std.testing: a local `const fake = struct { fn refAllDecls(_:
+/// type) void {} };` referenced as `fake.refAllDecls(@This())` passes. Both
+/// limits are recorded as implementation-time questions in
+/// docs/design/open-questions.md.
 fn hasRefAllDeclsTest(source: [:0]const u8) bool {
     var tok = std.zig.Tokenizer.init(source);
     var depth: usize = 0;
@@ -1186,6 +1188,20 @@ test "hasRefAllDeclsTest: a container expression is not @This()" {
     try std.testing.expect(hasRefAllDeclsTest(
         \\test {
         \\    std.testing.refAllDecls(@This());
+        \\}
+    ));
+}
+
+test "hasRefAllDeclsTest: a local qualifier passes, which is the recorded limit" {
+    // Lexing cannot tell what `fake` resolves to. The check is satisfied while
+    // nothing is referenced. This is one of the two limits open-questions.md
+    // records; the test is here so a later fix flips it visibly.
+    try std.testing.expect(hasRefAllDeclsTest(
+        \\const fake = struct {
+        \\    fn refAllDecls(_: type) void {}
+        \\};
+        \\test {
+        \\    fake.refAllDecls(@This());
         \\}
     ));
 }

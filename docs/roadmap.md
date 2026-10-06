@@ -66,7 +66,8 @@
 - [ ] REPL(素朴な行読み取り、完結判定による継続行)
 - [ ] リーダのファジングのワークフロー(定期実行と手動起動)
 - [ ] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版
-- [ ] Web UI をローカルで開く手段(`file://` から `.wasm` を取得できないため、手段は段階1の計画で決める)
+- [ ] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める)
+- [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 

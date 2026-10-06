@@ -363,7 +363,7 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 段階1から段階7は、CI の成果物として `sucheme.wasm` と `web/` を zip で添付し、ローカルで開いて確認する。
 
-ローカルで開く手段には制約がある。ブラウザは `file://` から `fetch` で `.wasm` を取得できないので、`WebAssembly.instantiateStreaming` がそのままでは動かない。手段は段階1の計画で決める([open-questions.md](open-questions.md))。候補は、`zig build` の step でローカルの静的サーバを立てる形と、`.wasm` をデータ URI として HTML に埋め込む形である。
+ローカルで開く手段には制約がある。`file://` から始まる取得は Fetch の対象外であり、`.wasm` だけでなくモジュールスクリプトと Worker のスクリプト取得も失敗する。したがって `file://` で直接開く道は閉じており、候補はローカルの HTTP サーバを立てる形に絞られる。理由と、zip を開くレビュアとの関係は [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) にある。手段は段階1の計画で決める([open-questions.md](open-questions.md))。
 
 ## REPL の行編集
 
