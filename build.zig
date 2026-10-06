@@ -81,17 +81,20 @@ const TestTarget = struct {
     /// Fails the configure step when the module no longer reports the path its
     /// test and its `--root` argument were made from.
     ///
-    /// `addTest` keeps the module by pointer and resolves `root_source_file`
-    /// when it compiles, so assigning to `root_module.root_source_file` after
-    /// the test was added compiles a file other than the one check-docs was
-    /// told about. Reading the path once at record time does not catch that:
-    /// with src/main.zig rebound after the loop, `zig build`, `zig build test`,
-    /// `zig build check-docs` and `zig fmt --check .` all stayed green while
-    /// main.zig's tests never ran. Calling this after every other edit in
-    /// `build` closes the window, because no configure-time code follows it and
-    /// no step mutates a module while the graph is made.
+    /// `addTest` resolves its module's `root_source_file` when it compiles, so
+    /// an edit after the test was added compiles a file other than the one
+    /// check-docs was told about, and every command stays green while that
+    /// file's tests never run. Calling this after every other edit in `build`
+    /// closes the window, because no configure-time code follows it and no step
+    /// mutates a module while the graph is made.
     fn recheck(self: TestTarget, b: *std.Build) void {
-        const now = sourcePath(b, self.mod);
+        // The module the test compiles, not the one recorded. `addTest` keeps
+        // its module in a public mutable field of the Compile step, so
+        // `unit.root_module = other` leaves `self.mod` untouched and compiles
+        // another file. Reading it through the unit covers both that and an
+        // assignment to the module's own `root_source_file`.
+        const unit = self.unit orelse return; // checkRunsEveryTest reports this
+        const now = sourcePath(b, unit.root_module);
         if (std.mem.eql(u8, now, self.path)) return;
         std.debug.print(
             "[sucheme] test target {s} was rebound to {s} after its test was added\n",
@@ -220,11 +223,10 @@ pub fn build(b: *std.Build) void {
 ///
 /// Each target is looked for by name among the run steps' producers, rather
 /// than the run steps being counted. A count is not a correspondence: pointing
-/// one target's run step at some other artifact kept the count at four, and
-/// src/main.zig's six tests were never compiled while all four commands stayed
-/// green. A count also breaks for an honest reason, since stage 1 adds
-/// `test-scheme` and `test-wasm` to this step and the number stops being the
-/// number of targets.
+/// one target's run step at some other artifact kept the count the same, and
+/// that target's tests were never compiled while all four commands stayed
+/// green. A count also breaks for an honest reason, as soon as anything but a
+/// target's test is attached to this step.
 ///
 /// What a run step then selects is `TestTarget.checkRunsEveryTest`'s business,
 /// and that every root has a test to select at all is check-docs' business.
