@@ -51,7 +51,7 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 不正確な数に基数10以外を与えた場合をエラーにしてはならない。R7RS 6.2.7 は次のように規定している。
 
-> returns as a string an external representation of the given number in the given radix such that ... (eqv? number (string->number (number->string number radix) radix)) is true. It is an error if no possible result makes this expression true. ... The result returned by number->string never contains an explicit radix prefix.
+> returns as a string an external representation of the given number in the given radix such that ... (let ((number number) (radix radix)) (eqv? number (string->number (number->string number radix) radix))) is true. It is an error if no possible result makes this expression true. ... The result returned by number->string never contains an explicit radix prefix.
 
 同項の Note が、エラーになる条件を限定している。
 

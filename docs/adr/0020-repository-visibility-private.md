@@ -21,7 +21,7 @@ ADR-0012 はリポジトリを public にすると決め、段階0で実施し�
 | 項目 | 帰結 |
 | --- | --- |
 | GitHub Pages | サイトは private リポジトリからでも公開できるが、公開されたサイト自体が private にはならない。private にした判断と両立しないので、配置先を変える([ADR-0021](0021-no-github-pages-defer-hosting.md)) |
-| arm64 ランナー | 影響を受けない。arm64 の標準ランナーは private リポジトリでも使える。aarch64 をテスト対象に加えるかは可視性とは独立の判断で、[ADR-0010](0010-ci-cd-and-release-strategy.md) の範囲を変えない |
+| arm64 ランナー | 使えるかどうかは影響を受けない。arm64 の標準ランナーは private リポジトリでも使える。ただし private では実行分数がプランの枠に計上されるので、対象に加えない理由の一部は可視性に依存する。理由と見直しの時点は [ADR-0010](0010-ci-cd-and-release-strategy.md) の追記が持つ。本ADRの見直し(公開に転じる判断)はその理由の一方を消すので、そのとき ADR-0010 もあわせて見直す |
 | Copilot のコードレビュー | private でも使える。ただしレビューの実行が Actions の分数をプランの枠から消費する。依頼は自前のレビューが収束してから1回にする(`AGENTS.md`、[ADR-0017](0017-self-hosted-adversarial-review.md)) |
 | 準拠マトリクス | 公開はしない。`docs/status/` にコミットし、リポジトリにアクセスできる人が見る形にする([design/r7rs-coverage.md](../design/r7rs-coverage.md)) |
 | リリースの配布 | GitHub Release は private リポジトリでも作れるが、取得できるのはアクセス権のある人だけである。第三者への配布は公開するまで行わない |

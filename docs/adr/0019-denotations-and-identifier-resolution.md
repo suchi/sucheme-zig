@@ -4,6 +4,8 @@
 - 日付: 2026-10-05
 - 置き換え: [ADR-0005: hygienic-expander-by-renaming](0005-hygienic-expander-by-renaming.md) を非推奨とし、本ADRが最新の決定となる
 
+> 2026-10-07 追記: 本ADRの決定(意味を6種とする)は変わらない。以下の本文が挙げている節番号が誤っている。`auxiliary syntax:` の項目は R7RS 本文に8件あり、4.2.1(`else`・`=>`)、4.2.8(`unquote`・`,`・`unquote-splicing`・`,@`)、4.3.2(`_`・`...`)の3節に分かれている。本文は 4.2.1 と 4.3.2 の2節しか挙げていないので、`unquote` と `unquote-splicing` の根拠が確認できない。正しくは 4.2.8 である。一次情報(R7RS 誤記修正版)で全数を数え上げて確認した。[design/frontend.md](../design/frontend.md) の同じ記述は訂正済みである。
+
 ## 背景
 
 ADR-0005 は衛生性の実現方式として構文環境と別名による改名を選んだ。方式の選択は妥当であり、本ADRもそれを引き継ぐ。

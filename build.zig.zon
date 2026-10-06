@@ -4,11 +4,9 @@
     .fingerprint = 0x9894d23d00f10c0d,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
-    // Why each entry is here: docs/design/zig-api-notes.md, the .paths
-    // paragraph. Dropping .zigversion or tests breaks the build or a check on
-    // the side that fetched this package, and nothing here reports it; LICENSE
-    // and README.md are here so the terms and the entry point travel with the
-    // package, which no check can notice either.
+    // Why each entry is here: the .paths table in docs/design/zig-api-notes.md,
+    // which is the one place that records it. Nothing in this file reports a
+    // missing entry.
     .paths = .{
         "build.zig",
         "build.zig.zon",
