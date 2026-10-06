@@ -204,10 +204,11 @@ pub fn build(b: *std.Build) void {
         t.recheck(b);
         t.checkRunsEveryTest();
     }
-    checkTestsAreRun(test_step, targets.items.len);
+    checkTestsAreRun(test_step, targets.items);
 }
 
-/// Fails the configure step unless the test step has one run step per target.
+/// Fails the configure step unless the test step runs each target's test
+/// binary.
 ///
 /// `TestTarget` guards which file each test is built from; it says nothing about
 /// the test being executed. Writing `test_step.dependOn(&unit.step)` instead of
@@ -217,20 +218,32 @@ pub fn build(b: *std.Build) void {
 /// check-docs` and `zig fmt --check .` stay green too. check-docs cannot see it,
 /// because it is told the paths and not whether anything ran.
 ///
-/// A run step per target is necessary and not sufficient: what that step then
-/// selects is `TestTarget.checkRunsEveryTest`'s business, and that every root
-/// has a test to select at all is check-docs' business.
-fn checkTestsAreRun(test_step: *std.Build.Step, want: usize) void {
-    var runs: usize = 0;
-    for (test_step.dependencies.items) |dep| {
-        if (dep.tag == .run) runs += 1;
+/// Each target is looked for by name among the run steps' producers, rather
+/// than the run steps being counted. A count is not a correspondence: pointing
+/// one target's run step at some other artifact kept the count at four, and
+/// src/main.zig's six tests were never compiled while all four commands stayed
+/// green. A count also breaks for an honest reason, since stage 1 adds
+/// `test-scheme` and `test-wasm` to this step and the number stops being the
+/// number of targets.
+///
+/// What a run step then selects is `TestTarget.checkRunsEveryTest`'s business,
+/// and that every root has a test to select at all is check-docs' business.
+fn checkTestsAreRun(test_step: *std.Build.Step, targets: []const TestTarget) void {
+    for (targets) |t| {
+        const unit = t.unit orelse continue; // checkRunsEveryTest reports this
+        var ran = false;
+        for (test_step.dependencies.items) |dep| {
+            const run = dep.cast(std.Build.Step.Run) orelse continue;
+            const producer = run.producer orelse continue;
+            if (producer == unit) ran = true;
+        }
+        if (ran) continue;
+        std.debug.print(
+            "[sucheme] the test step does not run the test built from {s}\n",
+            .{t.path},
+        );
+        std.process.exit(1);
     }
-    if (runs == want) return;
-    std.debug.print(
-        "[sucheme] the test step runs {d} test(s) for {d} target(s); each test must be run, not only built\n",
-        .{ runs, want },
-    );
-    std.process.exit(1);
 }
 
 /// Builds one of the helper programs under tools/.
