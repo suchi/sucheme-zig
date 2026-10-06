@@ -1069,6 +1069,76 @@ test "countOccurrences: every non-overlapping match counts" {
     try std.testing.expectEqual(@as(usize, 1), countOccurrences("aaa", "aa"));
 }
 
+test "hasRefAllDeclsTest: a container expression is not @This()" {
+    // The existing negative example falls at the token sequence rather than at
+    // the @This check, so loosening step 3 to accept any identifier left every
+    // test green. This one fails only while @This is required.
+    try std.testing.expect(!hasRefAllDeclsTest(
+        \\test {
+        \\    std.testing.refAllDecls(Container());
+        \\}
+    ));
+    try std.testing.expect(hasRefAllDeclsTest(
+        \\test {
+        \\    std.testing.refAllDecls(@This());
+        \\}
+    ));
+}
+
+test "sha256InMarkdown: the recorded hash is the one the row shows" {
+    const recorded = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    switch (sha256InMarkdown("| SHA-256 | `" ++ recorded ++ "` |")) {
+        .one => |h| try std.testing.expectEqualStrings(recorded, h),
+        else => return error.TestExpectedOne,
+    }
+}
+
+test "sha256InMarkdown: nothing to record" {
+    try std.testing.expect(sha256InMarkdown("| size | 67552 |") == .none);
+    // Names the hash but shows none.
+    try std.testing.expect(sha256InMarkdown("| SHA-256 | pending |") == .none);
+}
+
+test "sha256InMarkdown: a decoy makes the record ambiguous, not silently wrong" {
+    const real = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const decoy = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    // Hidden ahead of the real one on the same row, where the rendered
+    // table still shows the real hash.
+    try std.testing.expect(sha256InMarkdown(
+        "| SHA-256 | <!-- " ++ decoy ++ " --> `" ++ real ++ "` |",
+    ) == .ambiguous);
+    // A second row naming an older hash.
+    const two_rows = "| SHA-256 (old) | `" ++ decoy ++ "` |\n| SHA-256 | `" ++ real ++ "` |";
+    try std.testing.expect(sha256InMarkdown(two_rows) == .ambiguous);
+}
+
+test "sha256InMarkdown: case is not part of the record" {
+    const lower = "abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01";
+    const upper = "ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01";
+    // One hash written twice in different case is one record, not two.
+    switch (sha256InMarkdown("| SHA-256 | `" ++ lower ++ "` and `" ++ upper ++ "` |")) {
+        .one => {},
+        else => return error.TestExpectedOne,
+    }
+}
+
+test "trimIndent: four spaces is an indented block, three is still prose" {
+    try std.testing.expectEqualStrings("# a", trimIndent("# a"));
+    try std.testing.expectEqualStrings("# a", trimIndent("   # a"));
+    // Four or more is CommonMark's indented code block, so the line is returned
+    // as it stands and does not read as a heading.
+    try std.testing.expectEqualStrings("    # a", trimIndent("    # a"));
+    try std.testing.expectEqualStrings("     # a", trimIndent("     # a"));
+}
+
+test "fenceRun: a run of two is not a fence" {
+    // Reached only when the line is long enough but the run is not, which the
+    // length guard alone does not cover.
+    try std.testing.expect(fenceRun("``x") == null);
+    try std.testing.expect(fenceRun("~~x") == null);
+    try std.testing.expect(fenceRun("```") != null);
+}
+
 test "pathIn compares whole paths" {
     const haystack = [_][]const u8{ "src/wasm.zig", "src/main.zig" };
     try std.testing.expect(pathIn(&haystack, "src/wasm.zig"));
