@@ -11,8 +11,9 @@
 //! | `-` on its own | treated as a name, not an option | 69 |
 //! | anything else, including none | says the REPL is not implemented | 69 |
 //!
-//! The first recognised option wins, so `--version --bogus` prints the version.
-//! Later arguments are not inspected once a request is settled.
+//! The first argument that settles the request wins, so `--version --bogus`
+//! prints the version while `--bogus --version` names the unknown option. An
+//! unknown option settles the request too. Later arguments are not inspected.
 //!
 //! Diagnostics go to stderr and a request this stage cannot serve exits
 //! non-zero, so `sucheme prog.scm && echo ok` does not print ok while the

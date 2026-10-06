@@ -32,7 +32,7 @@ Zig のマニフェスト(`build.zig.zon`)には 0.17.0 時点で `license` フ�
 
 その期間に第三者が複製を得たかは確定できない。確認できた事実は次のとおりである。
 
-- fork は 0 件である(2026-10-07 時点、GitHub API)。public から private に変えても fork は残る。「Current forks will remain public and will be detached from this repository.」([Setting repository visibility](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/setting-repository-visibility))。fork が 0 件であることは、fork 経由の複製が無いことを示す。
+- fork は 0 件である(2026-10-07 時点、GitHub API)。ただしこの 0 は「fork が無かった」ことを意味しない。private 化のとき GitHub は fork を切り離して別のネットワークに移す。「Current forks will remain public and will be detached from this repository.」「GitHub will detach public forks of the public repository and put them into a new network.」([Setting repository visibility](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/setting-repository-visibility))。切り離された fork は元リポジトリの計数に入らないので、「fork が1つも無かった」と「fork があって切り離された」をこの計数では区別できない。
 - clone の計数は 2026-10-04 に10件(uniques 2)、2026-10-05 に21件(uniques 2)である(GitHub の traffic API、14日分)。この計数には本プロジェクトの CI のチェックアウトと権利者自身の clone が含まれるため、第三者が複製を得たことを示すものではない。示せるのは、示せないということである。
 
 したがって `LICENSE` には、本通知が本変更以後の版に適用され、すでに与えたものを撤回しないことを書く。「許諾を与えた状態をなくす」とは書かない。リポジトリ自身の履歴と矛盾するからである。
@@ -53,7 +53,7 @@ BSD 3条項の条件は3つあり、再配布を条件とするのは第1と第2
 > 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
 > 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
 
-第3条項に再配布の限定が無い。したがって「private のうちは義務が発生しない」は第1と第2についてのみ成り立つ。第3条項は、準拠の達成を示す文面(リリースノート、`docs/status/` の準拠マトリクス、README)で chibi-scheme や維持者の名前を本処理系の裏づけとして用いることを制限する。出典として事実を述べることと、推奨・宣伝として用いることの線は段階6で引く([ADR-0013](0013-testing-strategy-and-conformance-suite.md) を更新する)。
+第3条項に再配布の限定が無い。したがって「private のうちは義務が発生しない」は第1と第2についてのみ成り立つ。第3条項は、準拠の達成を示す文面(リリースノート、`docs/status/` の準拠マトリクス、README)で chibi-scheme や維持者の名前を本処理系の裏づけとして用いることを制限する。出典として事実を述べることと、推奨・宣伝として用いることの線は段階6で引く。運用ルールにより ADR-0013 の本文は書き換えられないので、そのとき新ADRを書く。
 
 許諾の範囲が広く、プロプライエタリな成果物への取り込みを禁じていない点は変わらない。第1と第2の表示は、private かつ無許諾のうちは再配布していないので発生しないが、リリース成果物をアクセス権のある人に渡す経路があるため記載は維持する([ADR-0020](0020-repository-visibility-private.md))。この方針は ADR-0013 から変わらない。
 
