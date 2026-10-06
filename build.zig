@@ -14,6 +14,14 @@ const pinned_zig_version = @embedFile(".zigversion");
 /// runner does not compile, because std's runner reaches posix declarations
 /// absent on that target. tools/check-docs rejects an entry naming a file that
 /// does not exist, so entries are added with the file, not ahead of it.
+///
+/// This is an escape hatch, and nothing checks that an entry deserves it:
+/// adding a name here while dropping the same module from `targets` leaves that
+/// file's tests unrun with every check green. So an entry carries the reason it
+/// cannot be a test target, and the reason names what makes the test impossible
+/// rather than inconvenient. Making the reason machine-checked is recorded as an
+/// implementation-time question in docs/design/open-questions.md, to settle when
+/// the first real entry arrives.
 const test_excluded = [_][]const u8{};
 
 /// The helper programs under tools/. Each is a single-file module.
