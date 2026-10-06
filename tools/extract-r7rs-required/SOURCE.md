@@ -63,12 +63,13 @@ R7RS の版が上がった場合、または誤記修正が入った場合に行
 
 ### 手順
 
-```
-$ sha256sum tools/extract-r7rs-required/appendix-a.html
-```
-
 1. 上の URL からページを取得して `appendix-a.html` を置き換える。
-2. 本ファイルの取得日・サイズ・入力の SHA-256 を更新する。取得日はここだけに書く。
+2. 本ファイルの取得日・サイズ・入力の SHA-256 を更新する。取得日はここだけに書く。入力のハッシュは次で求める。
+
+   ```
+   $ sha256sum tools/extract-r7rs-required/appendix-a.html
+   ```
+
 3. R7RS の版が変わってライブラリ数が16でなくなった場合は、`main.zig` の `expected_library_count` を更新する。同じ数が報告と検査の両方に使われる。
 4. `zig run tools/extract-r7rs-required/main.zig` を実行する。
 5. 報告されたライブラリ数と識別子数を上の表に反映する。

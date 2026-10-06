@@ -120,9 +120,9 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 ### 対象モジュールとパスの対応
 
-`test` step の対象モジュールと、`check-docs` に渡す `--root` のパスは1つの値(`TestTarget`)にまとめ、同じループで両方に使う。さらに `TestTarget.check` が、モジュールの `root_source_file` がそのパスから作られたことを configure 段で照合する。
+`test` step の対象モジュールと、`check-docs` に渡す `--root` のパスは1つの値(`TestTarget`)にまとめ、同じループで両方に使う。さらに `TestTarget` が、パスをモジュールの `root_source_file` から読み出し、`build` の末尾で再照合する。テストが run 段として繋がれていることも configure 段で照合する。
 
-照合を入れるのは、struct にまとめるだけでは対応の正しさを誰も見ないためである。`.{ .path = "src/main.zig", .mod = sucheme }` のように片方だけ取り違えた値は、構文上は1つの値でありながら `src/main.zig` のテストを1件も実行しない状態を作る。実機でこの状態を再現し、`zig fmt --check` と `zig build` と `zig build test` と `zig build check-docs` のすべてが緑になることを確認した。
+照合を入れるのは、struct にまとめるだけでは対応の正しさを誰も見ないためである。パスを手書きする形(`.{ .path = "src/main.zig", .mod = sucheme }`)で片方だけ取り違えた値は、構文上は1つの値でありながら `src/main.zig` のテストを1件も実行しない状態を作る。実機でこの状態を再現し、`zig fmt --check` と `zig build` と `zig build test` と `zig build check-docs` のすべてが緑になることを確認した。
 
 ### テスト対象から除くもの
 
@@ -166,8 +166,11 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 | 項目 | 検査の内容 |
 | --- | --- |
+| 自身の引数 | `build.zig` から `--root` が1つ以上渡る。`--root` と `--exclude` に値が付く。知らない引数が無い |
 | バージョンの3箇所の一致 | `.zigversion` の値が `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` のリテラルに一致する |
 | ベンダリングした入力のハッシュ | 出所の文書が記録した SHA-256 と内容が一致する |
+| 生成物のハッシュ | `tests/r7rs-required/*.txt` 全体の記録と一致する。記録はラベルで引き当て、1つに定まることも検査する。ディレクトリに `*.txt` 以外が無いことも見る |
+| `--root` と `--exclude` の実在 | 渡されたパスが実在するファイルを指す |
 | テストの到達性 | `src/` と `tools/` の全 `.zig` が、`test` step の対象モジュールのルートから `@import` の連鎖で到達できる。除外リストにあるものを除く |
 | `refAllDecls` の規約 | 他の `.zig` を `@import` するファイルが `refAllDecls(@This())` を呼ぶ `test` を持つ。呼び出しは修飾され、引数は `@This()` である |
 | 相対リンクの到達性 | Markdown の相対リンクが実在するファイルを指す。コードフェンス内のリンクは対象外 |
@@ -291,9 +294,9 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 
 | 用途 | コマンド | 使えるようになる段階 | CIで実行 |
 | --- | --- | --- | --- |
-| 実行(REPL) | `zig build run` | 0 | - |
+| 実行 | `zig build run -- <引数>` | 0 | - |
 | テスト(WASM の往復) | `zig build test-wasm` | 1 | 全コミット |
-| 準拠マトリクスの同期検査 | `zig build check-report` | 1 | 全コミット |
+| 進捗の同期検査 | `zig build check-report` | 1 | 全コミット |
 
 `test-wasm` は [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) が要求する「Node.js 上でのエクスポート呼び出しの往復テスト」である。行がないと、`README.md` が謳う WebAssembly の動作保証を検証する経路が CI に入らず、`sucheme.wasm` が一度も実行されずに出荷される。
 
