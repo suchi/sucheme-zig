@@ -237,9 +237,11 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
 /// Collects the `version:` value of every setup-zig step, and returns how many
 /// such steps were seen.
 ///
-/// The step is recognised by its `uses:` line, not by the text "setup-zig"
-/// appearing anywhere: a step merely *named* "prepare for setup-zig" would
-/// otherwise supply the version that gets checked.
+/// A step is recognised by a `setup-zig@` reference anywhere on the line, so
+/// that any YAML spelling of the step is seen: an item-level flow mapping and a
+/// quoted `uses:` key both install a Zig that a `uses:`-prefixed match misses.
+/// The `@` is what keeps a step merely *named* "prepare for setup-zig" from
+/// supplying the version that gets checked.
 fn workflowZigVersions(
     gpa: std.mem.Allocator,
     body: []const u8,
@@ -321,9 +323,19 @@ fn checkVendoredHashes(
         const body = read(gpa, io, cwd, rep, v.path) orelse continue;
         const doc = read(gpa, io, cwd, rep, v.provenance) orelse continue;
 
-        const recorded = sha256InMarkdown(doc) orelse {
-            rep.fail("{s} records no SHA-256 for {s}", .{ v.provenance, v.path });
-            continue;
+        const recorded = switch (sha256InMarkdown(doc)) {
+            .one => |h| h,
+            .ambiguous => {
+                rep.fail(
+                    "{s} records more than one SHA-256 for {s}; leave exactly one",
+                    .{ v.provenance, v.path },
+                );
+                continue;
+            },
+            .none => {
+                rep.fail("{s} records no SHA-256 for {s}", .{ v.provenance, v.path });
+                continue;
+            },
         };
 
         var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
@@ -331,7 +343,9 @@ fn checkVendoredHashes(
         var hex: [digest.len * 2]u8 = undefined;
         _ = std.fmt.bufPrint(&hex, "{x}", .{&digest}) catch unreachable;
 
-        if (!std.mem.eql(u8, &hex, recorded))
+        // Case is not part of the hash, so a record written in upper case is
+        // not a modified input.
+        if (!std.ascii.eqlIgnoreCase(&hex, recorded))
             rep.fail(
                 "{s} is {s} but {s} records {s}",
                 .{ v.path, hex[0..16], v.provenance, recorded[0..@min(16, recorded.len)] },
@@ -339,8 +353,28 @@ fn checkVendoredHashes(
     }
 }
 
-/// Finds the 64 hex digits of a SHA-256 in a Markdown table row that names it.
-fn sha256InMarkdown(doc: []const u8) ?[]const u8 {
+/// What a Markdown document records as the SHA-256 of a vendored input.
+const RecordedHash = union(enum) {
+    /// One value appears on the lines naming SHA-256.
+    one: []const u8,
+    none,
+    /// Several differing values appear, so which one is the record cannot be
+    /// decided from the document.
+    ambiguous,
+};
+
+/// Finds the SHA-256 a Markdown document records.
+///
+/// Every line naming SHA-256 is scanned, and every 64-hex run on each one is
+/// collected, rather than returning the first run on the first such line.
+/// Returning the first let a decoy supply the value. Putting a second 64-hex
+/// run inside an HTML comment, ahead of the real one on the same table row,
+/// left the rendered table showing the real hash while this function returned
+/// the hidden one: a swapped input compared green, and the substitution was
+/// invisible to anyone reading the document. A second row naming an older hash
+/// did the same.
+fn sha256InMarkdown(doc: []const u8) RecordedHash {
+    var found: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, doc, '\n');
     while (lines.next()) |line| {
         if (std.mem.indexOf(u8, line, "SHA-256") == null) continue;
@@ -348,13 +382,16 @@ fn sha256InMarkdown(doc: []const u8) ?[]const u8 {
         while (i + 64 <= line.len) : (i += 1) {
             const candidate = line[i .. i + 64];
             var all_hex = true;
-            for (candidate) |c| if (!std.ascii.isHex(c)) {
-                all_hex = false;
-            };
-            if (all_hex) return candidate;
+            for (candidate) |c| {
+                if (!std.ascii.isHex(c)) all_hex = false;
+            }
+            if (!all_hex) continue;
+            if (found) |first| {
+                if (!std.ascii.eqlIgnoreCase(first, candidate)) return .ambiguous;
+            } else found = candidate;
         }
     }
-    return null;
+    return if (found) |h| .{ .one = h } else .none;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,13 +427,24 @@ fn checkSources(
         if (!pathIn(files.items, e)) rep.fail("excluded file {s} does not exist", .{e});
     }
 
+    // Every file is read once, before either loop below. Reading inside the
+    // fixpoint loop reported one unreadable file as several problems, because
+    // that loop revisits every reachable path on each pass. An exclusion keeps
+    // a file from being a test target; it does not make the file unreadable, so
+    // a read failure is reported whether or not the path is excluded.
+    // The sentinel is what lets zigImports hand a body to std.zig.Tokenizer.
+    var bodies: std.StringHashMapUnmanaged([:0]const u8) = .empty;
+    for (files.items) |path| {
+        if (read(gpa, io, cwd, rep, path)) |body| try bodies.put(gpa, path, body);
+    }
+
     // Repeat until nothing new is reached: imports form a DAG of unknown depth.
     var changed = true;
     while (changed) {
         changed = false;
         for (files.items) |path| {
             if (!reachable.contains(path)) continue;
-            const body = read(gpa, io, cwd, rep, path) orelse continue;
+            const body = bodies.get(path) orelse continue;
             const dir = std.fs.path.dirnamePosix(path) orelse "src";
             var imports: std.ArrayList([]const u8) = .empty;
             try zigImports(gpa, body, &imports);
@@ -423,7 +471,7 @@ fn checkSources(
         if (!reachable.contains(path))
             rep.fail("{s} is not reached from any test root; its tests would be skipped", .{path});
 
-        const body = read(gpa, io, cwd, rep, path) orelse continue;
+        const body = bodies.get(path) orelse continue;
         var imports: std.ArrayList([]const u8) = .empty;
         try zigImports(gpa, body, &imports);
         if (imports.items.len == 0) continue;
