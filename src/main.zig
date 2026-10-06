@@ -1,7 +1,21 @@
 //! Native entry point.
 //!
-//! Stage 0 answers `--version` and `--help` and otherwise explains that the
-//! REPL arrives in stage 1.
+//! This doc comment is the contract for the command line and the exit status;
+//! AGENTS.md and the stage plan reference it rather than restating it.
+//!
+//! | Arguments | Behaviour | Exit |
+//! | --- | --- | --- |
+//! | `--version` | prints name and version to stdout | 0 |
+//! | `--help`, `-h` | prints usage to stdout | 0 |
+//! | an unknown `-...` option | names it on stderr | 64 |
+//! | anything else, including none | says the REPL is not implemented | 69 |
+//!
+//! The first recognised option wins, so `--version --bogus` prints the version.
+//! Later arguments are not inspected once a request is settled.
+//!
+//! Diagnostics go to stderr and a request this stage cannot serve exits
+//! non-zero, so `sucheme prog.scm && echo ok` does not print ok while the
+//! program never ran. The REPL arrives in stage 1.
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -44,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .help => {
             try out.print(
-                "{s} {s}\n\nUsage: {s} [--version] [--help]\n\n" ++
+                "{s} {s}\n\nUsage: {s} [--version] [--help|-h]\n\n" ++
                     "The REPL arrives in stage 1; see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
             );

@@ -59,7 +59,10 @@ pub fn main(init: std.process.Init) !void {
         const which: ?*std.ArrayList([]const u8) =
             if (std.mem.eql(u8, argv[i], "--root")) &roots else if (std.mem.eql(u8, argv[i], "--exclude")) &excluded else null;
         if (which) |list| {
-            if (i + 1 >= argv.len) {
+            // The next argument must be a value, not another flag: `--root
+            // --exclude x` would otherwise register "--exclude" as a root and
+            // report the consequences instead of the cause.
+            if (i + 1 >= argv.len or std.mem.startsWith(u8, argv[i + 1], "--")) {
                 rep.fail("{s} needs a value", .{argv[i]});
                 bad_args = true;
                 break;
@@ -81,6 +84,7 @@ pub fn main(init: std.process.Init) !void {
     // rather than causes, so stop here.
     if (!bad_args) {
         try checkZigVersionAgreement(gpa, io, cwd, &rep);
+        try checkVendoredHashes(gpa, io, cwd, &rep);
         try checkSources(gpa, io, cwd, &rep, roots.items, excluded.items);
         try checkMarkdown(gpa, io, cwd, &rep);
     }
@@ -117,10 +121,9 @@ fn checkZigVersionAgreement(
     cwd: std.Io.Dir,
     rep: *Reporter,
 ) !void {
-    const pinned_raw = read(gpa, io, cwd, rep, ".zigversion") orelse {
-        rep.fail(".zigversion is missing", .{});
-        return;
-    };
+    // read reports the failure itself; adding a second message here turned one
+    // cause into two problems.
+    const pinned_raw = read(gpa, io, cwd, rep, ".zigversion") orelse return;
     const pinned = std.mem.trim(u8, pinned_raw, &std.ascii.whitespace);
 
     if (read(gpa, io, cwd, rep, "build.zig.zon")) |source| {
@@ -138,7 +141,7 @@ fn checkZigVersionAgreement(
                     .{ m.minimum_zig_version, pinned },
                 );
         } else |_| rep.fail("build.zig.zon could not be parsed as ZON", .{});
-    } else rep.fail("build.zig.zon is missing", .{});
+    }
 
     // Only workflows at the top of .github/workflows run; a file in a
     // subdirectory is inert, so checking its version would fail on nothing.
@@ -177,7 +180,19 @@ fn checkZigVersionAgreement(
         rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
 }
 
-/// Collects the `version:` value of every `uses: .../setup-zig@...` step.
+/// Extracts a `version:` value written on the same line, as a flow mapping
+/// does: `- { uses: ...setup-zig@x, with: { version: 0.17.0 } }`.
+fn flowVersion(line: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, line, "version:") orelse return null;
+    var rest = line[at + "version:".len ..];
+    // Stop at whatever ends the scalar in a flow context.
+    if (std.mem.indexOfAny(u8, rest, ",}#")) |end| rest = rest[0..end];
+    const value = std.mem.trim(u8, std.mem.trim(u8, rest, &std.ascii.whitespace), "\"'");
+    return if (value.len == 0) null else value;
+}
+
+/// Collects the `version:` value of every setup-zig step, and returns how many
+/// such steps were seen.
 ///
 /// The step is recognised by its `uses:` line, not by the text "setup-zig"
 /// appearing anywhere: a step merely *named* "prepare for setup-zig" would
@@ -198,10 +213,22 @@ fn workflowZigVersions(
         const body_of_item = if (is_item) std.mem.trim(u8, line[2..], &std.ascii.whitespace) else line;
 
         if (is_item) in_setup = false;
+        // A step counts whenever the line carries a setup-zig reference,
+        // whatever YAML spelling holds it. Requiring the line to begin with
+        // `uses:` missed an item-level flow mapping and a quoted key, either of
+        // which installs a Zig this parser never sees.
+        if (std.mem.indexOf(u8, line, "setup-zig@") != null) {
+            steps += 1;
+            in_setup = true;
+            // A flow mapping carries the version on the same line.
+            if (flowVersion(line)) |v| {
+                try out.append(gpa, v);
+                in_setup = false;
+            }
+            continue;
+        }
         if (std.mem.startsWith(u8, body_of_item, "uses:")) {
-            const value = std.mem.trim(u8, body_of_item["uses:".len..], &std.ascii.whitespace);
-            in_setup = std.mem.indexOf(u8, value, "setup-zig@") != null;
-            if (in_setup) steps += 1;
+            in_setup = false;
             continue;
         }
         if (!in_setup) continue;
@@ -217,7 +244,71 @@ fn workflowZigVersions(
 }
 
 // ---------------------------------------------------------------------------
-// 2 and 3. Every src/ file is reachable from a test root, and every file that
+// 2. Vendored inputs match the hash their provenance file records.
+//
+// SOURCE.md calls the hash the means of verifying ADR-0013's "do not modify the
+// imported file". Recording it in a table nothing compares leaves the claim
+// without a mechanism: editing the HTML and re-extracting kept every check
+// green.
+// ---------------------------------------------------------------------------
+
+/// Files whose content is fixed by a recorded hash, with the document that
+/// records it. The hash is read from that document, so there is one copy.
+const vendored = [_]struct { path: []const u8, provenance: []const u8 }{
+    .{
+        .path = "tools/extract-r7rs-required/appendix-a.html",
+        .provenance = "tools/extract-r7rs-required/SOURCE.md",
+    },
+};
+
+fn checkVendoredHashes(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+) !void {
+    for (vendored) |v| {
+        const body = read(gpa, io, cwd, rep, v.path) orelse continue;
+        const doc = read(gpa, io, cwd, rep, v.provenance) orelse continue;
+
+        const recorded = sha256InMarkdown(doc) orelse {
+            rep.fail("{s} records no SHA-256 for {s}", .{ v.provenance, v.path });
+            continue;
+        };
+
+        var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(body, &digest, .{});
+        var hex: [digest.len * 2]u8 = undefined;
+        _ = std.fmt.bufPrint(&hex, "{x}", .{&digest}) catch unreachable;
+
+        if (!std.mem.eql(u8, &hex, recorded))
+            rep.fail(
+                "{s} is {s} but {s} records {s}",
+                .{ v.path, hex[0..16], v.provenance, recorded[0..@min(16, recorded.len)] },
+            );
+    }
+}
+
+/// Finds the 64 hex digits of a SHA-256 in a Markdown table row that names it.
+fn sha256InMarkdown(doc: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "SHA-256") == null) continue;
+        var i: usize = 0;
+        while (i + 64 <= line.len) : (i += 1) {
+            const candidate = line[i .. i + 64];
+            var all_hex = true;
+            for (candidate) |c| if (!std.ascii.isHex(c)) {
+                all_hex = false;
+            };
+            if (all_hex) return candidate;
+        }
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// 3 and 4. Every src/ file is reachable from a test root, and every file that
 // imports siblings re-establishes the reference with refAllDecls.
 //
 // Zig only analyses a file's `test` blocks when the file is reached from the
@@ -261,8 +352,13 @@ fn checkSources(
             try zigImports(gpa, body, &imports);
             for (imports.items) |name| {
                 const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, name });
-                if (!reachable.contains(joined)) {
-                    try reachable.put(gpa, joined, {});
+                // Normalise: an import written as "../other.zig" would
+                // otherwise produce src/sub/../other.zig and never match the
+                // collected src/other.zig, reporting a file whose tests do run
+                // as unreachable.
+                const key = try normalizePath(gpa, joined);
+                if (!reachable.contains(key)) {
+                    try reachable.put(gpa, key, {});
                     changed = true;
                 }
             }
@@ -287,6 +383,25 @@ fn checkSources(
                 .{path},
             );
     }
+}
+
+/// Resolves `.` and `..` segments so two spellings of one path compare equal.
+/// Separators are normalised to `/`.
+fn normalizePath(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(gpa);
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
+    while (it.next()) |seg| {
+        if (std.mem.eql(u8, seg, ".")) continue;
+        if (std.mem.eql(u8, seg, "..")) {
+            if (parts.items.len != 0) {
+                _ = parts.pop();
+                continue;
+            }
+        }
+        try parts.append(gpa, seg);
+    }
+    return std.mem.join(gpa, "/", parts.items);
 }
 
 fn pathIn(haystack: []const []const u8, needle: []const u8) bool {
@@ -326,10 +441,13 @@ fn zigImports(gpa: std.mem.Allocator, source: [:0]const u8, out: *std.ArrayList(
 /// like the convention but references the wrong declarations, so the imported
 /// file's tests still never run.
 ///
+/// The call must also be qualified: a local `fn refAllDecls` shadowing the std
+/// one passes a bare-name check while referencing nothing.
+///
 /// This cannot prove the call is reached. `comptime { if (false) ... }` inside a
-/// test block passes the check and has no effect. Proving reachability needs
-/// semantic analysis, which is recorded as an implementation-time question in
-/// docs/design/open-questions.md.
+/// test block passes the check and has no effect. Nor can it prove the
+/// qualifier resolves to std.testing. Both are recorded as implementation-time
+/// questions in docs/design/open-questions.md.
 fn hasRefAllDeclsTest(source: [:0]const u8) bool {
     var tok = std.zig.Tokenizer.init(source);
     var depth: usize = 0;
@@ -361,14 +479,17 @@ fn hasRefAllDeclsTest(source: [:0]const u8) bool {
         }
 
         seen = switch (seen) {
-            0 => if (t.tag == .identifier and std.mem.eql(u8, text, "refAllDecls")) 1 else 0,
-            1 => if (t.tag == .l_paren) 2 else 0,
-            2 => if (t.tag == .builtin and std.mem.eql(u8, text, "@This")) 3 else 0,
-            3 => if (t.tag == .l_paren) 4 else 0,
-            4 => if (t.tag == .r_paren) 5 else 0,
-            else => 5,
+            // `.refAllDecls` after a period: the call has to be qualified, so a
+            // locally defined function of the same name does not satisfy it.
+            0 => if (t.tag == .period) 1 else 0,
+            1 => if (t.tag == .identifier and std.mem.eql(u8, text, "refAllDecls")) 2 else 0,
+            2 => if (t.tag == .l_paren) 3 else 0,
+            3 => if (t.tag == .builtin and std.mem.eql(u8, text, "@This")) 4 else 0,
+            4 => if (t.tag == .l_paren) 5 else 0,
+            5 => if (t.tag == .r_paren) 6 else 0,
+            else => 6,
         };
-        if (seen == 5) return true;
+        if (seen == 6) return true;
     }
 }
 
@@ -399,6 +520,11 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
         while (lines.next()) |raw| {
             lineno += 1;
             const line = std.mem.trimEnd(u8, raw, "\r");
+            // Fences keep an unlimited indentation allowance. CommonMark
+            // measures indentation relative to the containing block, so a
+            // fence inside a list item can sit four or more spaces in;
+            // docs/adr/README.md relies on that. The cost is that an indented
+            // code block demonstrating a fence is read as one.
             const trimmed = std.mem.trimStart(u8, line, " ");
 
             if (fenceRun(trimmed)) |run| {
@@ -420,7 +546,10 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
             // Up to three spaces of indentation are allowed before the `#`
             // run, so the heading scan uses the same trimmed line as the fence
             // scan. GitHub renders both as headings with the same anchor.
-            if (atxHeadingText(trimmed)) |text| {
+            // Headings do take the three-space limit: four or more spaces
+            // make an indented code block, and a shell comment inside one was
+            // being counted as a heading.
+            if (atxHeadingText(trimIndent(line))) |text| {
                 if (text.len != 0) {
                     if (headings.contains(text))
                         rep.fail("{s}:{d}: duplicate heading \"{s}\"", .{ path, lineno, text })
@@ -459,6 +588,16 @@ fn atxHeadingText(trimmed: []const u8) ?[]const u8 {
     if (had_run and (end == 0 or preceded_by_space))
         text = std.mem.trimEnd(u8, text[0..end], " \t");
     return text;
+}
+
+/// Strips up to three spaces of indentation, the most CommonMark allows before
+/// an ATX heading at the top level. A line indented four or more spaces is an
+/// indented code block, and is returned unchanged so it matches nothing.
+fn trimIndent(line: []const u8) []const u8 {
+    var n: usize = 0;
+    while (n < line.len and n < 4 and line[n] == ' ') n += 1;
+    if (n == 4) return line;
+    return line[n..];
 }
 
 /// Recognises a fence line: a run of at least three backticks or tildes, plus
@@ -600,4 +739,184 @@ fn collectFiles(
             else => {},
         }
     }
+}
+// ---------------------------------------------------------------------------
+// Tests
+//
+// These cover the pure decision functions: the parts whose mistakes show up as
+// a check that quietly stops catching things. Every case below is one that an
+// adversarial review actually produced against an earlier version of this
+// file, so a regression reintroduces a known hole rather than a hypothetical.
+// ---------------------------------------------------------------------------
+
+test "fenceRun: an info string means the line opens, never closes" {
+    // ```zig must not be read as a closing fence; doing so made one valid
+    // document report a stray link plus an unclosed fence.
+    const open = fenceRun("```zig").?;
+    try std.testing.expect(!open.bare);
+    const close = fenceRun("```").?;
+    try std.testing.expect(close.bare);
+    try std.testing.expectEqual(@as(usize, 3), close.len);
+    try std.testing.expectEqual(@as(u8, '`'), close.ch);
+}
+
+test "fenceRun: tildes and longer runs" {
+    try std.testing.expectEqual(@as(u8, '~'), fenceRun("~~~").?.ch);
+    try std.testing.expectEqual(@as(usize, 4), fenceRun("````").?.len);
+    try std.testing.expect(fenceRun("``") == null);
+    try std.testing.expect(fenceRun("not a fence") == null);
+    // Trailing whitespace still closes.
+    try std.testing.expect(fenceRun("```   ").?.bare);
+}
+
+test "atxHeadingText: whitespace is required after the hashes" {
+    // #5 bolt is a paragraph in CommonMark; treating it as a heading made
+    // "#2 の指摘" style prose collide with a real heading.
+    try std.testing.expect(atxHeadingText("##A") == null);
+    try std.testing.expectEqualStrings("A", atxHeadingText("## A").?);
+    try std.testing.expectEqualStrings("A", atxHeadingText("#\tA").?);
+}
+
+test "atxHeadingText: a closing run needs whitespace before it" {
+    // ## C# and ## C are different headings.
+    try std.testing.expectEqualStrings("C#", atxHeadingText("## C#").?);
+    try std.testing.expectEqualStrings("A", atxHeadingText("## A ##").?);
+    try std.testing.expectEqualStrings("", atxHeadingText("## ##").?);
+}
+
+test "atxHeadingText: more than six hashes is not a heading" {
+    try std.testing.expect(atxHeadingText("####### x") == null);
+    try std.testing.expectEqualStrings("x", atxHeadingText("###### x").?);
+}
+
+test "hasUriScheme: a scheme needs a colon, and matching is case-insensitive" {
+    try std.testing.expect(hasUriScheme("https://example.com"));
+    try std.testing.expect(hasUriScheme("HTTPS://example.com"));
+    try std.testing.expect(hasUriScheme("ftp://example.com"));
+    try std.testing.expect(hasUriScheme("mailto:a@b"));
+    // A bare "http" prefix must not swallow a relative path.
+    try std.testing.expect(!hasUriScheme("http-guide.md"));
+    try std.testing.expect(!hasUriScheme("docs/x.md"));
+    try std.testing.expect(!hasUriScheme(""));
+}
+
+test "linkDestination: a title is not part of the destination" {
+    // A titled link is standard CommonMark; passing the title through to the
+    // file system crashed on Windows.
+    try std.testing.expectEqualStrings("README.md", linkDestination("README.md \"The readme\")").?.target);
+    try std.testing.expectEqualStrings("README.md", linkDestination("README.md 'x')").?.target);
+    try std.testing.expectEqualStrings("README.md", linkDestination("<README.md>)").?.target);
+    try std.testing.expectEqualStrings("a.md", linkDestination("a.md)").?.target);
+    try std.testing.expect(linkDestination("no-close") == null);
+}
+
+test "zigImports: only real import expressions count" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    // A commented-out import once made an unreferenced file look reachable.
+    try zigImports(gpa,
+        \\const a = @import("real.zig");
+        \\// @import("commented.zig")
+        \\const s = "@import(\"instring.zig\")";
+        \\const std = @import("std");
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqualStrings("real.zig", out.items[0]);
+}
+
+test "hasRefAllDeclsTest: the argument must be @This()" {
+    // Passing another container compiles and reads like the convention but
+    // references the wrong declarations.
+    try std.testing.expect(hasRefAllDeclsTest("test { std.testing.refAllDecls(@This()); }"));
+    try std.testing.expect(!hasRefAllDeclsTest("test { std.testing.refAllDecls(std.ascii); }"));
+    try std.testing.expect(!hasRefAllDeclsTest("// refAllDecls(@This())"));
+    try std.testing.expect(!hasRefAllDeclsTest("comptime { refAllDecls(@This()); }"));
+}
+
+test "workflowZigVersions: every setup-zig step is counted" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\jobs:
+        \\  a:
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with:
+        \\          version: 0.17.0
+        \\  b:
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with:
+        \\          version: 0.18.0
+    , &out);
+    try std.testing.expectEqual(@as(usize, 2), steps);
+    try std.testing.expectEqual(@as(usize, 2), out.items.len);
+    try std.testing.expectEqualStrings("0.17.0", out.items[0]);
+    try std.testing.expectEqualStrings("0.18.0", out.items[1]);
+}
+
+test "workflowZigVersions: a step whose version cannot be read still counts" {
+    // Counting steps and versions separately is what makes an unreadable
+    // version distinguishable from no step at all.
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with: { version: 0.18.0 }
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "workflowZigVersions: a step merely named after setup-zig supplies nothing" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - name: prepare for setup-zig
+        \\        uses: actions/checkout@abc
+        \\        with:
+        \\          version: 0.18.0
+    , &out);
+    try std.testing.expectEqual(@as(usize, 0), steps);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "workflowZigVersions: comments do not supply a version" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with:
+        \\          # version: 0.17.0
+        \\          version: 0.18.0
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+}
+
+test "pathIn compares whole paths" {
+    const haystack = [_][]const u8{ "src/wasm.zig", "src/main.zig" };
+    try std.testing.expect(pathIn(&haystack, "src/wasm.zig"));
+    // A base-name match would also exclude src/platform/wasm.zig.
+    try std.testing.expect(!pathIn(&haystack, "src/platform/wasm.zig"));
+    try std.testing.expect(!pathIn(&haystack, "wasm.zig"));
+}
+
+test "normalizePath resolves . and .. so an import chain matches" {
+    const gpa = std.testing.allocator;
+    const a = try normalizePath(gpa, "src/sub/../other.zig");
+    defer gpa.free(a);
+    try std.testing.expectEqualStrings("src/other.zig", a);
+    const b = try normalizePath(gpa, "src/./x.zig");
+    defer gpa.free(b);
+    try std.testing.expectEqualStrings("src/x.zig", b);
 }

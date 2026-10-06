@@ -151,8 +151,11 @@ pub fn main(init: std.process.Init) !void {
 /// keeping them would stop `binary-port?` and `char<?` from ever matching a
 /// library's export list. U+00A0 becomes a plain space so the whitespace check
 /// below can reject it.
+/// The caller owns the result. Returning a trimmed slice into the accumulator
+/// would hand back a pointer the caller cannot free.
 fn decode(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
     var acc: std.ArrayList(u8) = .empty;
+    defer acc.deinit(gpa);
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] != '&') {
@@ -184,7 +187,7 @@ fn decode(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
             try acc.append(gpa, ';');
         }
     }
-    return std.mem.trim(u8, acc.items, &std.ascii.whitespace);
+    return gpa.dupe(u8, std.mem.trim(u8, acc.items, &std.ascii.whitespace));
 }
 
 /// Library names become output file names, so only lowercase letters, digits
@@ -219,4 +222,65 @@ fn codePointOf(entity: []const u8) ?u21 {
     };
     for (named) |n| if (std.mem.eql(u8, entity, n.name)) return n.cp;
     return null;
+}
+// ---------------------------------------------------------------------------
+// Tests
+//
+// Appendix A's markup has two traps that silently corrupt identifiers, and the
+// output file name comes from parsed HTML. These cover both.
+// ---------------------------------------------------------------------------
+
+test "decode resolves the numeric references appendix A actually uses" {
+    const gpa = std.testing.allocator;
+    // The page writes < and > as &#x3c; and &#x3e;, not the named forms. A
+    // decoder that only knew the named forms dropped => and char<=? entirely.
+    const arrow = try decode(gpa, "=&#x3e;");
+    defer gpa.free(arrow);
+    try std.testing.expectEqualStrings("=>", arrow);
+
+    const le = try decode(gpa, "char&#x3c;=?");
+    defer gpa.free(le);
+    try std.testing.expectEqualStrings("char<=?", le);
+}
+
+test "decode drops the zero-width spaces tex2page inserts" {
+    const gpa = std.testing.allocator;
+    // Keeping U+200B would stop binary-port? from ever matching an export
+    // list, so it would read as unimplemented forever.
+    const got = try decode(gpa, "binary-port?&#x200b; &#x200b;");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("binary-port?", got);
+}
+
+test "decode keeps an unknown reference verbatim" {
+    const gpa = std.testing.allocator;
+    // Silently dropping it would let a parse change pass unnoticed; keeping it
+    // makes the whitespace and auxiliary-syntax checks notice.
+    const got = try decode(gpa, "a&weird;b");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("a&weird;b", got);
+}
+
+test "codePointOf handles hex, decimal and the named forms" {
+    try std.testing.expectEqual(@as(?u21, '<'), codePointOf("#x3c"));
+    try std.testing.expectEqual(@as(?u21, '<'), codePointOf("#X3C"));
+    try std.testing.expectEqual(@as(?u21, 60), codePointOf("#60"));
+    try std.testing.expectEqual(@as(?u21, '&'), codePointOf("amp"));
+    try std.testing.expectEqual(@as(?u21, 0xa0), codePointOf("nbsp"));
+    try std.testing.expectEqual(@as(?u21, null), codePointOf("weird"));
+    try std.testing.expectEqual(@as(?u21, null), codePointOf(""));
+}
+
+test "isPlainLibraryName rejects anything that could escape the output directory" {
+    try std.testing.expect(isPlainLibraryName("base"));
+    try std.testing.expect(isPlainLibraryName("case-lambda"));
+    try std.testing.expect(isPlainLibraryName("r5rs"));
+    // The name becomes a file name, and it comes from parsed HTML.
+    try std.testing.expect(!isPlainLibraryName("../etc"));
+    try std.testing.expect(!isPlainLibraryName("CHAR"));
+    try std.testing.expect(!isPlainLibraryName(""));
+    try std.testing.expect(!isPlainLibraryName("-base"));
+    try std.testing.expect(!isPlainLibraryName("base-"));
+    try std.testing.expect(!isPlainLibraryName("a/b"));
+    try std.testing.expect(!isPlainLibraryName("a.b"));
 }
