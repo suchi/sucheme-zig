@@ -167,13 +167,20 @@ fn checkZigVersionAgreement(
             if (!std.mem.eql(u8, version, pinned))
                 rep.fail("{s} sets up Zig {s}, .zigversion is {s}", .{ path, version, pinned });
         }
-        // Counting steps separately from versions matters: a step whose
+        // Counting references separately from versions matters: a step whose
         // `version` this parser cannot see (keys reordered, or a flow mapping)
         // would otherwise be indistinguishable from no step at all, and could
         // install any Zig unchecked.
+        //
+        // The diagnostic names every cause, not just the version's placement. A
+        // step merely *named* `setup-zig@v2` also lands here, and telling its
+        // author to move a `version:` that is already on its own line sends
+        // them to break a correct workflow.
         if (steps != found.items.len)
             rep.fail(
-                "{s}: {d} setup-zig step(s) but {d} readable version(s); write `version:` as its own line",
+                "{s}: {d} setup-zig reference(s) but {d} readable version(s). " ++
+                    "Give each step one `version:` on a line of its own, and keep " ++
+                    "`setup-zig@` and `version:` out of every other part of that step",
                 .{ path, steps, found.items.len },
             );
     }
@@ -273,12 +280,23 @@ fn workflowZigVersions(
         if (refs != 0) {
             steps += refs;
             in_setup = true;
-            // A flow mapping carries the version on the same line. One value is
-            // read per line, so a line holding several steps fails the caller's
-            // comparison rather than passing on a single version.
-            if (flowVersion(line)) |v| {
-                try out.append(gpa, v);
-                in_setup = false;
+            // A flow mapping carries the version on the same line, and
+            // exactly one `version:` may appear there. `flowVersion` takes the
+            // first one, so a second ahead of it supplied the value that got
+            // checked while the step installed the other: writing
+            // `- { name: "version: 0.17.0", uses: ...setup-zig@..., with: {
+            // version: 0.18.1 } }` passed every check with CI on 0.18.1.
+            // Removing comments did not close this; the carrier just moved from
+            // a comment to a value.
+            //
+            // Anything but one `version:` collects nothing, which leaves the
+            // caller's reference-versus-version comparison to reject the line.
+            // That also covers a line holding several steps.
+            if (countOccurrences(line, "version:") == 1) {
+                if (flowVersion(line)) |v| {
+                    try out.append(gpa, v);
+                    in_setup = false;
+                }
             }
             continue;
         }
@@ -325,8 +343,17 @@ const vendored = [_]Record{
 /// They are the denominator of the stage 6 conformance matrix.
 ///
 /// One hash covers the whole directory, so regenerating updates one value
-/// instead of one per file. A file added, removed or renamed changes it too,
-/// because each name is hashed along with its content.
+/// instead of one per file. Each name is hashed along with its content, and
+/// both are length-prefixed, which makes the encoding injective: a file added,
+/// removed, renamed, or with bytes moved across a file boundary changes the
+/// value.
+///
+/// Without the length prefixes it did not. The bytes were
+/// `name "\n" body name "\n" body ...`, with no delimiter after a body, so
+/// appending `lazy.txt`'s own name and content to the end of `inexact.txt` and
+/// deleting `lazy.txt` left the hash untouched: every check passed with 15
+/// files instead of 16 and `(scheme lazy)`'s five identifiers reassigned to
+/// `(scheme inexact)`. Folding all 16 into `base.txt` passed too.
 const generated = [_]struct {
     dir: []const u8,
     extension: []const u8,
@@ -455,6 +482,7 @@ fn checkGeneratedHashes(
     rep: *Reporter,
 ) !void {
     for (generated) |g| {
+        try checkNothingElseInDir(io, cwd, rep, g.dir, g.extension);
         var files: std.ArrayList([]const u8) = .empty;
         try collectFiles(gpa, io, cwd, g.dir, g.extension, &files, .flat);
         if (files.items.len == 0) {
@@ -472,11 +500,8 @@ fn checkGeneratedHashes(
                 unread = true;
                 continue;
             };
-            // The name is hashed with the content, so renaming a file or
-            // dropping one changes the value.
-            hasher.update(path);
-            hasher.update("\n");
-            hasher.update(body);
+            hashLengthPrefixed(&hasher, path);
+            hashLengthPrefixed(&hasher, body);
         }
         // A file this program could not read is already reported; comparing a
         // hash computed over the rest would add a second, misleading problem.
@@ -507,6 +532,41 @@ fn checkGeneratedHashes(
 
 fn lessThanPath(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
+}
+
+/// Feeds `bytes` to `hasher` behind its length, so that a sequence of such
+/// calls has exactly one reading. Concatenation alone does not: moving the
+/// boundary between two pieces leaves the same bytes.
+fn hashLengthPrefixed(hasher: *std.crypto.hash.sha2.Sha256, bytes: []const u8) void {
+    var len: [8]u8 = undefined;
+    std.mem.writeInt(u64, &len, bytes.len, .little);
+    hasher.update(&len);
+    hasher.update(bytes);
+}
+
+/// Reports anything in `dir` that the recorded hash does not cover.
+///
+/// `collectFiles` in flat mode returns the directory's own files with the right
+/// extension, so a subdirectory or another extension would sit beside the
+/// generated lists uncovered. The provenance document claims the record fixes
+/// the directory, so the directory holds nothing else.
+fn checkNothingElseInDir(
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    path: []const u8,
+    extension: []const u8,
+) !void {
+    var dir = cwd.openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, extension)) continue;
+        rep.fail(
+            "{s}/{s} is not a generated *{s} file, so the recorded hash does not cover it",
+            .{ path, entry.name, extension },
+        );
+    }
 }
 
 fn checkSources(
@@ -1140,9 +1200,9 @@ test "workflowZigVersions: a comment after a flow mapping does not override it" 
 }
 
 test "workflowZigVersions: two steps on one line count as two" {
-    // One version is readable on such a line, so the counts disagree and the
-    // caller rejects the spelling. Counting the line as one step instead let
-    // the second step install anything.
+    // Two `version:` on the line means neither is read, so the counts disagree
+    // and the caller rejects the spelling. Counting the line as one step, or
+    // reading the first version, let the second step install anything.
     const gpa = std.testing.allocator;
     var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(gpa);
@@ -1150,7 +1210,7 @@ test "workflowZigVersions: two steps on one line count as two" {
         \\    steps: [{uses: mlugg/setup-zig@abc, with: {version: 0.18.0}}, {uses: mlugg/setup-zig@abc, with: {version: 0.17.0}}]
     , &out);
     try std.testing.expectEqual(@as(usize, 2), steps);
-    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
 }
 
 test "stripComment: a hash opens a comment only at the start or after whitespace" {
@@ -1166,6 +1226,23 @@ test "stripComment: a hash inside a quoted scalar is not a comment" {
     try std.testing.expectEqualStrings("- name: 'a # b'", stripComment("- name: 'a # b'"));
     // The quote closes, so the next hash does open a comment.
     try std.testing.expectEqualStrings("- name: \"a\" ", stripComment("- name: \"a\" # b"));
+}
+
+test "hashLengthPrefixed: moving a boundary changes the digest" {
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    var a = Sha256.init(.{});
+    hashLengthPrefixed(&a, "x");
+    hashLengthPrefixed(&a, "yz");
+    var b = Sha256.init(.{});
+    hashLengthPrefixed(&b, "xy");
+    hashLengthPrefixed(&b, "z");
+    var da: [Sha256.digest_length]u8 = undefined;
+    var db: [Sha256.digest_length]u8 = undefined;
+    a.final(&da);
+    b.final(&db);
+    // Plain concatenation gives these two the same bytes, which is how one
+    // file's content moved into the file before it with the record unchanged.
+    try std.testing.expect(!std.mem.eql(u8, &da, &db));
 }
 
 test "countOccurrences: every non-overlapping match counts" {
