@@ -8,6 +8,7 @@
 | 内容 | R7RS 誤記修正版 HTML の付録A(Standard Libraries) |
 | 取得日 | 2026-10-06 |
 | サイズ | 67,552 バイト |
+| SHA-256 | `d20241aed9d26e0f32644040359613ab4fde27fc69a154042b5bf7bc6629e47b` |
 | 抽出プログラム | [main.zig](main.zig) |
 
 ネットワークから取得せずリポジトリに置くのは、再現可能なビルドを保ち、抽出結果を後から検証できるようにするためである([ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md))。
@@ -44,8 +45,14 @@ R7RS は全文または一部の複製を許諾している。Introduction の B
 
 R7RS の版が上がった場合、または誤記修正が入った場合に行う。
 
+ハッシュを記録するのは、入力が「corrected-r7rs」すなわち誤記修正が入り続ける生きた版であり、サイズだけでは改変を検出できないためである。[ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) は取り込んだファイルを改変しないことを求めており、その検証手段がこれである。
+
+```
+$ sha256sum tools/extract-r7rs-required/appendix-a.html
+```
+
 1. 上の URL からページを取得して `appendix-a.html` を置き換える。
-2. 本ファイルの取得日とサイズを更新する。取得日はここだけに書く。生成されるファイルは本ファイルを参照するだけなので、更新箇所は1つである。
+2. 本ファイルの取得日とサイズと SHA-256 を更新する。取得日はここだけに書く。生成されるファイルは本ファイルを参照するだけなので、更新箇所は1つである。
 3. R7RS の版が変わってライブラリ数が16でなくなった場合は、`main.zig` の `expected_library_count` を更新する。同じ数が報告と検査の両方に使われる。
 4. `zig run tools/extract-r7rs-required/main.zig` を実行する。
 5. 報告されたライブラリ数と識別子数を上の表に反映する。

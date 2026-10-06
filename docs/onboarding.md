@@ -14,7 +14,7 @@ Zig で書いた R7RS-small 準拠の Scheme インタプリタで、ネイテ�
 
 | 必要なもの | バージョン | 備考 |
 | --- | --- | --- |
-| Zig | `.zigversion` の値に固定 | `.zigversion` が正。`build.zig` が起動時に比較し、違う版では診断を出して止まる。固定の根拠は [adr/0001-zig-version-pinning.md](adr/0001-zig-version-pinning.md) |
+| Zig | `.zigversion` の値に固定 | `.zigversion` が正。`build.zig` が起動時に比較し、違う版では診断を出して止まる。ただし `build.zig` 自体がコンパイルできないほど std が違う版では、診断の前に標準ライブラリのエラーで止まる。固定の根拠は [adr/0001-zig-version-pinning.md](adr/0001-zig-version-pinning.md) |
 | Git | 任意 | |
 | GitHub CLI (`gh`) | 任意 | PR 操作に使う |
 | Node.js | 任意 | Web UI の確認とローカル配信に使う。本体のビルドには不要 |

@@ -36,6 +36,11 @@ concurrency:
   # on the same branch. github.ref distinguishes refs/heads/main from
   # refs/pull/<n>/merge, which is correct here because the two triggers no
   # longer overlap.
+  #
+  # Superseding means the older commit's run ends as cancelled and never turns
+  # green. That is the intended trade for not paying for runs nobody will read:
+  # the branch tip is what gets merged. "CI all green" is judged on the head
+  # commit of the PR, not on every intermediate commit.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 

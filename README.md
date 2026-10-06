@@ -20,12 +20,12 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 | --- | --- | --- | --- |
 | Linux (x86_64) | あり | あり | 0 |
 | Windows (x86_64) | あり | あり | 0 |
-| Linux (aarch64) | 目標(クロスコンパイル) | なし | 未着手 |
-| Windows (aarch64) | 目標(クロスコンパイル) | なし | 未着手 |
-| macOS (x86_64, aarch64) | 目標(クロスコンパイル) | なし | 未着手 |
+| Linux (aarch64) | あり(クロスコンパイル) | なし | 0 |
+| Windows (aarch64) | あり(クロスコンパイル) | なし | 0 |
+| macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし | 0 |
 | WebAssembly | 目標 | 目標(Node.js 上でのエクスポート呼び出し) | 段階1 |
 
-「到達した段階」が未着手または段階1以降の行は、まだそうなっていないという意味です。クロスコンパイルとリリース成果物は段階1から用意します。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
+クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。段階1から用意するのはリリースのワークフローと成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
 
 自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしません。GitHub Actions の macOS ランナーの課金単位が他の10倍であるためです([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。macOS の署名と公証も行いません。
 

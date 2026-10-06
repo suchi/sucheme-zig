@@ -26,7 +26,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
 | ビルド | `zig build` | 0 | 全コミット |
-| 実行(REPL) | `zig build run` | 0 | - |
+| 実行 | `zig build run -- <引数>` | 0 | - |
 | ビルド(WASM) | `zig build wasm` | 1 | 全コミット |
 | 進捗の生成 | `zig build report` | 1 | 全コミット |
 | 進捗の同期検査 | `zig build check-report` | 1 | 全コミット |
@@ -35,6 +35,8 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 コミット前に必ずテスト・リントを実行する。この表が正であり、他の文書はコマンド名を列挙せずここを参照する。新しいコマンドを足したらこの表に追加する。表にないコマンドは検証とレビューの対象外になる。
 
 ファジングを全コミットの CI に入れないのは、`--fuzz` が自律的に停止せず、時間切れまで走り続けるためである。全コミットの CI に入れると毎回タイムアウトする。手動実行と定期実行(スケジュール起動)に限る。
+
+`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。段階0では `--version` と `--help` 以外は非ゼロで終わるので、引数なしの `zig build run` は失敗する。
 
 `zig build test-wasm` は Node.js 上でエクスポートを呼び出す往復テストである([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([docs/design/r7rs-coverage.md](docs/design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
 

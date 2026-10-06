@@ -8,7 +8,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 
 /// Implementation name reported by `(features)` and the `--version` output.
-pub const name = "sucheme";
+pub const name = build_options.name;
 
 /// Project version. build.zig.zon's `.version` is the single source of truth;
 /// build.zig passes it through as a build option.
@@ -18,6 +18,6 @@ test "version is non-empty" {
     try std.testing.expect(version.len > 0);
 }
 
-test "name is the implementation name" {
-    try std.testing.expectEqualStrings("sucheme", name);
+test "name is non-empty" {
+    try std.testing.expect(name.len > 0);
 }
