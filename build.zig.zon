@@ -4,12 +4,16 @@
     .fingerprint = 0x9894d23d00f10c0d,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
+    // .zigversion は build.zig が @embedFile で読む。tests は段階1の
+    // `zig build report` と段階6の `test-conformance` が読む。欠けると依存
+    // パッケージとして取得された側でビルドまたは検証が失敗する。
     .paths = .{
         "build.zig",
         "build.zig.zon",
         ".zigversion",
         "src",
         "tools",
+        "tests",
         "LICENSE",
         "README.md",
     },

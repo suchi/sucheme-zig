@@ -6,16 +6,8 @@ const builtin = @import("builtin");
 /// tools/check-docs verifies; Zig itself does not enforce it.
 const pinned_zig_version = @embedFile(".zigversion");
 
-/// Root source files of the modules whose tests `zig build test` runs.
-///
-/// These strings create the modules below, so the paths and the modules cannot
-/// disagree. `test_modules` is typed with this array's length, so dropping a
-/// module from the test loop is a compile error rather than a silently skipped
-/// test file. tools/check-docs receives the same strings.
-const test_roots = [_][]const u8{ "src/sucheme.zig", "src/main.zig" };
-
-/// Repository-relative paths under src/ that must not become `addTest`
-/// targets. Full paths, not base names: `wasm.zig` alone would also exclude
+/// Repository-relative paths that must not become `addTest` targets. Full
+/// paths, not base names: `wasm.zig` alone would also exclude
 /// src/platform/wasm.zig.
 ///
 /// Empty at stage 0. Stage 1 adds "src/wasm.zig": a wasm32-freestanding test
@@ -24,8 +16,21 @@ const test_roots = [_][]const u8{ "src/sucheme.zig", "src/main.zig" };
 /// does not exist, so entries are added with the file, not ahead of it.
 const test_excluded = [_][]const u8{};
 
-/// The helper programs under tools/.
+/// The helper programs under tools/. Each is a single-file module.
 const tool_names = [_][]const u8{ "check-docs", "extract-r7rs-required" };
+
+/// A module whose tests `zig build test` runs, paired with the path that
+/// created it.
+///
+/// One value feeds both the `addTest` call and the `--root` argument passed to
+/// tools/check-docs, in the same loop. Keeping them apart has twice produced a
+/// build where a source file's tests silently stopped running while every
+/// check stayed green: first by dropping a module from the test loop, then by
+/// repeating one module and losing the other.
+const TestTarget = struct {
+    path: []const u8,
+    mod: *std.Build.Module,
+};
 
 pub fn build(b: *std.Build) void {
     enforcePinnedZigVersion();
@@ -41,17 +46,19 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "name", @tagName(manifest.name));
     options.addOption([]const u8, "version", manifest.version);
 
+    const lib_path = "src/sucheme.zig";
     const sucheme = b.addModule("sucheme", .{
-        .root_source_file = b.path(test_roots[0]),
+        .root_source_file = b.path(lib_path),
         .target = target,
         .optimize = optimize,
     });
     sucheme.addOptions("build_options", options);
 
+    const exe_path = "src/main.zig";
     const exe = b.addExecutable(.{
         .name = @tagName(manifest.name),
         .root_module = b.createModule(.{
-            .root_source_file = b.path(test_roots[1]),
+            .root_source_file = b.path(exe_path),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "sucheme", .module = sucheme }},
@@ -64,27 +71,35 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "run the sucheme executable").dependOn(&run.step);
 
-    // One addTest per module: a test binary covers a single module. The array
-    // length is tied to test_roots, so the two lists cannot drift apart.
-    const test_modules: [test_roots.len]*std.Build.Module = .{ sucheme, exe.root_module };
-    const test_step = b.step("test", "run the unit tests");
-    for (test_modules) |mod| {
-        const t = b.addTest(.{ .root_module = mod });
-        test_step.dependOn(&b.addRunArtifact(t).step);
-    }
-
-    // Every tool compiles as part of `zig build test`, which AGENTS.md's
-    // command table treats as the type check. extract-r7rs-required is run by
-    // hand, so without this it could rot unnoticed until the next extraction.
-    for (tool_names) |name| test_step.dependOn(&tool(b, name).step);
-
-    const run_check_docs = b.addRunArtifact(tool(b, "check-docs"));
+    const check_docs = tool(b, "check-docs");
+    const run_check_docs = b.addRunArtifact(check_docs);
     // Run steps inherit the directory `zig build` was started from, not the
     // build root, so a relative read would fail under --build-file.
     run_check_docs.setCwd(b.path("."));
-    for (test_roots) |path| {
+
+    const test_step = b.step("test", "run the unit tests");
+
+    var targets: std.ArrayList(TestTarget) = .empty;
+    targets.append(b.allocator, .{ .path = lib_path, .mod = sucheme }) catch @panic("OOM");
+    targets.append(b.allocator, .{ .path = exe_path, .mod = exe.root_module }) catch @panic("OOM");
+    // The tools are verification code; without tests of their own in the test
+    // step, a failing assertion in them would never run. They hold most of the
+    // new logic at stage 0.
+    for (tool_names) |name| {
+        const t = tool(b, name);
+        targets.append(b.allocator, .{
+            .path = b.fmt("tools/{s}/main.zig", .{name}),
+            .mod = t.root_module,
+        }) catch @panic("OOM");
+    }
+
+    // One loop, one list: a module and the path check-docs is told about come
+    // from the same value, so neither can be dropped or duplicated alone.
+    for (targets.items) |t| {
+        const unit = b.addTest(.{ .root_module = t.mod });
+        test_step.dependOn(&b.addRunArtifact(unit).step);
         run_check_docs.addArg("--root");
-        run_check_docs.addArg(path);
+        run_check_docs.addArg(t.path);
     }
     for (test_excluded) |path| {
         run_check_docs.addArg("--exclude");
@@ -112,6 +127,10 @@ fn enforcePinnedZigVersion() void {
     const have = builtin.zig_version;
     // Exact equality, including prerelease and build metadata: a 0.17.0-dev
     // master build is not the 0.17.0 release, and ADR-0001 pins the release.
+    //
+    // This only runs once build.zig itself compiles. A Zig whose std differs
+    // enough fails earlier, in the configure compile, with a std error rather
+    // than this diagnostic. docs/design/zig-api-notes.md records that limit.
     if (want.order(have) == .eq and
         optionalStringsEqual(want.pre, have.pre) and
         optionalStringsEqual(want.build, have.build)) return;

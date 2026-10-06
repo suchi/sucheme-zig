@@ -297,11 +297,11 @@ export fn alloc(n: usize) ?[*]u8 { ... }
     .fingerprint = 0x0,                    // 後述
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
-    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "src", "lib", "tools", "tests", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "src", "tools", "tests", "LICENSE", "README.md" },
 }
 ```
 
-`.paths` に `.zigversion` を入れるのは、`build.zig` が `@embedFile(".zigversion")` で読むためである。欠けると依存パッケージとして取得されたときにビルドが失敗する。`tests` を入れるのは、段階1の `zig build report` と段階6の `test-conformance` が `tests/r7rs-required/*.txt` を読むためである。
+`.paths` に `.zigversion` を入れるのは、`build.zig` が `@embedFile(".zigversion")` で読むためである。欠けると依存パッケージとして取得されたときにビルドが失敗する。`tests` を入れるのは、段階1の `zig build report` と段階6の `test-conformance` が `tests/r7rs-required/*.txt` を読むためである。`lib` は段階2で Scheme のソースを置いたときに加える。存在しないパスを先に書くと、何が必要で何が未着手かが読めなくなる。
 
 `fingerprint` はパッケージ名と結びついた値である。誤った値を書くとビルドが失敗し、エラーメッセージが正しい値を教えてくれるので、それを貼る。この値は一度決めたら変更しない(フォークの検出に使われる)。
 
@@ -323,7 +323,9 @@ export fn alloc(n: usize) ?[*]u8 { ... }
 
 第1種は「現在固定しているバージョンはこれである」という宣言である。正は `.zigversion` のみとする。機械が読む必要がある `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` は値を複製するが、`.zigversion` と一致することを `tools/check-docs` が検査する。README、ロードマップ、オンボーディングの前提表、SOW には宣言を書かず、`.zigversion` を参照する。
 
-版の強制は `build.zig` が行う。`.zigversion` を `@embedFile` で読み、`builtin.zig_version` と完全一致しなければ診断を出して止める。`build.zig.zon` の `minimum_zig_version` にバージョン検査を期待してはならない。Zig 0.17.0 では検査されないことを実機で確認した。`minimum_zig_version = "0.99.0"` のまま `zig build` と `zig build test` が警告も出さずに exit 0 になる。`lib/compiler/` に `builtin.zig_version` との比較は存在しない。
+版の強制は `build.zig` が行う。`.zigversion` を `@embedFile` で読み、`builtin.zig_version` と完全一致しなければ診断を出して止める。
+
+この強制には限界がある。`build.zig` がコンパイルされて実行されて初めて走るので、`std.zon.parse` や `std.process.Init` のような 0.17.0 固有の API が無い版では、configure 段のコンパイルが先に失敗して診断は出ない。利用者が見るのは標準ライブラリのエラーである。固定を外れた版を使っていることは伝わるが、原因が版であることは伝わらない。`comptime` の `@compileError` に移せば先に出せるが、`@embedFile` と `SemanticVersion.parse` を comptime で回す必要があり、段階0では採らない。`build.zig.zon` の `minimum_zig_version` にバージョン検査を期待してはならない。Zig 0.17.0 では検査されないことを実機で確認した。`minimum_zig_version = "0.99.0"` のまま `zig build` と `zig build test` が警告も出さずに exit 0 になる。`lib/compiler/` に `builtin.zig_version` との比較は存在しない。
 
 第2種は「このバージョンで確認した」「このバージョンの API はこうである」という検証と仕様の記録である。本ドキュメント、ADR、設計ドキュメントの実機確認の記述がこれにあたる。版数を書く。これは履歴であって、バージョンを上げたときに自動で書き換える対象ではない。新しいバージョンで再確認したら、確認した版を併記するか記述を更新する。
 
@@ -331,7 +333,7 @@ export fn alloc(n: usize) ?[*]u8 { ... }
 
 版数の宣言が散文に現れないことは機械検査にしない。実際に走らせると偽陽性と偽陰性が同時に出る。オンボーディングには `[0.17.0 の言語リファレンス](https://ziglang.org/documentation/0.17.0/)` という参照の URL があり、宣言ではないのに一致する。同じファイルの落とし穴の表には `0.17 では std.Io.Dir.cwd()` と書かれており、版を上げたときに古くなる記述なのに `0.17.0` には一致しない。宣言と参照と確認の記録を文字列で区別できない。下の更新手順の段で人手で確認する。
 
-`tools/check-docs` は版以外に次も検査する。`src/` の全 `.zig` がテストの根から `@import` の連鎖で到達できること、他の `.zig` を `@import` するファイルが `refAllDecls(@This())` を持つこと、Markdown の相対リンクが実在すること(コードフェンス内は対象外)、1つのファイル内に同じ見出しが2つないこと。
+`tools/check-docs` が版以外に何を検査するかは [plans/0002-phase0-scaffolding.md](../plans/0002-phase0-scaffolding.md) の表が正である。ここに複製しない。
 
 バージョンを上げるときは次の順で行う。
 

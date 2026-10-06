@@ -28,8 +28,10 @@ pub fn main(init: std.process.Init) !void {
 
     var out_buf: [512]u8 = undefined;
     var err_buf: [512]u8 = undefined;
-    var stdout = std.Io.File.Writer.init(.stdout(), io, &out_buf);
-    var stderr = std.Io.File.Writer.init(.stderr(), io, &err_buf);
+    // Streaming, not the default positional mode: positional starts at
+    // offset 0 and would overwrite the head of `sucheme --version >> log`.
+    var stdout = std.Io.File.Writer.initStreaming(.stdout(), io, &out_buf);
+    var stderr = std.Io.File.Writer.initStreaming(.stderr(), io, &err_buf);
     const out = &stdout.interface;
     const err = &stderr.interface;
 

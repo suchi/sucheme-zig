@@ -10,7 +10,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階0(足場)進行中。リポジトリの public 化のみ未了 |
+| 現在の段階 | 段階0(足場)進行中。リポジトリの public 化と、`main` での CI グリーンの確認が未了 |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
@@ -47,7 +47,7 @@
 
 確定したこと: `build.zig` の step は段階0の4つ(既定・`run`・`test`・`check-docs`)。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、16ライブラリ・557識別子を `tests/r7rs-required/` に置いた。
 
-残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容を下の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) に書いた。
+残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。
 
 ### 段階1: 通しで動く最小の縦切り
 

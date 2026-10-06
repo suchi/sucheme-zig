@@ -44,7 +44,10 @@ pub fn main(init: std.process.Init) !void {
     const cwd = std.Io.Dir.cwd();
 
     var buf: [8192]u8 = undefined;
-    var stderr = std.Io.File.Writer.init(.stderr(), io, &buf);
+    // Streaming, not the default positional mode: a positional writer starts at
+    // offset 0 and would overwrite the head of an appended or shared file, so
+    // `zig build check-docs >> ci.log 2>&1` would eat earlier output.
+    var stderr = std.Io.File.Writer.initStreaming(.stderr(), io, &buf);
     var rep: Reporter = .{ .w = &stderr.interface };
 
     const argv = try init.minimal.args.toSlice(gpa);
@@ -69,7 +72,10 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
     }
-    if (roots.items.len == 0 and !bad_args) rep.fail("build.zig passed no --root", .{});
+    if (roots.items.len == 0 and !bad_args) {
+        rep.fail("build.zig passed no --root", .{});
+        bad_args = true;
+    }
 
     // A malformed command line makes the later checks report consequences
     // rather than causes, so stop here.
@@ -88,8 +94,14 @@ pub fn main(init: std.process.Init) !void {
     if (rep.count != 0) std.process.exit(1);
 }
 
-fn read(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, path: []const u8) ?[:0]u8 {
-    return cwd.readFileAllocOptions(io, path, gpa, .unlimited, .of(u8), 0) catch null;
+/// Reads a file, reporting rather than swallowing a failure: a file that cannot
+/// be read drops out of every check, and silence there would be reported as
+/// "all checks passed".
+fn read(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Reporter, path: []const u8) ?[:0]u8 {
+    return cwd.readFileAllocOptions(io, path, gpa, .unlimited, .of(u8), 0) catch |err| {
+        rep.fail("{s} cannot be read ({t}), so it is unchecked", .{ path, err });
+        return null;
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -105,13 +117,13 @@ fn checkZigVersionAgreement(
     cwd: std.Io.Dir,
     rep: *Reporter,
 ) !void {
-    const pinned_raw = read(gpa, io, cwd, ".zigversion") orelse {
+    const pinned_raw = read(gpa, io, cwd, rep, ".zigversion") orelse {
         rep.fail(".zigversion is missing", .{});
         return;
     };
     const pinned = std.mem.trim(u8, pinned_raw, &std.ascii.whitespace);
 
-    if (read(gpa, io, cwd, "build.zig.zon")) |source| {
+    if (read(gpa, io, cwd, rep, "build.zig.zon")) |source| {
         var diagnostics: std.zon.parse.Diagnostics = undefined;
         if (std.zon.parse.fromSlice(Manifest, .{
             .gpa = gpa,
@@ -140,10 +152,10 @@ fn checkZigVersionAgreement(
 
     var setups: usize = 0;
     for (workflows.items) |path| {
-        const body = read(gpa, io, cwd, path) orelse continue;
+        const body = read(gpa, io, cwd, rep, path) orelse continue;
         var found: std.ArrayList([]const u8) = .empty;
-        try workflowZigVersions(gpa, body, &found);
-        setups += found.items.len;
+        const steps = try workflowZigVersions(gpa, body, &found);
+        setups += steps;
         // Every setup step is checked, not just the first: a second job could
         // otherwise install a different Zig. A workflow with no setup step is
         // fine — not every workflow needs Zig.
@@ -151,6 +163,15 @@ fn checkZigVersionAgreement(
             if (!std.mem.eql(u8, version, pinned))
                 rep.fail("{s} sets up Zig {s}, .zigversion is {s}", .{ path, version, pinned });
         }
+        // Counting steps separately from versions matters: a step whose
+        // `version` this parser cannot see (keys reordered, or a flow mapping)
+        // would otherwise be indistinguishable from no step at all, and could
+        // install any Zig unchecked.
+        if (steps != found.items.len)
+            rep.fail(
+                "{s}: {d} setup-zig step(s) but {d} readable version(s); write `version:` as its own line",
+                .{ path, steps, found.items.len },
+            );
     }
     if (setups == 0)
         rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
@@ -165,7 +186,8 @@ fn workflowZigVersions(
     gpa: std.mem.Allocator,
     body: []const u8,
     out: *std.ArrayList([]const u8),
-) !void {
+) !usize {
+    var steps: usize = 0;
     var in_setup = false;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
@@ -179,6 +201,7 @@ fn workflowZigVersions(
         if (std.mem.startsWith(u8, body_of_item, "uses:")) {
             const value = std.mem.trim(u8, body_of_item["uses:".len..], &std.ascii.whitespace);
             in_setup = std.mem.indexOf(u8, value, "setup-zig@") != null;
+            if (in_setup) steps += 1;
             continue;
         }
         if (!in_setup) continue;
@@ -190,6 +213,7 @@ fn workflowZigVersions(
             if (value.len != 0) try out.append(gpa, value);
         }
     }
+    return steps;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +235,10 @@ fn checkSources(
     excluded: []const []const u8,
 ) !void {
     var files: std.ArrayList([]const u8) = .empty;
-    try collectFiles(gpa, io, cwd, "src", ".zig", &files, .recursive);
+    // tools/ holds most of stage 0's logic and is verification code itself, so
+    // it is subject to the same reachability and refAllDecls rules as src/.
+    for ([_][]const u8{ "src", "tools" }) |root|
+        try collectFiles(gpa, io, cwd, root, ".zig", &files, .recursive);
 
     var reachable: std.StringHashMapUnmanaged(void) = .empty;
     for (roots) |r| {
@@ -228,7 +255,7 @@ fn checkSources(
         changed = false;
         for (files.items) |path| {
             if (!reachable.contains(path)) continue;
-            const body = read(gpa, io, cwd, path) orelse continue;
+            const body = read(gpa, io, cwd, rep, path) orelse continue;
             const dir = std.fs.path.dirnamePosix(path) orelse "src";
             var imports: std.ArrayList([]const u8) = .empty;
             try zigImports(gpa, body, &imports);
@@ -250,7 +277,7 @@ fn checkSources(
         if (!reachable.contains(path))
             rep.fail("{s} is not reached from any test root; its tests would be skipped", .{path});
 
-        const body = read(gpa, io, cwd, path) orelse continue;
+        const body = read(gpa, io, cwd, rep, path) orelse continue;
         var imports: std.ArrayList([]const u8) = .empty;
         try zigImports(gpa, body, &imports);
         if (imports.items.len == 0) continue;
@@ -359,7 +386,7 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
     try collectFiles(gpa, io, cwd, ".", ".md", &files, .recursive);
 
     for (files.items) |path| {
-        const body = read(gpa, io, cwd, path) orelse continue;
+        const body = read(gpa, io, cwd, rep, path) orelse continue;
         const dir = std.fs.path.dirnamePosix(path) orelse ".";
 
         var headings: std.StringHashMapUnmanaged(void) = .empty;
@@ -376,17 +403,24 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
 
             if (fenceRun(trimmed)) |run| {
                 if (fence) |open| {
-                    if (run.ch == open.ch and run.len >= open.len) fence = null;
+                    // Only a bare run of the same character, at least as long,
+                    // closes the block. Anything else is content.
+                    if (run.bare and run.ch == open.ch and run.len >= open.len) {
+                        fence = null;
+                        continue;
+                    }
                 } else {
                     fence = .{ .ch = run.ch, .len = run.len };
                     fence_line = lineno;
+                    continue;
                 }
-                continue;
             }
             if (fence != null) continue;
 
-            if (std.mem.startsWith(u8, line, "#")) {
-                const text = atxHeadingText(line);
+            // Up to three spaces of indentation are allowed before the `#`
+            // run, so the heading scan uses the same trimmed line as the fence
+            // scan. GitHub renders both as headings with the same anchor.
+            if (atxHeadingText(trimmed)) |text| {
                 if (text.len != 0) {
                     if (headings.contains(text))
                         rep.fail("{s}:{d}: duplicate heading \"{s}\"", .{ path, lineno, text })
@@ -402,13 +436,21 @@ fn checkMarkdown(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rep: *Repo
     }
 }
 
-/// Extracts the text of an ATX heading.
+/// Extracts the text of an ATX heading, or null when the line is not one.
 ///
-/// A closing `#` run only counts when whitespace precedes it, per CommonMark.
-/// Trimming `#` unconditionally would make `## C#` and `## C` the same heading.
-fn atxHeadingText(line: []const u8) []const u8 {
-    const after_hashes = std.mem.trimStart(u8, line, "#");
-    var text = std.mem.trim(u8, after_hashes, " ");
+/// CommonMark requires whitespace between the opening `#` run and the text, so
+/// `#5 bolt` is a paragraph, not a heading. A closing `#` run only counts when
+/// whitespace precedes it: trimming `#` unconditionally would make `## C#` and
+/// `## C` the same heading.
+fn atxHeadingText(trimmed: []const u8) ?[]const u8 {
+    if (trimmed.len == 0 or trimmed[0] != '#') return null;
+    var hashes: usize = 0;
+    while (hashes < trimmed.len and trimmed[hashes] == '#') hashes += 1;
+    if (hashes > 6) return null;
+    const rest = trimmed[hashes..];
+    if (rest.len != 0 and rest[0] != ' ' and rest[0] != '\t') return null;
+
+    var text = std.mem.trim(u8, rest, " \t");
     if (text.len == 0) return text;
     var end = text.len;
     while (end > 0 and text[end - 1] == '#') end -= 1;
@@ -419,15 +461,20 @@ fn atxHeadingText(line: []const u8) []const u8 {
     return text;
 }
 
-/// Recognises a fence line and returns its character and length.
-fn fenceRun(trimmed: []const u8) ?struct { ch: u8, len: usize } {
+/// Recognises a fence line: a run of at least three backticks or tildes, plus
+/// whether anything other than whitespace follows it.
+fn fenceRun(trimmed: []const u8) ?struct { ch: u8, len: usize, bare: bool } {
     if (trimmed.len < 3) return null;
     const ch = trimmed[0];
     if (ch != '`' and ch != '~') return null;
     var n: usize = 0;
     while (n < trimmed.len and trimmed[n] == ch) n += 1;
     if (n < 3) return null;
-    return .{ .ch = ch, .len = n };
+    // CommonMark: "The closing code fence ... may be followed only by spaces or
+    // tabs". A line like ```zig opens a block; treating it as a close turns one
+    // valid document into two false positives.
+    const rest = std.mem.trim(u8, trimmed[n..], " \t");
+    return .{ .ch = ch, .len = n, .bare = rest.len == 0 };
 }
 
 fn checkLinksOnLine(
@@ -441,6 +488,9 @@ fn checkLinksOnLine(
     line: []const u8,
 ) !void {
     var i: usize = 0;
+    // Backtick parity within the line. A code span that spans lines is not
+    // tracked, so a link-looking fragment inside one is reported. CommonMark
+    // allows multi-line spans; no file here uses one.
     var in_code_span = false;
     while (i < line.len) {
         // An inline code span may contain `](dest)` as an example; it is not a
@@ -494,7 +544,10 @@ fn linkDestination(rest: []const u8) ?struct { target: []const u8, consumed: usi
     }
     const close = std.mem.indexOfScalar(u8, rest, ')') orelse return null;
     var target = std.mem.trim(u8, rest[0..close], " \t");
-    // Strip a title: the destination ends at the first unescaped space.
+    // Strip a title. Backslash escapes are not handled: a destination such as
+    // `a\ b.md` is reported under the truncated name. No file in this
+    // repository needs one, and handling them means implementing CommonMark's
+    // escape rules.
     if (std.mem.indexOfAny(u8, target, " \t")) |space|
         target = std.mem.trimEnd(u8, target[0..space], " \t");
     return .{ .target = target, .consumed = close };

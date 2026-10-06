@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     const cwd = std.Io.Dir.cwd();
 
     var buf: [4096]u8 = undefined;
-    var stdout = std.Io.File.Writer.init(.stdout(), io, &buf);
+    var stdout = std.Io.File.Writer.initStreaming(.stdout(), io, &buf);
     const out = &stdout.interface;
 
     const html = cwd.readFileAlloc(io, html_path, gpa, .unlimited) catch |err| {
