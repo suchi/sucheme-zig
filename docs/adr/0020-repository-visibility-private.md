@@ -14,19 +14,23 @@ ADR-0012 はリポジトリを public にすると決め、段階0で実施し�
 
 リポジトリを private にする。
 
-公開を前提にしていた決定のうち、次が影響を受ける。
+公開を前提にしていた決定を見直した。可用性の主張はいずれも一次情報で確認した。
 
-| 影響を受けるもの | 帰結 |
+| 項目 | 帰結 |
 | --- | --- |
-| GitHub Pages | private リポジトリでは GitHub Enterprise Cloud でないと使えない。Web UI の配置先を変える([ADR-0021](0021-no-github-pages-defer-hosting.md)) |
-| arm64 ランナー | 無償提供は public リポジトリに限られる。CI のテスト対象は x86_64 の2ランナーのまま([ADR-0010](0010-ci-cd-and-release-strategy.md)の範囲を変えない) |
+| GitHub Pages | サイトは private リポジトリからでも公開できるが、公開されたサイト自体が private にはならない。private にした判断と両立しないので、配置先を変える([ADR-0021](0021-no-github-pages-defer-hosting.md)) |
+| arm64 ランナー | 影響を受けない。arm64 の標準ランナーは private リポジトリでも使える。aarch64 をテスト対象に加えるかは可視性とは独立の判断で、[ADR-0010](0010-ci-cd-and-release-strategy.md) の範囲を変えない |
 | ライセンス | MIT のまま変えない([ADR-0015](0015-mit-license.md))。private であってもライセンスファイルを置く意味は失われない。将来公開する場合に判断をやり直さずに済む |
 | 外部スイートのライセンス | BSD 3条項の表示義務は再配布時に生じる。private のうちは配布していないが、記載は維持する([ADR-0013](0013-testing-strategy-and-conformance-suite.md)) |
 
-Actions は private リポジトリでも動く。使用量の無料枠が public より小さいため、全コミットで走らせる検証を増やすときは課金への影響を見る。
+Pages について確認した事実は3つである。1つ目、Free では public リポジトリに限られる。「If the account that owns the repository uses GitHub Free or GitHub Free for organizations, the repository must be public.」([Creating a GitHub Pages site](https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site))。2つ目、private リポジトリから公開した場合もサイトはインターネットに公開される。「GitHub Pages sites are publicly available on the internet, even if the repository for the site is private (if your plan or organization allows it).」(同)。3つ目、サイトをアクセス制限するには組織アカウントで Enterprise Cloud が必要である。「To publish a GitHub Pages site privately, your organization must use GitHub Enterprise Cloud.」([Changing the visibility of your GitHub Pages site](https://docs.github.com/en/enterprise-cloud@latest/pages/getting-started-with-github-pages/changing-the-visibility-of-your-github-pages-site))。本リポジトリは個人アカウントなので3つ目を満たせない。
+
+arm64 については、2026-01-29 に private リポジトリでの提供が始まっている。「Linux and Windows arm64 standard hosted runners are now supported in all repositories.」「In private repositories, these runners have two vCPUs; in public repositories, they have four vCPUs.」「Because these are standard GitHub-hosted runners, usage counts towards the free minutes included in your plan.」([GitHub Changelog 2026-01-29](https://github.blog/changelog/2026-01-29-arm64-standard-runners-are-now-available-in-private-repositories/))。private 化が aarch64 の可否を変えるという想定は誤りだった。
+
+Actions は private リポジトリでも動く。public では標準ランナーの実行分数が課金されないのに対し、private ではプランに含まれる分数に計上される。全コミットで走らせる検証を増やすときは使用量を見る。
 
 ## 結果
 
-- メリ: ユーザーの意図に沿う。公開の判断を後からやり直せる。
-- デメリット・受け入れたトレードオフ: GitHub Pages が使えないため Web UI の配置先を別に用意する必要がある。arm64 ランナーが使えないため、aarch64 の動作保証は引き続き行わない。Actions の無料枠が小さい。実装の参照先として公開できない。
+- メリット: ユーザーの意図に沿う。公開の判断を後からやり直せる。
+- デメリット・受け入れたトレードオフ: Web UI の配置先を Pages 以外に用意する必要がある。Actions の実行分数がプランの枠に計上される。実装の参照先として公開できない。
 - 将来の見直し条件: 公開する判断に変わった場合、本ADRを非推奨にして新ADRを書く。そのとき ADR-0021 の配置先の決定も見直す。

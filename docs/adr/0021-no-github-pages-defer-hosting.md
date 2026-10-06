@@ -8,7 +8,9 @@
 
 ADR-0011 は `gh-pages` ブランチ方式で、リリース版・main・PR ごとのプレビューを配信すると決めた。前提は public リポジトリで GitHub Pages が無償で使えることだった。
 
-[ADR-0020](0020-repository-visibility-private.md) でリポジトリを private にしたため、この前提が消えた。private リポジトリの GitHub Pages は GitHub Enterprise Cloud でないと使えない。
+[ADR-0020](0020-repository-visibility-private.md) でリポジトリを private にしたため、この前提が変わった。private リポジトリからでも Pages のサイトは公開できるが、公開されたサイト自体は private にならない。「GitHub Pages sites are publicly available on the internet, even if the repository for the site is private (if your plan or organization allows it).」([Creating a GitHub Pages site](https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site))。サイトをアクセス制限するには組織アカウントで Enterprise Cloud が必要であり、「To publish a GitHub Pages site privately, your organization must use GitHub Enterprise Cloud.」([Changing the visibility of your GitHub Pages site](https://docs.github.com/en/enterprise-cloud@latest/pages/getting-started-with-github-pages/changing-the-visibility-of-your-github-pages-site))。本リポジトリは個人アカウントなのでこれを満たせない。
+
+つまり Pages を使うと、リポジトリを private にしたのに Web UI だけが公開される。ADR-0011 が前提にしていたのは公開して構わない成果物であり、その前提が成り立たなくなった。
 
 あわせてユーザーから、配置は計画の後半でよく、どこかのクラウドに private に置ければ十分という判断を受けた。
 
@@ -44,4 +46,4 @@ PR で動作を確認する手段は、CI の成果物として `sucheme.wasm` �
 
 - メリット: private リポジトリと両立する。シークレットを段階7まで増やさない。配置先の選定を、実際に配置したい時点の事情で決められる。`gh-pages` ブランチの履歴が膨らむ問題も起きない。
 - デメリット・受け入れたトレードオフ: PR で URL を開いて確認できない。zip を展開してローカルサーバを立てる手間がレビュアに残る。配置先が未定のまま段階8まで進むので、段階8の作業量が見積もりにくい。
-- 将来の見直し条件: リポジトリを public に戻す判断が出た場合、GitHub Pages と ADR-0011 の構成を再検討する。段階8より前に配置が必要になった場合、本ADRを非推奨にして新ADRを書く。
+- 将来の見直し条件: リポジトリを public に戻す判断が出た場合、サイトが公開されることが問題でなくなるので、GitHub Pages と ADR-0011 の構成を再検討する。段階8より前に配置が必要になった場合、本ADRを非推奨にして新ADRを書く。
