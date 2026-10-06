@@ -8,12 +8,24 @@
 | 内容 | R7RS 誤記修正版 HTML の付録A(Standard Libraries) |
 | 取得日 | 2026-10-06 |
 | サイズ | 67,552 バイト |
-| SHA-256 | `d20241aed9d26e0f32644040359613ab4fde27fc69a154042b5bf7bc6629e47b` |
+| 入力の SHA-256 | `d20241aed9d26e0f32644040359613ab4fde27fc69a154042b5bf7bc6629e47b` |
 | 抽出プログラム | [main.zig](main.zig) |
 
 ネットワークから取得せずリポジトリに置くのは、再現可能なビルドを保ち、抽出結果を後から検証できるようにするためである([ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md))。
 
 [docs/design/r7rs-coverage.md](../../docs/design/r7rs-coverage.md) と [docs/onboarding.md](../../docs/onboarding.md) が挙げている `https://standards.scheme.org/corrected-r7rs/r7rs.html` は分割 HTML の表紙であり、識別子を1件も含まない。付録Aは上の URL にある。
+
+## 抽出結果の固定
+
+`tests/r7rs-required/*.txt` は生成物であり手で編集しない。入力のハッシュだけではこれを守れない。`appendix-a.html` を変えずに `base.txt` から識別子を削っても、入力のハッシュは一致したままである。実際に `dynamic-wind` と `call-with-current-continuation` を削って作り物の名前を1つ足したところ、検証コマンドはすべて通った。これらのファイルは段階6で準拠マトリクスの分母になる。
+
+16ファイルをまとめた1つのハッシュで固定し、`zig build check-docs` が照合する。ファイル名を内容とともにハッシュするので、ファイルの追加・削除・改名も値を変える。1ファイルずつ記録しないのは、再抽出のときに更新する値を1つに保つためである。
+
+| 項目 | 値 |
+| --- | --- |
+| 抽出結果の SHA-256 | `b24ab7d6dddc0bd30816d0bffb438a2823efc010821a1143aef2357cfa6ab971` |
+
+記録と一致しないとき、`zig build check-docs` は計算した値を全桁表示する。再抽出したあとはその値をここに貼り替える。
 
 ## 複製の許諾
 
@@ -45,16 +57,31 @@ R7RS は全文または一部の複製を許諾している。Introduction の B
 
 R7RS の版が上がった場合、または誤記修正が入った場合に行う。
 
-ハッシュを記録するのは、入力が「corrected-r7rs」すなわち誤記修正が入り続ける生きた版であり、サイズだけでは改変を検出できないためである。[ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) は取り込んだファイルを改変しないことを求めており、その検証手段がこれである。`zig build check-docs` が本ファイルの SHA-256 と実物を照合する。
+ハッシュを記録するのは、入力が「corrected-r7rs」すなわち誤記修正が入り続ける生きた版であり、サイズだけでは改変を検出できないためである。[ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) は取り込んだファイルを改変しないことを求めており、その検証手段がこれである。`zig build check-docs` が本ファイルの記録と実物を照合する。入力と抽出結果の両方を照合するので、記録は2つある。
+
+### 手順
+
+```
+$ sha256sum tools/extract-r7rs-required/appendix-a.html
+```
+
+1. 上の URL からページを取得して `appendix-a.html` を置き換える。
+2. 本ファイルの取得日・サイズ・入力の SHA-256 を更新する。取得日はここだけに書く。
+3. R7RS の版が変わってライブラリ数が16でなくなった場合は、`main.zig` の `expected_library_count` を更新する。同じ数が報告と検査の両方に使われる。
+4. `zig run tools/extract-r7rs-required/main.zig` を実行する。
+5. 報告されたライブラリ数と識別子数を上の表に反映する。
+6. `zig build check-docs` を実行し、報告された抽出結果の SHA-256 を「抽出結果の固定」の表に貼り替える。
+7. `tests/r7rs-required/*.txt` の差分をレビューする。識別子の増減は準拠マトリクスに直接影響する。
+8. サイズと識別子数を引用している文書を更新する。[docs/plans/0002-phase0-scaffolding.md](../../docs/plans/0002-phase0-scaffolding.md) は入力の選定を裏づける実測として、[docs/roadmap.md](../../docs/roadmap.md) は段階0の到達点としてこれらの数を書いている。どちらも段階0の記録なので、値が変わったことを追記する形でよい。
 
 ### ADR-0013 の記録項目との対応
 
-[ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) は `tests/vendor/` に置く外部スイートを対象に、取得元のリポジトリ・取得時のコミットハッシュ・取得日・ライセンス名の記録と、ライセンス全文の同梱を求めている。本ファイルの対応は次のとおりで、2点が形を変えている。
+[ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) は `tests/vendor/` に置く外部スイートを対象に、取得元のリポジトリ・取得時のコミットハッシュ・取得日・ライセンス名の記録と、ライセンス全文の同梱を求めている。本ファイルの対応は次のとおりで、そのまま対応するのは取得日だけ、残る4点は形を変えている。
 
 | ADR-0013 の項目 | 本ファイル |
 | --- | --- |
 | 取得元のリポジトリ | 取得元の URL。R7RS はリポジトリとして配布されていない |
-| 取得時のコミットハッシュ | 内容の SHA-256。版管理されていない静的ページなのでコミットが存在しない |
+| 取得時のコミットハッシュ | 内容のハッシュ。版管理されていない静的ページなのでコミットが存在しない |
 | 取得日 | あり |
 | ライセンス名 | 名前のあるライセンスではないため、複製の許諾の原文を引用する |
 | ライセンス全文の同梱 | 許諾は R7RS 本文の一部であり、`appendix-a.html` と同じ文書に含まれる |
@@ -62,14 +89,3 @@ R7RS の版が上がった場合、または誤記修正が入った場合に行
 置き場所も `tests/vendor/` ではなく `tools/extract-r7rs-required/` である。これは抽出プログラムの入力であってテストスイートではないため、使う場所の隣に置いた。
 
 段階6で `r7rs-tests.scm` を取り込むときは ADR-0013 の形をそのまま使う。2つの記録形式が併存することになるので、そのときに ADR-0013 を更新して両方の形を定める。
-
-```
-$ sha256sum tools/extract-r7rs-required/appendix-a.html
-```
-
-1. 上の URL からページを取得して `appendix-a.html` を置き換える。
-2. 本ファイルの取得日とサイズと SHA-256 を更新する。取得日はここだけに書く。生成されるファイルは本ファイルを参照するだけなので、更新箇所は1つである。
-3. R7RS の版が変わってライブラリ数が16でなくなった場合は、`main.zig` の `expected_library_count` を更新する。同じ数が報告と検査の両方に使われる。
-4. `zig run tools/extract-r7rs-required/main.zig` を実行する。
-5. 報告されたライブラリ数と識別子数を上の表に反映する。
-6. `tests/r7rs-required/*.txt` の差分をレビューする。識別子の増減は準拠マトリクスに直接影響する。

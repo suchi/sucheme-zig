@@ -85,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
     if (!bad_args) {
         try checkZigVersionAgreement(gpa, io, cwd, &rep);
         try checkVendoredHashes(gpa, io, cwd, &rep);
+        try checkGeneratedHashes(gpa, io, cwd, &rep);
         try checkSources(gpa, io, cwd, &rep, roots.items, excluded.items);
         try checkMarkdown(gpa, io, cwd, &rep);
     }
@@ -306,11 +307,49 @@ fn workflowZigVersions(
 
 /// Files whose content is fixed by a recorded hash, with the document that
 /// records it. The hash is read from that document, so there is one copy.
-const vendored = [_]struct { path: []const u8, provenance: []const u8 }{
+const vendored = [_]Record{
     .{
         .path = "tools/extract-r7rs-required/appendix-a.html",
         .provenance = "tools/extract-r7rs-required/SOURCE.md",
+        .label = "入力の SHA-256",
     },
+};
+
+/// Directories whose generated contents are fixed as a whole by one recorded
+/// hash, with the file extension that selects them.
+///
+/// Hashing the input alone left the output unprotected. Deleting `dynamic-wind`
+/// and `call-with-current-continuation` from `base.txt` and adding a made-up
+/// name kept every check green, with the input's hash untouched: the files say
+/// they are generated and must not be edited by hand, and nothing enforced it.
+/// They are the denominator of the stage 6 conformance matrix.
+///
+/// One hash covers the whole directory, so regenerating updates one value
+/// instead of one per file. A file added, removed or renamed changes it too,
+/// because each name is hashed along with its content.
+const generated = [_]struct {
+    dir: []const u8,
+    extension: []const u8,
+    provenance: []const u8,
+    label: []const u8,
+}{
+    .{
+        .dir = "tests/r7rs-required",
+        .extension = ".txt",
+        .provenance = "tools/extract-r7rs-required/SOURCE.md",
+        .label = "抽出結果の SHA-256",
+    },
+};
+
+/// One hash record: what is hashed, which document records it, and the table
+/// label that carries the value.
+const Record = struct {
+    path: []const u8,
+    provenance: []const u8,
+    /// Looked up verbatim, so it is spelled as the document spells it. Two
+    /// records in one document need labels that are not substrings of one
+    /// another, or each would find the other's value as well.
+    label: []const u8,
 };
 
 fn checkVendoredHashes(
@@ -323,17 +362,17 @@ fn checkVendoredHashes(
         const body = read(gpa, io, cwd, rep, v.path) orelse continue;
         const doc = read(gpa, io, cwd, rep, v.provenance) orelse continue;
 
-        const recorded = switch (sha256InMarkdown(doc)) {
+        const recorded = switch (sha256InMarkdown(doc, v.label)) {
             .one => |h| h,
             .ambiguous => {
                 rep.fail(
-                    "{s} records more than one SHA-256 for {s}; leave exactly one",
-                    .{ v.provenance, v.path },
+                    "{s}: the {s} row holds more than one hash; leave exactly one",
+                    .{ v.provenance, v.label },
                 );
                 continue;
             },
             .none => {
-                rep.fail("{s} records no SHA-256 for {s}", .{ v.provenance, v.path });
+                rep.fail("{s} records no {s} for {s}", .{ v.provenance, v.label, v.path });
                 continue;
             },
         };
@@ -363,9 +402,9 @@ const RecordedHash = union(enum) {
     ambiguous,
 };
 
-/// Finds the SHA-256 a Markdown document records.
+/// Finds the SHA-256 a Markdown document records under `label`.
 ///
-/// Every line naming SHA-256 is scanned, and every 64-hex run on each one is
+/// Every line holding `label` is scanned, and every 64-hex run on each one is
 /// collected, rather than returning the first run on the first such line.
 /// Returning the first let a decoy supply the value. Putting a second 64-hex
 /// run inside an HTML comment, ahead of the real one on the same table row,
@@ -373,11 +412,11 @@ const RecordedHash = union(enum) {
 /// the hidden one: a swapped input compared green, and the substitution was
 /// invisible to anyone reading the document. A second row naming an older hash
 /// did the same.
-fn sha256InMarkdown(doc: []const u8) RecordedHash {
+fn sha256InMarkdown(doc: []const u8, label: []const u8) RecordedHash {
     var found: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, doc, '\n');
     while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, "SHA-256") == null) continue;
+        if (std.mem.indexOf(u8, line, label) == null) continue;
         var i: usize = 0;
         while (i + 64 <= line.len) : (i += 1) {
             const candidate = line[i .. i + 64];
@@ -403,6 +442,72 @@ fn sha256InMarkdown(doc: []const u8) RecordedHash {
 // descends one level and refAllDeclsRecursive does not exist in Zig 0.17.0, so
 // the reference has to be re-established at each level.
 // ---------------------------------------------------------------------------
+
+/// Checks one hash over all the generated files in a directory.
+///
+/// The diagnostic prints the whole computed hash, not a prefix: regenerating the
+/// files means pasting that value into the provenance document, and a prefix
+/// would send the reader to compute it again by hand.
+fn checkGeneratedHashes(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+) !void {
+    for (generated) |g| {
+        var files: std.ArrayList([]const u8) = .empty;
+        try collectFiles(gpa, io, cwd, g.dir, g.extension, &files, .flat);
+        if (files.items.len == 0) {
+            rep.fail("{s} holds no {s} file, so the generated lists are unchecked", .{ g.dir, g.extension });
+            continue;
+        }
+        // Directory order is whatever the filesystem returns, so it is sorted:
+        // the same contents must give the same hash on every host.
+        std.mem.sort([]const u8, files.items, {}, lessThanPath);
+
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        var unread = false;
+        for (files.items) |path| {
+            const body = read(gpa, io, cwd, rep, path) orelse {
+                unread = true;
+                continue;
+            };
+            // The name is hashed with the content, so renaming a file or
+            // dropping one changes the value.
+            hasher.update(path);
+            hasher.update("\n");
+            hasher.update(body);
+        }
+        // A file this program could not read is already reported; comparing a
+        // hash computed over the rest would add a second, misleading problem.
+        if (unread) continue;
+
+        var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+        hasher.final(&digest);
+        var hex: [digest.len * 2]u8 = undefined;
+        _ = std.fmt.bufPrint(&hex, "{x}", .{&digest}) catch unreachable;
+
+        const doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
+        switch (sha256InMarkdown(doc, g.label)) {
+            .one => |recorded| if (!std.ascii.eqlIgnoreCase(&hex, recorded)) rep.fail(
+                "{s}/*{s} hashes to {s} but {s} records {s}",
+                .{ g.dir, g.extension, &hex, g.provenance, recorded },
+            ),
+            .ambiguous => rep.fail(
+                "{s}: the {s} row holds more than one hash; leave exactly one",
+                .{ g.provenance, g.label },
+            ),
+            .none => rep.fail(
+                "{s} records no {s}; {s}/*{s} hashes to {s}",
+                .{ g.provenance, g.label, g.dir, g.extension, &hex },
+            ),
+        }
+    }
+}
+
+fn lessThanPath(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
 
 fn checkSources(
     gpa: std.mem.Allocator,
@@ -1087,36 +1192,53 @@ test "hasRefAllDeclsTest: a container expression is not @This()" {
 
 test "sha256InMarkdown: the recorded hash is the one the row shows" {
     const recorded = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    switch (sha256InMarkdown("| SHA-256 | `" ++ recorded ++ "` |")) {
+    switch (sha256InMarkdown("| 入力の SHA-256 | `" ++ recorded ++ "` |", "入力の SHA-256")) {
         .one => |h| try std.testing.expectEqualStrings(recorded, h),
         else => return error.TestExpectedOne,
     }
 }
 
 test "sha256InMarkdown: nothing to record" {
-    try std.testing.expect(sha256InMarkdown("| size | 67552 |") == .none);
-    // Names the hash but shows none.
-    try std.testing.expect(sha256InMarkdown("| SHA-256 | pending |") == .none);
+    try std.testing.expect(sha256InMarkdown("| size | 67552 |", "入力の SHA-256") == .none);
+    // Names the record but shows no hash.
+    try std.testing.expect(sha256InMarkdown("| 入力の SHA-256 | pending |", "入力の SHA-256") == .none);
 }
 
 test "sha256InMarkdown: a decoy makes the record ambiguous, not silently wrong" {
     const real = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const decoy = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    // Hidden ahead of the real one on the same row, where the rendered
-    // table still shows the real hash.
+    // Hidden ahead of the real one on the same row, where the rendered table
+    // still shows the real hash.
     try std.testing.expect(sha256InMarkdown(
-        "| SHA-256 | <!-- " ++ decoy ++ " --> `" ++ real ++ "` |",
+        "| 入力の SHA-256 | <!-- " ++ decoy ++ " --> `" ++ real ++ "` |",
+        "入力の SHA-256",
     ) == .ambiguous);
-    // A second row naming an older hash.
-    const two_rows = "| SHA-256 (old) | `" ++ decoy ++ "` |\n| SHA-256 | `" ++ real ++ "` |";
-    try std.testing.expect(sha256InMarkdown(two_rows) == .ambiguous);
+    // A second row carrying the same label with an older hash.
+    const two_rows = "| 入力の SHA-256 | `" ++ decoy ++ "` |\n| 入力の SHA-256 | `" ++ real ++ "` |";
+    try std.testing.expect(sha256InMarkdown(two_rows, "入力の SHA-256") == .ambiguous);
+}
+
+test "sha256InMarkdown: each label finds its own record" {
+    // One document holds two hashes. Looking a row up by the word SHA-256
+    // alone would find both and call every document ambiguous.
+    const input = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const output = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const doc = "| 入力の SHA-256 | `" ++ input ++ "` |\n| 抽出結果の SHA-256 | `" ++ output ++ "` |";
+    switch (sha256InMarkdown(doc, "入力の SHA-256")) {
+        .one => |h| try std.testing.expectEqualStrings(input, h),
+        else => return error.TestExpectedOne,
+    }
+    switch (sha256InMarkdown(doc, "抽出結果の SHA-256")) {
+        .one => |h| try std.testing.expectEqualStrings(output, h),
+        else => return error.TestExpectedOne,
+    }
 }
 
 test "sha256InMarkdown: case is not part of the record" {
     const lower = "abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01";
     const upper = "ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01";
     // One hash written twice in different case is one record, not two.
-    switch (sha256InMarkdown("| SHA-256 | `" ++ lower ++ "` and `" ++ upper ++ "` |")) {
+    switch (sha256InMarkdown("| 入力の SHA-256 | `" ++ lower ++ "` and `" ++ upper ++ "` |", "入力の SHA-256")) {
         .one => {},
         else => return error.TestExpectedOne,
     }
