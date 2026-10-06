@@ -7,6 +7,8 @@
 
 リポジトリを public にする決定([ADR-0012](0012-repository-visibility-public.md))に伴い、ライセンスの明示が必要になった。ライセンスを置かない public リポジトリは全権利保留と解釈されるため、公開の意図と矛盾する。
 
+(2026-10-06 追記: その後リポジトリは private に戻った([ADR-0020](0020-repository-visibility-private.md))。本ADRの決定は変えない。private でもライセンスファイルを置く意味は失われず、将来公開する場合に判断をやり直さずに済む。)
+
 次の制約を満たす必要があった。
 
 - 準拠テストスイート(chibi-scheme の `r7rs-tests.scm`、BSD 3条項)をリポジトリに取り込む([ADR-0013](0013-testing-strategy-and-conformance-suite.md))ため、BSD 3条項と両立すること。

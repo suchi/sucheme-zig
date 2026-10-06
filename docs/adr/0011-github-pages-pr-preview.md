@@ -1,7 +1,9 @@
 # ADR-0011: GitHub Pages は gh-pages ブランチ方式とし、PRごとのプレビューを配置する
 
-- ステータス: 採用
+- ステータス: ~~採用~~ 非推奨 → [ADR-0021: no-github-pages-defer-hosting](0021-no-github-pages-defer-hosting.md) に置き換え
 - 日付: 2026-10-04
+
+> 非推奨理由: 前提にしていた public リポジトリでの GitHub Pages が、[ADR-0020](0020-repository-visibility-private.md) による private 化で使えなくなった。あわせて配置を計画の後半まで行わない判断を受けた。
 
 ## 背景
 

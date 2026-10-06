@@ -283,7 +283,7 @@ import を増やさないのは、ホスト側が用意しなければならな�
 
 渡したバイト列が1回の読み取りより長い場合は、残りを WASM 側の入力バッファに保持し、次の読み取りが先にそこから取る。捨てない。捨てると `(list (read-char) (read-char))` に `sucheme_provide_input("ab")` を1回渡したときの結果が実装によって変わる。バッファが空になってから次の読み取りが来たときに 2 を返す。終端を受け取った後は、以降のすべての読み取りが EOF を返す。入力バッファも計上の対象に含める([runtime.md](runtime.md) の計上の対象)。
 
-ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とし、GitHub Pages ではヘッダを設定できないためである。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
+ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とする。配置先を段階8まで決めないので([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))、ヘッダを設定できる保証がない。ローカルで開く場合も、簡易な静的サーバがこれらのヘッダを返すとは限らない。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
 
 ### パニックとエラー
 
@@ -315,7 +315,7 @@ fn wasmPanic(msg: []const u8, _: ?usize) noreturn {
 | `web/app.js` | 画面の制御 |
 | `web/sucheme.wasm` | ビルド成果物。リポジトリにはコミットしない |
 
-依存ゼロとする理由は3つある。GitHub Pages への配置がファイルのコピーだけで済むこと、供給連鎖の面を増やさないこと、Dependabot の対象エコシステムを増やさないことである。
+依存ゼロとする理由は3つある。配置がファイルのコピーだけで済むこと、供給連鎖の面を増やさないこと、Dependabot の対象エコシステムを増やさないことである。1つ目は配置先を選ぶ自由にもつながる。静的ファイルを置ければどのサービスでもよい([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。
 
 ### 構成
 
@@ -359,7 +359,11 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 ### 配置
 
-GitHub Pages に配置する。リリース時の正式版に加えて、PR ごとのプレビューを用意する。方式は [ADR-0011](../adr/0011-github-pages-pr-preview.md) で定める。
+段階7までは配置しない。段階8で、private にアクセス制限できるクラウドに置く([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。配置先のサービスは段階8で選ぶ。
+
+段階1から段階7は、CI の成果物として `sucheme.wasm` と `web/` を zip で添付し、ローカルで開いて確認する。
+
+ローカルで開く手段には制約がある。ブラウザは `file://` から `fetch` で `.wasm` を取得できないので、`WebAssembly.instantiateStreaming` がそのままでは動かない。手段は段階1の計画で決める([open-questions.md](open-questions.md))。候補は、`zig build` の step でローカルの静的サーバを立てる形と、`.wasm` をデータ URI として HTML に埋め込む形である。
 
 ## REPL の行編集
 
