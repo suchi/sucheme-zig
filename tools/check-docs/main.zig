@@ -168,35 +168,52 @@ fn checkZigVersionAgreement(
     var setups: usize = 0;
     for (workflows.items) |path| {
         const body = read(gpa, io, cwd, rep, path) orelse continue;
-        var found: std.ArrayList([]const u8) = .empty;
-        const steps = try workflowZigVersions(gpa, body, &found);
-        setups += steps;
+        var found: std.ArrayList(StepVersion) = .empty;
+        try workflowZigVersions(gpa, body, &found);
+        setups += found.items.len;
         // Every setup step is checked, not just the first: a second job could
         // otherwise install a different Zig. A workflow with no setup step is
-        // fine — not every workflow needs Zig.
-        for (found.items) |version| {
-            if (!std.mem.eql(u8, version, pinned))
-                rep.fail("{s} sets up Zig {s}, .zigversion is {s}", .{ path, version, pinned });
+        // fine -- not every workflow needs Zig.
+        for (found.items) |step| {
+            const version = step.version;
+            if (version == null or step.extra) {
+                rep.fail(
+                    "{s}: a setup-zig step has no single readable version; write one `version:` on a line of its own under that step's `with:`",
+                    .{path},
+                );
+                continue;
+            }
+            if (!std.mem.eql(u8, version.?, pinned))
+                rep.fail("{s} sets up Zig {s}, .zigversion is {s}", .{ path, version.?, pinned });
         }
-        // Counting references separately from versions matters: a step whose
-        // `version` this parser cannot see (keys reordered, or a flow mapping)
-        // would otherwise be indistinguishable from no step at all, and could
-        // install any Zig unchecked.
-        //
-        // The diagnostic names every cause, not just the version's placement. A
-        // step merely *named* `setup-zig@v2` also lands here, and telling its
-        // author to move a `version:` that is already on its own line sends
-        // them to break a correct workflow.
-        if (steps != found.items.len)
-            rep.fail(
-                "{s}: {d} setup-zig reference(s) but {d} readable version(s). " ++
-                    "Give each step one `version:` on a line of its own, and keep " ++
-                    "`setup-zig@` and `version:` out of every other part of that step",
-                .{ path, steps, found.items.len },
-            );
     }
     if (setups == 0)
         rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
+}
+
+/// Whether the line opens a block of its own rather than continuing a
+/// paragraph.
+///
+/// CommonMark's laziness rule carries only "paragraph continuation text" into a
+/// block quote, and these interrupt a paragraph instead: an ATX heading, a list
+/// item, and a thematic break. Treating them as continuations reported correct
+/// documents.
+fn startsBlock(trimmed: []const u8) bool {
+    if (atxHeadingText(trimmed) != null) return true;
+    if (fenceRun(trimmed) != null) return true;
+    if (std.mem.startsWith(u8, trimmed, "- ") or
+        std.mem.startsWith(u8, trimmed, "* ") or
+        std.mem.startsWith(u8, trimmed, "+ ")) return true;
+    // A thematic break is three or more of -, * or _ with nothing else.
+    const ch = trimmed[0];
+    if (ch == '-' or ch == '*' or ch == '_') {
+        var n: usize = 0;
+        for (trimmed) |c| {
+            if (c == ch) n += 1 else if (c != ' ' and c != '\t') return false;
+        }
+        if (n >= 3) return true;
+    }
+    return false;
 }
 
 /// How deeply a line is indented, in spaces.
@@ -251,23 +268,41 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
     return found;
 }
 
-/// Collects the `version:` value of every setup-zig step, and returns how many
-/// such steps were seen.
+/// What one setup-zig step installs.
+const StepVersion = struct {
+    /// Null when this parser could not read a version for the step.
+    version: ?[]const u8 = null,
+    /// Another `version:` appeared under the same `with:`. The step is then
+    /// treated as unreadable: which one the action takes is not this parser's
+    /// to guess.
+    extra: bool = false,
+};
+
+/// Collects what each setup-zig step installs, one entry per step in document
+/// order.
 ///
 /// A step is recognised by a `setup-zig@` reference anywhere on the line, so
 /// that any YAML spelling of the step is seen: an item-level flow mapping and a
 /// quoted `uses:` key both install a Zig that a `uses:`-prefixed match misses.
 /// The `@` is what keeps a step merely *named* "prepare for setup-zig" from
 /// supplying the version that gets checked.
+///
+/// A version counts only on a line of its own directly under the step's own
+/// `with:`. Two weaker rules were tried first and both let a decoy through: any
+/// `version:` on the step's line, then any `version:` indented deeper than the
+/// step. The second admitted `env:` and every other key a step may carry. A
+/// version is also attached to the step it was read under, rather than being
+/// counted: with two steps, one step's version satisfied a count of two while
+/// the other installed anything.
 fn workflowZigVersions(
     gpa: std.mem.Allocator,
     body: []const u8,
-    out: *std.ArrayList([]const u8),
-) !usize {
-    var steps: usize = 0;
+    out: *std.ArrayList(StepVersion),
+) !void {
     // The indentation of the item holding the step whose version is being
-    // looked for, or null when outside one.
+    // looked for, and of that step's `with:`. Null when outside one.
     var step_indent: ?usize = null;
+    var with_indent: ?usize = null;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
         const indent = indentOf(raw);
@@ -278,15 +313,14 @@ fn workflowZigVersions(
         const is_item = std.mem.startsWith(u8, line, "- ");
         const body_of_item = if (is_item) std.mem.trim(u8, line[2..], &std.ascii.whitespace) else line;
 
-        // A line indented no deeper than the step's own item is outside it.
-        // Without this the search ran to the next `- ` item or `uses:` line
-        // whatever came between, so a `version:` belonging to another job was
-        // read as the step's: a `strategy.matrix` dimension named `version`
-        // supplied 0.17.0 while the step installed 0.18.1, and every check
-        // passed. The same leak failed a correct workflow from the other
-        // direction, with two versions found for one step.
+        // A line indented no deeper than the step's own item is outside it,
+        // and one no deeper than the `with:` is outside that mapping.
         if (step_indent) |si| if (indent <= si) {
             step_indent = null;
+            with_indent = null;
+        };
+        if (with_indent) |wi| if (indent <= wi) {
+            with_indent = null;
         };
         // A step counts whenever the line carries a setup-zig reference,
         // whatever YAML spelling holds it. Requiring the line to begin with
@@ -309,23 +343,31 @@ fn workflowZigVersions(
         // says exactly that.
         const refs = countOccurrences(line, "setup-zig@");
         if (refs != 0) {
-            steps += refs;
+            for (0..refs) |_| try out.append(gpa, .{});
             step_indent = indent;
+            with_indent = null;
             continue;
         }
         // Another `uses:` is another step, even nested deeper than this one.
         if (std.mem.startsWith(u8, body_of_item, "uses:")) {
             step_indent = null;
+            with_indent = null;
             continue;
         }
         if (step_indent == null) continue;
+        if (std.mem.eql(u8, body_of_item, "with:")) {
+            with_indent = indent;
+            continue;
+        }
+        if (with_indent == null) continue;
         if (std.mem.startsWith(u8, body_of_item, "version:")) {
             const scalar = std.mem.trim(u8, body_of_item["version:".len..], &std.ascii.whitespace);
             const value = std.mem.trim(u8, scalar, "\"'");
-            if (value.len != 0) try out.append(gpa, value);
+            if (value.len == 0) continue;
+            const step = &out.items[out.items.len - 1];
+            if (step.version == null) step.version = value else step.extra = true;
         }
     }
-    return steps;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +417,10 @@ const generated = [_]struct {
     label: []const u8,
     /// The row label in `provenance` carrying the total of the per-file counts.
     total_label: []const u8,
+    /// The row label carrying how many files there should be. Without it, the
+    /// file count and the recorded rows only had to agree with each other, so
+    /// removing a file and its row together passed.
+    count_label: []const u8,
 }{
     .{
         .dir = "tests/r7rs-required",
@@ -382,6 +428,7 @@ const generated = [_]struct {
         .provenance = "tools/extract-r7rs-required/SOURCE.md",
         .label = "抽出結果の SHA-256",
         .total_label = "| 合計 |",
+        .count_label = "| ライブラリ数 |",
     },
 };
 
@@ -655,6 +702,17 @@ fn checkRecordedCounts(
                 );
             }
         }
+        switch (integerAfter(doc, g.count_label)) {
+            .one => |recorded| if (recorded != files.items.len) rep.fail(
+                "{s} records {d} librar(ies) but {s} holds {d} *{s} file(s)",
+                .{ g.provenance, recorded, g.dir, files.items.len, g.extension },
+            ),
+            .none => rep.fail("{s} records no {s}", .{ g.provenance, g.count_label }),
+            .ambiguous => rep.fail(
+                "{s} records more than one {s}; leave exactly one",
+                .{ g.provenance, g.count_label },
+            ),
+        }
         if (rows != files.items.len) rep.fail(
             "{s} records {d} librar(ies) but {s} holds {d} *{s} file(s)",
             .{ g.provenance, rows, g.dir, files.items.len, g.extension },
@@ -716,11 +774,11 @@ fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
         const digits_at = i;
         while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {}
         if (i == digits_at) continue;
-        // Parsed rather than accumulated by hand. Accumulating overflowed on a
-        // long run of digits and panicked, which lost every diagnostic gathered
-        // so far -- the failure mode this program's own header warns about. A
-        // number too large to be a count is not a count.
-        const value = std.fmt.parseInt(usize, line[digits_at..i], 10) catch continue;
+        // Parsed rather than accumulated by hand: accumulating overflowed on a
+        // long run of digits and panicked, losing every diagnostic gathered so
+        // far. A value that does not parse is not skipped either, or a record
+        // too large to be a count would read as no record at all.
+        const value = std.fmt.parseInt(usize, line[digits_at..i], 10) catch return .ambiguous;
 
         if (found) |first| {
             if (first != value) return .ambiguous;
@@ -1079,7 +1137,9 @@ fn checkMarkdown(
             // specification, and nothing checked where it ends.
             if (trimmed.len != 0 and trimmed[0] == '>') {
                 quoted_line = lineno;
-            } else if (trimmed.len != 0 and quoted_line == lineno - 1) {
+            } else if (trimmed.len != 0 and quoted_line == lineno - 1 and
+                !startsBlock(trimmed))
+            {
                 rep.fail(
                     "{s}:{d}: this line continues the block quote above it; leave a blank line, or prefix it with `>` to quote it",
                     .{ path, lineno },
@@ -1388,11 +1448,11 @@ test "hasRefAllDeclsTest: the argument must be @This()" {
     try std.testing.expect(!hasRefAllDeclsTest("comptime { refAllDecls(@This()); }"));
 }
 
-test "workflowZigVersions: every setup-zig step is counted" {
+test "workflowZigVersions: every setup-zig step gets its own entry" {
     const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
+    try workflowZigVersions(gpa,
         \\jobs:
         \\  a:
         \\    steps:
@@ -1405,84 +1465,107 @@ test "workflowZigVersions: every setup-zig step is counted" {
         \\        with:
         \\          version: 0.18.0
     , &out);
-    try std.testing.expectEqual(@as(usize, 2), steps);
     try std.testing.expectEqual(@as(usize, 2), out.items.len);
-    try std.testing.expectEqualStrings("0.17.0", out.items[0]);
-    try std.testing.expectEqualStrings("0.18.0", out.items[1]);
+    try std.testing.expectEqualStrings("0.17.0", out.items[0].version.?);
+    try std.testing.expectEqualStrings("0.18.0", out.items[1].version.?);
 }
 
-test "workflowZigVersions: a step whose version cannot be read still counts" {
-    // Counting steps and versions separately is what makes an unreadable
-    // version distinguishable from no step at all.
+test "workflowZigVersions: only a version under the step's own with: counts" {
+    // The defect this pins: any line indented deeper than the step was
+    // accepted, so `env:` and every other key a step carries could supply
+    // the version that got checked.
     const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
+    try workflowZigVersions(gpa,
         \\    steps:
         \\      - uses: mlugg/setup-zig@abc
-        \\        with: { version: 0.18.0 }
+        \\        with: { version: 0.18.1 }
+        \\        env:
+        \\          version: 0.17.0
     , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
-    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expect(out.items[0].version == null);
+}
+
+test "workflowZigVersions: each step keeps its own version" {
+    // The defect this pins: versions were collected into one flat list and
+    // compared by count, so one step could supply the entry that satisfied
+    // the other while installing anything.
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList(StepVersion) = .empty;
+    defer out.deinit(gpa);
+    try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with: { version: 0.18.1 }
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with:
+        \\          version: 0.17.0
+    , &out);
+    try std.testing.expectEqual(@as(usize, 2), out.items.len);
+    try std.testing.expect(out.items[0].version == null);
+    try std.testing.expectEqualStrings("0.17.0", out.items[1].version.?);
+}
+
+test "workflowZigVersions: two versions under one with: make the step unreadable" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList(StepVersion) = .empty;
+    defer out.deinit(gpa);
+    try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        with:
+        \\          version: 0.17.0
+        \\          version: 0.18.1
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expect(out.items[0].extra);
 }
 
 test "workflowZigVersions: a step merely named after setup-zig supplies nothing" {
     const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
+    try workflowZigVersions(gpa,
         \\    steps:
         \\      - name: prepare for setup-zig
         \\        uses: actions/checkout@abc
         \\        with:
         \\          version: 0.18.0
     , &out);
-    try std.testing.expectEqual(@as(usize, 0), steps);
     try std.testing.expectEqual(@as(usize, 0), out.items.len);
 }
 
-test "workflowZigVersions: comments do not supply a version" {
+test "workflowZigVersions: comments and decoys on the step line supply nothing" {
     const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
-        \\    steps:
-        \\      - uses: mlugg/setup-zig@abc
-        \\        with:
-        \\          # version: 0.17.0
-        \\          version: 0.18.0
-    , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
-    try std.testing.expectEqual(@as(usize, 1), out.items.len);
-    try std.testing.expectEqualStrings("0.18.0", out.items[0]);
-}
-
-test "workflowZigVersions: a comment on the uses line does not supply the version" {
-    // The defect this pins: the comment's `version:` was read as the step's
-    // own, the real one below went uncollected, and the check passed on the
-    // version CI did not install.
-    const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
-    defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
+    // A comment carrying a version, and the real one below it.
+    try workflowZigVersions(gpa,
         \\    steps:
         \\      - uses: mlugg/setup-zig@abc  # version: 0.17.0
         \\        with:
         \\          version: 0.18.0
     , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
-    try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+    try std.testing.expectEqualStrings("0.18.0", out.items[0].version.?);
+
+    // A flow mapping, which keeps the version off a line of its own.
+    out.clearRetainingCapacity();
+    try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - { uses: "mlugg/setup-zig@abc", name: "pin version: 0.17.0" }
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expect(out.items[0].version == null);
 }
 
 test "workflowZigVersions: a version outside the step is not the step's" {
-    // The defect this pins: the search ran past the end of the job, so a
-    // `strategy.matrix` dimension named `version` in a later job was read as
-    // this step's version while the step installed another.
     const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
+    try workflowZigVersions(gpa,
         \\jobs:
         \\  fuzz:
         \\    steps:
@@ -1495,96 +1578,37 @@ test "workflowZigVersions: a version outside the step is not the step's" {
         \\    steps:
         \\      - run: echo hi
     , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
-    try std.testing.expectEqual(@as(usize, 0), out.items.len);
-}
-
-test "workflowZigVersions: a step at the end of a job does not reach the next" {
-    // The same leak the other way: a correct step found two versions and the
-    // caller rejected a workflow that was right.
-    const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
-    defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
-        \\jobs:
-        \\  a:
-        \\    steps:
-        \\      - uses: mlugg/setup-zig@abc
-        \\        with:
-        \\          version: 0.17.0
-        \\  b:
-        \\    strategy:
-        \\      matrix:
-        \\        version: 0.18.1
-        \\    steps:
-        \\      - run: echo hi
-    , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
-    try std.testing.expectEqualStrings("0.17.0", out.items[0]);
-}
-
-test "workflowZigVersions: a flow mapping supplies no version at all" {
-    // Reading a version from the line that names the action was the carrier
-    // for every decoy found: in a comment, then in a `name:` value ahead of
-    // the real one, then in a `name:` value with no real one. The line is
-    // counted and no version is taken from it, so the caller rejects the
-    // spelling instead of comparing against whatever the line carried.
-    const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
-    defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
-        \\    steps:
-        \\      - { uses: mlugg/setup-zig@abc, with: { version: 0.18.0 } }
-    , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
-    try std.testing.expectEqual(@as(usize, 0), out.items.len);
-}
-
-test "workflowZigVersions: a decoy on the uses line supplies nothing" {
-    const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
-    defer out.deinit(gpa);
-    // One `version:` on the line, in a value that installs nothing, and no
-    // real version anywhere. Reading the line gave 0.17.0 and passed.
-    const steps = try workflowZigVersions(gpa,
-        \\    steps:
-        \\      - { uses: "mlugg/setup-zig@abc", name: "pin version: 0.17.0" }
-    , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
-    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+    try std.testing.expect(out.items[0].version == null);
 }
 
 test "workflowZigVersions: a name holding version: does not shadow the real one" {
     const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    // The decoy is on its own line, so it is not on the line that names the
-    // action, and the real version below is still the one read.
-    const steps = try workflowZigVersions(gpa,
+    try workflowZigVersions(gpa,
         \\    steps:
         \\      - uses: mlugg/setup-zig@abc
         \\        name: "install the pinned version: see .zigversion"
         \\        with:
         \\          version: 0.17.0
     , &out);
-    try std.testing.expectEqual(@as(usize, 1), steps);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
-    try std.testing.expectEqualStrings("0.17.0", out.items[0]);
+    try std.testing.expectEqualStrings("0.17.0", out.items[0].version.?);
 }
 
-test "workflowZigVersions: two steps on one line count as two" {
-    // Two `version:` on the line means neither is read, so the counts disagree
-    // and the caller rejects the spelling. Counting the line as one step, or
-    // reading the first version, let the second step install anything.
-    const gpa = std.testing.allocator;
-    var out: std.ArrayList([]const u8) = .empty;
-    defer out.deinit(gpa);
-    const steps = try workflowZigVersions(gpa,
-        \\    steps: [{uses: mlugg/setup-zig@abc, with: {version: 0.18.0}}, {uses: mlugg/setup-zig@abc, with: {version: 0.17.0}}]
-    , &out);
-    try std.testing.expectEqual(@as(usize, 2), steps);
-    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+test "startsBlock: what interrupts a paragraph is not a quote continuation" {
+    try std.testing.expect(startsBlock("# heading"));
+    try std.testing.expect(startsBlock("- item"));
+    try std.testing.expect(startsBlock("---"));
+    try std.testing.expect(startsBlock("***"));
+    try std.testing.expect(startsBlock("```zig"));
+    // Ordinary prose continues the paragraph, which is the case the quote
+    // check is for.
+    try std.testing.expect(!startsBlock("plain prose"));
+    try std.testing.expect(!startsBlock("| a | b |"));
+    // Two dashes are not a thematic break.
+    try std.testing.expect(!startsBlock("--"));
 }
 
 test "stripComment: a hash opens a comment only at the start or after whitespace" {
