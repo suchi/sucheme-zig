@@ -96,6 +96,15 @@ fn checkZigVersion() void {
 
 段階1以降で追加する step と段階の対応は `AGENTS.md` の表が正とし、`build.zig` のコメントには書かない。コメントに書くと同じ対応表が3箇所になり、段階が進むたびに取り残しが出る。
 
+### 検証コードを検証する
+
+`tools/` の2つのプログラムは段階0の新規ロジックの大半を占める。これらが黙って壊れると、検査が働いていないことに気づけない。したがって次の2つを行う。
+
+- `tools/` の各モジュールを `test` step の対象にする。
+- 純粋な判定関数に単体テストを置く。`check-docs` の `fenceRun` `atxHeadingText` `hasUriScheme` `linkDestination` `zigImports` `hasRefAllDeclsTest` `workflowZigVersions` `pathIn` `normalizePath`、`extract-r7rs-required` の `decode` `codePointOf` `isPlainLibraryName` が対象である。
+
+テストの中身は、レビューが実際に作った迂回入力をそのまま使う。仮想の入力ではなく、一度通ってしまった穴を回帰として固定する。ハーネスだけを足して中身を空にすると、「テストが走る仕組みはある」という主張だけが残って実体がない。
+
 ### テストが黙って走らない経路への対処
 
 Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロックは、ルートから参照されない限り1件も実行されない。実機で確認した。`src/sucheme.zig` に `pub const reader = @import("reader.zig");` と書き、`src/reader.zig` に必ず失敗するテストを置いても `2/2 tests passed` で exit 0 になる。失敗するテストが実行されていない。
@@ -104,10 +113,16 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 したがって規約を次のとおり定める。
 
-- 他の `.zig` を `@import` する `src/` 以下のファイルは、`test { std.testing.refAllDecls(@This()); }` を持つ。
+- 他の `.zig` を `@import` するファイル(`src/` と `tools/` の両方)は、`test { std.testing.refAllDecls(@This()); }` を持つ。
 - これにより各階層で1段ずつ参照が連鎖し、`src/syntax/expand.zig` のような入れ子のテストまで実行される。実機で、各階層に置いた場合に `3 pass, 1 fail (4 total)` となり入れ子の失敗が検出されることを確認した。
 
 `tools/check-docs` がこの規約を検査する(後述)。規約だけでは守られない。
+
+### 対象モジュールとパスの対応
+
+`test` step の対象モジュールと、`check-docs` に渡す `--root` のパスは1つの値(`TestTarget`)にまとめ、同じループで両方に使う。さらに `TestTarget.check` が、モジュールの `root_source_file` がそのパスから作られたことを configure 段で照合する。
+
+照合を入れるのは、struct にまとめるだけでは対応の正しさを誰も見ないためである。`.{ .path = "src/main.zig", .mod = sucheme }` のように片方だけ取り違えた値は、構文上は1つの値でありながら `src/main.zig` のテストを1件も実行しない状態を作る。実機でこの状態を再現し、`zig fmt --check` と `zig build` と `zig build test` と `zig build check-docs` のすべてが緑になることを確認した。
 
 ### テスト対象から除くもの
 
@@ -131,7 +146,7 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 `src/main.zig` は `sucheme` モジュールをインポートし、引数を解釈する。引数と終了コードの契約は `src/main.zig` の doc コメントに置き、ここには複製しない。診断は標準エラーに書き、要求に応えられない場合は非ゼロで終わる。`sucheme prog.scm && echo ok` が ok を表示してはならない。Zig 0.17.0 のエントリポイントは `pub fn main(init: std.process.Init)` であり、標準出力は `std.Io` 経由で取る。書き込み後に `flush()` を呼ぶ([../design/zig-api-notes.md](../design/zig-api-notes.md))。
 
-両ファイルに `test` ブロックを置く。`src/sucheme.zig` はバージョンが空でないことを、`src/main.zig` は引数の解釈の関数が `--version` を認識することを確かめる。`test` step は `sucheme` モジュールと実行ファイルの `root_module` の両方に `addTest` を作る。実機で2モジュールを対象にできることを確認した。
+両ファイルに `test` ブロックを置く。`src/sucheme.zig` はバージョンが空でないことを、`src/main.zig` は引数の解釈の関数が `--version` を認識することを確かめる。`test` step は対象モジュールごとに `addTest` を作る。段階0の対象は `sucheme`、実行ファイルの `root_module`、`tools/` の2つで計4つである。件数は `build.zig` の `targets` が正であり、ここに複製しない。
 
 ### エントリポイントとアロケータ
 
@@ -152,8 +167,9 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 | 項目 | 検査の内容 |
 | --- | --- |
 | バージョンの3箇所の一致 | `.zigversion` の値が `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` のリテラルに一致する |
-| テストの到達性 | `src/` 以下の全 `.zig` が、`test` step の対象モジュールのルートから `@import` の連鎖で到達できる。除外リストにあるものを除く |
-| `refAllDecls` の規約 | 他の `.zig` を `@import` する `src/` 以下のファイルが `refAllDecls(@This())` を含む |
+| ベンダリングした入力のハッシュ | 出所の文書が記録した SHA-256 と内容が一致する |
+| テストの到達性 | `src/` と `tools/` の全 `.zig` が、`test` step の対象モジュールのルートから `@import` の連鎖で到達できる。除外リストにあるものを除く |
+| `refAllDecls` の規約 | 他の `.zig` を `@import` するファイルが `refAllDecls(@This())` を呼ぶ `test` を持つ。呼び出しは修飾され、引数は `@This()` である |
 | 相対リンクの到達性 | Markdown の相対リンクが実在するファイルを指す。コードフェンス内のリンクは対象外 |
 | 見出しの重複 | 1つの Markdown ファイル内に同じ見出しが2つない |
 | コードフェンスの閉じ忘れ | 開いたフェンスが閉じられている。閉じ忘れると以降のリンクと見出しが検査されなくなる |
@@ -231,7 +247,7 @@ https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html
 
 `build.zig` に名前付きの step を作らない。`zig run tools/extract-r7rs-required/main.zig` で走らせる。生成結果をコミットし、R7RS の版が上がったときだけ再実行する。
 
-step を作らない理由は2つある。`AGENTS.md` の検証コマンド表に行が増えるが検証コマンドではないこと、そして `build.zig` を触ることで作業の並行条件が崩れることである。実機で、`pub fn main(init: std.process.Init)` 形式のプログラムが `zig run` で動作することを確認した。
+step を作らない理由は、`build.zig` を触ることで作業の並行条件が崩れることである。手で走らせる道具なので CI の対象にもしない。再抽出の結果が正しいことは、`check-docs` が `appendix-a.html` のハッシュを照合することで担保する。実機で、`pub fn main(init: std.process.Init)` 形式のプログラムが `zig run` で動作することを確認した。
 
 記憶や他の処理系の実装からの推測で書かない。設計フェーズで、存在しない引用と存在しない手続き名をそれぞれ1件書いた経緯がある([../review/adversarial-review-baseline.md](../review/adversarial-review-baseline.md))。抽出を機械化するのはその再発を防ぐためである。入力ページの URL と妥当性検査の内容も、上のとおり実機と一次情報で確認したものに置き換えた。
 

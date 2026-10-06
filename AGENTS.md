@@ -36,7 +36,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 ファジングを全コミットの CI に入れないのは、`--fuzz` が自律的に停止せず、時間切れまで走り続けるためである。全コミットの CI に入れると毎回タイムアウトする。手動実行と定期実行(スケジュール起動)に限る。
 
-`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。段階0では `--version` と `--help` 以外は非ゼロで終わるので、引数なしの `zig build run` は失敗する。
+`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。段階0では版数と使い方の表示以外は非ゼロで終わるので、引数なしの `zig build run` は失敗する。
 
 `zig build test-wasm` は Node.js 上でエクスポートを呼び出す往復テストである([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([docs/design/r7rs-coverage.md](docs/design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
 

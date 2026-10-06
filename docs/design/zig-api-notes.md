@@ -16,7 +16,7 @@ Zig 0.17.0 は2026-10-01リリースで、0.14以前と比べて標準ライブ�
 
 ## 前提
 
-- 固定バージョン: 0.17.0。`.zigversion` と `build.zig.zon` の `minimum_zig_version` に記録する。
+- 固定バージョン: 0.17.0。正は `.zigversion` で、機械が読む複製は `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` の2箇所である(下の更新手順を参照)。
 - 確認コマンド: `zig version`
 - 標準ライブラリのソースは手元にある。迷ったら `$(dirname $(which zig))/../lib/std/` を読む。これが一次情報である。
 

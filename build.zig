@@ -23,14 +23,52 @@ const tool_names = [_][]const u8{ "check-docs", "extract-r7rs-required" };
 /// created it.
 ///
 /// One value feeds both the `addTest` call and the `--root` argument passed to
-/// tools/check-docs, in the same loop. Keeping them apart has twice produced a
-/// build where a source file's tests silently stopped running while every
-/// check stayed green: first by dropping a module from the test loop, then by
-/// repeating one module and losing the other.
+/// tools/check-docs, in the same loop, and `check` rejects a pair whose module
+/// was built from a different file. Three separate edits have otherwise left a
+/// source file's tests silently unrun while every check stayed green: dropping
+/// a module from the test loop, repeating one module and losing the other, and
+/// pairing one file's path with another file's module.
 const TestTarget = struct {
     path: []const u8,
     mod: *std.Build.Module,
+
+    /// Fails the configure step when the module was not built from `path`.
+    /// Bundling the two in a struct only puts them side by side; nothing about
+    /// a struct literal makes the pair correct.
+    fn check(self: TestTarget) void {
+        const lazy = self.mod.root_source_file orelse {
+            std.debug.print("[sucheme] test target {s}: module has no root source file\n", .{self.path});
+            std.process.exit(1);
+        };
+        switch (lazy) {
+            // b.path normalises the separator, so src/sucheme.zig comes back
+            // b.path normalises the separator, so src/sucheme.zig comes back
+            .src_path => |sp| if (!samePath(sp.sub_path, self.path)) {
+                std.debug.print(
+                    "[sucheme] test target {s} is paired with the module built from {s}\n",
+                    .{ self.path, sp.sub_path },
+                );
+                std.process.exit(1);
+            },
+            else => {
+                std.debug.print("[sucheme] test target {s}: unexpected path kind\n", .{self.path});
+                std.process.exit(1);
+            },
+        }
+    }
 };
+
+/// Compares two repository-relative paths, treating `/` and `\` as the same
+/// separator.
+fn samePath(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        const nx = if (x == '\\') '/' else x;
+        const ny = if (y == '\\') '/' else y;
+        if (nx != ny) return false;
+    }
+    return true;
+}
 
 pub fn build(b: *std.Build) void {
     enforcePinnedZigVersion();
@@ -96,6 +134,7 @@ pub fn build(b: *std.Build) void {
     // One loop, one list: a module and the path check-docs is told about come
     // from the same value, so neither can be dropped or duplicated alone.
     for (targets.items) |t| {
+        t.check();
         const unit = b.addTest(.{ .root_module = t.mod });
         test_step.dependOn(&b.addRunArtifact(unit).step);
         run_check_docs.addArg("--root");

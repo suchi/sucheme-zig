@@ -4,6 +4,8 @@
 
 各段階は、リーダからプリンタまでネイティブとブラウザの両方で通しで動く状態を作る([ADR-0018](adr/0018-incremental-vertical-slices.md))。層を1つずつ完成させる進め方は採らない。段階の終わりに「確定したこと」と「残していること」を記録する。
 
+「残していること」の欄は、その段階で決めずに後の段階へ回した事項を指す([design/open-questions.md](design/open-questions.md) の行)。未着手の作業項目のことではない。作業の進み具合は各段階のチェックボックスが正である。
+
 作業範囲の全体は [plans/0001-sow.md](plans/0001-sow.md) にある。設計は [design/](design/) に、決定は [adr/](adr/) に、実装時に決めることは [design/open-questions.md](design/open-questions.md) にある。
 
 ## 現在地
@@ -47,7 +49,7 @@
 
 確定したこと: `build.zig` の step は段階0の4つ(既定・`run`・`test`・`check-docs`)。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、16ライブラリ・557識別子を `tests/r7rs-required/` に置いた。
 
-残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。
+残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。未着手の作業項目はチェックボックスを参照する。
 
 ### 段階1: 通しで動く最小の縦切り
 
