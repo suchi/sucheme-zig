@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階0(足場)進行中。リポジトリの public 化と、`main` での CI グリーンの確認が未了 |
+| 現在の段階 | 段階0(足場)進行中。`main` での CI グリーンの確認が未了 |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
@@ -39,7 +39,7 @@
 - [x] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
 - [x] `AGENTS.md` の検証コマンド表を埋める
 - [x] ライセンスの決定と `LICENSE` の配置([ADR-0015](adr/0015-mit-license.md))
-- [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))。GitHub の設定変更なのでユーザーが実行する
+- [x] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))
 - [x] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
 - [x] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
 - [x] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
@@ -47,7 +47,7 @@
 
 完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。
 
-確定したこと: `build.zig` の step は段階0の4つ(既定・`run`・`test`・`check-docs`)。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、16ライブラリ・557識別子を `tests/r7rs-required/` に置いた。
+確定したこと: リポジトリは public にした(2026-10-06)。`build.zig` の step は段階0の4つ(既定・`run`・`test`・`check-docs`)。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、16ライブラリ・557識別子を `tests/r7rs-required/` に置いた。
 
 残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。未着手の作業項目はチェックボックスを参照する。
 
