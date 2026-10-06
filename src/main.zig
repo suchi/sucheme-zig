@@ -7,7 +7,8 @@
 //! | --- | --- | --- |
 //! | `--version` | prints name and version to stdout | 0 |
 //! | `--help`, `-h` | prints usage to stdout | 0 |
-//! | an unknown `-...` option | names it on stderr | 64 |
+//! | an unknown option, two or more characters long and starting with `-` | names it on stderr | 64 |
+//! | `-` on its own | treated as a name, not an option | 69 |
 //! | anything else, including none | says the REPL is not implemented | 69 |
 //!
 //! The first recognised option wins, so `--version --bogus` prints the version.
@@ -51,7 +52,11 @@ pub fn main(init: std.process.Init) !void {
 
     // Diagnostics go to stderr and the status is non-zero: `sucheme prog.scm &&
     // echo ok` must not print ok while the program never ran.
-    switch (classify(args[1..])) {
+    // `args` can be empty. POSIX allows execve with argc = 0, and `args[1..]`
+    // is a bounds panic in that case rather than the exit the contract above
+    // promises for "none".
+    const rest = if (args.len > 1) args[1..] else &[_][]const u8{};
+    switch (classify(rest)) {
         .version => {
             try out.print("{s} {s}\n", .{ sucheme.name, sucheme.version });
             try out.flush();
@@ -94,7 +99,9 @@ pub fn classify(args: []const []const u8) Request {
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--version")) return .version;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return .help;
-        // A leading dash with no match is a typo, not a file name.
+        // A leading dash with no match is a typo, not a file name -- except
+        // for `-` on its own, which by convention names standard input. It
+        // falls through to the name side, where stage 1 will give it a meaning.
         if (arg.len > 1 and arg[0] == '-') return .{ .unknown_option = arg };
     }
     return .not_implemented;
@@ -112,6 +119,12 @@ test "classify recognises --help and -h" {
 test "classify falls back to not_implemented" {
     try std.testing.expect(classify(&.{}) == .not_implemented);
     try std.testing.expect(classify(&.{"foo.scm"}) == .not_implemented);
+}
+
+test "classify treats a bare dash as a name, not an unknown option" {
+    try std.testing.expect(classify(&.{"-"}) == .not_implemented);
+    // One character more and it is an option again.
+    try std.testing.expect(classify(&.{"-x"}) == .unknown_option);
 }
 
 test "classify distinguishes a mistyped option from a file name" {
