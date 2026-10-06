@@ -63,11 +63,13 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 ## ライセンス
 
-MIT License です。詳細は [LICENSE](LICENSE) を参照してください。
+ライセンスを付与していません。UNLICENSED です([ADR-0022](docs/adr/0022-unlicensed-proprietary.md))。全権利保留で、権利者以外による使用・複製・改変・再配布を許諾していません。詳細は [LICENSE](LICENSE) を参照してください。
+
+名前の似た Unlicense(パブリックドメインへの献呈)とは逆の意味です。取り違えないでください。
 
 `tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。
 
-`tools/extract-r7rs-required/appendix-a.html` は R7RS の付録A の逐語コピーです。R7RS 自身が全文または一部の複製を許諾しています。出典と許諾の根拠は [tools/extract-r7rs-required/SOURCE.md](tools/extract-r7rs-required/SOURCE.md) にあります。MIT License はこのファイルには適用されません。
+`tools/extract-r7rs-required/appendix-a.html` は R7RS の付録A の逐語コピーです。R7RS 自身が全文または一部の複製を許諾しています。出典と許諾の根拠は [tools/extract-r7rs-required/SOURCE.md](tools/extract-r7rs-required/SOURCE.md) にあります。上の宣言はこのファイルには適用されません。
 
 ## AIコーディングエージェントへの指示
 

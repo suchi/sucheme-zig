@@ -413,7 +413,7 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 | [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) | CI のジョブ構成、ランナー、WASM の往復テスト、ファジングの扱い |
 | [ADR-0020](../adr/0020-repository-visibility-private.md) | リポジトリの可視性 |
 | [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md) | テストの3層構成、ベンダリングの規律 |
-| [ADR-0015](../adr/0015-mit-license.md) | ライセンス |
+| [ADR-0022](../adr/0022-unlicensed-proprietary.md) | ライセンス |
 | [ADR-0018](../adr/0018-incremental-vertical-slices.md) | 実装時に決めることの記録先 |
 
 ## この計画で決めなかったこと

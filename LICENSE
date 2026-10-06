@@ -1,16 +1,25 @@
-MIT License
-
 Copyright (c) 2026 suchi
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+All rights reserved.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+No license is granted. This software is not open source and is not licensed
+for use, copying, modification, merging, publication, distribution,
+sublicensing, or sale by anyone other than the copyright holder.
+
+The declaration for this project is UNLICENSED, in the sense of npm's `license`
+field: "if you do not wish to grant others the right to use a private or
+unpublished package under any terms". It is not the Unlicense
+(<https://unlicense.org/>), which dedicates work to the public domain and means
+the opposite of this notice.
+
+Third-party material in this repository is not covered by this notice and keeps
+its own terms:
+
+- `tools/extract-r7rs-required/appendix-a.html` is a verbatim copy of Appendix A
+  of R7RS, which permits copying in whole or in part. See
+  `tools/extract-r7rs-required/SOURCE.md`.
+- Test suites vendored under `tests/vendor/` keep their original licenses. See
+  `tests/vendor/README.md` when that directory arrives in stage 6.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
