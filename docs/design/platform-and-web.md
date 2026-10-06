@@ -1,6 +1,6 @@
 # プラットフォーム抽象、WebAssembly、Web UI
 
-対応する決定: [ADR-0009](../adr/0009-wasm-freestanding-and-zero-dependency-web-ui.md)、[ADR-0011](../adr/0011-github-pages-pr-preview.md)、[ADR-0014](../adr/0014-repl-line-editor-boundary.md)。
+対応する決定: [ADR-0009](../adr/0009-wasm-freestanding-and-zero-dependency-web-ui.md)、[ADR-0021](../adr/0021-no-github-pages-defer-hosting.md)、[ADR-0014](../adr/0014-repl-line-editor-boundary.md)。配置についての決定は ADR-0021 が最新で、[ADR-0011](../adr/0011-github-pages-pr-preview.md) はこれに置き換えられた。
 
 ## プラットフォーム抽象
 

@@ -323,7 +323,7 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 | `README.md` の対応プラットフォームの前置き | `build.zig` も CI もまだ存在しない | 両方存在し、x86_64 の Linux と Windows でテストが走る |
 | `docs/onboarding.md` の前提表 | 段階0の完了まで `.zigversion` は存在しない | 存在する |
 
-public リポジトリ([ADR-0012](../adr/0012-repository-visibility-public.md))の入口が自分の CI の存在を否定する状態を作らない。
+リポジトリの入口が自分の CI の存在を否定する状態を作らない。
 
 ## リポジトリの可視性と dependabot
 
