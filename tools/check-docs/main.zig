@@ -180,15 +180,58 @@ fn checkZigVersionAgreement(
         rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
 }
 
+/// Removes a trailing YAML comment. A `#` opens a comment at the start of the
+/// line or after whitespace, and not inside a quoted scalar.
+///
+/// Every line is stripped before anything is parsed out of it. A `version:`
+/// written in a comment on the `uses:` line otherwise supplied the version that
+/// got checked, and the real one on the next line was never read: a step
+/// spelled `uses: ...setup-zig@v2  # version: 0.17.0` with `version: 0.18.1`
+/// under it passed while CI installed 0.18.1.
+///
+/// An unbalanced quote ahead of the `#` leaves the comment in place, which only
+/// restores the behaviour this replaces. Such a line is also invalid YAML, so
+/// Actions rejects the workflow before the version it installs matters.
+///
+/// The whitespace that preceded the `#` stays in the result; the caller trims.
+fn stripComment(line: []const u8) []const u8 {
+    var quote: ?u8 = null;
+    for (line, 0..) |c, i| {
+        if (quote) |q| {
+            if (c == q) quote = null;
+            continue;
+        }
+        switch (c) {
+            '\'', '"' => quote = c,
+            '#' => if (i == 0 or std.ascii.isWhitespace(line[i - 1])) return line[0..i],
+            else => {},
+        }
+    }
+    return line;
+}
+
 /// Extracts a `version:` value written on the same line, as a flow mapping
 /// does: `- { uses: ...setup-zig@x, with: { version: 0.17.0 } }`.
+///
+/// The caller strips comments first, so only `,` and `}` end the scalar here.
 fn flowVersion(line: []const u8) ?[]const u8 {
     const at = std.mem.indexOf(u8, line, "version:") orelse return null;
     var rest = line[at + "version:".len ..];
     // Stop at whatever ends the scalar in a flow context.
-    if (std.mem.indexOfAny(u8, rest, ",}#")) |end| rest = rest[0..end];
+    if (std.mem.indexOfAny(u8, rest, ",}")) |end| rest = rest[0..end];
     const value = std.mem.trim(u8, std.mem.trim(u8, rest, &std.ascii.whitespace), "\"'");
     return if (value.len == 0) null else value;
+}
+
+/// Counts non-overlapping occurrences of `needle` in `haystack`.
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var found: usize = 0;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, from, needle)) |at| {
+        found += 1;
+        from = at + needle.len;
+    }
+    return found;
 }
 
 /// Collects the `version:` value of every setup-zig step, and returns how many
@@ -206,8 +249,9 @@ fn workflowZigVersions(
     var in_setup = false;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        if (line.len == 0 or line[0] == '#') continue;
+        var line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        line = std.mem.trim(u8, stripComment(line), &std.ascii.whitespace);
+        if (line.len == 0) continue;
 
         const is_item = std.mem.startsWith(u8, line, "- ");
         const body_of_item = if (is_item) std.mem.trim(u8, line[2..], &std.ascii.whitespace) else line;
@@ -217,10 +261,18 @@ fn workflowZigVersions(
         // whatever YAML spelling holds it. Requiring the line to begin with
         // `uses:` missed an item-level flow mapping and a quoted key, either of
         // which installs a Zig this parser never sees.
-        if (std.mem.indexOf(u8, line, "setup-zig@") != null) {
-            steps += 1;
+        //
+        // Every occurrence on the line counts, not just the first. A flow
+        // sequence holding two setup-zig steps on one line read as one step,
+        // and the second step's version went unchecked; counted in full, the
+        // caller's step-versus-version comparison rejects the line instead.
+        const refs = countOccurrences(line, "setup-zig@");
+        if (refs != 0) {
+            steps += refs;
             in_setup = true;
-            // A flow mapping carries the version on the same line.
+            // A flow mapping carries the version on the same line. One value is
+            // read per line, so a line holding several steps fails the caller's
+            // comparison rather than passing on a single version.
             if (flowVersion(line)) |v| {
                 try out.append(gpa, v);
                 in_setup = false;
@@ -233,10 +285,8 @@ fn workflowZigVersions(
         }
         if (!in_setup) continue;
         if (std.mem.startsWith(u8, body_of_item, "version:")) {
-            var value = std.mem.trim(u8, body_of_item["version:".len..], &std.ascii.whitespace);
-            if (std.mem.indexOfScalar(u8, value, '#')) |hash|
-                value = std.mem.trim(u8, value[0..hash], &std.ascii.whitespace);
-            value = std.mem.trim(u8, value, "\"'");
+            const scalar = std.mem.trim(u8, body_of_item["version:".len..], &std.ascii.whitespace);
+            const value = std.mem.trim(u8, scalar, "\"'");
             if (value.len != 0) try out.append(gpa, value);
         }
     }
@@ -901,6 +951,74 @@ test "workflowZigVersions: comments do not supply a version" {
     try std.testing.expectEqual(@as(usize, 1), steps);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
     try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+}
+
+test "workflowZigVersions: a comment on the uses line does not supply the version" {
+    // The defect this pins: the comment's `version:` was read as the step's
+    // own, the real one below went uncollected, and the check passed on the
+    // version CI did not install.
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc  # version: 0.17.0
+        \\        with:
+        \\          version: 0.18.0
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+}
+
+test "workflowZigVersions: a comment after a flow mapping does not override it" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - { uses: mlugg/setup-zig@abc, with: { version: 0.18.0 } }  # version: 0.17.0
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+}
+
+test "workflowZigVersions: two steps on one line count as two" {
+    // One version is readable on such a line, so the counts disagree and the
+    // caller rejects the spelling. Counting the line as one step instead let
+    // the second step install anything.
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    const steps = try workflowZigVersions(gpa,
+        \\    steps: [{uses: mlugg/setup-zig@abc, with: {version: 0.18.0}}, {uses: mlugg/setup-zig@abc, with: {version: 0.17.0}}]
+    , &out);
+    try std.testing.expectEqual(@as(usize, 2), steps);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+}
+
+test "stripComment: a hash opens a comment only at the start or after whitespace" {
+    try std.testing.expectEqualStrings("", stripComment("# all of it"));
+    try std.testing.expectEqualStrings("a: ", stripComment("a: # b"));
+    try std.testing.expectEqualStrings("a: b", stripComment("a: b"));
+    // Not whitespace before it, so it belongs to the scalar.
+    try std.testing.expectEqualStrings("- name: step#3", stripComment("- name: step#3"));
+}
+
+test "stripComment: a hash inside a quoted scalar is not a comment" {
+    try std.testing.expectEqualStrings("- name: \"a # b\"", stripComment("- name: \"a # b\""));
+    try std.testing.expectEqualStrings("- name: 'a # b'", stripComment("- name: 'a # b'"));
+    // The quote closes, so the next hash does open a comment.
+    try std.testing.expectEqualStrings("- name: \"a\" ", stripComment("- name: \"a\" # b"));
+}
+
+test "countOccurrences: every non-overlapping match counts" {
+    try std.testing.expectEqual(@as(usize, 0), countOccurrences("abc", "x"));
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences("abc", "b"));
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences("abab", "ab"));
+    // Non-overlapping: "aaa" holds one "aa", not two.
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences("aaa", "aa"));
 }
 
 test "pathIn compares whole paths" {
