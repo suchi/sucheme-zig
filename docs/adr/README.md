@@ -45,10 +45,11 @@
 | [0012](0012-repository-visibility-public.md) | リポジトリを public にする | 非推奨([0020](0020-repository-visibility-private.md)に置き換え) | 2026-10-04 |
 | [0013](0013-testing-strategy-and-conformance-suite.md) | テストは3層構成とし、外部の準拠スイートをベンダリングする | 採用 | 2026-10-04 |
 | [0014](0014-repl-line-editor-boundary.md) | 行編集は抽象境界のみ先に定め、実装方式は段階7で決める | 採用 | 2026-10-04 |
-| [0015](0015-mit-license.md) | MIT ライセンスを採用する | 採用 | 2026-10-04 |
+| [0015](0015-mit-license.md) | MIT ライセンスを採用する | 非推奨([0022](0022-unlicensed-proprietary.md)に置き換え) | 2026-10-04 |
 | [0016](0016-exception-handler-as-dynamic-point.md) | 例外ハンドラの切り替えを動的状態の点として表す | 採用 | 2026-10-04 |
 | [0017](0017-self-hosted-adversarial-review.md) | レビューは自前の敵対的レビューを主とする | 採用 | 2026-10-04 |
 | [0018](0018-incremental-vertical-slices.md) | 通しで動く縦切りを積み上げ、やり残しを明示して漸進的に進める | 採用 | 2026-10-05 |
 | [0019](0019-denotations-and-identifier-resolution.md) | 衛生性は構文環境と別名による改名で実現し、意味は6種とする | 採用 | 2026-10-05 |
 | [0020](0020-repository-visibility-private.md) | リポジトリを private にする | 採用 | 2026-10-06 |
 | [0021](0021-no-github-pages-defer-hosting.md) | GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない | 採用 | 2026-10-06 |
+| [0022](0022-unlicensed-proprietary.md) | ライセンスを付与せず UNLICENSED として非公開を明示する | 採用 | 2026-10-07 |
