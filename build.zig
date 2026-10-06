@@ -167,6 +167,29 @@ pub fn build(b: *std.Build) void {
     // Last in `build`, so nothing can rebind a module after its test was added.
     // See TestTarget.recheck.
     for (targets.items) |t| t.recheck(b);
+    checkTestsAreRun(test_step, targets.items.len);
+}
+
+/// Fails the configure step unless the test step runs one test per target.
+///
+/// `TestTarget` guards which file each test is built from; it says nothing about
+/// the test being executed. Writing `test_step.dependOn(&unit.step)` instead of
+/// `test_step.dependOn(&b.addRunArtifact(unit).step)` is a one-token edit that
+/// builds every test and runs none: `zig build test` then exits 0 with a
+/// deliberately failing test in src/sucheme.zig, and `zig build`, `zig build
+/// check-docs` and `zig fmt --check .` stay green too. check-docs cannot see it,
+/// because it is told the paths and not whether anything ran.
+fn checkTestsAreRun(test_step: *std.Build.Step, want: usize) void {
+    var runs: usize = 0;
+    for (test_step.dependencies.items) |dep| {
+        if (dep.tag == .run) runs += 1;
+    }
+    if (runs == want) return;
+    std.debug.print(
+        "[sucheme] the test step runs {d} test(s) for {d} target(s); each test must be run, not only built\n",
+        .{ runs, want },
+    );
+    std.process.exit(1);
 }
 
 /// Builds one of the helper programs under tools/.
