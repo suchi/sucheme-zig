@@ -218,19 +218,6 @@ fn stripComment(line: []const u8) []const u8 {
     return line;
 }
 
-/// Extracts a `version:` value written on the same line, as a flow mapping
-/// does: `- { uses: ...setup-zig@x, with: { version: 0.17.0 } }`.
-///
-/// The caller strips comments first, so only `,` and `}` end the scalar here.
-fn flowVersion(line: []const u8) ?[]const u8 {
-    const at = std.mem.indexOf(u8, line, "version:") orelse return null;
-    var rest = line[at + "version:".len ..];
-    // Stop at whatever ends the scalar in a flow context.
-    if (std.mem.indexOfAny(u8, rest, ",}")) |end| rest = rest[0..end];
-    const value = std.mem.trim(u8, std.mem.trim(u8, rest, &std.ascii.whitespace), "\"'");
-    return if (value.len == 0) null else value;
-}
-
 /// Counts non-overlapping occurrences of `needle` in `haystack`.
 fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
     var found: usize = 0;
@@ -276,28 +263,20 @@ fn workflowZigVersions(
         // sequence holding two setup-zig steps on one line read as one step,
         // and the second step's version went unchecked; counted in full, the
         // caller's step-versus-version comparison rejects the line instead.
+        //
+        // No version is read from this line, whatever it holds. Reading one was
+        // the carrier for every decoy found so far: a `version:` in a comment,
+        // then one in a `name:` value ahead of the real one, then one in a
+        // `name:` value with no real one at all. Each was closed and the next
+        // appeared, because the line that names the action is also the line
+        // that can carry arbitrary text. So the only accepted spelling is a
+        // `version:` on a line of its own below the step, and every flow
+        // mapping now fails the caller's comparison with the diagnostic that
+        // says exactly that.
         const refs = countOccurrences(line, "setup-zig@");
         if (refs != 0) {
             steps += refs;
             in_setup = true;
-            // A flow mapping carries the version on the same line, and
-            // exactly one `version:` may appear there. `flowVersion` takes the
-            // first one, so a second ahead of it supplied the value that got
-            // checked while the step installed the other: writing
-            // `- { name: "version: 0.17.0", uses: ...setup-zig@..., with: {
-            // version: 0.18.1 } }` passed every check with CI on 0.18.1.
-            // Removing comments did not close this; the carrier just moved from
-            // a comment to a value.
-            //
-            // Anything but one `version:` collects nothing, which leaves the
-            // caller's reference-versus-version comparison to reject the line.
-            // That also covers a line holding several steps.
-            if (countOccurrences(line, "version:") == 1) {
-                if (flowVersion(line)) |v| {
-                    try out.append(gpa, v);
-                    in_setup = false;
-                }
-            }
             continue;
         }
         if (std.mem.startsWith(u8, body_of_item, "uses:")) {
@@ -544,6 +523,28 @@ fn hashLengthPrefixed(hasher: *std.crypto.hash.sha2.Sha256, bytes: []const u8) v
     hasher.update(bytes);
 }
 
+/// Whether the source declares at least one `test` block at container level.
+///
+/// Lexed, not searched: the word "test" appears in paths, comments and strings
+/// all over this repository, and a raw search would accept a file that declares
+/// none.
+fn hasTestBlock(source: [:0]const u8) bool {
+    var tok = std.zig.Tokenizer.init(source);
+    var depth: usize = 0;
+    while (true) {
+        const t = tok.next();
+        switch (t.tag) {
+            .eof => return false,
+            .l_brace => depth += 1,
+            .r_brace => if (depth > 0) {
+                depth -= 1;
+            },
+            .keyword_test => if (depth == 0) return true,
+            else => {},
+        }
+    }
+}
+
 /// Reports anything in `dir` that the recorded hash does not cover.
 ///
 /// `collectFiles` in flat mode returns the directory's own files with the right
@@ -587,6 +588,15 @@ fn checkSources(
     for (roots) |r| {
         if (!pathIn(files.items, r)) rep.fail("test root {s} does not exist", .{r});
         try reachable.put(gpa, r, {});
+    }
+    // A root with no test block of its own still contributes a run step, so
+    // build.zig's count of run steps would be satisfied while that module runs
+    // nothing. The count says a test was launched; this says there was a test
+    // to launch.
+    for (roots) |r| {
+        const body = read(gpa, io, cwd, rep, r) orelse continue;
+        if (!hasTestBlock(body))
+            rep.fail("test root {s} declares no test, so its run step executes nothing", .{r});
     }
     for (excluded) |e| {
         if (!pathIn(files.items, e)) rep.fail("excluded file {s} does not exist", .{e});
@@ -1186,17 +1196,53 @@ test "workflowZigVersions: a comment on the uses line does not supply the versio
     try std.testing.expectEqualStrings("0.18.0", out.items[0]);
 }
 
-test "workflowZigVersions: a comment after a flow mapping does not override it" {
+test "workflowZigVersions: a flow mapping supplies no version at all" {
+    // Reading a version from the line that names the action was the carrier
+    // for every decoy found: in a comment, then in a `name:` value ahead of
+    // the real one, then in a `name:` value with no real one. The line is
+    // counted and no version is taken from it, so the caller rejects the
+    // spelling instead of comparing against whatever the line carried.
     const gpa = std.testing.allocator;
     var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(gpa);
     const steps = try workflowZigVersions(gpa,
         \\    steps:
-        \\      - { uses: mlugg/setup-zig@abc, with: { version: 0.18.0 } }  # version: 0.17.0
+        \\      - { uses: mlugg/setup-zig@abc, with: { version: 0.18.0 } }
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "workflowZigVersions: a decoy on the uses line supplies nothing" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    // One `version:` on the line, in a value that installs nothing, and no
+    // real version anywhere. Reading the line gave 0.17.0 and passed.
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - { uses: "mlugg/setup-zig@abc", name: "pin version: 0.17.0" }
+    , &out);
+    try std.testing.expectEqual(@as(usize, 1), steps);
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "workflowZigVersions: a name holding version: does not shadow the real one" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(gpa);
+    // The decoy is on its own line, so it is not on the line that names the
+    // action, and the real version below is still the one read.
+    const steps = try workflowZigVersions(gpa,
+        \\    steps:
+        \\      - uses: mlugg/setup-zig@abc
+        \\        name: "install the pinned version: see .zigversion"
+        \\        with:
+        \\          version: 0.17.0
     , &out);
     try std.testing.expectEqual(@as(usize, 1), steps);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
-    try std.testing.expectEqualStrings("0.18.0", out.items[0]);
+    try std.testing.expectEqualStrings("0.17.0", out.items[0]);
 }
 
 test "workflowZigVersions: two steps on one line count as two" {
