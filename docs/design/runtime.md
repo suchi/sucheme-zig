@@ -338,7 +338,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 | `parameterize` | 各 ⟨param⟩ 式の評価後、各 ⟨value⟩ 式の評価後、各変換手続きの呼び出し後 | 2 |
 | `exit` の巻き戻し | 各 `after` の後 | 5 |
 
-`make-parameter` のフレームが必要なのは、R7RS 4.2.6 が「Initially, this value is the value of (converter init), or of init if the conversion procedure converter is not specified」と規定しているためである。生成時に変換手続きを呼び、その戻り値を新しいパラメータオブジェクトに格納する。フレームがないと変換手続きを呼ばないか戻り値を捨てるかになり、`(make-parameter 10 (lambda (x) (* x 2))))` の直後の呼び出しが 20 ではなく 10 を返す。検証手続きを渡した場合は定義時に出るべきエラーが出ない。`parameterize` の変換手続きのフレームは動的点に値を積むためのもので、これの代わりにはならない。
+`make-parameter` のフレームが必要なのは、R7RS 4.2.6 が「Initially, this value is the value of (converter init), or of init if the conversion procedure converter is not specified」と規定しているためである。生成時に変換手続きを呼び、その戻り値を新しいパラメータオブジェクトに格納する。フレームがないと変換手続きを呼ばないか戻り値を捨てるかになり、`(make-parameter 10 (lambda (x) (* x 2)))` が返したパラメータオブジェクトの呼び出しが 20 ではなく 10 を返す。検証手続きを渡した場合は定義時に出るべきエラーが出ない。`parameterize` の変換手続きのフレームは動的点に値を積むためのもので、これの代わりにはならない。
 
 `exit` の巻き戻しのフレームは、未処理例外の巻き戻しと同じ形である。段階5に置くのは `(scheme process-context)` を段階5で入れるためである。
 

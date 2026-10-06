@@ -277,7 +277,7 @@ import を増やさないのは、ホスト側が用意しなければならな�
 - 実行の中断(停止ボタン)を実現できる。
 - ブラウザで `read` が実装できる。入力が必要になった時点で状態コード 2(入力待ち)を返し、ホストが `sucheme_provide_input` で応答してから `sucheme_step` を再開する。
 
-入力待ちには終端が必要である。R7RS 6.13.2 は `read-char` について「If no more characters are available, an end of file object is returned」と規定しているので、ホストが「これ以上入力はない」と伝える手段がなければ `(eof-object? c)` が真になることがなく、入力を読むループが終わらない。
+入力待ちには終端が必要である。R7RS 6.13.2 は `read-char` について「If no more characters are available, an end-of-file object is returned.」と規定しているので、ホストが「これ以上入力はない」と伝える手段がなければ `(eof-object? c)` が真になることがなく、入力を読むループが終わらない。
 
 終端は専用のエクスポート `sucheme_provide_eof()` で伝える。`sucheme_provide_input(ptr, 0)` を終端の意味にはしない。長さ0の入力(空行)と終端は別の事象であり、同じ呼び出しで表すとホストが空行を渡せなくなる。このエクスポートは状態コードを返す群に入るので、群の件数は6つになる。
 

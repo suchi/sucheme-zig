@@ -72,7 +72,7 @@ R7RS の版が上がった場合、または誤記修正が入った場合に行
 
 3. R7RS の版が変わってライブラリ数が16でなくなった場合は、`main.zig` の `expected_library_count` を更新する。同じ数が報告と検査の両方に使われる。
 4. `zig run tools/extract-r7rs-required/main.zig` を実行する。
-5. 報告されたライブラリ数と識別子数を上の表に反映する。
+5. 報告されたライブラリ数と識別子数を上の表に反映する。`zig build check-docs` が表の各行と合計を実物と照合するので、忘れると赤になる。
 6. `zig build check-docs` を実行し、報告された抽出結果の SHA-256 を「抽出結果の固定」の表に貼り替える。
 7. `tests/r7rs-required/*.txt` の差分をレビューする。識別子の増減は準拠マトリクスに直接影響する。
 8. サイズと識別子数を引用している文書を更新する。[docs/plans/0002-phase0-scaffolding.md](../../docs/plans/0002-phase0-scaffolding.md) は入力の選定を裏づける実測として、[docs/roadmap.md](../../docs/roadmap.md) は段階0の到達点としてこれらの数を書いている。どちらも段階0の記録なので、値が変わったことを追記する形でよい。
