@@ -1253,6 +1253,17 @@ test "countOccurrences: every non-overlapping match counts" {
     try std.testing.expectEqual(@as(usize, 1), countOccurrences("aaa", "aa"));
 }
 
+test "hasRefAllDeclsTest: the call must be qualified" {
+    // Loosening the period requirement left all other tests green, so the
+    // reason the doc comment gives for it was unpinned: a local fn of the same
+    // name satisfies a bare-name check while referencing nothing.
+    try std.testing.expect(!hasRefAllDeclsTest(
+        \\test {
+        \\    refAllDecls(@This());
+        \\}
+    ));
+}
+
 test "hasRefAllDeclsTest: a container expression is not @This()" {
     // The existing negative example falls at the token sequence rather than at
     // the @This check, so loosening step 3 to accept any identifier left every
