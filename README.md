@@ -27,7 +27,11 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。段階1から用意するのはリリースのワークフローと成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
 
-自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしません。GitHub Actions の macOS ランナーの課金単位が他の10倍であるためです([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。macOS の署名と公証も行いません。
+自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしませんが、理由はそれぞれ別です([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。
+
+macOS は GitHub Actions の課金単位が他の10倍であるためです。署名と公証も行いません。
+
+aarch64 はランナー自体は使えます。対象にしないのは、段階0にアーキテクチャ依存のコードが無く、private リポジトリでは実行分数がプランの枠に計上されるためです。値表現とGCが入る段階1で見直します。
 
 WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
 
