@@ -31,7 +31,7 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
 
-これらの環境で問題が出た場合は issue でお知らせください。
+これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
 
 リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置せず、CI の成果物として zip で添付します。ローカルで開いて試す形になります。配置は段階8で行います([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。
 
