@@ -301,7 +301,18 @@ export fn alloc(n: usize) ?[*]u8 { ... }
 }
 ```
 
-`.paths` に `.zigversion` を入れるのは、`build.zig` が `@embedFile(".zigversion")` で読むためである。欠けると依存パッケージとして取得されたときにビルドが失敗する。`tests` を入れるのは、段階1の `zig build report` と段階6の `test-conformance` が `tests/r7rs-required/*.txt` を読むためである。`lib` は段階2で Scheme のソースを置いたときに加える。存在しないパスを先に書くと、何が必要で何が未着手かが読めなくなる。
+`.paths` の8エントリの根拠は次のとおりである。この一覧が正であり、`build.zig.zon` のコメントはここを参照する。
+
+| エントリ | 根拠 |
+| --- | --- |
+| `build.zig`・`build.zig.zon` | ビルドそのもの |
+| `.zigversion` | `build.zig` が `@embedFile(".zigversion")` で読む。欠けると依存パッケージとして取得されたときにビルドが失敗する |
+| `src`・`tools` | 実装と検証プログラム |
+| `tests` | 段階1の `zig build report` と段階6の `test-conformance` が `tests/r7rs-required/*.txt` を読む |
+| `LICENSE` | 許諾の条件がパッケージとともに届くようにする([ADR-0022](../adr/0022-unlicensed-proprietary.md))。欠けても機械は何も報告しない |
+| `README.md` | 取得した側の入口。欠けても機械は何も報告しない |
+
+`lib` は段階2で Scheme のソースを置いたときに加える。存在しないパスを先に書くと、何が必要で何が未着手かが読めなくなる。
 
 `fingerprint` はパッケージ名と結びついた値である。誤った値を書くとビルドが失敗し、エラーメッセージが正しい値を教えてくれるので、それを貼る。この値は一度決めたら変更しない(フォークの検出に使われる)。
 
