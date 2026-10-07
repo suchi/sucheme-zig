@@ -271,18 +271,32 @@ fn checkAdrRules(
 
         const raw_body = read(gpa, io, cwd, rep, path) orelse continue;
         const body = try visibleMarkdown(gpa, rep, path, raw_body);
-        const status = adrStatus(body) orelse {
-            rep.fail("{s} has no `- ステータス:` line", .{path});
-            continue;
+        const status = switch (adrStatus(body)) {
+            .one => |s| s,
+            .none => {
+                rep.fail("{s} has no `- ステータス:` line", .{path});
+                continue;
+            },
+            .ambiguous => {
+                rep.fail("{s} has more than one `- ステータス:` line", .{path});
+                continue;
+            },
         };
         const deprecated = std.mem.indexOf(u8, status, "非推奨") != null;
 
         // Every decision appears in the index exactly once. The row is found
         // by the link that opens it, not by any link on it: a 非推奨 row also
         // names the ADR that replaced it.
-        const row = adrRow(index, name) orelse {
-            rep.fail("{s} has no row opening with a link to {s}", .{ adr_index, name });
-            continue;
+        const row = switch (adrRow(index, name)) {
+            .one => |line| line,
+            .none => {
+                rep.fail("{s} has no row opening with a link to {s}", .{ adr_index, name });
+                continue;
+            },
+            .many => |n| {
+                rep.fail("{s} has {d} rows for {s}; one ADR has one row", .{ adr_index, n, name });
+                continue;
+            },
         };
         // The status cell, not the whole row: an adopted ADR whose title holds
         // the word 非推奨 was reported as disagreeing with itself.
@@ -299,7 +313,38 @@ fn checkAdrRules(
         checkAdrNoteBlock(rep, path, body, deprecated);
     }
 
-    // The other direction: a row whose file is gone.
+    // The other direction of supersession: a `- 置き換え:` declaration whose
+    // target is still adopted. Checking only from the 非推奨 side let a new ADR
+    // declare that it replaces an adopted one, leaving the repository with two
+    // contradictory records and nothing red.
+    for (files.items) |path| {
+        const name = std.fs.path.basename(path);
+        if (std.mem.eql(u8, name, "README.md") or std.mem.startsWith(u8, name, "0000-")) continue;
+        const raw_body = read(gpa, io, cwd, rep, path) orelse continue;
+        const body = try visibleMarkdown(gpa, rep, path, raw_body);
+        var lines = std.mem.splitScalar(u8, body, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+            if (!std.mem.startsWith(u8, line, "- 置き換え:")) continue;
+            const open = std.mem.indexOf(u8, line, "](") orelse continue;
+            const rest = line[open + 2 ..];
+            const close = std.mem.indexOfScalar(u8, rest, ')') orelse continue;
+            const target = rest[0..close];
+            const old_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
+            const raw_old = read(gpa, io, cwd, rep, old_path) orelse continue;
+            const old_body = try visibleMarkdown(gpa, rep, old_path, raw_old);
+            const old_status = switch (adrStatus(old_body)) {
+                .one => |s| s,
+                else => continue,
+            };
+            if (std.mem.indexOf(u8, old_status, "非推奨") == null) rep.fail(
+                "{s} says it replaces {s}, but {s} is still 採用",
+                .{ path, target, target },
+            );
+        }
+    }
+
+    // A row whose file is gone.
     var lines = std.mem.splitScalar(u8, index, '\n');
     while (lines.next()) |raw| {
         const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
@@ -310,16 +355,31 @@ fn checkAdrRules(
     }
 }
 
-/// The text after `- ステータス:` on the line that carries it.
-fn adrStatus(body: []const u8) ?[]const u8 {
+/// What an ADR records as its status.
+const RecordedStatus = union(enum) {
+    one: []const u8,
+    none,
+    /// Two status lines, so which one is the status cannot be decided.
+    ambiguous,
+};
+
+/// The text after `- ステータス:`.
+///
+/// Returning the first match let a line added above the real one win silently,
+/// and that turned off the index comparison, the supersession check and the
+/// 非推奨理由 requirement at once. The other records in this program refuse to
+/// pick one of several; this one does too.
+fn adrStatus(body: []const u8) RecordedStatus {
+    var found: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
         const prefix = "- ステータス:";
         if (!std.mem.startsWith(u8, line, prefix)) continue;
-        return std.mem.trim(u8, line[prefix.len..], &std.ascii.whitespace);
+        if (found != null) return .ambiguous;
+        found = std.mem.trim(u8, line[prefix.len..], &std.ascii.whitespace);
     }
-    return null;
+    return if (found) |s| .{ .one = s } else .none;
 }
 
 /// The status cell of an index row: the third, as the table is laid out.
@@ -375,7 +435,19 @@ fn checkAdrSupersession(
 }
 
 /// The index row whose first cell links to `name`.
-fn adrRow(index: []const u8, name: []const u8) ?[]const u8 {
+///
+/// Counted, not found: an outdated row left below the real one was never read,
+/// and the index then showed two statuses for one ADR. The table says each ADR
+/// has one row, so more than one is reported.
+const IndexRow = union(enum) {
+    one: []const u8,
+    none,
+    many: usize,
+};
+
+fn adrRow(index: []const u8, name: []const u8) IndexRow {
+    var found: ?[]const u8 = null;
+    var count: usize = 0;
     var lines = std.mem.splitScalar(u8, index, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
@@ -384,9 +456,12 @@ fn adrRow(index: []const u8, name: []const u8) ?[]const u8 {
         _ = cells.next();
         const first = cells.next() orelse continue;
         const target = linkTargetInRow(first) orelse continue;
-        if (std.mem.eql(u8, target, name)) return line;
+        if (!std.mem.eql(u8, target, name)) continue;
+        count += 1;
+        if (found == null) found = line;
     }
-    return null;
+    if (count > 1) return .{ .many = count };
+    return if (found) |line| .{ .one = line } else .none;
 }
 
 /// The first `](...)` target in a row, when it names a sibling Markdown file.
@@ -635,7 +710,10 @@ fn checkEntryPointAdrs(
                 const adr = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, name });
                 const raw_adr = read(gpa, io, cwd, rep, adr) orelse continue;
                 const adr_body = try visibleMarkdown(gpa, rep, adr, raw_adr);
-                const status = adrStatus(adr_body) orelse continue;
+                const status = switch (adrStatus(adr_body)) {
+                    .one => |s| s,
+                    else => continue, // checkAdrRules reports it
+                };
                 if (std.mem.indexOf(u8, status, "非推奨") == null) continue;
                 rep.fail(
                     "{s}:{d}: the entry point names {s}, which is 非推奨",
@@ -677,27 +755,52 @@ fn checkCiRunsTheTable(
     var run_lines: std.ArrayList([]const u8) = .empty;
     for (workflows.items) |path| {
         const body = read(gpa, io, cwd, rep, path) orelse continue;
-        var lines = std.mem.splitScalar(u8, body, '\n');
-        while (lines.next()) |raw| {
+
+        var raw_lines: std.ArrayList([]const u8) = .empty;
+        var split = std.mem.splitScalar(u8, body, '\n');
+        while (split.next()) |raw| try raw_lines.append(gpa, raw);
+
+        for (raw_lines.items, 0..) |raw, i| {
             var line = std.mem.trim(u8, raw, &std.ascii.whitespace);
             line = std.mem.trim(u8, stripComment(line), &std.ascii.whitespace);
+
+            // The workflow's own comment forbids tolerating a step's failure,
+            // because a verification that fails but is forgiven has stopped
+            // running. Nothing read that; adding `continue-on-error: true` to
+            // every step left CI green with the source not parsing.
+            if (std.mem.startsWith(u8, line, "continue-on-error:") or
+                std.mem.startsWith(u8, line, "if:"))
+            {
+                rep.fail(
+                    "{s}:{d}: `{s}` lets a verification fail or be skipped without the job going red",
+                    .{ path, i + 1, line },
+                );
+                continue;
+            }
+
+            const key_column = if (std.mem.startsWith(u8, line, "- "))
+                indentOf(raw) + 2
+            else
+                indentOf(raw);
             if (std.mem.startsWith(u8, line, "- "))
                 line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
             if (!std.mem.startsWith(u8, line, "run:")) continue;
+
             const value = std.mem.trim(u8, line["run:".len..], &std.ascii.whitespace);
-            // A block scalar puts the commands on the lines below, one per
-            // line. Reading only the value left a correct workflow reported as
-            // running nothing.
             if (value.len != 0 and value[0] != '|' and value[0] != '>') {
                 try run_lines.append(gpa, value);
                 continue;
             }
-            const run_indent = indentOf(raw);
-            while (lines.next()) |nested_raw| {
-                if (indentOf(nested_raw) <= run_indent and
-                    std.mem.trim(u8, nested_raw, &std.ascii.whitespace).len != 0) break;
-                var nested = std.mem.trim(u8, nested_raw, &std.ascii.whitespace);
-                nested = std.mem.trim(u8, stripComment(nested), &std.ascii.whitespace);
+            // A block scalar's content is what is indented deeper than the
+            // `run` key itself. Measuring from the list item instead took the
+            // step's sibling keys as content, so four commands listed under an
+            // `env:` value read as four commands run; and consuming the line
+            // that ended the block lost the step written after it.
+            for (raw_lines.items[i + 1 ..]) |nested_raw| {
+                const nested_trimmed = std.mem.trim(u8, nested_raw, &std.ascii.whitespace);
+                if (nested_trimmed.len == 0) continue;
+                if (indentOf(nested_raw) <= key_column) break;
+                const nested = std.mem.trim(u8, stripComment(nested_trimmed), &std.ascii.whitespace);
                 if (nested.len != 0) try run_lines.append(gpa, nested);
             }
         }
@@ -860,6 +963,8 @@ fn workflowZigVersions(
     var step_indent: ?usize = null;
     var with_indent: ?usize = null;
     var input_indent: ?usize = null;
+    // The indentation of the list item being read, which is the step's own.
+    var item_indent: usize = 0;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
         const indent = indentOf(raw);
@@ -869,6 +974,12 @@ fn workflowZigVersions(
 
         const is_item = std.mem.startsWith(u8, line, "- ");
         const body_of_item = if (is_item) std.mem.trim(u8, line[2..], &std.ascii.whitespace) else line;
+        // A step is the list item, and its keys may come in any order. Taking
+        // the indentation of the line that carries `setup-zig@` made the step
+        // end at its own `with:` whenever `name:` was written first, which is
+        // the ordinary spelling: the version then read as unreadable and a
+        // correct workflow was told to move a `version:` already in place.
+        if (is_item) item_indent = indent;
 
         // A line indented no deeper than the step's own item is outside it,
         // and one no deeper than the `with:` is outside that mapping.
@@ -903,7 +1014,7 @@ fn workflowZigVersions(
         const refs = countOccurrences(line, "setup-zig@");
         if (refs != 0) {
             for (0..refs) |_| try out.append(gpa, .{});
-            step_indent = indent;
+            step_indent = item_indent;
             with_indent = null;
             input_indent = null;
             continue;
@@ -1150,16 +1261,40 @@ fn lineOf(doc: []const u8, offset: usize) usize {
     return n;
 }
 
-/// Blanks lines indented four spaces or more, which render as code.
+/// Blanks indented code blocks, which a reader sees as code rather than as
+/// text.
 ///
-/// A `- ステータス:` line put there is not a status a reader sees, and taking it
-/// as one let a decoy ahead of the real line turn two ADR checks off at once.
+/// A `- ステータス:` line put inside one is not a status a reader sees, and
+/// taking it as one let a decoy ahead of the real line turn several ADR checks
+/// off at once.
+///
+/// The block has to start after a blank line. CommonMark: "An indented code
+/// block cannot interrupt a paragraph, so there must be a blank line between a
+/// paragraph and a following indented code block." Blanking every deeply
+/// indented line instead removed paragraph continuations and list item
+/// continuations, which do render: a note written four spaces in, under a list
+/// item, was visible to every reader and invisible to every check.
 fn blankIndentedCode(out: []u8) void {
+    var in_code = false;
+    var after_blank = true;
     var line_start: usize = 0;
     while (line_start < out.len) {
         const line_end = std.mem.indexOfScalarPos(u8, out, line_start, '\n') orelse out.len;
         const line = out[line_start..line_end];
-        if (indentOf(line) >= 4) blankExceptNewlines(line);
+        const blank = std.mem.trim(u8, line, &std.ascii.whitespace).len == 0;
+        const deep = indentOf(line) >= 4;
+
+        if (blank) {
+            // A blank line neither opens nor closes a block on its own.
+            after_blank = true;
+        } else if (deep and (in_code or after_blank)) {
+            in_code = true;
+            after_blank = false;
+            blankExceptNewlines(line);
+        } else {
+            in_code = false;
+            after_blank = false;
+        }
         line_start = line_end + 1;
     }
 }
@@ -2361,12 +2496,44 @@ test "adrRow: the row is found by the link that opens it" {
         \\| [0005](0005-old.md) | ... | 非推奨([0019](0019-new.md)に置き換え) | 2026-10-04 |
         \\| [0019](0019-new.md) | ... | 採用 | 2026-10-05 |
     ;
-    // A 非推奨 row also links to its replacement, so matching any link on the
-    // row would find two rows for 0019.
-    const row = adrRow(index, "0019-new.md").?;
+    // A 非推奨 row also links to its replacement, so matching any link on
+    // the row would find two rows for 0019.
+    const row = adrRow(index, "0019-new.md").one;
     try std.testing.expect(std.mem.indexOf(u8, row, "採用") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "非推奨") == null);
-    try std.testing.expect(adrRow(index, "0021-absent.md") == null);
+    try std.testing.expect(adrRow(index, "0021-absent.md") == .none);
+}
+
+test "adrRow: a stale row left below the real one is reported" {
+    // The defect this pins: the first match won, so an outdated row showed
+    // a second status for the same ADR and nothing read it.
+    const index =
+        \\| [0017](0017-a.md) | ... | 非推奨([0023](0023-b.md)に置き換え) | 2026-10-04 |
+        \\| [0017](0017-a.md) | 古い行 | 採用 | 2026-10-04 |
+    ;
+    switch (adrRow(index, "0017-a.md")) {
+        .many => |n| try std.testing.expectEqual(@as(usize, 2), n),
+        else => return error.TestExpectedMany,
+    }
+}
+
+test "adrStatus: a second status line is ambiguous, not silently shadowed" {
+    const one =
+        \\# ADR-0001: x
+        \\
+        \\- ステータス: 採用
+        \\- 日付: 2026-10-04
+    ;
+    switch (adrStatus(one)) {
+        .one => |s| try std.testing.expectEqualStrings("採用", s),
+        else => return error.TestExpectedOne,
+    }
+    const two =
+        \\- ステータス: 採用
+        \\- ステータス: ~~採用~~ 非推奨
+    ;
+    try std.testing.expect(adrStatus(two) == .ambiguous);
+    try std.testing.expect(adrStatus("- 日付: 2026-10-04") == .none);
 }
 
 test "rowCounts: both spellings of a total with its parts" {
