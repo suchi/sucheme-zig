@@ -271,7 +271,7 @@ fn checkAdrRules(
 
         const raw_body = read(gpa, io, cwd, rep, path) orelse continue;
         const body = try visibleMarkdown(gpa, rep, path, raw_body);
-        const status = switch (adrStatus(body)) {
+        const status = switch (try adrStatus(gpa, body)) {
             .one => |s| s,
             .none => {
                 rep.fail("{s} has no `- ステータス:` line", .{path});
@@ -311,7 +311,6 @@ fn checkAdrRules(
         );
         if (deprecated) try checkAdrSupersession(gpa, io, cwd, rep, path, name, status);
         checkAdrNoteBlock(rep, path, body, deprecated);
-        checkNoIndentedRecords(rep, path, raw_body);
     }
 
     // The other direction of supersession: a `- 置き換え:` declaration whose
@@ -347,7 +346,7 @@ fn checkAdrRules(
                 const old_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
                 const raw_old = read(gpa, io, cwd, rep, old_path) orelse continue;
                 const old_body = try visibleMarkdown(gpa, rep, old_path, raw_old);
-                const old_status = switch (adrStatus(old_body)) {
+                const old_status = switch (try adrStatus(gpa, old_body)) {
                     .one => |s| s,
                     else => continue,
                 };
@@ -388,11 +387,14 @@ const RecordedStatus = union(enum) {
 /// and that turned off the index comparison, the supersession check and the
 /// 非推奨理由 requirement at once. The other records in this program refuse to
 /// pick one of several; this one does too.
-fn adrStatus(body: []const u8) RecordedStatus {
+fn adrStatus(gpa: std.mem.Allocator, body: []const u8) !RecordedStatus {
     var found: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        // Normalised, so a status written with a full-width colon or with
+        // emphasis counts as one. Those spellings render as a status and were
+        // read by nobody, so a second one could contradict the first in silence.
+        const line = std.mem.trim(u8, try normalizeRecordLine(gpa, raw), &std.ascii.whitespace);
         const prefix = "- ステータス:";
         if (!std.mem.startsWith(u8, line, prefix)) continue;
         if (found != null) return .ambiguous;
@@ -496,6 +498,9 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
 
     // `[text](path "title")`
     if (std.mem.indexOfScalar(u8, target, ' ')) |space| target = target[0..space];
+    // `[text](<path>)`
+    if (target.len >= 2 and target[0] == '<' and target[target.len - 1] == '>')
+        target = target[1 .. target.len - 1];
     if (std.mem.startsWith(u8, target, "./")) target = target[2..];
 
     if (!std.mem.endsWith(u8, target, ".md")) return null;
@@ -503,42 +508,121 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
     return target;
 }
 
-/// Lines that carry a record, and so must sit at column zero.
-const record_openers = [_][]const u8{ "- ステータス:", "- 日付:", "- 置き換え:" };
+/// The words that open a record. A line naming one declares a record, whether
+/// or not it is spelled the way the reader of it expects.
+const record_words = [_][]const u8{ "ステータス", "日付", "置き換え", "対応する決定", "追記" };
 
-/// Reports a record written where records are not read.
+/// Normalises a line enough to recognise a record written a little differently.
+///
+/// A full-width colon and Markdown emphasis are dropped, because neither
+/// changes what a reader takes the line to say. `- ステータス： 非推奨` and
+/// `- **ステータス**: 非推奨` both render as a status and both passed: the exact
+/// match that read records did not see them, so no check read them and no check
+/// reported them either.
+///
+/// The result is not freed. `gpa` is this program's arena, which it is because
+/// nothing here outlives one run; a caller with another allocator frees it.
+fn normalizeRecordLine(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < line.len) {
+        // The full-width colon U+FF1A, as UTF-8.
+        if (std.mem.startsWith(u8, line[i..], "\u{ff1a}")) {
+            try out.append(gpa, ':');
+            i += 3;
+            continue;
+        }
+        if (line[i] == '*' or line[i] == '_') {
+            i += 1;
+            continue;
+        }
+        try out.append(gpa, line[i]);
+        i += 1;
+    }
+    return out.items;
+}
+
+/// Reports a record written where no check reads it.
 ///
 /// `visibleMarkdown` blanks every indented line, because what four spaces mean
-/// depends on the containing block. That leaves one gap: an indented line that
-/// a reader does see. Nesting `- ステータス: 非推奨` under the metadata showed a
-/// reader two statuses while the checks saw one, and a note indented under a
-/// list item was visible and unchecked. Neither is read, so neither may be
-/// written.
-fn checkNoIndentedRecords(rep: *Reporter, path: []const u8, raw: []const u8) void {
+/// depends on the containing block. A line a reader does see but no check reads
+/// is the gap that leaves, and it has been reached three ways: nesting a status
+/// under the metadata, indenting a note under a list item, and indenting a
+/// whole count table by two spaces, which GFM renders unchanged.
+///
+/// The fence state is tracked by the opener's character and length, as
+/// `checkMarkdown` does. Toggling on any fence line let a short fence inside a
+/// long one leave the state stuck, and every indented line after it was
+/// skipped.
+fn checkNoIndentedRecords(
+    gpa: std.mem.Allocator,
+    rep: *Reporter,
+    path: []const u8,
+    raw: []const u8,
+) !void {
+    var fence: ?struct { ch: u8, len: usize } = null;
     var lines = std.mem.splitScalar(u8, raw, '\n');
     var lineno: usize = 0;
-    var in_fence = false;
     while (lines.next()) |line| {
         lineno += 1;
         const trimmed = std.mem.trimStart(u8, line, " ");
-        if (fenceRun(trimmed)) |_| {
-            in_fence = !in_fence;
+        if (fenceRun(trimmed)) |run| {
+            if (fence) |open| {
+                if (run.bare and run.ch == open.ch and run.len >= open.len) fence = null;
+            } else {
+                fence = .{ .ch = run.ch, .len = run.len };
+            }
             continue;
         }
-        if (in_fence) continue;
+        if (fence != null) continue;
         if (indentOf(line) == 0) continue;
+        if (std.mem.trim(u8, line, &std.ascii.whitespace).len == 0) continue;
 
-        const text = std.mem.trim(u8, line, &std.ascii.whitespace);
-        var looks_like_record = std.mem.indexOf(u8, text, "追記:") != null;
-        for (record_openers) |opener| {
-            if (std.mem.startsWith(u8, text, opener)) looks_like_record = true;
-        }
-        if (!looks_like_record) continue;
+        const text = std.mem.trim(u8, try normalizeRecordLine(gpa, line), &std.ascii.whitespace);
+        if (!namesARecord(text)) continue;
         rep.fail(
             "{s}:{d}: this reads as a record but is indented, where no check reads it; write it at column zero",
             .{ path, lineno },
         );
     }
+}
+
+/// Whether the line declares a record: a `key:` that is one of the record
+/// words, or a table row carrying a label this program reads.
+///
+/// The key has to be the word, not merely contain it. Accepting any key that
+/// mentioned one reported the operating rules themselves, where a numbered item
+/// describes the form a note takes and happens to carry a colon further along.
+fn namesARecord(text: []const u8) bool {
+    // A table row holding a label this program reads as a record.
+    if (text.len != 0 and text[0] == '|') {
+        for ([_][]const u8{ "SHA-256", "ライブラリ数", "合計", "(scheme " }) |label| {
+            if (std.mem.indexOf(u8, text, label) != null) return true;
+        }
+        return breakdownIn(text) != null;
+    }
+
+    var body = text;
+    if (std.mem.startsWith(u8, body, "> ")) body = body[2..];
+    if (std.mem.startsWith(u8, body, "- ")) body = body[2..];
+    body = std.mem.trim(u8, body, &std.ascii.whitespace);
+
+    const colon = std.mem.indexOfScalar(u8, body, ':') orelse return false;
+    const key = std.mem.trim(u8, body[0..colon], &std.ascii.whitespace);
+
+    for (record_words) |word| {
+        if (std.mem.eql(u8, key, word)) return true;
+        // A note carries the date it was written: `YYYY-MM-DD 追記:`.
+        if (!std.mem.endsWith(u8, key, word)) continue;
+        const before = std.mem.trim(u8, key[0 .. key.len - word.len], &std.ascii.whitespace);
+        if (before.len == 0) return true;
+        var all_date = true;
+        for (before) |c| {
+            if (!std.ascii.isDigit(c) and c != '-') all_date = false;
+        }
+        if (all_date) return true;
+    }
+    return false;
 }
 
 /// Checks where an ADR's notes sit and how each paragraph opens.
@@ -664,6 +748,9 @@ fn checkCountRows(
 
     for (files.items) |path| {
         const raw = read(gpa, io, cwd, rep, path) orelse continue;
+        // Every document, not only the ADRs: a count table indented by two
+        // spaces renders unchanged and left the arithmetic unchecked.
+        try checkNoIndentedRecords(gpa, rep, path, raw);
         const doc = try visibleMarkdown(gpa, rep, path, raw);
         var lines = std.mem.splitScalar(u8, doc, '\n');
         var lineno: usize = 0;
@@ -776,7 +863,7 @@ fn checkEntryPointAdrs(
                 const adr = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, name });
                 const raw_adr = read(gpa, io, cwd, rep, adr) orelse continue;
                 const adr_body = try visibleMarkdown(gpa, rep, adr, raw_adr);
-                const status = switch (adrStatus(adr_body)) {
+                const status = switch (try adrStatus(gpa, adr_body)) {
                     .one => |s| s,
                     else => continue, // checkAdrRules reports it
                 };
@@ -821,6 +908,8 @@ fn checkCiRunsTheTable(
     var run_lines: std.ArrayList([]const u8) = .empty;
     for (workflows.items) |path| {
         const body = read(gpa, io, cwd, rep, path) orelse continue;
+        // The column a step's own keys sit at, from the most recent list item.
+        var step_keys_at: ?usize = null;
         var lines = std.mem.splitScalar(u8, body, '\n');
         var lineno: usize = 0;
         while (lines.next()) |raw| {
@@ -828,10 +917,26 @@ fn checkCiRunsTheTable(
             var line = std.mem.trim(u8, raw, &std.ascii.whitespace);
             line = std.mem.trim(u8, stripComment(line), &std.ascii.whitespace);
             if (line.len == 0) continue;
-            if (std.mem.startsWith(u8, line, "- "))
-                line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
 
-            const key = yamlKey(line) orelse continue; // a sequence element
+            const is_item = std.mem.startsWith(u8, line, "- ");
+            const key_column = if (is_item) indentOf(raw) + 2 else indentOf(raw);
+            if (is_item) {
+                step_keys_at = key_column;
+                line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
+            }
+
+            const key = yamlKey(line) orelse {
+                // A line this check cannot read as `key: value` is reported, not
+                // skipped. Skipping let a quoted key and a space before the
+                // colon through, and both are spellings Actions treats as the
+                // bare one: `'if': false` on the job skipped every step while
+                // every command stayed green.
+                if (std.mem.indexOfScalar(u8, line, ':') != null) rep.fail(
+                    "{s}:{d}: `{s}` is not a key this check can read; write the key bare, with no quotes and no space before the colon",
+                    .{ path, lineno, line },
+                );
+                continue;
+            };
             if (!keyIsAllowed(key)) {
                 rep.fail(
                     "{s}:{d}: `{s}` is not a key this check knows; add it to allowed_workflow_keys after deciding what it means for the verification",
@@ -840,6 +945,17 @@ fn checkCiRunsTheTable(
                 continue;
             }
             if (!std.mem.eql(u8, key, "run")) continue;
+
+            // Only a step's own `run` runs anything. Put under `with:` it is an
+            // action input, which Actions warns about and ignores, and counting
+            // it let a command leave CI while the check reported it as run.
+            if (step_keys_at == null or key_column != step_keys_at.?) {
+                rep.fail(
+                    "{s}:{d}: this `run:` is not a step's own key, so it runs nothing",
+                    .{ path, lineno },
+                );
+                continue;
+            }
 
             const value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace);
             if (value.len == 0 or value[0] == '|' or value[0] == '>') {
@@ -947,9 +1063,10 @@ const allowed_job_names = [_][]const u8{"test"};
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
-/// Only a bare key counts. A quoted key is rejected by the caller as unknown,
-/// which is the safe direction: `"continue-on-error": true` must not slip past
-/// a check that forbids the bare spelling.
+/// Only a bare key counts, with no quotes and no space before the colon. The
+/// caller reports anything else that looks like a mapping, because a quoted key
+/// is the same key to Actions: returning null and letting the caller skip was
+/// how `"continue-on-error": true` and `continue-on-error : true` both passed.
 fn yamlKey(line: []const u8) ?[]const u8 {
     const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
     if (colon == 0) return null;
@@ -1349,12 +1466,17 @@ fn indexOfCommentOpen(doc: []const u8, from: usize) ?usize {
         var i: usize = 0;
         while (i < line.len) {
             if (line[i] == '`') {
-                // Skip the span only when it closes on this line.
-                if (std.mem.indexOfScalarPos(u8, line, i + 1, '`')) |close| {
-                    i = close + 1;
+                // A code span opens and closes on runs of the same length.
+                // Pairing each backtick with the next one read ``<!--`` as an
+                // empty span followed by a comment opener, so a sentence about
+                // the markup silenced the rest of its document.
+                var open_len: usize = 0;
+                while (i + open_len < line.len and line[i + open_len] == '`') open_len += 1;
+                if (closingRun(line, i + open_len, open_len)) |close| {
+                    i = close + open_len;
                     continue;
                 }
-                i += 1; // a literal backtick
+                i += open_len; // literal backticks
                 continue;
             }
             if (std.mem.startsWith(u8, line[i..], "<!--")) {
@@ -1364,6 +1486,22 @@ fn indexOfCommentOpen(doc: []const u8, from: usize) ?usize {
             i += 1;
         }
         line_start = line_end + 1;
+    }
+    return null;
+}
+
+/// Where a run of exactly `len` backticks starts, at or after `from`.
+fn closingRun(line: []const u8, from: usize, len: usize) ?usize {
+    var i = from;
+    while (i < line.len) {
+        if (line[i] != '`') {
+            i += 1;
+            continue;
+        }
+        var run: usize = 0;
+        while (i + run < line.len and line[i + run] == '`') run += 1;
+        if (run == len) return i;
+        i += run;
     }
     return null;
 }
@@ -2623,22 +2761,60 @@ test "adrRow: a stale row left below the real one is reported" {
 }
 
 test "adrStatus: a second status line is ambiguous, not silently shadowed" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
     const one =
         \\# ADR-0001: x
         \\
         \\- ステータス: 採用
         \\- 日付: 2026-10-04
     ;
-    switch (adrStatus(one)) {
-        .one => |s| try std.testing.expectEqualStrings("採用", s),
+    switch (try adrStatus(gpa, one)) {
+        .one => |st| try std.testing.expectEqualStrings("採用", st),
         else => return error.TestExpectedOne,
     }
     const two =
         \\- ステータス: 採用
         \\- ステータス: ~~採用~~ 非推奨
     ;
-    try std.testing.expect(adrStatus(two) == .ambiguous);
-    try std.testing.expect(adrStatus("- 日付: 2026-10-04") == .none);
+    try std.testing.expect(try adrStatus(gpa, two) == .ambiguous);
+    try std.testing.expect(try adrStatus(gpa, "- 日付: 2026-10-04") == .none);
+}
+
+test "adrStatus: a status spelled a little differently is still a status" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    // Both of these render as a status and neither was read, so a second
+    // one could contradict the first without any check seeing it.
+    const full_width =
+        \\- ステータス: 採用
+        \\- ステータス： 非推奨
+    ;
+    try std.testing.expect(try adrStatus(gpa, full_width) == .ambiguous);
+    const emphasised =
+        \\- ステータス: 採用
+        \\- **ステータス**: 非推奨
+    ;
+    try std.testing.expect(try adrStatus(gpa, emphasised) == .ambiguous);
+}
+
+test "namesARecord: the key is the word, not a sentence mentioning it" {
+    try std.testing.expect(namesARecord("- ステータス: 採用"));
+    try std.testing.expect(namesARecord("- 置き換え: [ADR-0001](0001-x.md) を..."));
+    try std.testing.expect(namesARecord("対応する決定: [ADR-0009](a.md)"));
+    try std.testing.expect(namesARecord("> 2026-10-07 追記: ..."));
+    try std.testing.expect(namesARecord("2026-10-07 追記: ..."));
+    // A table row carrying a label this program reads.
+    try std.testing.expect(namesARecord("| 合計 | 557 |"));
+    try std.testing.expect(namesARecord("| 9 | 24 | 必須9・推奨11・任意4 |"));
+    // The operating rules describe these forms in prose. Reporting them
+    // made the rules unwritable.
+    try std.testing.expect(!namesARecord("1. 旧ADRのステータスを`採用`から`非推奨`に変え、冒頭に追記する:"));
+    try std.testing.expect(!namesARecord("2. 決定を変えない追記。`> YYYY-MM-DD 追記: ...` の形で書く:"));
+    try std.testing.expect(!namesARecord("- メリット: 全体整合性の確認"));
+    try std.testing.expect(!namesARecord("| 項目 | 検査の内容 |"));
 }
 
 test "rowCounts: both spellings of a total with its parts" {
