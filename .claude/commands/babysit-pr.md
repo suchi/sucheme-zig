@@ -1,5 +1,5 @@
 ---
-description: PRを監視し、レビュー指摘の修正をNo New Commentまでループする
+description: PRを監視し、レビュー指摘の修正を必須の新規指摘ゼロまでループする
 argument-hint: <PR番号>
 ---
 
@@ -16,7 +16,7 @@ PR #$ARGUMENTS の未解決レビュースレッドと最新レビューを確�
       (`gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/comments --method POST -f body="修正しました: ..." -F in_reply_to=COMMENT_ID`)
    d. `resolveReviewThread` GraphQL mutationでスレッドを解決する
 4. Copilotに再レビューを依頼する: 必ず`gh pr edit $ARGUMENTS --add-reviewer @copilot`(gh 2.88.0以上が必要)。REST APIの`.../requested_reviewers`はレビュー済みPRの再レビューをトリガーしない。
-5. 下記「レビュー完了の判定」を満たすまで待ってから、未解決スレッドと新規コメントを確認する。未解決スレッドがなく新規コメントもなければ「No New Comment 達成」と報告する。マージはしない — マージには明示的なユーザー承認が必要(/merge-pr)。
+5. 下記「レビュー完了の判定」を満たすまで待ってから、未解決スレッドと新規コメントを確認する。未解決スレッドがなく、必須の新規指摘もなければ「必須の新規指摘ゼロ」と報告する([ADR-0023](../../docs/adr/0023-mandatory-zero-convergence.md))。マージはしない — マージには明示的なユーザー承認が必要(/merge-pr)。
 
 ## レビュー完了の判定
 
@@ -29,7 +29,7 @@ PR #$ARGUMENTS の未解決レビュースレッドと最新レビューを確�
 
 ## 環境への適応
 
-- ローカルのClaude Code(ghあり): 上記の手順をそのまま実行する。No New Commentになるまで修正のたびにループを回す。
+- ローカルのClaude Code(ghあり): 上記の手順をそのまま実行する。必須の新規指摘がゼロになるまで修正のたびにループを回す。
 - claude.ai/code(Web、ghなし): 同じ手順をGitHub MCPツールで実行し、`subscribe_pr_activity`ツールでPRを購読してレビューコメント・CIイベントを自動で受け取る。再レビュー依頼は`request_copilot_review` MCPツールで行う(手順4のghコマンドはここでは使えず、REST `requested_reviewers`での代用は不可)。各イベントを上記ループで処理し、PRのマージ/クローズ時またはユーザーの停止指示で購読を解除する。
 
 ## 重要ルール
