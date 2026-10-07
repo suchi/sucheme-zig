@@ -512,8 +512,12 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
     return target;
 }
 
-/// The words that open a record. A line naming one declares a record, whether
-/// or not it is spelled the way the reader of it expects.
+/// The words that open a record.
+///
+/// A line whose key is one of these declares a record. The key is compared after
+/// `normalizeRecordLine`, so the spellings that look alike to a reader are one
+/// key here; the claim is limited to the characters that function normalises,
+/// not to every way the word could be written.
 const record_words = [_][]const u8{ "ステータス", "日付", "置き換え", "対応する決定", "追記" };
 
 /// Cell contents that make a table row a record this program reads.
@@ -544,27 +548,71 @@ const record_table_labels = [_][]const u8{
 fn normalizeRecordLine(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     var i: usize = 0;
-    while (i < line.len) {
-        // The full-width colon U+FF1A, as UTF-8.
-        if (std.mem.startsWith(u8, line[i..], "\u{ff1a}")) {
+    outer: while (i < line.len) {
+        for (colon_spellings) |colon| {
+            if (!std.mem.startsWith(u8, line[i..], colon)) continue;
             try out.append(gpa, ':');
-            i += 3;
-            continue;
+            i += colon.len;
+            continue :outer;
         }
-        if (std.mem.startsWith(u8, line[i..], ideographic_space)) {
+        for (space_spellings) |space| {
+            if (!std.mem.startsWith(u8, line[i..], space)) continue;
             try out.append(gpa, ' ');
-            i += ideographic_space.len;
-            continue;
+            i += space.len;
+            continue :outer;
         }
-        if (line[i] == '*' or line[i] == '_') {
+        for (invisible_spellings) |hidden| {
+            if (!std.mem.startsWith(u8, line[i..], hidden)) continue;
+            i += hidden.len;
+            continue :outer;
+        }
+        // Emphasis and code spans, which change how the key looks and not what
+        // it says.
+        if (line[i] == '*' or line[i] == '_' or line[i] == '`') {
             i += 1;
             continue;
         }
         try out.append(gpa, line[i]);
         i += 1;
     }
-    return out.items;
+
+    // A space before the colon. `- ステータス :` is the same key to a reader.
+    var tight: std.ArrayList(u8) = .empty;
+    var j: usize = 0;
+    while (j < out.items.len) : (j += 1) {
+        if (out.items[j] == ' ') {
+            var k = j;
+            while (k < out.items.len and out.items[k] == ' ') k += 1;
+            if (k < out.items.len and out.items[k] == ':') {
+                j = k - 1;
+                continue;
+            }
+        }
+        try tight.append(gpa, out.items[j]);
+    }
+    return tight.items;
 }
+
+/// Spellings of a colon that a reader takes for the one a record uses.
+const colon_spellings = [_][]const u8{ "\u{ff1a}", "\u{fe55}" };
+
+/// Characters a reader sees as a space and `std.ascii.whitespace` does not.
+///
+/// A record written with one of these was read by nobody: the key did not match
+/// and the line counted as column zero, so no check reported it either. The set
+/// is the Unicode space separators plus the two that are not in that category
+/// but render as one.
+const space_spellings = [_][]const u8{
+    "\u{00a0}", "\u{1680}", "\u{2000}", "\u{2001}", "\u{2002}", "\u{2003}",
+    "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}",
+    "\u{200a}", "\u{202f}", "\u{205f}", "\u{3000}",
+};
+
+/// Characters a reader does not see at all. One inside a key made a second
+/// record render identically to the first while matching nothing.
+const invisible_spellings = [_][]const u8{
+    "\u{200b}", "\u{200c}", "\u{200d}", "\u{2060}", "\u{feff}",
+};
 
 /// A document line as the record readers see it: normalised and trimmed.
 ///
@@ -596,17 +644,35 @@ fn checkNoIndentedRecords(
     raw: []const u8,
 ) !void {
     var fence: ?struct { ch: u8, len: usize, indent: usize } = null;
+    // The column an open indented code block's content starts at.
+    var code: ?usize = null;
+    // Whether the last line at column zero opened a list.
+    var list_open = false;
+    // The first line of a document counts as following a blank line.
+    var prev_blank = true;
     var lines = std.mem.splitScalar(u8, raw, '\n');
     var lineno: usize = 0;
     while (lines.next()) |line| {
         lineno += 1;
-        const indent = indentOf(line);
-        const trimmed = std.mem.trimStart(u8, line, " ");
-        if (fenceRun(trimmed)) |run| {
+        const run = indentRun(line);
+        const indent = run.cols;
+        const trimmed = line[run.bytes..];
+        const blank = std.mem.trim(u8, line, &std.ascii.whitespace).len == 0;
+        defer prev_blank = blank;
+
+        // Inside an indented code block until a line dedents out of it. Only the
+        // first line can be recognised from its own indentation, so the state
+        // has to be carried: without it the second line of a code block, whose
+        // predecessor is code rather than a blank, read as a record.
+        if (code) |at| {
+            if (blank or indent >= at) continue;
+            code = null;
+        }
+        if (fenceRun(trimmed)) |f| {
             if (fence) |open| {
-                if (run.bare and run.ch == open.ch and run.len >= open.len) fence = null;
+                if (f.bare and f.ch == open.ch and f.len >= open.len) fence = null;
             } else {
-                fence = .{ .ch = run.ch, .len = run.len, .indent = indent };
+                fence = .{ .ch = f.ch, .len = f.len, .indent = indent };
             }
             continue;
         }
@@ -617,10 +683,21 @@ fn checkNoIndentedRecords(
         if (fence) |open| {
             if (indent >= open.indent) continue;
         }
-        if (indent == 0) continue;
-        if (std.mem.trim(u8, line, &std.ascii.whitespace).len == 0) continue;
-        // An indented code block, which renders as code rather than as a record.
-        if (indent >= 4 and fence == null) continue;
+        if (blank) continue;
+        if (indent == 0) {
+            list_open = opensAList(trimmed);
+            continue;
+        }
+        // An indented code block opens here. Four spaces means code only where a
+        // block can begin -- after a blank line -- and only outside a list, where
+        // the item's content column decides what its own indentation means. The
+        // two conditions are what separates code from a record a reader can see:
+        // without them a row indented into the middle of a table, and a record
+        // nested under a list item, were both skipped while rendering in place.
+        if (indent >= 4 and fence == null and !list_open and prev_blank) {
+            code = 4;
+            continue;
+        }
 
         const text = std.mem.trim(u8, try normalizeRecordLine(gpa, line), &std.ascii.whitespace);
         if (!namesARecord(text)) continue;
@@ -629,6 +706,26 @@ fn checkNoIndentedRecords(
             .{ path, lineno },
         );
     }
+}
+
+/// Whether the line opens a list item, taking the indentation as already
+/// stripped.
+///
+/// A list item's marker decides the column its content sits at, and every block
+/// nested under it is measured from there rather than from column zero. So the
+/// absolute four spaces that mean code at the top level mean something a reader
+/// sees inside a list.
+fn opensAList(trimmed: []const u8) bool {
+    if (trimmed.len == 0) return false;
+    const bullet = trimmed[0] == '-' or trimmed[0] == '*' or trimmed[0] == '+';
+    // `---` is a thematic break or a table's delimiter row, and `**` is emphasis.
+    if (bullet) return trimmed.len == 1 or trimmed[1] == ' ' or trimmed[1] == '\t';
+
+    var i: usize = 0;
+    while (i < trimmed.len and std.ascii.isDigit(trimmed[i])) i += 1;
+    if (i == 0 or i >= trimmed.len) return false;
+    if (trimmed[i] != '.' and trimmed[i] != ')') return false;
+    return i + 1 == trimmed.len or trimmed[i + 1] == ' ' or trimmed[i + 1] == '\t';
 }
 
 /// Whether the line declares a record: a `key:` that is one of the record
@@ -801,8 +898,11 @@ fn checkCountRows(
         // Every document, not only the ADRs: a count table indented by two
         // spaces renders unchanged and left the arithmetic unchecked.
         try checkNoIndentedRecords(gpa, rep, path, raw);
-        try checkTableCells(gpa, rep, path, raw);
         const doc = try visibleMarkdown(gpa, rep, path, raw);
+        // The cells are counted on what a reader sees. Counting the raw document
+        // made a table written inside a fence, to show what one looks like, a
+        // table with a broken row.
+        checkTableCells(rep, path, doc);
         var lines = std.mem.splitScalar(u8, doc, '\n');
         var lineno: usize = 0;
         while (lines.next()) |line_raw| {
@@ -1175,26 +1275,47 @@ fn runsCommand(line: []const u8, command: []const u8) bool {
 /// A tab does not count. YAML forbids one in indentation, so a tab-indented
 /// line reads as column zero, which closes a block rather than extending one.
 fn indentOf(raw: []const u8) usize {
-    var n: usize = 0;
+    return indentRun(raw).cols;
+}
+
+/// The run of leading whitespace: how many columns a reader sees, and how many
+/// bytes it occupies.
+///
+/// Both are needed. The column count decides what the indentation means, and the
+/// byte count is where the line's content begins -- `trimStart(line, " ")` left a
+/// U+3000 in place, so a fence indented with one was not recognised as a fence.
+fn indentRun(raw: []const u8) struct { cols: usize, bytes: usize } {
+    var cols: usize = 0;
     var i: usize = 0;
-    while (i < raw.len) {
+    outer: while (i < raw.len) {
         if (raw[i] == ' ') {
-            n += 1;
+            cols += 1;
             i += 1;
             continue;
         }
-        if (std.mem.startsWith(u8, raw[i..], ideographic_space)) {
-            n += 1;
-            i += ideographic_space.len;
+        // A tab advances to the next four-column stop, as CommonMark defines it.
+        // Not counting one at all made `字下げされた行は読まない` false for a tab:
+        // the line counted as column zero and was read as a record.
+        if (raw[i] == '\t') {
+            cols += 4 - cols % 4;
+            i += 1;
             continue;
+        }
+        for (space_spellings) |space| {
+            if (!std.mem.startsWith(u8, raw[i..], space)) continue;
+            cols += 1;
+            i += space.len;
+            continue :outer;
+        }
+        for (invisible_spellings) |hidden| {
+            if (!std.mem.startsWith(u8, raw[i..], hidden)) continue;
+            i += hidden.len;
+            continue :outer;
         }
         break;
     }
-    return n;
+    return .{ .cols = cols, .bytes = i };
 }
-
-/// U+3000, which readers see as a space and `std.ascii.whitespace` does not.
-const ideographic_space = "\u{3000}";
 
 /// Removes a trailing YAML comment. A `#` opens a comment at the start of the
 /// line or after whitespace, and not inside a quoted scalar.
@@ -1484,11 +1605,21 @@ fn checkVendoredHashes(
 /// every check stayed green. Blanking rather than deleting keeps line and byte
 /// offsets, so diagnostics still point at the right place.
 ///
-/// Two things this must not do. An unclosed `<!--` blanked the rest of the
-/// document, so every record below it read as absent and no check said why;
-/// `rep` is given so that is reported instead, like an unclosed fence. And a
-/// `<!--` inside a code span is prose about comments, not a comment: a sentence
-/// explaining this very mechanism silenced the rest of its own document.
+/// An unclosed opener blanked the rest of the document, so every record below
+/// it read as absent and no check said why; `rep` is given so that is reported
+/// instead, like an unclosed fence.
+///
+/// The opener counts wherever it appears on a line, not only at the start of
+/// one. CommonMark emits an inline raw HTML comment as it stands and a browser
+/// hides it exactly as it hides a block one, so a row carrying a commented value
+/// before a visible one showed the visible one to a reader and handed the hidden
+/// one to a check. Deciding instead whether the marker sits
+/// inside a code span needs an inline parser this program does not have: two
+/// attempts failed, one letting a single unpaired backtick hide a comment and the
+/// other reading a double-backtick span as an empty span plus an opener. So there
+/// is no exception for code spans, and the cost is that Markdown prose in this
+/// repository cannot carry the literal marker -- an unclosed one is reported, so
+/// the cost is paid in a diagnostic rather than in silence.
 fn visibleMarkdown(
     gpa: std.mem.Allocator,
     rep: *Reporter,
@@ -1496,71 +1627,56 @@ fn visibleMarkdown(
     doc: []const u8,
 ) ![]u8 {
     const out = try gpa.dupe(u8, doc);
-    var fence: ?struct { ch: u8, len: usize } = null;
+    var fence: ?struct { ch: u8, len: usize, indent: usize } = null;
     var i: usize = 0;
     while (i < out.len) {
         // A line at a time, so a fence is recognised where it opens.
         const end = std.mem.indexOfScalarPos(u8, out, i, '\n') orelse out.len;
         const line = out[i..end];
-        const trimmed = std.mem.trimStart(u8, line, " ");
+        const run = indentRun(line);
 
-        var blank_line = fence != null;
-        if (fenceRun(trimmed)) |run| {
+        var blank_line = false;
+        if (fenceRun(line[run.bytes..])) |f| {
             if (fence) |open| {
-                if (run.bare and run.ch == open.ch and run.len >= open.len) fence = null;
+                if (f.bare and f.ch == open.ch and f.len >= open.len) fence = null;
             } else {
-                fence = .{ .ch = run.ch, .len = run.len };
+                fence = .{ .ch = f.ch, .len = f.len, .indent = run.cols };
             }
             blank_line = true;
+        } else if (fence) |open| {
+            // Inside the fence only while indented at least as far as it, which
+            // is the rule `checkNoIndentedRecords` reads. Fixing one of the pair
+            // and not the other left a column-zero record between two indented
+            // fences blanked here and skipped there, so nothing read it.
+            blank_line = run.cols >= open.indent;
         }
         if (blank_line) blankExceptNewlines(line);
         i = end + 1;
     }
 
-    blankIndentedCode(out);
-
     // HTML comments span lines, so they are blanked over the whole document.
+    // Before the indented lines are blanked, not after: blanking first turned an
+    // opener indented one to three spaces into spaces, so it was never found and
+    // the table it hid from the reader was read as present.
     var from: usize = 0;
-    while (indexOfCommentOpen(out, from)) |open| {
+    while (std.mem.indexOfPos(u8, out, from, "<!--")) |open| {
         const close = std.mem.indexOfPos(u8, out, open, "-->") orelse {
             rep.fail(
-                "{s}:{d}: this `<!--` is never closed, which would hide every record below it",
+                "{s}:{d}: this HTML comment is never closed, which would hide every record below it",
                 .{ path, lineOf(out, open) },
             );
-            return out;
+            // Past this opener rather than out of the loop. Stopping left every
+            // later comment unblanked, so one unclosed marker turned the records
+            // a closed comment hides back into records that are read.
+            from = open + 4;
+            continue;
         };
         blankExceptNewlines(out[open .. close + 3]);
         from = close + 3;
     }
-    return out;
-}
 
-/// The next `<!--` at or after `from` that opens an HTML block.
-///
-/// Only a `<!--` that begins its line, after at most three spaces, counts.
-/// CommonMark's HTML block type 2 has "line begins with the string `<!--`" as
-/// its start condition, so a `<!--` further along the line does not hide what
-/// follows it from a reader. Treating one as an opener blanked records that are
-/// plainly visible: a sentence could be wrapped around a table and the table
-/// read as absent.
-///
-/// Reading the position rather than the backticks also drops the code-span
-/// question entirely. Two attempts at that lost -- every backtick opening a
-/// span let one unclosed backtick hide a comment, and pairing runs by length
-/// read ``<!--`` as an empty span followed by an opener.
-fn indexOfCommentOpen(doc: []const u8, from: usize) ?usize {
-    var line_start: usize = 0;
-    while (line_start < doc.len) {
-        const line_end = std.mem.indexOfScalarPos(u8, doc, line_start, '\n') orelse doc.len;
-        const line = doc[line_start..line_end];
-        const indent = line.len - std.mem.trimStart(u8, line, " ").len;
-        if (indent <= 3 and std.mem.startsWith(u8, line[indent..], "<!--")) {
-            const at = line_start + indent;
-            if (at >= from) return at;
-        }
-        line_start = line_end + 1;
-    }
-    return null;
+    blankIndentedCode(out);
+    return out;
 }
 
 /// The 1-based line number of `offset`.
@@ -1576,10 +1692,10 @@ fn lineOf(doc: []const u8, offset: usize) usize {
 ///
 /// GFM drops the extra cells of a longer row, so an unescaped `|` inside a cell
 /// moves the cells after it and the last one disappears from the rendered table.
-/// Three rows of this repository lost their content that way, one of them the
-/// record of how a review finding was closed. The pipe has to be escaped, "even
-/// inside other inline spans" as the GFM tables extension puts it.
-fn checkTableCells(gpa: std.mem.Allocator, rep: *Reporter, path: []const u8, doc: []const u8) !void {
+/// Rows of this repository lost their content that way, one of them the record of
+/// how a review finding was closed. The pipe has to be escaped, "including inside
+/// other inline spans" as the GFM tables extension puts it.
+fn checkTableCells(rep: *Reporter, path: []const u8, doc: []const u8) void {
     var header: ?usize = null;
     var in_table = false;
     var lines = std.mem.splitScalar(u8, doc, '\n');
@@ -1587,7 +1703,13 @@ fn checkTableCells(gpa: std.mem.Allocator, rep: *Reporter, path: []const u8, doc
     while (lines.next()) |raw| {
         lineno += 1;
         const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        if (line.len == 0 or line[0] != '|') {
+        // A leading pipe is optional in GFM, so a row in an open table is any
+        // line carrying one. Requiring the pipe at the start let a row drop it
+        // and take the rest of the table out of the check with it. Outside a
+        // table the pipe has to come first, or prose mentioning one would open
+        // a table that does not exist.
+        const is_row = line.len != 0 and (line[0] == '|' or (header != null and hasUnescapedPipe(line)));
+        if (!is_row) {
             header = null;
             in_table = false;
             continue;
@@ -1610,22 +1732,63 @@ fn checkTableCells(gpa: std.mem.Allocator, rep: *Reporter, path: []const u8, doc
             .{ path, lineno, cells, header.? },
         );
     }
-    _ = gpa;
 }
 
 /// The number of cells a table row declares, counting an escaped pipe as text.
+///
+/// GFM makes the pipes that open and close a row optional, so they are stripped
+/// before the rest are counted as separators. Counting the pipes and subtracting
+/// one instead was right only for a row that had both: dropping the closing pipe
+/// while adding an unescaped one inside a cell kept the count matching the header
+/// and the last cell still vanished from the rendered row.
+///
+/// `line` is expected trimmed, so a closing pipe is the last byte.
 fn cellCount(line: []const u8) usize {
-    var cells: usize = 0;
+    var body = line;
+    if (body.len != 0 and body[0] == '|') body = body[1..];
+
+    var cells: usize = 1;
+    var closed = false;
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        if (body[i] == '\\') {
+            i += 1; // the escaped character, pipe or not
+            closed = false;
+            continue;
+        }
+        if (body[i] != '|') {
+            closed = false;
+            continue;
+        }
+        cells += 1;
+        closed = i + 1 == body.len;
+    }
+    return if (closed) cells - 1 else cells;
+}
+
+/// Whether the line carries a `|` that is not escaped.
+fn hasUnescapedPipe(line: []const u8) bool {
     var i: usize = 0;
     while (i < line.len) : (i += 1) {
         if (line[i] == '\\') {
-            i += 1; // the escaped character, pipe or not
+            i += 1;
             continue;
         }
-        if (line[i] == '|') cells += 1;
+        if (line[i] == '|') return true;
     }
-    // `| a | b |` has three pipes and two cells.
-    return if (cells == 0) 0 else cells - 1;
+    return false;
+}
+
+test "cellCount: the pipes that open and close a row are optional" {
+    try std.testing.expectEqual(@as(usize, 2), cellCount("| a | b |"));
+    try std.testing.expectEqual(@as(usize, 2), cellCount("| a | b"));
+    try std.testing.expectEqual(@as(usize, 2), cellCount("a | b"));
+    try std.testing.expectEqual(@as(usize, 1), cellCount("| a |"));
+    // The defect this pins: dropping the closing pipe and adding one inside a
+    // cell kept the count, and the rendered row lost its last cell.
+    try std.testing.expectEqual(@as(usize, 3), cellCount("| a | b | c"));
+    // An escaped pipe is the cell's text.
+    try std.testing.expectEqual(@as(usize, 1), cellCount("| a \\| b |"));
 }
 
 /// Blanks every indented line, so that only column zero carries a record.
@@ -2801,15 +2964,70 @@ test "visibleMarkdown: a record hidden from the reader is not a record" {
     try std.testing.expectEqual(@as(usize, 0), rep.count);
 }
 
-test "visibleMarkdown: a comment in a code span is prose about comments" {
+test "visibleMarkdown: a comment in a code span is reported, not obeyed" {
     const gpa = std.testing.allocator;
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var rep: Reporter = .{ .w = &sink.writer };
-    // The defect this pins: one sentence like this silenced every record below
-    // it in its own document, and nothing said so.
+    // There is no exception for code spans, so prose carrying the marker is an
+    // unclosed comment. Reporting it is what tells the author to write the
+    // sentence another way, instead of the rest of the document going quiet.
     const doc =
         \\HTML コメントは `<!--` で開く。
         \\| 合計 | 557 |
+    ;
+    const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
+    defer gpa.free(seen);
+    try std.testing.expectEqual(@as(usize, 1), rep.count);
+    switch (integerAfter(seen, "| 合計 |")) {
+        .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
+        else => return error.TestExpectedOne,
+    }
+}
+
+test "visibleMarkdown: a comment part way along a line hides what it wraps" {
+    const gpa = std.testing.allocator;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var rep: Reporter = .{ .w = &sink.writer };
+    // A browser hides an inline comment as it hides a block one, so a reader
+    // sees 99 here. Reading 16 took a value nobody could see as the record.
+    const doc = "| 合計 | <!--16--> 99 |";
+    const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
+    defer gpa.free(seen);
+    switch (integerAfter(seen, "| 合計 |")) {
+        .one => |v| try std.testing.expectEqual(@as(usize, 99), v),
+        else => return error.TestExpectedOne,
+    }
+    try std.testing.expectEqual(@as(usize, 0), rep.count);
+}
+
+test "visibleMarkdown: an opener indented under four spaces still opens" {
+    const gpa = std.testing.allocator;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var rep: Reporter = .{ .w = &sink.writer };
+    // Blanking the indented lines first turned this opener into spaces, so the
+    // row it hides from the reader was read as present.
+    const doc =
+        \\  <!--
+        \\| 合計 | 557 |
+        \\-->
+    ;
+    const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
+    defer gpa.free(seen);
+    try std.testing.expectEqual(RecordedCount.none, integerAfter(seen, "| 合計 |"));
+    try std.testing.expectEqual(@as(usize, 0), rep.count);
+}
+
+test "visibleMarkdown: a record shallower than an indented fence is kept" {
+    const gpa = std.testing.allocator;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var rep: Reporter = .{ .w = &sink.writer };
+    // The fence is an indented code block's content rather than a fence, so the
+    // row between the two renders as a row. Blanking it here while
+    // `checkNoIndentedRecords` skipped it left nobody reading it.
+    const doc =
+        \\    ```
+        \\| 合計 | 557 |
+        \\    ```
     ;
     const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
     defer gpa.free(seen);
