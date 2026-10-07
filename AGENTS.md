@@ -107,7 +107,7 @@ feat: add todo filter feature      ← 1行目: 英語・命令形・50文字以
 2. 自前の敵対的レビューを実行する(`.agents/skills/adversarial-review/SKILL.md`)。設計の意図を渡さないサブエージェントに実行させる。
 3. 指摘は修正コミットで対応し、各スレッドに対応内容を返信してからresolveする。
 4. 再レビューを実行し、必須の新規指摘ゼロになるまで2〜3を繰り返す。推奨と任意の新規指摘は`docs/review/`に記録し、該当する段階の作業項目に回してよい。
-5. 自前のレビューが収束してから、必要ならGitHub Copilotにレビューを依頼する([ADR-0017](docs/adr/0017-self-hosted-adversarial-review.md))。依頼は任意。
+5. 自前のレビューが収束してから、必要ならGitHub Copilotにレビューを依頼する([ADR-0023](docs/adr/0023-mandatory-zero-convergence.md))。依頼は任意。
 6. Copilotの指摘も3の手順で対応する。
 7. レビュー完了・CI全ジョブグリーン・ユーザー承認の3つがそろってからマージする。「レビュー完了」は自前の敵対的レビューで必須の新規指摘ゼロになったことを指す。外部レビューの可否はマージの条件に含めない。
 
