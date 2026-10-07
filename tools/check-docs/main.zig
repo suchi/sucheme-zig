@@ -311,6 +311,7 @@ fn checkAdrRules(
         );
         if (deprecated) try checkAdrSupersession(gpa, io, cwd, rep, path, name, status);
         checkAdrNoteBlock(rep, path, body, deprecated);
+        checkNoIndentedRecords(rep, path, raw_body);
     }
 
     // The other direction of supersession: a `- 置き換え:` declaration whose
@@ -326,20 +327,38 @@ fn checkAdrRules(
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
             if (!std.mem.startsWith(u8, line, "- 置き換え:")) continue;
-            const open = std.mem.indexOf(u8, line, "](") orelse continue;
-            const rest = line[open + 2 ..];
-            const close = std.mem.indexOfScalar(u8, rest, ')') orelse continue;
-            const target = rest[0..close];
-            const old_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
-            const raw_old = read(gpa, io, cwd, rep, old_path) orelse continue;
-            const old_body = try visibleMarkdown(gpa, rep, old_path, raw_old);
-            const old_status = switch (adrStatus(old_body)) {
-                .one => |s| s,
-                else => continue,
-            };
-            if (std.mem.indexOf(u8, old_status, "非推奨") == null) rep.fail(
-                "{s} says it replaces {s}, but {s} is still 採用",
-                .{ path, target, target },
+
+            // Every link on the line, not the first: a declaration naming two
+            // ADRs had only its first one checked. A line with no link is
+            // reported rather than skipped, because the check cannot see what
+            // it names.
+            var links: usize = 0;
+            var from: usize = 0;
+            while (std.mem.indexOfPos(u8, line, from, "](")) |open| {
+                const rest = line[open + 2 ..];
+                const close = std.mem.indexOfScalar(u8, rest, ')') orelse break;
+                from = open + 2 + close;
+                var target = rest[0..close];
+                if (std.mem.indexOfScalar(u8, target, ' ')) |space| target = target[0..space];
+                if (std.mem.startsWith(u8, target, "./")) target = target[2..];
+                if (!std.mem.endsWith(u8, target, ".md")) continue;
+                links += 1;
+
+                const old_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
+                const raw_old = read(gpa, io, cwd, rep, old_path) orelse continue;
+                const old_body = try visibleMarkdown(gpa, rep, old_path, raw_old);
+                const old_status = switch (adrStatus(old_body)) {
+                    .one => |s| s,
+                    else => continue,
+                };
+                if (std.mem.indexOf(u8, old_status, "非推奨") == null) rep.fail(
+                    "{s} says it replaces {s}, but {s} is still 採用",
+                    .{ path, target, target },
+                );
+            }
+            if (links == 0) rep.fail(
+                "{s}: the `- 置き換え:` line names no ADR as a link, so nothing can check it",
+                .{path},
             );
         }
     }
@@ -465,14 +484,61 @@ fn adrRow(index: []const u8, name: []const u8) IndexRow {
 }
 
 /// The first `](...)` target in a row, when it names a sibling Markdown file.
+///
+/// A leading `./` is dropped and a link title is dropped, because both name the
+/// same file and neither was recognised: writing `[0017](./0017-x.md)` made a
+/// duplicated index row invisible to the check that counts rows.
 fn linkTargetInRow(row: []const u8) ?[]const u8 {
     const open = std.mem.indexOf(u8, row, "](") orelse return null;
     const rest = row[open + 2 ..];
     const close = std.mem.indexOfScalar(u8, rest, ')') orelse return null;
-    const target = rest[0..close];
+    var target = rest[0..close];
+
+    // `[text](path "title")`
+    if (std.mem.indexOfScalar(u8, target, ' ')) |space| target = target[0..space];
+    if (std.mem.startsWith(u8, target, "./")) target = target[2..];
+
     if (!std.mem.endsWith(u8, target, ".md")) return null;
     if (std.mem.indexOfScalar(u8, target, '/') != null) return null;
     return target;
+}
+
+/// Lines that carry a record, and so must sit at column zero.
+const record_openers = [_][]const u8{ "- ステータス:", "- 日付:", "- 置き換え:" };
+
+/// Reports a record written where records are not read.
+///
+/// `visibleMarkdown` blanks every indented line, because what four spaces mean
+/// depends on the containing block. That leaves one gap: an indented line that
+/// a reader does see. Nesting `- ステータス: 非推奨` under the metadata showed a
+/// reader two statuses while the checks saw one, and a note indented under a
+/// list item was visible and unchecked. Neither is read, so neither may be
+/// written.
+fn checkNoIndentedRecords(rep: *Reporter, path: []const u8, raw: []const u8) void {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    var lineno: usize = 0;
+    var in_fence = false;
+    while (lines.next()) |line| {
+        lineno += 1;
+        const trimmed = std.mem.trimStart(u8, line, " ");
+        if (fenceRun(trimmed)) |_| {
+            in_fence = !in_fence;
+            continue;
+        }
+        if (in_fence) continue;
+        if (indentOf(line) == 0) continue;
+
+        const text = std.mem.trim(u8, line, &std.ascii.whitespace);
+        var looks_like_record = std.mem.indexOf(u8, text, "追記:") != null;
+        for (record_openers) |opener| {
+            if (std.mem.startsWith(u8, text, opener)) looks_like_record = true;
+        }
+        if (!looks_like_record) continue;
+        rep.fail(
+            "{s}:{d}: this reads as a record but is indented, where no check reads it; write it at column zero",
+            .{ path, lineno },
+        );
+    }
 }
 
 /// Checks where an ADR's notes sit and how each paragraph opens.
@@ -755,54 +821,35 @@ fn checkCiRunsTheTable(
     var run_lines: std.ArrayList([]const u8) = .empty;
     for (workflows.items) |path| {
         const body = read(gpa, io, cwd, rep, path) orelse continue;
-
-        var raw_lines: std.ArrayList([]const u8) = .empty;
-        var split = std.mem.splitScalar(u8, body, '\n');
-        while (split.next()) |raw| try raw_lines.append(gpa, raw);
-
-        for (raw_lines.items, 0..) |raw, i| {
+        var lines = std.mem.splitScalar(u8, body, '\n');
+        var lineno: usize = 0;
+        while (lines.next()) |raw| {
+            lineno += 1;
             var line = std.mem.trim(u8, raw, &std.ascii.whitespace);
             line = std.mem.trim(u8, stripComment(line), &std.ascii.whitespace);
+            if (line.len == 0) continue;
+            if (std.mem.startsWith(u8, line, "- "))
+                line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
 
-            // The workflow's own comment forbids tolerating a step's failure,
-            // because a verification that fails but is forgiven has stopped
-            // running. Nothing read that; adding `continue-on-error: true` to
-            // every step left CI green with the source not parsing.
-            if (std.mem.startsWith(u8, line, "continue-on-error:") or
-                std.mem.startsWith(u8, line, "if:"))
-            {
+            const key = yamlKey(line) orelse continue; // a sequence element
+            if (!keyIsAllowed(key)) {
                 rep.fail(
-                    "{s}:{d}: `{s}` lets a verification fail or be skipped without the job going red",
-                    .{ path, i + 1, line },
+                    "{s}:{d}: `{s}` is not a key this check knows; add it to allowed_workflow_keys after deciding what it means for the verification",
+                    .{ path, lineno, key },
                 );
                 continue;
             }
+            if (!std.mem.eql(u8, key, "run")) continue;
 
-            const key_column = if (std.mem.startsWith(u8, line, "- "))
-                indentOf(raw) + 2
-            else
-                indentOf(raw);
-            if (std.mem.startsWith(u8, line, "- "))
-                line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
-            if (!std.mem.startsWith(u8, line, "run:")) continue;
-
-            const value = std.mem.trim(u8, line["run:".len..], &std.ascii.whitespace);
-            if (value.len != 0 and value[0] != '|' and value[0] != '>') {
-                try run_lines.append(gpa, value);
+            const value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace);
+            if (value.len == 0 or value[0] == '|' or value[0] == '>') {
+                rep.fail(
+                    "{s}:{d}: write the command on the `run:` line. A block scalar's lines are not keys, so nothing here can tell them from a neighbouring value",
+                    .{ path, lineno },
+                );
                 continue;
             }
-            // A block scalar's content is what is indented deeper than the
-            // `run` key itself. Measuring from the list item instead took the
-            // step's sibling keys as content, so four commands listed under an
-            // `env:` value read as four commands run; and consuming the line
-            // that ended the block lost the step written after it.
-            for (raw_lines.items[i + 1 ..]) |nested_raw| {
-                const nested_trimmed = std.mem.trim(u8, nested_raw, &std.ascii.whitespace);
-                if (nested_trimmed.len == 0) continue;
-                if (indentOf(nested_raw) <= key_column) break;
-                const nested = std.mem.trim(u8, stripComment(nested_trimmed), &std.ascii.whitespace);
-                if (nested.len != 0) try run_lines.append(gpa, nested);
-            }
+            try run_lines.append(gpa, value);
         }
     }
 
@@ -851,6 +898,66 @@ fn backtickedSpan(cell: []const u8) ?[]const u8 {
     const rest = cell[open + 1 ..];
     const close = std.mem.indexOfScalar(u8, rest, '`') orelse return null;
     return if (close == 0) null else rest[0..close];
+}
+
+/// Keys a workflow may use. Anything else is reported.
+///
+/// Four rounds of review each found a different YAML spelling that this check
+/// read wrongly: `if:` written as a step's first key, a key named `run` under
+/// `env:`, a block scalar whose content was really a sibling's value, a step
+/// whose keys came in another order. Each was closed and the next appeared,
+/// because matching strings against arbitrary YAML has no end of spellings to
+/// lose to.
+///
+/// So the set is closed instead. An unknown key is a diagnostic, not a hole,
+/// and adding one means deciding what it does to the verification. `if:` and
+/// `continue-on-error:` are absent on purpose: the workflow's own comment
+/// forbids them, because a verification that is skipped or forgiven has stopped
+/// running.
+const allowed_workflow_keys = [_][]const u8{
+    // Workflow level.
+    "name",               "on",           "permissions", "concurrency", "jobs",
+    "push",               "pull_request", "branches",    "contents",    "group",
+    "cancel-in-progress",
+    // Job level.
+    "runs-on",      "strategy",    "fail-fast",   "matrix",
+    "steps",              "os",
+    // Step level.
+              "uses",        "with",        "version",
+    "run",
+};
+
+/// Whether `key` is one of the allowed keys, or a job name.
+///
+/// A job's name is chosen by this repository, so it cannot be listed. A key at
+/// the indentation of a job under `jobs:` is accepted when the workflow has
+/// nothing else at that depth to confuse it with; `test` is the only one today.
+fn keyIsAllowed(key: []const u8) bool {
+    for (allowed_workflow_keys) |allowed| {
+        if (std.mem.eql(u8, key, allowed)) return true;
+    }
+    for (allowed_job_names) |job| {
+        if (std.mem.eql(u8, key, job)) return true;
+    }
+    return false;
+}
+
+/// The job names this repository's workflows define.
+const allowed_job_names = [_][]const u8{"test"};
+
+/// The key a mapping line declares, or null when the line is not `key: ...`.
+///
+/// Only a bare key counts. A quoted key is rejected by the caller as unknown,
+/// which is the safe direction: `"continue-on-error": true` must not slip past
+/// a check that forbids the bare spelling.
+fn yamlKey(line: []const u8) ?[]const u8 {
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
+    if (colon == 0) return null;
+    const key = line[0..colon];
+    for (key) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return null;
+    }
+    return key;
 }
 
 /// Suffixes a workflow may add to a command from the table.
@@ -1226,26 +1333,35 @@ fn visibleMarkdown(
 
 /// The next `<!--` at or after `from` that is not inside a code span.
 ///
-/// Backtick parity is counted from the start of its line, as `checkLinksOnLine`
-/// does. A span that opens on one line and closes on another is not followed,
-/// which keeps the count from drifting across the document.
+/// A code span needs a closing backtick on the same line, so a lone backtick is
+/// literal text. Treating every backtick as opening a span was the earlier bug:
+/// one unclosed backtick made the rest of the line read as code, the `<!--`
+/// after it was not an opener, and the value the comment hid was taken as the
+/// record while a reader saw nothing. Requiring the pair closes that and still
+/// leaves prose about comments alone, which is why the parity was there: this
+/// repository writes `<!--` inside code spans twice, and an opener there would
+/// silence the rest of those documents.
 fn indexOfCommentOpen(doc: []const u8, from: usize) ?usize {
-    var line_start = from;
+    var line_start: usize = 0;
     while (line_start < doc.len) {
         const line_end = std.mem.indexOfScalarPos(u8, doc, line_start, '\n') orelse doc.len;
         const line = doc[line_start..line_end];
-        var in_code = false;
         var i: usize = 0;
-        while (i < line.len) : (i += 1) {
+        while (i < line.len) {
             if (line[i] == '`') {
-                in_code = !in_code;
+                // Skip the span only when it closes on this line.
+                if (std.mem.indexOfScalarPos(u8, line, i + 1, '`')) |close| {
+                    i = close + 1;
+                    continue;
+                }
+                i += 1; // a literal backtick
                 continue;
             }
-            if (in_code) continue;
             if (std.mem.startsWith(u8, line[i..], "<!--")) {
                 const at = line_start + i;
                 if (at >= from) return at;
             }
+            i += 1;
         }
         line_start = line_end + 1;
     }
@@ -1261,40 +1377,29 @@ fn lineOf(doc: []const u8, offset: usize) usize {
     return n;
 }
 
-/// Blanks indented code blocks, which a reader sees as code rather than as
-/// text.
+/// Blanks every indented line, so that only column zero carries a record.
 ///
-/// A `- ステータス:` line put inside one is not a status a reader sees, and
-/// taking it as one let a decoy ahead of the real line turn several ADR checks
-/// off at once.
+/// What four spaces mean depends on the block that contains them. At the top
+/// level they open a code block; inside a list item they continue the item, or
+/// open a nested list, and render as text. CommonMark: "The position of the
+/// text after the list marker determines how much indentation is needed in
+/// subsequent blocks in the list item." Two attempts to tell the cases apart
+/// both failed in one direction or the other -- blanking all of them hid a
+/// visible note, blanking only those after a blank line read a nested decoy as
+/// a status.
 ///
-/// The block has to start after a blank line. CommonMark: "An indented code
-/// block cannot interrupt a paragraph, so there must be a blank line between a
-/// paragraph and a following indented code block." Blanking every deeply
-/// indented line instead removed paragraph continuations and list item
-/// continuations, which do render: a note written four spaces in, under a list
-/// item, was visible to every reader and invisible to every check.
+/// So indentation is not interpreted at all. A record is a thing a person is
+/// told to keep up to date, and every one this repository keeps -- the hash
+/// rows, the count tables, the command table, an ADR's metadata and index row
+/// -- sits at column zero. A line that does not is not read, whatever it would
+/// render as. The cost is that a record cannot be nested inside a list.
 fn blankIndentedCode(out: []u8) void {
-    var in_code = false;
-    var after_blank = true;
     var line_start: usize = 0;
     while (line_start < out.len) {
         const line_end = std.mem.indexOfScalarPos(u8, out, line_start, '\n') orelse out.len;
         const line = out[line_start..line_end];
-        const blank = std.mem.trim(u8, line, &std.ascii.whitespace).len == 0;
-        const deep = indentOf(line) >= 4;
-
-        if (blank) {
-            // A blank line neither opens nor closes a block on its own.
-            after_blank = true;
-        } else if (deep and (in_code or after_blank)) {
-            in_code = true;
-            after_blank = false;
+        if (indentOf(line) != 0 and std.mem.trim(u8, line, &std.ascii.whitespace).len != 0)
             blankExceptNewlines(line);
-        } else {
-            in_code = false;
-            after_blank = false;
-        }
         line_start = line_end + 1;
     }
 }
