@@ -262,14 +262,15 @@ fn checkAdrRules(
     try collectFiles(gpa, io, cwd, ignore, adr_dir, ".md", &files, .flat);
 
     const raw_index = read(gpa, io, cwd, rep, adr_index) orelse return;
-    const index = try visibleMarkdown(gpa, raw_index);
+    const index = try visibleMarkdown(gpa, rep, adr_index, raw_index);
 
     for (files.items) |path| {
         const name = std.fs.path.basename(path);
         // The index and the template are not decisions.
         if (std.mem.eql(u8, name, "README.md") or std.mem.startsWith(u8, name, "0000-")) continue;
 
-        const body = read(gpa, io, cwd, rep, path) orelse continue;
+        const raw_body = read(gpa, io, cwd, rep, path) orelse continue;
+        const body = try visibleMarkdown(gpa, rep, path, raw_body);
         const status = adrStatus(body) orelse {
             rep.fail("{s} has no `- ステータス:` line", .{path});
             continue;
@@ -283,17 +284,19 @@ fn checkAdrRules(
             rep.fail("{s} has no row opening with a link to {s}", .{ adr_index, name });
             continue;
         };
-        const row_deprecated = std.mem.indexOf(u8, row, "非推奨") != null;
+        // The status cell, not the whole row: an adopted ADR whose title holds
+        // the word 非推奨 was reported as disagreeing with itself.
+        const status_cell = adrRowStatus(row) orelse {
+            rep.fail("{s}: the row for {s} has no status cell", .{ adr_index, name });
+            continue;
+        };
+        const row_deprecated = std.mem.indexOf(u8, status_cell, "非推奨") != null;
         if (row_deprecated != deprecated) rep.fail(
             "{s} is {s} but its row in {s} says otherwise",
             .{ path, if (deprecated) "非推奨" else "採用", adr_index },
         );
-        if (deprecated and std.mem.indexOf(u8, status, "](") == null) rep.fail(
-            "{s}: a 非推奨 status names the ADR that replaces it, as a link",
-            .{path},
-        );
-
-        checkAdrNoteBlock(rep, path, body);
+        if (deprecated) try checkAdrSupersession(gpa, io, cwd, rep, path, name, status);
+        checkAdrNoteBlock(rep, path, body, deprecated);
     }
 
     // The other direction: a row whose file is gone.
@@ -317,6 +320,58 @@ fn adrStatus(body: []const u8) ?[]const u8 {
         return std.mem.trim(u8, line[prefix.len..], &std.ascii.whitespace);
     }
     return null;
+}
+
+/// The status cell of an index row: the third, as the table is laid out.
+fn adrRowStatus(row: []const u8) ?[]const u8 {
+    var cells = std.mem.splitScalar(u8, row, '|');
+    _ = cells.next(); // before the first bar
+    _ = cells.next() orelse return null; // the link
+    _ = cells.next() orelse return null; // the summary
+    const status = cells.next() orelse return null;
+    return std.mem.trim(u8, status, &std.ascii.whitespace);
+}
+
+/// Checks that a 非推奨 ADR names its replacement and that the replacement
+/// names it back.
+///
+/// Requiring only that the status carried a link let it point at an unrelated
+/// adopted ADR. A link is not a correspondence; the pair has to agree.
+fn checkAdrSupersession(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    path: []const u8,
+    name: []const u8,
+    status: []const u8,
+) !void {
+    const open = std.mem.indexOf(u8, status, "](") orelse {
+        rep.fail("{s}: a 非推奨 status names the ADR that replaces it, as a link", .{path});
+        return;
+    };
+    const rest = status[open + 2 ..];
+    const close = std.mem.indexOfScalar(u8, rest, ')') orelse return;
+    const target = rest[0..close];
+    if (std.mem.eql(u8, target, name)) {
+        rep.fail("{s}: its 非推奨 status links to itself", .{path});
+        return;
+    }
+
+    const other_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
+    const raw = read(gpa, io, cwd, rep, other_path) orelse return;
+    const other = try visibleMarkdown(gpa, rep, other_path, raw);
+    const back = try std.fmt.allocPrint(gpa, "]({s})", .{name});
+    var lines = std.mem.splitScalar(u8, other, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
+        if (!std.mem.startsWith(u8, line, "- 置き換え:")) continue;
+        if (std.mem.indexOf(u8, line, back) != null) return;
+    }
+    rep.fail(
+        "{s} says {s} replaces it, but {s} has no `- 置き換え:` line naming it",
+        .{ path, target, target },
+    );
 }
 
 /// The index row whose first cell links to `name`.
@@ -351,22 +406,38 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
 /// quote block, and each paragraph in it must open with `非推奨理由:` or a
 /// dated `追記:`. Prose there is a note written into the body, which the rules
 /// forbid; an undated paragraph loses when it was written.
-fn checkAdrNoteBlock(rep: *Reporter, path: []const u8, body: []const u8) void {
+fn checkAdrNoteBlock(rep: *Reporter, path: []const u8, body: []const u8, deprecated: bool) void {
     var lines = std.mem.splitScalar(u8, body, '\n');
     var lineno: usize = 0;
     var seen_metadata = false;
     var in_note = false;
+    var notes: usize = 0;
+    var reason_at: ?usize = null;
+    var dated_at: ?usize = null;
+    var in_front_matter = true;
     while (lines.next()) |raw| {
         lineno += 1;
         const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        if (std.mem.startsWith(u8, line, "## ")) return; // the body starts here
+        if (std.mem.startsWith(u8, line, "## ")) {
+            in_front_matter = false;
+            continue;
+        }
+        if (!in_front_matter) {
+            // A note written into the body is the edit the rules forbid, and
+            // the front-matter scan used to stop at the first heading.
+            if (std.mem.indexOf(u8, line, "追記:") != null) rep.fail(
+                "{s}:{d}: a note belongs in the quote block after the metadata, not in the body",
+                .{ path, lineno },
+            );
+            continue;
+        }
         if (std.mem.startsWith(u8, line, "# ")) continue;
         if (line.len == 0) {
             in_note = false;
             continue;
         }
         if (std.mem.startsWith(u8, line, "- ")) {
-            if (in_note) rep.fail(
+            if (notes != 0) rep.fail(
                 "{s}:{d}: a metadata line follows a note; notes go after every `- ` line",
                 .{ path, lineno },
             );
@@ -380,7 +451,13 @@ fn checkAdrNoteBlock(rep: *Reporter, path: []const u8, body: []const u8) void {
             );
             continue;
         }
-        if (!seen_metadata) continue;
+        if (!seen_metadata) {
+            rep.fail(
+                "{s}:{d}: a note comes after the metadata lines, not before them",
+                .{ path, lineno },
+            );
+            continue;
+        }
         const text = std.mem.trim(u8, line[1..], &std.ascii.whitespace);
         if (text.len == 0) { // the `>` that separates paragraphs
             in_note = false;
@@ -388,13 +465,29 @@ fn checkAdrNoteBlock(rep: *Reporter, path: []const u8, body: []const u8) void {
         }
         if (in_note) continue; // a continuation line of the same paragraph
         in_note = true;
-        if (std.mem.startsWith(u8, text, "非推奨理由:")) continue;
-        if (datedNote(text)) continue;
+        notes += 1;
+        if (std.mem.startsWith(u8, text, "非推奨理由:")) {
+            if (reason_at == null) reason_at = lineno;
+            continue;
+        }
+        if (datedNote(text)) {
+            if (dated_at == null) dated_at = lineno;
+            continue;
+        }
         rep.fail(
             "{s}:{d}: a note paragraph opens with `非推奨理由:` or `YYYY-MM-DD 追記:`",
             .{ path, lineno },
         );
     }
+
+    if (deprecated and reason_at == null) rep.fail(
+        "{s}: a 非推奨 ADR keeps its `> 非推奨理由:` block; deleting it loses the record",
+        .{path},
+    );
+    if (reason_at != null and dated_at != null and dated_at.? < reason_at.?) rep.fail(
+        "{s}:{d}: the `非推奨理由:` block comes before the dated notes",
+        .{ path, reason_at.? },
+    );
 }
 
 /// Whether the text opens with `YYYY-MM-DD 追記:`.
@@ -430,7 +523,7 @@ fn checkCountRows(
 
     for (files.items) |path| {
         const raw = read(gpa, io, cwd, rep, path) orelse continue;
-        const doc = try visibleMarkdown(gpa, raw);
+        const doc = try visibleMarkdown(gpa, rep, path, raw);
         var lines = std.mem.splitScalar(u8, doc, '\n');
         var lineno: usize = 0;
         while (lines.next()) |line_raw| {
@@ -523,7 +616,7 @@ fn checkEntryPointAdrs(
         // An ADR may point at a deprecated ADR: that is what supersession is.
         if (std.mem.startsWith(u8, path, adr_dir ++ "/")) continue;
         const raw = read(gpa, io, cwd, rep, path) orelse continue;
-        const doc = try visibleMarkdown(gpa, raw);
+        const doc = try visibleMarkdown(gpa, rep, path, raw);
         var lines = std.mem.splitScalar(u8, doc, '\n');
         var lineno: usize = 0;
         while (lines.next()) |line_raw| {
@@ -540,7 +633,8 @@ fn checkEntryPointAdrs(
                 const name = std.fs.path.basename(target);
                 if (!std.mem.endsWith(u8, name, ".md")) continue;
                 const adr = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, name });
-                const adr_body = read(gpa, io, cwd, rep, adr) orelse continue;
+                const raw_adr = read(gpa, io, cwd, rep, adr) orelse continue;
+                const adr_body = try visibleMarkdown(gpa, rep, adr, raw_adr);
                 const status = adrStatus(adr_body) orelse continue;
                 if (std.mem.indexOf(u8, status, "非推奨") == null) continue;
                 rep.fail(
@@ -574,7 +668,7 @@ fn checkCiRunsTheTable(
     stage: usize,
 ) !void {
     const raw_table = read(gpa, io, cwd, rep, "AGENTS.md") orelse return;
-    const table = try visibleMarkdown(gpa, raw_table);
+    const table = try visibleMarkdown(gpa, rep, "AGENTS.md", raw_table);
 
     var workflows: std.ArrayList([]const u8) = .empty;
     try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yml", &workflows, .flat);
@@ -590,7 +684,22 @@ fn checkCiRunsTheTable(
             if (std.mem.startsWith(u8, line, "- "))
                 line = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
             if (!std.mem.startsWith(u8, line, "run:")) continue;
-            try run_lines.append(gpa, std.mem.trim(u8, line["run:".len..], &std.ascii.whitespace));
+            const value = std.mem.trim(u8, line["run:".len..], &std.ascii.whitespace);
+            // A block scalar puts the commands on the lines below, one per
+            // line. Reading only the value left a correct workflow reported as
+            // running nothing.
+            if (value.len != 0 and value[0] != '|' and value[0] != '>') {
+                try run_lines.append(gpa, value);
+                continue;
+            }
+            const run_indent = indentOf(raw);
+            while (lines.next()) |nested_raw| {
+                if (indentOf(nested_raw) <= run_indent and
+                    std.mem.trim(u8, nested_raw, &std.ascii.whitespace).len != 0) break;
+                var nested = std.mem.trim(u8, nested_raw, &std.ascii.whitespace);
+                nested = std.mem.trim(u8, stripComment(nested), &std.ascii.whitespace);
+                if (nested.len != 0) try run_lines.append(gpa, nested);
+            }
         }
     }
 
@@ -641,17 +750,25 @@ fn backtickedSpan(cell: []const u8) ?[]const u8 {
     return if (close == 0) null else rest[0..close];
 }
 
-/// Whether a workflow's `run:` value runs `command`.
+/// Suffixes a workflow may add to a command from the table.
 ///
-/// Extra text is accepted only when it begins a flag, so `zig build test
-/// --summary all` runs `zig build test` but not `zig build`. Matching on a
-/// plain prefix would have let the test line stand in for the build row.
+/// A list, not a shape. Accepting anything that looked like a flag accepted the
+/// flags that cancel the command: `zig build test --help` exits 0 without
+/// running a test, and all four commands spelled that way left a repository
+/// whose source does not parse reporting every row as run. A suffix that
+/// changes what the command does has to be added here deliberately.
+const allowed_run_suffixes = [_][]const u8{"--summary all"};
+
+/// Whether a workflow's `run:` value runs `command`.
 fn runsCommand(line: []const u8, command: []const u8) bool {
     if (std.mem.eql(u8, line, command)) return true;
     if (!std.mem.startsWith(u8, line, command)) return false;
     if (line.len == command.len or line[command.len] != ' ') return false;
     const rest = std.mem.trimStart(u8, line[command.len..], " ");
-    return rest.len != 0 and rest[0] == '-';
+    for (allowed_run_suffixes) |suffix| {
+        if (std.mem.eql(u8, rest, suffix)) return true;
+    }
+    return false;
 }
 
 /// How deeply a line is indented, in spaces.
@@ -738,9 +855,11 @@ fn workflowZigVersions(
     out: *std.ArrayList(StepVersion),
 ) !void {
     // The indentation of the item holding the step whose version is being
-    // looked for, and of that step's `with:`. Null when outside one.
+    // looked for, of that step's `with:`, and of that mapping's own keys. Null
+    // when outside one.
     var step_indent: ?usize = null;
     var with_indent: ?usize = null;
+    var input_indent: ?usize = null;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
         const indent = indentOf(raw);
@@ -756,9 +875,11 @@ fn workflowZigVersions(
         if (step_indent) |si| if (indent <= si) {
             step_indent = null;
             with_indent = null;
+            input_indent = null;
         };
         if (with_indent) |wi| if (indent <= wi) {
             with_indent = null;
+            input_indent = null;
         };
         // A step counts whenever the line carries a setup-zig reference,
         // whatever YAML spelling holds it. Requiring the line to begin with
@@ -784,20 +905,29 @@ fn workflowZigVersions(
             for (0..refs) |_| try out.append(gpa, .{});
             step_indent = indent;
             with_indent = null;
+            input_indent = null;
             continue;
         }
         // Another `uses:` is another step, even nested deeper than this one.
         if (std.mem.startsWith(u8, body_of_item, "uses:")) {
             step_indent = null;
             with_indent = null;
+            input_indent = null;
             continue;
         }
         if (step_indent == null) continue;
         if (std.mem.eql(u8, body_of_item, "with:")) {
             with_indent = indent;
+            input_indent = null;
             continue;
         }
         if (with_indent == null) continue;
+        // The inputs are the keys directly under `with:`, which is where the
+        // action reads `version`. Taking any line indented deeper let a key
+        // nested under an input supply the version while the action's own
+        // `version` input stayed unset.
+        if (input_indent == null) input_indent = indent;
+        if (indent != input_indent.?) continue;
         if (std.mem.startsWith(u8, body_of_item, "version:")) {
             const scalar = std.mem.trim(u8, body_of_item["version:".len..], &std.ascii.whitespace);
             const value = std.mem.trim(u8, scalar, "\"'");
@@ -890,7 +1020,7 @@ fn checkVendoredHashes(
     for (vendored) |v| {
         const body = read(gpa, io, cwd, rep, v.path) orelse continue;
         const raw_doc = read(gpa, io, cwd, rep, v.provenance) orelse continue;
-        const doc = try visibleMarkdown(gpa, raw_doc);
+        const doc = try visibleMarkdown(gpa, rep, v.provenance, raw_doc);
 
         const recorded = switch (sha256InMarkdown(doc, v.label)) {
             .one => |h| h,
@@ -931,7 +1061,18 @@ fn checkVendoredHashes(
 /// count table in `<!--` and `-->` left the rendered page without a table while
 /// every check stayed green. Blanking rather than deleting keeps line and byte
 /// offsets, so diagnostics still point at the right place.
-fn visibleMarkdown(gpa: std.mem.Allocator, doc: []const u8) ![]u8 {
+///
+/// Two things this must not do. An unclosed `<!--` blanked the rest of the
+/// document, so every record below it read as absent and no check said why;
+/// `rep` is given so that is reported instead, like an unclosed fence. And a
+/// `<!--` inside a code span is prose about comments, not a comment: a sentence
+/// explaining this very mechanism silenced the rest of its own document.
+fn visibleMarkdown(
+    gpa: std.mem.Allocator,
+    rep: *Reporter,
+    path: []const u8,
+    doc: []const u8,
+) ![]u8 {
     const out = try gpa.dupe(u8, doc);
     var fence: ?struct { ch: u8, len: usize } = null;
     var i: usize = 0;
@@ -954,14 +1095,73 @@ fn visibleMarkdown(gpa: std.mem.Allocator, doc: []const u8) ![]u8 {
         i = end + 1;
     }
 
+    blankIndentedCode(out);
+
     // HTML comments span lines, so they are blanked over the whole document.
     var from: usize = 0;
-    while (std.mem.indexOfPos(u8, out, from, "<!--")) |open| {
-        const close = std.mem.indexOfPos(u8, out, open, "-->") orelse out.len - 3;
-        blankExceptNewlines(out[open..@min(close + 3, out.len)]);
-        from = @min(close + 3, out.len);
+    while (indexOfCommentOpen(out, from)) |open| {
+        const close = std.mem.indexOfPos(u8, out, open, "-->") orelse {
+            rep.fail(
+                "{s}:{d}: this `<!--` is never closed, which would hide every record below it",
+                .{ path, lineOf(out, open) },
+            );
+            return out;
+        };
+        blankExceptNewlines(out[open .. close + 3]);
+        from = close + 3;
     }
     return out;
+}
+
+/// The next `<!--` at or after `from` that is not inside a code span.
+///
+/// Backtick parity is counted from the start of its line, as `checkLinksOnLine`
+/// does. A span that opens on one line and closes on another is not followed,
+/// which keeps the count from drifting across the document.
+fn indexOfCommentOpen(doc: []const u8, from: usize) ?usize {
+    var line_start = from;
+    while (line_start < doc.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, doc, line_start, '\n') orelse doc.len;
+        const line = doc[line_start..line_end];
+        var in_code = false;
+        var i: usize = 0;
+        while (i < line.len) : (i += 1) {
+            if (line[i] == '`') {
+                in_code = !in_code;
+                continue;
+            }
+            if (in_code) continue;
+            if (std.mem.startsWith(u8, line[i..], "<!--")) {
+                const at = line_start + i;
+                if (at >= from) return at;
+            }
+        }
+        line_start = line_end + 1;
+    }
+    return null;
+}
+
+/// The 1-based line number of `offset`.
+fn lineOf(doc: []const u8, offset: usize) usize {
+    var n: usize = 1;
+    for (doc[0..@min(offset, doc.len)]) |c| {
+        if (c == '\n') n += 1;
+    }
+    return n;
+}
+
+/// Blanks lines indented four spaces or more, which render as code.
+///
+/// A `- ステータス:` line put there is not a status a reader sees, and taking it
+/// as one let a decoy ahead of the real line turn two ADR checks off at once.
+fn blankIndentedCode(out: []u8) void {
+    var line_start: usize = 0;
+    while (line_start < out.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, out, line_start, '\n') orelse out.len;
+        const line = out[line_start..line_end];
+        if (indentOf(line) >= 4) blankExceptNewlines(line);
+        line_start = line_end + 1;
+    }
 }
 
 fn blankExceptNewlines(span: []u8) void {
@@ -1065,7 +1265,7 @@ fn checkGeneratedHashes(
         _ = std.fmt.bufPrint(&hex, "{x}", .{&digest}) catch unreachable;
 
         const raw_doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
-        const doc = try visibleMarkdown(gpa, raw_doc);
+        const doc = try visibleMarkdown(gpa, rep, g.provenance, raw_doc);
         switch (sha256InMarkdown(doc, g.label)) {
             .one => |recorded| if (!std.ascii.eqlIgnoreCase(&hex, recorded)) rep.fail(
                 "{s}/*{s} hashes to {s} but {s} records {s}",
@@ -1137,7 +1337,7 @@ fn checkRecordedCounts(
 ) !void {
     for (generated) |g| {
         const raw_doc = read(gpa, io, cwd, rep, g.provenance) orelse continue;
-        const doc = try visibleMarkdown(gpa, raw_doc);
+        const doc = try visibleMarkdown(gpa, rep, g.provenance, raw_doc);
         var files: std.ArrayList([]const u8) = .empty;
         try collectFiles(gpa, io, cwd, ignore, g.dir, g.extension, &files, .flat);
 
@@ -2088,22 +2288,64 @@ test "workflowZigVersions: a name holding version: does not shadow the real one"
 
 test "visibleMarkdown: a record hidden from the reader is not a record" {
     const gpa = std.testing.allocator;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var rep: Reporter = .{ .w = &sink.writer };
     const doc =
         \\| 合計 | 557 |
         \\<!-- | 合計 | 99 | -->
         \\```
         \\| 合計 | 42 |
         \\```
+        \\    | 合計 | 7 |
     ;
-    const seen = try visibleMarkdown(gpa, doc);
+    const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
     defer gpa.free(seen);
-    // The visible row survives; the commented and fenced ones do not.
+    // The visible row survives; the commented, fenced and indented ones do not.
     switch (integerAfter(seen, "| 合計 |")) {
         .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
         else => return error.TestExpectedOne,
     }
     // Line structure is kept so diagnostics still line up.
     try std.testing.expectEqual(doc.len, seen.len);
+    try std.testing.expectEqual(@as(usize, 0), rep.count);
+}
+
+test "visibleMarkdown: a comment in a code span is prose about comments" {
+    const gpa = std.testing.allocator;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var rep: Reporter = .{ .w = &sink.writer };
+    // The defect this pins: one sentence like this silenced every record below
+    // it in its own document, and nothing said so.
+    const doc =
+        \\HTML コメントは `<!--` で開く。
+        \\| 合計 | 557 |
+    ;
+    const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
+    defer gpa.free(seen);
+    switch (integerAfter(seen, "| 合計 |")) {
+        .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
+        else => return error.TestExpectedOne,
+    }
+    try std.testing.expectEqual(@as(usize, 0), rep.count);
+}
+
+test "visibleMarkdown: an unclosed comment is reported, not obeyed" {
+    const gpa = std.testing.allocator;
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var rep: Reporter = .{ .w = &sink.writer };
+    const doc =
+        \\<!-- opened and never closed
+        \\| 合計 | 557 |
+    ;
+    const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
+    defer gpa.free(seen);
+    try std.testing.expectEqual(@as(usize, 1), rep.count);
+    // The rest of the document is left readable, so the records below are still
+    // compared rather than silently absent.
+    switch (integerAfter(seen, "| 合計 |")) {
+        .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
+        else => return error.TestExpectedOne,
+    }
 }
 
 test "datedNote: a note paragraph opens with a date" {
