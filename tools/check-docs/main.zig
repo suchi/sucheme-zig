@@ -118,6 +118,9 @@ pub fn main(init: std.process.Init) !void {
         try checkRecordedCounts(gpa, io, cwd, &rep, ignore);
         try checkSources(gpa, io, cwd, &rep, ignore, roots.items, excluded.items);
         try checkMarkdown(gpa, io, cwd, &rep, ignore);
+        try checkAdrRules(gpa, io, cwd, &rep, ignore);
+        try checkCountRows(gpa, io, cwd, &rep, ignore);
+        try checkEntryPointAdrs(gpa, io, cwd, &rep, ignore);
     }
 
     if (rep.count == 0) {
@@ -234,6 +237,319 @@ fn startsBlock(trimmed: []const u8) bool {
         if (n >= 3) return true;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// The ADR set obeys the rules docs/adr/README.md writes down.
+//
+// Those rules produced a finding in five consecutive review rounds: a decision
+// table rewritten instead of annotated, a note outside its quote block, a note
+// deleted to make room for another, a note dated when the premise changed
+// rather than when it was written. The rules were prose; nothing read them.
+// ---------------------------------------------------------------------------
+
+const adr_dir = "docs/adr";
+const adr_index = "docs/adr/README.md";
+
+fn checkAdrRules(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    ignore: []const u8,
+) !void {
+    var files: std.ArrayList([]const u8) = .empty;
+    try collectFiles(gpa, io, cwd, ignore, adr_dir, ".md", &files, .flat);
+
+    const raw_index = read(gpa, io, cwd, rep, adr_index) orelse return;
+    const index = try visibleMarkdown(gpa, raw_index);
+
+    for (files.items) |path| {
+        const name = std.fs.path.basename(path);
+        // The index and the template are not decisions.
+        if (std.mem.eql(u8, name, "README.md") or std.mem.startsWith(u8, name, "0000-")) continue;
+
+        const body = read(gpa, io, cwd, rep, path) orelse continue;
+        const status = adrStatus(body) orelse {
+            rep.fail("{s} has no `- ステータス:` line", .{path});
+            continue;
+        };
+        const deprecated = std.mem.indexOf(u8, status, "非推奨") != null;
+
+        // Every decision appears in the index exactly once. The row is found
+        // by the link that opens it, not by any link on it: a 非推奨 row also
+        // names the ADR that replaced it.
+        const row = adrRow(index, name) orelse {
+            rep.fail("{s} has no row opening with a link to {s}", .{ adr_index, name });
+            continue;
+        };
+        const row_deprecated = std.mem.indexOf(u8, row, "非推奨") != null;
+        if (row_deprecated != deprecated) rep.fail(
+            "{s} is {s} but its row in {s} says otherwise",
+            .{ path, if (deprecated) "非推奨" else "採用", adr_index },
+        );
+        if (deprecated and std.mem.indexOf(u8, status, "](") == null) rep.fail(
+            "{s}: a 非推奨 status names the ADR that replaces it, as a link",
+            .{path},
+        );
+
+        checkAdrNoteBlock(rep, path, body);
+    }
+
+    // The other direction: a row whose file is gone.
+    var lines = std.mem.splitScalar(u8, index, '\n');
+    while (lines.next()) |raw| {
+        const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (row.len == 0 or row[0] != '|') continue;
+        const target = linkTargetInRow(row) orelse continue;
+        const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
+        if (!pathIn(files.items, joined)) rep.fail("{s} lists {s}, which does not exist", .{ adr_index, target });
+    }
+}
+
+/// The text after `- ステータス:` on the line that carries it.
+fn adrStatus(body: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        const prefix = "- ステータス:";
+        if (!std.mem.startsWith(u8, line, prefix)) continue;
+        return std.mem.trim(u8, line[prefix.len..], &std.ascii.whitespace);
+    }
+    return null;
+}
+
+/// The index row whose first cell links to `name`.
+fn adrRow(index: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, index, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (line.len == 0 or line[0] != '|') continue;
+        var cells = std.mem.splitScalar(u8, line, '|');
+        _ = cells.next();
+        const first = cells.next() orelse continue;
+        const target = linkTargetInRow(first) orelse continue;
+        if (std.mem.eql(u8, target, name)) return line;
+    }
+    return null;
+}
+
+/// The first `](...)` target in a row, when it names a sibling Markdown file.
+fn linkTargetInRow(row: []const u8) ?[]const u8 {
+    const open = std.mem.indexOf(u8, row, "](") orelse return null;
+    const rest = row[open + 2 ..];
+    const close = std.mem.indexOfScalar(u8, rest, ')') orelse return null;
+    const target = rest[0..close];
+    if (!std.mem.endsWith(u8, target, ".md")) return null;
+    if (std.mem.indexOfScalar(u8, target, '/') != null) return null;
+    return target;
+}
+
+/// Checks where an ADR's notes sit and how each paragraph opens.
+///
+/// Everything between the metadata lines and the first `##` heading must be a
+/// quote block, and each paragraph in it must open with `非推奨理由:` or a
+/// dated `追記:`. Prose there is a note written into the body, which the rules
+/// forbid; an undated paragraph loses when it was written.
+fn checkAdrNoteBlock(rep: *Reporter, path: []const u8, body: []const u8) void {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    var lineno: usize = 0;
+    var seen_metadata = false;
+    var in_note = false;
+    while (lines.next()) |raw| {
+        lineno += 1;
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (std.mem.startsWith(u8, line, "## ")) return; // the body starts here
+        if (std.mem.startsWith(u8, line, "# ")) continue;
+        if (line.len == 0) {
+            in_note = false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "- ")) {
+            if (in_note) rep.fail(
+                "{s}:{d}: a metadata line follows a note; notes go after every `- ` line",
+                .{ path, lineno },
+            );
+            seen_metadata = true;
+            continue;
+        }
+        if (line[0] != '>') {
+            rep.fail(
+                "{s}:{d}: this line is neither metadata nor a quote block; a note is written as `> YYYY-MM-DD 追記: ...`",
+                .{ path, lineno },
+            );
+            continue;
+        }
+        if (!seen_metadata) continue;
+        const text = std.mem.trim(u8, line[1..], &std.ascii.whitespace);
+        if (text.len == 0) { // the `>` that separates paragraphs
+            in_note = false;
+            continue;
+        }
+        if (in_note) continue; // a continuation line of the same paragraph
+        in_note = true;
+        if (std.mem.startsWith(u8, text, "非推奨理由:")) continue;
+        if (datedNote(text)) continue;
+        rep.fail(
+            "{s}:{d}: a note paragraph opens with `非推奨理由:` or `YYYY-MM-DD 追記:`",
+            .{ path, lineno },
+        );
+    }
+}
+
+/// Whether the text opens with `YYYY-MM-DD 追記:`.
+fn datedNote(text: []const u8) bool {
+    const shape = "0000-00-00 追記:";
+    if (text.len < shape.len) return false;
+    for ("0000-00-00", 0..) |mark, i| {
+        const c = text[i];
+        if (mark == '0') {
+            if (!std.ascii.isDigit(c)) return false;
+        } else if (c != mark) return false;
+    }
+    return std.mem.startsWith(u8, text["0000-00-00".len..], " 追記:");
+}
+
+// ---------------------------------------------------------------------------
+// A table row that carries both a total and its parts agrees with itself.
+//
+// The review records keep counts as `20 | 必須7・推奨10・任意3`. One row was
+// written with a total of 17, and nothing noticed: which number was right could
+// not be settled afterwards.
+// ---------------------------------------------------------------------------
+
+fn checkCountRows(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    ignore: []const u8,
+) !void {
+    var files: std.ArrayList([]const u8) = .empty;
+    try collectFiles(gpa, io, cwd, ignore, ".", ".md", &files, .recursive);
+
+    for (files.items) |path| {
+        const raw = read(gpa, io, cwd, rep, path) orelse continue;
+        const doc = try visibleMarkdown(gpa, raw);
+        var lines = std.mem.splitScalar(u8, doc, '\n');
+        var lineno: usize = 0;
+        while (lines.next()) |line_raw| {
+            lineno += 1;
+            const row = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
+            if (row.len == 0 or row[0] != '|') continue;
+
+            const counts = rowCounts(row) orelse continue;
+            if (counts.parts == counts.total) continue;
+            const parts = counts.parts;
+            const total = counts.total;
+            rep.fail(
+                "{s}:{d}: the row totals {d} but its parts add to {d}",
+                .{ path, lineno, total, parts },
+            );
+        }
+    }
+}
+
+/// A row's total and the sum of its breakdown, when it carries both.
+///
+/// The two spellings in use are `| 20 | 必須7・推奨10・任意3 |`, where the
+/// total is the cell before, and `| 28(必須11・推奨16・任意1) |`, where it
+/// opens the same cell. Any other arrangement is left alone: guessing which
+/// number is the total would report rows that are not counts at all.
+fn rowCounts(row: []const u8) ?struct { total: usize, parts: usize } {
+    var previous: ?[]const u8 = null;
+    var cells = std.mem.splitScalar(u8, row, '|');
+    while (cells.next()) |raw_cell| {
+        const cell = std.mem.trim(u8, raw_cell, &std.ascii.whitespace);
+        const parts = breakdownIn(cell) orelse {
+            if (cell.len != 0) previous = cell;
+            continue;
+        };
+        if (leadingInteger(cell)) |total| return .{ .total = total, .parts = parts };
+        const before = previous orelse return null;
+        const total = std.fmt.parseInt(usize, before, 10) catch return null;
+        return .{ .total = total, .parts = parts };
+    }
+    return null;
+}
+
+/// The sum of a `必須a・推奨b・任意c` breakdown, if the cell holds one.
+///
+/// A list joined by `・` with at least two labelled numbers. Accepting a single
+/// label read "26件(うち必須9件)" as a breakdown of 26, which it is not: a
+/// subset is not a partition.
+fn breakdownIn(cell: []const u8) ?usize {
+    if (std.mem.indexOf(u8, cell, "・") == null) return null;
+    var sum: usize = 0;
+    var labelled: usize = 0;
+    for ([_][]const u8{ "必須", "推奨", "任意" }) |label| {
+        const at = std.mem.indexOf(u8, cell, label) orelse continue;
+        const start = at + label.len;
+        var i = start;
+        while (i < cell.len and std.ascii.isDigit(cell[i])) : (i += 1) {}
+        if (i == start) continue;
+        sum += std.fmt.parseInt(usize, cell[start..i], 10) catch continue;
+        labelled += 1;
+    }
+    return if (labelled >= 2) sum else null;
+}
+
+/// The integer a cell opens with, if it opens with one.
+fn leadingInteger(cell: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < cell.len and std.ascii.isDigit(cell[i])) : (i += 1) {}
+    if (i == 0) return null;
+    return std.fmt.parseInt(usize, cell[0..i], 10) catch null;
+}
+
+// ---------------------------------------------------------------------------
+// A document's entry points name the decisions that still hold.
+//
+// Two design documents opened with `対応する決定:` lines pointing at ADRs that
+// had been deprecated, while their own bodies referenced the replacements.
+// ---------------------------------------------------------------------------
+
+fn checkEntryPointAdrs(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    ignore: []const u8,
+) !void {
+    var files: std.ArrayList([]const u8) = .empty;
+    try collectFiles(gpa, io, cwd, ignore, ".", ".md", &files, .recursive);
+
+    for (files.items) |path| {
+        // An ADR may point at a deprecated ADR: that is what supersession is.
+        if (std.mem.startsWith(u8, path, adr_dir ++ "/")) continue;
+        const raw = read(gpa, io, cwd, rep, path) orelse continue;
+        const doc = try visibleMarkdown(gpa, raw);
+        var lines = std.mem.splitScalar(u8, doc, '\n');
+        var lineno: usize = 0;
+        while (lines.next()) |line_raw| {
+            lineno += 1;
+            const line = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
+            if (!std.mem.startsWith(u8, line, "対応する決定:")) continue;
+
+            var from: usize = 0;
+            while (std.mem.indexOfPos(u8, line, from, "](")) |open| {
+                const rest = line[open + 2 ..];
+                const close = std.mem.indexOfScalar(u8, rest, ')') orelse break;
+                from = open + 2 + close;
+                const target = rest[0..close];
+                const name = std.fs.path.basename(target);
+                if (!std.mem.endsWith(u8, name, ".md")) continue;
+                const adr = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, name });
+                const adr_body = read(gpa, io, cwd, rep, adr) orelse continue;
+                const status = adrStatus(adr_body) orelse continue;
+                if (std.mem.indexOf(u8, status, "非推奨") == null) continue;
+                rep.fail(
+                    "{s}:{d}: the entry point names {s}, which is 非推奨",
+                    .{ path, lineno, name },
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1788,6 +2104,55 @@ test "visibleMarkdown: a record hidden from the reader is not a record" {
     }
     // Line structure is kept so diagnostics still line up.
     try std.testing.expectEqual(doc.len, seen.len);
+}
+
+test "datedNote: a note paragraph opens with a date" {
+    try std.testing.expect(datedNote("2026-10-07 追記: ..."));
+    try std.testing.expect(!datedNote("追記: ..."));
+    try std.testing.expect(!datedNote("2026-10-7 追記: ..."));
+    try std.testing.expect(!datedNote("2026/10/07 追記: ..."));
+    try std.testing.expect(!datedNote("2026-10-07 note: ..."));
+}
+
+test "adrRow: the row is found by the link that opens it" {
+    const index =
+        \\| [0005](0005-old.md) | ... | 非推奨([0019](0019-new.md)に置き換え) | 2026-10-04 |
+        \\| [0019](0019-new.md) | ... | 採用 | 2026-10-05 |
+    ;
+    // A 非推奨 row also links to its replacement, so matching any link on the
+    // row would find two rows for 0019.
+    const row = adrRow(index, "0019-new.md").?;
+    try std.testing.expect(std.mem.indexOf(u8, row, "採用") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row, "非推奨") == null);
+    try std.testing.expect(adrRow(index, "0021-absent.md") == null);
+}
+
+test "rowCounts: both spellings of a total with its parts" {
+    // The total in the cell before the breakdown.
+    const a = rowCounts("| 7 | 20 | 必須7・推奨10・任意3 | 全件 |").?;
+    try std.testing.expectEqual(@as(usize, 20), a.total);
+    try std.testing.expectEqual(@as(usize, 20), a.parts);
+    // The total opening the same cell.
+    const b = rowCounts("| 指摘件数 | 4 | 28(必須11・推奨16・任意1) |").?;
+    try std.testing.expectEqual(@as(usize, 28), b.total);
+    try std.testing.expectEqual(@as(usize, 28), b.parts);
+    // Two labels joined, one of them covering both of the others.
+    const c = rowCounts("| 6 | 107 | 必須44・推奨と任意63 |").?;
+    try std.testing.expectEqual(@as(usize, 107), c.total);
+    try std.testing.expectEqual(@as(usize, 107), c.parts);
+    // A disagreement is what the check is for.
+    const d = rowCounts("| 7 | 17 | 必須7・推奨10・任意3 |").?;
+    try std.testing.expectEqual(@as(usize, 17), d.total);
+    try std.testing.expectEqual(@as(usize, 20), d.parts);
+}
+
+test "rowCounts: a subset is not a partition" {
+    // No list separator, so this is not a breakdown of 26.
+    try std.testing.expect(rowCounts("| x | - | 26件(うち必須9件) |") == null);
+    // No numbers at all.
+    try std.testing.expect(rowCounts("| 項目 | 必須 | 推奨 | 任意 |") == null);
+    // A breakdown with no total to compare against.
+    try std.testing.expect(rowCounts("| 必須7・推奨10・任意3 |") == null);
 }
 
 test "runsCommand: extra text is accepted only as a flag" {
