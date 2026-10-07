@@ -427,13 +427,10 @@ fn checkAdrSupersession(
     name: []const u8,
     status: []const u8,
 ) !void {
-    const open = std.mem.indexOf(u8, status, "](") orelse {
+    const target = linkTargetInRow(status) orelse {
         rep.fail("{s}: a 非推奨 status names the ADR that replaces it, as a link", .{path});
         return;
     };
-    const rest = status[open + 2 ..];
-    const close = std.mem.indexOfScalar(u8, rest, ')') orelse return;
-    const target = rest[0..close];
     if (std.mem.eql(u8, target, name)) {
         rep.fail("{s}: its 非推奨 status links to itself", .{path});
         return;
@@ -442,12 +439,22 @@ fn checkAdrSupersession(
     const other_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
     const raw = read(gpa, io, cwd, rep, other_path) orelse return;
     const other = try visibleMarkdown(gpa, rep, other_path, raw);
-    const back = try std.fmt.allocPrint(gpa, "]({s})", .{name});
     var lines = std.mem.splitScalar(u8, other, '\n');
     while (lines.next()) |line_raw| {
         const line = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
         if (!std.mem.startsWith(u8, line, "- 置き換え:")) continue;
-        if (std.mem.indexOf(u8, line, back) != null) return;
+        // Every link on the line, each normalised the same way the forward
+        // direction normalises them. A plain string match here rejected the
+        // `./` and titled spellings that the forward direction accepts.
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, line, from, "](")) |open| {
+            const rest = line[open + 2 ..];
+            const close = std.mem.indexOfScalar(u8, rest, ')') orelse break;
+            from = open + 2 + close;
+            if (linkTargetInRow(line[open..])) |back| {
+                if (std.mem.eql(u8, back, name)) return;
+            }
+        }
     }
     rep.fail(
         "{s} says {s} replaces it, but {s} has no `- 置き換え:` line naming it",
@@ -957,13 +964,30 @@ fn checkCiRunsTheTable(
                 continue;
             }
 
-            const value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace);
-            if (value.len == 0 or value[0] == '|' or value[0] == '>') {
+            var value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace);
+            if (value.len == 0) {
+                // `defaults:` opens a mapping whose `run:` holds settings, not
+                // a command. Saying "write the command on this line" names the
+                // wrong cause.
+                rep.fail(
+                    "{s}:{d}: this `run:` opens a mapping. A command belongs on the `run:` line itself",
+                    .{ path, lineno },
+                );
+                continue;
+            }
+            if (value[0] == '|' or value[0] == '>') {
                 rep.fail(
                     "{s}:{d}: write the command on the `run:` line. A block scalar's lines are not keys, so nothing here can tell them from a neighbouring value",
                     .{ path, lineno },
                 );
                 continue;
+            }
+            // A quoted scalar is the same command. Leaving the quotes on made a
+            // correct workflow read as running nothing.
+            if (value.len >= 2 and (value[0] == '"' or value[0] == '\'') and
+                value[value.len - 1] == value[0])
+            {
+                value = value[1 .. value.len - 1];
             }
             try run_lines.append(gpa, value);
         }
