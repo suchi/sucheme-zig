@@ -1,5 +1,20 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(zig build:*)",
+      "Bash(zig fmt:*)",
+      "Bash(zig version)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)"
+    ],
     "deny": [
       "Read(./.env)",
       "Read(./.env.*)",
