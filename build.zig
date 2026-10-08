@@ -31,9 +31,6 @@ const test_excluded = [_][]const u8{};
 /// that check demand the new rows, so it fails until the workflow is updated.
 const current_stage = 0;
 
-/// The helper programs under tools/. Each is a single-file module.
-const tool_names = [_][]const u8{ "check-docs", "extract-r7rs-required" };
-
 /// A module whose tests `zig build test` runs.
 ///
 /// The path is read back out of the module instead of being written beside it,
@@ -175,11 +172,27 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "run the sucheme executable").dependOn(&run.step);
 
+    // One Compile per tool, reused by every run step and by the test targets.
+    // Calling tool() at each use made two Compile steps from the same file.
     const check_docs = tool(b, "check-docs");
+    const extractor = tool(b, "extract-r7rs-required");
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor };
+
     const run_check_docs = b.addRunArtifact(check_docs);
     // Run steps inherit the directory `zig build` was started from, not the
     // build root, so a relative read would fail under --build-file.
     run_check_docs.setCwd(b.path("."));
+
+    // The generated lists are compared with what the extractor produces from the
+    // committed input. Comparing them only with a SHA-256 pasted into SOURCE.md
+    // left the pair unanchored: editing a list and pasting the new hash kept
+    // every verification command green with an identifier gone from the
+    // conformance denominator.
+    const run_check_extract = b.addRunArtifact(extractor);
+    run_check_extract.setCwd(b.path("."));
+    run_check_extract.addArg("--check");
+    const check_extract_step = b.step("check-extract", "check the generated lists against the input");
+    check_extract_step.dependOn(&run_check_extract.step);
 
     const test_step = b.step("test", "run the unit tests");
 
@@ -189,8 +202,8 @@ pub fn build(b: *std.Build) void {
     // The tools are verification code; without tests of their own in the test
     // step, a failing assertion in them would never run. They hold most of the
     // new logic at stage 0.
-    for (tool_names) |name| {
-        targets.append(b.allocator, .of(b, tool(b, name).root_module)) catch @panic("OOM");
+    for (tools) |t| {
+        targets.append(b.allocator, .of(b, t.root_module)) catch @panic("OOM");
     }
 
     // One loop, one list: the test and the path check-docs is told about come
@@ -208,7 +221,38 @@ pub fn build(b: *std.Build) void {
     }
     run_check_docs.addArg("--stage");
     run_check_docs.addArg(b.fmt("{d}", .{current_stage}));
-    b.step("check-docs", "check the docs and build settings").dependOn(&run_check_docs.step);
+
+    // The commands that must appear both in AGENTS.md's table and in the
+    // per-commit workflow, named by the steps that provide them.
+    //
+    // The table and the workflow were compared with each other and with nothing
+    // else, so weakening both at once was green: deleting a row and its step
+    // together removed the requirement, and three of the four commands could go
+    // that way. This list is the third point. It is not another record to keep
+    // in step by hand -- each entry is the step that runs it, so dropping a
+    // requirement means dropping the step, and then the command itself stops
+    // working. `zig fmt --check .` is not a build step, so it stays held by the
+    // table and the workflow alone.
+    const required_steps = [_]*std.Build.Step{
+        b.getInstallStep(),
+        test_step,
+        check_extract_step,
+    };
+    for (required_steps) |s| {
+        run_check_docs.addArg("--requires");
+        // The install step is what plain `zig build` runs, and the table names
+        // it that way.
+        run_check_docs.addArg(if (s == b.getInstallStep())
+            "zig build"
+        else
+            b.fmt("zig build {s}", .{s.name}));
+    }
+    const check_docs_step = b.step("check-docs", "check the docs and build settings");
+    check_docs_step.dependOn(&run_check_docs.step);
+    // Added after its own step exists, so the step this program runs in is held
+    // to the same requirement as the others.
+    run_check_docs.addArg("--requires");
+    run_check_docs.addArg(b.fmt("zig build {s}", .{check_docs_step.name}));
 
     // Last in `build`, so nothing can rebind a module or reconfigure a test
     // after it was added. See TestTarget.recheck and checkRunsEveryTest.

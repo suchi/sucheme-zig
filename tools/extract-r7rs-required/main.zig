@@ -5,6 +5,13 @@
 //! committed (see SOURCE.md); nothing is fetched at build time, so the build
 //! stays reproducible and offline (ADR-0013).
 //!
+//! With `--check` nothing is written: each file is compared with what this
+//! program extracts, and a difference exits non-zero. `zig build check-extract`
+//! runs that. Without it, the only thing holding the generated lists to the
+//! input was a SHA-256 pasted into SOURCE.md by hand, so editing a list and
+//! pasting the new hash left every verification command green with an
+//! identifier silently gone from the conformance denominator.
+//!
 //! This is extracted rather than typed out because the design phase produced
 //! one fabricated spec quote and one non-existent procedure name when writing
 //! from memory. See docs/review/adversarial-review-baseline.md.
@@ -54,6 +61,21 @@ pub fn main(init: std.process.Init) !void {
     var stdout = std.Io.File.Writer.initStreaming(.stdout(), io, &buf);
     const out = &stdout.interface;
 
+    const argv = try init.minimal.args.toSlice(gpa);
+    var check_only = false;
+    for (argv[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--check")) {
+            check_only = true;
+            continue;
+        }
+        // Reported rather than ignored: a misspelled flag would otherwise write
+        // the files while the caller believed it was only checking them.
+        try out.print("unknown argument {s}\n", .{arg});
+        try out.print("usage: extract-r7rs-required [--check]\n", .{});
+        try out.flush();
+        std.process.exit(2);
+    }
+
     const html = cwd.readFileAlloc(io, html_path, gpa, .unlimited) catch |err| {
         try out.print("cannot read {s}: {t}\n", .{ html_path, err });
         try out.print("run this from the repository root\n", .{});
@@ -94,6 +116,7 @@ pub fn main(init: std.process.Init) !void {
     defer dir.close(io);
 
     var total: usize = 0;
+    var stale = false;
     for (names.items, 0..) |name, i| {
         const from = starts.items[i];
         // The last library's span is bounded like the others. Letting it run to
@@ -164,24 +187,55 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const file_name = try std.fmt.allocPrint(gpa, "{s}.txt", .{name});
-        var file = try dir.createFile(io, file_name, .{});
-        defer file.close(io);
-        var wbuf: [4096]u8 = undefined;
-        var fw = file.writer(io, &wbuf);
-        const w = &fw.interface;
-        try w.print("; (scheme {s}) の必須識別子。R7RS 付録A から抽出した。\n", .{name});
-        try w.print("; 出典: {s}\n", .{source_url});
-        try w.print("; 取得日と許諾: tools/extract-r7rs-required/SOURCE.md\n", .{});
-        try w.print("; 抽出: zig run tools/extract-r7rs-required/main.zig\n", .{});
-        try w.print("; 手で編集しない。R7RS の版が上がったら再抽出する。\n", .{});
-        for (ids.items) |id| try w.print("{s}\n", .{id});
-        try w.flush();
+        // Built in memory first, so the same bytes can be written or compared.
+        // Writing and then hashing would have compared the file with itself.
+        var content: std.ArrayList(u8) = .empty;
+        try content.appendSlice(gpa, try std.fmt.allocPrint(
+            gpa,
+            "; (scheme {s}) の必須識別子。R7RS 付録A から抽出した。\n" ++
+                "; 出典: {s}\n" ++
+                "; 取得日と許諾: tools/extract-r7rs-required/SOURCE.md\n" ++
+                "; 抽出: zig run tools/extract-r7rs-required/main.zig\n" ++
+                "; 手で編集しない。R7RS の版が上がったら再抽出する。\n",
+            .{ name, source_url },
+        ));
+        for (ids.items) |id| {
+            try content.appendSlice(gpa, id);
+            try content.append(gpa, '\n');
+        }
+
+        if (check_only) {
+            if (dir.readFileAlloc(io, file_name, gpa, .unlimited)) |existing| {
+                if (!std.mem.eql(u8, existing, content.items)) {
+                    try out.print("{s}/{s} is not what this program extracts\n", .{ out_dir_path, file_name });
+                    stale = true;
+                }
+            } else |err| {
+                try out.print("cannot read {s}/{s}: {t}\n", .{ out_dir_path, file_name, err });
+                stale = true;
+            }
+        } else {
+            var file = try dir.createFile(io, file_name, .{});
+            defer file.close(io);
+            var wbuf: [4096]u8 = undefined;
+            var fw = file.writer(io, &wbuf);
+            try fw.interface.writeAll(content.items);
+            try fw.interface.flush();
+        }
 
         total += ids.items.len;
         try out.print("{s: <18}{d: >4}\n", .{ name, ids.items.len });
     }
 
     try out.print("\n{d} libraries, {d} identifiers\n", .{ names.items.len, total });
+    if (stale) {
+        try out.print(
+            "\n{s} is not what {s} extracts. Re-run `zig run tools/extract-r7rs-required/main.zig` and commit the result.\n",
+            .{ out_dir_path, html_path },
+        );
+        try out.flush();
+        std.process.exit(1);
+    }
     try out.flush();
 }
 
