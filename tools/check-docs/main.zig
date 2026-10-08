@@ -119,8 +119,6 @@ pub fn main(init: std.process.Init) !void {
         try checkSources(gpa, io, cwd, &rep, ignore, roots.items, excluded.items);
         try checkMarkdown(gpa, io, cwd, &rep, ignore);
         try checkAdrRules(gpa, io, cwd, &rep, ignore);
-        try checkCountRows(gpa, io, cwd, &rep, ignore);
-        try checkEntryPointAdrs(gpa, io, cwd, &rep, ignore);
     }
 
     if (rep.count == 0) {
@@ -214,38 +212,14 @@ fn checkZigVersionAgreement(
         rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
 }
 
-/// Whether the line opens a block of its own rather than continuing a
-/// paragraph.
-///
-/// CommonMark's laziness rule carries only "paragraph continuation text" into a
-/// block quote, and these interrupt a paragraph instead: an ATX heading, a list
-/// item, and a thematic break. Treating them as continuations reported correct
-/// documents.
-fn startsBlock(trimmed: []const u8) bool {
-    if (atxHeadingText(trimmed) != null) return true;
-    if (fenceRun(trimmed) != null) return true;
-    if (std.mem.startsWith(u8, trimmed, "- ") or
-        std.mem.startsWith(u8, trimmed, "* ") or
-        std.mem.startsWith(u8, trimmed, "+ ")) return true;
-    // A thematic break is three or more of -, * or _ with nothing else.
-    const ch = trimmed[0];
-    if (ch == '-' or ch == '*' or ch == '_') {
-        var n: usize = 0;
-        for (trimmed) |c| {
-            if (c == ch) n += 1 else if (c != ' ' and c != '\t') return false;
-        }
-        if (n >= 3) return true;
-    }
-    return false;
-}
-
 // ---------------------------------------------------------------------------
-// The ADR set obeys the rules docs/adr/README.md writes down.
+// Every ADR has a row in the index and every row has a file.
 //
-// Those rules produced a finding in five consecutive review rounds: a decision
-// table rewritten instead of annotated, a note outside its quote block, a note
-// deleted to make room for another, a note dated when the premise changed
-// rather than when it was written. The rules were prose; nothing read them.
+// Only the pair's existence. What the row says about the ADR -- its status, its
+// replacement, where its notes sit -- was compared here for several rounds, and
+// doing that meant reading records out of Markdown prose. ADR-0026 withdrew
+// that: a stale status in the index is an error a reader catches, and the
+// special cases needed to catch it mechanically cost more than the error.
 // ---------------------------------------------------------------------------
 
 const adr_dir = "docs/adr";
@@ -261,104 +235,19 @@ fn checkAdrRules(
     var files: std.ArrayList([]const u8) = .empty;
     try collectFiles(gpa, io, cwd, ignore, adr_dir, ".md", &files, .flat);
 
-    const raw_index = read(gpa, io, cwd, rep, adr_index) orelse return;
-    const index = try visibleMarkdown(gpa, rep, adr_index, raw_index);
+    const index = read(gpa, io, cwd, rep, adr_index) orelse return;
 
     for (files.items) |path| {
         const name = std.fs.path.basename(path);
         // The index and the template are not decisions.
         if (std.mem.eql(u8, name, "README.md") or std.mem.startsWith(u8, name, "0000-")) continue;
-
-        const raw_body = read(gpa, io, cwd, rep, path) orelse continue;
-        const body = try visibleMarkdown(gpa, rep, path, raw_body);
-        const status = switch (try adrStatus(gpa, body)) {
-            .one => |s| s,
-            .none => {
-                rep.fail("{s} has no `- ステータス:` line", .{path});
-                continue;
-            },
-            .ambiguous => {
-                rep.fail("{s} has more than one `- ステータス:` line", .{path});
-                continue;
-            },
-        };
-        const deprecated = std.mem.indexOf(u8, status, "非推奨") != null;
-
-        // Every decision appears in the index exactly once. The row is found
-        // by the link that opens it, not by any link on it: a 非推奨 row also
-        // names the ADR that replaced it.
-        const row = switch (adrRow(index, name)) {
-            .one => |line| line,
-            .none => {
-                rep.fail("{s} has no row opening with a link to {s}", .{ adr_index, name });
-                continue;
-            },
-            .many => |n| {
-                rep.fail("{s} has {d} rows for {s}; one ADR has one row", .{ adr_index, n, name });
-                continue;
-            },
-        };
-        // The status cell, not the whole row: an adopted ADR whose title holds
-        // the word 非推奨 was reported as disagreeing with itself.
-        const status_cell = adrRowStatus(row) orelse {
-            rep.fail("{s}: the row for {s} has no status cell", .{ adr_index, name });
-            continue;
-        };
-        const row_deprecated = std.mem.indexOf(u8, status_cell, "非推奨") != null;
-        if (row_deprecated != deprecated) rep.fail(
-            "{s} is {s} but its row in {s} says otherwise",
-            .{ path, if (deprecated) "非推奨" else "採用", adr_index },
-        );
-        if (deprecated) try checkAdrSupersession(gpa, io, cwd, rep, path, name, status);
-        try checkAdrNoteBlock(gpa, rep, path, body, deprecated);
-    }
-
-    // The other direction of supersession: a `- 置き換え:` declaration whose
-    // target is still adopted. Checking only from the 非推奨 side let a new ADR
-    // declare that it replaces an adopted one, leaving the repository with two
-    // contradictory records and nothing red.
-    for (files.items) |path| {
-        const name = std.fs.path.basename(path);
-        if (std.mem.eql(u8, name, "README.md") or std.mem.startsWith(u8, name, "0000-")) continue;
-        const raw_body = read(gpa, io, cwd, rep, path) orelse continue;
-        const body = try visibleMarkdown(gpa, rep, path, raw_body);
-        var lines = std.mem.splitScalar(u8, body, '\n');
-        while (lines.next()) |raw| {
-            const line = try recordLine(gpa, raw);
-            if (!std.mem.startsWith(u8, line, "- 置き換え:")) continue;
-
-            // Every link on the line, not the first: a declaration naming two
-            // ADRs had only its first one checked. A line with no link is
-            // reported rather than skipped, because the check cannot see what
-            // it names.
-            var links: usize = 0;
-            var from: usize = 0;
-            while (std.mem.indexOfPos(u8, line, from, "](")) |open| {
-                const rest = line[open + 2 ..];
-                const close = std.mem.indexOfScalar(u8, rest, ')') orelse break;
-                from = open + 2 + close;
-                var target = rest[0..close];
-                if (std.mem.indexOfScalar(u8, target, ' ')) |space| target = target[0..space];
-                if (std.mem.startsWith(u8, target, "./")) target = target[2..];
-                if (!std.mem.endsWith(u8, target, ".md")) continue;
-                links += 1;
-
-                const old_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
-                const raw_old = read(gpa, io, cwd, rep, old_path) orelse continue;
-                const old_body = try visibleMarkdown(gpa, rep, old_path, raw_old);
-                const old_status = switch (try adrStatus(gpa, old_body)) {
-                    .one => |s| s,
-                    else => continue,
-                };
-                if (std.mem.indexOf(u8, old_status, "非推奨") == null) rep.fail(
-                    "{s} says it replaces {s}, but {s} is still 採用",
-                    .{ path, target, target },
-                );
-            }
-            if (links == 0) rep.fail(
-                "{s}: the `- 置き換え:` line names no ADR as a link, so nothing can check it",
-                .{path},
-            );
+        switch (adrRow(index, name)) {
+            .one => {},
+            .none => rep.fail("{s} has no row opening with a link to {s}", .{ adr_index, name }),
+            .many => |n| rep.fail(
+                "{s} has {d} rows for {s}; one ADR has one row",
+                .{ adr_index, n, name },
+            ),
         }
     }
 
@@ -369,101 +258,17 @@ fn checkAdrRules(
         if (row.len == 0 or row[0] != '|') continue;
         const target = linkTargetInRow(row) orelse continue;
         const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
-        if (!pathIn(files.items, joined)) rep.fail("{s} lists {s}, which does not exist", .{ adr_index, target });
+        if (!pathIn(files.items, joined)) rep.fail(
+            "{s} lists {s}, which does not exist",
+            .{ adr_index, target },
+        );
     }
-}
-
-/// What an ADR records as its status.
-const RecordedStatus = union(enum) {
-    one: []const u8,
-    none,
-    /// Two status lines, so which one is the status cannot be decided.
-    ambiguous,
-};
-
-/// The text after `- ステータス:`.
-///
-/// Returning the first match let a line added above the real one win silently,
-/// and that turned off the index comparison, the supersession check and the
-/// 非推奨理由 requirement at once. The other records in this program refuse to
-/// pick one of several; this one does too.
-fn adrStatus(gpa: std.mem.Allocator, body: []const u8) !RecordedStatus {
-    var found: ?[]const u8 = null;
-    var lines = std.mem.splitScalar(u8, body, '\n');
-    while (lines.next()) |raw| {
-        const line = try recordLine(gpa, raw);
-        const prefix = "- ステータス:";
-        if (!std.mem.startsWith(u8, line, prefix)) continue;
-        if (found != null) return .ambiguous;
-        found = std.mem.trim(u8, line[prefix.len..], &std.ascii.whitespace);
-    }
-    return if (found) |s| .{ .one = s } else .none;
-}
-
-/// The status cell of an index row: the third, as the table is laid out.
-fn adrRowStatus(row: []const u8) ?[]const u8 {
-    var cells = std.mem.splitScalar(u8, row, '|');
-    _ = cells.next(); // before the first bar
-    _ = cells.next() orelse return null; // the link
-    _ = cells.next() orelse return null; // the summary
-    const status = cells.next() orelse return null;
-    return std.mem.trim(u8, status, &std.ascii.whitespace);
-}
-
-/// Checks that a 非推奨 ADR names its replacement and that the replacement
-/// names it back.
-///
-/// Requiring only that the status carried a link let it point at an unrelated
-/// adopted ADR. A link is not a correspondence; the pair has to agree.
-fn checkAdrSupersession(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    cwd: std.Io.Dir,
-    rep: *Reporter,
-    path: []const u8,
-    name: []const u8,
-    status: []const u8,
-) !void {
-    const target = linkTargetInRow(status) orelse {
-        rep.fail("{s}: a 非推奨 status names the ADR that replaces it, as a link", .{path});
-        return;
-    };
-    if (std.mem.eql(u8, target, name)) {
-        rep.fail("{s}: its 非推奨 status links to itself", .{path});
-        return;
-    }
-
-    const other_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, target });
-    const raw = read(gpa, io, cwd, rep, other_path) orelse return;
-    const other = try visibleMarkdown(gpa, rep, other_path, raw);
-    var lines = std.mem.splitScalar(u8, other, '\n');
-    while (lines.next()) |line_raw| {
-        const line = try recordLine(gpa, line_raw);
-        if (!std.mem.startsWith(u8, line, "- 置き換え:")) continue;
-        // Every link on the line, each normalised the same way the forward
-        // direction normalises them. A plain string match here rejected the
-        // `./` and titled spellings that the forward direction accepts.
-        var from: usize = 0;
-        while (std.mem.indexOfPos(u8, line, from, "](")) |open| {
-            const rest = line[open + 2 ..];
-            const close = std.mem.indexOfScalar(u8, rest, ')') orelse break;
-            from = open + 2 + close;
-            if (linkTargetInRow(line[open..])) |back| {
-                if (std.mem.eql(u8, back, name)) return;
-            }
-        }
-    }
-    rep.fail(
-        "{s} says {s} replaces it, but {s} has no `- 置き換え:` line naming it",
-        .{ path, target, target },
-    );
 }
 
 /// The index row whose first cell links to `name`.
 ///
-/// Counted, not found: an outdated row left below the real one was never read,
-/// and the index then showed two statuses for one ADR. The table says each ADR
-/// has one row, so more than one is reported.
+/// Counted, not found: the table says each ADR has one row, and an outdated row
+/// left below the real one made the index show two answers for one ADR.
 const IndexRow = union(enum) {
     one: []const u8,
     none,
@@ -477,9 +282,7 @@ fn adrRow(index: []const u8, name: []const u8) IndexRow {
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
         if (line.len == 0 or line[0] != '|') continue;
-        var cells = std.mem.splitScalar(u8, line, '|');
-        _ = cells.next();
-        const first = cells.next() orelse continue;
+        const first = cellAt(line, 0) orelse continue;
         const target = linkTargetInRow(first) orelse continue;
         if (!std.mem.eql(u8, target, name)) continue;
         count += 1;
@@ -512,545 +315,6 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
     return target;
 }
 
-/// The words that open a record.
-///
-/// A line whose key is one of these declares a record. The key is compared after
-/// `normalizeRecordLine`, so the spellings that look alike to a reader are one
-/// key here; the claim is limited to the characters that function normalises,
-/// not to every way the word could be written.
-const record_words = [_][]const u8{ "ステータス", "日付", "置き換え", "対応する決定", "追記" };
-
-/// Cell contents that make a table row a record this program reads.
-///
-/// `全コミット` is here because the verification command table is a record too,
-/// and leaving it out let one row of it be indented: the row still read as "run
-/// on every commit" while the check that compares the table with the workflow
-/// stopped seeing it, so a command could leave CI with everything green.
-const record_table_labels = [_][]const u8{
-    "SHA-256",
-    "ライブラリ数",
-    "合計",
-    "(scheme ",
-    "全コミット",
-    "手動と定期実行のみ",
-};
-
-/// Normalises a line enough to recognise a record written a little differently.
-///
-/// A full-width colon and Markdown emphasis are dropped, because neither
-/// changes what a reader takes the line to say. `- ステータス： 非推奨` and
-/// `- **ステータス**: 非推奨` both render as a status and both passed: the exact
-/// match that read records did not see them, so no check read them and no check
-/// reported them either.
-///
-/// The result is not freed. `gpa` is this program's arena, which it is because
-/// nothing here outlives one run; a caller with another allocator frees it.
-fn normalizeRecordLine(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    outer: while (i < line.len) {
-        for (colon_spellings) |colon| {
-            if (!std.mem.startsWith(u8, line[i..], colon)) continue;
-            try out.append(gpa, ':');
-            i += colon.len;
-            continue :outer;
-        }
-        for (space_spellings) |space| {
-            if (!std.mem.startsWith(u8, line[i..], space)) continue;
-            try out.append(gpa, ' ');
-            i += space.len;
-            continue :outer;
-        }
-        for (invisible_spellings) |hidden| {
-            if (!std.mem.startsWith(u8, line[i..], hidden)) continue;
-            i += hidden.len;
-            continue :outer;
-        }
-        // Emphasis and code spans, which change how the key looks and not what
-        // it says.
-        if (line[i] == '*' or line[i] == '_' or line[i] == '`') {
-            i += 1;
-            continue;
-        }
-        try out.append(gpa, line[i]);
-        i += 1;
-    }
-
-    // A space before the colon. `- ステータス :` is the same key to a reader.
-    var tight: std.ArrayList(u8) = .empty;
-    var j: usize = 0;
-    while (j < out.items.len) : (j += 1) {
-        if (out.items[j] == ' ') {
-            var k = j;
-            while (k < out.items.len and out.items[k] == ' ') k += 1;
-            if (k < out.items.len and out.items[k] == ':') {
-                j = k - 1;
-                continue;
-            }
-        }
-        try tight.append(gpa, out.items[j]);
-    }
-    return tight.items;
-}
-
-/// Whether the row is one of the ADR index's rows: its first cell links to a
-/// numbered ADR file.
-///
-/// Such a row is a record. `adrRow` reads it to find an ADR's one row,
-/// `adrRowStatus` reads its status, and the scan for an index row with no file
-/// reads its link. It carries none of `record_table_labels`, so an outdated
-/// copy indented two spaces was read by none of them while GFM still rendered
-/// it inside the table, and the index showed two statuses for one ADR.
-fn adrIndexRow(row: []const u8) bool {
-    if (row.len == 0 or row[0] != '|') return false;
-    const bar = std.mem.indexOfScalarPos(u8, row, 1, '|') orelse return false;
-    const target = linkTargetInRow(row[0..bar]) orelse return false;
-    var digits: usize = 0;
-    while (digits < target.len and std.ascii.isDigit(target[digits])) digits += 1;
-    return digits == 4 and digits < target.len and target[digits] == '-';
-}
-
-/// Spellings of a colon that a reader takes for the one a record uses.
-const colon_spellings = [_][]const u8{ "\u{ff1a}", "\u{fe55}" };
-
-/// Characters a reader sees as a space and `std.ascii.whitespace` does not.
-///
-/// A record written with one of these was read by nobody: the key did not match
-/// and the line counted as column zero, so no check reported it either. The set
-/// is the Unicode space separators plus the two that are not in that category
-/// but render as one.
-const space_spellings = [_][]const u8{
-    "\u{00a0}", "\u{1680}", "\u{2000}", "\u{2001}", "\u{2002}", "\u{2003}",
-    "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}",
-    "\u{200a}", "\u{202f}", "\u{205f}", "\u{3000}",
-};
-
-/// Characters a reader does not see at all. One inside a key made a second
-/// record render identically to the first while matching nothing.
-const invisible_spellings = [_][]const u8{
-    "\u{200b}", "\u{200c}", "\u{200d}", "\u{2060}", "\u{feff}",
-};
-
-/// A document line as the record readers see it: normalised and trimmed.
-///
-/// Normalising in one reader and not the others left four of them matching raw
-/// text, so a `- 置き換え:` or a `対応する決定:` written with a full-width colon
-/// was read by nobody and reported by nobody -- including the case where an ADR
-/// declared it replaced one that is still adopted.
-///
-/// The readers that stay on raw text are the ones that match a label to find a
-/// row: an unmatched label leaves them reporting a missing record, which is the
-/// closing direction. Claiming here that every reader goes through this was
-/// false, and the one reader where a miss opened a hole instead -- the
-/// verification command table's cells -- was outside the claim.
-fn recordLine(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
-    return std.mem.trim(u8, try normalizeRecordLine(gpa, raw), &std.ascii.whitespace);
-}
-
-/// Reports a record written where no check reads it.
-///
-/// `visibleMarkdown` blanks every indented line, because what four spaces mean
-/// depends on the containing block. A line a reader does see but no check reads
-/// is the gap that leaves, and it has been reached three ways: nesting a status
-/// under the metadata, indenting a note under a list item, and indenting a
-/// whole count table by two spaces, which GFM renders unchanged.
-///
-/// The fence state is tracked by the opener's character and length, as
-/// `checkMarkdown` does. Toggling on any fence line let a short fence inside a
-/// long one leave the state stuck, and every indented line after it was
-/// skipped.
-fn checkNoIndentedRecords(
-    gpa: std.mem.Allocator,
-    rep: *Reporter,
-    path: []const u8,
-    raw: []const u8,
-) !void {
-    var fence: ?struct { ch: u8, len: usize, indent: usize } = null;
-    // The column an open indented code block's content starts at.
-    var code: ?usize = null;
-    // Whether the last line at column zero opened a list.
-    var list_open = false;
-    // The first line of a document counts as following a blank line.
-    var prev_blank = true;
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    var lineno: usize = 0;
-    while (lines.next()) |line| {
-        lineno += 1;
-        const run = indentRun(line);
-        const indent = run.cols;
-        const trimmed = line[run.bytes..];
-        const blank = std.mem.trim(u8, line, &std.ascii.whitespace).len == 0;
-        defer prev_blank = blank;
-
-        // Inside an indented code block until a line dedents out of it. Only the
-        // first line can be recognised from its own indentation, so the state
-        // has to be carried: without it the second line of a code block, whose
-        // predecessor is code rather than a blank, read as a record.
-        if (code) |at| {
-            if (blank or indent >= at) continue;
-            code = null;
-        }
-        if (fenceRun(trimmed)) |f| {
-            if (fence) |open| {
-                if (f.bare and f.ch == open.ch and f.len >= open.len) fence = null;
-            } else {
-                fence = .{ .ch = f.ch, .len = f.len, .indent = indent };
-            }
-            continue;
-        }
-        // Inside the fence only while indented at least as far as it. A fence
-        // written four spaces in is an indented code block's content rather than
-        // a fence, and a record written shallower than it renders as a list item
-        // the reader sees: treating the whole span as code skipped it.
-        if (fence) |open| {
-            if (indent >= open.indent) continue;
-        }
-        if (blank) continue;
-        if (indent == 0) {
-            list_open = opensAList(trimmed);
-            continue;
-        }
-        // An indented code block opens here. Four spaces means code only where a
-        // block can begin -- after a blank line -- and only outside a list, where
-        // the item's content column decides what its own indentation means. The
-        // two conditions are what separates code from a record a reader can see:
-        // without them a row indented into the middle of a table, and a record
-        // nested under a list item, were both skipped while rendering in place.
-        if (indent >= 4 and fence == null and !list_open and prev_blank) {
-            code = 4;
-            continue;
-        }
-
-        const text = std.mem.trim(u8, try normalizeRecordLine(gpa, line), &std.ascii.whitespace);
-        if (!namesARecord(text)) continue;
-        rep.fail(
-            "{s}:{d}: this reads as a record but is indented, where no check reads it; write it at column zero",
-            .{ path, lineno },
-        );
-    }
-}
-
-/// Whether the line opens a list item, taking the indentation as already
-/// stripped.
-///
-/// A list item's marker decides the column its content sits at, and every block
-/// nested under it is measured from there rather than from column zero. So the
-/// absolute four spaces that mean code at the top level mean something a reader
-/// sees inside a list.
-fn opensAList(trimmed: []const u8) bool {
-    if (trimmed.len == 0) return false;
-    const bullet = trimmed[0] == '-' or trimmed[0] == '*' or trimmed[0] == '+';
-    // `---` is a thematic break or a table's delimiter row, and `**` is emphasis.
-    if (bullet) return trimmed.len == 1 or trimmed[1] == ' ' or trimmed[1] == '\t';
-
-    var i: usize = 0;
-    while (i < trimmed.len and std.ascii.isDigit(trimmed[i])) i += 1;
-    if (i == 0 or i >= trimmed.len) return false;
-    if (trimmed[i] != '.' and trimmed[i] != ')') return false;
-    return i + 1 == trimmed.len or trimmed[i + 1] == ' ' or trimmed[i + 1] == '\t';
-}
-
-/// Whether the line declares a record: a `key:` that is one of the record
-/// words, or a table row carrying a label this program reads.
-///
-/// The key has to be the word, not merely contain it. Accepting any key that
-/// mentioned one reported the operating rules themselves, where a numbered item
-/// describes the form a note takes and happens to carry a colon further along.
-fn namesARecord(text: []const u8) bool {
-    // A table row holding a label this program reads as a record.
-    if (text.len != 0 and text[0] == '|') {
-        for (record_table_labels) |label| {
-            if (std.mem.indexOf(u8, text, label) != null) return true;
-        }
-        if (adrIndexRow(text)) return true;
-        return breakdownIn(text) != null;
-    }
-
-    var body = text;
-    if (std.mem.startsWith(u8, body, "> ")) body = body[2..];
-    if (std.mem.startsWith(u8, body, "- ")) body = body[2..];
-    body = std.mem.trim(u8, body, &std.ascii.whitespace);
-
-    const colon = std.mem.indexOfScalar(u8, body, ':') orelse return false;
-    const key = std.mem.trim(u8, body[0..colon], &std.ascii.whitespace);
-
-    for (record_words) |word| {
-        if (std.mem.eql(u8, key, word)) return true;
-        // A note carries the date it was written: `YYYY-MM-DD 追記:`.
-        if (!std.mem.endsWith(u8, key, word)) continue;
-        const before = std.mem.trim(u8, key[0 .. key.len - word.len], &std.ascii.whitespace);
-        if (before.len == 0) return true;
-        var all_date = true;
-        for (before) |c| {
-            if (!std.ascii.isDigit(c) and c != '-') all_date = false;
-        }
-        if (all_date) return true;
-    }
-    return false;
-}
-
-/// Checks where an ADR's notes sit and how each paragraph opens.
-///
-/// Everything between the metadata lines and the first `##` heading must be a
-/// quote block, and each paragraph in it must open with `非推奨理由:` or a
-/// dated `追記:`. Prose there is a note written into the body, which the rules
-/// forbid; an undated paragraph loses when it was written.
-fn checkAdrNoteBlock(
-    gpa: std.mem.Allocator,
-    rep: *Reporter,
-    path: []const u8,
-    body: []const u8,
-    deprecated: bool,
-) !void {
-    var lines = std.mem.splitScalar(u8, body, '\n');
-    var lineno: usize = 0;
-    var seen_metadata = false;
-    var in_note = false;
-    var notes: usize = 0;
-    var reason_at: ?usize = null;
-    var dated_at: ?usize = null;
-    var in_front_matter = true;
-    while (lines.next()) |raw| {
-        lineno += 1;
-        const line = try recordLine(gpa, raw);
-        if (std.mem.startsWith(u8, line, "## ")) {
-            in_front_matter = false;
-            continue;
-        }
-        if (!in_front_matter) {
-            // A note written into the body is the edit the rules forbid, and
-            // the front-matter scan used to stop at the first heading.
-            if (std.mem.indexOf(u8, line, "追記:") != null) rep.fail(
-                "{s}:{d}: a note belongs in the quote block after the metadata, not in the body",
-                .{ path, lineno },
-            );
-            continue;
-        }
-        if (std.mem.startsWith(u8, line, "# ")) continue;
-        if (line.len == 0) {
-            in_note = false;
-            continue;
-        }
-        if (std.mem.startsWith(u8, line, "- ")) {
-            if (notes != 0) rep.fail(
-                "{s}:{d}: a metadata line follows a note; notes go after every `- ` line",
-                .{ path, lineno },
-            );
-            seen_metadata = true;
-            continue;
-        }
-        if (line[0] != '>') {
-            rep.fail(
-                "{s}:{d}: this line is neither metadata nor a quote block; a note is written as `> YYYY-MM-DD 追記: ...`",
-                .{ path, lineno },
-            );
-            continue;
-        }
-        if (!seen_metadata) {
-            rep.fail(
-                "{s}:{d}: a note comes after the metadata lines, not before them",
-                .{ path, lineno },
-            );
-            continue;
-        }
-        const text = std.mem.trim(u8, line[1..], &std.ascii.whitespace);
-        if (text.len == 0) { // the `>` that separates paragraphs
-            in_note = false;
-            continue;
-        }
-        if (in_note) continue; // a continuation line of the same paragraph
-        in_note = true;
-        notes += 1;
-        if (std.mem.startsWith(u8, text, "非推奨理由:")) {
-            if (reason_at == null) reason_at = lineno;
-            continue;
-        }
-        if (datedNote(text)) {
-            if (dated_at == null) dated_at = lineno;
-            continue;
-        }
-        rep.fail(
-            "{s}:{d}: a note paragraph opens with `非推奨理由:` or `YYYY-MM-DD 追記:`",
-            .{ path, lineno },
-        );
-    }
-
-    if (deprecated and reason_at == null) rep.fail(
-        "{s}: a 非推奨 ADR keeps its `> 非推奨理由:` block; deleting it loses the record",
-        .{path},
-    );
-    if (reason_at != null and dated_at != null and dated_at.? < reason_at.?) rep.fail(
-        "{s}:{d}: the `非推奨理由:` block comes before the dated notes",
-        .{ path, reason_at.? },
-    );
-}
-
-/// Whether the text opens with `YYYY-MM-DD 追記:`.
-fn datedNote(text: []const u8) bool {
-    const shape = "0000-00-00 追記:";
-    if (text.len < shape.len) return false;
-    for ("0000-00-00", 0..) |mark, i| {
-        const c = text[i];
-        if (mark == '0') {
-            if (!std.ascii.isDigit(c)) return false;
-        } else if (c != mark) return false;
-    }
-    return std.mem.startsWith(u8, text["0000-00-00".len..], " 追記:");
-}
-
-// ---------------------------------------------------------------------------
-// A table row that carries both a total and its parts agrees with itself.
-//
-// The review records keep counts as `20 | 必須7・推奨10・任意3`. One row was
-// written with a total of 17, and nothing noticed: which number was right could
-// not be settled afterwards.
-// ---------------------------------------------------------------------------
-
-fn checkCountRows(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    cwd: std.Io.Dir,
-    rep: *Reporter,
-    ignore: []const u8,
-) !void {
-    var files: std.ArrayList([]const u8) = .empty;
-    try collectFiles(gpa, io, cwd, ignore, ".", ".md", &files, .recursive);
-
-    for (files.items) |path| {
-        const raw = read(gpa, io, cwd, rep, path) orelse continue;
-        // Every document, not only the ADRs: a count table indented by two
-        // spaces renders unchanged and left the arithmetic unchecked.
-        try checkNoIndentedRecords(gpa, rep, path, raw);
-        const doc = try visibleMarkdown(gpa, rep, path, raw);
-        // The cells are counted on what a reader sees. Counting the raw document
-        // made a table written inside a fence, to show what one looks like, a
-        // table with a broken row.
-        checkTableCells(rep, path, doc);
-        var lines = std.mem.splitScalar(u8, doc, '\n');
-        var lineno: usize = 0;
-        while (lines.next()) |line_raw| {
-            lineno += 1;
-            const row = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
-            if (row.len == 0 or row[0] != '|') continue;
-
-            const counts = rowCounts(row) orelse continue;
-            if (counts.parts == counts.total) continue;
-            const parts = counts.parts;
-            const total = counts.total;
-            rep.fail(
-                "{s}:{d}: the row totals {d} but its parts add to {d}",
-                .{ path, lineno, total, parts },
-            );
-        }
-    }
-}
-
-/// A row's total and the sum of its breakdown, when it carries both.
-///
-/// The two spellings in use are `| 20 | 必須7・推奨10・任意3 |`, where the
-/// total is the cell before, and `| 28(必須11・推奨16・任意1) |`, where it
-/// opens the same cell. Any other arrangement is left alone: guessing which
-/// number is the total would report rows that are not counts at all.
-fn rowCounts(row: []const u8) ?struct { total: usize, parts: usize } {
-    var previous: ?[]const u8 = null;
-    var cells = std.mem.splitScalar(u8, row, '|');
-    while (cells.next()) |raw_cell| {
-        const cell = std.mem.trim(u8, raw_cell, &std.ascii.whitespace);
-        const parts = breakdownIn(cell) orelse {
-            if (cell.len != 0) previous = cell;
-            continue;
-        };
-        if (leadingInteger(cell)) |total| return .{ .total = total, .parts = parts };
-        const before = previous orelse return null;
-        const total = std.fmt.parseInt(usize, before, 10) catch return null;
-        return .{ .total = total, .parts = parts };
-    }
-    return null;
-}
-
-/// The sum of a `必須a・推奨b・任意c` breakdown, if the cell holds one.
-///
-/// A list joined by `・` with at least two labelled numbers. Accepting a single
-/// label read "26件(うち必須9件)" as a breakdown of 26, which it is not: a
-/// subset is not a partition.
-fn breakdownIn(cell: []const u8) ?usize {
-    if (std.mem.indexOf(u8, cell, "・") == null) return null;
-    var sum: usize = 0;
-    var labelled: usize = 0;
-    for ([_][]const u8{ "必須", "推奨", "任意" }) |label| {
-        const at = std.mem.indexOf(u8, cell, label) orelse continue;
-        const start = at + label.len;
-        var i = start;
-        while (i < cell.len and std.ascii.isDigit(cell[i])) : (i += 1) {}
-        if (i == start) continue;
-        sum += std.fmt.parseInt(usize, cell[start..i], 10) catch continue;
-        labelled += 1;
-    }
-    return if (labelled >= 2) sum else null;
-}
-
-/// The integer a cell opens with, if it opens with one.
-fn leadingInteger(cell: []const u8) ?usize {
-    var i: usize = 0;
-    while (i < cell.len and std.ascii.isDigit(cell[i])) : (i += 1) {}
-    if (i == 0) return null;
-    return std.fmt.parseInt(usize, cell[0..i], 10) catch null;
-}
-
-// ---------------------------------------------------------------------------
-// A document's entry points name the decisions that still hold.
-//
-// Two design documents opened with `対応する決定:` lines pointing at ADRs that
-// had been deprecated, while their own bodies referenced the replacements.
-// ---------------------------------------------------------------------------
-
-fn checkEntryPointAdrs(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    cwd: std.Io.Dir,
-    rep: *Reporter,
-    ignore: []const u8,
-) !void {
-    var files: std.ArrayList([]const u8) = .empty;
-    try collectFiles(gpa, io, cwd, ignore, ".", ".md", &files, .recursive);
-
-    for (files.items) |path| {
-        // An ADR may point at a deprecated ADR: that is what supersession is.
-        if (std.mem.startsWith(u8, path, adr_dir ++ "/")) continue;
-        const raw = read(gpa, io, cwd, rep, path) orelse continue;
-        const doc = try visibleMarkdown(gpa, rep, path, raw);
-        var lines = std.mem.splitScalar(u8, doc, '\n');
-        var lineno: usize = 0;
-        while (lines.next()) |line_raw| {
-            lineno += 1;
-            const line = try recordLine(gpa, line_raw);
-            if (!std.mem.startsWith(u8, line, "対応する決定:")) continue;
-
-            var from: usize = 0;
-            while (std.mem.indexOfPos(u8, line, from, "](")) |open| {
-                const rest = line[open + 2 ..];
-                const close = std.mem.indexOfScalar(u8, rest, ')') orelse break;
-                from = open + 2 + close;
-                const target = rest[0..close];
-                const name = std.fs.path.basename(target);
-                if (!std.mem.endsWith(u8, name, ".md")) continue;
-                const adr = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ adr_dir, name });
-                const raw_adr = read(gpa, io, cwd, rep, adr) orelse continue;
-                const adr_body = try visibleMarkdown(gpa, rep, adr, raw_adr);
-                const status = switch (try adrStatus(gpa, adr_body)) {
-                    .one => |s| s,
-                    else => continue, // checkAdrRules reports it
-                };
-                if (std.mem.indexOf(u8, status, "非推奨") == null) continue;
-                rep.fail(
-                    "{s}:{d}: the entry point names {s}, which is 非推奨",
-                    .{ path, lineno, name },
-                );
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The CI workflow runs the rows AGENTS.md marks for every commit.
 //
@@ -1060,42 +324,31 @@ fn checkEntryPointAdrs(
 // says it is written to avoid.
 // ---------------------------------------------------------------------------
 
-/// The header of AGENTS.md's verification command table.
+/// The workflow that runs on every commit.
 ///
-/// The table is found by this header. A renamed column leaves it unfound, and
-/// the check then reports that the table was not read, so the set is closed in
-/// both directions.
-const command_table_header = [_][]const u8{ "用途", "コマンド", "使えるようになる段階", "CIで実行" };
+/// Named, because "every commit" is a property of the trigger and this is the
+/// only workflow whose trigger is a commit. A command the table marks 全コミット
+/// has to run here, not merely somewhere: accepting a match in any workflow let
+/// a command move to one driven by a schedule and stay green.
+const per_commit_workflow = ".github/workflows/ci.yml";
 
-/// The spellings the `CIで実行` column uses.
+/// A row of the verification command table, as this check reads it.
+const CommandRow = struct {
+    command: []const u8,
+    /// The stage the command starts existing at, or null if the cell is not a
+    /// number -- the setup row writes `-`.
+    stage: ?usize,
+    every_commit: bool,
+};
+
+/// Reports disagreement between the table and the workflow that runs per commit.
 ///
-/// Anything else is reported. Comparing against `全コミット` alone and skipping
-/// the rest meant a spelling the check could not read removed the row silently,
-/// and a removed row is a command that may leave CI with everything green.
-const command_table_ci_cells = [_][]const u8{ "全コミット", "手動と定期実行のみ", "-" };
-
-/// Whether the row is the verification command table's header, read as a record.
-fn isCommandTableHeader(gpa: std.mem.Allocator, row: []const u8) !bool {
-    if (cellCount(row) != command_table_header.len) return false;
-    for (command_table_header, 0..) |want, i| {
-        const cell = cellAt(row, i) orelse return false;
-        if (!std.mem.eql(u8, try recordLine(gpa, cell), want)) return false;
-    }
-    return true;
-}
-
-/// Whether the cell is one of the spellings the `CIで実行` column uses.
-fn isKnownCiCell(cell: []const u8) bool {
-    for (command_table_ci_cells) |known| {
-        if (std.mem.eql(u8, cell, known)) return true;
-    }
-    return false;
-}
-
-/// Reports a command the table requires at this stage that no workflow runs.
-///
-/// Only the commands are compared, not where they run. A row that should run on
-/// another trigger, or in a job that is skipped, is beyond what this sees.
+/// Both directions. The table requires a command that the workflow does not run,
+/// and the workflow runs a command the table does not mark for this stage. One
+/// direction alone needed the table to be read exactly: hiding a row, or writing
+/// `全コミット` with a zero-width space in it, removed the requirement and nothing
+/// noticed. With both, a row the check cannot see leaves the workflow's step
+/// unaccounted for, so the spelling of the cell stops mattering.
 fn checkCiRunsTheTable(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -1111,8 +364,12 @@ fn checkCiRunsTheTable(
     try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yml", &workflows, .flat);
     try collectFiles(gpa, io, cwd, ignore, ".github/workflows", ".yaml", &workflows, .flat);
 
+    // The keys are checked in every workflow, because an unreadable key anywhere
+    // makes this check's reading of that file untrustworthy. The commands are
+    // collected only from the one that runs per commit.
     var run_lines: std.ArrayList([]const u8) = .empty;
     for (workflows.items) |path| {
+        const per_commit = std.mem.eql(u8, path, per_commit_workflow);
         const body = read(gpa, io, cwd, rep, path) orelse continue;
         // The column a step's own keys sit at, from the most recent list item.
         var step_keys_at: ?usize = null;
@@ -1195,86 +452,66 @@ fn checkCiRunsTheTable(
             {
                 value = value[1 .. value.len - 1];
             }
-            try run_lines.append(gpa, value);
+            if (per_commit) try run_lines.append(gpa, value);
         }
     }
 
-    var rows: usize = 0;
-    // The table is located by its header, and only its own rows are read.
-    // Walking every line of AGENTS.md that starts with a pipe read the other
-    // tables too, which is why a cell this check cannot read could not be
-    // reported: the report would have fired on every row of every other table.
-    var in_table = false;
-    var lineno: usize = 0;
+    // Every line that reads as a row of the table. The other tables of AGENTS.md
+    // have fewer cells or no command in backticks, so they fall out here.
+    var table_rows: std.ArrayList(CommandRow) = .empty;
     var lines = std.mem.splitScalar(u8, table, '\n');
     while (lines.next()) |raw| {
         const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        lineno += 1;
-        if (!in_table) {
-            in_table = try isCommandTableHeader(gpa, row);
-            continue;
-        }
-        if (endsATable(row)) break;
-        if (isDelimiterRow(row)) continue;
-        if (cellCount(row) < command_table_header.len) {
-            rep.fail(
-                "AGENTS.md:{d}: this row of the verification command table has {d} cells, not {d}",
-                .{ lineno, cellCount(row), command_table_header.len },
-            );
-            continue;
-        }
-        const command_cell = cellAt(row, 1).?;
-        const stage_cell = cellAt(row, 2).?;
-        const ci_cell = cellAt(row, 3).?;
+        if (row.len == 0 or row[0] != '|') continue;
+        if (cellCount(row) < 4) continue;
+        const command = backtickedSpan(cellAt(row, 1).?) orelse continue;
+        const stage_cell = std.mem.trim(u8, cellAt(row, 2).?, &std.ascii.whitespace);
+        const ci_cell = std.mem.trim(u8, cellAt(row, 3).?, &std.ascii.whitespace);
+        try table_rows.append(gpa, .{
+            .command = command,
+            .stage = std.fmt.parseInt(usize, stage_cell, 10) catch null,
+            .every_commit = std.mem.eql(u8, ci_cell, "全コミット"),
+        });
+    }
 
-        // Normalised, as every other reader of a record normalises. Comparing
-        // the raw cell let a zero-width space inside `全コミット` drop the row:
-        // the reader saw no difference and the check stopped requiring the
-        // command, so deleting its step left CI green.
-        const ci = try recordLine(gpa, ci_cell);
-        if (!isKnownCiCell(ci)) {
-            rep.fail(
-                "AGENTS.md:{d}: `{s}` is not a spelling the `CIで実行` column uses; add it to command_table_ci_cells after deciding what it means for the verification",
-                .{ lineno, ci },
-            );
-            continue;
-        }
-        if (!std.mem.eql(u8, ci, "全コミット")) continue;
-
-        const stage_text = try recordLine(gpa, stage_cell);
-        const needed_at = std.fmt.parseInt(usize, stage_text, 10) catch {
-            // Reported, not skipped. A stage cell this check could not read used
-            // to take the row with it, so writing `0(最初から)` there excused the
-            // command from CI while the table still said every commit.
-            rep.fail(
-                "AGENTS.md:{d}: `{s}` is not a stage number; a row marked 全コミット needs one so the check knows when the command exists",
-                .{ lineno, stage_text },
-            );
-            continue;
-        };
+    // The table requires it, so the workflow runs it.
+    var required: usize = 0;
+    for (table_rows.items) |row| {
+        if (!row.every_commit) continue;
+        const needed_at = row.stage orelse continue;
         if (needed_at > stage) continue;
-
-        const command = backtickedSpan(command_cell) orelse {
-            rep.fail(
-                "AGENTS.md:{d}: this row is marked 全コミット but names no command in backticks",
-                .{lineno},
-            );
-            continue;
-        };
-        rows += 1;
+        required += 1;
         var ran = false;
         for (run_lines.items) |line| {
-            if (runsCommand(line, command)) ran = true;
+            if (runsCommand(line, row.command)) ran = true;
         }
         if (!ran) rep.fail(
-            "AGENTS.md requires `{s}` on every commit at stage {d}, and no workflow runs it",
-            .{ command, stage },
+            "AGENTS.md requires `{s}` on every commit at stage {d}, and {s} does not run it",
+            .{ row.command, stage, per_commit_workflow },
         );
     }
-    if (rows == 0) rep.fail(
+    if (required == 0) rep.fail(
         "AGENTS.md has no command marked for every commit at stage {d}; the table was not read",
         .{stage},
     );
+
+    // The workflow runs it, so the table requires it. This is the direction that
+    // makes the first one hold without reading the cells exactly: a row this
+    // check cannot see is a step with nothing behind it.
+    for (run_lines.items) |line| {
+        var accounted = false;
+        for (table_rows.items) |row| {
+            if (!runsCommand(line, row.command)) continue;
+            if (!row.every_commit) continue;
+            const needed_at = row.stage orelse continue;
+            if (needed_at > stage) continue;
+            accounted = true;
+        }
+        if (!accounted) rep.fail(
+            "{s} runs `{s}`, and no row of AGENTS.md's table marks it 全コミット at stage {d} or below",
+            .{ per_commit_workflow, line, stage },
+        );
+    }
 }
 
 /// The first text between backticks, which is where the table puts the command.
@@ -1382,35 +619,23 @@ fn indentOf(raw: []const u8) usize {
 /// bytes it occupies.
 ///
 /// Both are needed. The column count decides what the indentation means, and the
-/// byte count is where the line's content begins -- `trimStart(line, " ")` left a
-/// U+3000 in place, so a fence indented with one was not recognised as a fence.
+/// byte count is where the line's content begins.
+///
+/// A space and a tab, and nothing else. YAML allows only the space in
+/// indentation, and the other characters a reader might take for one were here
+/// to serve checks ADR-0026 withdrew.
 fn indentRun(raw: []const u8) struct { cols: usize, bytes: usize } {
     var cols: usize = 0;
     var i: usize = 0;
-    outer: while (i < raw.len) {
+    while (i < raw.len) : (i += 1) {
         if (raw[i] == ' ') {
             cols += 1;
-            i += 1;
             continue;
         }
         // A tab advances to the next four-column stop, as CommonMark defines it.
-        // Not counting one at all made `字下げされた行は読まない` false for a tab:
-        // the line counted as column zero and was read as a record.
         if (raw[i] == '\t') {
             cols += 4 - cols % 4;
-            i += 1;
             continue;
-        }
-        for (space_spellings) |space| {
-            if (!std.mem.startsWith(u8, raw[i..], space)) continue;
-            cols += 1;
-            i += space.len;
-            continue :outer;
-        }
-        for (invisible_spellings) |hidden| {
-            if (!std.mem.startsWith(u8, raw[i..], hidden)) continue;
-            i += hidden.len;
-            continue :outer;
         }
         break;
     }
@@ -1788,57 +1013,6 @@ fn lineOf(doc: []const u8, offset: usize) usize {
     return n;
 }
 
-/// Reports a table row carrying more cells than its header.
-///
-/// GFM drops the extra cells of a longer row, so an unescaped `|` inside a cell
-/// moves the cells after it and the last one disappears from the rendered table.
-/// Rows of this repository lost their content that way, one of them the record of
-/// how a review finding was closed. The pipe has to be escaped, "including inside
-/// other inline spans" as the GFM tables extension puts it.
-///
-/// A shorter row is not reported. GFM pads one with empty cells, so no content
-/// is lost and the advice to escape a pipe would name the wrong cause.
-fn checkTableCells(rep: *Reporter, path: []const u8, doc: []const u8) void {
-    // The number of cells the open table's header declares.
-    var header: ?usize = null;
-    var prev: []const u8 = "";
-    var lines = std.mem.splitScalar(u8, doc, '\n');
-    var lineno: usize = 0;
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        lineno += 1;
-        defer prev = line;
-
-        if (header == null) {
-            // A table opens where a delimiter row follows a line carrying a pipe
-            // and the two declare the same number of cells, which is GFM's rule.
-            // Taking the first line starting with a pipe for the header instead
-            // required the pipe there: a header that left it off, as GFM allows,
-            // took its whole table out of this check.
-            if (isDelimiterRow(line) and hasUnescapedPipe(prev) and
-                cellCount(line) == cellCount(prev))
-            {
-                header = cellCount(prev);
-            }
-            continue;
-        }
-        // Only a blank line or another block closes a table. Closing it at any
-        // line without a pipe let one pipeless line -- which GFM renders as a
-        // one-cell row, keeping the table open -- take every row below it out of
-        // the check.
-        if (endsATable(line)) {
-            header = null;
-            continue;
-        }
-        const cells = cellCount(line);
-        if (cells <= header.?) continue;
-        rep.fail(
-            "{s}:{d}: this row has {d} cells and its header has {d}, so GFM drops the last ones; escape a `|` inside a cell as `\\|`",
-            .{ path, lineno, cells, header.? },
-        );
-    }
-}
-
 /// The number of cells a table row declares, counting an escaped pipe as text.
 ///
 /// GFM makes the pipes that open and close a row optional, so they are stripped
@@ -1898,75 +1072,6 @@ fn cellAt(row: []const u8, index: usize) ?[]const u8 {
     return if (at == index) body[start..] else null;
 }
 
-/// Whether the row is a table's delimiter row: every cell is a run of dashes,
-/// with an optional colon at either end.
-///
-/// GFM opens a table where this row follows one with the same number of cells,
-/// which is what makes the leading pipe optional on both.
-fn isDelimiterRow(row: []const u8) bool {
-    if (!hasUnescapedPipe(row)) return false;
-    var i: usize = 0;
-    const n = cellCount(row);
-    while (i < n) : (i += 1) {
-        const cell = std.mem.trim(
-            u8,
-            cellAt(row, i) orelse return false,
-            &std.ascii.whitespace,
-        );
-        var j: usize = 0;
-        if (j < cell.len and cell[j] == ':') j += 1;
-        var dashes: usize = 0;
-        while (j < cell.len and cell[j] == '-') : (j += 1) dashes += 1;
-        if (j < cell.len and cell[j] == ':') j += 1;
-        if (dashes == 0 or j != cell.len) return false;
-    }
-    return true;
-}
-
-/// Whether the line starts a block that breaks an open table.
-///
-/// GFM breaks a table at "the first empty line, or beginning of another
-/// block-level structure". A line that merely carries no pipe is neither: GFM
-/// renders it as a one-cell row and the table continues past it.
-fn endsATable(line: []const u8) bool {
-    if (line.len == 0) return true;
-    if (line[0] == '#' or line[0] == '>') return true;
-    if (fenceRun(line) != null) return true;
-    if (opensAList(line)) return true;
-    return isThematicBreak(line);
-}
-
-/// Whether the line is a thematic break: three or more of the same marker, with
-/// nothing else but spaces.
-fn isThematicBreak(line: []const u8) bool {
-    if (line.len < 3) return false;
-    const ch = line[0];
-    if (ch != '-' and ch != '*' and ch != '_') return false;
-    var n: usize = 0;
-    for (line) |c| {
-        if (c == ch) {
-            n += 1;
-            continue;
-        }
-        if (c == ' ' or c == '\t') continue;
-        return false;
-    }
-    return n >= 3;
-}
-
-/// Whether the line carries a `|` that is not escaped.
-fn hasUnescapedPipe(line: []const u8) bool {
-    var i: usize = 0;
-    while (i < line.len) : (i += 1) {
-        if (line[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (line[i] == '|') return true;
-    }
-    return false;
-}
-
 test "cellCount: the pipes that open and close a row are optional" {
     try std.testing.expectEqual(@as(usize, 2), cellCount("| a | b |"));
     try std.testing.expectEqual(@as(usize, 2), cellCount("| a | b"));
@@ -1989,52 +1094,6 @@ test "cellAt: reads the same cells cellCount counts" {
     try std.testing.expectEqualStrings(" b", cellAt("| a | b", 1).?);
     // An escaped pipe stays inside its cell.
     try std.testing.expectEqualStrings(" a \\| b ", cellAt("| a \\| b |", 0).?);
-}
-
-test "isDelimiterRow: dashes with an optional colon at either end" {
-    try std.testing.expect(isDelimiterRow("| --- | --- |"));
-    try std.testing.expect(isDelimiterRow("--- | ---"));
-    try std.testing.expect(isDelimiterRow("| :--- | ---: | :---: |"));
-    try std.testing.expect(isDelimiterRow("| - | - |"));
-    try std.testing.expect(!isDelimiterRow("| a | b |"));
-    try std.testing.expect(!isDelimiterRow("| --- | a |"));
-    try std.testing.expect(!isDelimiterRow("---"));
-    try std.testing.expect(!isDelimiterRow("| :: | --- |"));
-}
-
-test "endsATable: only a blank line or another block closes a table" {
-    // The defect this pins: a line with no pipe is a one-cell row in GFM, and
-    // closing the table there took every row below it out of the check.
-    try std.testing.expect(!endsATable("pipeless"));
-    try std.testing.expect(!endsATable("| a | b |"));
-    try std.testing.expect(endsATable(""));
-    try std.testing.expect(endsATable("## 見出し"));
-    try std.testing.expect(endsATable("> 引用"));
-    try std.testing.expect(endsATable("```"));
-    try std.testing.expect(endsATable("- 箇条書き"));
-    try std.testing.expect(endsATable("1. 番号付き"));
-    try std.testing.expect(endsATable("---"));
-    try std.testing.expect(endsATable("***"));
-}
-
-test "adrIndexRow: the index's rows are records" {
-    // The defect this pins: the row carries none of record_table_labels, so an
-    // indented copy was read by nobody while GFM rendered it in the table.
-    try std.testing.expect(adrIndexRow("| [0005](0005-hygienic-expander-by-renaming.md) | t | 非推奨 | 2026-10-04 |"));
-    try std.testing.expect(adrIndexRow("| [0000](./0000-template.md) | テンプレート | - | - |"));
-    try std.testing.expect(!adrIndexRow("| [ADR-0024](../adr/0024-closed-spelling-sets.md) | x |"));
-    try std.testing.expect(!adrIndexRow("| 番号 | タイトル | ステータス | 日付 |"));
-    try std.testing.expect(!adrIndexRow("| [x](README.md) | t |"));
-    try std.testing.expect(!adrIndexRow("- [0005](0005-x.md)"));
-}
-
-test "isKnownCiCell: the CI column's spellings are a closed set" {
-    try std.testing.expect(isKnownCiCell("全コミット"));
-    try std.testing.expect(isKnownCiCell("手動と定期実行のみ"));
-    try std.testing.expect(isKnownCiCell("-"));
-    try std.testing.expect(!isKnownCiCell("毎コミット"));
-    try std.testing.expect(!isKnownCiCell("全コミット(段階0から)"));
-    try std.testing.expect(!isKnownCiCell(""));
 }
 
 /// Blanks every indented line, so that only column zero carries a record.
@@ -2683,12 +1742,10 @@ fn checkMarkdown(
         const body = read(gpa, io, cwd, rep, path) orelse continue;
         const dir = std.fs.path.dirnamePosix(path) orelse ".";
 
-        var headings: std.StringHashMapUnmanaged(void) = .empty;
         // A fence is closed by a run of the same character at least as long as
-        // the opener, so ``` inside a ```` block does not end it.
+        // the opener, so ``` inside a ```` block does not end it. The state is
+        // tracked only to leave a fenced block's links alone.
         var fence: ?struct { ch: u8, len: usize } = null;
-        var fence_line: usize = 0;
-        var quoted_line: ?usize = null;
         var lines = std.mem.splitScalar(u8, body, '\n');
         var lineno: usize = 0;
         while (lines.next()) |raw| {
@@ -2699,12 +1756,6 @@ fn checkMarkdown(
             // fence inside a list item can sit four or more spaces in;
             // docs/adr/README.md relies on that. The cost is that an indented
             // code block demonstrating a fence is read as one.
-            //
-            // The run is measured by `indentRun`, as the record readers measure
-            // it. `trimStart(line, " ")` left an ideographic space in place, so
-            // a fence indented with one was not seen as a fence here while
-            // `visibleMarkdown` did see it: the same three lines were a code
-            // block to one reader and a paragraph with a live link to the other.
             const trimmed = line[indentRun(line).bytes..];
 
             if (fenceRun(trimmed)) |run| {
@@ -2717,85 +1768,14 @@ fn checkMarkdown(
                     }
                 } else {
                     fence = .{ .ch = run.ch, .len = run.len };
-                    fence_line = lineno;
                     continue;
                 }
             }
             if (fence != null) continue;
 
-            // CommonMark lets a block quote continue onto a line that drops the
-            // `>`, so prose written straight after a quotation joins it. Every
-            // reader of the rendered page then sees that prose as part of what
-            // was quoted. One sentence of this repository's own had been
-            // absorbed into an R7RS quotation that way, which is the failure
-            // this catches: a quotation is checked word for word against the
-            // specification, and nothing checked where it ends.
-            if (trimmed.len != 0 and trimmed[0] == '>') {
-                quoted_line = lineno;
-            } else if (trimmed.len != 0 and quoted_line == lineno - 1 and
-                !startsBlock(trimmed))
-            {
-                rep.fail(
-                    "{s}:{d}: this line continues the block quote above it; leave a blank line, or prefix it with `>` to quote it",
-                    .{ path, lineno },
-                );
-            }
-
-            // Up to three spaces of indentation are allowed before the `#`
-            // run, so the heading scan uses the same trimmed line as the fence
-            // scan. GitHub renders both as headings with the same anchor.
-            // Headings do take the three-space limit: four or more spaces
-            // make an indented code block, and a shell comment inside one was
-            // being counted as a heading.
-            if (atxHeadingText(trimIndent(line))) |text| {
-                if (text.len != 0) {
-                    if (headings.contains(text))
-                        rep.fail("{s}:{d}: duplicate heading \"{s}\"", .{ path, lineno, text })
-                    else
-                        try headings.put(gpa, text, {});
-                }
-            }
-
             try checkLinksOnLine(gpa, io, cwd, rep, path, lineno, dir, line);
         }
-        if (fence) |open|
-            rep.fail("{s}:{d}: code fence opened with {d} '{c}' is never closed", .{ path, fence_line, open.len, open.ch });
     }
-}
-
-/// Extracts the text of an ATX heading, or null when the line is not one.
-///
-/// CommonMark requires whitespace between the opening `#` run and the text, so
-/// `#5 bolt` is a paragraph, not a heading. A closing `#` run only counts when
-/// whitespace precedes it: trimming `#` unconditionally would make `## C#` and
-/// `## C` the same heading.
-fn atxHeadingText(trimmed: []const u8) ?[]const u8 {
-    if (trimmed.len == 0 or trimmed[0] != '#') return null;
-    var hashes: usize = 0;
-    while (hashes < trimmed.len and trimmed[hashes] == '#') hashes += 1;
-    if (hashes > 6) return null;
-    const rest = trimmed[hashes..];
-    if (rest.len != 0 and rest[0] != ' ' and rest[0] != '\t') return null;
-
-    var text = std.mem.trim(u8, rest, " \t");
-    if (text.len == 0) return text;
-    var end = text.len;
-    while (end > 0 and text[end - 1] == '#') end -= 1;
-    const had_run = end < text.len;
-    const preceded_by_space = end > 0 and (text[end - 1] == ' ' or text[end - 1] == '\t');
-    if (had_run and (end == 0 or preceded_by_space))
-        text = std.mem.trimEnd(u8, text[0..end], " \t");
-    return text;
-}
-
-/// Strips up to three spaces of indentation, the most CommonMark allows before
-/// an ATX heading at the top level. A line indented four or more spaces is an
-/// indented code block, and is returned unchanged so it matches nothing.
-fn trimIndent(line: []const u8) []const u8 {
-    var n: usize = 0;
-    while (n < line.len and n < 4 and line[n] == ' ') n += 1;
-    if (n == 4) return line;
-    return line[n..];
 }
 
 /// Recognises a fence line: a run of at least three backticks or tildes, plus
@@ -2976,26 +1956,6 @@ test "fenceRun: tildes and longer runs" {
     try std.testing.expect(fenceRun("not a fence") == null);
     // Trailing whitespace still closes.
     try std.testing.expect(fenceRun("```   ").?.bare);
-}
-
-test "atxHeadingText: whitespace is required after the hashes" {
-    // #5 bolt is a paragraph in CommonMark; treating it as a heading made
-    // "#2 の指摘" style prose collide with a real heading.
-    try std.testing.expect(atxHeadingText("##A") == null);
-    try std.testing.expectEqualStrings("A", atxHeadingText("## A").?);
-    try std.testing.expectEqualStrings("A", atxHeadingText("#\tA").?);
-}
-
-test "atxHeadingText: a closing run needs whitespace before it" {
-    // ## C# and ## C are different headings.
-    try std.testing.expectEqualStrings("C#", atxHeadingText("## C#").?);
-    try std.testing.expectEqualStrings("A", atxHeadingText("## A ##").?);
-    try std.testing.expectEqualStrings("", atxHeadingText("## ##").?);
-}
-
-test "atxHeadingText: more than six hashes is not a heading" {
-    try std.testing.expect(atxHeadingText("####### x") == null);
-    try std.testing.expectEqualStrings("x", atxHeadingText("###### x").?);
 }
 
 test "hasUriScheme: a scheme needs a colon, and matching is case-insensitive" {
@@ -3309,14 +2269,6 @@ test "visibleMarkdown: an unclosed comment is reported, not obeyed" {
     }
 }
 
-test "datedNote: a note paragraph opens with a date" {
-    try std.testing.expect(datedNote("2026-10-07 追記: ..."));
-    try std.testing.expect(!datedNote("追記: ..."));
-    try std.testing.expect(!datedNote("2026-10-7 追記: ..."));
-    try std.testing.expect(!datedNote("2026/10/07 追記: ..."));
-    try std.testing.expect(!datedNote("2026-10-07 note: ..."));
-}
-
 test "adrRow: the row is found by the link that opens it" {
     const index =
         \\| [0005](0005-old.md) | ... | 非推奨([0019](0019-new.md)に置き換え) | 2026-10-04 |
@@ -3343,94 +2295,6 @@ test "adrRow: a stale row left below the real one is reported" {
     }
 }
 
-test "adrStatus: a second status line is ambiguous, not silently shadowed" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const gpa = arena.allocator();
-    const one =
-        \\# ADR-0001: x
-        \\
-        \\- ステータス: 採用
-        \\- 日付: 2026-10-04
-    ;
-    switch (try adrStatus(gpa, one)) {
-        .one => |st| try std.testing.expectEqualStrings("採用", st),
-        else => return error.TestExpectedOne,
-    }
-    const two =
-        \\- ステータス: 採用
-        \\- ステータス: ~~採用~~ 非推奨
-    ;
-    try std.testing.expect(try adrStatus(gpa, two) == .ambiguous);
-    try std.testing.expect(try adrStatus(gpa, "- 日付: 2026-10-04") == .none);
-}
-
-test "adrStatus: a status spelled a little differently is still a status" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const gpa = arena.allocator();
-    // Both of these render as a status and neither was read, so a second
-    // one could contradict the first without any check seeing it.
-    const full_width =
-        \\- ステータス: 採用
-        \\- ステータス： 非推奨
-    ;
-    try std.testing.expect(try adrStatus(gpa, full_width) == .ambiguous);
-    const emphasised =
-        \\- ステータス: 採用
-        \\- **ステータス**: 非推奨
-    ;
-    try std.testing.expect(try adrStatus(gpa, emphasised) == .ambiguous);
-}
-
-test "namesARecord: the key is the word, not a sentence mentioning it" {
-    try std.testing.expect(namesARecord("- ステータス: 採用"));
-    try std.testing.expect(namesARecord("- 置き換え: [ADR-0001](0001-x.md) を..."));
-    try std.testing.expect(namesARecord("対応する決定: [ADR-0009](a.md)"));
-    try std.testing.expect(namesARecord("> 2026-10-07 追記: ..."));
-    try std.testing.expect(namesARecord("2026-10-07 追記: ..."));
-    // A table row carrying a label this program reads.
-    try std.testing.expect(namesARecord("| 合計 | 557 |"));
-    try std.testing.expect(namesARecord("| 9 | 24 | 必須9・推奨11・任意4 |"));
-    // The operating rules describe these forms in prose. Reporting them
-    // made the rules unwritable.
-    try std.testing.expect(!namesARecord("1. 旧ADRのステータスを`採用`から`非推奨`に変え、冒頭に追記する:"));
-    try std.testing.expect(!namesARecord("2. 決定を変えない追記。`> YYYY-MM-DD 追記: ...` の形で書く:"));
-    try std.testing.expect(!namesARecord("- メリット: 全体整合性の確認"));
-    try std.testing.expect(!namesARecord("| 項目 | 検査の内容 |"));
-    // A row of the ADR index is a record, and its header is not.
-    try std.testing.expect(namesARecord("| [0005](0005-hygienic-expander-by-renaming.md) | t | 非推奨 | 2026-10-04 |"));
-    try std.testing.expect(!namesARecord("| 番号 | タイトル | ステータス | 日付 |"));
-}
-
-test "rowCounts: both spellings of a total with its parts" {
-    // The total in the cell before the breakdown.
-    const a = rowCounts("| 7 | 20 | 必須7・推奨10・任意3 | 全件 |").?;
-    try std.testing.expectEqual(@as(usize, 20), a.total);
-    try std.testing.expectEqual(@as(usize, 20), a.parts);
-    // The total opening the same cell.
-    const b = rowCounts("| 指摘件数 | 4 | 28(必須11・推奨16・任意1) |").?;
-    try std.testing.expectEqual(@as(usize, 28), b.total);
-    try std.testing.expectEqual(@as(usize, 28), b.parts);
-    // Two labels joined, one of them covering both of the others.
-    const c = rowCounts("| 6 | 107 | 必須44・推奨と任意63 |").?;
-    try std.testing.expectEqual(@as(usize, 107), c.total);
-    try std.testing.expectEqual(@as(usize, 107), c.parts);
-    // A disagreement is what the check is for.
-    const d = rowCounts("| 7 | 17 | 必須7・推奨10・任意3 |").?;
-    try std.testing.expectEqual(@as(usize, 17), d.total);
-    try std.testing.expectEqual(@as(usize, 20), d.parts);
-}
-
-test "rowCounts: a subset is not a partition" {
-    // No list separator, so this is not a breakdown of 26.
-    try std.testing.expect(rowCounts("| x | - | 26件(うち必須9件) |") == null);
-    // No numbers at all.
-    try std.testing.expect(rowCounts("| 項目 | 必須 | 推奨 | 任意 |") == null);
-    // A breakdown with no total to compare against.
-    try std.testing.expect(rowCounts("| 必須7・推奨10・任意3 |") == null);
-}
-
 test "runsCommand: extra text is accepted only as a flag" {
     try std.testing.expect(runsCommand("zig build", "zig build"));
     try std.testing.expect(runsCommand("zig build test --summary all", "zig build test"));
@@ -3447,20 +2311,6 @@ test "backtickedSpan: the command, not the note beside it" {
     );
     try std.testing.expect(backtickedSpan(" no backticks ") == null);
     try std.testing.expect(backtickedSpan(" `` ") == null);
-}
-
-test "startsBlock: what interrupts a paragraph is not a quote continuation" {
-    try std.testing.expect(startsBlock("# heading"));
-    try std.testing.expect(startsBlock("- item"));
-    try std.testing.expect(startsBlock("---"));
-    try std.testing.expect(startsBlock("***"));
-    try std.testing.expect(startsBlock("```zig"));
-    // Ordinary prose continues the paragraph, which is the case the quote
-    // check is for.
-    try std.testing.expect(!startsBlock("plain prose"));
-    try std.testing.expect(!startsBlock("| a | b |"));
-    // Two dashes are not a thematic break.
-    try std.testing.expect(!startsBlock("--"));
 }
 
 test "stripComment: a hash opens a comment only at the start or after whitespace" {
@@ -3634,15 +2484,6 @@ test "sha256InMarkdown: case is not part of the record" {
         .one => {},
         else => return error.TestExpectedOne,
     }
-}
-
-test "trimIndent: four spaces is an indented block, three is still prose" {
-    try std.testing.expectEqualStrings("# a", trimIndent("# a"));
-    try std.testing.expectEqualStrings("# a", trimIndent("   # a"));
-    // Four or more is CommonMark's indented code block, so the line is returned
-    // as it stands and does not read as a heading.
-    try std.testing.expectEqualStrings("    # a", trimIndent("    # a"));
-    try std.testing.expectEqualStrings("     # a", trimIndent("     # a"));
 }
 
 test "fenceRun: a run of two is not a fence" {
