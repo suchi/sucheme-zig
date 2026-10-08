@@ -26,7 +26,7 @@
 | 項目 | 値 |
 | --- | --- |
 | ライブラリ数 | 16 |
-| 抽出結果の SHA-256 | `100125a808eec8a246837c4911e7728623cba534db565ff12866a0ffc27bae13` |
+| 抽出結果の SHA-256 | `8cc48db5e9a3dd07ad5b66349ce4a69680590e4a1321ce97ea89dcb5b498032a` |
 
 記録と一致しないとき、`zig build check-docs` は計算した値を全桁表示する。再抽出したあとはその値をここに貼り替える。
 
@@ -72,7 +72,7 @@ R7RS の版が上がった場合、または誤記修正が入った場合に行
    ```
 
 3. R7RS の版が変わってライブラリ数が16でなくなった場合は、`main.zig` の `expected_library_count` を更新する。同じ数が報告と検査の両方に使われる。
-4. `zig run tools/extract-r7rs-required/main.zig` を実行する。
+4. `zig run tools/extract-r7rs-required/main.zig -- --write` を実行する。引数なしで走らせると、書き込まずに現在の生成物と比較するだけである(`zig build check-extract` と同じ)。
 5. 報告されたライブラリ数と識別子数を上の表に反映する。`zig build check-docs` が表の各行と合計を実物と照合するので、忘れると赤になる。
 6. `zig build check-docs` を実行し、報告された抽出結果の SHA-256 を「抽出結果の固定」の表に貼り替える。
 7. `tests/r7rs-required/*.txt` の差分をレビューする。識別子の増減は準拠マトリクスに直接影響する。

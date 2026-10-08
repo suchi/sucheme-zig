@@ -15,9 +15,11 @@
 //! `2> log` would keep only the last line.
 //!
 //! What is checked is limited to facts about the code and the generated files:
-//! that a verification cannot stop without saying so, that a generated file
-//! still follows from its input, that a pinned version agrees everywhere, and
-//! that a relative link resolves. The way prose is written is not checked. The
+//! that a verification cannot stop without saying so, that a generated file's
+//! recorded hash and counts match it, that a pinned version agrees everywhere,
+//! and that a relative link resolves. Whether a generated file still follows
+//! from its input is checked by the extractor's own comparison, which
+//! `zig build check-extract` runs; nothing here does that. The way prose is written is not checked. The
 //! line, and the checks withdrawn to draw it, are in
 //! docs/adr/0026-verify-facts-about-code-not-prose.md.
 //!
@@ -499,6 +501,10 @@ fn checkCiRunsTheTable(
     // repository chooses are as finite as the keys, so they are enumerated too.
     for ([_]struct { key: []const u8, value: ?[]const u8 }{
         .{ .key = "on", .value = "" },
+        // `jobs:` was in the allowed set but not required, so deleting it and
+        // unindenting the job left a workflow with no job and every `run:` line
+        // still in place.
+        .{ .key = "jobs", .value = "" },
         .{ .key = "push", .value = "" },
         .{ .key = "branches", .value = "[main]" },
         .{ .key = "pull_request", .value = "" },
@@ -686,7 +692,7 @@ fn yamlKey(line: []const u8) ?[]const u8 {
 ///
 /// A list, not a shape. Accepting anything that looked like a flag accepted the
 /// flags that cancel the command: `zig build test --help` exits 0 without
-/// running a test, and all four commands spelled that way left a repository
+/// running a test, and every verification command spelled that way left a repository
 /// whose source does not parse reporting every row as run. A suffix that
 /// changes what the command does has to be added here deliberately.
 const allowed_run_suffixes = [_][]const u8{"--summary all"};
@@ -1030,9 +1036,10 @@ fn checkVendoredHashes(
 /// deleting keeps line and byte offsets, so diagnostics still point at the right
 /// place.
 ///
-/// An unclosed opener blanks the rest of the document, so every row below it
-/// would read as absent with no check saying why; `rep` is given so that is
-/// reported instead.
+/// An unclosed opener is reported and the scan moves past it, so the rows
+/// below stay readable. Blanking to the end of the document instead made every
+/// row below read as absent with no check saying why, and stopping the scan at
+/// it left every later comment unblanked.
 ///
 /// The opener counts wherever it appears on a line, not only at the start of
 /// one. CommonMark emits an inline raw HTML comment as it stands and a browser
@@ -1874,8 +1881,13 @@ fn checkMarkdown(
             }
             if (fence != null) continue;
 
-            if (referenceDefinition(trimmed)) |target|
-                try checkLinkTarget(gpa, io, cwd, rep, path, lineno, dir, target);
+            if (referenceDefinition(trimmed)) |def| switch (def) {
+                .target => |target| try checkLinkTarget(gpa, io, cwd, rep, path, lineno, dir, target),
+                .unreadable => rep.fail(
+                    "{s}:{d}: this link definition names no destination on its own line; write `[label]: path` on one line",
+                    .{ path, lineno },
+                ),
+            };
             try checkLinksOnLine(gpa, io, cwd, rep, path, lineno, dir, line);
         }
         // Reported because the link check stops at an open fence. ADR-0026 keeps
@@ -1916,14 +1928,24 @@ fn checkLinksOnLine(
     line: []const u8,
 ) !void {
     var i: usize = 0;
-    // Backtick parity within the line. A code span that spans lines is not
-    // tracked, so a link-looking fragment inside one is reported. CommonMark
-    // allows multi-line spans; no file here uses one.
+    // A code span opens only where a closing backtick follows on the same line.
+    //
+    // Toggling on every backtick made the parity of the line decide: one
+    // unmatched backtick before a link turned the rest of the line into a span
+    // and the link was never read, and a span written across two lines did the
+    // same to the line that closes it. CommonMark renders an unmatched backtick
+    // as text and the link after it as a link, so the direction of that error
+    // was silence, not noise. Requiring the closer keeps a real span's contents
+    // out and leaves everything else to be read.
     var in_code_span = false;
     while (i < line.len) {
         // An inline code span may contain `](dest)` as an example; it is not a
         // link.
         if (line[i] == '`') {
+            if (!in_code_span and std.mem.indexOfScalarPos(u8, line, i + 1, '`') == null) {
+                i += 1;
+                continue;
+            }
             in_code_span = !in_code_span;
             i += 1;
             continue;
@@ -1939,20 +1961,34 @@ fn checkLinksOnLine(
     }
 }
 
-/// The destination of a reference link definition, `[label]: dest`.
+/// What a reference link definition names, `[label]: dest`.
 ///
 /// `checkLinksOnLine` looks for `](`, which a definition does not carry, so a
 /// link written in the reference form had its destination read by nobody: the
 /// rendered page pointed at a file that is not there and nothing said so.
-fn referenceDefinition(line: []const u8) ?[]const u8 {
+const Definition = union(enum) {
+    /// The destination, on the same line as the label.
+    target: []const u8,
+    /// A definition this check cannot read, because CommonMark allows the
+    /// destination on the next line and this reads one line at a time.
+    /// Reported rather than skipped: skipping it was silence on a link that
+    /// renders, which is the shape of every hole this program has had.
+    unreadable,
+};
+
+fn referenceDefinition(line: []const u8) ?Definition {
     if (line.len == 0 or line[0] != '[') return null;
     const close = std.mem.indexOf(u8, line, "]:") orelse return null;
+    // A label holds no unescaped bracket, so prose with a bracket and a colon
+    // further along is not a definition.
+    if (std.mem.indexOfAny(u8, line[1..close], "[]") != null) return null;
     var rest = std.mem.trimStart(u8, line[close + 2 ..], " \t");
+    if (rest.len == 0) return .unreadable;
     // A title may follow the destination on the same line.
     if (std.mem.indexOfAny(u8, rest, " \t")) |space| rest = rest[0..space];
     if (rest.len >= 2 and rest[0] == '<' and rest[rest.len - 1] == '>')
         rest = rest[1 .. rest.len - 1];
-    return if (rest.len == 0) null else rest;
+    return if (rest.len == 0) .unreadable else .{ .target = rest };
 }
 
 /// Reports a relative link whose target is not a file in the repository.

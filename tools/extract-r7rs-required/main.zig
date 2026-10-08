@@ -1,13 +1,18 @@
 //! Extracts the identifiers exported by each standard library from R7RS
 //! Appendix A and writes them to tests/r7rs-required/<library>.txt.
 //!
-//! Run with `zig run tools/extract-r7rs-required/main.zig`. The input HTML is
-//! committed (see SOURCE.md); nothing is fetched at build time, so the build
-//! stays reproducible and offline (ADR-0013).
+//! Comparing is what it does by default: each file is read and checked against
+//! what this program extracts, and a difference exits non-zero. `zig build
+//! check-extract` runs that. Writing takes `--write`, as in `zig run
+//! tools/extract-r7rs-required/main.zig -- --write`.
 //!
-//! With `--check` nothing is written: each file is compared with what this
-//! program extracts, and a difference exits non-zero. `zig build check-extract`
-//! runs that. Without it, the only thing holding the generated lists to the
+//! Comparing is the default because the other way round left a one-line hole:
+//! deleting the `--check` argument from build.zig turned the check into a
+//! rewrite, so the comparison could never fail. Dropping an argument now leaves
+//! it comparing. The input HTML is committed (see SOURCE.md); nothing is fetched
+//! at build time, so the build stays reproducible and offline (ADR-0013).
+//!
+//! Without this comparison, the only thing holding the generated lists to the
 //! input was a SHA-256 pasted into SOURCE.md by hand, so editing a list and
 //! pasting the new hash left every verification command green with an
 //! identifier silently gone from the conformance denominator.
@@ -62,16 +67,19 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout.interface;
 
     const argv = try init.minimal.args.toSlice(gpa);
-    var check_only = false;
+    var check_only = true;
     for (argv[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--check")) {
-            check_only = true;
+        // `--check` is accepted and means the default, so a caller that passes
+        // it keeps working.
+        if (std.mem.eql(u8, arg, "--check")) continue;
+        if (std.mem.eql(u8, arg, "--write")) {
+            check_only = false;
             continue;
         }
-        // Reported rather than ignored: a misspelled flag would otherwise write
-        // the files while the caller believed it was only checking them.
+        // Reported rather than ignored: a misspelled flag would otherwise leave
+        // the caller believing it had asked for something it did not get.
         try out.print("unknown argument {s}\n", .{arg});
-        try out.print("usage: extract-r7rs-required [--check]\n", .{});
+        try out.print("usage: extract-r7rs-required [--check | --write]\n", .{});
         try out.flush();
         std.process.exit(2);
     }
@@ -195,7 +203,7 @@ pub fn main(init: std.process.Init) !void {
             "; (scheme {s}) の必須識別子。R7RS 付録A から抽出した。\n" ++
                 "; 出典: {s}\n" ++
                 "; 取得日と許諾: tools/extract-r7rs-required/SOURCE.md\n" ++
-                "; 抽出: zig run tools/extract-r7rs-required/main.zig\n" ++
+                "; 抽出: zig run tools/extract-r7rs-required/main.zig -- --write\n" ++
                 "; 手で編集しない。R7RS の版が上がったら再抽出する。\n",
             .{ name, source_url },
         ));
@@ -230,7 +238,7 @@ pub fn main(init: std.process.Init) !void {
     try out.print("\n{d} libraries, {d} identifiers\n", .{ names.items.len, total });
     if (stale) {
         try out.print(
-            "\n{s} is not what {s} extracts. Re-run `zig run tools/extract-r7rs-required/main.zig` and commit the result.\n",
+            "\n{s} is not what {s} extracts. Re-run `zig run tools/extract-r7rs-required/main.zig -- --write` and commit the result.\n",
             .{ out_dir_path, html_path },
         );
         try out.flush();
