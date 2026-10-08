@@ -56,7 +56,8 @@
 | [0020](0020-repository-visibility-private.md) | リポジトリを private にする | 採用 | 2026-10-06 |
 | [0021](0021-no-github-pages-defer-hosting.md) | GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない | 採用 | 2026-10-06 |
 | [0022](0022-unlicensed-proprietary.md) | ライセンスを付与せず UNLICENSED として非公開を明示する | 採用 | 2026-10-07 |
-| [0023](0023-mandatory-zero-convergence.md) | 自前の敵対的レビューの収束条件を必須の新規指摘ゼロとする | 採用 | 2026-10-07 |
+| [0023](0023-mandatory-zero-convergence.md) | 自前の敵対的レビューの収束条件を必須の新規指摘ゼロとする | 非推奨([0027](0027-severity-by-consequence-and-a-cost-side-stop.md)に置き換え) | 2026-10-07 |
 | [0024](0024-closed-spelling-sets.md) | 検証ツールは受理する綴りの集合を閉じ、知らない綴りを報告する | 非推奨([0026](0026-verify-facts-about-code-not-prose.md)に置き換え) | 2026-10-08 |
 | [0025](0025-permission-policy-guard-in-hooks.md) | 承認の判断はフックに置き、許可リストは日常操作まで広げる | 採用 | 2026-10-08 |
 | [0026](0026-verify-facts-about-code-not-prose.md) | 機械検査の対象をコードと生成物についての事実に限る | 採用 | 2026-10-08 |
+| [0027](0027-severity-by-consequence-and-a-cost-side-stop.md) | 指摘の重要度を帰結で定め、レビューを費用の側で止める | 採用 | 2026-10-08 |
