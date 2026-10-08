@@ -190,7 +190,6 @@ pub fn build(b: *std.Build) void {
     // conformance denominator.
     const run_check_extract = b.addRunArtifact(extractor);
     run_check_extract.setCwd(b.path("."));
-    run_check_extract.addArg("--check");
     const check_extract_step = b.step("check-extract", "check the generated lists against the input");
     check_extract_step.dependOn(&run_check_extract.step);
 
@@ -261,32 +260,77 @@ pub fn build(b: *std.Build) void {
         t.checkRunsEveryTest();
     }
     checkTestsAreRun(test_step, targets.items);
-    checkStepRuns(check_docs_step, check_docs);
-    checkStepRuns(check_extract_step, extractor);
+    checkStepRuns(check_docs_step, check_docs, null);
+    // Exactly the artifact: see checkStepRuns on why an argument here is the
+    // one way to turn the comparison into a rewrite.
+    checkStepRuns(check_extract_step, extractor, 1);
 }
 
-/// Fails the configure step unless `step` runs the artifact built from `exe`.
+/// Fails the configure step unless `step` runs the artifact built from `exe` and
+/// lets the result of that run decide whether the step succeeds.
 ///
-/// The same one-line hole `checkTestsAreRun` closes for the tests was open here.
 /// Deleting `check_docs_step.dependOn(&run_check_docs.step)` leaves a step with
 /// nothing attached, so `zig build check-docs` exits 0 having printed nothing --
 /// not even `all checks passed`, so the log holds no trace of a verification
 /// that stopped. `zig build check-extract` had the same shape.
 ///
+/// Running it is not enough. `run.stdio = .{ .check = .empty }` keeps the
+/// dependency and the producer while the exit code stops being read: check-docs
+/// then printed its diagnostics and the step still succeeded. Of the StdIo forms
+/// only `.check` can ignore the exit code, and `skip_foreign_checks` turns a run
+/// that cannot execute into a pass, so both are refused. Checking that the run
+/// exists and not that its answer is heard was the same half-a-pair mistake as
+/// checking the build and not the workflow.
+///
+/// `want_argv` is how many arguments the run must carry, counting the artifact
+/// itself, or null to leave the arguments alone. `check-extract` requires
+/// exactly the artifact: the comparison is the extractor's default, and writing
+/// takes `--write`, so an argument added here is the one way to turn the check
+/// into a rewrite whose output is identical.
+///
 /// The artifact is looked for among the dependencies' producers, not counted: a
 /// step that depends on some other run step would keep a count right while
 /// running nothing of its own.
-fn checkStepRuns(step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
+fn checkStepRuns(step: *std.Build.Step, exe: *std.Build.Step.Compile, want_argv: ?usize) void {
     for (step.dependencies.items) |dep| {
         const run = dep.cast(std.Build.Step.Run) orelse continue;
         const producer = run.producer orelse continue;
-        if (producer == exe) return;
+        if (producer != exe) continue;
+        checkRunIsHeard(step, run);
+        if (want_argv) |n| {
+            if (run.argv.items.len != n) {
+                std.debug.print(
+                    "[sucheme] the {s} step runs {s} with {d} argument(s), not {d}\n",
+                    .{ step.name, exe.name, run.argv.items.len, n },
+                );
+                std.process.exit(1);
+            }
+        }
+        return;
     }
     std.debug.print(
         "[sucheme] the {s} step does not run {s}\n",
         .{ step.name, exe.name },
     );
     std.process.exit(1);
+}
+
+/// Fails the configure step if `run`'s exit code would not decide its outcome.
+fn checkRunIsHeard(step: *std.Build.Step, run: *std.Build.Step.Run) void {
+    if (run.stdio == .check) {
+        std.debug.print(
+            "[sucheme] a run in the {s} step checks its own conditions, so a non-zero exit would not fail it\n",
+            .{step.name},
+        );
+        std.process.exit(1);
+    }
+    if (run.skip_foreign_checks) {
+        std.debug.print(
+            "[sucheme] a run in the {s} step may be skipped as foreign, which would pass without running\n",
+            .{step.name},
+        );
+        std.process.exit(1);
+    }
 }
 
 /// Fails the configure step unless the test step runs each target's test
@@ -316,7 +360,13 @@ fn checkTestsAreRun(test_step: *std.Build.Step, targets: []const TestTarget) voi
         for (test_step.dependencies.items) |dep| {
             const run = dep.cast(std.Build.Step.Run) orelse continue;
             const producer = run.producer orelse continue;
-            if (producer == unit) ran = true;
+            if (producer != unit) continue;
+            // The run existing is not the same as its answer being heard. With
+            // `stdio = .{ .check = .empty }` a deliberately failing test printed
+            // `1 failed` and `zig build test` exited 0, which is the state this
+            // function's own comment claims to have closed.
+            checkRunIsHeard(test_step, run);
+            ran = true;
         }
         if (ran) continue;
         std.debug.print(

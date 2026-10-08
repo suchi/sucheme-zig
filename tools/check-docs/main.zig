@@ -1914,6 +1914,12 @@ fn fenceRun(trimmed: []const u8) ?struct { ch: u8, len: usize, bare: bool } {
     // tabs". A line like ```zig opens a block; treating it as a close turns one
     // valid document into two false positives.
     const rest = std.mem.trim(u8, trimmed[n..], " \t");
+    // CommonMark: "If the info string comes after a backtick fence, it may not
+    // contain any backtick characters." So ```a`b` is a paragraph holding a code
+    // span, not a fence. Reading it as a fence opened a block that nothing
+    // closed, which both reported a fence that is not there and took every link
+    // below it out of the check.
+    if (ch == '`' and std.mem.indexOfScalar(u8, rest, '`') != null) return null;
     return .{ .ch = ch, .len = n, .bare = rest.len == 0 };
 }
 
@@ -1928,29 +1934,36 @@ fn checkLinksOnLine(
     line: []const u8,
 ) !void {
     var i: usize = 0;
-    // A code span opens only where a closing backtick follows on the same line.
+    // Code spans are skipped by CommonMark's own rule: a run of backticks opens
+    // a span that only a run of the same length closes, and a backslash escapes
+    // the character after it.
     //
-    // Toggling on every backtick made the parity of the line decide: one
-    // unmatched backtick before a link turned the rest of the line into a span
-    // and the link was never read, and a span written across two lines did the
-    // same to the line that closes it. CommonMark renders an unmatched backtick
-    // as text and the link after it as a link, so the direction of that error
-    // was silence, not noise. Requiring the closer keeps a real span's contents
-    // out and leaves everything else to be read.
-    var in_code_span = false;
+    // Two weaker rules came before this one and both failed silently. Toggling
+    // on every backtick let the parity of the line decide, so one unmatched
+    // backtick before a link took the link out of the check. Requiring a closing
+    // backtick anywhere on the line fixed that case and left two more: `\`` is
+    // an escaped literal that the toggle still counted, and a run of three or
+    // five backticks does not pair with a single one. Matching run lengths is
+    // the rule the renderer uses, so there is no shorter spelling left to find.
     while (i < line.len) {
-        // An inline code span may contain `](dest)` as an example; it is not a
-        // link.
-        if (line[i] == '`') {
-            if (!in_code_span and std.mem.indexOfScalarPos(u8, line, i + 1, '`') == null) {
-                i += 1;
-                continue;
-            }
-            in_code_span = !in_code_span;
-            i += 1;
+        if (line[i] == '\\') {
+            i += 2; // the escaped character, backtick or not
             continue;
         }
-        if (in_code_span or i + 1 >= line.len or line[i] != ']' or line[i + 1] != '(') {
+        if (line[i] == '`') {
+            var run = i;
+            while (run < line.len and line[run] == '`') run += 1;
+            const len = run - i;
+            if (closingBacktickRun(line, run, len)) |close| {
+                i = close + len;
+            } else {
+                // No run of the same length follows, so these backticks are
+                // text and what comes after them is read as usual.
+                i = run;
+            }
+            continue;
+        }
+        if (i + 1 >= line.len or line[i] != ']' or line[i + 1] != '(') {
             i += 1;
             continue;
         }
@@ -1959,6 +1972,26 @@ fn checkLinksOnLine(
         i += dest.consumed;
         try checkLinkTarget(gpa, io, cwd, rep, path, lineno, dir, dest.target);
     }
+}
+
+/// Where a run of exactly `len` backticks starts, searching from `from`.
+///
+/// Exactly that length: CommonMark closes a code span only with a run of the
+/// same size, so a single backtick does not close a run of three. A longer run
+/// is passed over rather than treated as a match, because it is not one.
+fn closingBacktickRun(line: []const u8, from: usize, len: usize) ?usize {
+    var i = from;
+    while (i < line.len) {
+        if (line[i] != '`') {
+            i += 1;
+            continue;
+        }
+        var run = i;
+        while (run < line.len and line[run] == '`') run += 1;
+        if (run - i == len) return i;
+        i = run;
+    }
+    return null;
 }
 
 /// What a reference link definition names, `[label]: dest`.
@@ -1976,13 +2009,40 @@ const Definition = union(enum) {
     unreadable,
 };
 
-fn referenceDefinition(line: []const u8) ?Definition {
+fn referenceDefinition(raw: []const u8) ?Definition {
+    // A definition inside a block quote or a list item is still a definition,
+    // and the renderer resolves a reference to it. Reading only the line as it
+    // stands left `> [label]: dest` and `- [label]: dest` unread and unreported.
+    var line = raw;
+    while (true) {
+        const before = line;
+        for ([_][]const u8{ "> ", "- ", "* ", "+ " }) |marker| {
+            if (std.mem.startsWith(u8, line, marker))
+                line = std.mem.trimStart(u8, line[marker.len..], " \t");
+        }
+        if (line.len == before.len) break;
+    }
+
     if (line.len == 0 or line[0] != '[') return null;
-    const close = std.mem.indexOf(u8, line, "]:") orelse return null;
-    // A label holds no unescaped bracket, so prose with a bracket and a colon
-    // further along is not a definition.
-    if (std.mem.indexOfAny(u8, line[1..close], "[]") != null) return null;
-    var rest = std.mem.trimStart(u8, line[close + 2 ..], " \t");
+    // The label ends at the first `]` that is not escaped, as CommonMark reads
+    // it. Rejecting a label that holds any bracket let `[a\]b]: dest` through
+    // unread: the renderer takes it as a definition and this did not.
+    var close: ?usize = null;
+    var i: usize = 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (line[i] == '[') return null; // an unescaped bracket is not a label
+        if (line[i] == ']') {
+            close = i;
+            break;
+        }
+    }
+    const label_end = close orelse return null;
+    if (label_end + 1 >= line.len or line[label_end + 1] != ':') return null;
+    var rest = std.mem.trimStart(u8, line[label_end + 2 ..], " \t");
     if (rest.len == 0) return .unreadable;
     // A title may follow the destination on the same line.
     if (std.mem.indexOfAny(u8, rest, " \t")) |space| rest = rest[0..space];

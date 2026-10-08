@@ -76,7 +76,7 @@ R7RS の版が上がった場合、または誤記修正が入った場合に行
 5. 報告されたライブラリ数と識別子数を上の表に反映する。`zig build check-docs` が表の各行と合計を実物と照合するので、忘れると赤になる。
 6. `zig build check-docs` を実行し、報告された抽出結果の SHA-256 を「抽出結果の固定」の表に貼り替える。
 7. `tests/r7rs-required/*.txt` の差分をレビューする。識別子の増減は準拠マトリクスに直接影響する。
-8. サイズと識別子数を引用している文書を更新する。[docs/plans/0002-phase0-scaffolding.md](../../docs/plans/0002-phase0-scaffolding.md) は入力の選定を裏づける実測として、[docs/roadmap.md](../../docs/roadmap.md) は段階0の到達点としてこれらの数を書いている。どちらも段階0の記録なので、値が変わったことを追記する形でよい。
+8. この文書の表以外にサイズと識別子数を書いている箇所があれば更新する。[docs/roadmap.md](../../docs/roadmap.md) と [docs/plans/0002-phase0-scaffolding.md](../../docs/plans/0002-phase0-scaffolding.md) は16巡目以降これらの数を書かず、本文書への参照にしてある。実測値を散文に複製しない方針([AGENTS.md](../../AGENTS.md))に従い、新しく書き足さないこと。
 
 ### ADR-0013 の記録項目との対応
 
