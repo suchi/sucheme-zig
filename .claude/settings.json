@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "acceptEdits",
     "allow": [
       "Bash(zig build:*)",
       "Bash(zig fmt:*)",
@@ -10,10 +11,68 @@
       "Bash(git show:*)",
       "Bash(git ls-files:*)",
       "Bash(git check-ignore:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git blame:*)",
+      "Bash(git shortlog:*)",
+      "Bash(git describe:*)",
+      "Bash(git for-each-ref:*)",
+      "Bash(git remote:*)",
+      "Bash(git stash list:*)",
+      "Bash(git worktree list:*)",
+      "Bash(git fetch:*)",
+      "Bash(git switch:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr checks:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr status:*)",
       "Bash(gh run list:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh api --method GET:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(jq:*)",
+      "Bash(diff:*)",
+      "Bash(sed -n:*)",
+      "Bash(sed -i:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(pwd)",
+      "Bash(python $HOME/.claude/projects/d--Project-Dev-local-sucheme-zig/tools/:*)"
+    ],
+    "ask": [
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(git reset:*)",
+      "Bash(git revert:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git checkout:*)",
+      "Bash(git restore:*)",
+      "Bash(git tag:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh pr review:*)",
+      "Bash(gh pr close:*)",
+      "Bash(gh pr reopen:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh release:*)",
+      "Bash(rm:*)",
+      "Bash(rmdir:*)"
     ],
     "deny": [
       "Read(./.env)",
@@ -33,6 +92,10 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/block-dangerous-git.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-config.sh\""
           }
         ]
       },
