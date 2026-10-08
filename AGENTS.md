@@ -162,6 +162,10 @@ Copilotに指摘を小出しにせずまとめて挙げるよう依頼する指�
 - セキュリティ設定(`.claude/settings.json`・`.claude/hooks/`・`.github/workflows/`・`.github/dependabot.yml`・ブランチ保護・サンドボックス/承認設定)の変更は、必ずユーザーの承認を得てから行う。
 - `.github/dependabot.yml`の`cooldown`はサプライチェーン攻撃対策。レビューツールに「無効なキー」等と指摘されても、公式ドキュメントで仕様を確認して修正で追従し、ユーザーの承認なしに削除・無効化しない。
 
+承認の方針は`.claude/settings.json`が正である。`allow`に読み取りとフィーチャーブランチ上の日常操作を置き、`ask`に外部へ出るもの・履歴を書き換えるもの・削除を置く。シークレットファイルとガードレール設定は`permissions`では守らず、`.claude/hooks/protect-config.sh`がEdit・WriteとBashの両方で守る。フックの判定は許可リストより優先されるので、許可を緩めてもこの2つは貫通しない。判断の経緯は[ADR-0025](docs/adr/0025-permission-policy-guard-in-hooks.md)にある。
+
+シークレットファイルとガードレール設定は、`cat`や`grep`ではなくReadツールで読む。Bashのコマンド文字列にこれらのパスが現れると、読むだけでもフックが止める。
+
 ## エージェント別の設定ファイル
 
 | ツール         | 読み込み                              | 補足                                                                           |
