@@ -14,9 +14,16 @@
 //! — creating a `File.Writer` per diagnostic rewinds to offset 0 each time, so
 //! `2> log` would keep only the last line.
 //!
-//! What is deliberately NOT checked: whether prose declares a pinned Zig
-//! version. "Declaration", "reference" and "record of a verification" cannot be
-//! told apart by matching digits, and attempts produce both false positives (a
+//! What is checked is limited to facts about the code and the generated files:
+//! that a verification cannot stop without saying so, that a generated file
+//! still follows from its input, that a pinned version agrees everywhere, and
+//! that a relative link resolves. The way prose is written is not checked. The
+//! line, and the checks withdrawn to draw it, are in
+//! docs/adr/0026-verify-facts-about-code-not-prose.md.
+//!
+//! Also not checked: whether prose declares a pinned Zig version.
+//! "Declaration", "reference" and "record of a verification" cannot be told
+//! apart by matching digits, and attempts produce both false positives (a
 //! documentation URL containing the version) and false negatives (a bare
 //! "0.17"). docs/design/zig-api-notes.md keeps that as a human step in the
 //! version-bump procedure.
@@ -57,6 +64,10 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(gpa);
     var roots: std.ArrayList([]const u8) = .empty;
     var excluded: std.ArrayList([]const u8) = .empty;
+    // The commands `build.zig` guarantees exist, each named after the step that
+    // provides it. See the `--requires` list there for why the build has to be
+    // the one naming them.
+    var required: std.ArrayList([]const u8) = .empty;
     var bad_args = false;
     var stage: ?usize = null;
     var i: usize = 1;
@@ -76,7 +87,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
         const which: ?*std.ArrayList([]const u8) =
-            if (std.mem.eql(u8, argv[i], "--root")) &roots else if (std.mem.eql(u8, argv[i], "--exclude")) &excluded else null;
+            if (std.mem.eql(u8, argv[i], "--root")) &roots else if (std.mem.eql(u8, argv[i], "--exclude")) &excluded else if (std.mem.eql(u8, argv[i], "--requires")) &required else null;
         if (which) |list| {
             // The next argument must be a value, not another flag: `--root
             // --exclude x` would otherwise register "--exclude" as a root and
@@ -102,6 +113,10 @@ pub fn main(init: std.process.Init) !void {
         rep.fail("build.zig passed no --stage", .{});
         bad_args = true;
     }
+    if (required.items.len == 0 and !bad_args) {
+        rep.fail("build.zig passed no --requires", .{});
+        bad_args = true;
+    }
 
     // A malformed command line makes the later checks report consequences
     // rather than causes, so stop here.
@@ -112,7 +127,7 @@ pub fn main(init: std.process.Init) !void {
         const ignore = read(gpa, io, cwd, &rep, ".gitignore") orelse "";
 
         try checkZigVersionAgreement(gpa, io, cwd, &rep, ignore);
-        try checkCiRunsTheTable(gpa, io, cwd, &rep, ignore, stage.?);
+        try checkCiRunsTheTable(gpa, io, cwd, &rep, ignore, stage.?, required.items);
         try checkVendoredHashes(gpa, io, cwd, &rep);
         try checkGeneratedHashes(gpa, io, cwd, &rep, ignore);
         try checkRecordedCounts(gpa, io, cwd, &rep, ignore);
@@ -186,12 +201,12 @@ fn checkZigVersionAgreement(
         return;
     }
 
-    var setups: usize = 0;
+    var setups_per_commit: usize = 0;
     for (workflows.items) |path| {
         const body = read(gpa, io, cwd, rep, path) orelse continue;
         var found: std.ArrayList(StepVersion) = .empty;
         try workflowZigVersions(gpa, body, &found);
-        setups += found.items.len;
+        if (std.mem.eql(u8, path, per_commit_workflow)) setups_per_commit += found.items.len;
         // Every setup step is checked, not just the first: a second job could
         // otherwise install a different Zig. A workflow with no setup step is
         // fine -- not every workflow needs Zig.
@@ -208,8 +223,14 @@ fn checkZigVersionAgreement(
                 rep.fail("{s} sets up Zig {s}, .zigversion is {s}", .{ path, version.?, pinned });
         }
     }
-    if (setups == 0)
-        rep.fail("no workflow sets up Zig, so the CI copy of the version is unchecked", .{});
+    // Counted in the per-commit workflow, not across all of them. A total let
+    // the setup step move to a workflow nothing triggers: the version stayed
+    // checked while the commands that need Zig had none installed. The run
+    // lines are held to the same workflow for the same reason.
+    if (setups_per_commit == 0) rep.fail(
+        "{s} has no setup-zig step, so the commands it runs have no pinned Zig",
+        .{per_commit_workflow},
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +256,11 @@ fn checkAdrRules(
     var files: std.ArrayList([]const u8) = .empty;
     try collectFiles(gpa, io, cwd, ignore, adr_dir, ".md", &files, .flat);
 
-    const index = read(gpa, io, cwd, rep, adr_index) orelse return;
+    // Read as a reader sees it. Taking the raw file let the whole index be
+    // wrapped in an HTML comment: every row vanished from the rendered page
+    // while this check still found them all.
+    const raw_index = read(gpa, io, cwd, rep, adr_index) orelse return;
+    const index = try visibleMarkdown(gpa, rep, adr_index, raw_index);
 
     for (files.items) |path| {
         const name = std.fs.path.basename(path);
@@ -356,6 +381,7 @@ fn checkCiRunsTheTable(
     rep: *Reporter,
     ignore: []const u8,
     stage: usize,
+    required_commands: []const []const u8,
 ) !void {
     const raw_table = read(gpa, io, cwd, rep, "AGENTS.md") orelse return;
     const table = try visibleMarkdown(gpa, rep, "AGENTS.md", raw_table);
@@ -368,6 +394,9 @@ fn checkCiRunsTheTable(
     // makes this check's reading of that file untrustworthy. The commands are
     // collected only from the one that runs per commit.
     var run_lines: std.ArrayList([]const u8) = .empty;
+    // The keys and values the per-commit workflow actually carries, so the ones
+    // that decide whether it runs at all can be held to a closed set.
+    var seen: std.ArrayList(struct { key: []const u8, value: []const u8 }) = .empty;
     for (workflows.items) |path| {
         const per_commit = std.mem.eql(u8, path, per_commit_workflow);
         const body = read(gpa, io, cwd, rep, path) orelse continue;
@@ -414,6 +443,10 @@ fn checkCiRunsTheTable(
                 );
                 continue;
             }
+            if (per_commit) try seen.append(gpa, .{
+                .key = key,
+                .value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace),
+            });
             if (!std.mem.eql(u8, key, "run")) continue;
 
             // Only a step's own `run` runs anything. Put under `with:` it is an
@@ -456,6 +489,41 @@ fn checkCiRunsTheTable(
         }
     }
 
+    // The keys that decide whether the per-commit workflow runs at all, and the
+    // values it may give them.
+    //
+    // Closing the key set said nothing about the values. Deleting the `on:`
+    // block, writing `os: []` so the matrix expands to no jobs, or naming a
+    // runner that does not exist each left every `run:` line in place and every
+    // verification command green while CI ran nothing. The values this
+    // repository chooses are as finite as the keys, so they are enumerated too.
+    for ([_]struct { key: []const u8, value: ?[]const u8 }{
+        .{ .key = "on", .value = "" },
+        .{ .key = "push", .value = "" },
+        .{ .key = "branches", .value = "[main]" },
+        .{ .key = "pull_request", .value = "" },
+        .{ .key = "steps", .value = "" },
+        .{ .key = "runs-on", .value = "${{ matrix.os }}" },
+        .{ .key = "strategy", .value = "" },
+        .{ .key = "matrix", .value = "" },
+        .{ .key = "os", .value = "[ubuntu-latest, windows-latest]" },
+    }) |want| {
+        var found = false;
+        for (seen.items) |got| {
+            if (!std.mem.eql(u8, got.key, want.key)) continue;
+            found = true;
+            const expected = want.value orelse continue;
+            if (!std.mem.eql(u8, got.value, expected)) rep.fail(
+                "{s}: `{s}:` is `{s}`, and this check only knows `{s}`; decide what the new value means for the verification before changing it",
+                .{ per_commit_workflow, want.key, got.value, expected },
+            );
+        }
+        if (!found) rep.fail(
+            "{s} has no `{s}:`, so the workflow does not run what the table requires",
+            .{ per_commit_workflow, want.key },
+        );
+    }
+
     // Every line that reads as a row of the table. The other tables of AGENTS.md
     // have fewer cells or no command in backticks, so they fall out here.
     var table_rows: std.ArrayList(CommandRow) = .empty;
@@ -472,6 +540,36 @@ fn checkCiRunsTheTable(
             .stage = std.fmt.parseInt(usize, stage_cell, 10) catch null,
             .every_commit = std.mem.eql(u8, ci_cell, "全コミット"),
         });
+    }
+
+    // The build provides it, so the table requires it and the workflow runs it.
+    //
+    // This is the third point. The table and the workflow were compared with
+    // each other and with nothing else, so weakening both at once was green:
+    // deleting a row together with its step removed the requirement, and three
+    // of the four commands could go that way. `build.zig` names these after the
+    // steps that provide them, so dropping one means dropping the step.
+    for (required_commands) |command| {
+        var in_table = false;
+        for (table_rows.items) |row| {
+            if (!std.mem.eql(u8, row.command, command)) continue;
+            if (!row.every_commit) continue;
+            const needed_at = row.stage orelse continue;
+            if (needed_at > stage) continue;
+            in_table = true;
+        }
+        if (!in_table) rep.fail(
+            "build.zig provides `{s}`, and no row of AGENTS.md's table marks it 全コミット at stage {d} or below",
+            .{ command, stage },
+        );
+        var ran = false;
+        for (run_lines.items) |line| {
+            if (runsCommand(line, command)) ran = true;
+        }
+        if (!ran) rep.fail(
+            "build.zig provides `{s}`, and {s} does not run it",
+            .{ command, per_commit_workflow },
+        );
     }
 
     // The table requires it, so the workflow runs it.
@@ -923,16 +1021,18 @@ fn checkVendoredHashes(
 /// Blanks out what a reader of the rendered document does not see: HTML
 /// comments and fenced code blocks.
 ///
-/// Every record this program reads out of a document is read from the result.
-/// A record is a thing a person is told to keep up to date, so one that only
-/// exists where nobody can see it is not a record: wrapping the identifier
-/// count table in `<!--` and `-->` left the rendered page without a table while
-/// every check stayed green. Blanking rather than deleting keeps line and byte
-/// offsets, so diagnostics still point at the right place.
+/// Every reader of a table this program reads goes through the result: the hash
+/// rows, the count tables, the verification command table and the ADR index. A
+/// record is a thing a person is told to keep up to date, so one that only
+/// exists where nobody can see it is not a record: wrapping the identifier count
+/// table in `<!--` and `-->` left the rendered page without a table while every
+/// check stayed green, and so did wrapping the ADR index. Blanking rather than
+/// deleting keeps line and byte offsets, so diagnostics still point at the right
+/// place.
 ///
-/// An unclosed opener blanked the rest of the document, so every record below
-/// it read as absent and no check said why; `rep` is given so that is reported
-/// instead, like an unclosed fence.
+/// An unclosed opener blanks the rest of the document, so every row below it
+/// would read as absent with no check saying why; `rep` is given so that is
+/// reported instead.
 ///
 /// The opener counts wherever it appears on a line, not only at the start of
 /// one. CommonMark emits an inline raw HTML comment as it stands and a browser
@@ -969,10 +1069,10 @@ fn visibleMarkdown(
             }
             blank_line = true;
         } else if (fence) |open| {
-            // Inside the fence only while indented at least as far as it, which
-            // is the rule `checkNoIndentedRecords` reads. Fixing one of the pair
-            // and not the other left a column-zero record between two indented
-            // fences blanked here and skipped there, so nothing read it.
+            // Inside the fence only while indented at least as far as it. An
+            // indented code block that shows a fence is not a fence, so a row at
+            // column zero between two such lines is content a reader sees, and
+            // blanking it hid a count table from the check that reads it.
             blank_line = run.cols >= open.indent;
         }
         if (blank_line) blankExceptNewlines(line);
@@ -1017,9 +1117,8 @@ fn lineOf(doc: []const u8, offset: usize) usize {
 ///
 /// GFM makes the pipes that open and close a row optional, so they are stripped
 /// before the rest are counted as separators. Counting the pipes and subtracting
-/// one instead was right only for a row that had both: dropping the closing pipe
-/// while adding an unescaped one inside a cell kept the count matching the header
-/// and the last cell still vanished from the rendered row.
+/// one instead was right only for a row that had both. The count decides whether
+/// a row of AGENTS.md's table carries the four cells this program reads.
 ///
 /// `line` is expected trimmed, so a closing pipe is the last byte.
 fn cellCount(line: []const u8) usize {
@@ -1077,8 +1176,8 @@ test "cellCount: the pipes that open and close a row are optional" {
     try std.testing.expectEqual(@as(usize, 2), cellCount("| a | b"));
     try std.testing.expectEqual(@as(usize, 2), cellCount("a | b"));
     try std.testing.expectEqual(@as(usize, 1), cellCount("| a |"));
-    // The defect this pins: dropping the closing pipe and adding one inside a
-    // cell kept the count, and the rendered row lost its last cell.
+    // The defect this pins: a row that drops its closing pipe has as many cells
+    // as one that keeps it, so the count cannot be read off the pipes alone.
     try std.testing.expectEqual(@as(usize, 3), cellCount("| a | b | c"));
     // An escaped pipe is the cell's text.
     try std.testing.expectEqual(@as(usize, 1), cellCount("| a \\| b |"));
@@ -1720,10 +1819,11 @@ fn hasRefAllDeclsTest(source: [:0]const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 4 and 5. Markdown: relative links resolve, headings are unique.
+// 4. Markdown: relative links resolve.
 //
 // Links inside fenced code blocks are skipped: docs/adr/README.md shows a
-// deprecation template whose links are placeholders by design.
+// deprecation template whose links are placeholders by design. An unclosed
+// fence would take the rest of the file with them, so it is reported.
 // ---------------------------------------------------------------------------
 
 fn checkMarkdown(
@@ -1743,9 +1843,9 @@ fn checkMarkdown(
         const dir = std.fs.path.dirnamePosix(path) orelse ".";
 
         // A fence is closed by a run of the same character at least as long as
-        // the opener, so ``` inside a ```` block does not end it. The state is
-        // tracked only to leave a fenced block's links alone.
+        // the opener, so ``` inside a ```` block does not end it.
         var fence: ?struct { ch: u8, len: usize } = null;
+        var fence_line: usize = 0;
         var lines = std.mem.splitScalar(u8, body, '\n');
         var lineno: usize = 0;
         while (lines.next()) |raw| {
@@ -1768,13 +1868,24 @@ fn checkMarkdown(
                     }
                 } else {
                     fence = .{ .ch = run.ch, .len = run.len };
+                    fence_line = lineno;
                     continue;
                 }
             }
             if (fence != null) continue;
 
+            if (referenceDefinition(trimmed)) |target|
+                try checkLinkTarget(gpa, io, cwd, rep, path, lineno, dir, target);
             try checkLinksOnLine(gpa, io, cwd, rep, path, lineno, dir, line);
         }
+        // Reported because the link check stops at an open fence. ADR-0026 keeps
+        // the reachability of relative links; leaving a fence unclosed took the
+        // rest of the file out of that check and said nothing, which is the one
+        // thing the first of its three facts forbids.
+        if (fence) |open| rep.fail(
+            "{s}:{d}: this code fence of {d} '{c}' is never closed, so the links below it are not checked",
+            .{ path, fence_line, open.len, open.ch },
+        );
     }
 }
 
@@ -1824,30 +1935,59 @@ fn checkLinksOnLine(
         i += 2;
         const dest = linkDestination(line[i..]) orelse continue;
         i += dest.consumed;
-        const target = dest.target;
-        if (target.len == 0) continue;
-        // Any URI scheme, matched case-insensitively: RFC 3986 makes schemes
-        // case-insensitive, and a bare "http" prefix would also skip the
-        // relative path http-guide.md.
-        if (hasUriScheme(target)) continue;
-        if (target[0] == '#') continue;
-        const file_part = std.mem.sliceTo(target, '#');
-        if (file_part.len == 0) continue;
-        // Reject characters a path cannot hold before touching the file system:
-        // std.Io.Dir.access panics on Windows for an invalid name rather than
-        // returning an error, which would turn one bad link into a crash that
-        // loses every other diagnostic.
-        if (std.mem.indexOfAny(u8, file_part, "<>:\"|?*") != null or
-            std.mem.indexOfScalar(u8, file_part, 0) != null)
-        {
-            rep.fail("{s}:{d}: link target {s} is not a usable path", .{ path, lineno, target });
-            continue;
-        }
-        const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, file_part });
-        cwd.access(io, joined, .{}) catch {
-            rep.fail("{s}:{d}: link target {s} does not exist", .{ path, lineno, target });
-        };
+        try checkLinkTarget(gpa, io, cwd, rep, path, lineno, dir, dest.target);
     }
+}
+
+/// The destination of a reference link definition, `[label]: dest`.
+///
+/// `checkLinksOnLine` looks for `](`, which a definition does not carry, so a
+/// link written in the reference form had its destination read by nobody: the
+/// rendered page pointed at a file that is not there and nothing said so.
+fn referenceDefinition(line: []const u8) ?[]const u8 {
+    if (line.len == 0 or line[0] != '[') return null;
+    const close = std.mem.indexOf(u8, line, "]:") orelse return null;
+    var rest = std.mem.trimStart(u8, line[close + 2 ..], " \t");
+    // A title may follow the destination on the same line.
+    if (std.mem.indexOfAny(u8, rest, " \t")) |space| rest = rest[0..space];
+    if (rest.len >= 2 and rest[0] == '<' and rest[rest.len - 1] == '>')
+        rest = rest[1 .. rest.len - 1];
+    return if (rest.len == 0) null else rest;
+}
+
+/// Reports a relative link whose target is not a file in the repository.
+fn checkLinkTarget(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    rep: *Reporter,
+    path: []const u8,
+    lineno: usize,
+    dir: []const u8,
+    target: []const u8,
+) !void {
+    if (target.len == 0) return;
+    // Any URI scheme, matched case-insensitively: RFC 3986 makes schemes
+    // case-insensitive, and a bare "http" prefix would also skip the
+    // relative path http-guide.md.
+    if (hasUriScheme(target)) return;
+    if (target[0] == '#') return;
+    const file_part = std.mem.sliceTo(target, '#');
+    if (file_part.len == 0) return;
+    // Reject characters a path cannot hold before touching the file system:
+    // std.Io.Dir.access panics on Windows for an invalid name rather than
+    // returning an error, which would turn one bad link into a crash that
+    // loses every other diagnostic.
+    if (std.mem.indexOfAny(u8, file_part, "<>:\"|?*") != null or
+        std.mem.indexOfScalar(u8, file_part, 0) != null)
+    {
+        rep.fail("{s}:{d}: link target {s} is not a usable path", .{ path, lineno, target });
+        return;
+    }
+    const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, file_part });
+    cwd.access(io, joined, .{}) catch {
+        rep.fail("{s}:{d}: link target {s} does not exist", .{ path, lineno, target });
+    };
 }
 
 /// Splits a CommonMark inline link destination from its optional title.
@@ -2234,8 +2374,8 @@ test "visibleMarkdown: a record shallower than an indented fence is kept" {
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var rep: Reporter = .{ .w = &sink.writer };
     // The fence is an indented code block's content rather than a fence, so the
-    // row between the two renders as a row. Blanking it here while
-    // `checkNoIndentedRecords` skipped it left nobody reading it.
+    // row between the two renders as a row. Blanking it here left nobody
+    // reading a table the page shows.
     const doc =
         \\    ```
         \\| 合計 | 557 |

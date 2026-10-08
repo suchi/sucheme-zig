@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | `build.zig` の `current_stage` が正。段階が上がると `zig build check-docs` が新しい行をCIに要求する |
+| 現在の段階 | 段階0(足場)。`main` での CI グリーンの確認が未了。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
