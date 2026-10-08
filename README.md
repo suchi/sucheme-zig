@@ -2,13 +2,13 @@
 
 sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Scheme インタプリタです。衛生的マクロ、完全な継続、適切な末尾再帰、完全な数値塔までの準拠を目指します。
 
-単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールの両方を、同一のコアから生成することを目指しています。現時点では設計のみで、実行できる成果物はまだありません。
+単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールの両方を、同一のコアから生成することを目指しています。現時点で動くのはビルドの足場だけで、Scheme の評価はまだできません。
 
 名前はリポジトリオーナーに由来しています(`scheme` の打ち間違いではありません)。
 
 ## 状態
 
-設計フェーズが完了し、実装の開始を待っている段階です。
+設計フェーズが完了し、実装の段階0(足場)まで進んでいます。`zig build` で実行ファイルができ、`--version` に答えます。Scheme の評価は段階1からです。
 
 進捗の単一のソースは [docs/roadmap.md](docs/roadmap.md) です。現在の段階、最新リリース、段階ごとのチェックリストはそこにあります。R7RS 準拠の達成度は [docs/status/](docs/status/) にあります。固定している Zig のバージョンは `.zigversion` が正です。
 
@@ -16,24 +16,28 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 ## 対応プラットフォーム
 
-次の表は段階0と段階1で到達する目標です。現時点では `build.zig` も CI もまだ存在しないので、どの行もまだ真ではありません。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
+| プラットフォーム | ビルド | 自動テストによる動作保証 | そろう段階 |
+| --- | --- | --- | --- |
+| Linux (x86_64) | あり | あり | 0 |
+| Windows (x86_64) | あり | あり | 0 |
+| Linux (aarch64) | あり(クロスコンパイル) | なし | 0 |
+| Windows (aarch64) | あり(クロスコンパイル) | なし | 0 |
+| macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし | 0 |
+| WebAssembly | 段階1 | 段階1(Node.js 上でのエクスポート呼び出し) | 1 |
 
-| プラットフォーム | ビルド | 自動テストによる動作保証 |
-| --- | --- | --- |
-| Linux (x86_64) | あり | あり |
-| Windows (x86_64) | あり | あり |
-| Linux (aarch64) | あり(クロスコンパイル) | なし |
-| Windows (aarch64) | あり(クロスコンパイル) | なし |
-| macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし |
-| WebAssembly | あり | あり(Node.js 上でのエクスポート呼び出し) |
+クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。段階1から用意するのはリリースのワークフローと成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
 
-自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS のバイナリはクロスコンパイルで生成し、自動テストを実行していません。GitHub Actions の macOS ランナーの課金単位が他の10倍であるためです([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。macOS の署名と公証も行っていません。
+自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしませんが、理由はそれぞれ別です([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。
 
-WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行っていないため、ブラウザ固有の問題は検出されません。
+macOS は GitHub Actions の課金単位が他の10倍であるためです。署名と公証も行いません。
 
-これらの環境で問題が出た場合は issue でお知らせください。
+aarch64 はランナー自体は使えます。対象にしないのは、段階0にアーキテクチャ依存のコードが無く、private リポジトリでは実行分数がプランの枠に計上されるためです。値表現とGCが入る段階1で見直します。
 
-リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は GitHub Pages に配置し、GitHub Release の成果物には含めません。
+WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
+
+これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
+
+リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。段階1から、CI の成果物として zip で添付し、ローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。
 
 ## 特徴として目指すもの
 
@@ -59,9 +63,21 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 ## ライセンス
 
-MIT License です。詳細は [LICENSE](LICENSE) を参照してください。
+ライセンスを付与していません。UNLICENSED です([ADR-0022](docs/adr/0022-unlicensed-proprietary.md))。全権利保留で、権利者以外による使用・複製・改変・再配布を許諾していません。詳細は [LICENSE](LICENSE) を参照してください。
+
+この宣言が適用されるのは本変更以後の版です。2026-10-04 から 2026-10-06 までリポジトリは public で MIT でした。MIT に終了条項はないので、その期間に得た複製の条件は変わりません。
+
+名前の似た Unlicense(パブリックドメインへの献呈)とは逆の意味です。取り違えないでください。
 
 `tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。
+
+`tools/extract-r7rs-required/appendix-a.html` は R7RS の付録A の逐語コピーです。R7RS 自身が全文または一部の複製を許諾しています。出典と許諾の根拠は [tools/extract-r7rs-required/SOURCE.md](tools/extract-r7rs-required/SOURCE.md) にあります。
+
+`tests/r7rs-required/*.txt` はそのコピーから抽出した R7RS の内容なので、同じ許諾に依拠します。各ファイルが2行目で出典を名乗っています。
+
+`docs/` 以下には R7RS とその他の仕様の逐語引用が含まれます。引用として用いているもので、上の宣言の対象ではありません。
+
+上の宣言は sucheme-zig 自身の成果物に適用されるもので、この節で挙げた第三者由来のものには適用されません。対象外の一覧は [LICENSE](LICENSE) が正です。
 
 ## AIコーディングエージェントへの指示
 

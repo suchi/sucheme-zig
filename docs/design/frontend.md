@@ -10,12 +10,12 @@
 
 | 分類 | 対応する記法 |
 | --- | --- |
-| コメント | `;` 行末まで、`#|` と `|#` の入れ子可能なブロック、`#;` によるデータ単位のコメント |
+| コメント | `;` 行末まで、`#\|` と `\|#` の入れ子可能なブロック、`#;` によるデータ単位のコメント |
 | 真偽値 | `#t` `#true` `#f` `#false` |
 | 数値 | 基数接頭辞 `#b` `#o` `#d` `#x`、正確性接頭辞 `#e` `#i`、分数、小数、指数、`+inf.0` `-inf.0` `+nan.0` `-nan.0`、複素数 |
 | 文字 | `#\a`、名前付き文字9種(`alarm` `backspace` `delete` `escape` `newline` `null` `return` `space` `tab`)、`#\x` に続く16進 |
-| 文字列 | `\a \b \t \n \r \" \\ \|`、`\x` に続く16進とセミコロン、行継続 |
-| 識別子 | 通常の識別子、特殊初期文字、`|` で囲んだ記法 |
+| 文字列 | `\a \b \t \n \r \" \\ \|`、`\x` に続く16進とセミコロン(段階5)、行継続(段階5) |
+| 識別子 | 通常の識別子、特殊初期文字、`\|` で囲んだ記法 |
 | リスト | `(...)`、`[...]` は使わない、ドット対 |
 | ベクタ | `#(...)` |
 | バイトベクタ | `#u8(...)` |
@@ -92,7 +92,7 @@ REPL は「入力が完結したか」を知る必要がある。リーダは不
 | グローバルセル | ライブラリまたは REPL のトップレベルの束縛 |
 | パターン変数 | `syntax-rules` の展開中にのみ現れる |
 
-補助構文を独立した意味にするのは、R7RS 付録A が `(scheme base)` のエクスポートに `...` `=>` `_` `else` `unquote` `unquote-splicing` の6個を含めており、R7RS 4.2.1 と 4.3.2 がこれらを auxiliary syntax として項目化しているためである。これらは式に変換されないので特殊形式ではなく、変換子を持たないのでマクロでもない。意味を与えないと3つが同時に壊れる。
+補助構文を独立した意味にするのは、R7RS 付録A が `(scheme base)` のエクスポートに `...` `=>` `_` `else` `unquote` `unquote-splicing` の6個を含めており、R7RS 4.2.1(`else` と `=>`)・4.2.8(`unquote` と `unquote-splicing`)・4.3.2(`_` と `...`)がこれらを auxiliary syntax として項目化しているためである。これらは式に変換されないので特殊形式ではなく、変換子を持たないのでマクロでもない。意味を与えないと3つが同時に壊れる。
 
 - `(import (only (scheme base) cond else))` がエクスポート表に `else` の行を作れず、R7RS 5.2 の「It is an error if any of the listed identifiers are not found in the original set」に該当して失敗する。
 - `cond` のリテラル `else` の照合が、識別子が未束縛であることに依存する。ライブラリごとに独立したグローバル環境を持つ設計(後述)では、定義側と利用側の `else` が別のセルに解決されうるため照合が壊れる。意味を共有すれば位置によらず照合する。
@@ -206,6 +206,7 @@ flowchart TB
 `include`、`include-ci`、`cond-expand` は式の位置にも現れる。根拠は付録A が3つとも `(scheme base)` のエクスポートに含めていることである。R7RS の Language changes の節(Other language changes since R5RS)にも次の記述があるが、同節は自ら「This list is not authoritative」と述べているので補足として扱う。
 
 > The expressions types include, include-ci, and cond-expand have been added to the base library; they have the same semantics as the corresponding library declarations.
+
 ライブラリ宣言としての経路と式としての経路の両方を持つ。前者はライブラリ宣言の列という文脈で処理順の規則に従い、後者は普通の式として展開する。
 
 `syntax-error` を特殊形式にするのは、R7RS 4.3.3 が「syntax-error behaves similarly to error (6.11) except that implementations with an expansion pass separate from evaluation should signal an error as soon as syntax-error is expanded」と規定しているためである。本処理系は展開と評価を分けるので、展開時に送出する。同節は「Applications cannot count on being able to catch syntax errors with exception handlers or guards」としているので、`guard` では捕捉できない。付録A が `(scheme base)` のエクスポートに含めているので、エクスポート表には特殊形式として入る。

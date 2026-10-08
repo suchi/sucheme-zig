@@ -14,10 +14,10 @@ Zig で書いた R7RS-small 準拠の Scheme インタプリタで、ネイテ�
 
 | 必要なもの | バージョン | 備考 |
 | --- | --- | --- |
-| Zig | `.zigversion` の値に固定 | `.zigversion` が正。バージョンが違うとビルドが通らない。段階0の完了までこのファイルは存在しないので、それまでは [adr/0001-zig-version-pinning.md](adr/0001-zig-version-pinning.md) の決定を見る |
+| Zig | `.zigversion` の値に固定 | `.zigversion` が正。`build.zig` が起動時に比較し、違う版では診断を出して止まる。ただし `build.zig` 自体がコンパイルできないほど std が違う版では、診断の前に標準ライブラリのエラーで止まる。固定の根拠は [adr/0001-zig-version-pinning.md](adr/0001-zig-version-pinning.md) |
 | Git | 任意 | |
 | GitHub CLI (`gh`) | 任意 | PR 操作に使う |
-| Node.js | 任意 | Web UI の確認とローカル配信に使う。本体のビルドには不要 |
+| Node.js | 任意 | `zig build test-wasm` が使う。段階1から必要になる。本体のビルドには不要 |
 
 固定している Zig は破壊的変更が多い版である。[design/zig-api-notes.md](design/zig-api-notes.md) を読む前にコードを書き始めないこと。古い記法の多くはコンパイルエラーになるが、すべてではない。管理型の `AutoHashMap` と `StringHashMap` の旧記法や、古い形の panic ハンドラはそのまま通る。コンパイラに頼りきらず対応表を参照する。
 
