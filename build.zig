@@ -57,7 +57,7 @@ const TestTarget = struct {
     /// Counting run steps is not enough. `b.addTest(.{ ..., .filters = &.{"x"}
     /// })` is a one-field edit that leaves the run step in place and selects no
     /// test: `zig build test` then exits 0 with a deliberately failing test in
-    /// src/sucheme.zig, all four commands stay green, and `--summary all` stops
+    /// src/sucheme.zig, every verification command stays green, and `--summary all` stops
     /// printing a test count, so even the log holds no trace. A custom
     /// `test_runner` can decide the same thing. Neither is needed here, so both
     /// are refused outright rather than inspected.
@@ -261,6 +261,32 @@ pub fn build(b: *std.Build) void {
         t.checkRunsEveryTest();
     }
     checkTestsAreRun(test_step, targets.items);
+    checkStepRuns(check_docs_step, check_docs);
+    checkStepRuns(check_extract_step, extractor);
+}
+
+/// Fails the configure step unless `step` runs the artifact built from `exe`.
+///
+/// The same one-line hole `checkTestsAreRun` closes for the tests was open here.
+/// Deleting `check_docs_step.dependOn(&run_check_docs.step)` leaves a step with
+/// nothing attached, so `zig build check-docs` exits 0 having printed nothing --
+/// not even `all checks passed`, so the log holds no trace of a verification
+/// that stopped. `zig build check-extract` had the same shape.
+///
+/// The artifact is looked for among the dependencies' producers, not counted: a
+/// step that depends on some other run step would keep a count right while
+/// running nothing of its own.
+fn checkStepRuns(step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
+    for (step.dependencies.items) |dep| {
+        const run = dep.cast(std.Build.Step.Run) orelse continue;
+        const producer = run.producer orelse continue;
+        if (producer == exe) return;
+    }
+    std.debug.print(
+        "[sucheme] the {s} step does not run {s}\n",
+        .{ step.name, exe.name },
+    );
+    std.process.exit(1);
 }
 
 /// Fails the configure step unless the test step runs each target's test
@@ -277,7 +303,7 @@ pub fn build(b: *std.Build) void {
 /// Each target is looked for by name among the run steps' producers, rather
 /// than the run steps being counted. A count is not a correspondence: pointing
 /// one target's run step at some other artifact kept the count the same, and
-/// that target's tests were never compiled while all four commands stayed
+/// that target's tests were never compiled while every verification command stayed
 /// green. A count also breaks for an honest reason, as soon as anything but a
 /// target's test is attached to this step.
 ///

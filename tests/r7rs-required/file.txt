@@ -1,7 +1,7 @@
 ; (scheme file) の必須識別子。R7RS 付録A から抽出した。
 ; 出典: https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html
 ; 取得日と許諾: tools/extract-r7rs-required/SOURCE.md
-; 抽出: zig run tools/extract-r7rs-required/main.zig
+; 抽出: zig run tools/extract-r7rs-required/main.zig -- --write
 ; 手で編集しない。R7RS の版が上がったら再抽出する。
 call-with-input-file
 call-with-output-file

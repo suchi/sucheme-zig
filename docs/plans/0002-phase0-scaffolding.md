@@ -39,7 +39,7 @@
 | `.gitattributes` | `*.wasm binary` を追記 | 変更 |
 | `.editorconfig` | Scheme のファイル(`.scm` `.sld` `.ss`)の2スペース設定を追記 | 変更 |
 | `.github/dependabot.yml` | 担当者の修正と `TODO(project):` の解消 | 変更 |
-| `AGENTS.md` | 検証コマンド表に3行追加(後述) | 変更 |
+| `AGENTS.md` | 検証コマンド表に行を追加(後述) | 変更 |
 | `README.md` | 段階0完了後に偽になる現在形の記述を直す | 変更 |
 | `docs/onboarding.md` | 同上。`.zigversion` の不在を前提にした記述を直す | 変更 |
 | `docs/design/architecture.md` | 確保点の一元化の不変条件の範囲を直す(後述) | 変更 |
@@ -91,6 +91,7 @@ fn checkZigVersion() void {
 | `run` | 実行ファイルを起動する。`--` 以降を転送する | 既定の install step |
 | `test` | ネイティブ対象のモジュールのテスト | なし |
 | `check-docs` | `tools/check-docs` を実行する | なし |
+| `check-extract` | 抽出プログラムを `--check` で実行し、生成物が入力から導かれたままかを比べる | なし |
 
 `run` を `AGENTS.md` の検証コマンド表に追加する。表が step の正であると宣言している以上、表外の step を作ると検査もレビューの対象外になる。表には「CIで実行: -」として、検証コマンドではないことを示す。
 
@@ -122,7 +123,7 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 `test` step の対象モジュールと、`check-docs` に渡す `--root` のパスは1つの値(`TestTarget`)にまとめ、同じループで両方に使う。さらに `TestTarget` が、パスをモジュールの `root_source_file` から読み出し、`build` の末尾で再照合する。各 target の test バイナリが `test` step の run 段の producer として現れることと、テストフィルタもカスタムの test runner も設定されていないことも、同じ場所で照合する。
 
-照合を入れるのは、struct にまとめるだけでは対応の正しさを誰も見ないためである。パスを手書きする形(`.{ .path = "src/main.zig", .mod = sucheme }`)で片方だけ取り違えた値は、構文上は1つの値でありながら `src/main.zig` のテストを1件も実行しない状態を作る。実機でこの状態を再現し、`zig fmt --check` と `zig build` と `zig build test` と `zig build check-docs` のすべてが緑になることを確認した。
+照合を入れるのは、struct にまとめるだけでは対応の正しさを誰も見ないためである。パスを手書きする形(`.{ .path = "src/main.zig", .mod = sucheme }`)で片方だけ取り違えた値は、構文上は1つの値でありながら `src/main.zig` のテストを1件も実行しない状態を作る。実機でこの状態を再現し、検証コマンドのすべてが緑になることを確認した。
 
 ### テスト対象から除くもの
 
@@ -175,7 +176,6 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 | テストが走ること | 各 `--root` が `test` ブロックを1つ以上持つ。`build.zig` 側では、各 target の test バイナリが `test` step の run 段の producer として現れ、テストフィルタもカスタムの test runner も設定されていないことを configure 段で照合する |
 | build.zig が表と CI を固定すること | `build.zig` が宣言する step から作った `--requires` の各コマンドについて、表に全コミットの行があり、`ci.yml` がそれを走らせている。表と `ci.yml` は互いにしか照合していなかったので、行と段を対で落とすと要求ごと消えた。この一覧は step そのものなので、要求を消すには step を消すことになり、コマンド自体が動かなくなる。`zig fmt --check .` は step ではないので、表と `ci.yml` だけが支える |
 | ワークフローが走ること | `ci.yml` の `on`・`push`・`branches`・`pull_request`・`strategy`・`matrix`・`os`・`runs-on`・`steps` が揃い、値が閉じた集合に入る。キーの集合を閉じても値は見ていなかったので、`on:` を消す・`os: []` にする・存在しないランナーを指すだけで、run の段を1行も触らずに CI が1回も走らなくなった |
-| 生成物が入力から導かれること | `zig build check-extract` が抽出プログラムを走らせ、`tests/r7rs-required/` と一致するかを比べる。記録した SHA-256 との照合だけでは、手で編集して記録を貼り替える経路が開いていた |
 | CI が表の行を走らせること | `AGENTS.md` の検証コマンド表と `.github/workflows/ci.yml` が双方向に一致する。表が「CIで実行=全コミット」かつ段階が現在以下とする行を ci.yml が走らせ、ci.yml が走らせるコマンドにはそういう行がある。段階は `build.zig` の `current_stage` から渡る。コマンドに付けてよい後続は許可リストで限る。逆方向があるので、行を隠したりセルの綴りを崩したりしても、対応の無い段として現れる([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
 | ADR と一覧の対応 | 各ADRが一覧に1行持ち、一覧の各行が実在するファイルを指す。行が何を書いているか(ステータス・置き換え・追記の位置)は検査しない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
 | ワークフローのキー | 使ってよいキーの列挙にないキーが無い。`if:` と `continue-on-error:` は列挙に入れていないので、ジョブ階層でも段階層でも報告される。`run:` のブロックスカラーも報告する。キーとして読めない行は、コロンを含むかどうかに関わらず報告するので、複数行の平スカラーの継続行も通らない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
@@ -185,6 +185,8 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 | 相対リンクの到達性 | Markdown の相対リンクが実在するファイルを指す。`[ref]: dest` の参照形式の定義も読む。コードフェンス内のリンクは対象外で、閉じ忘れたフェンスは以降のリンクを検査から外すので報告する |
 | HTML コメントの閉じ忘れ | `AGENTS.md`・`SOURCE.md`・`docs/adr/README.md` の HTML コメントが閉じられている。この3つは表を読まれる側なので、閉じ忘れると以降の行が読まれなくなる。他の `.md` は対象外である |
 | 読み取れないファイル | 走査対象のファイルがすべて読めた。読めないファイルは検査から抜けるので報告する |
+
+生成物が入力から導かれたことは、この表の検査ではなく `zig build check-extract` が見る。実装は抽出プログラムの比較モードで、`tools/check-docs` はこれを行わない。
 
 検査する対象は、コードと生成物についての事実に限る。文書の書き方(記録の綴り、字下げ、表のセル数、見出しの重複、引用の継続、ADR の運用ルールの体裁)は検査しない。段階0でそこまで広げた結果、製品コードより1桁大きい検査ツールが育ち、レビューの指摘がその読み方の話に占められた。線引きと撤回した検査の一覧は [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md) にある。
 
@@ -256,9 +258,9 @@ https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html
 
 ### 起動手段
 
-`build.zig` に名前付きの step を作らない。`zig run tools/extract-r7rs-required/main.zig` で走らせる。生成結果をコミットし、R7RS の版が上がったときだけ再実行する。
+書き込むには `zig run tools/extract-r7rs-required/main.zig -- --write` を実行する。生成結果をコミットし、R7RS の版が上がったときだけ再実行する。引数なしで走らせると、書き込まずに現在の生成物と比べる。比較を既定にしたのは、引数を1つ落としただけで比較が書き込みに変わる形を避けるためである。実機で、`pub fn main(init: std.process.Init)` 形式のプログラムが `zig run` で動作することを確認した。
 
-step を作らない理由は、`build.zig` を触ることで作業の並行条件が崩れることである。手で走らせる道具なので CI の対象にもしない。再抽出の結果が正しいことは、`check-docs` が `appendix-a.html` と `tests/r7rs-required/*.txt` の両方のハッシュを照合することで担保する。入力だけでは、入力を変えずに生成物を直接編集する改変が通る。実機で、`pub fn main(init: std.process.Init)` 形式のプログラムが `zig run` で動作することを確認した。
+比較は `check-extract` step として CI でも走らせる。当初は step を作らず、`check-docs` が `appendix-a.html` と `tests/r7rs-required/*.txt` の両方のハッシュを照合することで担保する形にしていた。それでは足りなかった。記録したハッシュは人が貼る値なので、生成物を手で編集して記録を貼り替えると全コマンドが緑のまま識別子が1件消える。出力を入力から導き直して比べる以外に、両者の対応を確かめる手段が無い。
 
 記憶や他の処理系の実装からの推測で書かない。設計フェーズで、存在しない引用と存在しない手続き名をそれぞれ1件書いた経緯がある([../review/adversarial-review-baseline.md](../review/adversarial-review-baseline.md))。抽出を機械化するのはその再発を防ぐためである。入力ページの URL と妥当性検査の内容も、上のとおり実機と一次情報で確認したものに置き換えた。
 
@@ -270,9 +272,9 @@ step を作らない理由は、`build.zig` を触ることで作業の並行条
 
 | ジョブ | ランナー | 内容 |
 | --- | --- | --- |
-| `test` | `ubuntu-latest` と `windows-latest` のマトリクス | Zig のセットアップ、`zig fmt --check .`、`zig build`、`zig build test`、`zig build check-docs` |
+| `test` | `ubuntu-latest` と `windows-latest` のマトリクス | Zig のセットアップと、`AGENTS.md` の表が段階0の全コミットとする各コマンド |
 
-段階0のジョブは1つだけにする。`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」かつ使えるようになる段階が0の行がこれだけだからである。独立に数え上げた結果、該当するのは5行で重複を除いたコマンドは4つである。
+段階0のジョブは1つだけにする。`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」かつ使えるようになる段階が0の行がこれだけだからである。どの行が該当するかは表が正で、件数をここに書かない。`zig build check-docs` が両方向に照合する。
 
 `zig fmt --check .` は両方のランナーで走らせる。CRLF の `.zig` ファイルを `zig fmt --check` が不合格にすることを実機で確認したので、Windows で改行が壊れた場合に検出できる。
 
@@ -298,13 +300,14 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 
 ワークフローのファイルは段階ごとに書き換える。条件分岐や「step があれば実行する」という形にはしない。存在しない step を呼ぶと失敗し、失敗を無視する形にすると検証が無効になったことに気づけない。
 
-各段階の計画書で、その段階で CI に追加する行を明示する。追加する対象は、`AGENTS.md` の表の行である。表が CI 検証の正であるためには、ADR と設計ドキュメントが要求している CI 検証も表に行を持たなければならない。段階0で次の3行を `AGENTS.md` の表に足す。
+各段階の計画書で、その段階で CI に追加する行を明示する。追加する対象は、`AGENTS.md` の表の行である。表が CI 検証の正であるためには、ADR と設計ドキュメントが要求している CI 検証も表に行を持たなければならない。段階0で次の行を `AGENTS.md` の表に足す。
 
 | 用途 | コマンド | 使えるようになる段階 | CIで実行 |
 | --- | --- | --- | --- |
 | 実行 | `zig build run -- <引数>` | 0 | - |
 | テスト(WASM の往復) | `zig build test-wasm` | 1 | 全コミット |
 | 進捗の同期検査 | `zig build check-report` | 1 | 全コミット |
+| 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
 
 `test-wasm` は [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) が要求する「Node.js 上でのエクスポート呼び出しの往復テスト」である。行がないと、`README.md` が謳う WebAssembly の動作保証を検証する経路が CI に入らず、`sucheme.wasm` が一度も実行されずに出荷される。
 
@@ -375,10 +378,11 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 5. `tools/check-docs` を作り、`check-docs` step を追加する。1と3と4の完了後。CI より後にするのは、ワークフローが0個の状態で版の一致検査を通過させないためである。
 6. `tools/extract-r7rs-required` と `appendix-a.html` と `SOURCE.md` を作り、`zig run` で走らせて `tests/r7rs-required/*.txt` をコミットする。1の完了後。4と5と並行できる。
 7. `.github/dependabot.yml` を修正する。担当者が決まった後。どの段とも独立。
+   `check-extract` step は6の抽出プログラムと5の `build.zig` の両方に触るので、両方の完了後に足す。
 8. `README.md` と `docs/onboarding.md` の現在形の記述を直す。4と5の完了後(CI が実際に緑になったことを確認してから書く)。
 9. ロードマップのチェックと現在地を更新し、open-questions.md の段階0の行を消す。すべての完了後。
 
-6と5は触るファイルが重複せず、互いのインタフェースに依存しない。並行させてよい([0001-sow.md](0001-sow.md) のマルチエージェントの使い方)。6が `build.zig` に step を作らないと決めたのは、この並行条件を保つためでもある。
+6と5は触るファイルが重複せず、互いのインタフェースに依存しない。並行させてよい([0001-sow.md](0001-sow.md) のマルチエージェントの使い方)。`check-extract` step は両方に触るので、並行させる区間の外に置く。
 
 ## テストと Red からの手順
 
