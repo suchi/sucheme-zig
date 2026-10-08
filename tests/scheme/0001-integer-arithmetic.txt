@@ -1,0 +1,26 @@
+# Slice 1a: an integer, a call, and a primitive.
+#
+# Each case is an input line, then the expected output of writing the value it
+# evaluates to. A line starting with # is a comment and a blank line separates
+# cases. The runner is tools/test-scheme; the format is its doc comment.
+
+(+ 1 2)
+3
+
+42
+42
+
+-7
+-7
+
+(+ 1)
+1
+
+(+ 1 2 3 4 5)
+15
+
+(+)
+0
+
+(+ (+ 1 2) (+ 3 4))
+10
