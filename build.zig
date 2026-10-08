@@ -292,10 +292,15 @@ pub fn build(b: *std.Build) void {
 /// step that depends on some other run step would keep a count right while
 /// running nothing of its own.
 fn checkStepRuns(step: *std.Build.Step, exe: *std.Build.Step.Compile, want_argv: ?usize) void {
+    var found = false;
+    // Every matching run, not the first. Returning on the first left a second
+    // run of the same artifact unexamined, and `checkTestsAreRun` already looked
+    // at all of them: the pair of functions were not equally strong.
     for (step.dependencies.items) |dep| {
         const run = dep.cast(std.Build.Step.Run) orelse continue;
         const producer = run.producer orelse continue;
         if (producer != exe) continue;
+        found = true;
         checkRunIsHeard(step, run);
         if (want_argv) |n| {
             if (run.argv.items.len != n) {
@@ -306,8 +311,8 @@ fn checkStepRuns(step: *std.Build.Step, exe: *std.Build.Step.Compile, want_argv:
                 std.process.exit(1);
             }
         }
-        return;
     }
+    if (found) return;
     std.debug.print(
         "[sucheme] the {s} step does not run {s}\n",
         .{ step.name, exe.name },
@@ -327,6 +332,20 @@ fn checkRunIsHeard(step: *std.Build.Step, run: *std.Build.Step.Run) void {
     if (run.skip_foreign_checks) {
         std.debug.print(
             "[sucheme] a run in the {s} step may be skipped as foreign, which would pass without running\n",
+            .{step.name},
+        );
+        std.process.exit(1);
+    }
+    // Capturing either stream makes the run cacheable. Whether a run has side
+    // effects is computed when the graph is made, from `.infer_from_args` and
+    // the absence of captures, so a capture turns the run into one whose
+    // manifest holds the argv and the artifact and nothing else: a verification
+    // that reads the repository would then be skipped on the second run no
+    // matter what changed in it. `has_side_effects` itself is left alone, since
+    // false is its ordinary state and only the computed value matters.
+    if (run.captured_stdout != null or run.captured_stderr != null) {
+        std.debug.print(
+            "[sucheme] a run in the {s} step captures its output, which makes it cacheable and so skippable\n",
             .{step.name},
         );
         std.process.exit(1);

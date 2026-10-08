@@ -1853,28 +1853,47 @@ fn checkMarkdown(
         // the opener, so ``` inside a ```` block does not end it.
         var fence: ?struct { ch: u8, len: usize } = null;
         var fence_line: usize = 0;
+        // The column the innermost open list item's content starts at, which is
+        // what CommonMark measures indentation against.
+        var content_col: usize = 0;
         var lines = std.mem.splitScalar(u8, body, '\n');
         var lineno: usize = 0;
         while (lines.next()) |raw| {
             lineno += 1;
             const line = std.mem.trimEnd(u8, raw, "\r");
-            // Fences keep an unlimited indentation allowance. CommonMark
-            // measures indentation relative to the containing block, so a
-            // fence inside a list item can sit four or more spaces in;
-            // docs/adr/README.md relies on that. The cost is that an indented
-            // code block demonstrating a fence is read as one.
-            const trimmed = line[indentRun(line).bytes..];
+            const run = indentRun(line);
+            const trimmed = line[run.bytes..];
 
-            if (fenceRun(trimmed)) |run| {
+            if (fence == null and trimmed.len != 0) {
+                if (listContentColumn(run.cols, trimmed)) |col| {
+                    content_col = col;
+                } else if (run.cols < content_col) {
+                    // A line shallower than the item's content closes it.
+                    content_col = 0;
+                }
+            }
+            // Four columns past the containing block's content is an indented
+            // code block, not a fence and not prose. Allowing a fence at any
+            // indentation let a pair of them at four spaces hide the paragraph
+            // between them: the lines read as a fenced block, the paragraph
+            // inside it was never checked for links, and the fences were closed
+            // so nothing was reported. Measuring against the list item's
+            // content column keeps the fences docs/adr/README.md writes inside
+            // a numbered item, which sit five spaces in and zero columns past
+            // their content.
+            const relative = run.cols - @min(run.cols, content_col);
+            if (relative >= 4) continue;
+
+            if (fenceRun(trimmed)) |opener| {
                 if (fence) |open| {
                     // Only a bare run of the same character, at least as long,
                     // closes the block. Anything else is content.
-                    if (run.bare and run.ch == open.ch and run.len >= open.len) {
+                    if (opener.bare and opener.ch == open.ch and opener.len >= open.len) {
                         fence = null;
                         continue;
                     }
                 } else {
-                    fence = .{ .ch = run.ch, .len = run.len };
+                    fence = .{ .ch = opener.ch, .len = opener.len };
                     fence_line = lineno;
                     continue;
                 }
@@ -1968,10 +1987,46 @@ fn checkLinksOnLine(
             continue;
         }
         i += 2;
-        const dest = linkDestination(line[i..]) orelse continue;
+        const dest = linkDestination(line[i..]) orelse {
+            // Reported rather than skipped. CommonMark lets a newline sit
+            // between the parentheses, so a link whose destination or closing
+            // parenthesis is on the next line renders as a link while one line
+            // at a time cannot read it. Skipping it was silence on a link that
+            // renders, which is the shape of every hole this program has had,
+            // and the same decision was already taken for the reference form.
+            rep.fail(
+                "{s}:{d}: this link does not close on its own line; write `[text](path)` on one line",
+                .{ path, lineno },
+            );
+            continue;
+        };
         i += dest.consumed;
         try checkLinkTarget(gpa, io, cwd, rep, path, lineno, dir, dest.target);
     }
+}
+
+/// The column a list item's content starts at, when `trimmed` opens one.
+///
+/// `indent` is where the marker starts and `trimmed` is the line from there.
+/// CommonMark measures everything inside an item against this column, which is
+/// why a fence five spaces in is a fence when it sits in an item whose content
+/// starts there.
+fn listContentColumn(indent: usize, trimmed: []const u8) ?usize {
+    if (trimmed.len < 2) return null;
+    var marker: usize = 0;
+    if (trimmed[0] == '-' or trimmed[0] == '*' or trimmed[0] == '+') {
+        marker = 1;
+    } else {
+        while (marker < trimmed.len and std.ascii.isDigit(trimmed[marker])) marker += 1;
+        if (marker == 0 or marker >= trimmed.len) return null;
+        if (trimmed[marker] != '.' and trimmed[marker] != ')') return null;
+        marker += 1;
+    }
+    if (marker >= trimmed.len) return null;
+    if (trimmed[marker] != ' ' and trimmed[marker] != '\t') return null;
+    var spaces = marker;
+    while (spaces < trimmed.len and (trimmed[spaces] == ' ' or trimmed[spaces] == '\t')) spaces += 1;
+    return indent + spaces;
 }
 
 /// Where a run of exactly `len` backticks starts, searching from `from`.
@@ -2016,9 +2071,26 @@ fn referenceDefinition(raw: []const u8) ?Definition {
     var line = raw;
     while (true) {
         const before = line;
-        for ([_][]const u8{ "> ", "- ", "* ", "+ " }) |marker| {
-            if (std.mem.startsWith(u8, line, marker))
-                line = std.mem.trimStart(u8, line[marker.len..], " \t");
+        // A quote marker takes no space after it, and a list marker may be a
+        // number. Stripping only `> `, `- `, `* ` and `+ ` left `>[label]:`,
+        // `>> [label]:`, `1. [label]:` and a tab after the marker unread and
+        // unreported, which is the closed-set discipline failing open.
+        if (line.len != 0 and line[0] == '>') {
+            line = std.mem.trimStart(u8, line[1..], " \t");
+        } else if (line.len >= 2 and
+            (line[0] == '-' or line[0] == '*' or line[0] == '+') and
+            (line[1] == ' ' or line[1] == '\t'))
+        {
+            line = std.mem.trimStart(u8, line[1..], " \t");
+        } else {
+            var digits: usize = 0;
+            while (digits < line.len and std.ascii.isDigit(line[digits])) digits += 1;
+            if (digits != 0 and digits + 1 < line.len and
+                (line[digits] == '.' or line[digits] == ')') and
+                (line[digits + 1] == ' ' or line[digits + 1] == '\t'))
+            {
+                line = std.mem.trimStart(u8, line[digits + 1 ..], " \t");
+            }
         }
         if (line.len == before.len) break;
     }
@@ -2183,6 +2255,104 @@ test "fenceRun: an info string means the line opens, never closes" {
     try std.testing.expect(close.bare);
     try std.testing.expectEqual(@as(usize, 3), close.len);
     try std.testing.expectEqual(@as(u8, '`'), close.ch);
+}
+
+test "fenceRun: a backtick in the info string means it is not a fence" {
+    // The defect this pins: CommonMark forbids a backtick in a backtick fence's
+    // info string, so ```a`b is a paragraph holding a code span. Reading it as a
+    // fence opened a block nothing closed, which took every link below it out of
+    // the check.
+    try std.testing.expect(fenceRun("```a`b") == null);
+    try std.testing.expect(fenceRun("```[x](d.md)```") == null);
+    try std.testing.expect(fenceRun("```zig") != null);
+    // A tilde fence may hold a backtick in its info string.
+    try std.testing.expect(fenceRun("~~~a`b") != null);
+}
+
+test "closingBacktickRun: only a run of the same length closes a span" {
+    // The defect this pins: a single backtick does not close a run of three, and
+    // counting backticks one at a time let an escaped or longer run leave the
+    // scan inside a span for the rest of the line.
+    try std.testing.expectEqual(@as(?usize, 4), closingBacktickRun("a `b` c", 3, 1));
+    try std.testing.expectEqual(@as(?usize, null), closingBacktickRun("``` x ` y", 3, 3));
+    try std.testing.expectEqual(@as(?usize, 6), closingBacktickRun("``` x ``` y", 3, 3));
+    // A longer run is passed over, not taken as a match.
+    try std.testing.expectEqual(@as(?usize, 9), closingBacktickRun("a ```` b ` c", 2, 1));
+    try std.testing.expectEqual(@as(?usize, null), closingBacktickRun("no ticks", 0, 1));
+}
+
+test "listContentColumn: where an item's content starts" {
+    // The column a fence inside the item is measured against. Without it, a pair
+    // of fences four spaces in read as a fenced block and hid the paragraph
+    // between them from the link check.
+    try std.testing.expectEqual(@as(?usize, 2), listContentColumn(0, "- a"));
+    try std.testing.expectEqual(@as(?usize, 5), listContentColumn(2, "1. a"));
+    try std.testing.expectEqual(@as(?usize, 3), listContentColumn(0, "1) a"));
+    try std.testing.expectEqual(@as(?usize, 4), listContentColumn(0, "-   a"));
+    try std.testing.expectEqual(@as(?usize, null), listContentColumn(0, "-a"));
+    try std.testing.expectEqual(@as(?usize, null), listContentColumn(0, "a - b"));
+    try std.testing.expectEqual(@as(?usize, null), listContentColumn(0, "1.a"));
+}
+
+test "referenceDefinition: the markers a definition may sit behind" {
+    // The defect this pins: a quote marker takes no space after it and a list
+    // marker may be a number, so `>[l]:`, `>> [l]:` and `1. [l]:` are
+    // definitions the renderer resolves. Stripping only `> `, `- `, `* ` and
+    // `+ ` left them unread and unreported.
+    try std.testing.expectEqualStrings("d.md", referenceDefinition("[l]: d.md").?.target);
+    try std.testing.expectEqualStrings("d.md", referenceDefinition(">[l]: d.md").?.target);
+    try std.testing.expectEqualStrings("d.md", referenceDefinition(">> [l]: d.md").?.target);
+    try std.testing.expectEqualStrings("d.md", referenceDefinition("1. [l]: d.md").?.target);
+    try std.testing.expectEqualStrings("d.md", referenceDefinition("- [l]: d.md").?.target);
+    // The label ends at the first unescaped bracket, as CommonMark reads it.
+    try std.testing.expectEqualStrings("d.md", referenceDefinition("[a\\]b]: d.md").?.target);
+    // A title after the destination is not part of it, and `<d>` is.
+    try std.testing.expectEqualStrings("d.md", referenceDefinition("[l]: d.md \"t\"").?.target);
+    try std.testing.expectEqualStrings("d.md", referenceDefinition("[l]: <d.md>").?.target);
+    // No destination on the line is reported, not skipped.
+    try std.testing.expect(referenceDefinition("[l]:").? == .unreadable);
+    try std.testing.expect(referenceDefinition("[l]:   ").? == .unreadable);
+    // Prose that merely holds a bracket and a colon is not a definition.
+    try std.testing.expect(referenceDefinition("[参考] 次の節: 使い方") == null);
+    try std.testing.expect(referenceDefinition("see [a](b.md): yes") == null);
+    try std.testing.expect(referenceDefinition("no bracket here") == null);
+}
+
+test "yamlKey: the spellings Actions treats as a bare key are refused" {
+    try std.testing.expectEqualStrings("run", yamlKey("run: zig build").?);
+    try std.testing.expectEqualStrings("on", yamlKey("on:").?);
+    // A quoted key and a space before the colon are spellings Actions accepts
+    // and this check refuses, so that they are reported rather than misread.
+    try std.testing.expect(yamlKey("'if': false") == null);
+    try std.testing.expect(yamlKey("run : zig build") == null);
+    try std.testing.expect(yamlKey("- not a key") == null);
+    try std.testing.expect(yamlKey("no colon") == null);
+}
+
+test "keyIsAllowed: the set is closed and holds no conditional" {
+    try std.testing.expect(keyIsAllowed("run"));
+    try std.testing.expect(keyIsAllowed("jobs"));
+    try std.testing.expect(keyIsAllowed("test")); // the one allowed job name
+    // Absent on purpose: a verification that is skipped or forgiven has stopped.
+    try std.testing.expect(!keyIsAllowed("if"));
+    try std.testing.expect(!keyIsAllowed("continue-on-error"));
+    try std.testing.expect(!keyIsAllowed("needs"));
+    try std.testing.expect(!keyIsAllowed("verify"));
+}
+
+test "identifierCount: comments and blank lines are not identifiers" {
+    try std.testing.expectEqual(@as(usize, 2), identifierCount("; a\n; b\ncar\ncdr\n"));
+    try std.testing.expectEqual(@as(usize, 0), identifierCount("; only a comment\n"));
+    try std.testing.expectEqual(@as(usize, 1), identifierCount("car\n\n\n"));
+    try std.testing.expectEqual(@as(usize, 0), identifierCount(""));
+}
+
+test "hasTestBlock: a top-level test, not the word in prose" {
+    try std.testing.expect(hasTestBlock("test \"a\" {}"));
+    try std.testing.expect(hasTestBlock("const x = 1;\ntest {}\n"));
+    try std.testing.expect(!hasTestBlock("// test \"a\" {}"));
+    try std.testing.expect(!hasTestBlock("const testing = 1;"));
+    try std.testing.expect(!hasTestBlock(""));
 }
 
 test "fenceRun: tildes and longer runs" {
