@@ -1,0 +1,66 @@
+# Per-commit verification.
+#
+# AGENTS.md's verification command table is the source of truth for what runs
+# here: every row whose "CIで実行" is 全コミット and whose "使えるようになる段階"
+# is at or below the current stage. Each stage's plan adds the new rows.
+#
+# No conditionals and no "run the step if it exists": calling a step that does
+# not exist fails, and tolerating that failure would hide a verification that
+# silently stopped running.
+#
+# Fuzzing (`zig build test --fuzz`) is deliberately absent. `--fuzz` does not
+# terminate on its own, so running it per commit would time out every time.
+# Stage 1 adds .github/workflows/fuzz.yml driven by schedule and
+# workflow_dispatch.
+#
+# The Zig version below is a copy; .zigversion is the source of truth and
+# `zig build check-docs` verifies that the two agree.
+
+name: CI
+
+# A feature-branch push with an open PR would otherwise start two runs, one per
+# event. Sharing a concurrency group does not fix that: cancellation is per
+# group, so one of the two would simply be killed and the PR would show a
+# cancelled check. Filtering the push trigger to main means a branch gets the
+# pull_request run and main gets the push run, never both.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One group per workflow and ref so a new commit supersedes the previous run
+  # on the same branch. github.ref distinguishes refs/heads/main from
+  # refs/pull/<n>/merge, which is correct here because the two triggers no
+  # longer overlap.
+  #
+  # Superseding means the older commit's run ends as cancelled and never turns
+  # green. That is the intended trade for not paying for runs nobody will read:
+  # the branch tip is what gets merged. "CI all green" is judged on the head
+  # commit of the PR, not on every intermediate commit.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      # dependabot's github-actions ecosystem keeps this current.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+      - run: zig fmt --check .
+      - run: zig build
+      - run: zig build test --summary all
+      - run: zig build check-docs
+      - run: zig build check-extract

@@ -1,0 +1,20 @@
+.{
+    .name = .sucheme,
+    .version = "0.1.0-dev",
+    .fingerprint = 0x9894d23d00f10c0d,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    // Why each entry is here: the .paths table in docs/design/zig-api-notes.md,
+    // which is the one place that records it. Nothing in this file reports a
+    // missing entry.
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        ".zigversion",
+        "src",
+        "tools",
+        "tests",
+        "LICENSE",
+        "README.md",
+    },
+}

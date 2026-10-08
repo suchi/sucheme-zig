@@ -1,7 +1,11 @@
 # ADR-0015: MIT ライセンスを採用する
 
-- ステータス: 採用
+- ステータス: ~~採用~~ 非推奨 → [ADR-0022: unlicensed-proprietary](0022-unlicensed-proprietary.md) に置き換え
 - 日付: 2026-10-04
+
+> 非推奨理由: 本ADRは public リポジトリを前提に、ライセンスを置かないことが公開の意図と矛盾するとして MIT を選んだ。[ADR-0020](0020-repository-visibility-private.md) で private にしたあと、ユーザーの判断により許諾を与えないことになった([ADR-0022](0022-unlicensed-proprietary.md))。MIT のままではアクセスできる人が成果物を自由に再配布できるため、アクセス制限の意図と食い違う。本ADRが整理した制約(BSD 3条項との両立、R7RS 付録Aの扱い)は ADR-0022 に引き継いだ。
+
+> 2026-10-06 追記: その後リポジトリは private に戻った([ADR-0020](0020-repository-visibility-private.md))。本ADRの決定は変えない。private でもライセンスファイルを置く意味は失われず、将来公開する場合に判断をやり直さずに済む。
 
 ## 背景
 

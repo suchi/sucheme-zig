@@ -4,3 +4,18 @@ _work
 .env
 .env.*
 !.env.example
+
+# Zig build artifacts
+zig-out/
+.zig-cache/
+
+# Files the OS and editors create beside tracked ones. check-docs rejects
+# anything that is not a generated *.txt in tests/r7rs-required/, so one of
+# these left there turns a correct repository red.
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+*~
+*.swp
+*.swo

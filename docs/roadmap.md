@@ -4,13 +4,15 @@
 
 各段階は、リーダからプリンタまでネイティブとブラウザの両方で通しで動く状態を作る([ADR-0018](adr/0018-incremental-vertical-slices.md))。層を1つずつ完成させる進め方は採らない。段階の終わりに「確定したこと」と「残していること」を記録する。
 
+「残していること」の欄は、その段階で決めずに後の段階へ回した事項を指す([design/open-questions.md](design/open-questions.md) の行)。未着手の作業項目のことではない。作業の進み具合は各段階のチェックボックスが正である。
+
 作業範囲の全体は [plans/0001-sow.md](plans/0001-sow.md) にある。設計は [design/](design/) に、決定は [adr/](adr/) に、実装時に決めることは [design/open-questions.md](design/open-questions.md) にある。
 
 ## 現在地
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 設計フェーズ(手順1)完了。段階0 を進行中 |
+| 現在の段階 | 段階0(足場)。`main` での CI グリーンの確認が未了。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
@@ -33,19 +35,21 @@
 
 ### 段階0: 足場
 
-- [ ] `build.zig` と `build.zig.zon` と `.zigversion`
-- [ ] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
+- [x] `build.zig` と `build.zig.zon` と `.zigversion`
+- [x] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
 - [x] `AGENTS.md` の検証コマンド表を埋める
-- [x] ライセンスの決定と `LICENSE` の配置([ADR-0015](adr/0015-mit-license.md))
-- [ ] リポジトリの public 化([ADR-0012](adr/0012-repository-visibility-public.md))
-- [ ] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
-- [ ] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
-- [ ] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
-- [ ] `.github/dependabot.yml` の担当者をテンプレート由来の値から修正
+- [x] ライセンスの決定と `LICENSE` の配置。MIT で始め、private 化の後に UNLICENSED に変えた([ADR-0022](adr/0022-unlicensed-proprietary.md))
+- [x] リポジトリの可視性の決定。public にしたのち private に戻した([ADR-0020](adr/0020-repository-visibility-private.md))
+- [x] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
+- [x] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
+- [x] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
+- [x] `.github/dependabot.yml` の担当者をテンプレート由来の値から修正
 
 完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階0までに決める」の行。件数と内容をここに複製しない。
+確定したこと: リポジトリは private とする(2026-10-06、[ADR-0020](adr/0020-repository-visibility-private.md))。GitHub Pages は使わず、Web UI の配置は段階8で行う([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。`build.zig` の step は既定・`run`・`test`・`check-docs`・`check-extract` である。どれが毎コミットで要るかは `AGENTS.md` の表が正で、`zig build check-docs` が表と `ci.yml` と `build.zig` の3つを突き合わせる。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、`tests/r7rs-required/` に置いた。ライブラリ数と識別子数は [extract-r7rs-required/SOURCE.md](../tools/extract-r7rs-required/SOURCE.md) の表が正で、`zig build check-docs` が実物と照合する。
+
+残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。未着手の作業項目はチェックボックスを参照する。
 
 ### 段階1: 通しで動く最小の縦切り
 
@@ -62,9 +66,11 @@
 - [ ] REPL(素朴な行読み取り、完結判定による継続行)
 - [ ] リーダのファジングのワークフロー(定期実行と手動起動)
 - [ ] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版
-- [ ] GitHub Pages への配置と PR プレビュー
+- [ ] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める)
+- [ ] aarch64 を自動テストの対象に加えるかの判断と ADR の作成([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる)
+- [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う
 
-完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
+完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 
 残していること: [design/open-questions.md](design/open-questions.md) の「段階1までに決める」の行。件数と内容をここに複製しない。
 
@@ -104,7 +110,7 @@
 
 この段階で未実装として表れてよいのは、後の段階の機能を必要とする識別子である。数値塔を必要とするもの(`/` `exact` `inexact` `sqrt` など)は段階4、ポートを引数に取るか返すもの(`read-char` `write-string` `open-input-string` など)は段階5である。どの族にも属さず後の段階にも割り当てられない識別子が残っていれば、それは [ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md) の族の一覧の漏れである。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階3までに決める」の行。件数と内容をここに複製しない。
+残していること: なし。open-questions.md に段階3の節はない。
 
 ### 段階4: 数値塔とUnicode
 
@@ -137,11 +143,13 @@
 
 - [ ] `(chibi test)` 互換の最小実装
 - [ ] `r7rs-tests.scm` の取り込みと実行
-- [ ] 準拠マトリクスの生成と公開、CI による同期検査
+- [ ] 準拠マトリクスの生成と `docs/status/` への反映、CI による同期検査
 - [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消
 - [ ] 不合格項目の issue 化と解消
+- [ ] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
+- [ ] BSD 3条項の第3条項(名前の宣伝利用)について、出典として述べることと推奨として用いることの線を引く新ADRの作成([ADR-0022](adr/0022-unlicensed-proprietary.md))。記録形式が2つ併存することを定める件も同じ ADR で扱う
 
-完了条件: 準拠マトリクスが公開され、`r7rs-tests.scm` の不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
+完了条件: 準拠マトリクスが `docs/status/` に生成され、`r7rs-tests.scm` の不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
 
 残していること: [design/open-questions.md](design/open-questions.md) の「段階を定めずに保留しているもの」のうち、性能測定を根拠にする行。
 
@@ -159,15 +167,16 @@
 - [ ] `read` による対話
 - [ ] エラー位置の表示と処理の中断
 - [ ] 編集の補助とサンプルの充実
+- [ ] Web UI の配置先の選定と配置([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。private にアクセス制限でき、静的ファイルを `application/wasm` で配信できるサービスを選ぶ
 
-完了条件: ブラウザで R7RS のサンプルが一通り動く。リリース v1.2.0 を出す。
+完了条件: ブラウザで R7RS のサンプルが一通り動く。配置した URL でも動く。リリース v1.2.0 を出す。
 
 残していること: なし。ここが最終段階である。
 
 ## 横断的に続ける作業
 
 - ドキュメントとコードの整合性チェックを節目ごとに実施する。
-- PR は自前の敵対的レビューを実行し、新規指摘ゼロになるまで修正する([ADR-0017](adr/0017-self-hosted-adversarial-review.md))。「この詳細が未規定である」という指摘のうち実装時に決めると判断したものは [design/open-questions.md](design/open-questions.md) に記録して閉じる([ADR-0018](adr/0018-incremental-vertical-slices.md))。
+- PR は自前の敵対的レビューを実行し、必須の新規指摘ゼロになるまで修正する([ADR-0023](adr/0023-mandatory-zero-convergence.md))。推奨と任意は `docs/review/` に記録して該当する段階の作業項目に回す。手順の正は `AGENTS.md` の「PR・レビュー・マージ」の節である。「この詳細が未規定である」という指摘のうち実装時に決めると判断したものは [design/open-questions.md](design/open-questions.md) に記録して閉じる([ADR-0018](adr/0018-incremental-vertical-slices.md))。
 - 技術選択と設計判断、およびレビュー提案をあえて採用しない場合は ADR に記録する。
 - 段階の完了時に、確定したことを設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す。
 - 1コミット=1論理変更を守り、節目ごとにプッシュする。
