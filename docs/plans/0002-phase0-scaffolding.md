@@ -373,7 +373,7 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 
 1. `.zigversion`、`build.zig.zon`、`src/sucheme.zig`、`src/main.zig`、`build.zig`(版の強制とビルドオプションを含む)を作り、`zig build` と `zig build test` がローカルで通ることを確認する。`fingerprint` をここで確定させる。
 2. `.gitignore`、`.gitattributes`、`.editorconfig` に追記する。1と並行できる。
-3. `AGENTS.md` の検証コマンド表に3行を足す。`docs/design/architecture.md` の確保点の一元化の範囲を直す。`docs/design/zig-api-notes.md` の `minimum_zig_version` と check-docs の記述を直す。1と並行できる。
+3. `AGENTS.md` の検証コマンド表に行を足す(上の「CI で実行する検証」の節が挙げる行)。`docs/design/architecture.md` の確保点の一元化の範囲を直す。`docs/design/zig-api-notes.md` の `minimum_zig_version` と check-docs の記述を直す。1と並行できる。
 4. `.github/workflows/ci.yml` を作る。1の完了後、かつ Zig のセットアップ手段が決まった後。
 5. `tools/check-docs` を作り、`check-docs` step を追加する。1と3と4の完了後。CI より後にするのは、ワークフローが0個の状態で版の一致検査を通過させないためである。
 6. `tools/extract-r7rs-required` と `appendix-a.html` と `SOURCE.md` を作り、`zig run` で走らせて `tests/r7rs-required/*.txt` をコミットする。1の完了後。4と5と並行できる。
