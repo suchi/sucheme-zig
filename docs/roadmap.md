@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階0(足場)。`main` での CI グリーンの確認が未了。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
+| 現在の段階 | 段階1(通しで動く最小の縦切り)。切片は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
@@ -45,13 +45,15 @@
 - [x] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
 - [x] `.github/dependabot.yml` の担当者をテンプレート由来の値から修正
 
-完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。
+完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。**2026-10-08 に PR #2 のマージで満たした。** `main` の CI がグリーンになったことを確認済みである。
 
 確定したこと: リポジトリは private とする(2026-10-06、[ADR-0020](adr/0020-repository-visibility-private.md))。GitHub Pages は使わず、Web UI の配置は段階8で行う([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。`build.zig` の step は既定・`run`・`test`・`check-docs`・`check-extract` である。どれが毎コミットで要るかは `AGENTS.md` の表が正で、`zig build check-docs` が表と `ci.yml` と `build.zig` の3つを突き合わせる。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、`tests/r7rs-required/` に置いた。ライブラリ数と識別子数は [extract-r7rs-required/SOURCE.md](../tools/extract-r7rs-required/SOURCE.md) の表が正で、`zig build check-docs` が実物と照合する。
 
 残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。未着手の作業項目はチェックボックスを参照する。
 
 ### 段階1: 通しで動く最小の縦切り
+
+作業は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が10個の切片に割っている。下のチェックボックスは段階の全体で、切片ごとの完了条件はその計画書が正である。1つの PR に段階1の全部を入れると段階0の経緯が繰り返されるので、切片ごとにマージする。
 
 意図的に小さくする。10進整数と記号と手続き呼び出しだけで `(define (fact n) ...)` が動く状態を目標にする。この時点で値表現、ヒープ、GC、機械、リーダ、プリンタ、REPL、WASM、Web UI、CI がすべて最小の形でそろう。以降の段階はこの縦切りを太らせる作業になる。
 

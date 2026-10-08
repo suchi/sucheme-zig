@@ -61,3 +61,4 @@
 | [0025](0025-permission-policy-guard-in-hooks.md) | 承認の判断はフックに置き、許可リストは日常操作まで広げる | 採用 | 2026-10-08 |
 | [0026](0026-verify-facts-about-code-not-prose.md) | 機械検査の対象をコードと生成物についての事実に限る | 採用 | 2026-10-08 |
 | [0027](0027-severity-by-consequence-and-a-cost-side-stop.md) | 指摘の重要度を帰結で定め、レビューを費用の側で止める | 採用 | 2026-10-08 |
+| [0028](0028-review-harness-in-repo.md) | 実機確認のハーネスをリポジトリに置き、Python で書く | 採用 | 2026-10-09 |
