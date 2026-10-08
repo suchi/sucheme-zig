@@ -593,6 +593,23 @@ fn normalizeRecordLine(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
     return tight.items;
 }
 
+/// Whether the row is one of the ADR index's rows: its first cell links to a
+/// numbered ADR file.
+///
+/// Such a row is a record. `adrRow` reads it to find an ADR's one row,
+/// `adrRowStatus` reads its status, and the scan for an index row with no file
+/// reads its link. It carries none of `record_table_labels`, so an outdated
+/// copy indented two spaces was read by none of them while GFM still rendered
+/// it inside the table, and the index showed two statuses for one ADR.
+fn adrIndexRow(row: []const u8) bool {
+    if (row.len == 0 or row[0] != '|') return false;
+    const bar = std.mem.indexOfScalarPos(u8, row, 1, '|') orelse return false;
+    const target = linkTargetInRow(row[0..bar]) orelse return false;
+    var digits: usize = 0;
+    while (digits < target.len and std.ascii.isDigit(target[digits])) digits += 1;
+    return digits == 4 and digits < target.len and target[digits] == '-';
+}
+
 /// Spellings of a colon that a reader takes for the one a record uses.
 const colon_spellings = [_][]const u8{ "\u{ff1a}", "\u{fe55}" };
 
@@ -616,11 +633,16 @@ const invisible_spellings = [_][]const u8{
 
 /// A document line as the record readers see it: normalised and trimmed.
 ///
-/// Every reader of a record goes through this. Normalising in one reader and
-/// not the others left four of them matching raw text, so a `- 置き換え:` or a
-/// `対応する決定:` written with a full-width colon was read by nobody and
-/// reported by nobody -- including the case where an ADR declared it replaced
-/// one that is still adopted.
+/// Normalising in one reader and not the others left four of them matching raw
+/// text, so a `- 置き換え:` or a `対応する決定:` written with a full-width colon
+/// was read by nobody and reported by nobody -- including the case where an ADR
+/// declared it replaced one that is still adopted.
+///
+/// The readers that stay on raw text are the ones that match a label to find a
+/// row: an unmatched label leaves them reporting a missing record, which is the
+/// closing direction. Claiming here that every reader goes through this was
+/// false, and the one reader where a miss opened a hole instead -- the
+/// verification command table's cells -- was outside the claim.
 fn recordLine(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
     return std.mem.trim(u8, try normalizeRecordLine(gpa, raw), &std.ascii.whitespace);
 }
@@ -740,6 +762,7 @@ fn namesARecord(text: []const u8) bool {
         for (record_table_labels) |label| {
             if (std.mem.indexOf(u8, text, label) != null) return true;
         }
+        if (adrIndexRow(text)) return true;
         return breakdownIn(text) != null;
     }
 
@@ -1037,6 +1060,38 @@ fn checkEntryPointAdrs(
 // says it is written to avoid.
 // ---------------------------------------------------------------------------
 
+/// The header of AGENTS.md's verification command table.
+///
+/// The table is found by this header. A renamed column leaves it unfound, and
+/// the check then reports that the table was not read, so the set is closed in
+/// both directions.
+const command_table_header = [_][]const u8{ "用途", "コマンド", "使えるようになる段階", "CIで実行" };
+
+/// The spellings the `CIで実行` column uses.
+///
+/// Anything else is reported. Comparing against `全コミット` alone and skipping
+/// the rest meant a spelling the check could not read removed the row silently,
+/// and a removed row is a command that may leave CI with everything green.
+const command_table_ci_cells = [_][]const u8{ "全コミット", "手動と定期実行のみ", "-" };
+
+/// Whether the row is the verification command table's header, read as a record.
+fn isCommandTableHeader(gpa: std.mem.Allocator, row: []const u8) !bool {
+    if (cellCount(row) != command_table_header.len) return false;
+    for (command_table_header, 0..) |want, i| {
+        const cell = cellAt(row, i) orelse return false;
+        if (!std.mem.eql(u8, try recordLine(gpa, cell), want)) return false;
+    }
+    return true;
+}
+
+/// Whether the cell is one of the spellings the `CIで実行` column uses.
+fn isKnownCiCell(cell: []const u8) bool {
+    for (command_table_ci_cells) |known| {
+        if (std.mem.eql(u8, cell, known)) return true;
+    }
+    return false;
+}
+
 /// Reports a command the table requires at this stage that no workflow runs.
 ///
 /// Only the commands are compared, not where they run. A row that should run on
@@ -1082,8 +1137,15 @@ fn checkCiRunsTheTable(
                 // colon through, and both are spellings Actions treats as the
                 // bare one: `'if': false` on the job skipped every step while
                 // every command stayed green.
-                if (std.mem.indexOfScalar(u8, line, ':') != null) rep.fail(
-                    "{s}:{d}: `{s}` is not a key this check can read; write the key bare, with no quotes and no space before the colon",
+                //
+                // Reported whether or not it carries a colon. Requiring one let
+                // a multi-line plain scalar through, because its continuation
+                // lines have none: `- run: zig fmt --check .` followed by an
+                // indented `--help` read here as the bare command, while YAML
+                // folds the two into `zig fmt --check . --help`, which checks
+                // nothing and exits zero.
+                rep.fail(
+                    "{s}:{d}: `{s}` is not a key this check can read; write every line as a bare `key: value`, with no quotes, no space before the colon and no continuation line",
                     .{ path, lineno, line },
                 );
                 continue;
@@ -1138,27 +1200,67 @@ fn checkCiRunsTheTable(
     }
 
     var rows: usize = 0;
+    // The table is located by its header, and only its own rows are read.
+    // Walking every line of AGENTS.md that starts with a pipe read the other
+    // tables too, which is why a cell this check cannot read could not be
+    // reported: the report would have fired on every row of every other table.
+    var in_table = false;
+    var lineno: usize = 0;
     var lines = std.mem.splitScalar(u8, table, '\n');
     while (lines.next()) |raw| {
         const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        if (row.len == 0 or row[0] != '|') continue;
-        var cells = std.mem.splitScalar(u8, row, '|');
-        _ = cells.next(); // the empty cell before the first bar
-        _ = cells.next() orelse continue; // purpose
-        const command_cell = cells.next() orelse continue;
-        const stage_cell = cells.next() orelse continue;
-        const ci_cell = cells.next() orelse continue;
+        lineno += 1;
+        if (!in_table) {
+            in_table = try isCommandTableHeader(gpa, row);
+            continue;
+        }
+        if (endsATable(row)) break;
+        if (isDelimiterRow(row)) continue;
+        if (cellCount(row) < command_table_header.len) {
+            rep.fail(
+                "AGENTS.md:{d}: this row of the verification command table has {d} cells, not {d}",
+                .{ lineno, cellCount(row), command_table_header.len },
+            );
+            continue;
+        }
+        const command_cell = cellAt(row, 1).?;
+        const stage_cell = cellAt(row, 2).?;
+        const ci_cell = cellAt(row, 3).?;
 
-        const ci = std.mem.trim(u8, ci_cell, &std.ascii.whitespace);
+        // Normalised, as every other reader of a record normalises. Comparing
+        // the raw cell let a zero-width space inside `全コミット` drop the row:
+        // the reader saw no difference and the check stopped requiring the
+        // command, so deleting its step left CI green.
+        const ci = try recordLine(gpa, ci_cell);
+        if (!isKnownCiCell(ci)) {
+            rep.fail(
+                "AGENTS.md:{d}: `{s}` is not a spelling the `CIで実行` column uses; add it to command_table_ci_cells after deciding what it means for the verification",
+                .{ lineno, ci },
+            );
+            continue;
+        }
         if (!std.mem.eql(u8, ci, "全コミット")) continue;
-        const needed_at = std.fmt.parseInt(
-            usize,
-            std.mem.trim(u8, stage_cell, &std.ascii.whitespace),
-            10,
-        ) catch continue;
+
+        const stage_text = try recordLine(gpa, stage_cell);
+        const needed_at = std.fmt.parseInt(usize, stage_text, 10) catch {
+            // Reported, not skipped. A stage cell this check could not read used
+            // to take the row with it, so writing `0(最初から)` there excused the
+            // command from CI while the table still said every commit.
+            rep.fail(
+                "AGENTS.md:{d}: `{s}` is not a stage number; a row marked 全コミット needs one so the check knows when the command exists",
+                .{ lineno, stage_text },
+            );
+            continue;
+        };
         if (needed_at > stage) continue;
 
-        const command = backtickedSpan(command_cell) orelse continue;
+        const command = backtickedSpan(command_cell) orelse {
+            rep.fail(
+                "AGENTS.md:{d}: this row is marked 全コミット but names no command in backticks",
+                .{lineno},
+            );
+            continue;
+        };
         rows += 1;
         var ran = false;
         for (run_lines.items) |line| {
@@ -1266,14 +1368,12 @@ fn runsCommand(line: []const u8, command: []const u8) bool {
     return false;
 }
 
-/// How deeply a line is indented.
+/// How deeply a line is indented, in columns.
 ///
-/// An ideographic space counts as one unit. It is not Markdown indentation, so
-/// a line starting with one renders as ordinary text -- and reading it as column
-/// zero meant a record written there was neither read nor reported.
-///
-/// A tab does not count. YAML forbids one in indentation, so a tab-indented
-/// line reads as column zero, which closes a block rather than extending one.
+/// `indentRun` holds what counts as indentation and why. Restating it here let
+/// the two drift: this comment went on saying a tab does not count after the
+/// implementation started counting one, so the file described one function's
+/// behaviour two ways at once.
 fn indentOf(raw: []const u8) usize {
     return indentRun(raw).cols;
 }
@@ -1688,47 +1788,52 @@ fn lineOf(doc: []const u8, offset: usize) usize {
     return n;
 }
 
-/// Reports a table row whose cell count does not match its header.
+/// Reports a table row carrying more cells than its header.
 ///
 /// GFM drops the extra cells of a longer row, so an unescaped `|` inside a cell
 /// moves the cells after it and the last one disappears from the rendered table.
 /// Rows of this repository lost their content that way, one of them the record of
 /// how a review finding was closed. The pipe has to be escaped, "including inside
 /// other inline spans" as the GFM tables extension puts it.
+///
+/// A shorter row is not reported. GFM pads one with empty cells, so no content
+/// is lost and the advice to escape a pipe would name the wrong cause.
 fn checkTableCells(rep: *Reporter, path: []const u8, doc: []const u8) void {
+    // The number of cells the open table's header declares.
     var header: ?usize = null;
-    var in_table = false;
+    var prev: []const u8 = "";
     var lines = std.mem.splitScalar(u8, doc, '\n');
     var lineno: usize = 0;
     while (lines.next()) |raw| {
-        lineno += 1;
         const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
-        // A leading pipe is optional in GFM, so a row in an open table is any
-        // line carrying one. Requiring the pipe at the start let a row drop it
-        // and take the rest of the table out of the check with it. Outside a
-        // table the pipe has to come first, or prose mentioning one would open
-        // a table that does not exist.
-        const is_row = line.len != 0 and (line[0] == '|' or (header != null and hasUnescapedPipe(line)));
-        if (!is_row) {
+        lineno += 1;
+        defer prev = line;
+
+        if (header == null) {
+            // A table opens where a delimiter row follows a line carrying a pipe
+            // and the two declare the same number of cells, which is GFM's rule.
+            // Taking the first line starting with a pipe for the header instead
+            // required the pipe there: a header that left it off, as GFM allows,
+            // took its whole table out of this check.
+            if (isDelimiterRow(line) and hasUnescapedPipe(prev) and
+                cellCount(line) == cellCount(prev))
+            {
+                header = cellCount(prev);
+            }
+            continue;
+        }
+        // Only a blank line or another block closes a table. Closing it at any
+        // line without a pipe let one pipeless line -- which GFM renders as a
+        // one-cell row, keeping the table open -- take every row below it out of
+        // the check.
+        if (endsATable(line)) {
             header = null;
-            in_table = false;
             continue;
         }
         const cells = cellCount(line);
-        if (header == null) {
-            header = cells;
-            continue;
-        }
-        // The row after the header is the delimiter row, which GFM requires to
-        // match it; a mismatch there means the block is not a table at all.
-        if (!in_table) {
-            in_table = true;
-            if (cells != header.?) header = null;
-            continue;
-        }
-        if (cells == header.?) continue;
+        if (cells <= header.?) continue;
         rep.fail(
-            "{s}:{d}: this row has {d} cells and its header has {d}; escape a `|` inside a cell as `\\|`",
+            "{s}:{d}: this row has {d} cells and its header has {d}, so GFM drops the last ones; escape a `|` inside a cell as `\\|`",
             .{ path, lineno, cells, header.? },
         );
     }
@@ -1766,6 +1871,89 @@ fn cellCount(line: []const u8) usize {
     return if (closed) cells - 1 else cells;
 }
 
+/// The cell at `index` of a table row, counting from zero, untrimmed.
+///
+/// The split follows `cellCount`: the opening and closing pipes are optional and
+/// an escaped pipe is text, so reading cells by `splitScalar(u8, row, '|')` gave
+/// a different answer from the count on the same row.
+fn cellAt(row: []const u8, index: usize) ?[]const u8 {
+    var body = row;
+    if (body.len != 0 and body[0] == '|') body = body[1..];
+
+    var at: usize = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        if (body[i] == '\\') {
+            i += 1; // the escaped character, pipe or not
+            continue;
+        }
+        if (body[i] != '|') continue;
+        if (at == index) return body[start..i];
+        at += 1;
+        start = i + 1;
+        // A pipe at the end closes the row, so there is no cell after it.
+        if (i + 1 == body.len) return null;
+    }
+    return if (at == index) body[start..] else null;
+}
+
+/// Whether the row is a table's delimiter row: every cell is a run of dashes,
+/// with an optional colon at either end.
+///
+/// GFM opens a table where this row follows one with the same number of cells,
+/// which is what makes the leading pipe optional on both.
+fn isDelimiterRow(row: []const u8) bool {
+    if (!hasUnescapedPipe(row)) return false;
+    var i: usize = 0;
+    const n = cellCount(row);
+    while (i < n) : (i += 1) {
+        const cell = std.mem.trim(
+            u8,
+            cellAt(row, i) orelse return false,
+            &std.ascii.whitespace,
+        );
+        var j: usize = 0;
+        if (j < cell.len and cell[j] == ':') j += 1;
+        var dashes: usize = 0;
+        while (j < cell.len and cell[j] == '-') : (j += 1) dashes += 1;
+        if (j < cell.len and cell[j] == ':') j += 1;
+        if (dashes == 0 or j != cell.len) return false;
+    }
+    return true;
+}
+
+/// Whether the line starts a block that breaks an open table.
+///
+/// GFM breaks a table at "the first empty line, or beginning of another
+/// block-level structure". A line that merely carries no pipe is neither: GFM
+/// renders it as a one-cell row and the table continues past it.
+fn endsATable(line: []const u8) bool {
+    if (line.len == 0) return true;
+    if (line[0] == '#' or line[0] == '>') return true;
+    if (fenceRun(line) != null) return true;
+    if (opensAList(line)) return true;
+    return isThematicBreak(line);
+}
+
+/// Whether the line is a thematic break: three or more of the same marker, with
+/// nothing else but spaces.
+fn isThematicBreak(line: []const u8) bool {
+    if (line.len < 3) return false;
+    const ch = line[0];
+    if (ch != '-' and ch != '*' and ch != '_') return false;
+    var n: usize = 0;
+    for (line) |c| {
+        if (c == ch) {
+            n += 1;
+            continue;
+        }
+        if (c == ' ' or c == '\t') continue;
+        return false;
+    }
+    return n >= 3;
+}
+
 /// Whether the line carries a `|` that is not escaped.
 fn hasUnescapedPipe(line: []const u8) bool {
     var i: usize = 0;
@@ -1789,6 +1977,64 @@ test "cellCount: the pipes that open and close a row are optional" {
     try std.testing.expectEqual(@as(usize, 3), cellCount("| a | b | c"));
     // An escaped pipe is the cell's text.
     try std.testing.expectEqual(@as(usize, 1), cellCount("| a \\| b |"));
+}
+
+test "cellAt: reads the same cells cellCount counts" {
+    try std.testing.expectEqualStrings(" a ", cellAt("| a | b |", 0).?);
+    try std.testing.expectEqualStrings(" b ", cellAt("| a | b |", 1).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), cellAt("| a | b |", 2));
+    // The opening and closing pipes are optional, as in cellCount.
+    try std.testing.expectEqualStrings("a ", cellAt("a | b", 0).?);
+    try std.testing.expectEqualStrings(" b", cellAt("a | b", 1).?);
+    try std.testing.expectEqualStrings(" b", cellAt("| a | b", 1).?);
+    // An escaped pipe stays inside its cell.
+    try std.testing.expectEqualStrings(" a \\| b ", cellAt("| a \\| b |", 0).?);
+}
+
+test "isDelimiterRow: dashes with an optional colon at either end" {
+    try std.testing.expect(isDelimiterRow("| --- | --- |"));
+    try std.testing.expect(isDelimiterRow("--- | ---"));
+    try std.testing.expect(isDelimiterRow("| :--- | ---: | :---: |"));
+    try std.testing.expect(isDelimiterRow("| - | - |"));
+    try std.testing.expect(!isDelimiterRow("| a | b |"));
+    try std.testing.expect(!isDelimiterRow("| --- | a |"));
+    try std.testing.expect(!isDelimiterRow("---"));
+    try std.testing.expect(!isDelimiterRow("| :: | --- |"));
+}
+
+test "endsATable: only a blank line or another block closes a table" {
+    // The defect this pins: a line with no pipe is a one-cell row in GFM, and
+    // closing the table there took every row below it out of the check.
+    try std.testing.expect(!endsATable("pipeless"));
+    try std.testing.expect(!endsATable("| a | b |"));
+    try std.testing.expect(endsATable(""));
+    try std.testing.expect(endsATable("## 見出し"));
+    try std.testing.expect(endsATable("> 引用"));
+    try std.testing.expect(endsATable("```"));
+    try std.testing.expect(endsATable("- 箇条書き"));
+    try std.testing.expect(endsATable("1. 番号付き"));
+    try std.testing.expect(endsATable("---"));
+    try std.testing.expect(endsATable("***"));
+}
+
+test "adrIndexRow: the index's rows are records" {
+    // The defect this pins: the row carries none of record_table_labels, so an
+    // indented copy was read by nobody while GFM rendered it in the table.
+    try std.testing.expect(adrIndexRow("| [0005](0005-hygienic-expander-by-renaming.md) | t | 非推奨 | 2026-10-04 |"));
+    try std.testing.expect(adrIndexRow("| [0000](./0000-template.md) | テンプレート | - | - |"));
+    try std.testing.expect(!adrIndexRow("| [ADR-0024](../adr/0024-closed-spelling-sets.md) | x |"));
+    try std.testing.expect(!adrIndexRow("| 番号 | タイトル | ステータス | 日付 |"));
+    try std.testing.expect(!adrIndexRow("| [x](README.md) | t |"));
+    try std.testing.expect(!adrIndexRow("- [0005](0005-x.md)"));
+}
+
+test "isKnownCiCell: the CI column's spellings are a closed set" {
+    try std.testing.expect(isKnownCiCell("全コミット"));
+    try std.testing.expect(isKnownCiCell("手動と定期実行のみ"));
+    try std.testing.expect(isKnownCiCell("-"));
+    try std.testing.expect(!isKnownCiCell("毎コミット"));
+    try std.testing.expect(!isKnownCiCell("全コミット(段階0から)"));
+    try std.testing.expect(!isKnownCiCell(""));
 }
 
 /// Blanks every indented line, so that only column zero carries a record.
@@ -2453,7 +2699,13 @@ fn checkMarkdown(
             // fence inside a list item can sit four or more spaces in;
             // docs/adr/README.md relies on that. The cost is that an indented
             // code block demonstrating a fence is read as one.
-            const trimmed = std.mem.trimStart(u8, line, " ");
+            //
+            // The run is measured by `indentRun`, as the record readers measure
+            // it. `trimStart(line, " ")` left an ideographic space in place, so
+            // a fence indented with one was not seen as a fence here while
+            // `visibleMarkdown` did see it: the same three lines were a code
+            // block to one reader and a paragraph with a live link to the other.
+            const trimmed = line[indentRun(line).bytes..];
 
             if (fenceRun(trimmed)) |run| {
                 if (fence) |open| {
@@ -3146,6 +3398,9 @@ test "namesARecord: the key is the word, not a sentence mentioning it" {
     try std.testing.expect(!namesARecord("2. 決定を変えない追記。`> YYYY-MM-DD 追記: ...` の形で書く:"));
     try std.testing.expect(!namesARecord("- メリット: 全体整合性の確認"));
     try std.testing.expect(!namesARecord("| 項目 | 検査の内容 |"));
+    // A row of the ADR index is a record, and its header is not.
+    try std.testing.expect(namesARecord("| [0005](0005-hygienic-expander-by-renaming.md) | t | 非推奨 | 2026-10-04 |"));
+    try std.testing.expect(!namesARecord("| 番号 | タイトル | ステータス | 日付 |"));
 }
 
 test "rowCounts: both spellings of a total with its parts" {
