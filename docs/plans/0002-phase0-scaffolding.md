@@ -91,7 +91,7 @@ fn checkZigVersion() void {
 | `run` | 実行ファイルを起動する。`--` 以降を転送する | 既定の install step |
 | `test` | ネイティブ対象のモジュールのテスト | なし |
 | `check-docs` | `tools/check-docs` を実行する | なし |
-| `check-extract` | 抽出プログラムを `--check` で実行し、生成物が入力から導かれたままかを比べる | なし |
+| `check-extract` | 抽出プログラムを引数なしで実行し、生成物が入力から導かれたままかを比べる。比較が既定で、書き込みは `--write` が要る。この run が引数を持たないことを configure 段で固定している | なし |
 
 `run` を `AGENTS.md` の検証コマンド表に追加する。表が step の正であると宣言している以上、表外の step を作ると検査もレビューの対象外になる。表には「CIで実行: -」として、検証コマンドではないことを示す。
 
@@ -167,15 +167,16 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 | 項目 | 検査の内容 |
 | --- | --- |
-| 自身の引数 | `build.zig` から `--root` が1つ以上渡る。`--root` と `--exclude` に値が付く。知らない引数が無い |
+| 自身の引数 | `build.zig` から `--root` が1つ以上渡る。`--stage` が渡り、値が数値である。`--requires` が1つ以上渡る。`--root`・`--exclude`・`--requires` に値が付く。知らない引数が無い |
 | バージョンの3箇所の一致 | `.zigversion` の値が `build.zig.zon` の `minimum_zig_version` と `.github/workflows/*.yml` のリテラルに一致する |
 | CI が入れる Zig の読み取り | ワークフローのファイルが1つ以上ある。Zig を入れる段が `ci.yml` に1つ以上ある(別のワークフローに移すと、毎コミットで走るジョブに Zig が無いまま版だけ検査される)。各段が自分の `with:` の直下に `version:` を1つだけ持ち、その値が `.zigversion` と一致する |
 | ベンダリングした入力のハッシュ | 出所の文書が記録した SHA-256 と内容が一致する |
 | 生成物のハッシュ | `tests/r7rs-required/*.txt` 全体の記録と一致する。記録はラベルで引き当て、1つに定まることも検査する。ディレクトリに `*.txt` 以外が無いことも見る。`.gitignore` が無視する名前は対象外とし、無視集合の正は `.gitignore` 1箇所である |
 | 生成物の識別子数 | 出所の文書の表の各行と合計が実物と一致する。表の行とファイルが双方向に対応し、記録されたライブラリ数とファイル数も一致する |
 | テストが走ること | 各 `--root` が `test` ブロックを1つ以上持つ。`build.zig` 側では、各 target の test バイナリが `test` step の run 段の producer として現れ、テストフィルタもカスタムの test runner も設定されていないことを configure 段で照合する |
+| 検査が走り、その結果が聞かれること | `check-docs` と `check-extract` の step が自分の run を依存に持ち、その run が終了コードで step の成否を決める形であることを configure 段で照合する。`stdio` が自分で条件を検査する形、外部として飛ばされる形、出力を捕獲してキャッシュ可能になる形を拒否する。`check-extract` の run は引数を1つも持たないことも固定する。テスト step については同じ照合を各 target について行う |
 | build.zig が表と CI を固定すること | `build.zig` が宣言する step から作った `--requires` の各コマンドについて、表に全コミットの行があり、`ci.yml` がそれを走らせている。表と `ci.yml` は互いにしか照合していなかったので、行と段を対で落とすと要求ごと消えた。この一覧は step そのものなので、要求を消すには step を消すことになり、コマンド自体が動かなくなる。`zig fmt --check .` は step ではないので、表と `ci.yml` だけが支える |
-| ワークフローが走ること | `ci.yml` の `on`・`push`・`branches`・`pull_request`・`strategy`・`matrix`・`os`・`runs-on`・`steps` が揃い、値が閉じた集合に入る。キーの集合を閉じても値は見ていなかったので、`on:` を消す・`os: []` にする・存在しないランナーを指すだけで、run の段を1行も触らずに CI が1回も走らなくなった |
+| ワークフローが走ること | `ci.yml` の `on`・`jobs`・`push`・`branches`・`pull_request`・`strategy`・`matrix`・`os`・`runs-on`・`steps` が揃い、値が閉じた集合に入る。キーの集合を閉じても値は見ていなかったので、`on:` を消す・`os: []` にする・存在しないランナーを指すだけで、run の段を1行も触らずに CI が1回も走らなくなった |
 | CI が表の行を走らせること | `AGENTS.md` の検証コマンド表と `.github/workflows/ci.yml` が双方向に一致する。表が「CIで実行=全コミット」かつ段階が現在以下とする行を ci.yml が走らせ、ci.yml が走らせるコマンドにはそういう行がある。段階は `build.zig` の `current_stage` から渡る。コマンドに付けてよい後続は許可リストで限る。逆方向があるので、行を隠したりセルの綴りを崩したりしても、対応の無い段として現れる([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
 | ADR と一覧の対応 | 各ADRが一覧に1行持ち、一覧の各行が実在するファイルを指す。行が何を書いているか(ステータス・置き換え・追記の位置)は検査しない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
 | ワークフローのキー | 使ってよいキーの列挙にないキーが無い。`if:` と `continue-on-error:` は列挙に入れていないので、ジョブ階層でも段階層でも報告される。`run:` のブロックスカラーも報告する。キーとして読めない行は、コロンを含むかどうかに関わらず報告するので、複数行の平スカラーの継続行も通らない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
@@ -238,7 +239,7 @@ https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html
 
 識別子を正規化する。付録Aの HTML には識別子にゼロ幅空白(U+200B)が混入している。`?` や `<` の直後に挿入されているため、`binary-port?` や `char<?` のような識別子がそのままでは壊れる。U+200B を除去し、前後の空白を落とす。正規化しないと、`zig build report` が `lib/**/*.sld` のエクスポート節と突き合わせたときに該当する識別子が1件も一致せず、実装済みでも恒久的に未実装として準拠マトリクスに表示される。
 
-各ファイルの先頭に、出典の URL、取得日、抽出プログラムのパスをコメント行(`;` で始まる)として書く。
+各ファイルの先頭に、出典の URL、取得日と許諾の在り処、抽出プログラムの呼び方をコメント行(`;` で始まる)として書く。取得日そのものは書かない。日付を1箇所に閉じるため、[../../tools/extract-r7rs-required/SOURCE.md](../../tools/extract-r7rs-required/SOURCE.md) への参照にする。
 
 ### 抽出結果の妥当性検査
 
@@ -373,7 +374,7 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 
 1. `.zigversion`、`build.zig.zon`、`src/sucheme.zig`、`src/main.zig`、`build.zig`(版の強制とビルドオプションを含む)を作り、`zig build` と `zig build test` がローカルで通ることを確認する。`fingerprint` をここで確定させる。
 2. `.gitignore`、`.gitattributes`、`.editorconfig` に追記する。1と並行できる。
-3. `AGENTS.md` の検証コマンド表に行を足す(上の「CI で実行する検証」の節が挙げる行)。`docs/design/architecture.md` の確保点の一元化の範囲を直す。`docs/design/zig-api-notes.md` の `minimum_zig_version` と check-docs の記述を直す。1と並行できる。
+3. `AGENTS.md` の検証コマンド表に行を足す(上の「段階ごとに増える検証の扱い」の節が挙げる行)。`docs/design/architecture.md` の確保点の一元化の範囲を直す。`docs/design/zig-api-notes.md` の `minimum_zig_version` と check-docs の記述を直す。1と並行できる。
 4. `.github/workflows/ci.yml` を作る。1の完了後、かつ Zig のセットアップ手段が決まった後。
 5. `tools/check-docs` を作り、`check-docs` step を追加する。1と3と4の完了後。CI より後にするのは、ワークフローが0個の状態で版の一致検査を通過させないためである。
 6. `tools/extract-r7rs-required` と `appendix-a.html` と `SOURCE.md` を作り、`zig run` で走らせて `tests/r7rs-required/*.txt` をコミットする。1の完了後。4と5と並行できる。
