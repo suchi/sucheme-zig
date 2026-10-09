@@ -15,12 +15,15 @@ pub const name = build_options.name;
 pub const version = build_options.version;
 
 const reader = @import("reader.zig");
-const eval = @import("eval.zig");
+const expand = @import("syntax/expand.zig");
+const machine = @import("machine.zig");
+const context = @import("context.zig");
 const printer = @import("printer.zig");
 
-/// Every way `evalPrint` can fail. Until slice 1f reports Scheme errors as
-/// conditions, a Scheme error is one of these too.
-pub const Error = reader.Error || eval.Error || printer.Error;
+/// Every way `evalPrint` can fail. `Raised` is a Scheme error, with its condition
+/// in the context; `diagnostic` describes it. The reader's errors are described
+/// the same way.
+pub const Error = reader.Error || expand.Error || machine.Error || printer.Error;
 
 /// One interpreter: what outlives a single line of input, which is the data the
 /// reader builds, the symbol table and the global environment.
@@ -30,7 +33,7 @@ pub const Error = reader.Error || eval.Error || printer.Error;
 /// the arena, so an interpreter is initialised in place and not copied after.
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
-    ctx: eval.Context,
+    ctx: context.Context,
 
     pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
         self.arena = .init(gpa);
@@ -53,7 +56,7 @@ pub const Interpreter = struct {
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         self.ctx.clearDiagnostic();
         self.run(arena, source, out) catch |e| {
-            if (self.ctx.diagnostic().len == 0) self.ctx.setDiagnostic(describe(e));
+            if (self.ctx.diagnostic().len == 0) self.ctx.raise("{s}", .{describe(e)}) catch {};
             return e;
         };
     }
@@ -69,7 +72,9 @@ pub const Interpreter = struct {
         // What is read outlives the line: `quote` can hand it to a definition.
         const sink: reader.Sink = .{ .alloc = self.ctx.persist, .symbols = &self.ctx.symbols };
         while (try r.next(arena, sink)) |form| {
-            const v = try eval.eval(&self.ctx, arena, form);
+            const node = try expand.expand(&self.ctx, arena, form);
+            var m: machine.Machine = .init(&self.ctx, arena);
+            const v = try m.run(node);
             // A definition prints nothing. The REPL shows a value, and this one
             // has no external form.
             if (v.kind() == .unspecified) continue;
@@ -124,7 +129,7 @@ test "evalPrint stops at the first error and describes it" {
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try std.testing.expectError(error.UnboundVariable, interp.evalPrint(arena.allocator(), "1 (foo) 2", &w));
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "1 (foo) 2", &w));
     try std.testing.expectEqualStrings("1\n", w.buffered());
     try std.testing.expectEqualStrings("unbound variable: foo", interp.diagnostic());
 }
@@ -165,10 +170,10 @@ test "a failed line keeps the definitions made before it and not the one that fa
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try std.testing.expectError(error.UnboundVariable, interp.evalPrint(arena.allocator(), "(define a 1) (define b nope)", &w));
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(define a 1) (define b nope)", &w));
     try interp.evalPrint(arena.allocator(), "a", &w);
     try std.testing.expectEqualStrings("1\n", w.buffered());
-    try std.testing.expectError(error.UnboundVariable, interp.evalPrint(arena.allocator(), "b", &w));
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "b", &w));
     try std.testing.expectEqualStrings("unbound variable: b", interp.diagnostic());
 }
 
@@ -184,7 +189,7 @@ test "two interpreters do not share definitions" {
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try one.evalPrint(arena.allocator(), "(define x 1)", &w);
-    try std.testing.expectError(error.UnboundVariable, two.evalPrint(arena.allocator(), "x", &w));
+    try std.testing.expectError(error.Raised, two.evalPrint(arena.allocator(), "x", &w));
 }
 
 test "a closure keeps its frame after the line that made it is gone" {

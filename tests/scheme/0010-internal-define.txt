@@ -61,13 +61,13 @@ error: variable used before its definition: a
 (define (f) 0 (define a 1) a) (f)
 error: bad define: a definition is only allowed at the top level or at the start of a body
 
-# A definition after an expression makes no local variable, so a read before it
-# finds no variable at all rather than an uninitialized one.
+# A definition after an expression is refused when the procedure is expanded,
+# before any of its body runs, so the read of `a` before it is never reached.
 (define (f) a (define a 1) a) (f)
-error: unbound variable: a
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 (define (f) (+ a 1) (define a 1) a) (f)
-error: unbound variable: a
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 # Assigning a variable before its definition is as much an error as reading it.
 (define (f) (define a (set! b 1)) (define b 2) b) (f)

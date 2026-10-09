@@ -1,0 +1,50 @@
+# Slice 1f: the evaluator is a machine with an explicit continuation, so how
+# deep a program recurses is bounded by memory and not by the Zig stack, and a
+# call in tail position does not grow the continuation (R7RS 3.5).
+
+# Non-tail recursion is as deep as the argument says: 10000 pending additions.
+(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 10000)
+10000
+
+(define (sum n) (if (= n 0) 0 (+ n (sum (- n 1))))) (sum 10000)
+50005000
+
+# A tail call in `if`.
+(define (loop n) (if (= n 0) 'done (loop (- n 1)))) (loop 100000)
+done
+
+# Mutual tail recursion.
+(define (ev? n) (if (= n 0) #t (od? (- n 1)))) (define (od? n) (if (= n 0) #f (ev? (- n 1)))) (ev? 100000)
+#t
+
+(define (ev? n) (if (= n 0) #t (od? (- n 1)))) (define (od? n) (if (= n 0) #f (ev? (- n 1)))) (ev? 100001)
+#f
+
+# A tail call as the last form of `begin` and of a body with definitions.
+(define (b n) (begin 1 (if (= n 0) 'ok (b (- n 1))))) (b 100000)
+ok
+
+(define (g n) (define k 1) (if (= n 0) 'ok (g (- n k)))) (g 100000)
+ok
+
+# A tail call through a procedure that was passed in.
+(define (run f n) (if (= n 0) 'ok (f f (- n 1)))) (run run 100000)
+ok
+
+# An error deep in the recursion is reported as it was before, and the
+# interpreter goes on to the next line.
+(define (boom n) (if (= n 0) (nope) (+ 1 (boom (- n 1))))) (boom 1000)
+error: unbound variable: nope
+
+# A deep recursion that returns, then a value from the line after it.
+(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 5000) (count 3)
+5000
+3
+
+# After a call returns, the variables of the procedure that made it are the ones
+# in sight again.
+(define (id x) x) (define (f x y) (+ (id 100) x y)) (f 1 2)
+103
+
+(define (id x) x) (define (g n) (if (id #t) (+ n 1) 0)) (g 41)
+42

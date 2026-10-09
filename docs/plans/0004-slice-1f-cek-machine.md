@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(切片 1f)。切片の全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-09
-- 状態: 合意待ち。合意されるまで実装を始めない
+- 状態: 2026-10-09 にユーザーが合意した。実装済み(PR #13)。作業の進み具合は 0003 の進捗表と「次にやること」が正
 
 ## 解こうとしている問題
 
@@ -139,7 +139,7 @@ flowchart LR
 ## リスク
 
 - 差分が大きい。1f は 1a から 1e の合計に近い規模になりうる。対策は上の線と、コミットごとの Red→Green。
-- 永続アリーナの使用量が増える。呼び出しごとに、フレーム・スロット列・引数の蓄積の3つが永続側に残る。1g で `heap.zig` に移して回収する。
+- 永続アリーナの使用量が増える。呼び出しごとに、フレーム・スロット列・引数の蓄積に加えて、`if` や呼び出しの各オペランドが積む継続フレームが永続側に残る。1g で `heap.zig` に移して回収する。
 - 非末尾の無限再帰がメモリを使い切る(上述)。1g の計上上限で止まる。
 - ADR-0004 の文言とのずれ(末尾位置の印)。ADR-0029 に書き、ユーザーの合意を得る。
 
@@ -149,3 +149,12 @@ flowchart LR
 - [design/runtime.md](../design/runtime.md) の環境、コアIR、CEK機械、例外
 - [design/frontend.md](../design/frontend.md) の展開器
 - [design/architecture.md](../design/architecture.md) の評価の進行点の一元化(暫定の例外が外れる)
+
+## 実装で計画から変わった点
+
+- 作業順の4と5は1つのコミットになった。`Closure` と `Frame` を旧評価器と機械が共有するので、機械の Green と、`Interpreter` の付け替えと、`eval.zig` の削除を分けられなかった。機械の Red(stub とテスト)は別のコミットで先に入れた。
+- 条件オブジェクトは、`Outcome` の共用体でなく `error.Raised` と `Context.raised` にした。展開器の構文エラーと機械のエラーを同じ経路で扱え、`diagnostic()` の契約を変えずに済む。ハンドラが入る段階2で、継続を使う形へ置き換える。
+- メッセージは 256 バイトで切らず、永続アリーナに全文を持つ。
+- 本体の途中の `define` は展開時に報告するようになった(計画書は想定していなかった)。
+- `core.zig` は節点の作成とテキスト出力にとどめた。展開器のテストが、コアIRをテキストで読む。
+- ADR を2つ書いた: [ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md)(末尾位置の印を持たない)と [ADR-0030](../adr/0030-lexical-address-width-u32.md)(字句アドレスの幅)。

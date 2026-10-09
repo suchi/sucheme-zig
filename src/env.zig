@@ -1,17 +1,15 @@
 //! The global environment: which symbols are bound, and to what.
 //!
 //! A name that is absent is unbound, so no marker value is needed for it. Local
-//! variables live in the frames of calls and are found by name (`findLocal`);
-//! the "uninitialized" state of an internal definition is a `Value` of its own
+//! variables live in the frames of calls and are found by lexical address; the
+//! "uninitialized" state of an internal definition is a `Value` of its own
 //! (`Value.uninitialized`), set when a call starts. The cells of
 //! docs/design/runtime.md, shared by `import`, arrive with the library system in
 //! stage 2.
 
 const std = @import("std");
 const SymbolId = @import("symbol.zig").SymbolId;
-const value_mod = @import("value.zig");
-const Value = value_mod.Value;
-const Frame = value_mod.Frame;
+const Value = @import("value.zig").Value;
 
 pub const Global = struct {
     bindings: std.AutoHashMapUnmanaged(SymbolId, Value) = .empty,
@@ -35,19 +33,6 @@ pub const Global = struct {
         return true;
     }
 };
-
-/// The slot of the local variable `id` in `frame` or the frames behind it,
-/// innermost first, or null when no frame binds it. A local variable hides a
-/// global one of the same name, and a nearer frame hides a farther one.
-pub fn findLocal(frame: ?*Frame, id: SymbolId) ?*Value {
-    var f = frame;
-    while (f) |fr| : (f = fr.parent) {
-        for (fr.names, 0..) |n, i| {
-            if (n == id) return &fr.values[i];
-        }
-    }
-    return null;
-}
 
 test {
     std.testing.refAllDecls(@This());
@@ -84,23 +69,4 @@ test "assign changes a binding that exists and refuses one that does not" {
     try g.define(arena.allocator(), x, .fromFixnum(1));
     try std.testing.expect(g.assign(x, .fromFixnum(2)));
     try std.testing.expectEqual(2, g.lookup(x).?.asFixnum().?);
-}
-
-test "findLocal finds the nearest binding, and nothing when no frame binds the name" {
-    const a: SymbolId = @fromBackingInt(@intCast(0));
-    const b: SymbolId = @fromBackingInt(@intCast(1));
-    const c: SymbolId = @fromBackingInt(@intCast(2));
-    var outer_values = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
-    var outer: Frame = .{ .names = &.{ a, b }, .values = &outer_values, .parent = null };
-    var inner_values = [_]Value{.fromFixnum(10)};
-    var inner: Frame = .{ .names = &.{a}, .values = &inner_values, .parent = &outer };
-    // The inner `a` hides the outer one; `b` is found behind it.
-    try std.testing.expectEqual(10, findLocal(&inner, a).?.asFixnum().?);
-    try std.testing.expectEqual(2, findLocal(&inner, b).?.asFixnum().?);
-    try std.testing.expectEqual(1, findLocal(&outer, a).?.asFixnum().?);
-    try std.testing.expect(findLocal(&inner, c) == null);
-    try std.testing.expect(findLocal(null, a) == null);
-    // The slot is the variable itself, so writing through it changes it.
-    findLocal(&inner, b).?.* = .fromFixnum(5);
-    try std.testing.expectEqual(5, outer_values[1].asFixnum().?);
 }

@@ -62,3 +62,5 @@
 | [0026](0026-verify-facts-about-code-not-prose.md) | 機械検査の対象をコードと生成物についての事実に限る | 採用 | 2026-10-08 |
 | [0027](0027-severity-by-consequence-and-a-cost-side-stop.md) | 指摘の重要度を帰結で定め、レビューを費用の側で止める | 採用 | 2026-10-08 |
 | [0028](0028-review-harness-in-repo.md) | 実機確認のハーネスをリポジトリに置き、Python で書く | 採用 | 2026-10-09 |
+| [0029](0029-no-tail-marks-in-stage-1-machine.md) | 段階1の機械は戻り先のフレームを積まず、末尾位置の印を持たない | 採用 | 2026-10-09 |
+| [0030](0030-lexical-address-width-u32.md) | 字句アドレスは u32 とし、超える入れ子は実装制限として報告する | 採用 | 2026-10-09 |

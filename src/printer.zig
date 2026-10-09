@@ -59,6 +59,9 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             // Reading a variable that holds it is an error, so no program sees
             // it; written anyway so that a leak shows.
             .uninitialized => try out.writeAll("#<uninitialized>"),
+            // Nothing reads a condition as a value yet: an error leaves the
+            // machine and is reported. Written anyway so that a leak shows.
+            .condition => try out.writeAll("#<condition>"),
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -144,6 +147,14 @@ test "write shows an uninitialized marker that leaked" {
     try std.testing.expectEqualStrings("#<uninitialized>", try f.written(&buf, .uninitialized_value));
 }
 
+test "write shows a condition that leaked" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var c: value_mod.Condition = .{ .message = "boom" };
+    try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
+}
+
 test "write writes nothing for the unspecified value" {
     var f: Fixture = .init();
     defer f.deinit();
@@ -165,7 +176,9 @@ test "write prints a procedure in a form read rejects" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    var closure: value_mod.Closure = .{ .names = &.{}, .arity = 0, .body = &.{}, .defines = 0, .env = null };
+    const body: value_mod.Node = .{ .constant = .unspecified_value };
+    const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
+    var closure: value_mod.Closure = .{ .lambda = &lambda, .env = null };
     try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
     const prim: value_mod.Primitive = .{ .name = "plus", .call = struct {
         fn call(_: []const Value) value_mod.PrimitiveError!Value {
