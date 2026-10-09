@@ -18,8 +18,9 @@
 //!
 //! No arguments are taken. build.zig checks that none are passed, because an
 //! argument naming a narrower directory or a filter would be the one-line way
-//! to make this step pass while running fewer cases. Finding no case at all is
-//! a failure for the same reason.
+//! to make this step pass while running fewer cases. For the same reason an
+//! entry of tests/scheme/ that is not a `.txt` file, a file with no case and a
+//! run with no case at all are failures.
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -52,15 +53,22 @@ pub fn main(init: std.process.Init) !void {
     };
     defer dir.close(io);
     var it = dir.iterate();
+    var failed: usize = 0;
     while (try it.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) continue;
+        // Anything that is not a `.txt` file is reported, not skipped: a test
+        // saved as `0002.TXT`, `0002.scm` or inside a subdirectory would
+        // otherwise never run while the step stays green.
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) {
+            try err.print("{s}/{s}: not a `.txt` file, so its cases would never run\n", .{ tests_dir, entry.name });
+            failed += 1;
+            continue;
+        }
         try names.append(gpa, try gpa.dupe(u8, entry.name));
     }
     // Directory order differs between hosts; sorting keeps the report stable.
     std.mem.sort([]const u8, names.items, {}, lessThan);
 
     var passed: usize = 0;
-    var failed: usize = 0;
     for (names.items) |name| {
         const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ tests_dir, name });
         const body = cwd.readFileAlloc(io, path, gpa, .unlimited) catch |e| {
@@ -77,6 +85,12 @@ pub fn main(init: std.process.Init) !void {
             },
             error.OutOfMemory => return e,
         };
+        // A file with no case is as suspect as a missing one: a comment-only
+        // file, or a format change that parses everything as comments.
+        if (cases.items.len == 0) {
+            try err.print("{s}: no case found in this file\n", .{path});
+            failed += 1;
+        }
         for (cases.items) |c| {
             if (try runCase(gpa, c)) |got| {
                 try err.print(
@@ -88,14 +102,17 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    if (passed + failed == 0) {
-        try err.print("test-scheme: no case found under {s}\n", .{tests_dir});
-        try err.flush();
-        std.process.exit(1);
-    }
     try err.print("test-scheme: {d} passed, {d} failed\n", .{ passed, failed });
     try err.flush();
-    if (failed != 0) std.process.exit(1);
+    const status = exitStatus(passed, failed);
+    if (status != 0) std.process.exit(status);
+}
+
+/// The exit status for a run. Finding no case at all is a failure, because a
+/// runner that read nothing has verified nothing.
+fn exitStatus(passed: usize, failed: usize) u8 {
+    if (failed != 0 or passed == 0) return 1;
+    return 0;
 }
 
 fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -156,11 +173,12 @@ fn isComment(line: []const u8) bool {
 }
 
 /// Evaluates one case. Returns null when the output matches, and otherwise what
-/// was produced instead, so the report can show it.
+/// was produced instead, so the report can show it. The caller owns the result.
 fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
     sucheme.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return try std.fmt.allocPrint(gpa, "error.{t}", .{e}),
@@ -169,7 +187,7 @@ fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
     // after its last line.
     const got = std.mem.trimEnd(u8, out.written(), "\n");
     if (std.mem.eql(u8, got, c.expected)) return null;
-    return got;
+    return try gpa.dupe(u8, got);
 }
 
 test "parse reads an input and its expected line" {
@@ -243,4 +261,35 @@ test "parse finds no case in a file of comments" {
     defer cases.deinit(std.testing.allocator);
     try parse(std.testing.allocator, "# only\n# comments\n", &cases);
     try std.testing.expectEqual(0, cases.items.len);
+}
+
+test "runCase returns null when the output matches and what it got when not" {
+    const gpa = std.testing.allocator;
+    try std.testing.expect(try runCase(gpa, .{ .line = 1, .input = "(+ 1 2)", .expected = "3" }) == null);
+    const got = (try runCase(gpa, .{ .line = 1, .input = "(+ 1 2)", .expected = "4" })).?;
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("3", got);
+}
+
+test "runCase reports an error as a mismatch, and does not match its own text by accident" {
+    const gpa = std.testing.allocator;
+    const got = (try runCase(gpa, .{ .line = 1, .input = "(foo)", .expected = "3" })).?;
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("error.UnboundVariable", got);
+}
+
+test "runCase compares the whole output, not a prefix or a trimmed form" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "", "3 ", " 3", "3\n3" }) |expected| {
+        const got = try runCase(gpa, .{ .line = 1, .input = "(+ 1 2)", .expected = expected });
+        defer if (got) |g| gpa.free(g);
+        try std.testing.expect(got != null);
+    }
+}
+
+test "exitStatus fails on a failure and on a run that read no case" {
+    try std.testing.expectEqual(0, exitStatus(7, 0));
+    try std.testing.expectEqual(1, exitStatus(7, 1));
+    try std.testing.expectEqual(1, exitStatus(0, 1));
+    try std.testing.expectEqual(1, exitStatus(0, 0));
 }
