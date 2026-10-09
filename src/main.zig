@@ -123,7 +123,8 @@ pub fn classify(args: []const []const u8) Request {
     return if (args.len == 0) .repl else .not_implemented;
 }
 
-/// The longest line the REPL reads. A longer one is reported and skipped.
+/// The size of the REPL's line buffer, newline included. A line that does not
+/// fit is reported and skipped.
 pub const max_line = 64 * 1024;
 
 /// Reads lines from `in` until it ends, and evaluates and prints each.
@@ -138,7 +139,7 @@ pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err
         try out.flush();
         const line = in.takeDelimiter('\n') catch |e| switch (e) {
             error.StreamTooLong => {
-                try err.print("error: the line is longer than {d} bytes\n", .{max_line});
+                try err.print("error: the line does not fit in {d} bytes, newline included\n", .{max_line});
                 try err.flush();
                 _ = in.discardDelimiterInclusive('\n') catch |d| switch (d) {
                     error.EndOfStream => break,
@@ -244,5 +245,23 @@ test "repl skips a line longer than it reads and goes on" {
     var err: std.Io.Writer = .fixed(&eb);
     try repl(std.testing.allocator, &in.interface, &out, &err);
     try std.testing.expectEqualStrings("> > 7\n> \n", out.buffered());
-    try std.testing.expectEqualStrings("error: the line is longer than 65536 bytes\n", err.buffered());
+    try std.testing.expectEqualStrings("error: the line does not fit in 65536 bytes, newline included\n", err.buffered());
+}
+
+test "repl reads the longest line that fits, newline included" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const fits = try std.testing.allocator.alloc(u8, max_line);
+    defer std.testing.allocator.free(fits);
+    @memset(fits, ' ');
+    fits[max_line - 2] = '5';
+    fits[max_line - 1] = '\n';
+    var in_buf: [max_line]u8 = undefined;
+    var src: std.Io.Reader = .fixed(fits);
+    var in = src.limited(.unlimited, &in_buf);
+    var out: std.Io.Writer = .fixed(&ob);
+    var err: std.Io.Writer = .fixed(&eb);
+    try repl(std.testing.allocator, &in.interface, &out, &err);
+    try std.testing.expectEqualStrings("> 5\n> \n", out.buffered());
+    try std.testing.expectEqualStrings("", err.buffered());
 }
