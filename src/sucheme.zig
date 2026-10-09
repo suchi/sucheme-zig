@@ -97,6 +97,7 @@ test {
     // Until the interpreter runs on them, the tests of these are reached from here.
     _ = @import("core.zig");
     _ = @import("syntax/expand.zig");
+    _ = @import("machine.zig");
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {
