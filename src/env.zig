@@ -2,8 +2,8 @@
 //!
 //! A name that is absent is unbound, so no marker value is needed for it. Local
 //! variables live in the frames of calls and are found by name (`findLocal`);
-//! the "uninitialized" state of an internal definition arrives with internal
-//! `define` in slice 1e, which is what needs it. The cells of
+//! the "uninitialized" state of an internal definition is a `Value` of its own
+//! (`Value.uninitialized`), set when a call starts. The cells of
 //! docs/design/runtime.md, shared by `import`, arrive with the library system in
 //! stage 2.
 

@@ -6,8 +6,9 @@
 //! evaluation advance. That document records this file as a provisional
 //! exception until then.
 //!
-//! Slice 1d evaluates integers, booleans, variables, `define`, `quote`, `if`,
-//! `lambda`, `begin`, `set!` and procedure calls. A local variable is found by
+//! Slice 1e evaluates integers, booleans, variables, `define` (also the
+//! `(define (name parameter ...) body ...)` form, and at the start of a body),
+//! `quote`, `if`, `lambda`, `begin`, `set!` and procedure calls. A local variable is found by
 //! name in the frames of the calls that are open around the `lambda`; slice 1f
 //! replaces that with lexical addresses. A Scheme error is a Zig error with a
 //! message in `Context`.
@@ -30,6 +31,8 @@ pub const Error = arith.Error || error{
     UnboundVariable,
     /// A call with a number of arguments the procedure does not take.
     WrongArgumentCount,
+    /// A local variable read before its definition has run.
+    UninitializedVariable,
     /// A form whose shape the evaluator rejects, such as `(define)`.
     BadSyntax,
     /// The operator is not a procedure.
@@ -124,16 +127,19 @@ const Keyword = enum {
     }
 };
 
-/// Where a form is evaluated: the frame whose variables it sees, and whether it
-/// is at the top level, where a definition is allowed (R7RS 5.3). Slice 1e lets
-/// a body start with definitions.
+/// Where a form stands, which decides whether a definition is allowed there
+/// (R7RS 5.3): at the top level, or at the start of a body.
+const Position = enum { top, body, expression };
+
+/// Where a form is evaluated: the frame whose variables it sees, and its
+/// position.
 const Scope = struct {
     env: ?*Frame,
-    top: bool,
+    pos: Position,
 
     /// The same variables, inside an expression.
     fn inner(self: Scope) Scope {
-        return .{ .env = self.env, .top = false };
+        return .{ .env = self.env, .pos = .expression };
     }
 };
 
@@ -141,14 +147,14 @@ const Scope = struct {
 /// arguments, comes from `arena`; the data a form returns is whatever the reader
 /// allocated. On an error `ctx` holds the message.
 pub fn eval(ctx: *Context, arena: std.mem.Allocator, form: Value) Error!Value {
-    return evalAt(ctx, arena, form, 0, .{ .env = null, .top = true });
+    return evalAt(ctx, arena, form, 0, .{ .env = null, .pos = .top });
 }
 
 fn evalAt(ctx: *Context, arena: std.mem.Allocator, form: Value, depth: usize, scope: Scope) Error!Value {
     if (depth >= max_depth) return ctx.fail(error.NestingTooDeep, "nesting too deep", .{});
     switch (form.kind()) {
         // Self-evaluating (R7RS 4.1.2).
-        .fixnum, .boolean, .unspecified, .primitive, .closure => return form,
+        .fixnum, .boolean, .unspecified, .uninitialized, .primitive, .closure => return form,
         // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
         .empty_list => return ctx.fail(error.EmptyCombination, "empty combination", .{}),
         .symbol => return lookupVariable(ctx, form.asSymbol().?, scope),
@@ -175,7 +181,11 @@ fn lookupVariable(ctx: *Context, id: SymbolId, scope: Scope) Error!Value {
     const name = ctx.symbols.nameOf(id);
     if (Keyword.of(name) != null)
         return ctx.fail(error.BadSyntax, "{s} is a syntactic keyword and cannot be used as a variable", .{name});
-    if (env.findLocal(scope.env, id)) |slot| return slot.*;
+    if (env.findLocal(scope.env, id)) |slot| {
+        if (slot.kind() == .uninitialized)
+            return ctx.fail(error.UninitializedVariable, "variable used before its definition: {s}", .{name});
+        return slot.*;
+    }
     if (ctx.globals.lookup(id)) |v| return v;
     return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name});
 }
@@ -206,26 +216,30 @@ fn apply(ctx: *Context, arena: std.mem.Allocator, procedure: Value, args: []cons
         return prim.call(args) catch |e| switch (e) {
             error.WrongType => ctx.fail(e, "wrong type of argument to {s}", .{prim.name}),
             error.IntegerOverflow => ctx.fail(e, "integer overflow in {s}", .{prim.name}),
+            error.WrongArgumentCount => ctx.fail(e, "wrong number of arguments to {s}", .{prim.name}),
         };
     }
     const closure = procedure.asClosure() orelse
         return ctx.fail(error.NotAProcedure, "not a procedure", .{});
-    if (args.len != closure.params.len) return ctx.fail(
+    if (args.len != closure.arity) return ctx.fail(
         error.WrongArgumentCount,
         "wrong number of arguments: expected {d}, got {d}",
-        .{ closure.params.len, args.len },
+        .{ closure.arity, args.len },
     );
     // The frame outlives the call when a closure made in it does, so it is
-    // allocated where closures are, not in `arena`.
+    // allocated where closures are, not in `arena`. The names the body defines
+    // start out uninitialized (R7RS 5.3.2: a body is a `letrec*`).
     const frame = try ctx.persist.create(Frame);
-    frame.* = .{
-        .names = closure.params,
-        .values = try ctx.persist.dupe(Value, args),
-        .parent = closure.env,
-    };
-    const scope: Scope = .{ .env = frame, .top = false };
-    for (closure.body[0 .. closure.body.len - 1]) |form| _ = try evalAt(ctx, arena, form, depth + 1, scope);
-    return evalAt(ctx, arena, closure.body[closure.body.len - 1], depth + 1, scope);
+    const values = try ctx.persist.alloc(Value, closure.names.len);
+    @memcpy(values[0..args.len], args);
+    @memset(values[args.len..], Value.uninitialized_value);
+    frame.* = .{ .names = closure.names, .values = values, .parent = closure.env };
+    const definitions: Scope = .{ .env = frame, .pos = .body };
+    for (closure.body[0..closure.defines]) |form| _ = try evalAt(ctx, arena, form, depth + 1, definitions);
+    const expressions = closure.body[closure.defines..];
+    const scope: Scope = .{ .env = frame, .pos = .expression };
+    for (expressions[0 .. expressions.len - 1]) |form| _ = try evalAt(ctx, arena, form, depth + 1, scope);
+    return evalAt(ctx, arena, expressions[expressions.len - 1], depth + 1, scope);
 }
 
 /// `(quote datum)` (R7RS 4.1.2). The datum, unevaluated.
@@ -254,33 +268,92 @@ fn evalIf(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: 
 fn evalLambda(ctx: *Context, arena: std.mem.Allocator, items: []const Value, scope: Scope) Error!Value {
     if (items.len < 3)
         return ctx.fail(error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)", .{});
+    return makeClosure(ctx, arena, items[1], items[2..], scope, "lambda");
+}
+
+/// The procedure with the parameters `params` and the forms `body`, made in
+/// `scope`. `form_name` is the form it was written as, for the messages:
+/// `(define (f x) ...)` is a `define` with a parameter list of its own.
+fn makeClosure(
+    ctx: *Context,
+    arena: std.mem.Allocator,
+    params_form: Value,
+    body: []const Value,
+    scope: Scope,
+    comptime form_name: []const u8,
+) Error!Value {
     var params: std.ArrayList(SymbolId) = .empty;
-    var rest = items[1];
+    var rest = params_form;
     if (rest.kind() == .symbol) return ctx.fail(
         error.BadSyntax,
-        "bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet",
+        "bad " ++ form_name ++ ": parameters must be a list of identifiers; a variable number of arguments is not supported yet",
         .{},
     );
     while (rest.asPair()) |p| : (rest = p.cdr) {
         const id = p.car.asSymbol() orelse
-            return ctx.fail(error.BadSyntax, "bad lambda: a parameter must be an identifier", .{});
+            return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a parameter must be an identifier", .{});
         const name = ctx.symbols.nameOf(id);
         if (Keyword.of(name) != null)
-            return ctx.fail(error.BadSyntax, "bad lambda: {s} is a syntactic keyword and cannot be a parameter", .{name});
+            return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
         for (params.items) |seen| {
-            if (seen == id) return ctx.fail(error.BadSyntax, "bad lambda: duplicate parameter: {s}", .{name});
+            if (seen == id) return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
         }
         try params.append(arena, id);
     }
     if (rest.kind() != .empty_list)
-        return ctx.fail(error.BadSyntax, "bad lambda: the parameters must be a list of identifiers", .{});
+        return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
+    const arity = params.items.len;
+    const defines = try collectDefinitions(ctx, arena, body, &params);
+    // Why: R7RS 5.3.2 gives a body definitions followed by expressions, and at
+    // least one expression: a body that only defines has no value to return.
+    if (defines == body.len)
+        return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
     const closure = try ctx.persist.create(Closure);
     closure.* = .{
-        .params = try ctx.persist.dupe(SymbolId, params.items),
-        .body = try ctx.persist.dupe(Value, items[2..]),
+        .names = try ctx.persist.dupe(SymbolId, params.items),
+        .arity = arity,
+        .body = try ctx.persist.dupe(Value, body),
+        .defines = defines,
         .env = scope.env,
     };
     return .fromClosure(closure);
+}
+
+/// Adds the names that the definitions at the start of `body` define to
+/// `names`, and returns how many forms they are. A name that is already there,
+/// as a parameter or an earlier definition, is an error. The definitions
+/// themselves are checked when they run.
+fn collectDefinitions(
+    ctx: *Context,
+    arena: std.mem.Allocator,
+    body: []const Value,
+    names: *std.ArrayList(SymbolId),
+) Error!usize {
+    var count: usize = 0;
+    for (body) |form| {
+        const head = form.asPair() orelse break;
+        const keyword_id = head.car.asSymbol() orelse break;
+        if (Keyword.of(ctx.symbols.nameOf(keyword_id)) != .define) break;
+        const rest = head.cdr.asPair() orelse
+            return ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
+        // `(define (name parameter ...) body ...)` names what its header starts with.
+        const target = if (rest.car.asPair()) |header| header.car else rest.car;
+        const id = target.asSymbol() orelse
+            return ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
+        const name = ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+        for (names.items) |seen| {
+            if (seen == id) return ctx.fail(
+                error.BadSyntax,
+                "bad define: {s} is already a parameter or defined earlier in this body",
+                .{name},
+            );
+        }
+        try names.append(arena, id);
+        count += 1;
+    }
+    return count;
 }
 
 /// `(begin expression ...)` (R7RS 4.2.3). Evaluates its forms in order and
@@ -307,6 +380,10 @@ fn evalSet(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth:
         return ctx.fail(error.BadSyntax, "bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
     const value = try evalAt(ctx, arena, items[2], depth + 1, scope.inner());
     if (env.findLocal(scope.env, id)) |slot| {
+        // Why: R7RS 5.3.2 binds a body's names as `letrec*` does, so assigning
+        // one before its definition is as much an error as reading it.
+        if (slot.kind() == .uninitialized)
+            return ctx.fail(error.UninitializedVariable, "variable used before its definition: {s}", .{name});
         slot.* = value;
         return .unspecified_value;
     }
@@ -315,30 +392,43 @@ fn evalSet(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth:
     return .unspecified_value;
 }
 
-/// `(define name expression)` (R7RS 5.3.1). Binds `name` in the global
-/// environment, replacing an earlier binding, and returns the unspecified value.
+/// `(define name expression)` (R7RS 5.3.1). At the top level it binds `name` in
+/// the global environment, replacing an earlier binding. At the start of a body
+/// it gives a value to the local variable that the body's definitions made when
+/// the call began (R7RS 5.3.2). Either way it returns the unspecified value.
 ///
 /// The expression is evaluated before the name is bound, so a failing
 /// definition leaves the name as it was.
 fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: usize, scope: Scope) Error!Value {
     // Why: R7RS 5.3 allows a definition at the top level and at the start of a
-    // body; a body is only a lambda's, which slice 1e opens to definitions.
-    // Anything else would bind a name from inside an expression that may go on
-    // to fail.
-    if (!scope.top)
-        return ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level", .{});
-    if (items.len != 3)
+    // body. Anything else would bind a name from inside an expression that may
+    // go on to fail.
+    if (scope.pos == .expression)
+        return ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level or at the start of a body", .{});
+    // `(define (name parameter ...) body ...)` is `(define name (lambda
+    // (parameter ...) body ...))` (R7RS 5.3.1).
+    const shorthand = items.len >= 2 and items[1].kind() == .pair;
+    if (shorthand and items.len < 3)
+        return ctx.fail(error.BadSyntax, "bad define: expected (define (name parameter ...) body ...)", .{});
+    if (!shorthand and items.len != 3)
         return ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
-    const id = items[1].asSymbol() orelse {
-        if (items[1].kind() == .pair)
-            return ctx.fail(error.BadSyntax, "bad define: procedure definitions are not supported yet", .{});
+    const target = if (shorthand) items[1].asPair().?.car else items[1];
+    const id = target.asSymbol() orelse
         return ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
-    };
     const name = ctx.symbols.nameOf(id);
     if (Keyword.of(name) != null)
         return ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
-    const value = try evalAt(ctx, arena, items[2], depth + 1, scope.inner());
-    try ctx.globals.define(ctx.persist, id, value);
+    const value = if (shorthand)
+        try makeClosure(ctx, arena, items[1].asPair().?.cdr, items[2..], scope, "define")
+    else
+        try evalAt(ctx, arena, items[2], depth + 1, scope.inner());
+    switch (scope.pos) {
+        .top => try ctx.globals.define(ctx.persist, id, value),
+        // `collectDefinitions` made the variable when the closure was made, and
+        // the frame being evaluated in is the call's own, so it is the nearest.
+        .body => env.findLocal(scope.env, id).?.* = value,
+        .expression => unreachable,
+    }
     return .unspecified_value;
 }
 
@@ -639,4 +729,48 @@ test "eval handles the deepest nesting the limit allows" {
     defer arena.deinit();
     const a = arena.allocator();
     try std.testing.expectEqual(1, try evalSource(a, try nestedCalls(a, max_depth - 1)));
+}
+
+test "a body's definitions are local to the call and do not reach the globals" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx = try Context.init(a);
+    _ = try evalWith(&ctx, a, "(define (f x) (define y (+ x 1)) (define (g) (* y 2)) (g))");
+    try std.testing.expectEqual(8, (try evalWith(&ctx, a, "(f 3)")).asFixnum().?);
+    try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "y"));
+    try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "g"));
+}
+
+test "a call gets a frame of its own for the names its body defines" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx = try Context.init(a);
+    _ = try evalWith(&ctx, a, "(define (f n) (define cell n) (set! cell (+ cell 1)) cell)");
+    try std.testing.expectEqual(2, (try evalWith(&ctx, a, "(f 1)")).asFixnum().?);
+    try std.testing.expectEqual(11, (try evalWith(&ctx, a, "(f 10)")).asFixnum().?);
+}
+
+test "a variable read before its definition is an error that names it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx = try Context.init(a);
+    try std.testing.expectError(error.UninitializedVariable, evalWith(&ctx, a, "((lambda () (define a b) (define b 1) a))"));
+    try std.testing.expectEqualStrings("variable used before its definition: b", ctx.diagnostic());
+    // A definition that fails leaves the name uninitialized, not defined.
+    try std.testing.expectError(error.UninitializedVariable, evalWith(&ctx, a, "((lambda () (define a a) a))"));
+}
+
+test "a body that only defines is refused, and a definition after an expression is too" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx = try Context.init(a);
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "(lambda () (define a 1))"));
+    try std.testing.expectEqualStrings("bad lambda: a body needs an expression after its definitions", ctx.diagnostic());
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "((lambda () 0 (define a 1) a))"));
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "(lambda (x) (define x 1) x)"));
+    try std.testing.expectEqualStrings("bad define: x is already a parameter or defined earlier in this body", ctx.diagnostic());
 }

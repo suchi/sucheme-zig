@@ -15,7 +15,7 @@
 | 現在の段階 | 段階1(通しで動く最小の縦切り)。切片は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
-| R7RS 準拠マトリクス | [status/](status/)(段階1から生成される) |
+| R7RS 準拠マトリクス | [status/](status/)(段階3から生成される) |
 
 段階ごとの進み具合は下の段階の節のチェックボックスが正である。ここに件数や割合を書くと必ず古くなる。
 
@@ -107,6 +107,7 @@
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
+- [ ] 準拠マトリクスの生成(`zig build report`)と、生成し直した結果との同期検査(`zig build check-report`)。`lib/` のエクスポート節が実在するこの段階で入れる。`.github/workflows/` の変更なのでユーザーの承認を得てから行う
 
 完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。リリース v0.3.0 を出す。
 
