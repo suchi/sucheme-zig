@@ -32,9 +32,10 @@ pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
     ctx: eval.Context,
 
-    pub fn init(self: *Interpreter, gpa: std.mem.Allocator) void {
+    pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
         self.arena = .init(gpa);
-        self.ctx = .init(self.arena.allocator());
+        errdefer self.arena.deinit();
+        self.ctx = try .init(self.arena.allocator());
     }
 
     pub fn deinit(self: *Interpreter) void {
@@ -102,7 +103,7 @@ fn evalPrinted(src: []const u8) ![]const u8 {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    interp.init(std.testing.allocator);
+    try interp.init(std.testing.allocator);
     defer interp.deinit();
     var w: std.Io.Writer = .fixed(&S.buf);
     try interp.evalPrint(arena.allocator(), src, &w);
@@ -119,7 +120,7 @@ test "evalPrint stops at the first error and describes it" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    interp.init(std.testing.allocator);
+    try interp.init(std.testing.allocator);
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -132,7 +133,7 @@ test "evalPrint describes a reader error, and a later success clears the message
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    interp.init(std.testing.allocator);
+    try interp.init(std.testing.allocator);
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -146,7 +147,7 @@ test "a definition survives into the next call, and prints nothing itself" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    interp.init(std.testing.allocator);
+    try interp.init(std.testing.allocator);
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -160,7 +161,7 @@ test "a failed line keeps the definitions made before it and not the one that fa
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    interp.init(std.testing.allocator);
+    try interp.init(std.testing.allocator);
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -175,13 +176,31 @@ test "two interpreters do not share definitions" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var one: Interpreter = undefined;
-    one.init(std.testing.allocator);
+    try one.init(std.testing.allocator);
     defer one.deinit();
     var two: Interpreter = undefined;
-    two.init(std.testing.allocator);
+    try two.init(std.testing.allocator);
     defer two.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try one.evalPrint(arena.allocator(), "(define x 1)", &w);
     try std.testing.expectError(error.UnboundVariable, two.evalPrint(arena.allocator(), "x", &w));
+}
+
+test "a closure keeps its frame after the line that made it is gone" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    {
+        // The arena of the first line is freed before the closure is called.
+        var first: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer first.deinit();
+        try interp.evalPrint(first.allocator(), "(define make (lambda (n) (lambda () (set! n (+ n 1)) n))) (define next (make 40))", &w);
+    }
+    var second: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer second.deinit();
+    try interp.evalPrint(second.allocator(), "(next) (next)", &w);
+    try std.testing.expectEqualStrings("41\n42\n", w.buffered());
 }

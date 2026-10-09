@@ -1,0 +1,131 @@
+# Slice 1d: lambda makes a procedure, and a call binds its arguments in a new
+# frame whose parent is the frame the lambda was evaluated in. Primitives are
+# values too, so + can be passed around and named. Local variables are looked up
+# by name, innermost frame first, then in the global environment.
+
+((lambda (x) (+ x 1)) 2)
+3
+
+((lambda () 5))
+5
+
+((lambda (x y) (+ x y)) 1 2)
+3
+
+((lambda (x) x) 'a)
+a
+
+((lambda (x) 1 2 x) 7)
+7
+
+((lambda (x) (if x 1 2)) #f)
+2
+
+(define inc (lambda (x) (+ x 1))) (inc 41)
+42
+
+(define add (lambda (x) (lambda (y) (+ x y)))) ((add 1) 2)
+3
+
+(define add (lambda (x) (lambda (y) (+ x y)))) (define add5 (add 5)) (define add7 (add 7)) (add5 1) (add7 1)
+6
+8
+
+((lambda (x) ((lambda (y) (+ x y)) 2)) 1)
+3
+
+(define x 10) ((lambda (x) x) 1)
+1
+
+(define x 10) ((lambda (y) x) 1)
+10
+
+(define x 10) ((lambda (x) ((lambda (y) x) 2)) 3)
+3
+
+(define f (lambda (g) (g 1))) (f (lambda (x) (+ x 1)))
+2
+
+(define apply1 (lambda (f x) (f x))) (apply1 + 5)
+5
+
+(define plus +) (plus 1 2)
+3
+
+(define + 5) +
+5
+
+(define + 5) (+ 1 2)
+error: not a procedure
+
+(lambda (x) x)
+#<procedure>
+
++
+#<procedure +>
+
+(define f (lambda () 1)) f
+#<procedure>
+
+'(lambda (x) x)
+(lambda (x) x)
+
+(define x 0) (define f (lambda (a b) b)) (f (begin (set! x 1) x) x)
+1
+
+(define x 0) (define f (lambda (a) a)) ((begin (set! x 1) f) x)
+1
+
+((lambda (x) x))
+error: wrong number of arguments: expected 1, got 0
+
+((lambda (x) x) 1 2)
+error: wrong number of arguments: expected 1, got 2
+
+((lambda () 1) 2)
+error: wrong number of arguments: expected 0, got 1
+
+(define f (lambda (x y) x)) (f 1)
+error: wrong number of arguments: expected 2, got 1
+
+((lambda (x) x) (foo))
+error: unbound variable: foo
+
+((lambda (x) y) 1)
+error: unbound variable: y
+
+((lambda (x) (+ x 'a)) 1)
+error: wrong type of argument to +
+
+(lambda)
+error: bad lambda: expected (lambda (name ...) body ...)
+
+(lambda (x))
+error: bad lambda: expected (lambda (name ...) body ...)
+
+(lambda (1) 1)
+error: bad lambda: a parameter must be an identifier
+
+(lambda (x x) x)
+error: bad lambda: duplicate parameter: x
+
+(lambda x x)
+error: bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet
+
+(lambda 1 1)
+error: bad lambda: the parameters must be a list of identifiers
+
+(lambda #t 1)
+error: bad lambda: the parameters must be a list of identifiers
+
+(lambda (if) 1)
+error: bad lambda: if is a syntactic keyword and cannot be a parameter
+
+lambda
+error: lambda is a syntactic keyword and cannot be used as a variable
+
+(define lambda 1)
+error: bad define: lambda is a syntactic keyword and cannot be redefined
+
+((lambda (x) (define y 1) y) 1)
+error: bad define: a definition is only allowed at the top level

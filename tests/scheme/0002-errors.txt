@@ -23,8 +23,6 @@ error: empty combination
 (+ 9223372036854775807 1)
 error: integer overflow in +
 
-+
-error: procedure values are not supported yet: +
 
 (+ 1 2
 error: unexpected end of input
