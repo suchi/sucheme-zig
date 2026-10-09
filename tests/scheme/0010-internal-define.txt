@@ -95,7 +95,7 @@ error: bad define: if is a syntactic keyword and cannot be redefined
 error: bad define: the name must be an identifier
 
 (define (f) (define x 1))
-error: bad lambda: a body needs an expression after its definitions
+error: bad define: a body needs an expression after its definitions
 
 (lambda () (define x 1) (define y 2))
 error: bad lambda: a body needs an expression after its definitions

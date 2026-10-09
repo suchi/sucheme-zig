@@ -6,8 +6,9 @@
 //! evaluation advance. That document records this file as a provisional
 //! exception until then.
 //!
-//! Slice 1d evaluates integers, booleans, variables, `define`, `quote`, `if`,
-//! `lambda`, `begin`, `set!` and procedure calls. A local variable is found by
+//! Slice 1e evaluates integers, booleans, variables, `define` (also the
+//! `(define (name parameter ...) body ...)` form, and at the start of a body),
+//! `quote`, `if`, `lambda`, `begin`, `set!` and procedure calls. A local variable is found by
 //! name in the frames of the calls that are open around the `lambda`; slice 1f
 //! replaces that with lexical addresses. A Scheme error is a Zig error with a
 //! message in `Context`.
@@ -306,7 +307,7 @@ fn makeClosure(
     // Why: R7RS 5.3.2 gives a body definitions followed by expressions, and at
     // least one expression: a body that only defines has no value to return.
     if (defines == body.len)
-        return ctx.fail(error.BadSyntax, "bad lambda: a body needs an expression after its definitions", .{});
+        return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
     const closure = try ctx.persist.create(Closure);
     closure.* = .{
         .names = try ctx.persist.dupe(SymbolId, params.items),
@@ -379,6 +380,10 @@ fn evalSet(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth:
         return ctx.fail(error.BadSyntax, "bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
     const value = try evalAt(ctx, arena, items[2], depth + 1, scope.inner());
     if (env.findLocal(scope.env, id)) |slot| {
+        // Why: R7RS 5.3.2 binds a body's names as `letrec*` does, so assigning
+        // one before its definition is as much an error as reading it.
+        if (slot.kind() == .uninitialized)
+            return ctx.fail(error.UninitializedVariable, "variable used before its definition: {s}", .{name});
         slot.* = value;
         return .unspecified_value;
     }
