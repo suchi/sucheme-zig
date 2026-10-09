@@ -134,6 +134,7 @@ pub const max_line = 64 * 1024;
 pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
+    var interp: sucheme.Interpreter = .init();
     while (true) {
         try out.writeAll("> ");
         try out.flush();
@@ -150,13 +151,13 @@ pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err
             error.ReadFailed => return e,
         } orelse break;
         _ = arena.reset(.retain_capacity);
-        sucheme.evalPrint(arena.allocator(), line, out) catch |e| switch (e) {
+        interp.evalPrint(arena.allocator(), line, out) catch |e| switch (e) {
             error.WriteFailed => return e,
             else => {
                 // Results written before the error go out first, so the two
                 // streams stay in order on a terminal.
                 try out.flush();
-                try err.print("error: {t}\n", .{e});
+                try err.print("error: {s}\n", .{interp.diagnostic()});
                 try err.flush();
             },
         };
@@ -225,7 +226,7 @@ test "repl reports an error and goes on to the next line" {
     var eb: [256]u8 = undefined;
     const r = try replOver("(foo)\n(+ 1\n42\n", &ob, &eb);
     try std.testing.expectEqualStrings("> > > 42\n> \n", r.out);
-    try std.testing.expectEqualStrings("error: UnboundVariable\nerror: Incomplete\n", r.err);
+    try std.testing.expectEqualStrings("error: unbound variable: foo\nerror: unexpected end of input\n", r.err);
 }
 
 test "repl skips a line longer than it reads and goes on" {
