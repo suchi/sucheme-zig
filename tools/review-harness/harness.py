@@ -21,7 +21,7 @@ docs/review/process-lessons.md にある。
     for name, step, want_red, apply in cases:
         h.reset()
         apply(h)                     # h.edit(...) / h.write(...) で改変する
-        code, out = h.run(step)      # "check-docs" / "check-extract" / "test" / "fmt"
+        code, out = h.run(step)      # "check-docs" / "check-extract" / "test" / "test-scheme" / "fmt"
         ok = (code != 0) == want_red
         print("%-4s %-40s exit=%d  %s" % ("OK" if ok else "BAD", name, code, first_line(out)[:70]))
     h.reset(); h.drop()
@@ -44,6 +44,11 @@ import subprocess
 _here = pathlib.Path(__file__).resolve()
 ROOT = pathlib.Path(os.environ.get("SUCHEME_ROOT", _here.parents[2]))
 WORK = pathlib.Path(os.environ.get("WORK", ROOT / "_work" / "review-harness"))
+
+# リストで渡したコマンドに shell=True を付けてよいのは Windows だけ。POSIX では
+# リストの先頭の語だけがシェルに渡り、`zig` が引数なしで走って全シナリオが
+# 誤って赤になる。Windows では zig が shim 経由のことがあるので付ける。
+_SHELL = os.name == "nt"
 
 
 class Harness:
@@ -72,11 +77,11 @@ class Harness:
     def run(self, step="check-docs"):
         if step == "fmt":
             r = subprocess.run(["zig", "fmt", "--check", "."], cwd=self.dir,
-                               capture_output=True, shell=True)
+                               capture_output=True, shell=_SHELL)
         else:
             r = subprocess.run(
                 ["zig", "build", step, "--cache-dir", str(self.cache)],
-                cwd=self.dir, capture_output=True, shell=True,
+                cwd=self.dir, capture_output=True, shell=_SHELL,
             )
         return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
 
