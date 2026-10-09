@@ -621,6 +621,12 @@ test "the deepest legal evaluation of each form fits a stack half the size of 1 
     try std.testing.expectEqual(error.NotAProcedure, (try evalOnSmallStack(try nestedOperators(a, max_depth - 1))).?);
     for (shapes) |sh|
         try std.testing.expectEqual(null, try evalOnSmallStack(try wrapped(a, max_depth - 1, sh.prefix, sh.core, sh.suffix)));
+    // A set! chain needs a bound variable, so it runs in a lambda body. Its
+    // innermost `1` is one level below the call, plus the depth of the chain.
+    const set_chain = try std.mem.concat(a, u8, &.{
+        "((lambda (x) ", try wrapped(a, max_depth - 2, "(set! x ", "1", ")"), ") 0)",
+    });
+    try std.testing.expectEqual(null, try evalOnSmallStack(set_chain));
     // Past the limit it is reported, on the same small stack.
     try std.testing.expectEqual(error.NestingTooDeep, (try evalOnSmallStack(try nestedCalls(a, max_depth + 50))).?);
 }

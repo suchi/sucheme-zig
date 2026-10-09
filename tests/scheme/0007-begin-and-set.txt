@@ -55,6 +55,12 @@
 11
 2
 
+((lambda (x) (set! x 5)) 1)
+<no output>
+
+(define inc 0) (define get 0) ((lambda (n) (set! inc (lambda () (set! n (+ n 1)))) (set! get (lambda () n))) 0) (inc) (inc) (get)
+2
+
 (define f (lambda () 1)) (set! f 2) f
 2
 
@@ -65,6 +71,9 @@
 error: unbound variable: x
 
 (define x 1) (set! x (foo)) x
+error: unbound variable: foo
+
+(set! nope (foo))
 error: unbound variable: foo
 
 (define x 1) (set! x)
