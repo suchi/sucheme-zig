@@ -45,8 +45,10 @@ pub const Error = arith.Error || error{
 /// identifier lives here, and the caller reads it with `diagnostic` after an
 /// error. Slice 1f replaces the message with condition objects.
 pub const Context = struct {
-    /// Where the data the reader builds, the symbols and the global bindings are
-    /// allocated. Slice 1g replaces it with the GC heap.
+    /// Where the data the reader builds, the symbols, the global bindings, the
+    /// closures and the frames of calls are allocated. Nothing in it is freed
+    /// until slice 1g replaces it with the GC heap, so a program that makes many
+    /// calls grows it by a frame and its arguments each.
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     globals: env.Global = .{},
@@ -246,8 +248,9 @@ fn evalIf(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: 
 }
 
 /// `(lambda (name ...) body ...)` (R7RS 4.1.4). A procedure that remembers the
-/// frame it was made in. A variable number of arguments, `(lambda args ...)` and
-/// `(lambda (a . rest) ...)`, waits for the reader to read a dotted list.
+/// frame it was made in. A variable number of arguments is not supported yet:
+/// `(lambda args ...)` is refused until the evaluator takes it, and
+/// `(lambda (a . rest) ...)` also waits for the reader to read a dotted list.
 fn evalLambda(ctx: *Context, arena: std.mem.Allocator, items: []const Value, scope: Scope) Error!Value {
     if (items.len < 3)
         return ctx.fail(error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)", .{});
