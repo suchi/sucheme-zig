@@ -4,7 +4,9 @@
 //! docs/design/runtime.md; each arrives with the slice that first creates it.
 //! Slice 1a had fixed-length integers, 1b the unspecified value, 1c booleans,
 //! the empty list, symbols and pairs, 1d the two kinds of procedure, and 1e adds
-//! the marker of a variable that is not defined yet.
+//! the marker of a variable that is not defined yet. Slice 1f adds the layouts of
+//! the core IR and of the continuation, which are not values but are walked all
+//! the same.
 //! The layouts of everything the GC will walk are defined here, so the one
 //! place that has to know them all is this file (docs/design/architecture.md).
 //!
@@ -189,6 +191,126 @@ pub const Frame = struct {
     parent: ?*Frame,
 };
 
+/// Where a local variable lives: how many frames out from the one being run, and
+/// which slot in that frame. The expander resolves it (docs/design/runtime.md,
+/// the environment); `u32` is the width the expander reports an overflow of as
+/// an implementation restriction (R7RS 1.3.2).
+pub const Address = struct {
+    depth: u32,
+    index: u32,
+};
+
+/// A node of the core IR: what the expander produces and the machine runs
+/// (docs/design/runtime.md). Nodes are immutable, and a node refers to the nodes
+/// under it by pointer. They live where the expander allocated them, which until
+/// slice 1g is the interpreter's arena.
+pub const Node = union(enum) {
+    /// A literal, or the datum of a `quote`.
+    constant: Value,
+    local_ref: LocalRef,
+    /// A global variable, found by name until stage 2 gives it a cell.
+    global_ref: SymbolId,
+    /// `set!` of a local variable. The variable must have a value.
+    local_set: LocalAssign,
+    /// The definition of a local variable, at the start of a body. It gives the
+    /// first value to a slot that holds `uninitialized`.
+    local_define: LocalAssign,
+    global_set: GlobalAssign,
+    global_define: GlobalAssign,
+    @"if": If,
+    /// `begin` and the body of a `lambda`: one or more nodes, the last one's
+    /// value is the value of the sequence.
+    sequence: []const *const Node,
+    lambda: *const Lambda,
+    call: Call,
+};
+
+/// A local variable read. The name is for the message when the slot is still
+/// uninitialized.
+pub const LocalRef = struct {
+    address: Address,
+    name: SymbolId,
+};
+
+pub const LocalAssign = struct {
+    address: Address,
+    name: SymbolId,
+    value: *const Node,
+};
+
+pub const GlobalAssign = struct {
+    name: SymbolId,
+    value: *const Node,
+};
+
+pub const If = struct {
+    condition: *const Node,
+    consequent: *const Node,
+    /// Null when the form had none; a false condition then gives the
+    /// unspecified value.
+    alternative: ?*const Node,
+};
+
+/// What a `lambda` expression means, apart from the frame it is evaluated in.
+pub const Lambda = struct {
+    /// The number of parameters, which a call has to match.
+    arity: u32,
+    /// The number of slots of a call's frame: the parameters, then the names the
+    /// body defines at its start.
+    frame_size: u32,
+    body: *const Node,
+};
+
+/// A procedure call. The operator is evaluated first, then the operands from
+/// left to right.
+pub const Call = struct {
+    operator: *const Node,
+    operands: []const *const Node,
+};
+
+/// Values already evaluated for a call, most recent first. Immutable, so a
+/// continuation captured while a call evaluates its operands can be resumed more
+/// than once, each time from the same operands (ADR-0004).
+pub const Args = struct {
+    value: Value,
+    next: ?*const Args,
+};
+
+/// One frame of the continuation: what to do with the value that arrives, and
+/// the frame to do it in. The frames form a chain, and are never changed once
+/// made, which is what lets a continuation be captured in constant time.
+pub const Kont = struct {
+    next: ?*const Kont,
+    /// The local frame to resume in.
+    env: ?*Frame,
+    /// The number of frames in the chain from this one, itself included.
+    depth: usize,
+    step: Step,
+
+    pub const Step = union(enum) {
+        /// The value is the condition of this `if`.
+        branch: *const If,
+        /// The value is dropped, and these nodes run next. Never empty: the
+        /// last node of a sequence runs with this frame already gone, which is
+        /// what makes a call in tail position cost no frame.
+        sequence: []const *const Node,
+        local_set: *const LocalAssign,
+        local_define: *const LocalAssign,
+        global_set: *const GlobalAssign,
+        global_define: *const GlobalAssign,
+        /// The value is the next one of the call: the operator first, then each
+        /// operand. `args` holds those that came before it.
+        call: CallStep,
+    };
+
+    pub const CallStep = struct {
+        call: *const Call,
+        args: ?*const Args,
+        /// How many values `args` holds.
+        received: usize,
+    };
+};
+
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized };
 
@@ -259,6 +381,20 @@ test "procedures answer only to their own accessor" {
     try std.testing.expectEqual(&closure, cv.asClosure().?);
     try std.testing.expect(cv.asPrimitive() == null);
     try std.testing.expect(Value.fromFixnum(1).asClosure() == null);
+}
+
+test "a node tree and a continuation chain can be built from the layouts" {
+    const x: SymbolId = @fromBackingInt(@intCast(0));
+    const one: Node = .{ .constant = .fromFixnum(1) };
+    const reference: Node = .{ .local_ref = .{ .address = .{ .depth = 1, .index = 2 }, .name = x } };
+    const operands = [_]*const Node{&one};
+    const call: Node = .{ .call = .{ .operator = &reference, .operands = &operands } };
+    try std.testing.expectEqual(1, call.call.operands[0].constant.asFixnum().?);
+    try std.testing.expectEqual(2, call.call.operator.local_ref.address.index);
+    const base: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .branch = &.{ .condition = &one, .consequent = &one, .alternative = null } } };
+    const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call.call, .args = null, .received = 0 } } };
+    try std.testing.expectEqual(2, top.depth);
+    try std.testing.expectEqual(&base, top.next.?);
 }
 
 test "cons makes a pair that holds both halves" {

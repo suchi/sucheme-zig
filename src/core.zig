@@ -1,0 +1,167 @@
+//! The core IR: helpers over the nodes of value.zig.
+//!
+//! The layouts are in value.zig, where everything the GC will walk is defined
+//! (docs/design/architecture.md). This file makes nodes and writes them as text,
+//! which is how the tests of the expander read what it produced.
+
+const std = @import("std");
+const value_mod = @import("value.zig");
+const Value = value_mod.Value;
+const Node = value_mod.Node;
+const symbol = @import("symbol.zig");
+const printer = @import("printer.zig");
+
+pub const Error = std.Io.Writer.Error || error{OutOfMemory};
+
+/// A new node holding `n`, allocated with `alloc`.
+pub fn make(alloc: std.mem.Allocator, n: Node) error{OutOfMemory}!*const Node {
+    const p = try alloc.create(Node);
+    p.* = n;
+    return p;
+}
+
+/// Writes `node` as a list that names the kind of node first, for the tests of
+/// the expander. Not a form `read` takes back: the IR is not source.
+///
+/// A node is written by recursion, which is as deep as the node tree. The tests
+/// are the only caller, so a deep input is not a concern here; a caller that
+/// takes a program's input must not use it.
+pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, node: *const Node) Error!void {
+    switch (node.*) {
+        .constant => |v| {
+            try out.writeAll("(const ");
+            try printer.write(out, scratch, symbols, v);
+            try out.writeByte(')');
+        },
+        .local_ref => |r| try out.print("(local {s} {d} {d})", .{ symbols.nameOf(r.name), r.address.depth, r.address.index }),
+        .global_ref => |id| try out.print("(global {s})", .{symbols.nameOf(id)}),
+        .local_set => |a| {
+            try out.print("(set-local {s} {d} {d} ", .{ symbols.nameOf(a.name), a.address.depth, a.address.index });
+            try write(out, scratch, symbols, a.value);
+            try out.writeByte(')');
+        },
+        .local_define => |a| {
+            try out.print("(define-local {s} {d} {d} ", .{ symbols.nameOf(a.name), a.address.depth, a.address.index });
+            try write(out, scratch, symbols, a.value);
+            try out.writeByte(')');
+        },
+        .global_set => |a| {
+            try out.print("(set-global {s} ", .{symbols.nameOf(a.name)});
+            try write(out, scratch, symbols, a.value);
+            try out.writeByte(')');
+        },
+        .global_define => |a| {
+            try out.print("(define-global {s} ", .{symbols.nameOf(a.name)});
+            try write(out, scratch, symbols, a.value);
+            try out.writeByte(')');
+        },
+        .@"if" => |i| {
+            try out.writeAll("(if ");
+            try write(out, scratch, symbols, i.condition);
+            try out.writeByte(' ');
+            try write(out, scratch, symbols, i.consequent);
+            if (i.alternative) |alt| {
+                try out.writeByte(' ');
+                try write(out, scratch, symbols, alt);
+            }
+            try out.writeByte(')');
+        },
+        .sequence => |nodes| {
+            try out.writeAll("(seq");
+            for (nodes) |n| {
+                try out.writeByte(' ');
+                try write(out, scratch, symbols, n);
+            }
+            try out.writeByte(')');
+        },
+        .lambda => |l| {
+            try out.print("(lambda {d} {d} ", .{ l.arity, l.frame_size });
+            try write(out, scratch, symbols, l.body);
+            try out.writeByte(')');
+        },
+        .call => |c| {
+            try out.writeAll("(call ");
+            try write(out, scratch, symbols, c.operator);
+            for (c.operands) |n| {
+                try out.writeByte(' ');
+                try write(out, scratch, symbols, n);
+            }
+            try out.writeByte(')');
+        },
+    }
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}
+
+/// The text of `node`, in memory owned by the caller.
+fn written(gpa: std.mem.Allocator, symbols: *const symbol.Table, node: *const Node) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    try write(&out.writer, gpa, symbols, node);
+    return out.toOwnedSlice();
+}
+
+test "make allocates a node that holds what it was given" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const n = try make(arena.allocator(), .{ .constant = .fromFixnum(7) });
+    try std.testing.expectEqual(7, n.constant.asFixnum().?);
+}
+
+test "write names each kind of node and its parts" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var symbols: symbol.Table = .{};
+    const x = try symbols.intern(a, "x");
+    const f = try symbols.intern(a, "f");
+
+    const one = try make(a, .{ .constant = .fromFixnum(1) });
+    const local = try make(a, .{ .local_ref = .{ .address = .{ .depth = 1, .index = 2 }, .name = x } });
+    const global = try make(a, .{ .global_ref = f });
+    const set_local = try make(a, .{ .local_set = .{ .address = .{ .depth = 0, .index = 0 }, .name = x, .value = one } });
+    const define_local = try make(a, .{ .local_define = .{ .address = .{ .depth = 0, .index = 1 }, .name = x, .value = one } });
+    const set_global = try make(a, .{ .global_set = .{ .name = f, .value = one } });
+    const define_global = try make(a, .{ .global_define = .{ .name = f, .value = one } });
+    const no_alt = try make(a, .{ .@"if" = .{ .condition = one, .consequent = local, .alternative = null } });
+    const with_alt = try make(a, .{ .@"if" = .{ .condition = one, .consequent = local, .alternative = global } });
+    const seq = try make(a, .{ .sequence = &.{ one, local } });
+    const lambda = value_mod.Lambda{ .arity = 1, .frame_size = 2, .body = seq };
+    const lam = try make(a, .{ .lambda = &lambda });
+    const call = try make(a, .{ .call = .{ .operator = global, .operands = &.{ one, local } } });
+
+    const cases = [_]struct { node: *const Node, text: []const u8 }{
+        .{ .node = one, .text = "(const 1)" },
+        .{ .node = local, .text = "(local x 1 2)" },
+        .{ .node = global, .text = "(global f)" },
+        .{ .node = set_local, .text = "(set-local x 0 0 (const 1))" },
+        .{ .node = define_local, .text = "(define-local x 0 1 (const 1))" },
+        .{ .node = set_global, .text = "(set-global f (const 1))" },
+        .{ .node = define_global, .text = "(define-global f (const 1))" },
+        .{ .node = no_alt, .text = "(if (const 1) (local x 1 2))" },
+        .{ .node = with_alt, .text = "(if (const 1) (local x 1 2) (global f))" },
+        .{ .node = seq, .text = "(seq (const 1) (local x 1 2))" },
+        .{ .node = lam, .text = "(lambda 1 2 (seq (const 1) (local x 1 2)))" },
+        .{ .node = call, .text = "(call (global f) (const 1) (local x 1 2))" },
+    };
+    for (cases) |c| {
+        const text = try written(std.testing.allocator, &symbols, c.node);
+        defer std.testing.allocator.free(text);
+        try std.testing.expectEqualStrings(c.text, text);
+    }
+}
+
+test "write prints a quoted datum with the printer" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var symbols: symbol.Table = .{};
+    const s = Value.fromSymbol(try symbols.intern(a, "a"));
+    const datum = try Value.cons(a, s, try Value.cons(a, .fromFixnum(2), Value.empty_list_value));
+    const n = try make(a, .{ .constant = datum });
+    const text = try written(std.testing.allocator, &symbols, n);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("(const (a 2))", text);
+}
