@@ -1,10 +1,10 @@
 //! The symbol table: each distinct name is interned once and named by a
 //! `SymbolId`, so comparing two symbols is comparing two integers.
 //!
-//! Slice 1b interns the names that `define` binds. A symbol as a `Value`
-//! arrives with `quote` in slice 1c, the first thing that can evaluate to one.
-//! The table lives as long as the interpreter and is never collected; the weak
-//! table of docs/design/runtime.md replaces it when the GC arrives (slice 1g).
+//! The reader interns every symbol it reads, so a name that is only ever
+//! referred to still takes a place in the table. The table lives as long as the
+//! interpreter and is never collected; the weak table of
+//! docs/design/runtime.md replaces it when the GC arrives (slice 1g).
 
 const std = @import("std");
 
@@ -29,12 +29,6 @@ pub const Table = struct {
         // The key is the table's own copy, which stays valid as the table grows.
         try self.index.put(alloc, owned, id);
         return id;
-    }
-
-    /// The id for `name` if it was interned, without interning it. A lookup of
-    /// a name nobody defined should not grow the table.
-    pub fn find(self: *const Table, name: []const u8) ?SymbolId {
-        return self.index.get(name);
     }
 
     pub fn nameOf(self: *const Table, id: SymbolId) []const u8 {
@@ -81,16 +75,6 @@ test "the table keeps its own copy of a name" {
     try std.testing.expectEqual(id, try t.intern(a, "abc"));
 }
 
-test "find does not intern" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    var t: Table = .{};
-    try std.testing.expect(t.find("x") == null);
-    try std.testing.expectEqual(0, t.names.items.len);
-    const id = try t.intern(arena.allocator(), "x");
-    try std.testing.expectEqual(id, t.find("x").?);
-}
-
 test "ids stay valid as the table grows" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -101,6 +85,6 @@ test "ids stay valid as the table grows" {
     for (&ids, 0..) |*id, i| id.* = try t.intern(a, std.fmt.bufPrint(&buf, "s{d}", .{i}) catch unreachable);
     for (ids, 0..) |id, i| {
         try std.testing.expectEqualStrings(std.fmt.bufPrint(&buf, "s{d}", .{i}) catch unreachable, t.nameOf(id));
-        try std.testing.expectEqual(id, t.find(t.nameOf(id)).?);
+        try std.testing.expectEqual(id, try t.intern(a, t.nameOf(id)));
     }
 }
