@@ -35,7 +35,12 @@ pub const Error = arith.Error || error{
 /// would kill the process instead of reporting an error. The reader handles any
 /// depth, so this is where the limit has to be. It goes with the recursion,
 /// when slice 1f moves evaluation into the machine.
-pub const max_depth = 10_000;
+///
+/// Why: a Debug build uses about a kilobyte of stack per level, measured by
+/// running nested `(+ (+ ... 1))` against `ulimit -s`; at 8 MiB it overflowed
+/// before 10_000 levels. 500 stays inside a 1 MiB stack, the smallest a host
+/// might give, with room to spare.
+pub const max_depth = 500;
 
 /// Evaluates `d`. Temporary storage, such as the evaluated arguments, comes
 /// from `arena`.
