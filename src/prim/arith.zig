@@ -2,38 +2,16 @@
 //! (docs/design/runtime.md, ADR-0007).
 
 const std = @import("std");
-const Value = @import("../value.zig").Value;
+const value = @import("../value.zig");
+const Value = value.Value;
+const Primitive = value.Primitive;
+const PrimitiveError = value.PrimitiveError;
 
-pub const Error = error{
-    /// An argument is not a number.
-    WrongType,
-    /// The exact result does not fit a fixnum. R7RS 6.2.3 lets an
-    /// implementation report this as a violation of an implementation
-    /// restriction; bignums arrive in stage 4.
-    IntegerOverflow,
-};
-
-/// A procedure implemented in Zig.
-///
-/// Slice 1a has no procedure values, so a primitive is found by name where a
-/// call names it. It becomes a heap object in value.zig when slice 1d brings
-/// procedures as values.
-pub const Primitive = struct {
-    name: []const u8,
-    call: *const fn (args: []const Value) Error!Value,
-};
+pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "+", .call = add },
+    .{ .name = "+", .call = &add },
 };
-
-/// The primitive named `name`, or null.
-pub fn lookup(name: []const u8) ?*const Primitive {
-    for (&primitives) |*p| {
-        if (std.mem.eql(u8, p.name, name)) return p;
-    }
-    return null;
-}
 
 /// `(+ z1 ...)`. With no argument the sum is 0 (R7RS 6.2.6).
 fn add(args: []const Value) Error!Value {
@@ -51,7 +29,7 @@ test {
 fn addAll(ns: []const i64) Error!i64 {
     var args: [8]Value = undefined;
     for (ns, 0..) |n, i| args[i] = .fromFixnum(n);
-    return (try lookup("+").?.call(args[0..ns.len])).asFixnum().?;
+    return (try primitives[0].call(args[0..ns.len])).asFixnum().?;
 }
 
 test "+ adds its arguments, and of none is 0" {
@@ -72,11 +50,13 @@ test "+ holds only the result to the fixnum range, not a partial sum" {
 
 test "+ reports an argument that is not a number" {
     const args = [_]Value{ .fromFixnum(1), .unspecified_value };
-    try std.testing.expectError(error.WrongType, lookup("+").?.call(&args));
+    try std.testing.expectError(error.WrongType, primitives[0].call(&args));
 }
 
-test "lookup finds + and nothing it does not define" {
-    try std.testing.expect(lookup("+") != null);
-    try std.testing.expect(lookup("-") == null);
-    try std.testing.expect(lookup("") == null);
+test "the table names each primitive once" {
+    for (primitives, 0..) |p, i| {
+        try std.testing.expect(p.name.len > 0);
+        for (primitives[i + 1 ..]) |q| try std.testing.expect(!std.mem.eql(u8, p.name, q.name));
+    }
+    try std.testing.expectEqualStrings("+", primitives[0].name);
 }

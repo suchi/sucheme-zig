@@ -1,0 +1,110 @@
+# Slice 1d: begin evaluates its forms in order and gives the last; at the top
+# level the forms are at the top level too, so it can hold definitions. set!
+# changes the nearest binding, local or global, and never creates one.
+
+(begin 1 2 3)
+3
+
+(begin 1)
+1
+
+(begin (define x 1) x)
+1
+
+(begin (define x 1) (define y 2) (+ x y))
+3
+
+(begin (begin (define x 5)) x)
+5
+
+(if #t (begin 1 2))
+2
+
+((lambda () (begin 1 2)))
+2
+
+(begin (define x 1) (begin (set! x 2) x))
+2
+
+(define x 1) (set! x 2) x
+2
+
+(define x 1) (set! x (+ x 1)) x
+2
+
+(define x 1) (set! x 2)
+<no output>
+
+(define x 1) ((lambda () (set! x 2))) x
+2
+
+((lambda (x) (set! x 5) x) 1)
+5
+
+(define x 1) ((lambda (x) (set! x 5) x) 1) x
+5
+1
+
+(define make-counter (lambda (n) (lambda () (set! n (+ n 1)) n))) (define c (make-counter 0)) (c) (c) (c)
+1
+2
+3
+
+(define make-counter (lambda (n) (lambda () (set! n (+ n 1)) n))) (define a (make-counter 0)) (define b (make-counter 10)) (a) (b) (a)
+1
+11
+2
+
+((lambda (x) (set! x 5)) 1)
+<no output>
+
+(define inc 0) (define get 0) ((lambda (n) (set! inc (lambda () (set! n (+ n 1)))) (set! get (lambda () n))) 0) (inc) (inc) (get)
+2
+
+(define f (lambda () 1)) (set! f 2) f
+2
+
+(define + 5) (set! + 6) +
+6
+
+(set! x 1)
+error: unbound variable: x
+
+(define x 1) (set! x (foo)) x
+error: unbound variable: foo
+
+(set! nope (foo))
+error: unbound variable: foo
+
+(define x 1) (set! x)
+error: bad set!: expected (set! name expression)
+
+(define x 1) (set! x 1 2)
+error: bad set!: expected (set! name expression)
+
+(set! 1 2)
+error: bad set!: the name must be an identifier
+
+(set! if 1)
+error: bad set!: if is a syntactic keyword and cannot be assigned
+
+(begin)
+error: bad begin: expected (begin expression ...)
+
+(begin (foo) 1)
+error: unbound variable: foo
+
+(if #t (begin (define z 1)))
+error: bad define: a definition is only allowed at the top level
+
+((lambda () (begin (define z 1) z)))
+error: bad define: a definition is only allowed at the top level
+
+(+ 1 (begin (define z 1) z))
+error: bad define: a definition is only allowed at the top level
+
+begin
+error: begin is a syntactic keyword and cannot be used as a variable
+
+set!
+error: set! is a syntactic keyword and cannot be used as a variable
