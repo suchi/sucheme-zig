@@ -54,7 +54,7 @@
 - テストの書式: `tests/scheme/*.txt` は、入力の行、期待する出力の行、空行の順。出力が空のケースは期待する行に `<no output>` と書く。書式は `tools/test-scheme/main.zig` の doc コメントが正。
 - レビュー: 切片の PR ごとに、設計の意図を渡さないサブエージェントに `adversarial-review` を1巡させる。機械の検査を壊して確かめるときは `tools/review-harness/harness.py` を使う。
 - 環境の事実: 実行環境から ziglang.org に届かないことがある。その場合は `python3 -m venv <dir> && <dir>/bin/pip install ziglang==0.17.0` で入れ、`zig` を PATH に置く(`.zigversion` と一致することを `zig version` で確かめる)。
-- ブランチ: 切片ごとに、作業内容が分かる名前のブランチを最新の `origin/main` から作る(1f は `feature/slice-1f-cek-machine`)。PR がマージされたら、次の切片のブランチを新しく作る。マージ済みのブランチは、ユーザーの承認を得てから消す。
+- ブランチ: 切片ごとに、作業内容が分かる名前のブランチを最新の `origin/main` から作る(1f は `feature/phase1-slice-1f-cek-machine`)。PR がマージされたら、次の切片のブランチを新しく作る。マージ済みのブランチは、ユーザーの承認を得てから消す。
 
 GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく、アリーナで足りるためである。ただし 1d で呼び出しごとのフレームが永続側に残るようになり、メモリは入力の大きさでなく呼び出しの回数に比例して増える。1f までのあいだ、入れ子の呼び出しを多数作る小さな入力で使い切れることは、既知の制約として受け入れている(深さの上限が止めるのは入れ子の深さだけである)。1f で末尾再帰が一定のメモリで回ると、初めて「回収しないと終わらない」状態が作れる。GC の正しさは、回収が必要な状況で初めて検査できる。
 
@@ -107,7 +107,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 ## 次にやること
 
-切片 1f を [0004-slice-1f-cek-machine.md](0004-slice-1f-cek-machine.md) の作業順で実装している。ブランチは `feature/slice-1f-cek-machine`。PR は実装がそろってから作る。
+切片 1f を [0004-slice-1f-cek-machine.md](0004-slice-1f-cek-machine.md) の作業順で実装している。ブランチは `feature/phase1-slice-1f-cek-machine`。PR は実装がそろってから作る。
 
 | 作業順 | 状態 |
 | --- | --- |
