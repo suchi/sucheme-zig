@@ -1,0 +1,631 @@
+//! The expander: data in, core IR out.
+//!
+//! Slice 1f has the six special forms and no macros, so this is a translation
+//! of `quote`, `if`, `lambda`, `set!`, `define` and `begin`, and of calls. What
+//! stage 2 adds (syntactic bindings, `syntax-rules`) replaces `Keyword` with a
+//! syntactic environment; docs/design/frontend.md describes where it goes.
+//!
+//! The expander resolves every variable. A name that a `lambda` binds becomes a
+//! lexical address (how many frames out, which slot), and any other name is a
+//! global one, found by name when the machine runs it.
+//!
+//! The work is kept on a stack of its own and never recurses, so a program
+//! nested as deep as the reader can read it does not overflow the Zig stack
+//! (docs/design/frontend.md).
+
+const std = @import("std");
+const value_mod = @import("../value.zig");
+const Value = value_mod.Value;
+const Node = value_mod.Node;
+const SymbolId = @import("../symbol.zig").SymbolId;
+const symbol = @import("../symbol.zig");
+const context = @import("../context.zig");
+const Context = context.Context;
+const core = @import("../core.zig");
+
+pub const Error = context.Error;
+
+/// What the representation of a lexical address holds. The default is the width
+/// of the address; a test passes a smaller figure to reach the limit.
+pub const Limits = struct {
+    address: u32 = std.math.maxInt(u32),
+};
+
+/// Expands `form`, which is at the top level of a program. The node and what it
+/// refers to are allocated in `ctx.persist`; what the expansion needs only while
+/// it runs comes from `scratch`. On an error `ctx` holds the message.
+pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*const Node {
+    return expandWith(ctx, scratch, form, .{});
+}
+
+pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
+    var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
+    const root = try ctx.persist.create(Node);
+    try e.stack.append(scratch, .{ .form = form, .scope = null, .pos = .top, .dest = root });
+    while (e.stack.pop()) |task| try e.step(task);
+    return root;
+}
+
+/// The special forms. A keyword cannot be shadowed, redefined, assigned or used
+/// as a variable or a parameter; stage 2 replaces this enum with syntactic
+/// bindings.
+const Keyword = enum {
+    define,
+    quote,
+    @"if",
+    lambda,
+    begin,
+    @"set!",
+
+    fn of(name: []const u8) ?Keyword {
+        return std.meta.stringToEnum(Keyword, name);
+    }
+};
+
+/// Where a form stands, which decides whether a definition is allowed there
+/// (R7RS 5.3): at the top level, or at the start of a body.
+const Position = enum { top, body, expression };
+
+/// The variables of one `lambda` as the expander sees them: the parameters, then
+/// the names its body defines at the start, in the order of the slots of a call's
+/// frame.
+const Scope = struct {
+    names: []const SymbolId,
+    parent: ?*const Scope,
+};
+
+/// A form still to expand, and the node to fill in with the result. The node is
+/// allocated before its children are known, which is what lets the work go on a
+/// stack instead of in recursion.
+const Task = struct {
+    form: Value,
+    scope: ?*const Scope,
+    pos: Position,
+    dest: *Node,
+};
+
+const Expander = struct {
+    ctx: *Context,
+    scratch: std.mem.Allocator,
+    limits: Limits,
+    stack: std.ArrayList(Task) = .empty,
+
+    fn step(self: *Expander, task: Task) Error!void {
+        switch (task.form.kind()) {
+            // Self-evaluating (R7RS 4.1.2).
+            .fixnum, .boolean, .unspecified, .uninitialized, .condition, .primitive, .closure => task.dest.* = .{ .constant = task.form },
+            // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
+            .empty_list => return self.ctx.raise("empty combination", .{}),
+            .symbol => try self.reference(task),
+            .pair => {
+                const items = try self.itemsOf(task.form);
+                if (items[0].asSymbol()) |head| {
+                    if (Keyword.of(self.ctx.symbols.nameOf(head))) |keyword| return switch (keyword) {
+                        .define => self.define(task, items),
+                        .quote => self.quote(task, items),
+                        .@"if" => self.conditional(task, items),
+                        .lambda => self.lambdaForm(task, items),
+                        .begin => self.begin(task, items),
+                        .@"set!" => self.set(task, items),
+                    };
+                }
+                try self.call(task, items);
+            },
+        }
+    }
+
+    /// Queues `form` to fill a new node, and returns the node.
+    fn child(self: *Expander, form: Value, scope: ?*const Scope, pos: Position) Error!*Node {
+        const node = try self.ctx.persist.create(Node);
+        try self.stack.append(self.scratch, .{ .form = form, .scope = scope, .pos = pos, .dest = node });
+        return node;
+    }
+
+    /// The elements of the list `form`. A form is a proper list; the reader
+    /// cannot write any other, so this fails only for a datum built by hand.
+    fn itemsOf(self: *Expander, form: Value) Error![]const Value {
+        var items: std.ArrayList(Value) = .empty;
+        var rest = form;
+        while (rest.asPair()) |p| : (rest = p.cdr) try items.append(self.scratch, p.car);
+        if (rest.kind() != .empty_list)
+            return self.ctx.raise("bad syntax: a form must be a proper list", .{});
+        return items.items;
+    }
+
+    /// The address of the variable `id` if a `lambda` around `scope` binds it.
+    fn resolve(self: *Expander, scope: ?*const Scope, id: SymbolId) Error!?value_mod.Address {
+        var depth: u32 = 0;
+        var s = scope;
+        while (s) |sc| : (s = sc.parent) {
+            for (sc.names, 0..) |n, i| {
+                if (n != id) continue;
+                if (depth > self.limits.address) return self.ctx.raise(
+                    "implementation restriction: procedures are nested too deeply",
+                    .{},
+                );
+                return .{ .depth = depth, .index = @intCast(i) };
+            }
+            depth += 1;
+        }
+        return null;
+    }
+
+    fn reference(self: *Expander, task: Task) Error!void {
+        const id = task.form.asSymbol().?;
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.raise("{s} is a syntactic keyword and cannot be used as a variable", .{name});
+        task.dest.* = if (try self.resolve(task.scope, id)) |address|
+            .{ .local_ref = .{ .address = address, .name = id } }
+        else
+            .{ .global_ref = id };
+    }
+
+    /// `(quote datum)` (R7RS 4.1.2). The datum, unexpanded.
+    fn quote(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len != 2)
+            return self.ctx.raise("bad quote: expected (quote datum)", .{});
+        task.dest.* = .{ .constant = items[1] };
+    }
+
+    /// `(if test consequent [alternative])` (R7RS 4.1.5).
+    fn conditional(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len != 3 and items.len != 4)
+            return self.ctx.raise("bad if: expected (if test consequent) or (if test consequent alternative)", .{});
+        // Pushed last first, so the test is expanded first.
+        const alternative = if (items.len == 4) try self.child(items[3], task.scope, .expression) else null;
+        const consequent = try self.child(items[2], task.scope, .expression);
+        const condition = try self.child(items[1], task.scope, .expression);
+        task.dest.* = .{ .@"if" = .{ .condition = condition, .consequent = consequent, .alternative = alternative } };
+    }
+
+    /// `(begin expression ...)` (R7RS 4.2.3). At the top level its forms are at
+    /// the top level too, so a definition in it is allowed (R7RS 5.3).
+    fn begin(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len < 2)
+            return self.ctx.raise("bad begin: expected (begin expression ...)", .{});
+        const pos: Position = if (task.pos == .top) .top else .expression;
+        try self.sequence(task.dest, items[1..], task.scope, pos, 0);
+    }
+
+    /// Fills `dest` with `forms` run in order: `defines` of them at the start
+    /// are definitions of a body, the rest are in `pos`. One form is that form
+    /// itself (a body never has only definitions, so it is never one of them).
+    fn sequence(self: *Expander, dest: *Node, forms: []const Value, scope: ?*const Scope, pos: Position, defines: usize) Error!void {
+        if (forms.len == 1) {
+            try self.stack.append(self.scratch, .{ .form = forms[0], .scope = scope, .pos = pos, .dest = dest });
+            return;
+        }
+        const nodes = try self.ctx.persist.alloc(*const Node, forms.len);
+        // The nodes are made in order, and queued last first.
+        for (nodes) |*n| n.* = try self.ctx.persist.create(Node);
+        var i = forms.len;
+        while (i > 0) {
+            i -= 1;
+            try self.stack.append(self.scratch, .{
+                .form = forms[i],
+                .scope = scope,
+                .pos = if (i < defines) .body else pos,
+                .dest = @constCast(nodes[i]),
+            });
+        }
+        dest.* = .{ .sequence = nodes };
+    }
+
+    /// `(set! name expression)` (R7RS 4.1.6). The nearest binding of `name`,
+    /// local or global.
+    fn set(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len != 3)
+            return self.ctx.raise("bad set!: expected (set! name expression)", .{});
+        const id = items[1].asSymbol() orelse
+            return self.ctx.raise("bad set!: the name must be an identifier", .{});
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.raise("bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
+        const value = try self.child(items[2], task.scope, .expression);
+        task.dest.* = if (try self.resolve(task.scope, id)) |address|
+            .{ .local_set = .{ .address = address, .name = id, .value = value } }
+        else
+            .{ .global_set = .{ .name = id, .value = value } };
+    }
+
+    /// `(define name expression)` and `(define (name parameter ...) body ...)`
+    /// (R7RS 5.3.1). At the top level it binds a global; at the start of a body
+    /// it gives a value to the local variable that `lambdaNode` made for it.
+    fn define(self: *Expander, task: Task, items: []const Value) Error!void {
+        // Why: R7RS 5.3 allows a definition at the top level and at the start of
+        // a body. Anything else would bind a name from inside an expression that
+        // may go on to fail.
+        if (task.pos == .expression)
+            return self.ctx.raise("bad define: a definition is only allowed at the top level or at the start of a body", .{});
+        // `(define (name parameter ...) body ...)` is `(define name (lambda
+        // (parameter ...) body ...))` (R7RS 5.3.1).
+        const shorthand = items.len >= 2 and items[1].kind() == .pair;
+        if (shorthand and items.len < 3)
+            return self.ctx.raise("bad define: expected (define (name parameter ...) body ...)", .{});
+        if (!shorthand and items.len != 3)
+            return self.ctx.raise("bad define: expected (define name expression)", .{});
+        const target = if (shorthand) items[1].asPair().?.car else items[1];
+        const id = target.asSymbol() orelse
+            return self.ctx.raise("bad define: the name must be an identifier", .{});
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+        const value = try self.ctx.persist.create(Node);
+        if (shorthand) {
+            try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.scope, "define");
+        } else {
+            try self.stack.append(self.scratch, .{ .form = items[2], .scope = task.scope, .pos = .expression, .dest = value });
+        }
+        switch (task.pos) {
+            .top => task.dest.* = .{ .global_define = .{ .name = id, .value = value } },
+            // `collectDefinitions` made the variable when the lambda was made,
+            // and the scope is that lambda's own.
+            .body => {
+                const index = std.mem.indexOfScalar(SymbolId, task.scope.?.names, id).?;
+                task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = @intCast(index) }, .name = id, .value = value } };
+            },
+            .expression => unreachable,
+        }
+    }
+
+    /// `(lambda (name ...) body ...)` (R7RS 4.1.4).
+    fn lambdaForm(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len < 3)
+            return self.ctx.raise("bad lambda: expected (lambda (name ...) body ...)", .{});
+        try self.lambdaNode(task.dest, items[1], items[2..], task.scope, "lambda");
+    }
+
+    /// Fills `dest` with the procedure whose parameters are `params_form` and
+    /// whose body is `body`, made in `scope`. `form_name` is the form it was
+    /// written as, for the messages: `(define (f x) ...)` is a `define` with a
+    /// parameter list of its own.
+    ///
+    /// A variable number of arguments is not supported yet: `(lambda args ...)`
+    /// is refused until the machine takes it, and `(lambda (a . rest) ...)` also
+    /// waits for the reader to read a dotted list.
+    fn lambdaNode(
+        self: *Expander,
+        dest: *Node,
+        params_form: Value,
+        body: []const Value,
+        scope: ?*const Scope,
+        comptime form_name: []const u8,
+    ) Error!void {
+        var names: std.ArrayList(SymbolId) = .empty;
+        var rest = params_form;
+        if (rest.kind() == .symbol) return self.ctx.raise(
+            "bad " ++ form_name ++ ": parameters must be a list of identifiers; a variable number of arguments is not supported yet",
+            .{},
+        );
+        while (rest.asPair()) |p| : (rest = p.cdr) {
+            const id = p.car.asSymbol() orelse
+                return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
+            const name = self.ctx.symbols.nameOf(id);
+            if (Keyword.of(name) != null)
+                return self.ctx.raise("bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
+            for (names.items) |seen| {
+                if (seen == id) return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
+            }
+            try names.append(self.scratch, id);
+        }
+        if (rest.kind() != .empty_list)
+            return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
+        const arity = names.items.len;
+        const defines = try self.collectDefinitions(body, &names);
+        // Why: R7RS 5.3.2 gives a body definitions followed by expressions, and
+        // at least one expression: a body that only defines has no value to
+        // return.
+        if (defines == body.len)
+            return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
+        if (names.items.len > self.limits.address)
+            return self.ctx.raise("implementation restriction: a procedure has too many variables", .{});
+        const inner = try self.scratch.create(Scope);
+        inner.* = .{ .names = names.items, .parent = scope };
+        const body_node = try self.ctx.persist.create(Node);
+        try self.sequence(body_node, body, inner, .expression, defines);
+        const lambda = try self.ctx.persist.create(value_mod.Lambda);
+        lambda.* = .{ .arity = @intCast(arity), .frame_size = @intCast(names.items.len), .body = body_node };
+        dest.* = .{ .lambda = lambda };
+    }
+
+    /// Adds the names that the definitions at the start of `body` define to
+    /// `names`, and returns how many forms they are. A name that is already
+    /// there, as a parameter or an earlier definition, is an error. The
+    /// definitions themselves are checked when they are expanded.
+    fn collectDefinitions(self: *Expander, body: []const Value, names: *std.ArrayList(SymbolId)) Error!usize {
+        var count: usize = 0;
+        for (body) |form| {
+            const head = form.asPair() orelse break;
+            const keyword_id = head.car.asSymbol() orelse break;
+            if (Keyword.of(self.ctx.symbols.nameOf(keyword_id)) != .define) break;
+            const rest = head.cdr.asPair() orelse
+                return self.ctx.raise("bad define: expected (define name expression)", .{});
+            // `(define (name parameter ...) body ...)` names what its header starts with.
+            const target = if (rest.car.asPair()) |header| header.car else rest.car;
+            const id = target.asSymbol() orelse
+                return self.ctx.raise("bad define: the name must be an identifier", .{});
+            const name = self.ctx.symbols.nameOf(id);
+            if (Keyword.of(name) != null)
+                return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+            for (names.items) |seen| {
+                if (seen == id) return self.ctx.raise(
+                    "bad define: {s} is already a parameter or defined earlier in this body",
+                    .{name},
+                );
+            }
+            try names.append(self.scratch, id);
+            count += 1;
+        }
+        return count;
+    }
+
+    /// A procedure call (R7RS 4.1.3): the operator, then the operands from left
+    /// to right. Why: R7RS leaves the order of evaluation unspecified; left to
+    /// right is the one a reader expects.
+    fn call(self: *Expander, task: Task, items: []const Value) Error!void {
+        const operands = try self.ctx.persist.alloc(*const Node, items.len - 1);
+        for (operands) |*n| n.* = try self.ctx.persist.create(Node);
+        var i = items.len;
+        while (i > 1) {
+            i -= 1;
+            try self.stack.append(self.scratch, .{ .form = items[i], .scope = task.scope, .pos = .expression, .dest = @constCast(operands[i - 1]) });
+        }
+        const operator = try self.child(items[0], task.scope, .expression);
+        task.dest.* = .{ .call = .{ .operator = operator, .operands = operands } };
+    }
+};
+
+test {
+    std.testing.refAllDecls(@This());
+}
+
+/// What the tests share: a context whose symbols the reader fills, and the text
+/// of what `src` expands to.
+const Fixture = struct {
+    arena: std.heap.ArenaAllocator,
+    ctx: Context,
+
+    fn init(self: *Fixture) !void {
+        self.arena = .init(std.testing.allocator);
+        errdefer self.arena.deinit();
+        self.ctx = try .init(self.arena.allocator());
+    }
+
+    fn deinit(self: *Fixture) void {
+        self.arena.deinit();
+    }
+
+    /// The first datum of `src`.
+    fn read(self: *Fixture, src: []const u8) !Value {
+        var r: @import("../reader.zig").Reader = .init(src);
+        const sink: @import("../reader.zig").Sink = .{ .alloc = self.ctx.persist, .symbols = &self.ctx.symbols };
+        return (try r.next(self.arena.allocator(), sink)).?;
+    }
+
+    fn expandText(self: *Fixture, src: []const u8, limits: Limits) ![]const u8 {
+        const form = try self.read(src);
+        const node = try expandWith(&self.ctx, self.arena.allocator(), form, limits);
+        var out: std.Io.Writer.Allocating = .init(self.arena.allocator());
+        try core.write(&out.writer, self.arena.allocator(), &self.ctx.symbols, node);
+        return out.written();
+    }
+
+    fn expectExpands(self: *Fixture, src: []const u8, expected: []const u8) !void {
+        try std.testing.expectEqualStrings(expected, try self.expandText(src, .{}));
+    }
+
+    /// `src` raises an error whose condition has `message`.
+    fn expectFails(self: *Fixture, src: []const u8, message: []const u8) !void {
+        try std.testing.expectError(error.Raised, self.expandText(src, .{}));
+        try std.testing.expectEqualStrings(message, self.ctx.raised.?.message);
+    }
+};
+
+test "a literal is a constant, and a name is a global variable when nothing binds it" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("42", "(const 42)");
+    try f.expectExpands("#t", "(const #t)");
+    try f.expectExpands("x", "(global x)");
+    try f.expectExpands("+", "(global +)");
+}
+
+test "quote gives its datum unexpanded" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(quote x)", "(const x)");
+    try f.expectExpands("'(a (b 2) ())", "(const (a (b 2) ()))");
+    // A form inside a quote is data, so it is not read as a call.
+    try f.expectExpands("'(if 1)", "(const (if 1))");
+}
+
+test "a call has the operator first and the operands in order" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(f)", "(call (global f))");
+    try f.expectExpands("(f 1 2)", "(call (global f) (const 1) (const 2))");
+    try f.expectExpands("((g) (h 1))", "(call (call (global g)) (call (global h) (const 1)))");
+}
+
+test "if takes two or three parts" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(if 1 2 3)", "(if (const 1) (const 2) (const 3))");
+    try f.expectExpands("(if x 2)", "(if (global x) (const 2))");
+}
+
+test "define at the top level binds a global, and the shorthand makes a lambda" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define x 1)", "(define-global x (const 1))");
+    try f.expectExpands("(define (f a) a)", "(define-global f (lambda 1 1 (local a 0 0)))");
+    try f.expectExpands("(define (f) 1 2)", "(define-global f (lambda 0 0 (seq (const 1) (const 2))))");
+}
+
+test "a lambda binds its parameters at depth 0, and the frame outside at depth 1" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(lambda (x y) y)", "(lambda 2 2 (local y 0 1))");
+    try f.expectExpands("(lambda () 1)", "(lambda 0 0 (const 1))");
+    try f.expectExpands("(lambda (x) 1 x)", "(lambda 1 1 (seq (const 1) (local x 0 0)))");
+    try f.expectExpands(
+        "(lambda (x) (lambda (y) (+ x y)))",
+        "(lambda 1 1 (lambda 1 1 (call (global +) (local x 1 0) (local y 0 0))))",
+    );
+    // The nearer binding hides the farther one, and a local hides a global.
+    try f.expectExpands("(lambda (x) (lambda (x) x))", "(lambda 1 1 (lambda 1 1 (local x 0 0)))");
+    try f.expectExpands("(lambda (+) +)", "(lambda 1 1 (local + 0 0))");
+}
+
+test "set! assigns the nearest binding, local or global" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(set! x 1)", "(set-global x (const 1))");
+    try f.expectExpands("(lambda (x) (set! x 2))", "(lambda 1 1 (set-local x 0 0 (const 2)))");
+    try f.expectExpands("(lambda (x) (lambda () (set! x 2)))", "(lambda 1 1 (lambda 0 0 (set-local x 1 0 (const 2))))");
+    try f.expectExpands("(lambda (x) (set! y 2))", "(lambda 1 1 (set-global y (const 2)))");
+}
+
+test "begin is a sequence, and one form is that form" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(begin 1 2)", "(seq (const 1) (const 2))");
+    try f.expectExpands("(begin 1)", "(const 1)");
+    // At the top level its forms are at the top level too (R7RS 5.3).
+    try f.expectExpands("(begin (define x 1) x)", "(seq (define-global x (const 1)) (global x))");
+}
+
+test "definitions at the start of a body make slots after the parameters" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands(
+        "(lambda (n) (define a 1) (define (g) a) (g))",
+        "(lambda 1 3 (seq (define-local a 0 1 (const 1)) (define-local g 0 2 (lambda 0 0 (local a 1 1))) (call (local g 0 2))))",
+    );
+    // A name defined later is already visible to a procedure defined earlier.
+    try f.expectExpands(
+        "(lambda () (define (even? n) (odd? n)) (define (odd? n) n) 1)",
+        "(lambda 0 2 (seq (define-local even? 0 0 (lambda 1 1 (call (local odd? 1 1) (local n 0 0)))) (define-local odd? 0 1 (lambda 1 1 (local n 0 0))) (const 1)))",
+    );
+    // A definition after an expression is refused, before any of the body runs.
+    try f.expectFails(
+        "(lambda () (+ a 1) (define a 1) a)",
+        "bad define: a definition is only allowed at the top level or at the start of a body",
+    );
+}
+
+test "the shapes the expander refuses, with the messages the evaluator gave" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("()", "empty combination");
+    try f.expectFails("(quote)", "bad quote: expected (quote datum)");
+    try f.expectFails("(quote 1 2)", "bad quote: expected (quote datum)");
+    try f.expectFails("(if 1)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try f.expectFails("(lambda)", "bad lambda: expected (lambda (name ...) body ...)");
+    try f.expectFails("(lambda (x))", "bad lambda: expected (lambda (name ...) body ...)");
+    try f.expectFails("(lambda (x x) x)", "bad lambda: duplicate parameter: x");
+    try f.expectFails("(lambda (if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
+    try f.expectFails("(lambda (1) 1)", "bad lambda: a parameter must be an identifier");
+    try f.expectFails("(lambda x 1)", "bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet");
+    try f.expectFails("(set! x)", "bad set!: expected (set! name expression)");
+    try f.expectFails("(set! 1 2)", "bad set!: the name must be an identifier");
+    try f.expectFails("(set! if 1)", "bad set!: if is a syntactic keyword and cannot be assigned");
+    try f.expectFails("(begin)", "bad begin: expected (begin expression ...)");
+    try f.expectFails("if", "if is a syntactic keyword and cannot be used as a variable");
+    try f.expectFails("(define)", "bad define: expected (define name expression)");
+    try f.expectFails("(define x)", "bad define: expected (define name expression)");
+    try f.expectFails("(define 1 2)", "bad define: the name must be an identifier");
+    try f.expectFails("(define if 1)", "bad define: if is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(define (f))", "bad define: expected (define (name parameter ...) body ...)");
+    try f.expectFails("(+ 1 (define x 1))", "bad define: a definition is only allowed at the top level or at the start of a body");
+    try f.expectFails("(if (define x 1) 2)", "bad define: a definition is only allowed at the top level or at the start of a body");
+}
+
+test "the shapes a body refuses" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("(lambda () (define x 1))", "bad lambda: a body needs an expression after its definitions");
+    try f.expectFails("(define (f) (define x 1))", "bad define: a body needs an expression after its definitions");
+    try f.expectFails("(lambda (x) (define x 1) x)", "bad define: x is already a parameter or defined earlier in this body");
+    try f.expectFails("(lambda () (define x 1) (define x 2) x)", "bad define: x is already a parameter or defined earlier in this body");
+    try f.expectFails("(lambda () (define if 1) 1)", "bad define: if is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(lambda () (begin (define x 1)) x)", "bad define: a definition is only allowed at the top level or at the start of a body");
+}
+
+test "an address that does not fit the width is reported, and one that just fits is not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .address = 1 };
+    // Depth 1 is the last that fits.
+    try std.testing.expectEqualStrings(
+        "(lambda 1 1 (lambda 1 1 (local a 1 0)))",
+        try f.expandText("(lambda (a) (lambda (b) a))", limits),
+    );
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (lambda (b) (lambda (c) a)))", limits));
+    try std.testing.expectEqualStrings("implementation restriction: procedures are nested too deeply", f.ctx.diagnostic());
+    // A frame of one slot is the last that fits, and two do not.
+    try std.testing.expectEqualStrings("(lambda 1 1 (local a 0 0))", try f.expandText("(lambda (a) a)", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a b) a)", limits));
+    try std.testing.expectEqualStrings("implementation restriction: a procedure has too many variables", f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
+}
+
+test "a keyword is not a variable, a parameter or a name to define" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("quote", "quote is a syntactic keyword and cannot be used as a variable");
+    try f.expectFails("(define quote 1)", "bad define: quote is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(define #t 1)", "bad define: the name must be an identifier");
+    try f.expectFails("(f if)", "if is a syntactic keyword and cannot be used as a variable");
+}
+
+test "a form that is not a proper list is refused" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // The reader cannot write a dotted list, so build (+ 1 . 2) by hand.
+    const tail = try Value.cons(a, .fromFixnum(1), .fromFixnum(2));
+    const plus: Value = .fromSymbol(try f.ctx.symbols.intern(a, "+"));
+    const form = try Value.cons(a, plus, tail);
+    try std.testing.expectError(error.Raised, expand(&f.ctx, a, form));
+    try std.testing.expectEqualStrings("bad syntax: a form must be a proper list", f.ctx.diagnostic());
+}
+
+test "quote gives the very datum it was read with, not a copy" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    const form = try f.read("(quote (1 2))");
+    const node = try expand(&f.ctx, a, form);
+    try std.testing.expectEqual(form.asPair().?.cdr.asPair().?.car.asPair().?, node.constant.asPair().?);
+}
+
+test "a program nested deeper than the Zig stack allows still expands" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const depth = 100_000;
+    var src: std.ArrayList(u8) = .empty;
+    for (0..depth) |_| try src.appendSlice(f.arena.allocator(), "(+ 1 ");
+    try src.append(f.arena.allocator(), '2');
+    for (0..depth) |_| try src.append(f.arena.allocator(), ')');
+    const form = try f.read(src.items);
+    const node = try expand(&f.ctx, f.arena.allocator(), form);
+    try std.testing.expect(node.* == .call);
+}
