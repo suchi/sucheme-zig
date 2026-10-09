@@ -3,7 +3,8 @@
 //! A plain recursive evaluator, as docs/plans/0003-phase1-minimal-slice.md
 //! decides for slices 1a to 1e. Slice 1f replaces it with the CEK machine in
 //! machine.zig, which is the only place docs/design/architecture.md lets
-//! evaluation advance; until then this file is the stated exception.
+//! evaluation advance. That document records this file as a provisional
+//! exception until then.
 //!
 //! Slice 1a evaluates integers and calls to a primitive named in the operator
 //! position. Variables, `define` and the reporting of errors as Scheme
