@@ -448,6 +448,21 @@ test "a call in tail position does not grow the continuation" {
     try std.testing.expectEqual(small_all, f.machine.peak_depth);
 }
 
+test "the operands of a primitive call with many operands do not pile up in the scratch space" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // The machine's scratch space is its own, apart from the one the expander used.
+    var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer scratch.deinit();
+    f.machine.scratch = scratch.allocator();
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (+ 1 2 3 4 5 6 7 8 9 10) (loop (- n 1)))))");
+    _ = try f.eval("(loop 20000)");
+    // Each call may take its operands from the scratch space for as long as the
+    // call runs, and gives them back; the space does not grow with the loop.
+    try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
+}
+
 test "a call that is not in tail position holds a frame for each pending call" {
     var f: Fixture = undefined;
     try f.init();
