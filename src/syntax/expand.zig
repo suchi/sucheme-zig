@@ -47,11 +47,345 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 }
 
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
-    _ = scratch;
-    _ = form;
-    _ = limits;
-    return ctx.fail(error.BadSyntax, "not implemented", .{});
+    var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
+    const root = try ctx.persist.create(Node);
+    try e.stack.append(scratch, .{ .form = form, .scope = null, .pos = .top, .dest = root });
+    while (e.stack.pop()) |task| try e.step(task);
+    return root;
 }
+
+/// The special forms. A keyword cannot be shadowed, redefined, assigned or used
+/// as a variable or a parameter; stage 2 replaces this enum with syntactic
+/// bindings.
+const Keyword = enum {
+    define,
+    quote,
+    @"if",
+    lambda,
+    begin,
+    @"set!",
+
+    fn of(name: []const u8) ?Keyword {
+        return std.meta.stringToEnum(Keyword, name);
+    }
+};
+
+/// Where a form stands, which decides whether a definition is allowed there
+/// (R7RS 5.3): at the top level, or at the start of a body.
+const Position = enum { top, body, expression };
+
+/// The variables of one `lambda` as the expander sees them: the parameters, then
+/// the names its body defines at the start, in the order of the slots of a call's
+/// frame.
+const Scope = struct {
+    names: []const SymbolId,
+    parent: ?*const Scope,
+};
+
+/// A form still to expand, and the node to fill in with the result. The node is
+/// allocated before its children are known, which is what lets the work go on a
+/// stack instead of in recursion.
+const Task = struct {
+    form: Value,
+    scope: ?*const Scope,
+    pos: Position,
+    dest: *Node,
+};
+
+const Expander = struct {
+    ctx: *Context,
+    scratch: std.mem.Allocator,
+    limits: Limits,
+    stack: std.ArrayList(Task) = .empty,
+
+    fn step(self: *Expander, task: Task) Error!void {
+        switch (task.form.kind()) {
+            // Self-evaluating (R7RS 4.1.2).
+            .fixnum, .boolean, .unspecified, .uninitialized, .primitive, .closure => task.dest.* = .{ .constant = task.form },
+            // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
+            .empty_list => return self.ctx.fail(error.EmptyCombination, "empty combination", .{}),
+            .symbol => try self.reference(task),
+            .pair => {
+                const items = try self.itemsOf(task.form);
+                if (items[0].asSymbol()) |head| {
+                    if (Keyword.of(self.ctx.symbols.nameOf(head))) |keyword| return switch (keyword) {
+                        .define => self.define(task, items),
+                        .quote => self.quote(task, items),
+                        .@"if" => self.conditional(task, items),
+                        .lambda => self.lambdaForm(task, items),
+                        .begin => self.begin(task, items),
+                        .@"set!" => self.set(task, items),
+                    };
+                }
+                try self.call(task, items);
+            },
+        }
+    }
+
+    /// Queues `form` to fill a new node, and returns the node.
+    fn child(self: *Expander, form: Value, scope: ?*const Scope, pos: Position) Error!*Node {
+        const node = try self.ctx.persist.create(Node);
+        try self.stack.append(self.scratch, .{ .form = form, .scope = scope, .pos = pos, .dest = node });
+        return node;
+    }
+
+    /// The elements of the list `form`. A form is a proper list; the reader
+    /// cannot write any other, so this fails only for a datum built by hand.
+    fn itemsOf(self: *Expander, form: Value) Error![]const Value {
+        var items: std.ArrayList(Value) = .empty;
+        var rest = form;
+        while (rest.asPair()) |p| : (rest = p.cdr) try items.append(self.scratch, p.car);
+        if (rest.kind() != .empty_list)
+            return self.ctx.fail(error.BadSyntax, "bad syntax: a form must be a proper list", .{});
+        return items.items;
+    }
+
+    /// The address of the variable `id` if a `lambda` around `scope` binds it.
+    fn resolve(self: *Expander, scope: ?*const Scope, id: SymbolId) Error!?value_mod.Address {
+        var depth: u32 = 0;
+        var s = scope;
+        while (s) |sc| : (s = sc.parent) {
+            for (sc.names, 0..) |n, i| {
+                if (n != id) continue;
+                if (depth > self.limits.address) return self.ctx.fail(
+                    error.ImplementationRestriction,
+                    "implementation restriction: procedures are nested too deeply",
+                    .{},
+                );
+                return .{ .depth = depth, .index = @intCast(i) };
+            }
+            depth += 1;
+        }
+        return null;
+    }
+
+    fn reference(self: *Expander, task: Task) Error!void {
+        const id = task.form.asSymbol().?;
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.fail(error.BadSyntax, "{s} is a syntactic keyword and cannot be used as a variable", .{name});
+        task.dest.* = if (try self.resolve(task.scope, id)) |address|
+            .{ .local_ref = .{ .address = address, .name = id } }
+        else
+            .{ .global_ref = id };
+    }
+
+    /// `(quote datum)` (R7RS 4.1.2). The datum, unexpanded.
+    fn quote(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len != 2)
+            return self.ctx.fail(error.BadSyntax, "bad quote: expected (quote datum)", .{});
+        task.dest.* = .{ .constant = items[1] };
+    }
+
+    /// `(if test consequent [alternative])` (R7RS 4.1.5).
+    fn conditional(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len != 3 and items.len != 4)
+            return self.ctx.fail(error.BadSyntax, "bad if: expected (if test consequent) or (if test consequent alternative)", .{});
+        // Pushed last first, so the test is expanded first.
+        const alternative = if (items.len == 4) try self.child(items[3], task.scope, .expression) else null;
+        const consequent = try self.child(items[2], task.scope, .expression);
+        const condition = try self.child(items[1], task.scope, .expression);
+        task.dest.* = .{ .@"if" = .{ .condition = condition, .consequent = consequent, .alternative = alternative } };
+    }
+
+    /// `(begin expression ...)` (R7RS 4.2.3). At the top level its forms are at
+    /// the top level too, so a definition in it is allowed (R7RS 5.3).
+    fn begin(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len < 2)
+            return self.ctx.fail(error.BadSyntax, "bad begin: expected (begin expression ...)", .{});
+        const pos: Position = if (task.pos == .top) .top else .expression;
+        try self.sequence(task.dest, items[1..], task.scope, pos, 0);
+    }
+
+    /// Fills `dest` with `forms` run in order: `defines` of them at the start
+    /// are definitions of a body, the rest are in `pos`. One form is that form
+    /// itself (a body never has only definitions, so it is never one of them).
+    fn sequence(self: *Expander, dest: *Node, forms: []const Value, scope: ?*const Scope, pos: Position, defines: usize) Error!void {
+        if (forms.len == 1) {
+            try self.stack.append(self.scratch, .{ .form = forms[0], .scope = scope, .pos = pos, .dest = dest });
+            return;
+        }
+        const nodes = try self.ctx.persist.alloc(*const Node, forms.len);
+        // The nodes are made in order, and queued last first.
+        for (nodes) |*n| n.* = try self.ctx.persist.create(Node);
+        var i = forms.len;
+        while (i > 0) {
+            i -= 1;
+            try self.stack.append(self.scratch, .{
+                .form = forms[i],
+                .scope = scope,
+                .pos = if (i < defines) .body else pos,
+                .dest = @constCast(nodes[i]),
+            });
+        }
+        dest.* = .{ .sequence = nodes };
+    }
+
+    /// `(set! name expression)` (R7RS 4.1.6). The nearest binding of `name`,
+    /// local or global.
+    fn set(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len != 3)
+            return self.ctx.fail(error.BadSyntax, "bad set!: expected (set! name expression)", .{});
+        const id = items[1].asSymbol() orelse
+            return self.ctx.fail(error.BadSyntax, "bad set!: the name must be an identifier", .{});
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.fail(error.BadSyntax, "bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
+        const value = try self.child(items[2], task.scope, .expression);
+        task.dest.* = if (try self.resolve(task.scope, id)) |address|
+            .{ .local_set = .{ .address = address, .name = id, .value = value } }
+        else
+            .{ .global_set = .{ .name = id, .value = value } };
+    }
+
+    /// `(define name expression)` and `(define (name parameter ...) body ...)`
+    /// (R7RS 5.3.1). At the top level it binds a global; at the start of a body
+    /// it gives a value to the local variable that `lambdaNode` made for it.
+    fn define(self: *Expander, task: Task, items: []const Value) Error!void {
+        // Why: R7RS 5.3 allows a definition at the top level and at the start of
+        // a body. Anything else would bind a name from inside an expression that
+        // may go on to fail.
+        if (task.pos == .expression)
+            return self.ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level or at the start of a body", .{});
+        // `(define (name parameter ...) body ...)` is `(define name (lambda
+        // (parameter ...) body ...))` (R7RS 5.3.1).
+        const shorthand = items.len >= 2 and items[1].kind() == .pair;
+        if (shorthand and items.len < 3)
+            return self.ctx.fail(error.BadSyntax, "bad define: expected (define (name parameter ...) body ...)", .{});
+        if (!shorthand and items.len != 3)
+            return self.ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
+        const target = if (shorthand) items[1].asPair().?.car else items[1];
+        const id = target.asSymbol() orelse
+            return self.ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+        const value = try self.ctx.persist.create(Node);
+        if (shorthand) {
+            try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.scope, "define");
+        } else {
+            try self.stack.append(self.scratch, .{ .form = items[2], .scope = task.scope, .pos = .expression, .dest = value });
+        }
+        switch (task.pos) {
+            .top => task.dest.* = .{ .global_define = .{ .name = id, .value = value } },
+            // `collectDefinitions` made the variable when the lambda was made,
+            // and the scope is that lambda's own.
+            .body => {
+                const index = std.mem.indexOfScalar(SymbolId, task.scope.?.names, id).?;
+                task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = @intCast(index) }, .name = id, .value = value } };
+            },
+            .expression => unreachable,
+        }
+    }
+
+    /// `(lambda (name ...) body ...)` (R7RS 4.1.4).
+    fn lambdaForm(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len < 3)
+            return self.ctx.fail(error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)", .{});
+        try self.lambdaNode(task.dest, items[1], items[2..], task.scope, "lambda");
+    }
+
+    /// Fills `dest` with the procedure whose parameters are `params_form` and
+    /// whose body is `body`, made in `scope`. `form_name` is the form it was
+    /// written as, for the messages: `(define (f x) ...)` is a `define` with a
+    /// parameter list of its own.
+    ///
+    /// A variable number of arguments is not supported yet: `(lambda args ...)`
+    /// is refused until the machine takes it, and `(lambda (a . rest) ...)` also
+    /// waits for the reader to read a dotted list.
+    fn lambdaNode(
+        self: *Expander,
+        dest: *Node,
+        params_form: Value,
+        body: []const Value,
+        scope: ?*const Scope,
+        comptime form_name: []const u8,
+    ) Error!void {
+        var names: std.ArrayList(SymbolId) = .empty;
+        var rest = params_form;
+        if (rest.kind() == .symbol) return self.ctx.fail(
+            error.BadSyntax,
+            "bad " ++ form_name ++ ": parameters must be a list of identifiers; a variable number of arguments is not supported yet",
+            .{},
+        );
+        while (rest.asPair()) |p| : (rest = p.cdr) {
+            const id = p.car.asSymbol() orelse
+                return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a parameter must be an identifier", .{});
+            const name = self.ctx.symbols.nameOf(id);
+            if (Keyword.of(name) != null)
+                return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
+            for (names.items) |seen| {
+                if (seen == id) return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
+            }
+            try names.append(self.scratch, id);
+        }
+        if (rest.kind() != .empty_list)
+            return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
+        const arity = names.items.len;
+        const defines = try self.collectDefinitions(body, &names);
+        // Why: R7RS 5.3.2 gives a body definitions followed by expressions, and
+        // at least one expression: a body that only defines has no value to
+        // return.
+        if (defines == body.len)
+            return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
+        if (names.items.len > self.limits.address)
+            return self.ctx.fail(error.ImplementationRestriction, "implementation restriction: a procedure has too many variables", .{});
+        const inner = try self.scratch.create(Scope);
+        inner.* = .{ .names = names.items, .parent = scope };
+        const body_node = try self.ctx.persist.create(Node);
+        try self.sequence(body_node, body, inner, .expression, defines);
+        const lambda = try self.ctx.persist.create(value_mod.Lambda);
+        lambda.* = .{ .arity = @intCast(arity), .frame_size = @intCast(names.items.len), .body = body_node };
+        dest.* = .{ .lambda = lambda };
+    }
+
+    /// Adds the names that the definitions at the start of `body` define to
+    /// `names`, and returns how many forms they are. A name that is already
+    /// there, as a parameter or an earlier definition, is an error. The
+    /// definitions themselves are checked when they are expanded.
+    fn collectDefinitions(self: *Expander, body: []const Value, names: *std.ArrayList(SymbolId)) Error!usize {
+        var count: usize = 0;
+        for (body) |form| {
+            const head = form.asPair() orelse break;
+            const keyword_id = head.car.asSymbol() orelse break;
+            if (Keyword.of(self.ctx.symbols.nameOf(keyword_id)) != .define) break;
+            const rest = head.cdr.asPair() orelse
+                return self.ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
+            // `(define (name parameter ...) body ...)` names what its header starts with.
+            const target = if (rest.car.asPair()) |header| header.car else rest.car;
+            const id = target.asSymbol() orelse
+                return self.ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
+            const name = self.ctx.symbols.nameOf(id);
+            if (Keyword.of(name) != null)
+                return self.ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+            for (names.items) |seen| {
+                if (seen == id) return self.ctx.fail(
+                    error.BadSyntax,
+                    "bad define: {s} is already a parameter or defined earlier in this body",
+                    .{name},
+                );
+            }
+            try names.append(self.scratch, id);
+            count += 1;
+        }
+        return count;
+    }
+
+    /// A procedure call (R7RS 4.1.3): the operator, then the operands from left
+    /// to right. Why: R7RS leaves the order of evaluation unspecified; left to
+    /// right is the one a reader expects.
+    fn call(self: *Expander, task: Task, items: []const Value) Error!void {
+        const operands = try self.ctx.persist.alloc(*const Node, items.len - 1);
+        for (operands) |*n| n.* = try self.ctx.persist.create(Node);
+        var i = items.len;
+        while (i > 1) {
+            i -= 1;
+            try self.stack.append(self.scratch, .{ .form = items[i], .scope = task.scope, .pos = .expression, .dest = @constCast(operands[i - 1]) });
+        }
+        const operator = try self.child(items[0], task.scope, .expression);
+        task.dest.* = .{ .call = .{ .operator = operator, .operands = operands } };
+    }
+};
 
 test {
     std.testing.refAllDecls(@This());
