@@ -2,8 +2,9 @@
 //!
 //! Slice 1a reads decimal integers, identifiers and parenthesised lists. Its
 //! output is `Datum`, a tree local to this file, because the value
-//! representation has neither pairs nor symbols yet. Slices 1b and 1c bring
-//! symbols and pairs, and then the reader returns `Value` and `Datum` goes.
+//! representation has neither pairs nor symbols yet. Slice 1c brings both as
+//! values, with `quote`, and then the reader returns `Value` and `Datum` goes.
+//! Until then the evaluator interns an identifier's name where it needs one.
 //!
 //! Nesting is handled with an explicit stack, not Zig recursion: the depth of
 //! the input decides how deep it goes (docs/design/runtime.md).

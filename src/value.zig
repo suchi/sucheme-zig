@@ -14,8 +14,8 @@ const std = @import("std");
 
 pub const Value = union(enum) {
     fixnum: i64,
-    /// What an expression with no useful value returns, such as `define`
-    /// (R7RS 5.3.2). It has no external representation.
+    /// What an expression with no useful value returns, such as `define`. It
+    /// has no external representation.
     unspecified,
 
     /// The unspecified value. Named apart from the variant, which a constant of

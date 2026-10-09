@@ -21,7 +21,7 @@
 //! program never ran.
 //!
 //! The REPL writes a `> ` prompt and each result to stdout, and an error to
-//! stderr as `error: ` and its name; an error ends that line's evaluation and
+//! stderr as `error: ` and a message such as `unbound variable: foo`; an error ends that line's evaluation and
 //! not the REPL. A line holds whole data: one that ends inside a list is an
 //! error, until continuation lines arrive (ADR-0014). The status stays 0
 //! after an error, because the REPL went on to read the rest of its input.
@@ -45,8 +45,9 @@ pub const Request = union(enum) {
 /// Entry layer. What it allocates is not subject to the accounting invariant in
 /// docs/design/architecture.md: the arena holds the argument vector and the
 /// output buffer, both needed only to start up and shut down. No Scheme value
-/// is allocated here. The REPL's per-line arena is handed to `sucheme`, which
-/// allocates in it until the heap arrives in slice 1g.
+/// is allocated here. The REPL gives `sucheme` a per-line arena for what one
+/// line needs and an `Interpreter`, which keeps its own arena for the symbols
+/// and definitions that outlive a line, until the heap arrives in slice 1g.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -75,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
             try out.print(
                 "{s} {s}\n\nUsage: {s} [--version] [--help|-h]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
-                    "Integers and + only for now; see docs/roadmap.md.\n",
+                    "Integers, global variables, define and + only for now; see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
             );
             try out.flush();
