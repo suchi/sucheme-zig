@@ -87,6 +87,7 @@ pub const Reader = struct {
             const n = std.fmt.parseInt(i64, token, 10) catch return error.IntegerOutOfRange;
             return .{ .integer = n };
         }
+        if (isUnsupportedNumber(token)) return error.InvalidToken;
         if (isIdentifier(token)) return .{ .identifier = token };
         return error.InvalidToken;
     }
@@ -112,9 +113,22 @@ fn isDecimalInteger(token: []const u8) bool {
     return true;
 }
 
+/// Numbers whose syntax matches a <peculiar identifier> but which R7RS 7.1.1
+/// reads as numbers: <infnan> and the complex units `+i` and `-i`. They arrive
+/// with the numeric tower in stage 4; until then they are rejected, not read as
+/// identifiers a program could bind. Other number syntax (`1.5`, `1/2`, `#x1F`)
+/// does not look like an identifier, so `isIdentifier` already refuses it.
+fn isUnsupportedNumber(token: []const u8) bool {
+    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i" }) |n| {
+        if (std.ascii.eqlIgnoreCase(token, n)) return true;
+    }
+    return false;
+}
+
 // Why: R7RS 7.1.1 <identifier>, restricted to ASCII and without the
 // `|...|` form: an <initial> followed by <subsequent>s, or a <peculiar
-// identifier>. Numbers are recognised before this is asked.
+// identifier>. Integers are recognised before this is asked, and
+// `isUnsupportedNumber` takes the other numbers that look like one.
 fn isIdentifier(token: []const u8) bool {
     if (isInitial(token[0])) return allSubsequent(token[1..]);
     // <peculiar identifier>
@@ -210,6 +224,18 @@ test "next rejects text that is neither an integer nor an identifier" {
     defer arena.deinit();
     for ([_][]const u8{ "1+", "12a", "#t", "\"s\"", ";", "|x|", ".", "+.1", "'a" }) |src| {
         try std.testing.expectError(error.InvalidToken, readOne(arena.allocator(), src));
+    }
+}
+
+test "next rejects the numbers that are spelled like peculiar identifiers" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i", "+INF.0" }) |src| {
+        try std.testing.expectError(error.InvalidToken, readOne(arena.allocator(), src));
+    }
+    // Close neighbours stay identifiers.
+    for ([_][]const u8{ "+in", "-inf", "+inf.01", "+ia", "i" }) |src| {
+        _ = try readOne(arena.allocator(), src);
     }
 }
 
