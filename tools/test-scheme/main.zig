@@ -1,7 +1,7 @@
 //! Runs the Scheme behaviour tests under tests/scheme/.
 //!
 //! Run as `zig build test-scheme`. Every `*.txt` file in tests/scheme/ is read
-//! and each case in it is evaluated in-process through `sucheme.evalPrint`, the
+//! and each case in it is evaluated in-process through `sucheme.Interpreter.evalPrint`, the
 //! same entry the REPL uses, so a case exercises the reader, the evaluator and
 //! the printer together.
 //!
@@ -12,6 +12,9 @@
 //! - A blank line ends a case.
 //! - The first other line of a case is the input. Every line after it, up to
 //!   the blank line, is the expected output, joined with newlines.
+//!
+//! An error is part of the output: after what the line printed before it, the
+//! text is `error: ` and the interpreter's message, as the REPL prints it.
 //!
 //! A case with an input and no expected output is reported, not skipped: a
 //! missing line would otherwise make the case compare against nothing.
@@ -179,9 +182,14 @@ fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
     defer arena.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    sucheme.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
+    var interp: sucheme.Interpreter = .init();
+    interp.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return try std.fmt.allocPrint(gpa, "error.{t}", .{e}),
+        // The writer allocates, so it can only fail for want of memory.
+        error.WriteFailed => return error.OutOfMemory,
+        // Printed the way the REPL prints it, after what the line wrote
+        // before it failed.
+        else => out.writer.print("error: {s}\n", .{interp.diagnostic()}) catch return error.OutOfMemory,
     };
     // evalPrint ends every result with a newline; the expected text has none
     // after its last line.
@@ -275,7 +283,16 @@ test "runCase reports an error as a mismatch, and does not match its own text by
     const gpa = std.testing.allocator;
     const got = (try runCase(gpa, .{ .line = 1, .input = "(foo)", .expected = "3" })).?;
     defer gpa.free(got);
-    try std.testing.expectEqualStrings("error.UnboundVariable", got);
+    try std.testing.expectEqualStrings("error: unbound variable: foo", got);
+}
+
+test "runCase matches an error with the output that came before it" {
+    const gpa = std.testing.allocator;
+    try std.testing.expect(try runCase(gpa, .{
+        .line = 1,
+        .input = "1 (foo)",
+        .expected = "1\nerror: unbound variable: foo",
+    }) == null);
 }
 
 test "runCase compares the whole output, not a prefix or a trimmed form" {
