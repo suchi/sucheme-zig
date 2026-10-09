@@ -1,0 +1,101 @@
+# Slice 1c: booleans, symbols, the empty list and lists as data. quote and its
+# ' abbreviation return a datum unevaluated. Lists print the way write prints
+# them, with (quote x) spelled out.
+
+#t
+#t
+
+#f
+#f
+
+#true
+#t
+
+#false
+#f
+
+(quote a)
+a
+
+'a
+a
+
+'Abc
+Abc
+
+'1
+1
+
+'#t
+#t
+
+'()
+()
+
+'(1 2 3)
+(1 2 3)
+
+'(a (b c) ())
+(a (b c) ())
+
+(quote (1 2))
+(1 2)
+
+''a
+(quote a)
+
+'(a 'b)
+(a (quote b))
+
+'(if define quote)
+(if define quote)
+
+(quote if)
+if
+
+'x 'y
+x
+y
+
+(+ 1 '2)
+3
+
+(define x '(1 2)) x
+(1 2)
+
+(define x 'a) (define y x) y
+a
+
+(define x '(a b)) (define x '(c)) x
+(c)
+
+(quote)
+error: bad quote: expected (quote datum)
+
+(quote a b)
+error: bad quote: expected (quote datum)
+
+'
+error: unexpected end of input
+
+')
+error: quote needs a datum
+
+(quote #t) (quote)
+#t
+error: bad quote: expected (quote datum)
+
+#tru
+error: unreadable token
+
+(+ 1 'a)
+error: wrong type of argument to +
+
+(+ #t 1)
+error: wrong type of argument to +
+
+(a)
+error: unbound variable: a
+
+(define x 'a) (x)
+error: not a procedure

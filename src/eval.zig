@@ -1,4 +1,4 @@
-//! Evaluates a datum.
+//! Evaluates a form.
 //!
 //! A plain recursive evaluator, as docs/plans/0003-phase1-minimal-slice.md
 //! decides for slices 1a to 1e. Slice 1f replaces it with the CEK machine in
@@ -6,14 +6,13 @@
 //! evaluation advance. That document records this file as a provisional
 //! exception until then.
 //!
-//! Slice 1b evaluates integers, global variables, `define`, and calls to a
-//! primitive or a variable in the operator position. Procedure values and
-//! `lambda` arrive in slice 1d; until then no variable holds a procedure, and a
-//! Scheme error is a Zig error with a message in `Context`.
+//! Slice 1c evaluates integers, booleans, global variables, `define`, `quote`,
+//! `if`, and calls to a primitive or a variable in the operator position. Procedure
+//! values and `lambda` arrive in slice 1d; until then no variable holds a
+//! procedure, and a Scheme error is a Zig error with a message in `Context`.
 
 const std = @import("std");
 const Value = @import("value.zig").Value;
-const Datum = @import("reader.zig").Datum;
 const arith = @import("prim/arith.zig");
 const symbol = @import("symbol.zig");
 const env = @import("env.zig");
@@ -35,15 +34,15 @@ pub const Error = arith.Error || error{
     NestingTooDeep,
 };
 
-/// What `eval` carries between calls: the symbols and global bindings that
-/// outlive a line, and the message for the most recent error.
+/// What `eval` carries between calls: where what outlives a line is allocated,
+/// the symbols and global bindings, and the message for the most recent error.
 ///
 /// A Zig error carries no payload, so the message that names the offending
 /// identifier lives here, and the caller reads it with `diagnostic` after an
 /// error. Slice 1f replaces the message with condition objects.
 pub const Context = struct {
-    /// Where symbols and global bindings are allocated. Slice 1g replaces it
-    /// with the GC heap.
+    /// Where the data the reader builds, the symbols and the global bindings are
+    /// allocated. Slice 1g replaces it with the GC heap.
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     globals: env.Global = .{},
@@ -97,65 +96,79 @@ pub const Context = struct {
 /// down with it.
 pub const max_depth = 200;
 
-/// Evaluates `d`. Temporary storage, such as the evaluated arguments, comes
-/// from `arena`. On an error `ctx` holds the message.
-pub fn eval(ctx: *Context, arena: std.mem.Allocator, d: Datum) Error!Value {
-    return evalAt(ctx, arena, d, 0);
+/// The special forms. A keyword cannot be shadowed, redefined or used as a
+/// variable; the expander of stage 2 replaces this table with syntactic
+/// bindings.
+const keywords = [_][]const u8{ "define", "quote", "if" };
+
+fn isKeyword(name: []const u8) bool {
+    for (keywords) |k| if (std.mem.eql(u8, name, k)) return true;
+    return false;
 }
 
-/// The one special form of slice 1b. A keyword cannot be shadowed or used as a
-/// variable; the expander of stage 2 replaces this check with syntactic
-/// bindings.
-const define_keyword = "define";
+/// Evaluates `form`. Temporary storage, such as the evaluated arguments, comes
+/// from `arena`; the data a form returns is whatever the reader allocated. On
+/// an error `ctx` holds the message.
+pub fn eval(ctx: *Context, arena: std.mem.Allocator, form: Value) Error!Value {
+    return evalAt(ctx, arena, form, 0);
+}
 
-fn evalAt(ctx: *Context, arena: std.mem.Allocator, d: Datum, depth: usize) Error!Value {
+fn evalAt(ctx: *Context, arena: std.mem.Allocator, form: Value, depth: usize) Error!Value {
     if (depth >= max_depth) return ctx.fail(error.NestingTooDeep, "nesting too deep", .{});
-    switch (d) {
-        .integer => |n| return .fromFixnum(n),
-        .identifier => |name| {
-            if (std.mem.eql(u8, name, define_keyword))
+    switch (form.kind()) {
+        // Self-evaluating (R7RS 4.1.2).
+        .fixnum, .boolean, .unspecified => return form,
+        // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
+        .empty_list => return ctx.fail(error.EmptyCombination, "empty combination", .{}),
+        .symbol => {
+            const id = form.asSymbol().?;
+            const name = ctx.symbols.nameOf(id);
+            if (isKeyword(name))
                 return ctx.fail(error.BadSyntax, "{s} is a syntactic keyword and cannot be used as a variable", .{name});
-            if (lookupGlobal(ctx, name)) |v| return v;
+            if (ctx.globals.lookup(id)) |v| return v;
             if (arith.lookup(name) != null)
                 return ctx.fail(error.VariableReferenceUnsupported, "procedure values are not supported yet: {s}", .{name});
             return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name});
         },
-        .list => |items| {
-            if (items.len == 0) return ctx.fail(error.EmptyCombination, "empty combination", .{});
-            switch (items[0]) {
-                .identifier => |name| {
-                    if (std.mem.eql(u8, name, define_keyword)) return evalDefine(ctx, arena, items, depth);
-                    // A definition shadows a primitive of the same name. Nothing
-                    // a variable can hold is a procedure yet, so a bound
-                    // operator is an error.
-                    if (lookupGlobal(ctx, name) != null)
-                        return ctx.fail(error.NotAProcedure, "not a procedure", .{});
-                    const prim = arith.lookup(name) orelse
-                        return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name});
-                    return applyPrimitive(ctx, arena, prim, items[1..], depth);
-                },
-                else => {
-                    // Evaluated for its errors; no value is a procedure yet.
-                    _ = try evalAt(ctx, arena, items[0], depth + 1);
-                    return ctx.fail(error.NotAProcedure, "not a procedure", .{});
-                },
-            }
+        .pair => {
+            const items = try itemsOf(ctx, arena, form);
+            const head = items[0].asSymbol() orelse {
+                // Evaluated for its errors; no value is a procedure yet.
+                _ = try evalAt(ctx, arena, items[0], depth + 1);
+                return ctx.fail(error.NotAProcedure, "not a procedure", .{});
+            };
+            const name = ctx.symbols.nameOf(head);
+            if (std.mem.eql(u8, name, "define")) return evalDefine(ctx, arena, items, depth);
+            if (std.mem.eql(u8, name, "quote")) return evalQuote(ctx, items);
+            if (std.mem.eql(u8, name, "if")) return evalIf(ctx, arena, items, depth);
+            // A definition shadows a primitive of the same name. Nothing a
+            // variable can hold is a procedure yet, so a bound operator is an
+            // error.
+            if (ctx.globals.lookup(head) != null)
+                return ctx.fail(error.NotAProcedure, "not a procedure", .{});
+            const prim = arith.lookup(name) orelse
+                return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name});
+            return applyPrimitive(ctx, arena, prim, items[1..], depth);
         },
     }
 }
 
-/// The value of the global variable `name`, or null when it is unbound. Looking
-/// up a name nobody defined does not intern it.
-fn lookupGlobal(ctx: *Context, name: []const u8) ?Value {
-    const id = ctx.symbols.find(name) orelse return null;
-    return ctx.globals.lookup(id);
+/// The elements of the list `form`, in `arena`. A form is a proper list; the
+/// reader cannot write any other, so this fails only for a datum built by hand.
+fn itemsOf(ctx: *Context, arena: std.mem.Allocator, form: Value) Error![]const Value {
+    var items: std.ArrayList(Value) = .empty;
+    var rest = form;
+    while (rest.asPair()) |p| : (rest = p.cdr) try items.append(arena, p.car);
+    if (rest.kind() != .empty_list)
+        return ctx.fail(error.BadSyntax, "bad syntax: a form must be a proper list", .{});
+    return items.items;
 }
 
 fn applyPrimitive(
     ctx: *Context,
     arena: std.mem.Allocator,
     prim: *const arith.Primitive,
-    operands: []const Datum,
+    operands: []const Value,
     depth: usize,
 ) Error!Value {
     const args = try arena.alloc(Value, operands.len);
@@ -166,12 +179,31 @@ fn applyPrimitive(
     };
 }
 
+/// `(quote datum)` (R7RS 4.1.2). The datum, unevaluated.
+fn evalQuote(ctx: *Context, items: []const Value) Error!Value {
+    if (items.len != 2)
+        return ctx.fail(error.BadSyntax, "bad quote: expected (quote datum)", .{});
+    return items[1];
+}
+
+/// `(if test consequent [alternative])` (R7RS 4.1.5). Evaluates the test, then
+/// the consequent when it is true and the alternative otherwise. Without an
+/// alternative, a false test gives the unspecified value.
+fn evalIf(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: usize) Error!Value {
+    if (items.len != 3 and items.len != 4)
+        return ctx.fail(error.BadSyntax, "bad if: expected (if test consequent) or (if test consequent alternative)", .{});
+    const test_value = try evalAt(ctx, arena, items[1], depth + 1);
+    if (test_value.isTrue()) return evalAt(ctx, arena, items[2], depth + 1);
+    if (items.len == 4) return evalAt(ctx, arena, items[3], depth + 1);
+    return .unspecified_value;
+}
+
 /// `(define name expression)` (R7RS 5.3.1). Binds `name` in the global
 /// environment, replacing an earlier binding, and returns the unspecified value.
 ///
 /// The expression is evaluated before the name is bound, so a failing
 /// definition leaves the name as it was.
-fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Datum, depth: usize) Error!Value {
+fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: usize) Error!Value {
     // Why: R7RS 5.3 allows a definition at the top level and at the start of a
     // body; a body has no form here before slice 1e, so depth 0 is the top
     // level. Anything else would bind a name from inside an expression that
@@ -180,15 +212,15 @@ fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Datum, dep
         return ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level", .{});
     if (items.len != 3)
         return ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
-    const name = switch (items[1]) {
-        .identifier => |n| n,
-        .list => return ctx.fail(error.BadSyntax, "bad define: procedure definitions are not supported yet", .{}),
-        .integer => return ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{}),
+    const id = items[1].asSymbol() orelse {
+        if (items[1].kind() == .pair)
+            return ctx.fail(error.BadSyntax, "bad define: procedure definitions are not supported yet", .{});
+        return ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
     };
-    if (std.mem.eql(u8, name, define_keyword))
+    const name = ctx.symbols.nameOf(id);
+    if (isKeyword(name))
         return ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
     const value = try evalAt(ctx, arena, items[2], depth + 1);
-    const id = try ctx.symbols.intern(ctx.persist, name);
     try ctx.globals.define(ctx.persist, id, value);
     return .unspecified_value;
 }
@@ -202,10 +234,12 @@ fn evalSource(arena: std.mem.Allocator, src: []const u8) Error!i64 {
     return (try evalWith(&ctx, arena, src)).asFixnum().?;
 }
 
+/// Reads the first datum of `src` into `ctx`'s symbols and allocator, and
+/// evaluates it.
 fn evalWith(ctx: *Context, arena: std.mem.Allocator, src: []const u8) Error!Value {
     var r: @import("reader.zig").Reader = .init(src);
-    const d = (r.next(arena) catch unreachable).?;
-    return eval(ctx, arena, d);
+    const form = (r.next(arena, .{ .alloc = ctx.persist, .symbols = &ctx.symbols }) catch unreachable).?;
+    return eval(ctx, arena, form);
 }
 
 test "eval returns an integer as itself and applies +" {
@@ -242,6 +276,63 @@ fn nestedCalls(a: std.mem.Allocator, calls: usize) ![]const u8 {
     return src;
 }
 
+test "eval returns a boolean as itself, and quote returns its datum unevaluated" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: Context = .init(a);
+    try std.testing.expectEqual(.boolean, (try evalWith(&ctx, a, "#f")).kind());
+    try std.testing.expect(!(try evalWith(&ctx, a, "#f")).isTrue());
+    try std.testing.expect((try evalWith(&ctx, a, "#t")).isTrue());
+    const sym = try evalWith(&ctx, a, "'foo");
+    try std.testing.expectEqualStrings("foo", ctx.symbols.nameOf(sym.asSymbol().?));
+    // The datum is not evaluated: neither a call nor an unbound name fails.
+    const call = try evalWith(&ctx, a, "(quote (+ 1 2))");
+    try std.testing.expectEqual(.pair, call.kind());
+    try std.testing.expectEqual(.empty_list, (try evalWith(&ctx, a, "'()")).kind());
+    // Quoting twice reads the same symbol: eq?-ness of symbols is id equality.
+    try std.testing.expectEqual(sym.asSymbol().?, (try evalWith(&ctx, a, "(quote foo)")).asSymbol().?);
+}
+
+test "quote returns the very datum it was read with, not a copy" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: Context = .init(a);
+    _ = try evalWith(&ctx, a, "(define x '(1 2))");
+    const first = try evalWith(&ctx, a, "x");
+    const second = try evalWith(&ctx, a, "x");
+    try std.testing.expectEqual(first.asPair().?, second.asPair().?);
+}
+
+test "eval rejects a quote or define of the wrong shape, and keywords as variables" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: Context = .init(a);
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "(quote)"));
+    try std.testing.expectEqualStrings("bad quote: expected (quote datum)", ctx.diagnostic());
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "(quote 1 2)"));
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "quote"));
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "(define quote 1)"));
+    try std.testing.expectEqualStrings("bad define: quote is a syntactic keyword and cannot be redefined", ctx.diagnostic());
+    try std.testing.expectError(error.BadSyntax, evalWith(&ctx, a, "(define #t 1)"));
+    try std.testing.expectEqualStrings("bad define: the name must be an identifier", ctx.diagnostic());
+}
+
+test "eval refuses a form that is not a proper list" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: Context = .init(a);
+    // The reader cannot write a dotted list, so build (+ 1 . 2) by hand.
+    const tail = try Value.cons(a, .fromFixnum(1), .fromFixnum(2));
+    const plus: Value = .fromSymbol(try ctx.symbols.intern(a, "+"));
+    const form = try Value.cons(a, plus, tail);
+    try std.testing.expectError(error.BadSyntax, eval(&ctx, a, form));
+    try std.testing.expectEqualStrings("bad syntax: a form must be a proper list", ctx.diagnostic());
+}
+
 test "eval leaves the message of an error in the context" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -253,19 +344,6 @@ test "eval leaves the message of an error in the context" {
     try std.testing.expectEqualStrings("integer overflow in +", ctx.diagnostic());
     ctx.clearDiagnostic();
     try std.testing.expectEqualStrings("", ctx.diagnostic());
-}
-
-test "a reference to an unbound name does not intern it, and a definition does" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ctx: Context = .init(a);
-    try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "nope"));
-    try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "(nope 1)"));
-    try std.testing.expectEqual(0, ctx.symbols.names.items.len);
-    _ = try evalWith(&ctx, a, "(define yes 1)");
-    try std.testing.expectEqual(1, ctx.symbols.names.items.len);
-    try std.testing.expectEqualStrings("yes", ctx.symbols.nameOf(ctx.symbols.find("yes").?));
 }
 
 test "eval cuts a message longer than its buffer instead of dropping it" {
@@ -304,6 +382,34 @@ fn nestedOperators(a: std.mem.Allocator, parens: usize) ![]const u8 {
     return src;
 }
 
+/// `prefix` repeated `n` times, `core`, then `suffix` repeated `n` times.
+fn wrapped(a: std.mem.Allocator, n: usize, prefix: []const u8, core: []const u8, suffix: []const u8) ![]const u8 {
+    const src = try a.alloc(u8, n * (prefix.len + suffix.len) + core.len);
+    for (0..n) |k| @memcpy(src[k * prefix.len ..][0..prefix.len], prefix);
+    @memcpy(src[n * prefix.len ..][0..core.len], core);
+    for (0..n) |k| @memcpy(src[n * prefix.len + core.len + k * suffix.len ..][0..suffix.len], suffix);
+    return src;
+}
+
+/// The three places an `if` evaluates a subform, each nested `n` deep: the
+/// innermost `1`, `#t` or `2` is evaluated at depth `n`.
+const if_shapes = [_]struct { prefix: []const u8, core: []const u8, suffix: []const u8 }{
+    .{ .prefix = "(if #t ", .core = "1", .suffix = ")" },
+    .{ .prefix = "(if ", .core = "#t", .suffix = " 1 2)" },
+    .{ .prefix = "(if #f 1 ", .core = "2", .suffix = ")" },
+};
+
+test "eval stops each subform of an if at the limit, and not one level later" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (if_shapes) |sh| {
+        var ctx: Context = .init(a);
+        _ = try evalWith(&ctx, a, try wrapped(a, max_depth - 1, sh.prefix, sh.core, sh.suffix));
+        try std.testing.expectError(error.NestingTooDeep, evalWith(&ctx, a, try wrapped(a, max_depth, sh.prefix, sh.core, sh.suffix)));
+    }
+}
+
 test "eval stops a definition's expression at the limit, and not one level later" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -338,9 +444,7 @@ fn evalOnSmallStack(src: []const u8) !?Error {
             var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
             defer arena.deinit();
             var ctx: Context = .init(arena.allocator());
-            var reader: @import("reader.zig").Reader = .init(self.src);
-            const d = (reader.next(arena.allocator()) catch unreachable).?;
-            if (eval(&ctx, arena.allocator(), d)) |_| {} else |e| self.outcome = e;
+            if (evalWith(&ctx, arena.allocator(), self.src)) |_| {} else |e| self.outcome = e;
         }
     };
     var probe: Probe = .{ .src = src };
@@ -356,6 +460,8 @@ test "the deepest legal evaluation of each form fits a stack half the size of 1 
     try std.testing.expectEqual(null, try evalOnSmallStack(try nestedCalls(a, max_depth - 1)));
     try std.testing.expectEqual(null, try evalOnSmallStack(try definitionOfNestedCalls(a, max_depth - 2)));
     try std.testing.expectEqual(error.NotAProcedure, (try evalOnSmallStack(try nestedOperators(a, max_depth - 1))).?);
+    for (if_shapes) |sh|
+        try std.testing.expectEqual(null, try evalOnSmallStack(try wrapped(a, max_depth - 1, sh.prefix, sh.core, sh.suffix)));
     // Past the limit it is reported, on the same small stack.
     try std.testing.expectEqual(error.NestingTooDeep, (try evalOnSmallStack(try nestedCalls(a, max_depth + 50))).?);
 }
