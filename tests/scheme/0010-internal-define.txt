@@ -69,6 +69,10 @@ error: unbound variable: a
 (define (f) (+ a 1) (define a 1) a) (f)
 error: unbound variable: a
 
+# Assigning a variable before its definition is as much an error as reading it.
+(define (f) (define a (set! b 1)) (define b 2) b) (f)
+error: variable used before its definition: b
+
 (define (f) (define a 1) a (define b 2) b) (f)
 error: bad define: a definition is only allowed at the top level or at the start of a body
 
