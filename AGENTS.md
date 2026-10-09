@@ -87,7 +87,7 @@ Qiita、Zenn、note、AI生成記事、SEO目的の記事は、特定の記事�
 ## 開発フロー
 
 - GitHub Flow。`main`への直接コミット・プッシュは禁止。
-- ブランチ名は英語kebab-caseで`feature/xxx`・`fix/xxx`・`docs/xxx`・`chore/xxx`。
+- ブランチ名は英語kebab-caseで`feature/xxx`・`fix/xxx`・`docs/xxx`・`chore/xxx`。`xxx`は作業内容が分かる名前にする(`feature/slice-1f-cek-machine`など)。セッションが自動で付ける名前のまま作業しない。
 - TDD(t_wada流): Red(失敗するテスト)→ Green(最小の実装)→ Refactor(テストを通したまま整理)。
 - 1コミット=1論理変更。節目ごとにプッシュする。
 - 先回りで機能・抽象化を追加しない(YAGNI)。
