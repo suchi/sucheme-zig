@@ -95,13 +95,13 @@ error: bad begin: expected (begin expression ...)
 error: unbound variable: foo
 
 (if #t (begin (define z 1)))
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 ((lambda () (begin (define z 1) z)))
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 (+ 1 (begin (define z 1) z))
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 begin
 error: begin is a syntactic keyword and cannot be used as a variable
