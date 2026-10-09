@@ -7,7 +7,7 @@
 //! exception until then.
 //!
 //! Slice 1c evaluates integers, booleans, global variables, `define`, `quote`,
-//! and calls to a primitive or a variable in the operator position. Procedure
+//! `if`, and calls to a primitive or a variable in the operator position. Procedure
 //! values and `lambda` arrive in slice 1d; until then no variable holds a
 //! procedure, and a Scheme error is a Zig error with a message in `Context`.
 
@@ -99,7 +99,7 @@ pub const max_depth = 200;
 /// The special forms. A keyword cannot be shadowed, redefined or used as a
 /// variable; the expander of stage 2 replaces this table with syntactic
 /// bindings.
-const keywords = [_][]const u8{ "define", "quote" };
+const keywords = [_][]const u8{ "define", "quote", "if" };
 
 fn isKeyword(name: []const u8) bool {
     for (keywords) |k| if (std.mem.eql(u8, name, k)) return true;
@@ -140,6 +140,7 @@ fn evalAt(ctx: *Context, arena: std.mem.Allocator, form: Value, depth: usize) Er
             const name = ctx.symbols.nameOf(head);
             if (std.mem.eql(u8, name, "define")) return evalDefine(ctx, arena, items, depth);
             if (std.mem.eql(u8, name, "quote")) return evalQuote(ctx, items);
+            if (std.mem.eql(u8, name, "if")) return evalIf(ctx, arena, items, depth);
             // A definition shadows a primitive of the same name. Nothing a
             // variable can hold is a procedure yet, so a bound operator is an
             // error.
@@ -183,6 +184,18 @@ fn evalQuote(ctx: *Context, items: []const Value) Error!Value {
     if (items.len != 2)
         return ctx.fail(error.BadSyntax, "bad quote: expected (quote datum)", .{});
     return items[1];
+}
+
+/// `(if test consequent [alternative])` (R7RS 4.1.5). Evaluates the test, then
+/// the consequent when it is true and the alternative otherwise. Without an
+/// alternative, a false test gives the unspecified value.
+fn evalIf(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: usize) Error!Value {
+    if (items.len != 3 and items.len != 4)
+        return ctx.fail(error.BadSyntax, "bad if: expected (if test consequent) or (if test consequent alternative)", .{});
+    const test_value = try evalAt(ctx, arena, items[1], depth + 1);
+    if (test_value.isTrue()) return evalAt(ctx, arena, items[2], depth + 1);
+    if (items.len == 4) return evalAt(ctx, arena, items[3], depth + 1);
+    return .unspecified_value;
 }
 
 /// `(define name expression)` (R7RS 5.3.1). Binds `name` in the global
@@ -369,6 +382,34 @@ fn nestedOperators(a: std.mem.Allocator, parens: usize) ![]const u8 {
     return src;
 }
 
+/// `prefix` repeated `n` times, `core`, then `suffix` repeated `n` times.
+fn wrapped(a: std.mem.Allocator, n: usize, prefix: []const u8, core: []const u8, suffix: []const u8) ![]const u8 {
+    const src = try a.alloc(u8, n * (prefix.len + suffix.len) + core.len);
+    for (0..n) |k| @memcpy(src[k * prefix.len ..][0..prefix.len], prefix);
+    @memcpy(src[n * prefix.len ..][0..core.len], core);
+    for (0..n) |k| @memcpy(src[n * prefix.len + core.len + k * suffix.len ..][0..suffix.len], suffix);
+    return src;
+}
+
+/// The three places an `if` evaluates a subform, each nested `n` deep: the
+/// innermost `1`, `#t` or `2` is evaluated at depth `n`.
+const if_shapes = [_]struct { prefix: []const u8, core: []const u8, suffix: []const u8 }{
+    .{ .prefix = "(if #t ", .core = "1", .suffix = ")" },
+    .{ .prefix = "(if ", .core = "#t", .suffix = " 1 2)" },
+    .{ .prefix = "(if #f 1 ", .core = "2", .suffix = ")" },
+};
+
+test "eval stops each subform of an if at the limit, and not one level later" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (if_shapes) |sh| {
+        var ctx: Context = .init(a);
+        _ = try evalWith(&ctx, a, try wrapped(a, max_depth - 1, sh.prefix, sh.core, sh.suffix));
+        try std.testing.expectError(error.NestingTooDeep, evalWith(&ctx, a, try wrapped(a, max_depth, sh.prefix, sh.core, sh.suffix)));
+    }
+}
+
 test "eval stops a definition's expression at the limit, and not one level later" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -419,6 +460,8 @@ test "the deepest legal evaluation of each form fits a stack half the size of 1 
     try std.testing.expectEqual(null, try evalOnSmallStack(try nestedCalls(a, max_depth - 1)));
     try std.testing.expectEqual(null, try evalOnSmallStack(try definitionOfNestedCalls(a, max_depth - 2)));
     try std.testing.expectEqual(error.NotAProcedure, (try evalOnSmallStack(try nestedOperators(a, max_depth - 1))).?);
+    for (if_shapes) |sh|
+        try std.testing.expectEqual(null, try evalOnSmallStack(try wrapped(a, max_depth - 1, sh.prefix, sh.core, sh.suffix)));
     // Past the limit it is reported, on the same small stack.
     try std.testing.expectEqual(error.NestingTooDeep, (try evalOnSmallStack(try nestedCalls(a, max_depth + 50))).?);
 }
