@@ -2,8 +2,10 @@
 //!
 //! A tagged union (ADR-0002). The full set of kinds is the table in
 //! docs/design/runtime.md; each arrives with the slice that first creates it.
-//! Slice 1a had fixed-length integers, 1b the unspecified value, and 1c adds
-//! booleans, the empty list, symbols and pairs.
+//! Slice 1a had fixed-length integers, 1b the unspecified value, 1c booleans,
+//! the empty list, symbols and pairs, and 1d adds the two kinds of procedure.
+//! The layouts of everything the GC will walk are defined here, so the one
+//! place that has to know them all is this file (docs/design/architecture.md).
 //!
 //! Code outside this file does not switch on the union's tag. It asks `kind`
 //! and reads through the accessors, which keeps the representation replaceable
@@ -22,6 +24,10 @@ pub const Value = union(enum) {
     /// A pair. It lives where its allocator put it; until the GC heap arrives
     /// (slice 1g) that is the interpreter's arena, and nothing frees it.
     pair: *Pair,
+    /// A procedure implemented in Zig.
+    primitive: *const Primitive,
+    /// A procedure made by `lambda`.
+    closure: *Closure,
     /// What an expression with no useful value returns, such as `define`. It
     /// has no external representation.
     unspecified,
@@ -45,6 +51,14 @@ pub const Value = union(enum) {
         return .{ .symbol = id };
     }
 
+    pub fn fromPrimitive(p: *const Primitive) Value {
+        return .{ .primitive = p };
+    }
+
+    pub fn fromClosure(c: *Closure) Value {
+        return .{ .closure = c };
+    }
+
     /// A new pair of `car` and `cdr`, allocated with `alloc`.
     pub fn cons(alloc: std.mem.Allocator, car: Value, cdr: Value) error{OutOfMemory}!Value {
         const p = try alloc.create(Pair);
@@ -59,6 +73,8 @@ pub const Value = union(enum) {
             .empty_list => .empty_list,
             .symbol => .symbol,
             .pair => .pair,
+            .primitive => .primitive,
+            .closure => .closure,
             .unspecified => .unspecified,
         };
     }
@@ -87,6 +103,22 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The primitive, or null when the value is not one.
+    pub fn asPrimitive(self: Value) ?*const Primitive {
+        return switch (self) {
+            .primitive => |p| p,
+            else => null,
+        };
+    }
+
+    /// The closure, or null when the value is not one.
+    pub fn asClosure(self: Value) ?*Closure {
+        return switch (self) {
+            .closure => |c| c,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent. Every value but `#f` is
     /// true, the empty list and zero included (R7RS 6.3).
     pub fn isTrue(self: Value) bool {
@@ -102,8 +134,43 @@ pub const Pair = struct {
     cdr: Value,
 };
 
+/// The ways a primitive can fail. It grows with the primitives: a failure the
+/// evaluator has to describe is named here.
+pub const PrimitiveError = error{
+    /// An argument is not of the type the primitive takes.
+    WrongType,
+    /// The exact result does not fit a fixnum. R7RS 6.2.3 lets an
+    /// implementation report this as a violation of an implementation
+    /// restriction; bignums arrive in stage 4.
+    IntegerOverflow,
+};
+
+/// A procedure implemented in Zig. The table of them is in prim/.
+pub const Primitive = struct {
+    name: []const u8,
+    call: *const fn (args: []const Value) PrimitiveError!Value,
+};
+
+/// A procedure made by `lambda`: its parameters, its body, and the frame it was
+/// made in. Local variables are found by name through `env` and the frames
+/// behind it; the expander of slice 1f replaces that with lexical addresses.
+pub const Closure = struct {
+    params: []const SymbolId,
+    /// The forms of the body, evaluated in order; the last one is the value.
+    body: []const Value,
+    env: ?*Frame,
+};
+
+/// The variables of one call: the parameter names and what they are bound to,
+/// and the frame the closure was made in.
+pub const Frame = struct {
+    names: []const SymbolId,
+    values: []Value,
+    parent: ?*Frame,
+};
+
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, unspecified };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified };
 
 test {
     std.testing.refAllDecls(@This());
@@ -144,6 +211,25 @@ test "each kind answers only to its own accessor" {
     try std.testing.expect(Value.fromFixnum(1).asSymbol() == null);
     try std.testing.expectEqual(Kind.boolean, Value.fromBool(true).kind());
     try std.testing.expectEqual(Kind.empty_list, Value.empty_list_value.kind());
+}
+
+test "procedures answer only to their own accessor" {
+    const prim: Primitive = .{ .name = "p", .call = struct {
+        fn f(_: []const Value) PrimitiveError!Value {
+            return .unspecified_value;
+        }
+    }.f };
+    const pv: Value = .fromPrimitive(&prim);
+    try std.testing.expectEqual(Kind.primitive, pv.kind());
+    try std.testing.expectEqualStrings("p", pv.asPrimitive().?.name);
+    try std.testing.expect(pv.asClosure() == null);
+    try std.testing.expect(pv.isTrue());
+    var closure: Closure = .{ .params = &.{}, .body = &.{}, .env = null };
+    const cv: Value = .fromClosure(&closure);
+    try std.testing.expectEqual(Kind.closure, cv.kind());
+    try std.testing.expectEqual(&closure, cv.asClosure().?);
+    try std.testing.expect(cv.asPrimitive() == null);
+    try std.testing.expect(Value.fromFixnum(1).asClosure() == null);
 }
 
 test "cons makes a pair that holds both halves" {
