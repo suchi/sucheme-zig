@@ -20,7 +20,7 @@ const printer = @import("printer.zig");
 
 /// Every way `evalPrint` can fail. Until slice 1f reports Scheme errors as
 /// conditions, a Scheme error is one of these too.
-pub const Error = reader.Error || eval.Error || std.Io.Writer.Error;
+pub const Error = reader.Error || eval.Error || printer.Error;
 
 /// One interpreter: what outlives a single line of input, which is the symbol
 /// table and the global environment.
@@ -65,12 +65,14 @@ pub const Interpreter = struct {
 
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         var r: reader.Reader = .init(source);
-        while (try r.next(arena)) |d| {
-            const v = try eval.eval(&self.ctx, arena, d);
+        // What is read outlives the line: `quote` can hand it to a definition.
+        const sink: reader.Sink = .{ .alloc = self.ctx.persist, .symbols = &self.ctx.symbols };
+        while (try r.next(arena, sink)) |form| {
+            const v = try eval.eval(&self.ctx, arena, form);
             // A definition prints nothing. The REPL shows a value, and this one
             // has no external form.
             if (v.kind() == .unspecified) continue;
-            try printer.write(out, v);
+            try printer.write(out, arena, &self.ctx.symbols, v);
             try out.writeByte('\n');
         }
     }
@@ -81,6 +83,7 @@ fn describe(e: Error) []const u8 {
     return switch (e) {
         error.Incomplete => "unexpected end of input",
         error.UnexpectedCloseParen => "unexpected )",
+        error.MissingDatum => "quote needs a datum",
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
