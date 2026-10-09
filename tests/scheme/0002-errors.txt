@@ -1,0 +1,39 @@
+# Slice 1b: an error is reported as "error: " and a message, after whatever the
+# line printed before it. The runner and the REPL print the same text.
+
+(foo)
+error: unbound variable: foo
+
+foo
+error: unbound variable: foo
+
+(+ 1 (foo))
+error: unbound variable: foo
+
+1 (foo) 2
+1
+error: unbound variable: foo
+
+(1 2)
+error: not a procedure
+
+()
+error: empty combination
+
+(+ 9223372036854775807 1)
+error: integer overflow in +
+
++
+error: procedure values are not supported yet: +
+
+(+ 1 2
+error: unexpected end of input
+
+)
+error: unexpected )
+
+#t
+error: unreadable token
+
+9223372036854775808
+error: integer out of range
