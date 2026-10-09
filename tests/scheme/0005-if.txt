@@ -1,0 +1,78 @@
+# Slice 1c: if evaluates its test, then one branch. Only #f is false (R7RS 6.3),
+# so 0, the empty list and the symbol nil are all true. A branch that is not
+# taken is not evaluated.
+
+(if #t 1 2)
+1
+
+(if #f 1 2)
+2
+
+(if 0 1 2)
+1
+
+(if '() 1 2)
+1
+
+(if 'nil 1 2)
+1
+
+(if (if #f #f #t) 1 2)
+1
+
+(if (if #t #f #t) 1 2)
+2
+
+(if #t (if #f 1 2) 3)
+2
+
+(if #f (foo) 2)
+2
+
+(if #t 1 (foo))
+1
+
+(if #t 1)
+1
+
+(if #f 1)
+<no output>
+
+(define x #f) (if x 1 2)
+2
+
+(define x 0) (if x 1 2)
+1
+
+(+ 1 (if #t 2 3))
+3
+
+(if #t 'a 'b)
+a
+
+(if (foo) 1 2)
+error: unbound variable: foo
+
+(if #t (foo) 2)
+error: unbound variable: foo
+
+(if)
+error: bad if: expected (if test consequent) or (if test consequent alternative)
+
+(if 1)
+error: bad if: expected (if test consequent) or (if test consequent alternative)
+
+(if 1 2 3 4)
+error: bad if: expected (if test consequent) or (if test consequent alternative)
+
+if
+error: if is a syntactic keyword and cannot be used as a variable
+
+(define if 1)
+error: bad define: if is a syntactic keyword and cannot be redefined
+
+(if #t (define y 1) 2)
+error: bad define: a definition is only allowed at the top level
+
+(+ 1 (if #f 1))
+error: wrong type of argument to +
