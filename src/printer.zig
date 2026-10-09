@@ -1,14 +1,16 @@
 //! Writes values in their external representation.
 //!
-//! Slice 1c prints integers, booleans, symbols and lists; the unspecified value
-//! has no external form, so callers that print results skip it. `write` and
-//! `display` differ first for strings and characters, which arrive in slice 1h.
+//! Slice 1d prints integers, booleans, symbols, lists and procedures; the
+//! unspecified value has no external form, so callers that print results skip
+//! it. `write` and `display` differ first for strings and characters, which
+//! arrive in slice 1h.
 //!
 //! The depth of the data decides how deep printing goes, so it runs on an
 //! explicit stack and not on Zig recursion (docs/design/runtime.md).
 
 const std = @import("std");
-const Value = @import("value.zig").Value;
+const value_mod = @import("value.zig");
+const Value = value_mod.Value;
 const symbol = @import("symbol.zig");
 
 pub const Error = std.Io.Writer.Error || error{OutOfMemory};
@@ -42,6 +44,10 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             .boolean => try out.writeAll(if (x.isTrue()) "#t" else "#f"),
             .empty_list => try out.writeAll("()"),
             .symbol => try out.writeAll(symbols.nameOf(x.asSymbol().?)),
+            // Why: R7RS leaves the external form of a procedure open; most
+            // systems write it in a notation `read` rejects, and so do we.
+            .closure => try out.writeAll("#<procedure>"),
+            .primitive => try out.print("#<procedure {s}>", .{x.asPrimitive().?.name}),
             .pair => {
                 const p = x.asPair().?;
                 try out.writeByte('(');
@@ -143,6 +149,23 @@ test "write prints booleans, the empty list and symbols" {
     try std.testing.expectEqualStrings("#f", try f.written(&buf, .fromBool(false)));
     try std.testing.expectEqualStrings("()", try f.written(&buf, Value.empty_list_value));
     try std.testing.expectEqualStrings("list->vector", try f.written(&buf, try f.sym("list->vector")));
+}
+
+test "write prints a procedure in a form read rejects" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var closure: value_mod.Closure = .{ .params = &.{}, .body = &.{}, .env = null };
+    try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
+    const prim: value_mod.Primitive = .{ .name = "plus", .call = struct {
+        fn call(_: []const Value) value_mod.PrimitiveError!Value {
+            return .unspecified_value;
+        }
+    }.call };
+    try std.testing.expectEqualStrings("#<procedure plus>", try f.written(&buf, .fromPrimitive(&prim)));
+    // Inside a list it is one element like any other.
+    const l = try f.list(&.{ .fromPrimitive(&prim), .fromFixnum(1) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(#<procedure plus> 1)", try f.written(&buf, l));
 }
 
 test "write prints a list with one space between elements" {

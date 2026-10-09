@@ -141,7 +141,7 @@ pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var interp: sucheme.Interpreter = undefined;
-    interp.init(gpa);
+    try interp.init(gpa);
     defer interp.deinit();
     while (true) {
         try out.writeAll("> ");
