@@ -35,7 +35,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 `zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。引数なしの `zig build run` は標準入力を読む REPL になる。
 
-行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどの切片で足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
+行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどのスライスで足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
 
 ## 進め方(Agentic Coding)
 
@@ -47,7 +47,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - コマンドやスクリプトが想定外の挙動を示したときは、原因を特定してから対処する。原因不明のままワークアラウンドで迂回しない(脆弱性や誤ったコード・アーキテクチャの温床になる)。やむを得ず回避策を採る場合は、調査の経緯と理由を記録し(`Why:`コメント・ADR)、ユーザーに報告する。
 - 大きめの機能は計画(SOW)を`docs/plans/`に保存し、合意してから実装する。
 - セッション中に受けた重要な指示は本ファイルに追記して蓄積する。実行環境をまたいでも残るよう、リポジトリの中に書く。
-- 作業の区切りごとに、タスクリストに当たる計画書の進捗の表と「次にやること」を更新する。会話がいつ途切れても、リポジトリの文書だけから現状に戻れる状態を保つ。切片の PR では、その PR の中で更新する。
+- 作業の区切りごとに、タスクリストに当たる計画書の進捗の表と「次にやること」を更新する。会話がいつ途切れても、リポジトリの文書だけから現状に戻れる状態を保つ。スライスの PR では、その PR の中で更新する。
 - 10分以上ユーザーを待たせるときは、作業状況と走っているエージェントの状態、ブロックしている事項を報告する。判断が必要なら選択肢を示して求める。ファイル活動の有無を「止まっている」の根拠にしない(読解中は活動がゼロになる)。
 - 作業ブロックに入る前に、そこで打つ予定のコマンドを列挙して1回でまとめて許可を得る。報告と承認依頼には「全体計画のどの手順の、何件中の何件目か」を書く。
 - 過去の失敗と対処は[docs/review/process-lessons.md](docs/review/process-lessons.md)にある。新しいセッションで同じ失敗を繰り返さないために読む。
@@ -87,7 +87,7 @@ Qiita、Zenn、note、AI生成記事、SEO目的の記事は、特定の記事�
 ## 開発フロー
 
 - GitHub Flow。`main`への直接コミット・プッシュは禁止。
-- ブランチ名は英語kebab-caseで`feature/xxx`・`fix/xxx`・`docs/xxx`・`chore/xxx`。`xxx`は、どの段階のどの作業かが分かる名前にする(`feature/phase1-slice-1f-cek-machine`など。段階は`phaseN`、切片は`slice-1f`の形)。セッションが自動で付ける名前のまま作業しない。
+- ブランチ名は英語kebab-caseで`feature/xxx`・`fix/xxx`・`docs/xxx`・`chore/xxx`。`xxx`は、どの段階のどの作業かが分かる名前にする(`feature/phase1-slice-1f-cek-machine`など。段階は`phaseN`、スライスは`slice-1f`の形)。セッションが自動で付ける名前のまま作業しない。
 - TDD(t_wada流): Red(失敗するテスト)→ Green(最小の実装)→ Refactor(テストを通したまま整理)。
 - 1コミット=1論理変更。節目ごとにプッシュする。
 - 先回りで機能・抽象化を追加しない(YAGNI)。
