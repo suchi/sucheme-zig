@@ -46,9 +46,9 @@ pub const Interpreter = struct {
     ///
     /// Stops at the first error. The results written before it stay written,
     /// and `diagnostic` describes the error. What this call needs only while it
-    /// runs comes from `arena`, which the caller frees as a whole. The names and
-    /// values that a definition keeps are allocated in the interpreter's own
-    /// arena and live until `deinit`.
+    /// runs comes from `arena`, which the caller frees as a whole. The data the
+    /// reader builds, the symbols and what a definition keeps are allocated in
+    /// the interpreter's own arena and live until `deinit`.
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         self.ctx.clearDiagnostic();
         self.run(arena, source, out) catch |e| {
