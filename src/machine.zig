@@ -168,6 +168,11 @@ pub const Machine = struct {
         if (operator.asPrimitive()) |prim| {
             var small: [8]Value = undefined;
             const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
+            // Why: the operands are the last thing taken from the scratch space and
+            // the primitive takes nothing from it, so giving them back right after
+            // the call lets an arena reuse them. Left, a loop that calls a primitive
+            // with many operands would grow the space with each pass.
+            defer if (count > small.len) self.scratch.free(operands);
             fill(operands, args);
             const result = prim.call(operands) catch |e| return switch (e) {
                 error.WrongType => ctx.raise("wrong type of argument to {s}", .{prim.name}),
