@@ -94,8 +94,9 @@ fn describe(e: Error) []const u8 {
 
 test {
     std.testing.refAllDecls(@This());
-    // Until the expander imports it, the tests of core.zig are reached from here.
+    // Until the interpreter runs on them, the tests of these are reached from here.
     _ = @import("core.zig");
+    _ = @import("syntax/expand.zig");
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {
