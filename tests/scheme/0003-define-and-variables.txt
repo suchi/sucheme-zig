@@ -1,8 +1,8 @@
 # Slice 1b: define binds a global, a variable reference reads it, and define
-# itself prints nothing. A definition is only allowed at the top level until
-# internal definitions arrive in slice 1e (R7RS 5.3.1). A case is one
-# line, so it defines and uses in the same line; the REPL's unit tests cover
-# a definition surviving into the next line.
+# itself prints nothing. A definition is allowed at the top level and at the
+# start of a body (R7RS 5.3.1); tests/scheme/0010-internal-define.txt has the
+# latter. A case is one line, so it defines and uses in the same line; the
+# REPL's unit tests cover a definition surviving into the next line.
 
 (define x 1) x
 1
@@ -49,9 +49,6 @@ error: bad define: expected (define name expression)
 (define)
 error: bad define: expected (define name expression)
 
-(define (f) 1)
-error: bad define: procedure definitions are not supported yet
-
 define
 error: define is a syntactic keyword and cannot be used as a variable
 
@@ -59,13 +56,13 @@ error: define is a syntactic keyword and cannot be used as a variable
 error: bad define: define is a syntactic keyword and cannot be redefined
 
 (+ 1 (define x 2))
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 (define x (define y 1))
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 ((define x 1) 2)
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 (define z (+ 1 (define w 2)))
-error: bad define: a definition is only allowed at the top level
+error: bad define: a definition is only allowed at the top level or at the start of a body

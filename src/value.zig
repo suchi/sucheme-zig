@@ -3,7 +3,8 @@
 //! A tagged union (ADR-0002). The full set of kinds is the table in
 //! docs/design/runtime.md; each arrives with the slice that first creates it.
 //! Slice 1a had fixed-length integers, 1b the unspecified value, 1c booleans,
-//! the empty list, symbols and pairs, and 1d adds the two kinds of procedure.
+//! the empty list, symbols and pairs, 1d the two kinds of procedure, and 1e adds
+//! the marker of a variable that is not defined yet.
 //! The layouts of everything the GC will walk are defined here, so the one
 //! place that has to know them all is this file (docs/design/architecture.md).
 //!
@@ -31,6 +32,11 @@ pub const Value = union(enum) {
     /// What an expression with no useful value returns, such as `define`. It
     /// has no external representation.
     unspecified,
+    /// What a local variable holds between the start of its body and its
+    /// definition (R7RS 5.3.2 binds the names of a body as `letrec*` does).
+    /// Reading the variable while it holds this is an error, so the marker never
+    /// reaches a program as a value.
+    uninitialized,
 
     /// The empty list. Named apart from the variant, which a constant of the
     /// same name would clash with.
@@ -38,6 +44,10 @@ pub const Value = union(enum) {
 
     /// The unspecified value. Named apart from the variant for the same reason.
     pub const unspecified_value: Value = .unspecified;
+
+    /// The marker of a variable that is not defined yet. Named apart from the
+    /// variant for the same reason.
+    pub const uninitialized_value: Value = .uninitialized;
 
     pub fn fromFixnum(n: i64) Value {
         return .{ .fixnum = n };
@@ -76,6 +86,7 @@ pub const Value = union(enum) {
             .primitive => .primitive,
             .closure => .closure,
             .unspecified => .unspecified,
+            .uninitialized => .uninitialized,
         };
     }
 
@@ -143,6 +154,8 @@ pub const PrimitiveError = error{
     /// implementation report this as a violation of an implementation
     /// restriction; bignums arrive in stage 4.
     IntegerOverflow,
+    /// A number of arguments the primitive does not take, such as `(-)`.
+    WrongArgumentCount,
 };
 
 /// A procedure implemented in Zig. The table of them is in prim/.
@@ -151,18 +164,25 @@ pub const Primitive = struct {
     call: *const fn (args: []const Value) PrimitiveError!Value,
 };
 
-/// A procedure made by `lambda`: its parameters, its body, and the frame it was
+/// A procedure made by `lambda`: its variables, its body, and the frame it was
 /// made in. Local variables are found by name through `env` and the frames
 /// behind it; the expander of slice 1f replaces that with lexical addresses.
 pub const Closure = struct {
-    params: []const SymbolId,
+    /// The names of the variables of a call: the parameters, then the names the
+    /// body defines at its start.
+    names: []const SymbolId,
+    /// How many of `names` are parameters, so how many arguments a call takes.
+    arity: usize,
     /// The forms of the body, evaluated in order; the last one is the value.
     body: []const Value,
+    /// How many forms at the start of `body` are definitions. Never all of
+    /// them: a body ends in an expression.
+    defines: usize,
     env: ?*Frame,
 };
 
-/// The variables of one call: the parameter names and what they are bound to,
-/// and the frame the closure was made in.
+/// The variables of one call: their names and what they are bound to, and the
+/// frame the closure was made in.
 pub const Frame = struct {
     names: []const SymbolId,
     values: []Value,
@@ -170,7 +190,7 @@ pub const Frame = struct {
 };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized };
 
 test {
     std.testing.refAllDecls(@This());
@@ -202,6 +222,15 @@ test "only #f is false" {
     try std.testing.expect(Value.fromSymbol(@fromBackingInt(@intCast(0))).isTrue());
 }
 
+test "the uninitialized marker is its own kind, and is true like any value but #f" {
+    const v = Value.uninitialized_value;
+    try std.testing.expectEqual(Kind.uninitialized, v.kind());
+    try std.testing.expect(v.asFixnum() == null);
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(v.isTrue());
+    try std.testing.expect(Value.unspecified_value.kind() != v.kind());
+}
+
 test "each kind answers only to its own accessor" {
     const sym: Value = .fromSymbol(@fromBackingInt(@intCast(3)));
     try std.testing.expectEqual(Kind.symbol, sym.kind());
@@ -224,7 +253,7 @@ test "procedures answer only to their own accessor" {
     try std.testing.expectEqualStrings("p", pv.asPrimitive().?.name);
     try std.testing.expect(pv.asClosure() == null);
     try std.testing.expect(pv.isTrue());
-    var closure: Closure = .{ .params = &.{}, .body = &.{}, .env = null };
+    var closure: Closure = .{ .names = &.{}, .arity = 0, .body = &.{}, .defines = 0, .env = null };
     const cv: Value = .fromClosure(&closure);
     try std.testing.expectEqual(Kind.closure, cv.kind());
     try std.testing.expectEqual(&closure, cv.asClosure().?);

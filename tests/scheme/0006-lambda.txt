@@ -127,5 +127,5 @@ error: lambda is a syntactic keyword and cannot be used as a variable
 (define lambda 1)
 error: bad define: lambda is a syntactic keyword and cannot be redefined
 
-((lambda (x) (define y 1) y) 1)
-error: bad define: a definition is only allowed at the top level
+((lambda (x) (define y 1) (+ x y)) 1)
+2

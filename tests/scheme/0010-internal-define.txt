@@ -1,0 +1,107 @@
+# Slice 1e: a body may start with definitions (R7RS 5.3.2). They are local to the
+# call, and they see each other as letrec* does: a definition can use the
+# procedures defined after it, but not the value of one that is not defined yet.
+
+((lambda () (define x 1) x))
+1
+
+((lambda () (define x 1) (define y 2) (+ x y)))
+3
+
+((lambda (a) (define b (+ a 1)) (* a b)) 3)
+12
+
+(define (f n) (define (sq x) (* x x)) (+ (sq n) 1)) (f 3)
+10
+
+(define (f) (define a 1) (define b a) b) (f)
+1
+
+(define (f) (define (even? n) (if (= n 0) #t (odd? (- n 1)))) (define (odd? n) (if (= n 0) #f (even? (- n 1)))) (even? 6)) (f)
+#t
+
+(define (f) (define g (lambda () a)) (define a 1) (g)) (f)
+1
+
+(define x 10) (define (f) (define x 1) x) (f) x
+1
+10
+
+(define (f) (define x 1) (set! x 2) x) (f)
+2
+
+(define (make) (define n 0) (lambda () (set! n (+ n 1)) n)) (define c (make)) (c) (c) (c)
+1
+2
+3
+
+(define (make) (define n 0) (lambda () (set! n (+ n 1)) n)) (define a (make)) (define b (make)) (a) (a) (b)
+1
+2
+1
+
+(+ 1 ((lambda () (define x 5) x)))
+6
+
+(define (f) (define x 1) (define (g) (define y 2) (+ x y)) (g)) (f)
+3
+
+(define (f) (define a b) (define b 1) a) (f)
+error: variable used before its definition: b
+
+(define (f) (define b a) (define a 1) b) (f)
+error: variable used before its definition: a
+
+(define (f) (define a a) a) (f)
+error: variable used before its definition: a
+
+(define (f) (define g (lambda () a)) (define h (g)) (define a 1) h) (f)
+error: variable used before its definition: a
+
+(define (f) 0 (define a 1) a) (f)
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+# A definition after an expression makes no local variable, so a read before it
+# finds no variable at all rather than an uninitialized one.
+(define (f) a (define a 1) a) (f)
+error: unbound variable: a
+
+(define (f) (+ a 1) (define a 1) a) (f)
+error: unbound variable: a
+
+# Assigning a variable before its definition is as much an error as reading it.
+(define (f) (define a (set! b 1)) (define b 2) b) (f)
+error: variable used before its definition: b
+
+(define (f) (define a 1) a (define b 2) b) (f)
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+(define (f) (begin (define x 1)) x) (f)
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+(define (f) (if #t (define x 1)) 2) (f)
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+(define (f x) (define x 1) x)
+error: bad define: x is already a parameter or defined earlier in this body
+
+(define (f) (define x 1) (define x 2) x)
+error: bad define: x is already a parameter or defined earlier in this body
+
+(define (f) (define if 1) 1)
+error: bad define: if is a syntactic keyword and cannot be redefined
+
+(define (f) (define 1 2) 1)
+error: bad define: the name must be an identifier
+
+(define (f) (define x 1))
+error: bad define: a body needs an expression after its definitions
+
+(lambda () (define x 1) (define y 2))
+error: bad lambda: a body needs an expression after its definitions
+
+((lambda () (define x) 1))
+error: bad define: expected (define name expression)
+
+((lambda () (define x 1 2) 1))
+error: bad define: expected (define name expression)
