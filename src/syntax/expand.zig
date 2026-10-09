@@ -594,6 +594,39 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.ImplementationRestriction, f.expandText("(lambda (a) (define b 1) a)", limits));
 }
 
+test "a keyword is not a variable, a parameter or a name to define" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("quote", error.BadSyntax, "quote is a syntactic keyword and cannot be used as a variable");
+    try f.expectFails("(define quote 1)", error.BadSyntax, "bad define: quote is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(define #t 1)", error.BadSyntax, "bad define: the name must be an identifier");
+    try f.expectFails("(f if)", error.BadSyntax, "if is a syntactic keyword and cannot be used as a variable");
+}
+
+test "a form that is not a proper list is refused" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // The reader cannot write a dotted list, so build (+ 1 . 2) by hand.
+    const tail = try Value.cons(a, .fromFixnum(1), .fromFixnum(2));
+    const plus: Value = .fromSymbol(try f.ctx.symbols.intern(a, "+"));
+    const form = try Value.cons(a, plus, tail);
+    try std.testing.expectError(error.BadSyntax, expand(&f.ctx, a, form));
+    try std.testing.expectEqualStrings("bad syntax: a form must be a proper list", f.ctx.diagnostic());
+}
+
+test "quote gives the very datum it was read with, not a copy" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    const form = try f.read("(quote (1 2))");
+    const node = try expand(&f.ctx, a, form);
+    try std.testing.expectEqual(form.asPair().?.cdr.asPair().?.car.asPair().?, node.constant.asPair().?);
+}
+
 test "a program nested deeper than the Zig stack allows still expands" {
     var f: Fixture = undefined;
     try f.init();

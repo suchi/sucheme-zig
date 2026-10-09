@@ -166,27 +166,18 @@ pub const Primitive = struct {
     call: *const fn (args: []const Value) PrimitiveError!Value,
 };
 
-/// A procedure made by `lambda`: its variables, its body, and the frame it was
-/// made in. Local variables are found by name through `env` and the frames
-/// behind it; the expander of slice 1f replaces that with lexical addresses.
+/// A procedure made by `lambda`: what the expression means, and the frame it was
+/// evaluated in. A call makes a frame behind `env`, and the variables of the
+/// body are found in it and the frames behind it by lexical address.
 pub const Closure = struct {
-    /// The names of the variables of a call: the parameters, then the names the
-    /// body defines at its start.
-    names: []const SymbolId,
-    /// How many of `names` are parameters, so how many arguments a call takes.
-    arity: usize,
-    /// The forms of the body, evaluated in order; the last one is the value.
-    body: []const Value,
-    /// How many forms at the start of `body` are definitions. Never all of
-    /// them: a body ends in an expression.
-    defines: usize,
+    lambda: *const Lambda,
     env: ?*Frame,
 };
 
-/// The variables of one call: their names and what they are bound to, and the
+/// The variables of one call, in the slots the expander assigned: the
+/// parameters, then the names the body defines at its start. `parent` is the
 /// frame the closure was made in.
 pub const Frame = struct {
-    names: []const SymbolId,
     values: []Value,
     parent: ?*Frame,
 };
@@ -375,7 +366,9 @@ test "procedures answer only to their own accessor" {
     try std.testing.expectEqualStrings("p", pv.asPrimitive().?.name);
     try std.testing.expect(pv.asClosure() == null);
     try std.testing.expect(pv.isTrue());
-    var closure: Closure = .{ .names = &.{}, .arity = 0, .body = &.{}, .defines = 0, .env = null };
+    const body: Node = .{ .constant = .unspecified_value };
+    const lambda: Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
+    var closure: Closure = .{ .lambda = &lambda, .env = null };
     const cv: Value = .fromClosure(&closure);
     try std.testing.expectEqual(Kind.closure, cv.kind());
     try std.testing.expectEqual(&closure, cv.asClosure().?);
