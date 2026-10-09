@@ -54,6 +54,9 @@ error: bad define: procedure definitions are not supported yet
 define
 error: define is a syntactic keyword and cannot be used as a variable
 
+(define define 1)
+error: bad define: define is a syntactic keyword and cannot be redefined
+
 (+ 1 (define x 2))
 error: wrong type of argument to +
 

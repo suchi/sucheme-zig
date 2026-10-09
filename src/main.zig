@@ -134,7 +134,9 @@ pub const max_line = 64 * 1024;
 pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
-    var interp: sucheme.Interpreter = .init();
+    var interp: sucheme.Interpreter = undefined;
+    interp.init(gpa);
+    defer interp.deinit();
     while (true) {
         try out.writeAll("> ");
         try out.flush();
@@ -265,4 +267,12 @@ test "repl reads the longest line that fits, newline included" {
     try repl(std.testing.allocator, &in.interface, &out, &err);
     try std.testing.expectEqualStrings("> 5\n> \n", out.buffered());
     try std.testing.expectEqualStrings("", err.buffered());
+}
+
+test "repl keeps a definition for the lines after it" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(define x 40)\n(+ x 2)\n(+ y 1)\n(define y 1)\n(+ x y)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> > 42\n> > > 41\n> \n", r.out);
+    try std.testing.expectEqualStrings("error: unbound variable: y\n", r.err);
 }

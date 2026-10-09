@@ -6,14 +6,17 @@
 //! evaluation advance. That document records this file as a provisional
 //! exception until then.
 //!
-//! Slice 1a evaluates integers and calls to a primitive named in the operator
-//! position. Variables, `define` and the reporting of errors as Scheme
-//! conditions arrive in slice 1b; until then a Scheme error is a Zig error.
+//! Slice 1b evaluates integers, global variables, `define`, and calls to a
+//! primitive or a variable in the operator position. Procedure values and
+//! `lambda` arrive in slice 1d; until then no variable holds a procedure, and a
+//! Scheme error is a Zig error with a message in `Context`.
 
 const std = @import("std");
 const Value = @import("value.zig").Value;
 const Datum = @import("reader.zig").Datum;
 const arith = @import("prim/arith.zig");
+const symbol = @import("symbol.zig");
+const env = @import("env.zig");
 
 pub const Error = arith.Error || error{
     OutOfMemory,
@@ -21,22 +24,35 @@ pub const Error = arith.Error || error{
     EmptyCombination,
     /// An identifier naming nothing.
     UnboundVariable,
-    /// An identifier outside the operator position. Slice 1a has no
-    /// variables and no procedure values to give it.
+    /// A primitive named outside the operator position. There are no procedure
+    /// values to give it until slice 1d.
     VariableReferenceUnsupported,
+    /// A form whose shape the evaluator rejects, such as `(define)`.
+    BadSyntax,
     /// The operator is not a procedure.
     NotAProcedure,
     /// The expression nests deeper than `max_depth`.
     NestingTooDeep,
 };
 
-/// What `eval` knows beyond the error it returns: a Zig error carries no
-/// payload, so the message that names the offending identifier lives here, and
-/// the caller reads it with `diagnostic` after an error. Slice 1f replaces both
-/// with condition objects.
+/// What `eval` carries between calls: the symbols and global bindings that
+/// outlive a line, and the message for the most recent error.
+///
+/// A Zig error carries no payload, so the message that names the offending
+/// identifier lives here, and the caller reads it with `diagnostic` after an
+/// error. Slice 1f replaces the message with condition objects.
 pub const Context = struct {
+    /// Where symbols and global bindings are allocated. Slice 1g replaces it
+    /// with the GC heap.
+    persist: std.mem.Allocator,
+    symbols: symbol.Table = .{},
+    globals: env.Global = .{},
     message_buf: [256]u8 = undefined,
     message_len: usize = 0,
+
+    pub fn init(persist: std.mem.Allocator) Context {
+        return .{ .persist = persist };
+    }
 
     /// The message for the most recent error, or empty when none was set.
     /// Valid until the next call that fails or `clearDiagnostic`.
@@ -84,34 +100,88 @@ pub fn eval(ctx: *Context, arena: std.mem.Allocator, d: Datum) Error!Value {
     return evalAt(ctx, arena, d, 0);
 }
 
+/// The one special form of slice 1b. A keyword cannot be shadowed or used as a
+/// variable; the expander of stage 2 replaces this check with syntactic
+/// bindings.
+const define_keyword = "define";
+
 fn evalAt(ctx: *Context, arena: std.mem.Allocator, d: Datum, depth: usize) Error!Value {
     if (depth >= max_depth) return ctx.fail(error.NestingTooDeep, "nesting too deep", .{});
     switch (d) {
         .integer => |n| return .fromFixnum(n),
-        .identifier => |name| return if (arith.lookup(name) == null)
-            ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name})
-        else
-            ctx.fail(error.VariableReferenceUnsupported, "procedure values are not supported yet: {s}", .{name}),
+        .identifier => |name| {
+            if (std.mem.eql(u8, name, define_keyword))
+                return ctx.fail(error.BadSyntax, "{s} is a syntactic keyword and cannot be used as a variable", .{name});
+            if (lookupGlobal(ctx, name)) |v| return v;
+            if (arith.lookup(name) != null)
+                return ctx.fail(error.VariableReferenceUnsupported, "procedure values are not supported yet: {s}", .{name});
+            return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name});
+        },
         .list => |items| {
             if (items.len == 0) return ctx.fail(error.EmptyCombination, "empty combination", .{});
-            const prim = switch (items[0]) {
-                .identifier => |name| arith.lookup(name) orelse
-                    return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name}),
+            switch (items[0]) {
+                .identifier => |name| {
+                    if (std.mem.eql(u8, name, define_keyword)) return evalDefine(ctx, arena, items, depth);
+                    // A definition shadows a primitive of the same name. Nothing
+                    // a variable can hold is a procedure yet, so a bound
+                    // operator is an error.
+                    if (lookupGlobal(ctx, name) != null)
+                        return ctx.fail(error.NotAProcedure, "not a procedure", .{});
+                    const prim = arith.lookup(name) orelse
+                        return ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{name});
+                    return applyPrimitive(ctx, arena, prim, items[1..], depth);
+                },
                 else => {
-                    // Evaluated for its errors; no value of slice 1a is a
-                    // procedure.
+                    // Evaluated for its errors; no value is a procedure yet.
                     _ = try evalAt(ctx, arena, items[0], depth + 1);
                     return ctx.fail(error.NotAProcedure, "not a procedure", .{});
                 },
-            };
-            const args = try arena.alloc(Value, items.len - 1);
-            for (items[1..], args) |item, *arg| arg.* = try evalAt(ctx, arena, item, depth + 1);
-            return prim.call(args) catch |e| switch (e) {
-                error.WrongType => ctx.fail(e, "wrong type of argument to {s}", .{prim.name}),
-                error.IntegerOverflow => ctx.fail(e, "integer overflow in {s}", .{prim.name}),
-            };
+            }
         },
     }
+}
+
+/// The value of the global variable `name`, or null when it is unbound. Looking
+/// up a name nobody defined does not intern it.
+fn lookupGlobal(ctx: *Context, name: []const u8) ?Value {
+    const id = ctx.symbols.find(name) orelse return null;
+    return ctx.globals.lookup(id);
+}
+
+fn applyPrimitive(
+    ctx: *Context,
+    arena: std.mem.Allocator,
+    prim: *const arith.Primitive,
+    operands: []const Datum,
+    depth: usize,
+) Error!Value {
+    const args = try arena.alloc(Value, operands.len);
+    for (operands, args) |operand, *arg| arg.* = try evalAt(ctx, arena, operand, depth + 1);
+    return prim.call(args) catch |e| switch (e) {
+        error.WrongType => ctx.fail(e, "wrong type of argument to {s}", .{prim.name}),
+        error.IntegerOverflow => ctx.fail(e, "integer overflow in {s}", .{prim.name}),
+    };
+}
+
+/// `(define name expression)` (R7RS 5.3.2). Binds `name` in the global
+/// environment, replacing an earlier binding, and returns the unspecified value.
+///
+/// The expression is evaluated before the name is bound, so a failing
+/// definition leaves the name as it was.
+fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Datum, depth: usize) Error!Value {
+    if (items.len != 3)
+        return ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
+    const name = switch (items[1]) {
+        .identifier => |n| n,
+        .list => return ctx.fail(error.BadSyntax, "bad define: procedure definitions are not supported yet", .{}),
+        .integer => return ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{}),
+    };
+    if (std.mem.eql(u8, name, define_keyword))
+        return ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+    const value = try evalAt(ctx, arena, items[2], depth + 1);
+    const id = try ctx.symbols.intern(ctx.persist, name);
+    try ctx.globals.define(ctx.persist, id, value);
+    return .unspecified_value;
 }
 
 test {
@@ -119,7 +189,7 @@ test {
 }
 
 fn evalSource(arena: std.mem.Allocator, src: []const u8) Error!i64 {
-    var ctx: Context = .{};
+    var ctx: Context = .init(arena);
     return (try evalWith(&ctx, arena, src)).asFixnum().?;
 }
 
@@ -167,7 +237,7 @@ test "eval leaves the message of an error in the context" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var ctx: Context = .{};
+    var ctx: Context = .init(a);
     try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "(+ 1 foo)"));
     try std.testing.expectEqualStrings("unbound variable: foo", ctx.diagnostic());
     try std.testing.expectError(error.IntegerOverflow, evalWith(&ctx, a, "(+ 9223372036854775807 1)"));
@@ -176,13 +246,26 @@ test "eval leaves the message of an error in the context" {
     try std.testing.expectEqualStrings("", ctx.diagnostic());
 }
 
+test "a reference to an unbound name does not intern it, and a definition does" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: Context = .init(a);
+    try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "nope"));
+    try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, "(nope 1)"));
+    try std.testing.expectEqual(0, ctx.symbols.names.items.len);
+    _ = try evalWith(&ctx, a, "(define yes 1)");
+    try std.testing.expectEqual(1, ctx.symbols.names.items.len);
+    try std.testing.expectEqualStrings("yes", ctx.symbols.nameOf(ctx.symbols.find("yes").?));
+}
+
 test "eval cuts a message longer than its buffer instead of dropping it" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const name = try a.alloc(u8, 1000);
     @memset(name, 'x');
-    var ctx: Context = .{};
+    var ctx: Context = .init(a);
     try std.testing.expectError(error.UnboundVariable, evalWith(&ctx, a, name));
     try std.testing.expect(std.mem.startsWith(u8, ctx.diagnostic(), "unbound variable: xxx"));
     try std.testing.expectEqual(ctx.message_buf.len, ctx.diagnostic().len);
