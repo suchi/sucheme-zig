@@ -65,3 +65,35 @@ pub const Context = struct {
 test {
     std.testing.refAllDecls(@This());
 }
+
+test "a message longer than the buffer is cut, not dropped" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const name = try a.alloc(u8, 1000);
+    @memset(name, 'x');
+    var ctx = try Context.init(a);
+    const e = ctx.fail(error.Failed, "unbound variable: {s}", .{name});
+    try std.testing.expectEqual(error.Failed, e);
+    try std.testing.expect(std.mem.startsWith(u8, ctx.diagnostic(), "unbound variable: xxx"));
+    try std.testing.expectEqual(ctx.message_buf.len, ctx.diagnostic().len);
+}
+
+test "the message of an error stays until it is cleared" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator());
+    try std.testing.expectEqualStrings("", ctx.diagnostic());
+    try std.testing.expectEqual(error.Failed, ctx.fail(error.Failed, "bad {s}", .{"thing"}));
+    try std.testing.expectEqualStrings("bad thing", ctx.diagnostic());
+    ctx.clearDiagnostic();
+    try std.testing.expectEqualStrings("", ctx.diagnostic());
+}
+
+test "a context binds each primitive to its name" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator());
+    const id = try ctx.symbols.intern(arena.allocator(), "+");
+    try std.testing.expectEqualStrings("+", ctx.globals.lookup(id).?.asPrimitive().?.name);
+}

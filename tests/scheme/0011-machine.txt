@@ -40,3 +40,11 @@ error: unbound variable: nope
 (define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 5000) (count 3)
 5000
 3
+
+# After a call returns, the variables of the procedure that made it are the ones
+# in sight again.
+(define (id x) x) (define (f x y) (+ (id 100) x y)) (f 1 2)
+103
+
+(define (id x) x) (define (g n) (if (id #t) (+ n 1) 0)) (g 41)
+42

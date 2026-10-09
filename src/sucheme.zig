@@ -15,12 +15,14 @@ pub const name = build_options.name;
 pub const version = build_options.version;
 
 const reader = @import("reader.zig");
-const eval = @import("eval.zig");
+const expand = @import("syntax/expand.zig");
+const machine = @import("machine.zig");
+const context = @import("context.zig");
 const printer = @import("printer.zig");
 
 /// Every way `evalPrint` can fail. Until slice 1f reports Scheme errors as
 /// conditions, a Scheme error is one of these too.
-pub const Error = reader.Error || eval.Error || printer.Error;
+pub const Error = reader.Error || expand.Error || machine.Error || printer.Error;
 
 /// One interpreter: what outlives a single line of input, which is the data the
 /// reader builds, the symbol table and the global environment.
@@ -30,7 +32,7 @@ pub const Error = reader.Error || eval.Error || printer.Error;
 /// the arena, so an interpreter is initialised in place and not copied after.
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
-    ctx: eval.Context,
+    ctx: context.Context,
 
     pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
         self.arena = .init(gpa);
@@ -69,7 +71,9 @@ pub const Interpreter = struct {
         // What is read outlives the line: `quote` can hand it to a definition.
         const sink: reader.Sink = .{ .alloc = self.ctx.persist, .symbols = &self.ctx.symbols };
         while (try r.next(arena, sink)) |form| {
-            const v = try eval.eval(&self.ctx, arena, form);
+            const node = try expand.expand(&self.ctx, arena, form);
+            var m: machine.Machine = .init(&self.ctx, arena);
+            const v = try m.run(node);
             // A definition prints nothing. The REPL shows a value, and this one
             // has no external form.
             if (v.kind() == .unspecified) continue;
@@ -94,10 +98,6 @@ fn describe(e: Error) []const u8 {
 
 test {
     std.testing.refAllDecls(@This());
-    // Until the interpreter runs on them, the tests of these are reached from here.
-    _ = @import("core.zig");
-    _ = @import("syntax/expand.zig");
-    _ = @import("machine.zig");
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {

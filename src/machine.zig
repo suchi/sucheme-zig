@@ -16,6 +16,11 @@ const std = @import("std");
 const value_mod = @import("value.zig");
 const Value = value_mod.Value;
 const Node = value_mod.Node;
+const Frame = value_mod.Frame;
+const Closure = value_mod.Closure;
+const Kont = value_mod.Kont;
+const Args = value_mod.Args;
+const SymbolId = @import("symbol.zig").SymbolId;
 const Context = @import("context.zig").Context;
 const arith = @import("prim/arith.zig");
 
@@ -45,11 +50,196 @@ pub const Machine = struct {
     }
 
     /// Runs `node` to its value. On an error `ctx` holds the message.
-    pub fn run(self: *Machine, node: *const Node) Error!Value {
-        _ = node;
-        return self.ctx.fail(error.NotAProcedure, "not implemented", .{});
+    pub fn run(self: *Machine, root: *const Node) Error!Value {
+        const ctx = self.ctx;
+        var control: ?*const Node = root;
+        var env: ?*Frame = null;
+        var kont: ?*const Kont = null;
+        var value: Value = .unspecified_value;
+        while (true) {
+            if (control) |node| {
+                control = null;
+                switch (node.*) {
+                    .constant => |v| value = v,
+                    .local_ref => |*r| {
+                        const slot = slotAt(env, r.address);
+                        if (slot.kind() == .uninitialized) return self.uninitialized(r.name);
+                        value = slot.*;
+                    },
+                    .global_ref => |id| value = ctx.globals.lookup(id) orelse return self.unbound(id),
+                    .lambda => |lambda| {
+                        const closure = try ctx.persist.create(Closure);
+                        closure.* = .{ .lambda = lambda, .env = env };
+                        value = .fromClosure(closure);
+                    },
+                    .@"if" => |*i| {
+                        kont = try self.push(kont, env, .{ .branch = i });
+                        control = i.condition;
+                    },
+                    .sequence => |nodes| {
+                        if (nodes.len > 1) kont = try self.push(kont, env, .{ .sequence = nodes[1..] });
+                        control = nodes[0];
+                    },
+                    .local_set => |*a| {
+                        kont = try self.push(kont, env, .{ .local_set = a });
+                        control = a.value;
+                    },
+                    .local_define => |*a| {
+                        kont = try self.push(kont, env, .{ .local_define = a });
+                        control = a.value;
+                    },
+                    .global_set => |*a| {
+                        kont = try self.push(kont, env, .{ .global_set = a });
+                        control = a.value;
+                    },
+                    .global_define => |*a| {
+                        kont = try self.push(kont, env, .{ .global_define = a });
+                        control = a.value;
+                    },
+                    .call => |*c| {
+                        kont = try self.push(kont, env, .{ .call = .{ .call = c, .args = null, .received = 0 } });
+                        control = c.operator;
+                    },
+                }
+            } else {
+                // The value goes to the top frame of the continuation, which is
+                // taken off first: whatever runs next runs without it.
+                const k = kont orelse return value;
+                kont = k.next;
+                env = k.env;
+                switch (k.step) {
+                    .branch => |i| {
+                        if (value.isTrue()) {
+                            control = i.consequent;
+                        } else if (i.alternative) |alternative| {
+                            control = alternative;
+                        } else {
+                            value = .unspecified_value;
+                        }
+                    },
+                    .sequence => |rest| {
+                        // The last node runs with no frame of this sequence left.
+                        if (rest.len > 1) kont = try self.push(kont, env, .{ .sequence = rest[1..] });
+                        control = rest[0];
+                    },
+                    .local_set => |a| {
+                        const slot = slotAt(env, a.address);
+                        if (slot.kind() == .uninitialized) return self.uninitialized(a.name);
+                        slot.* = value;
+                        value = .unspecified_value;
+                    },
+                    .local_define => |a| {
+                        slotAt(env, a.address).* = value;
+                        value = .unspecified_value;
+                    },
+                    .global_set => |a| {
+                        if (!ctx.globals.assign(a.name, value)) return self.unbound(a.name);
+                        value = .unspecified_value;
+                    },
+                    .global_define => |a| {
+                        try ctx.globals.define(ctx.persist, a.name, value);
+                        value = .unspecified_value;
+                    },
+                    .call => |c| {
+                        const args = try ctx.persist.create(Args);
+                        args.* = .{ .value = value, .next = c.args };
+                        const received = c.received + 1;
+                        if (received <= c.call.operands.len) {
+                            kont = try self.push(kont, env, .{ .call = .{ .call = c.call, .args = args, .received = received } });
+                            control = c.call.operands[received - 1];
+                        } else switch (try self.apply(args, received - 1)) {
+                            .value => |v| value = v,
+                            // A tail call: the body runs under the continuation of
+                            // the call, which is what is left of `kont`.
+                            .body => |entry| {
+                                env = entry.env;
+                                control = entry.body;
+                            },
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+    const Applied = union(enum) {
+        value: Value,
+        body: struct { env: *Frame, body: *const Node },
+    };
+
+    /// Applies the operator at the end of `args` to the `count` operands before
+    /// it. A primitive gives its value; a closure gives the frame of the call and
+    /// the body to run in it.
+    fn apply(self: *Machine, args: *const Args, count: usize) Error!Applied {
+        const ctx = self.ctx;
+        var operator_node = args;
+        while (operator_node.next) |n| operator_node = n;
+        const operator = operator_node.value;
+        if (operator.asPrimitive()) |prim| {
+            var small: [8]Value = undefined;
+            const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
+            fill(operands, args);
+            const result = prim.call(operands) catch |e| return switch (e) {
+                error.WrongType => ctx.fail(e, "wrong type of argument to {s}", .{prim.name}),
+                error.IntegerOverflow => ctx.fail(e, "integer overflow in {s}", .{prim.name}),
+                error.WrongArgumentCount => ctx.fail(e, "wrong number of arguments to {s}", .{prim.name}),
+            };
+            return .{ .value = result };
+        }
+        const closure = operator.asClosure() orelse
+            return ctx.fail(error.NotAProcedure, "not a procedure", .{});
+        const lambda = closure.lambda;
+        if (count != lambda.arity) return ctx.fail(
+            error.WrongArgumentCount,
+            "wrong number of arguments: expected {d}, got {d}",
+            .{ lambda.arity, count },
+        );
+        // The frame outlives the call when a closure made in it does, so it is
+        // allocated where closures are. The names the body defines start out
+        // uninitialized (R7RS 5.3.2: a body is a `letrec*`).
+        const frame = try ctx.persist.create(Frame);
+        const values = try ctx.persist.alloc(Value, lambda.frame_size);
+        fill(values[0..count], args);
+        @memset(values[count..], Value.uninitialized_value);
+        frame.* = .{ .values = values, .parent = closure.env };
+        return .{ .body = .{ .env = frame, .body = lambda.body } };
+    }
+
+    /// Copies the operands in `args`, which holds them last first and the
+    /// operator at the end, into `out` in the order they were written.
+    fn fill(out: []Value, args: *const Args) void {
+        var i = out.len;
+        var it: ?*const Args = args;
+        while (i > 0) : (it = it.?.next) {
+            i -= 1;
+            out[i] = it.?.value;
+        }
+    }
+
+    /// A new frame on top of `next`.
+    fn push(self: *Machine, next: ?*const Kont, env: ?*Frame, step: Kont.Step) error{OutOfMemory}!*const Kont {
+        const k = try self.ctx.persist.create(Kont);
+        k.* = .{ .next = next, .env = env, .depth = (if (next) |n| n.depth else 0) + 1, .step = step };
+        if (k.depth > self.peak_depth) self.peak_depth = k.depth;
+        return k;
+    }
+
+    fn uninitialized(self: *Machine, name: SymbolId) Error {
+        return self.ctx.fail(error.UninitializedVariable, "variable used before its definition: {s}", .{self.ctx.symbols.nameOf(name)});
+    }
+
+    fn unbound(self: *Machine, name: SymbolId) Error {
+        return self.ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{self.ctx.symbols.nameOf(name)});
     }
 };
+
+/// The slot of a local variable: `depth` frames out from `env`, then `index`.
+fn slotAt(env: ?*Frame, address: value_mod.Address) *Value {
+    var frame = env.?;
+    var depth = address.depth;
+    while (depth > 0) : (depth -= 1) frame = frame.parent.?;
+    return &frame.values[address.index];
+}
 
 test {
     std.testing.refAllDecls(@This());
@@ -104,8 +294,23 @@ test "a constant is its own value, and a primitive is applied to its operands" {
     try f.expectInt(42, "42");
     try f.expectInt(3, "(+ 1 2)");
     try f.expectInt(10, "(+ (+ 1 2) (+ 3 4))");
+    // More operands than the machine keeps on its own stack for a primitive.
+    try f.expectInt(55, "(+ 1 2 3 4 5 6 7 8 9 10)");
+    try f.expectInt(-53, "(- 1 2 3 4 5 6 7 8 9 10)");
     try std.testing.expect((try f.eval("#t")).isTrue());
     try std.testing.expectEqual(value_mod.Kind.unspecified, (try f.eval("(define x 1)")).kind());
+}
+
+test "a quoted datum is shared, not copied, each time it is read" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.eval("(define x '(1 2))");
+    const first = try f.eval("x");
+    const second = try f.eval("x");
+    try std.testing.expectEqual(first.asPair().?, second.asPair().?);
+    const sym = try f.eval("'foo");
+    try std.testing.expectEqual(sym.asSymbol().?, (try f.eval("(quote foo)")).asSymbol().?);
 }
 
 test "if takes the branch the condition chooses, and has no value without an alternative" {
@@ -140,6 +345,18 @@ test "a lambda is applied, and sees the frame it was made in" {
     try f.expectInt(5, "(((lambda (x) (lambda (y) (+ x y))) 2) 3)");
     try f.expectInt(4, "((lambda () 1 2 4))");
     try std.testing.expectEqual(value_mod.Kind.closure, (try f.eval("(lambda (x) x)")).kind());
+}
+
+test "after a call returns, the caller's own variables are the ones in sight" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.eval("(define (id x) x)");
+    // The operand `x` is read after `(id 100)` has run in a frame of its own.
+    try f.expectInt(101, "((lambda (x) (+ (id 100) x)) 1)");
+    try f.expectInt(7, "((lambda (x) (if (id #t) (+ x 6) 0)) 1)");
+    try f.expectInt(12, "((lambda (x) (id 0) (id 0) (+ x 11)) 1)");
+    try f.expectInt(9, "((lambda (x) (define y (id 8)) (+ x y)) 1)");
 }
 
 test "a closure keeps its frame, and set! changes the variable it shares" {

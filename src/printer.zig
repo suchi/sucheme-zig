@@ -165,7 +165,9 @@ test "write prints a procedure in a form read rejects" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    var closure: value_mod.Closure = .{ .names = &.{}, .arity = 0, .body = &.{}, .defines = 0, .env = null };
+    const body: value_mod.Node = .{ .constant = .unspecified_value };
+    const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
+    var closure: value_mod.Closure = .{ .lambda = &lambda, .env = null };
     try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
     const prim: value_mod.Primitive = .{ .name = "plus", .call = struct {
         fn call(_: []const Value) value_mod.PrimitiveError!Value {
