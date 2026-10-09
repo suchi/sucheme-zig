@@ -70,6 +70,11 @@ test "+ holds only the result to the fixnum range, not a partial sum" {
     try std.testing.expectEqual(std.math.maxInt(i64), try addAll(&.{ std.math.maxInt(i64), 1, -1 }));
 }
 
+test "+ reports an argument that is not a number" {
+    const args = [_]Value{ .fromFixnum(1), .unspecified_value };
+    try std.testing.expectError(error.WrongType, lookup("+").?.call(&args));
+}
+
 test "lookup finds + and nothing it does not define" {
     try std.testing.expect(lookup("+") != null);
     try std.testing.expect(lookup("-") == null);
