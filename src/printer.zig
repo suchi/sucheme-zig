@@ -25,8 +25,8 @@ const Item = union(enum) {
 };
 
 /// Writes `v` as `write` would (R7RS 6.13.3). Symbol names come from `symbols`.
-/// `scratch` holds the stack of what is left to write, and is the caller's to
-/// free.
+/// `scratch` holds the stack of what is left to write; `write` frees what it
+/// takes from it before it returns.
 ///
 /// A symbol is written by its name alone. The names the reader produces never
 /// need the `|...|` form; the procedures that make other symbols come with the

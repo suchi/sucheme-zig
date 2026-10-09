@@ -34,15 +34,15 @@ pub const Error = arith.Error || error{
     NestingTooDeep,
 };
 
-/// What `eval` carries between calls: the symbols and global bindings that
-/// outlive a line, and the message for the most recent error.
+/// What `eval` carries between calls: where what outlives a line is allocated,
+/// the symbols and global bindings, and the message for the most recent error.
 ///
 /// A Zig error carries no payload, so the message that names the offending
 /// identifier lives here, and the caller reads it with `diagnostic` after an
 /// error. Slice 1f replaces the message with condition objects.
 pub const Context = struct {
-    /// Where symbols and global bindings are allocated. Slice 1g replaces it
-    /// with the GC heap.
+    /// Where the data the reader builds, the symbols and the global bindings are
+    /// allocated. Slice 1g replaces it with the GC heap.
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     globals: env.Global = .{},
