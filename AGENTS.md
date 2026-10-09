@@ -33,7 +33,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 ファジングを全コミットの CI に入れないのは、`--fuzz` が自律的に停止せず、時間切れまで走り続けるためである。全コミットの CI に入れると毎回タイムアウトする。手動実行と定期実行(スケジュール起動)に限る。
 
-`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。段階0では版数と使い方の表示以外は非ゼロで終わるので、引数なしの `zig build run` は失敗する。
+`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。引数なしの `zig build run` は標準入力を読む REPL になる。
 
 行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどの切片で足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
 
