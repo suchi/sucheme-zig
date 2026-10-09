@@ -122,6 +122,9 @@ error: integer overflow in *
 (* 9223372036854775807 9223372036854775807 9223372036854775807)
 error: integer overflow in *
 
+(* 4294967296 4294967296 4294967296 4294967296)
+error: integer overflow in *
+
 (= 1 'a)
 error: wrong type of argument to =
 

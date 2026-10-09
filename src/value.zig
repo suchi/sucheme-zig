@@ -143,6 +143,8 @@ pub const PrimitiveError = error{
     /// implementation report this as a violation of an implementation
     /// restriction; bignums arrive in stage 4.
     IntegerOverflow,
+    /// A number of arguments the primitive does not take, such as `(-)`.
+    WrongArgumentCount,
 };
 
 /// A procedure implemented in Zig. The table of them is in prim/.
