@@ -1,8 +1,7 @@
 # Slice 1e: (define (name parameter ...) body ...) is (define name (lambda
 # (parameter ...) body ...)) (R7RS 5.3.1). A global may be used before it is
 # defined, as long as it is defined by the time the call runs, so procedures can
-# call each other. A recursion that never stops reports the depth limit until
-# slice 1f lets it run in constant space.
+# call each other. 0011-machine.txt has the recursions that run deep.
 
 (define (f) 1) (f)
 1
@@ -53,11 +52,8 @@ error: integer overflow in *
 (define (f x) (g x)) (f 1)
 error: unbound variable: g
 
-(define (loop n) (loop n)) (loop 1)
-error: nesting too deep
-
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 100)
-error: nesting too deep
+error: integer overflow in *
 
 (define (f))
 error: bad define: expected (define (name parameter ...) body ...)
