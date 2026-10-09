@@ -255,30 +255,44 @@ fn evalIf(ctx: *Context, arena: std.mem.Allocator, items: []const Value, depth: 
 fn evalLambda(ctx: *Context, arena: std.mem.Allocator, items: []const Value, scope: Scope) Error!Value {
     if (items.len < 3)
         return ctx.fail(error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)", .{});
+    return makeClosure(ctx, arena, items[1], items[2..], scope, "lambda");
+}
+
+/// The procedure with the parameters `params` and the forms `body`, made in
+/// `scope`. `form_name` is the form it was written as, for the messages:
+/// `(define (f x) ...)` is a `define` with a parameter list of its own.
+fn makeClosure(
+    ctx: *Context,
+    arena: std.mem.Allocator,
+    params_form: Value,
+    body: []const Value,
+    scope: Scope,
+    comptime form_name: []const u8,
+) Error!Value {
     var params: std.ArrayList(SymbolId) = .empty;
-    var rest = items[1];
+    var rest = params_form;
     if (rest.kind() == .symbol) return ctx.fail(
         error.BadSyntax,
-        "bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet",
+        "bad " ++ form_name ++ ": parameters must be a list of identifiers; a variable number of arguments is not supported yet",
         .{},
     );
     while (rest.asPair()) |p| : (rest = p.cdr) {
         const id = p.car.asSymbol() orelse
-            return ctx.fail(error.BadSyntax, "bad lambda: a parameter must be an identifier", .{});
+            return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a parameter must be an identifier", .{});
         const name = ctx.symbols.nameOf(id);
         if (Keyword.of(name) != null)
-            return ctx.fail(error.BadSyntax, "bad lambda: {s} is a syntactic keyword and cannot be a parameter", .{name});
+            return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
         for (params.items) |seen| {
-            if (seen == id) return ctx.fail(error.BadSyntax, "bad lambda: duplicate parameter: {s}", .{name});
+            if (seen == id) return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
         }
         try params.append(arena, id);
     }
     if (rest.kind() != .empty_list)
-        return ctx.fail(error.BadSyntax, "bad lambda: the parameters must be a list of identifiers", .{});
+        return ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
     const closure = try ctx.persist.create(Closure);
     closure.* = .{
         .params = try ctx.persist.dupe(SymbolId, params.items),
-        .body = try ctx.persist.dupe(Value, items[2..]),
+        .body = try ctx.persist.dupe(Value, body),
         .env = scope.env,
     };
     return .fromClosure(closure);
@@ -328,17 +342,23 @@ fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Value, dep
     // to fail.
     if (!scope.top)
         return ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level", .{});
-    if (items.len != 3)
+    // `(define (name parameter ...) body ...)` is `(define name (lambda
+    // (parameter ...) body ...))` (R7RS 5.3.1).
+    const shorthand = items.len >= 2 and items[1].kind() == .pair;
+    if (shorthand and items.len < 3)
+        return ctx.fail(error.BadSyntax, "bad define: expected (define (name parameter ...) body ...)", .{});
+    if (!shorthand and items.len != 3)
         return ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
-    const id = items[1].asSymbol() orelse {
-        if (items[1].kind() == .pair)
-            return ctx.fail(error.BadSyntax, "bad define: procedure definitions are not supported yet", .{});
+    const target = if (shorthand) items[1].asPair().?.car else items[1];
+    const id = target.asSymbol() orelse
         return ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
-    };
     const name = ctx.symbols.nameOf(id);
     if (Keyword.of(name) != null)
         return ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
-    const value = try evalAt(ctx, arena, items[2], depth + 1, scope.inner());
+    const value = if (shorthand)
+        try makeClosure(ctx, arena, items[1].asPair().?.cdr, items[2..], scope, "define")
+    else
+        try evalAt(ctx, arena, items[2], depth + 1, scope.inner());
     try ctx.globals.define(ctx.persist, id, value);
     return .unspecified_value;
 }
