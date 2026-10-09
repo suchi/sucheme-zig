@@ -21,15 +21,11 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | テスト(単体) | `zig build test` | 0 | 全コミット |
 | テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 | 全コミット |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
-| テスト(WASM の往復) | `zig build test-wasm` | 1 | 全コミット |
 | テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
 | ビルド | `zig build` | 0 | 全コミット |
 | 実行 | `zig build run -- <引数>` | 0 | - |
-| ビルド(WASM) | `zig build wasm` | 1 | 全コミット |
-| 進捗の生成 | `zig build report` | 1 | 全コミット |
-| 進捗の同期検査 | `zig build check-report` | 1 | 全コミット |
 | ドキュメントの検査 | `zig build check-docs` | 0 | 全コミット |
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
 
@@ -39,7 +35,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 `zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。段階0では版数と使い方の表示以外は非ゼロで終わるので、引数なしの `zig build run` は失敗する。
 
-`zig build test-wasm` は Node.js 上でエクスポートを呼び出す往復テストである([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([docs/design/r7rs-coverage.md](docs/design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
+行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどの切片で足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
 
 ## 進め方(Agentic Coding)
 

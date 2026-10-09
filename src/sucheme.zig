@@ -14,6 +14,20 @@ pub const name = build_options.name;
 /// build.zig passes it through as a build option.
 pub const version = build_options.version;
 
+pub const Error = error{ OutOfMemory, WriteFailed, NotImplemented };
+
+/// Reads every datum in `source`, evaluates each in turn, and writes each
+/// result followed by a newline to `out`.
+///
+/// Not implemented yet; tests/scheme/0001-integer-arithmetic.txt fails
+/// against this.
+pub fn evalPrint(arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
+    _ = arena;
+    _ = source;
+    _ = out;
+    return error.NotImplemented;
+}
+
 test "version is non-empty" {
     try std.testing.expect(version.len > 0);
 }
