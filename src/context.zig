@@ -20,7 +20,8 @@ pub const Context = struct {
     /// Where the data the reader builds, the symbols, the global bindings, the
     /// closures, the frames of calls and the conditions are allocated. Nothing in
     /// it is freed until slice 1g replaces it with the GC heap, so a program that
-    /// makes many calls grows it by a frame and its arguments each.
+    /// makes many calls grows it by a frame, its arguments and the frames of the
+    /// continuation that each call pushes.
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     globals: env.Global = .{},
