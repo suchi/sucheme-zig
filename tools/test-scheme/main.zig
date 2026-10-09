@@ -34,8 +34,10 @@ const tests_dir = "tests/scheme";
 
 /// The expected text of a case that prints nothing, such as a definition. A
 /// case needs an expected line, so an empty output has to be written down.
-/// Nothing the printer writes looks like this: a symbol with a space in it
-/// would be written with bars.
+/// The value printer never writes this: a symbol with a space in it would be
+/// written with bars. Output that is not a value, such as the text `display`
+/// writes in slice 1h, can say it; when that arrives, this marker has to move
+/// to a spelling no output can have.
 const no_output = "<no output>";
 
 pub fn main(init: std.process.Init) !void {

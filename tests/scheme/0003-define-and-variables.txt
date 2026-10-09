@@ -1,5 +1,6 @@
 # Slice 1b: define binds a global, a variable reference reads it, and define
-# itself prints nothing (its value is unspecified, R7RS 5.3.2). A case is one
+# itself prints nothing. A definition is only allowed at the top level until
+# internal definitions arrive in slice 1e (R7RS 5.3.1). A case is one
 # line, so it defines and uses in the same line; the REPL's unit tests cover
 # a definition surviving into the next line.
 
@@ -58,7 +59,13 @@ error: define is a syntactic keyword and cannot be used as a variable
 error: bad define: define is a syntactic keyword and cannot be redefined
 
 (+ 1 (define x 2))
-error: wrong type of argument to +
+error: bad define: a definition is only allowed at the top level
 
-(define x (define y 1)) x
-<no output>
+(define x (define y 1))
+error: bad define: a definition is only allowed at the top level
+
+((define x 1) 2)
+error: bad define: a definition is only allowed at the top level
+
+(define z (+ 1 (define w 2)))
+error: bad define: a definition is only allowed at the top level
