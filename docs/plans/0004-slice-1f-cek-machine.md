@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(切片 1f)。切片の全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-09
-- 状態: 2026-10-09 にユーザーが合意した。実装中。作業の進み具合は 0003 の進捗表と「次にやること」が正
+- 状態: 2026-10-09 にユーザーが合意した。実装済み(PR #13)。作業の進み具合は 0003 の進捗表と「次にやること」が正
 
 ## 解こうとしている問題
 
@@ -149,3 +149,12 @@ flowchart LR
 - [design/runtime.md](../design/runtime.md) の環境、コアIR、CEK機械、例外
 - [design/frontend.md](../design/frontend.md) の展開器
 - [design/architecture.md](../design/architecture.md) の評価の進行点の一元化(暫定の例外が外れる)
+
+## 実装で計画から変わった点
+
+- 作業順の4と5は1つのコミットになった。`Closure` と `Frame` を旧評価器と機械が共有するので、機械の Green と、`Interpreter` の付け替えと、`eval.zig` の削除を分けられなかった。機械の Red(stub とテスト)は別のコミットで先に入れた。
+- 条件オブジェクトは、`Outcome` の共用体でなく `error.Raised` と `Context.raised` にした。展開器の構文エラーと機械のエラーを同じ経路で扱え、`diagnostic()` の契約を変えずに済む。ハンドラが入る段階2で、継続を使う形へ置き換える。
+- メッセージは 256 バイトで切らず、永続アリーナに全文を持つ。
+- 本体の途中の `define` は展開時に報告するようになった(計画書は想定していなかった)。
+- `core.zig` は節点の作成とテキスト出力にとどめた。展開器のテストが、コアIRをテキストで読む。
+- ADR を2つ書いた: [ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md)(末尾位置の印を持たない)と [ADR-0030](../adr/0030-lexical-address-width-u32.md)(字句アドレスの幅)。
