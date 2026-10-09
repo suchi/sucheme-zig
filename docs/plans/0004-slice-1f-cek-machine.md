@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(切片 1f)。切片の全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-09
-- 状態: 合意待ち。合意されるまで実装を始めない
+- 状態: 2026-10-09 にユーザーが合意した。実装中。作業の進み具合は 0003 の進捗表と「次にやること」が正
 
 ## 解こうとしている問題
 
