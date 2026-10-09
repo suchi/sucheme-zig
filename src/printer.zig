@@ -1,6 +1,7 @@
 //! Writes values in their external representation.
 //!
-//! Slice 1a prints integers only. `write` and `display` differ first for
+//! Slice 1b prints integers; the unspecified value has no external form, so
+//! callers that print results skip it. `write` and `display` differ first for
 //! strings and characters, which arrive in slice 1h.
 
 const std = @import("std");
@@ -10,6 +11,8 @@ const Value = @import("value.zig").Value;
 pub fn write(out: *std.Io.Writer, v: Value) std.Io.Writer.Error!void {
     switch (v.kind()) {
         .fixnum => try out.print("{d}", .{v.asFixnum().?}),
+        // Nothing to write. The caller decides not to print the value at all.
+        .unspecified => {},
     }
 }
 
@@ -35,4 +38,8 @@ test "write prints an integer in decimal with its sign" {
 test "write prints the extremes of a fixnum" {
     try std.testing.expectEqualStrings("-9223372036854775808", try written(.fromFixnum(std.math.minInt(i64))));
     try std.testing.expectEqualStrings("9223372036854775807", try written(.fromFixnum(std.math.maxInt(i64))));
+}
+
+test "write writes nothing for the unspecified value" {
+    try std.testing.expectEqualStrings("", try written(.unspecified_value));
 }

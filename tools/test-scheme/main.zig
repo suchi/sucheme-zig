@@ -191,7 +191,9 @@ fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
     defer arena.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    var interp: sucheme.Interpreter = .init();
+    var interp: sucheme.Interpreter = undefined;
+    interp.init(gpa);
+    defer interp.deinit();
     interp.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         // The writer allocates, so it can only fail for want of memory.
