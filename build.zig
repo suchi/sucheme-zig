@@ -29,7 +29,7 @@ const test_excluded = [_][]const u8{};
 /// Passed to tools/check-docs, which uses it to decide which rows of AGENTS.md's
 /// verification command table the CI workflow must already run. Raising it makes
 /// that check demand the new rows, so it fails until the workflow is updated.
-const current_stage = 0;
+const current_stage = 1;
 
 /// A module whose tests `zig build test` runs.
 ///
@@ -176,7 +176,18 @@ pub fn build(b: *std.Build) void {
     // Calling tool() at each use made two Compile steps from the same file.
     const check_docs = tool(b, "check-docs");
     const extractor = tool(b, "extract-r7rs-required");
-    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor };
+    const test_scheme = tool(b, "test-scheme");
+    // The runner evaluates each case in-process, so it is built against the
+    // same source as the executable. For the host, not `target`: the runner
+    // runs here, and `-Dtarget` names where the executable will run.
+    const sucheme_host = b.createModule(.{
+        .root_source_file = b.path("src/sucheme.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    sucheme_host.addOptions("build_options", options);
+    test_scheme.root_module.addImport("sucheme", sucheme_host);
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme };
 
     const run_check_docs = b.addRunArtifact(check_docs);
     // Run steps inherit the directory `zig build` was started from, not the
@@ -192,6 +203,14 @@ pub fn build(b: *std.Build) void {
     run_check_extract.setCwd(b.path("."));
     const check_extract_step = b.step("check-extract", "check the generated lists against the input");
     check_extract_step.dependOn(&run_check_extract.step);
+
+    // The runner takes no arguments and reads tests/scheme/ itself, so an
+    // argument added here is the one way to narrow what it runs; see the
+    // checkStepRuns call at the end.
+    const run_test_scheme = b.addRunArtifact(test_scheme);
+    run_test_scheme.setCwd(b.path("."));
+    const test_scheme_step = b.step("test-scheme", "run the Scheme behaviour tests");
+    test_scheme_step.dependOn(&run_test_scheme.step);
 
     const test_step = b.step("test", "run the unit tests");
 
@@ -235,6 +254,7 @@ pub fn build(b: *std.Build) void {
     const required_steps = [_]*std.Build.Step{
         b.getInstallStep(),
         test_step,
+        test_scheme_step,
         check_extract_step,
     };
     for (required_steps) |s| {
@@ -264,6 +284,9 @@ pub fn build(b: *std.Build) void {
     // Exactly the artifact: see checkStepRuns on why an argument here is the
     // one way to turn the comparison into a rewrite.
     checkStepRuns(check_extract_step, extractor, 1);
+    // Exactly the artifact too: an argument is how a filter or a narrower
+    // directory would get in.
+    checkStepRuns(test_scheme_step, test_scheme, 1);
 }
 
 /// Fails the configure step unless `step` runs the artifact built from `exe` and

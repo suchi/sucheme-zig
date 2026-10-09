@@ -19,3 +19,7 @@ desktop.ini
 *~
 *.swp
 *.swo
+
+# Python bytecode from tools/review-harness (ADR-0028)
+__pycache__/
+*.pyc
