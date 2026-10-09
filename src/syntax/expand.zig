@@ -19,19 +19,11 @@ const Value = value_mod.Value;
 const Node = value_mod.Node;
 const SymbolId = @import("../symbol.zig").SymbolId;
 const symbol = @import("../symbol.zig");
-const Context = @import("../context.zig").Context;
+const context = @import("../context.zig");
+const Context = context.Context;
 const core = @import("../core.zig");
 
-pub const Error = error{
-    OutOfMemory,
-    /// `()` is not an expression (R7RS 4.1.3 requires an operator).
-    EmptyCombination,
-    /// A form whose shape the expander rejects, such as `(define)`.
-    BadSyntax,
-    /// A program the representation cannot hold, which R7RS 1.3.2 lets an
-    /// implementation report.
-    ImplementationRestriction,
-};
+pub const Error = context.Error;
 
 /// What the representation of a lexical address holds. The default is the width
 /// of the address; a test passes a smaller figure to reach the limit.
@@ -101,9 +93,9 @@ const Expander = struct {
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
             // Self-evaluating (R7RS 4.1.2).
-            .fixnum, .boolean, .unspecified, .uninitialized, .primitive, .closure => task.dest.* = .{ .constant = task.form },
+            .fixnum, .boolean, .unspecified, .uninitialized, .condition, .primitive, .closure => task.dest.* = .{ .constant = task.form },
             // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
-            .empty_list => return self.ctx.fail(error.EmptyCombination, "empty combination", .{}),
+            .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol => try self.reference(task),
             .pair => {
                 const items = try self.itemsOf(task.form);
@@ -136,7 +128,7 @@ const Expander = struct {
         var rest = form;
         while (rest.asPair()) |p| : (rest = p.cdr) try items.append(self.scratch, p.car);
         if (rest.kind() != .empty_list)
-            return self.ctx.fail(error.BadSyntax, "bad syntax: a form must be a proper list", .{});
+            return self.ctx.raise("bad syntax: a form must be a proper list", .{});
         return items.items;
     }
 
@@ -147,8 +139,7 @@ const Expander = struct {
         while (s) |sc| : (s = sc.parent) {
             for (sc.names, 0..) |n, i| {
                 if (n != id) continue;
-                if (depth > self.limits.address) return self.ctx.fail(
-                    error.ImplementationRestriction,
+                if (depth > self.limits.address) return self.ctx.raise(
                     "implementation restriction: procedures are nested too deeply",
                     .{},
                 );
@@ -163,7 +154,7 @@ const Expander = struct {
         const id = task.form.asSymbol().?;
         const name = self.ctx.symbols.nameOf(id);
         if (Keyword.of(name) != null)
-            return self.ctx.fail(error.BadSyntax, "{s} is a syntactic keyword and cannot be used as a variable", .{name});
+            return self.ctx.raise("{s} is a syntactic keyword and cannot be used as a variable", .{name});
         task.dest.* = if (try self.resolve(task.scope, id)) |address|
             .{ .local_ref = .{ .address = address, .name = id } }
         else
@@ -173,14 +164,14 @@ const Expander = struct {
     /// `(quote datum)` (R7RS 4.1.2). The datum, unexpanded.
     fn quote(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 2)
-            return self.ctx.fail(error.BadSyntax, "bad quote: expected (quote datum)", .{});
+            return self.ctx.raise("bad quote: expected (quote datum)", .{});
         task.dest.* = .{ .constant = items[1] };
     }
 
     /// `(if test consequent [alternative])` (R7RS 4.1.5).
     fn conditional(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3 and items.len != 4)
-            return self.ctx.fail(error.BadSyntax, "bad if: expected (if test consequent) or (if test consequent alternative)", .{});
+            return self.ctx.raise("bad if: expected (if test consequent) or (if test consequent alternative)", .{});
         // Pushed last first, so the test is expanded first.
         const alternative = if (items.len == 4) try self.child(items[3], task.scope, .expression) else null;
         const consequent = try self.child(items[2], task.scope, .expression);
@@ -192,7 +183,7 @@ const Expander = struct {
     /// the top level too, so a definition in it is allowed (R7RS 5.3).
     fn begin(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len < 2)
-            return self.ctx.fail(error.BadSyntax, "bad begin: expected (begin expression ...)", .{});
+            return self.ctx.raise("bad begin: expected (begin expression ...)", .{});
         const pos: Position = if (task.pos == .top) .top else .expression;
         try self.sequence(task.dest, items[1..], task.scope, pos, 0);
     }
@@ -225,12 +216,12 @@ const Expander = struct {
     /// local or global.
     fn set(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3)
-            return self.ctx.fail(error.BadSyntax, "bad set!: expected (set! name expression)", .{});
+            return self.ctx.raise("bad set!: expected (set! name expression)", .{});
         const id = items[1].asSymbol() orelse
-            return self.ctx.fail(error.BadSyntax, "bad set!: the name must be an identifier", .{});
+            return self.ctx.raise("bad set!: the name must be an identifier", .{});
         const name = self.ctx.symbols.nameOf(id);
         if (Keyword.of(name) != null)
-            return self.ctx.fail(error.BadSyntax, "bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
+            return self.ctx.raise("bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
         const value = try self.child(items[2], task.scope, .expression);
         task.dest.* = if (try self.resolve(task.scope, id)) |address|
             .{ .local_set = .{ .address = address, .name = id, .value = value } }
@@ -246,20 +237,20 @@ const Expander = struct {
         // a body. Anything else would bind a name from inside an expression that
         // may go on to fail.
         if (task.pos == .expression)
-            return self.ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level or at the start of a body", .{});
+            return self.ctx.raise("bad define: a definition is only allowed at the top level or at the start of a body", .{});
         // `(define (name parameter ...) body ...)` is `(define name (lambda
         // (parameter ...) body ...))` (R7RS 5.3.1).
         const shorthand = items.len >= 2 and items[1].kind() == .pair;
         if (shorthand and items.len < 3)
-            return self.ctx.fail(error.BadSyntax, "bad define: expected (define (name parameter ...) body ...)", .{});
+            return self.ctx.raise("bad define: expected (define (name parameter ...) body ...)", .{});
         if (!shorthand and items.len != 3)
-            return self.ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
+            return self.ctx.raise("bad define: expected (define name expression)", .{});
         const target = if (shorthand) items[1].asPair().?.car else items[1];
         const id = target.asSymbol() orelse
-            return self.ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
+            return self.ctx.raise("bad define: the name must be an identifier", .{});
         const name = self.ctx.symbols.nameOf(id);
         if (Keyword.of(name) != null)
-            return self.ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+            return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
         const value = try self.ctx.persist.create(Node);
         if (shorthand) {
             try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.scope, "define");
@@ -281,7 +272,7 @@ const Expander = struct {
     /// `(lambda (name ...) body ...)` (R7RS 4.1.4).
     fn lambdaForm(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len < 3)
-            return self.ctx.fail(error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)", .{});
+            return self.ctx.raise("bad lambda: expected (lambda (name ...) body ...)", .{});
         try self.lambdaNode(task.dest, items[1], items[2..], task.scope, "lambda");
     }
 
@@ -303,33 +294,32 @@ const Expander = struct {
     ) Error!void {
         var names: std.ArrayList(SymbolId) = .empty;
         var rest = params_form;
-        if (rest.kind() == .symbol) return self.ctx.fail(
-            error.BadSyntax,
+        if (rest.kind() == .symbol) return self.ctx.raise(
             "bad " ++ form_name ++ ": parameters must be a list of identifiers; a variable number of arguments is not supported yet",
             .{},
         );
         while (rest.asPair()) |p| : (rest = p.cdr) {
             const id = p.car.asSymbol() orelse
-                return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a parameter must be an identifier", .{});
+                return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
             const name = self.ctx.symbols.nameOf(id);
             if (Keyword.of(name) != null)
-                return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
+                return self.ctx.raise("bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
             for (names.items) |seen| {
-                if (seen == id) return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
+                if (seen == id) return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
             }
             try names.append(self.scratch, id);
         }
         if (rest.kind() != .empty_list)
-            return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
+            return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
         const arity = names.items.len;
         const defines = try self.collectDefinitions(body, &names);
         // Why: R7RS 5.3.2 gives a body definitions followed by expressions, and
         // at least one expression: a body that only defines has no value to
         // return.
         if (defines == body.len)
-            return self.ctx.fail(error.BadSyntax, "bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
+            return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
         if (names.items.len > self.limits.address)
-            return self.ctx.fail(error.ImplementationRestriction, "implementation restriction: a procedure has too many variables", .{});
+            return self.ctx.raise("implementation restriction: a procedure has too many variables", .{});
         const inner = try self.scratch.create(Scope);
         inner.* = .{ .names = names.items, .parent = scope };
         const body_node = try self.ctx.persist.create(Node);
@@ -350,17 +340,16 @@ const Expander = struct {
             const keyword_id = head.car.asSymbol() orelse break;
             if (Keyword.of(self.ctx.symbols.nameOf(keyword_id)) != .define) break;
             const rest = head.cdr.asPair() orelse
-                return self.ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
+                return self.ctx.raise("bad define: expected (define name expression)", .{});
             // `(define (name parameter ...) body ...)` names what its header starts with.
             const target = if (rest.car.asPair()) |header| header.car else rest.car;
             const id = target.asSymbol() orelse
-                return self.ctx.fail(error.BadSyntax, "bad define: the name must be an identifier", .{});
+                return self.ctx.raise("bad define: the name must be an identifier", .{});
             const name = self.ctx.symbols.nameOf(id);
             if (Keyword.of(name) != null)
-                return self.ctx.fail(error.BadSyntax, "bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
+                return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
             for (names.items) |seen| {
-                if (seen == id) return self.ctx.fail(
-                    error.BadSyntax,
+                if (seen == id) return self.ctx.raise(
                     "bad define: {s} is already a parameter or defined earlier in this body",
                     .{name},
                 );
@@ -426,9 +415,10 @@ const Fixture = struct {
         try std.testing.expectEqualStrings(expected, try self.expandText(src, .{}));
     }
 
-    fn expectFails(self: *Fixture, src: []const u8, err: Error, message: []const u8) !void {
-        try std.testing.expectError(err, self.expandText(src, .{}));
-        try std.testing.expectEqualStrings(message, self.ctx.diagnostic());
+    /// `src` raises an error whose condition has `message`.
+    fn expectFails(self: *Fixture, src: []const u8, message: []const u8) !void {
+        try std.testing.expectError(error.Raised, self.expandText(src, .{}));
+        try std.testing.expectEqualStrings(message, self.ctx.raised.?.message);
     }
 };
 
@@ -527,10 +517,9 @@ test "definitions at the start of a body make slots after the parameters" {
         "(lambda () (define (even? n) (odd? n)) (define (odd? n) n) 1)",
         "(lambda 0 2 (seq (define-local even? 0 0 (lambda 1 1 (call (local odd? 1 1) (local n 0 0)))) (define-local odd? 0 1 (lambda 1 1 (local n 0 0))) (const 1)))",
     );
-    // A definition after an expression makes no variable: the name stays global.
+    // A definition after an expression is refused, before any of the body runs.
     try f.expectFails(
         "(lambda () (+ a 1) (define a 1) a)",
-        error.BadSyntax,
         "bad define: a definition is only allowed at the top level or at the start of a body",
     );
 }
@@ -539,40 +528,40 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
-    try f.expectFails("()", error.EmptyCombination, "empty combination");
-    try f.expectFails("(quote)", error.BadSyntax, "bad quote: expected (quote datum)");
-    try f.expectFails("(quote 1 2)", error.BadSyntax, "bad quote: expected (quote datum)");
-    try f.expectFails("(if 1)", error.BadSyntax, "bad if: expected (if test consequent) or (if test consequent alternative)");
-    try f.expectFails("(lambda)", error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)");
-    try f.expectFails("(lambda (x))", error.BadSyntax, "bad lambda: expected (lambda (name ...) body ...)");
-    try f.expectFails("(lambda (x x) x)", error.BadSyntax, "bad lambda: duplicate parameter: x");
-    try f.expectFails("(lambda (if) 1)", error.BadSyntax, "bad lambda: if is a syntactic keyword and cannot be a parameter");
-    try f.expectFails("(lambda (1) 1)", error.BadSyntax, "bad lambda: a parameter must be an identifier");
-    try f.expectFails("(lambda x 1)", error.BadSyntax, "bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet");
-    try f.expectFails("(set! x)", error.BadSyntax, "bad set!: expected (set! name expression)");
-    try f.expectFails("(set! 1 2)", error.BadSyntax, "bad set!: the name must be an identifier");
-    try f.expectFails("(set! if 1)", error.BadSyntax, "bad set!: if is a syntactic keyword and cannot be assigned");
-    try f.expectFails("(begin)", error.BadSyntax, "bad begin: expected (begin expression ...)");
-    try f.expectFails("if", error.BadSyntax, "if is a syntactic keyword and cannot be used as a variable");
-    try f.expectFails("(define)", error.BadSyntax, "bad define: expected (define name expression)");
-    try f.expectFails("(define x)", error.BadSyntax, "bad define: expected (define name expression)");
-    try f.expectFails("(define 1 2)", error.BadSyntax, "bad define: the name must be an identifier");
-    try f.expectFails("(define if 1)", error.BadSyntax, "bad define: if is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(define (f))", error.BadSyntax, "bad define: expected (define (name parameter ...) body ...)");
-    try f.expectFails("(+ 1 (define x 1))", error.BadSyntax, "bad define: a definition is only allowed at the top level or at the start of a body");
-    try f.expectFails("(if (define x 1) 2)", error.BadSyntax, "bad define: a definition is only allowed at the top level or at the start of a body");
+    try f.expectFails("()", "empty combination");
+    try f.expectFails("(quote)", "bad quote: expected (quote datum)");
+    try f.expectFails("(quote 1 2)", "bad quote: expected (quote datum)");
+    try f.expectFails("(if 1)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try f.expectFails("(lambda)", "bad lambda: expected (lambda (name ...) body ...)");
+    try f.expectFails("(lambda (x))", "bad lambda: expected (lambda (name ...) body ...)");
+    try f.expectFails("(lambda (x x) x)", "bad lambda: duplicate parameter: x");
+    try f.expectFails("(lambda (if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
+    try f.expectFails("(lambda (1) 1)", "bad lambda: a parameter must be an identifier");
+    try f.expectFails("(lambda x 1)", "bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet");
+    try f.expectFails("(set! x)", "bad set!: expected (set! name expression)");
+    try f.expectFails("(set! 1 2)", "bad set!: the name must be an identifier");
+    try f.expectFails("(set! if 1)", "bad set!: if is a syntactic keyword and cannot be assigned");
+    try f.expectFails("(begin)", "bad begin: expected (begin expression ...)");
+    try f.expectFails("if", "if is a syntactic keyword and cannot be used as a variable");
+    try f.expectFails("(define)", "bad define: expected (define name expression)");
+    try f.expectFails("(define x)", "bad define: expected (define name expression)");
+    try f.expectFails("(define 1 2)", "bad define: the name must be an identifier");
+    try f.expectFails("(define if 1)", "bad define: if is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(define (f))", "bad define: expected (define (name parameter ...) body ...)");
+    try f.expectFails("(+ 1 (define x 1))", "bad define: a definition is only allowed at the top level or at the start of a body");
+    try f.expectFails("(if (define x 1) 2)", "bad define: a definition is only allowed at the top level or at the start of a body");
 }
 
 test "the shapes a body refuses" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
-    try f.expectFails("(lambda () (define x 1))", error.BadSyntax, "bad lambda: a body needs an expression after its definitions");
-    try f.expectFails("(define (f) (define x 1))", error.BadSyntax, "bad define: a body needs an expression after its definitions");
-    try f.expectFails("(lambda (x) (define x 1) x)", error.BadSyntax, "bad define: x is already a parameter or defined earlier in this body");
-    try f.expectFails("(lambda () (define x 1) (define x 2) x)", error.BadSyntax, "bad define: x is already a parameter or defined earlier in this body");
-    try f.expectFails("(lambda () (define if 1) 1)", error.BadSyntax, "bad define: if is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(lambda () (begin (define x 1)) x)", error.BadSyntax, "bad define: a definition is only allowed at the top level or at the start of a body");
+    try f.expectFails("(lambda () (define x 1))", "bad lambda: a body needs an expression after its definitions");
+    try f.expectFails("(define (f) (define x 1))", "bad define: a body needs an expression after its definitions");
+    try f.expectFails("(lambda (x) (define x 1) x)", "bad define: x is already a parameter or defined earlier in this body");
+    try f.expectFails("(lambda () (define x 1) (define x 2) x)", "bad define: x is already a parameter or defined earlier in this body");
+    try f.expectFails("(lambda () (define if 1) 1)", "bad define: if is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(lambda () (begin (define x 1)) x)", "bad define: a definition is only allowed at the top level or at the start of a body");
 }
 
 test "an address that does not fit the width is reported, and one that just fits is not" {
@@ -585,23 +574,23 @@ test "an address that does not fit the width is reported, and one that just fits
         "(lambda 1 1 (lambda 1 1 (local a 1 0)))",
         try f.expandText("(lambda (a) (lambda (b) a))", limits),
     );
-    try std.testing.expectError(error.ImplementationRestriction, f.expandText("(lambda (a) (lambda (b) (lambda (c) a)))", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (lambda (b) (lambda (c) a)))", limits));
     try std.testing.expectEqualStrings("implementation restriction: procedures are nested too deeply", f.ctx.diagnostic());
     // A frame of one slot is the last that fits, and two do not.
     try std.testing.expectEqualStrings("(lambda 1 1 (local a 0 0))", try f.expandText("(lambda (a) a)", limits));
-    try std.testing.expectError(error.ImplementationRestriction, f.expandText("(lambda (a b) a)", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a b) a)", limits));
     try std.testing.expectEqualStrings("implementation restriction: a procedure has too many variables", f.ctx.diagnostic());
-    try std.testing.expectError(error.ImplementationRestriction, f.expandText("(lambda (a) (define b 1) a)", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
 }
 
 test "a keyword is not a variable, a parameter or a name to define" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
-    try f.expectFails("quote", error.BadSyntax, "quote is a syntactic keyword and cannot be used as a variable");
-    try f.expectFails("(define quote 1)", error.BadSyntax, "bad define: quote is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(define #t 1)", error.BadSyntax, "bad define: the name must be an identifier");
-    try f.expectFails("(f if)", error.BadSyntax, "if is a syntactic keyword and cannot be used as a variable");
+    try f.expectFails("quote", "quote is a syntactic keyword and cannot be used as a variable");
+    try f.expectFails("(define quote 1)", "bad define: quote is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(define #t 1)", "bad define: the name must be an identifier");
+    try f.expectFails("(f if)", "if is a syntactic keyword and cannot be used as a variable");
 }
 
 test "a form that is not a proper list is refused" {
@@ -613,7 +602,7 @@ test "a form that is not a proper list is refused" {
     const tail = try Value.cons(a, .fromFixnum(1), .fromFixnum(2));
     const plus: Value = .fromSymbol(try f.ctx.symbols.intern(a, "+"));
     const form = try Value.cons(a, plus, tail);
-    try std.testing.expectError(error.BadSyntax, expand(&f.ctx, a, form));
+    try std.testing.expectError(error.Raised, expand(&f.ctx, a, form));
     try std.testing.expectEqualStrings("bad syntax: a form must be a proper list", f.ctx.diagnostic());
 }
 

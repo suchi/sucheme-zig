@@ -21,20 +21,10 @@ const Closure = value_mod.Closure;
 const Kont = value_mod.Kont;
 const Args = value_mod.Args;
 const SymbolId = @import("symbol.zig").SymbolId;
-const Context = @import("context.zig").Context;
-const arith = @import("prim/arith.zig");
+const context = @import("context.zig");
+const Context = context.Context;
 
-pub const Error = arith.Error || error{
-    OutOfMemory,
-    /// An identifier naming nothing.
-    UnboundVariable,
-    /// A call with a number of arguments the procedure does not take.
-    WrongArgumentCount,
-    /// A local variable read before its definition has run.
-    UninitializedVariable,
-    /// The operator is not a procedure.
-    NotAProcedure,
-};
+pub const Error = context.Error;
 
 pub const Machine = struct {
     ctx: *Context,
@@ -180,17 +170,16 @@ pub const Machine = struct {
             const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
             fill(operands, args);
             const result = prim.call(operands) catch |e| return switch (e) {
-                error.WrongType => ctx.fail(e, "wrong type of argument to {s}", .{prim.name}),
-                error.IntegerOverflow => ctx.fail(e, "integer overflow in {s}", .{prim.name}),
-                error.WrongArgumentCount => ctx.fail(e, "wrong number of arguments to {s}", .{prim.name}),
+                error.WrongType => ctx.raise("wrong type of argument to {s}", .{prim.name}),
+                error.IntegerOverflow => ctx.raise("integer overflow in {s}", .{prim.name}),
+                error.WrongArgumentCount => ctx.raise("wrong number of arguments to {s}", .{prim.name}),
             };
             return .{ .value = result };
         }
         const closure = operator.asClosure() orelse
-            return ctx.fail(error.NotAProcedure, "not a procedure", .{});
+            return ctx.raise("not a procedure", .{});
         const lambda = closure.lambda;
-        if (count != lambda.arity) return ctx.fail(
-            error.WrongArgumentCount,
+        if (count != lambda.arity) return ctx.raise(
             "wrong number of arguments: expected {d}, got {d}",
             .{ lambda.arity, count },
         );
@@ -225,11 +214,11 @@ pub const Machine = struct {
     }
 
     fn uninitialized(self: *Machine, name: SymbolId) Error {
-        return self.ctx.fail(error.UninitializedVariable, "variable used before its definition: {s}", .{self.ctx.symbols.nameOf(name)});
+        return self.ctx.raise("variable used before its definition: {s}", .{self.ctx.symbols.nameOf(name)});
     }
 
     fn unbound(self: *Machine, name: SymbolId) Error {
-        return self.ctx.fail(error.UnboundVariable, "unbound variable: {s}", .{self.ctx.symbols.nameOf(name)});
+        return self.ctx.raise("unbound variable: {s}", .{self.ctx.symbols.nameOf(name)});
     }
 };
 
@@ -281,9 +270,10 @@ const Fixture = struct {
         try std.testing.expectEqual(expected, (try self.eval(src)).asFixnum().?);
     }
 
-    fn expectFails(self: *Fixture, err: anyerror, message: []const u8, src: []const u8) !void {
-        try std.testing.expectError(err, self.eval(src));
-        try std.testing.expectEqualStrings(message, self.ctx.diagnostic());
+    /// `src` raises an error whose condition has `message`.
+    fn expectFails(self: *Fixture, message: []const u8, src: []const u8) !void {
+        try std.testing.expectError(error.Raised, self.eval(src));
+        try std.testing.expectEqualStrings(message, self.ctx.raised.?.message);
     }
 };
 
@@ -329,10 +319,10 @@ test "a global is defined, read and assigned" {
     defer f.deinit();
     try f.expectInt(5, "(define x 5) x");
     try f.expectInt(6, "(set! x 6) x");
-    try f.expectFails(error.UnboundVariable, "unbound variable: nope", "nope");
-    try f.expectFails(error.UnboundVariable, "unbound variable: nope", "(set! nope 1)");
+    try f.expectFails("unbound variable: nope", "nope");
+    try f.expectFails("unbound variable: nope", "(set! nope 1)");
     // A failing definition leaves the name as it was.
-    try f.expectFails(error.UnboundVariable, "unbound variable: nope", "(define x nope)");
+    try f.expectFails("unbound variable: nope", "(define x nope)");
     try f.expectInt(6, "x");
 }
 
@@ -385,9 +375,9 @@ test "definitions at the start of a body are local, and uninitialized until they
     try f.init();
     defer f.deinit();
     try f.expectInt(8, "((lambda (x) (define y (+ x 1)) (define (g) (* y 2)) (g)) 3)");
-    try f.expectFails(error.UnboundVariable, "unbound variable: y", "y");
-    try f.expectFails(error.UninitializedVariable, "variable used before its definition: b", "((lambda () (define a b) (define b 1) a))");
-    try f.expectFails(error.UninitializedVariable, "variable used before its definition: b", "((lambda () (define a (set! b 1)) (define b 2) b))");
+    try f.expectFails("unbound variable: y", "y");
+    try f.expectFails("variable used before its definition: b", "((lambda () (define a b) (define b 1) a))");
+    try f.expectFails("variable used before its definition: b", "((lambda () (define a (set! b 1)) (define b 2) b))");
     // Each call has frame of its own.
     _ = try f.eval("(define (f n) (define cell n) (set! cell (+ cell 1)) cell)");
     try f.expectInt(2, "(f 1)");
@@ -409,12 +399,30 @@ test "the errors of a call keep the messages the evaluator gave" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
-    try f.expectFails(error.NotAProcedure, "not a procedure", "(1 2)");
-    try f.expectFails(error.WrongType, "wrong type of argument to +", "(+ 1 #t)");
-    try f.expectFails(error.IntegerOverflow, "integer overflow in +", "(+ 9223372036854775807 1)");
-    try f.expectFails(error.WrongArgumentCount, "wrong number of arguments to -", "(-)");
-    try f.expectFails(error.WrongArgumentCount, "wrong number of arguments: expected 1, got 2", "((lambda (x) x) 1 2)");
-    try f.expectFails(error.WrongArgumentCount, "wrong number of arguments: expected 2, got 1", "((lambda (x y) x) 1)");
+    try f.expectFails("not a procedure", "(1 2)");
+    try f.expectFails("wrong type of argument to +", "(+ 1 #t)");
+    try f.expectFails("integer overflow in +", "(+ 9223372036854775807 1)");
+    try f.expectFails("wrong number of arguments to -", "(-)");
+    try f.expectFails("wrong number of arguments: expected 1, got 2", "((lambda (x) x) 1 2)");
+    try f.expectFails("wrong number of arguments: expected 2, got 1", "((lambda (x y) x) 1)");
+}
+
+test "an error raised deep in the recursion leaves the machine, and the next run is not affected" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.eval("(define (boom n) (if (= n 0) (nope) (+ 1 (boom (- n 1)))))");
+    try std.testing.expectError(error.Raised, f.eval("(boom 1000)"));
+    const condition = Value.fromCondition(f.ctx.raised.?);
+    try std.testing.expectEqual(value_mod.Kind.condition, condition.kind());
+    try std.testing.expectEqualStrings("unbound variable: nope", condition.asCondition().?.message);
+    // The continuation of the failed run is gone with it: a run starts empty.
+    f.machine.peak_depth = 0;
+    try f.expectInt(3, "(+ 1 2)");
+    try std.testing.expect(f.machine.peak_depth <= 4);
+    // A later error raises a condition of its own.
+    try f.expectFails("not a procedure", "(1)");
+    try std.testing.expect(f.ctx.raised.? != condition.asCondition().?);
 }
 
 test "a call in tail position does not grow the continuation" {
