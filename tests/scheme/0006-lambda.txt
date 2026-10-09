@@ -70,6 +70,12 @@ error: not a procedure
 '(lambda (x) x)
 (lambda (x) x)
 
+(define x 0) (define f (lambda (a b) b)) (f (begin (set! x 1) x) x)
+1
+
+(define x 0) (define f (lambda (a) a)) ((begin (set! x 1) f) x)
+1
+
 ((lambda (x) x))
 error: wrong number of arguments: expected 1, got 0
 
@@ -105,6 +111,12 @@ error: bad lambda: duplicate parameter: x
 
 (lambda x x)
 error: bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet
+
+(lambda 1 1)
+error: bad lambda: the parameters must be a list of identifiers
+
+(lambda #t 1)
+error: bad lambda: the parameters must be a list of identifiers
 
 (lambda (if) 1)
 error: bad lambda: if is a syntactic keyword and cannot be a parameter
