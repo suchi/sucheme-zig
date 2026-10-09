@@ -56,6 +56,9 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             },
             // Nothing to write. The caller decides not to print the value at all.
             .unspecified => {},
+            // Reading a variable that holds it is an error, so no program sees
+            // it; written anyway so that a leak shows.
+            .uninitialized => try out.writeAll("#<uninitialized>"),
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -134,6 +137,13 @@ test "write prints the extremes of a fixnum" {
     try std.testing.expectEqualStrings("9223372036854775807", try f.written(&buf, .fromFixnum(std.math.maxInt(i64))));
 }
 
+test "write shows an uninitialized marker that leaked" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("#<uninitialized>", try f.written(&buf, .uninitialized_value));
+}
+
 test "write writes nothing for the unspecified value" {
     var f: Fixture = .init();
     defer f.deinit();
@@ -155,7 +165,7 @@ test "write prints a procedure in a form read rejects" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    var closure: value_mod.Closure = .{ .params = &.{}, .body = &.{}, .env = null };
+    var closure: value_mod.Closure = .{ .names = &.{}, .arity = 0, .body = &.{}, .defines = 0, .env = null };
     try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
     const prim: value_mod.Primitive = .{ .name = "plus", .call = struct {
         fn call(_: []const Value) value_mod.PrimitiveError!Value {

@@ -58,8 +58,16 @@ error: variable used before its definition: a
 (define (f) (define g (lambda () a)) (define h (g)) (define a 1) h) (f)
 error: variable used before its definition: a
 
-(define (f) a (define a 1) a) (f)
+(define (f) 0 (define a 1) a) (f)
 error: bad define: a definition is only allowed at the top level or at the start of a body
+
+# A definition after an expression makes no local variable, so a read before it
+# finds no variable at all rather than an uninitialized one.
+(define (f) a (define a 1) a) (f)
+error: unbound variable: a
+
+(define (f) (+ a 1) (define a 1) a) (f)
+error: unbound variable: a
 
 (define (f) (define a 1) a (define b 2) b) (f)
 error: bad define: a definition is only allowed at the top level or at the start of a body
