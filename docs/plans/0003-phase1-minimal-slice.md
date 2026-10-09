@@ -112,13 +112,13 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 | 作業順 | 状態 |
 | --- | --- |
 | 1 Red: `0011-machine.txt` と `0009` の期待値 | 済み |
-| 2 `value.zig` のレイアウトと `core.zig` | これから |
-| 3 展開器 | 未着手 |
-| 4 機械 | 未着手 |
-| 5 切り替えと `eval.zig` の削除 | 未着手 |
+| 2 `value.zig` のレイアウトと `core.zig` | 済み |
+| 3 展開器(`syntax/expand.zig`。`Context` を `context.zig` に移した) | 済み |
+| 4 機械 | Red 済み(`machine.zig` の stub とテスト)。次は Green |
+| 5 切り替えと `eval.zig` の削除 | 未着手。`Closure` と `Frame` を旧評価器と機械が共有するので、4 の Green と同じコミットで行う |
 | 6 条件オブジェクト | 未着手 |
 | 7 文書、ADR-0029、検証、PR、敵対的レビュー | 未着手 |
 
-2 の補足: 作業順1の Red のコミットのあと、`zig build test-scheme` は意図して落ちている(深さの上限を超える入力と、10万回の末尾ループ)。5 の切り替えで通る。それまでの各 Green のコミットでは `zig build test` と `zig fmt --check .` を通し、`test-scheme` の失敗が 0009 と 0011 の既知のケースだけであることを確かめる。
+補足: 作業順1の Red のコミットのあと、`zig build test-scheme` は意図して落ちている(深さの上限を超える入力と、10万回の末尾ループ)。5 の切り替えで通る。それまでの各 Green のコミットでは `zig build test` と `zig fmt --check .` を通し、`test-scheme` の失敗が 0009 と 0011 の既知のケースだけであることを確かめる。
 
 1f の完了後は 1g(GC ヒープ)に進む。1g も計画書を先に書く。
