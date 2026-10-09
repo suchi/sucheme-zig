@@ -21,15 +21,11 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | テスト(単体) | `zig build test` | 0 | 全コミット |
 | テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 | 全コミット |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
-| テスト(WASM の往復) | `zig build test-wasm` | 1 | 全コミット |
 | テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
 | ビルド | `zig build` | 0 | 全コミット |
 | 実行 | `zig build run -- <引数>` | 0 | - |
-| ビルド(WASM) | `zig build wasm` | 1 | 全コミット |
-| 進捗の生成 | `zig build report` | 1 | 全コミット |
-| 進捗の同期検査 | `zig build check-report` | 1 | 全コミット |
 | ドキュメントの検査 | `zig build check-docs` | 0 | 全コミット |
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
 
@@ -37,9 +33,9 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 ファジングを全コミットの CI に入れないのは、`--fuzz` が自律的に停止せず、時間切れまで走り続けるためである。全コミットの CI に入れると毎回タイムアウトする。手動実行と定期実行(スケジュール起動)に限る。
 
-`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。段階0では版数と使い方の表示以外は非ゼロで終わるので、引数なしの `zig build run` は失敗する。
+`zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。引数なしの `zig build run` は標準入力を読む REPL になる。
 
-`zig build test-wasm` は Node.js 上でエクスポートを呼び出す往復テストである([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([docs/design/r7rs-coverage.md](docs/design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
+行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどの切片で足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
 
 ## 進め方(Agentic Coding)
 
@@ -50,7 +46,10 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - ユーザーの変更を、明示的な依頼なしに巻き戻したり上書きしたりしない。
 - コマンドやスクリプトが想定外の挙動を示したときは、原因を特定してから対処する。原因不明のままワークアラウンドで迂回しない(脆弱性や誤ったコード・アーキテクチャの温床になる)。やむを得ず回避策を採る場合は、調査の経緯と理由を記録し(`Why:`コメント・ADR)、ユーザーに報告する。
 - 大きめの機能は計画(SOW)を`docs/plans/`に保存し、合意してから実装する。
-- セッション中に受けた重要な指示は本ファイルに追記して蓄積する。
+- セッション中に受けた重要な指示は本ファイルに追記して蓄積する。実行環境をまたいでも残るよう、リポジトリの中に書く。
+- 10分以上ユーザーを待たせるときは、作業状況と走っているエージェントの状態、ブロックしている事項を報告する。判断が必要なら選択肢を示して求める。ファイル活動の有無を「止まっている」の根拠にしない(読解中は活動がゼロになる)。
+- 作業ブロックに入る前に、そこで打つ予定のコマンドを列挙して1回でまとめて許可を得る。報告と承認依頼には「全体計画のどの手順の、何件中の何件目か」を書く。
+- 過去の失敗と対処は[docs/review/process-lessons.md](docs/review/process-lessons.md)にある。新しいセッションで同じ失敗を繰り返さないために読む。
 
 ## 情報源
 
@@ -131,6 +130,10 @@ feat: add todo filter feature      ← 1行目: 英語・命令形・50文字以
 - 修正が、新しい機構を足す形になっている。
 
 段階0ではこの3つがすべて14巡目に出ていたが、20巡目まで巡を足し続けた。経緯は[docs/review/stage0-findings.md](docs/review/stage0-findings.md)にある。
+
+検査の指摘を実機で確かめるときは、[tools/review-harness/](tools/review-harness/)のハーネスを使う。シナリオを1つのスクリプトにまとめ、作業用複製の作成・リセット・検証コマンドの実行をそのスクリプトの中で行う([ADR-0028](docs/adr/0028-review-harness-in-repo.md))。シェルで1つずつ打つと、`git clean -f`がフックの確認判定に当たってシナリオごとに承認待ちが入る。複製は1つ作って使い回し、ビルドキャッシュは複製の外に置いて共有する。穴のシナリオと、正当な記述が緑のままであることの対照を必ず両方入れる。
+
+純粋な判定関数を足すコミットで、その関数のテストも足す。テストが実際にその関数を固定しているかは、関数の挙動を機械的に変えてテストが落ちるかで確かめる。
 
 巡をまたいで再発した類型のうち、コードまたは生成物についてのものは検査として足す。置き場所は`tools/check-docs`に限らない。生成物が入力から導かれたことは抽出プログラムの比較モードと`check-extract`が見ており、検査の step が自分の run を実行してその結果が尊重されることは`build.zig`が configure 段で見ている。文書の書き方についてのものは足さない。文書の誤りは読んで直す。この線引きは[ADR-0026](docs/adr/0026-verify-facts-about-code-not-prose.md)にある。段階0で線引きをせずに足し続けた結果、検査ツールが製品コードより1桁大きく育ち、3巡続けて指摘の大半が検査ツール自身の読み方についてのものになった。規模の推移は[ADR-0026](docs/adr/0026-verify-facts-about-code-not-prose.md)の背景にある。
 
