@@ -166,12 +166,18 @@ fn applyPrimitive(
     };
 }
 
-/// `(define name expression)` (R7RS 5.3.2). Binds `name` in the global
+/// `(define name expression)` (R7RS 5.3.1). Binds `name` in the global
 /// environment, replacing an earlier binding, and returns the unspecified value.
 ///
 /// The expression is evaluated before the name is bound, so a failing
 /// definition leaves the name as it was.
 fn evalDefine(ctx: *Context, arena: std.mem.Allocator, items: []const Datum, depth: usize) Error!Value {
+    // Why: R7RS 5.3 allows a definition at the top level and at the start of a
+    // body; a body has no form here before slice 1e, so depth 0 is the top
+    // level. Anything else would bind a name from inside an expression that
+    // may go on to fail.
+    if (depth != 0)
+        return ctx.fail(error.BadSyntax, "bad define: a definition is only allowed at the top level", .{});
     if (items.len != 3)
         return ctx.fail(error.BadSyntax, "bad define: expected (define name expression)", .{});
     const name = switch (items[1]) {
