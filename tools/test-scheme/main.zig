@@ -13,6 +13,8 @@
 //! - The first other line of a case is the input. Every line after it, up to
 //!   the blank line, is the expected output, joined with newlines.
 //!
+//! A case that prints nothing says `<no output>` as its expected line.
+//!
 //! An error is part of the output: after what the line printed before it, the
 //! text is `error: ` and the interpreter's message, as the REPL prints it.
 //!
@@ -29,6 +31,12 @@ const std = @import("std");
 const sucheme = @import("sucheme");
 
 const tests_dir = "tests/scheme";
+
+/// The expected text of a case that prints nothing, such as a definition. A
+/// case needs an expected line, so an empty output has to be written down.
+/// Nothing the printer writes looks like this: a symbol with a space in it
+/// would be written with bars.
+const no_output = "<no output>";
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
@@ -149,11 +157,12 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) er
         if (line.len == 0) {
             if (input) |in| {
                 if (expected_lines == 0) return error.MissingExpected;
-                try out.append(gpa, .{
-                    .line = input_line,
-                    .input = in,
-                    .expected = try expected.toOwnedSlice(gpa),
-                });
+                var text = try expected.toOwnedSlice(gpa);
+                if (std.mem.eql(u8, text, no_output)) {
+                    gpa.free(text);
+                    text = "";
+                }
+                try out.append(gpa, .{ .line = input_line, .input = in, .expected = text });
                 input = null;
                 expected_lines = 0;
             }
@@ -309,4 +318,34 @@ test "exitStatus fails on a failure and on a run that read no case" {
     try std.testing.expectEqual(1, exitStatus(7, 1));
     try std.testing.expectEqual(1, exitStatus(0, 1));
     try std.testing.expectEqual(1, exitStatus(0, 0));
+}
+
+test "parse reads <no output> as an empty expectation" {
+    var cases: std.ArrayList(Case) = .empty;
+    try parse(std.testing.allocator, "(define x 1)\n<no output>\n\n(+ 1 2)\n3\n", &cases);
+    defer {
+        for (cases.items) |c| if (c.expected.len != 0) std.testing.allocator.free(c.expected);
+        cases.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(2, cases.items.len);
+    try std.testing.expectEqualStrings("", cases.items[0].expected);
+    try std.testing.expectEqualStrings("3", cases.items[1].expected);
+}
+
+test "<no output> only stands alone: with other lines it is text" {
+    var cases: std.ArrayList(Case) = .empty;
+    try parse(std.testing.allocator, "1\n<no output>\n2\n", &cases);
+    defer {
+        for (cases.items) |c| std.testing.allocator.free(c.expected);
+        cases.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqualStrings("<no output>\n2", cases.items[0].expected);
+}
+
+test "runCase matches an empty expectation only against no output" {
+    const gpa = std.testing.allocator;
+    try std.testing.expect(try runCase(gpa, .{ .line = 1, .input = "  ", .expected = "" }) == null);
+    const got = (try runCase(gpa, .{ .line = 1, .input = "1", .expected = "" })).?;
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("1", got);
 }

@@ -1,0 +1,61 @@
+# Slice 1b: define binds a global, a variable reference reads it, and define
+# itself prints nothing (its value is unspecified, R7RS 5.3.2). A case is one
+# line, so it defines and uses in the same line; the REPL's unit tests cover
+# a definition surviving into the next line.
+
+(define x 1) x
+1
+
+(define x 1) (define y 2) (+ x y)
+3
+
+(define x (+ 1 2)) (+ x x)
+6
+
+(define x 1) (define x 2) x
+2
+
+(define x 1) (define y x) y
+1
+
+(define x 1) (define x (+ x 1)) x
+2
+
+(define x 1)
+<no output>
+
+(define x y)
+error: unbound variable: y
+
+(define x 1) (x 2)
+error: not a procedure
+
+(define + 5) +
+5
+
+(define + 5) (+ 1 2)
+error: not a procedure
+
+(define 1 2)
+error: bad define: the name must be an identifier
+
+(define x)
+error: bad define: expected (define name expression)
+
+(define x 1 2)
+error: bad define: expected (define name expression)
+
+(define)
+error: bad define: expected (define name expression)
+
+(define (f) 1)
+error: bad define: procedure definitions are not supported yet
+
+define
+error: define is a syntactic keyword and cannot be used as a variable
+
+(+ 1 (define x 2))
+error: wrong type of argument to +
+
+(define x (define y 1)) x
+<no output>
