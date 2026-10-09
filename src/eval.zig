@@ -88,11 +88,14 @@ pub const Context = struct {
 /// depth, so this is where the limit has to be. It goes with the recursion,
 /// when slice 1f moves evaluation into the machine.
 ///
-/// Why: a Debug build uses about a kilobyte of stack per level, measured by
-/// running nested `(+ (+ ... 1))` against `ulimit -s`; at 8 MiB it overflowed
-/// before 10_000 levels. 500 stays inside a 1 MiB stack, the smallest a host
-/// might give, with room to spare.
-pub const max_depth = 500;
+/// Why: the stack a level costs depends on the build mode and on what `evalAt`
+/// does in a level, and it grew when `define` was added. A figure written here
+/// went stale once, so the test "the deepest legal evaluation of each form
+/// fits" runs the deepest legal input of each form on a stack half the size of
+/// 1 MiB, the smallest a host is assumed to give. Adding a form or a local to
+/// `evalAt` that makes a level cost more fails that test, and the limit comes
+/// down with it.
+pub const max_depth = 200;
 
 /// Evaluates `d`. Temporary storage, such as the evaluated arguments, comes
 /// from `arena`. On an error `ctx` holds the message.
@@ -276,6 +279,79 @@ test "eval reports a nesting it cannot recurse into instead of overflowing" {
     defer arena.deinit();
     const a = arena.allocator();
     try std.testing.expectError(error.NestingTooDeep, evalSource(a, try nestedCalls(a, max_depth)));
+}
+
+/// `(define x (+ (+ ... 1)))`: the expression is evaluated one level below the
+/// definition, so its innermost `1` is at depth `calls + 1`.
+fn definitionOfNestedCalls(a: std.mem.Allocator, calls: usize) ![]const u8 {
+    return std.mem.concat(a, u8, &.{ "(define x ", try nestedCalls(a, calls), ")" });
+}
+
+/// `((( ... 1)))` with `parens` opening parentheses: each operator is evaluated
+/// one level below its call, so the `1` is at depth `parens`, and the innermost
+/// call is the one that fails, as `NotAProcedure`.
+fn nestedOperators(a: std.mem.Allocator, parens: usize) ![]const u8 {
+    const src = try a.alloc(u8, parens * 2 + 1);
+    @memset(src[0..parens], '(');
+    src[parens] = '1';
+    @memset(src[parens + 1 ..], ')');
+    return src;
+}
+
+test "eval stops a definition's expression at the limit, and not one level later" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: Context = .init(a);
+    _ = try evalWith(&ctx, a, try definitionOfNestedCalls(a, max_depth - 2));
+    try std.testing.expectError(error.NestingTooDeep, evalWith(&ctx, a, try definitionOfNestedCalls(a, max_depth - 1)));
+}
+
+test "eval stops an operator that nests at the limit, and not one level later" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.NotAProcedure, evalSource(a, try nestedOperators(a, max_depth - 1)));
+    try std.testing.expectError(error.NestingTooDeep, evalSource(a, try nestedOperators(a, max_depth)));
+}
+
+/// The stack the deepest legal evaluation must fit in. Half of the smallest
+/// stack a host is assumed to give (1 MiB), so a Debug build that grows a level
+/// by a few percent still fits and one that doubles it does not.
+const probe_stack_size = 512 * 1024;
+
+/// Evaluates `src` on a thread whose stack is `probe_stack_size`, and reports
+/// what it returned. A stack overflow ends the process, so a limit that is too
+/// high shows as a crashed test run and not as an error.
+fn evalOnSmallStack(src: []const u8) !?Error {
+    const Probe = struct {
+        src: []const u8,
+        outcome: ?Error = null,
+
+        fn run(self: *@This()) void {
+            var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+            defer arena.deinit();
+            var ctx: Context = .init(arena.allocator());
+            var reader: @import("reader.zig").Reader = .init(self.src);
+            const d = (reader.next(arena.allocator()) catch unreachable).?;
+            if (eval(&ctx, arena.allocator(), d)) |_| {} else |e| self.outcome = e;
+        }
+    };
+    var probe: Probe = .{ .src = src };
+    const t = try std.Thread.spawn(.{ .stack_size = probe_stack_size }, Probe.run, .{&probe});
+    t.join();
+    return probe.outcome;
+}
+
+test "the deepest legal evaluation of each form fits a stack half the size of 1 MiB" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqual(null, try evalOnSmallStack(try nestedCalls(a, max_depth - 1)));
+    try std.testing.expectEqual(null, try evalOnSmallStack(try definitionOfNestedCalls(a, max_depth - 2)));
+    try std.testing.expectEqual(error.NotAProcedure, (try evalOnSmallStack(try nestedOperators(a, max_depth - 1))).?);
+    // Past the limit it is reported, on the same small stack.
+    try std.testing.expectEqual(error.NestingTooDeep, (try evalOnSmallStack(try nestedCalls(a, max_depth + 50))).?);
 }
 
 test "eval handles the deepest nesting the limit allows" {
