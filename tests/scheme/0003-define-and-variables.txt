@@ -49,9 +49,6 @@ error: bad define: expected (define name expression)
 (define)
 error: bad define: expected (define name expression)
 
-(define (f) 1)
-error: bad define: procedure definitions are not supported yet
-
 define
 error: define is a syntactic keyword and cannot be used as a variable
 

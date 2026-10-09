@@ -1,0 +1,90 @@
+# Slice 1e: (define (name parameter ...) body ...) is (define name (lambda
+# (parameter ...) body ...)) (R7RS 5.3.1). A global may be used before it is
+# defined, as long as it is defined by the time the call runs, so procedures can
+# call each other. A recursion that never stops reports the depth limit until
+# slice 1f lets it run in constant space.
+
+(define (f) 1) (f)
+1
+
+(define (add x y) (+ x y)) (add 1 2)
+3
+
+(define (f x) 1 2 x) (f 7)
+7
+
+(define (f x) x) f
+#<procedure>
+
+(define (f) 1) (set! f 2) f
+2
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 10)
+3628800
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 0) (fact 1) (fact 5)
+1
+1
+120
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20)
+2432902008176640000
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 21)
+error: integer overflow in *
+
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)
+55
+
+(define (even? n) (if (= n 0) #t (odd? (- n 1)))) (define (odd? n) (if (= n 0) #f (even? (- n 1)))) (even? 10) (odd? 7) (even? 7)
+#t
+#t
+#f
+
+(define (f x) (g x)) (define (g x) (+ x 1)) (f 1)
+2
+
+(define (compose f g) (lambda (x) (f (g x)))) (define (inc x) (+ x 1)) (define (double x) (* x 2)) ((compose inc double) 5)
+11
+
+(define (twice f x) (f (f x))) (twice (lambda (n) (* n n)) 3)
+81
+
+(define (f x) (g x)) (f 1)
+error: unbound variable: g
+
+(define (loop n) (loop n)) (loop 1)
+error: nesting too deep
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 100)
+error: nesting too deep
+
+(define (f))
+error: bad define: expected (define (name parameter ...) body ...)
+
+(define (f x))
+error: bad define: expected (define (name parameter ...) body ...)
+
+(define () 1)
+error: bad define: the name must be an identifier
+
+(define (1 x) x)
+error: bad define: the name must be an identifier
+
+(define ((f a) b) 1)
+error: bad define: the name must be an identifier
+
+(define (f 1) 1)
+error: bad define: a parameter must be an identifier
+
+(define (f x x) x)
+error: bad define: duplicate parameter: x
+
+(define (f if) 1)
+error: bad define: if is a syntactic keyword and cannot be a parameter
+
+(define (if x) 1)
+error: bad define: if is a syntactic keyword and cannot be redefined
+
+(+ 1 (define (f) 1))
+error: bad define: a definition is only allowed at the top level
