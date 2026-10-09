@@ -1,10 +1,11 @@
 //! The global environment: which symbols are bound, and to what.
 //!
-//! A name that is absent is unbound, so slice 1b needs no marker value for it.
-//! Local variables and the "uninitialized" state of an internal definition
-//! arrive with `lambda` (slice 1d) and internal `define` (slice 1e), which are
-//! what need them. The cells of docs/design/runtime.md, shared by `import`,
-//! arrive with the library system in stage 2.
+//! A name that is absent is unbound, so no marker value is needed for it. Local
+//! variables live in the frames of calls and are found by name (`findLocal`);
+//! the "uninitialized" state of an internal definition arrives with internal
+//! `define` in slice 1e, which is what needs it. The cells of
+//! docs/design/runtime.md, shared by `import`, arrive with the library system in
+//! stage 2.
 
 const std = @import("std");
 const SymbolId = @import("symbol.zig").SymbolId;

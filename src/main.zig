@@ -49,8 +49,10 @@ pub const Request = union(enum) {
 /// is allocated here. The REPL gives `sucheme` a per-line arena for what one
 /// line needs while it runs, and an `Interpreter`, which keeps its own arena
 /// for what outlives a line: the data the reader builds, the symbols and the
-/// definitions. Until the heap arrives in slice 1g, nothing in that arena is
-/// freed, so the memory of a session grows with what it reads.
+/// definitions, and the frame of every procedure call. Until the heap arrives in
+/// slice 1g, nothing in that arena is freed, so the memory of a session grows
+/// with what it reads and with how many calls it makes: a small program can use
+/// it up.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -79,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
             try out.print(
                 "{s} {s}\n\nUsage: {s} [--version] [--help|-h]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
-                    "Integers, booleans, lists, variables, quote, if, define and + only for now;\n" ++
+                    "Integers, booleans, lists, variables, procedures and + only for now;\n" ++
                     "see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
             );
