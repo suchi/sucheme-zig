@@ -1,8 +1,8 @@
 //! sucheme: an R7RS-small Scheme interpreter.
 //!
-//! The public entry to the interpreter. Slice 1a of stage 1 reads integers and
-//! calls to `+`; docs/plans/0003-phase1-minimal-slice.md lists what each slice
-//! adds, and docs/design/architecture.md the modules it grows into.
+//! The public entry to the interpreter. Each slice of stage 1 adds to what it
+//! reads and evaluates; docs/plans/0003-phase1-minimal-slice.md lists what each
+//! slice adds, and docs/design/architecture.md the modules it grows into.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -45,8 +45,10 @@ pub const Interpreter = struct {
     /// result followed by a newline to `out`.
     ///
     /// Stops at the first error. The results written before it stay written,
-    /// and `diagnostic` describes the error. Everything allocated for this call
-    /// comes from `arena`, which the caller frees as a whole.
+    /// and `diagnostic` describes the error. What this call needs only while it
+    /// runs comes from `arena`, which the caller frees as a whole. The names and
+    /// values that a definition keeps are allocated in the interpreter's own
+    /// arena and live until `deinit`.
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         self.ctx.clearDiagnostic();
         self.run(arena, source, out) catch |e| {
