@@ -4,9 +4,9 @@
 //! docs/design/runtime.md; each arrives with the slice that first creates it.
 //! Slice 1a had fixed-length integers, 1b the unspecified value, 1c booleans,
 //! the empty list, symbols and pairs, 1d the two kinds of procedure, and 1e adds
-//! the marker of a variable that is not defined yet. Slice 1f adds the layouts of
-//! the core IR and of the continuation, which are not values but are walked all
-//! the same.
+//! the marker of a variable that is not defined yet. Slice 1f adds the condition,
+//! and the layouts of the core IR and of the continuation, which are not values
+//! but are walked all the same.
 //! The layouts of everything the GC will walk are defined here, so the one
 //! place that has to know them all is this file (docs/design/architecture.md).
 //!
@@ -39,6 +39,8 @@ pub const Value = union(enum) {
     /// Reading the variable while it holds this is an error, so the marker never
     /// reaches a program as a value.
     uninitialized,
+    /// What a Scheme error is: an object that says what went wrong (R7RS 6.11).
+    condition: *Condition,
 
     /// The empty list. Named apart from the variant, which a constant of the
     /// same name would clash with.
@@ -78,6 +80,10 @@ pub const Value = union(enum) {
         return .{ .pair = p };
     }
 
+    pub fn fromCondition(c: *Condition) Value {
+        return .{ .condition = c };
+    }
+
     pub fn kind(self: Value) Kind {
         return switch (self) {
             .fixnum => .fixnum,
@@ -89,6 +95,7 @@ pub const Value = union(enum) {
             .closure => .closure,
             .unspecified => .unspecified,
             .uninitialized => .uninitialized,
+            .condition => .condition,
         };
     }
 
@@ -132,6 +139,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The condition, or null when the value is not one.
+    pub fn asCondition(self: Value) ?*Condition {
+        return switch (self) {
+            .condition => |c| c,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent. Every value but `#f` is
     /// true, the empty list and zero included (R7RS 6.3).
     pub fn isTrue(self: Value) bool {
@@ -140,6 +155,12 @@ pub const Value = union(enum) {
             else => true,
         };
     }
+};
+
+/// The object an error is. Slice 1f has the message only; stage 2 adds the kind
+/// of error and the irritants that `error` takes (R7RS 6.11).
+pub const Condition = struct {
+    message: []const u8,
 };
 
 pub const Pair = struct {
@@ -303,7 +324,7 @@ pub const Kont = struct {
 };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition };
 
 test {
     std.testing.refAllDecls(@This());
@@ -342,6 +363,17 @@ test "the uninitialized marker is its own kind, and is true like any value but #
     try std.testing.expect(v.asClosure() == null);
     try std.testing.expect(v.isTrue());
     try std.testing.expect(Value.unspecified_value.kind() != v.kind());
+}
+
+test "a condition is its own kind, and carries its message" {
+    var c: Condition = .{ .message = "went wrong" };
+    const v: Value = .fromCondition(&c);
+    try std.testing.expectEqual(Kind.condition, v.kind());
+    try std.testing.expectEqualStrings("went wrong", v.asCondition().?.message);
+    try std.testing.expect(v.asFixnum() == null);
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(Value.fromFixnum(1).asCondition() == null);
+    try std.testing.expect(v.isTrue());
 }
 
 test "each kind answers only to its own accessor" {

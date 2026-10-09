@@ -59,6 +59,9 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             // Reading a variable that holds it is an error, so no program sees
             // it; written anyway so that a leak shows.
             .uninitialized => try out.writeAll("#<uninitialized>"),
+            // Nothing reads a condition as a value yet: an error leaves the
+            // machine and is reported. Written anyway so that a leak shows.
+            .condition => try out.writeAll("#<condition>"),
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -142,6 +145,14 @@ test "write shows an uninitialized marker that leaked" {
     defer f.deinit();
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("#<uninitialized>", try f.written(&buf, .uninitialized_value));
+}
+
+test "write shows a condition that leaked" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var c: value_mod.Condition = .{ .message = "boom" };
+    try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
 }
 
 test "write writes nothing for the unspecified value" {
