@@ -206,6 +206,7 @@ fn apply(ctx: *Context, arena: std.mem.Allocator, procedure: Value, args: []cons
         return prim.call(args) catch |e| switch (e) {
             error.WrongType => ctx.fail(e, "wrong type of argument to {s}", .{prim.name}),
             error.IntegerOverflow => ctx.fail(e, "integer overflow in {s}", .{prim.name}),
+            error.WrongArgumentCount => ctx.fail(e, "wrong number of arguments to {s}", .{prim.name}),
         };
     }
     const closure = procedure.asClosure() orelse
