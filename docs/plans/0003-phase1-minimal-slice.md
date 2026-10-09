@@ -39,7 +39,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 | 切片 | 決める事項 |
 | --- | --- |
-| 1a | 内部値(未束縛、未初期化)の表現 |
+| 1b | 内部値(未束縛、未初期化)の表現。1a で決める予定だったが、1a には束縛が無く使う箇所が無いので、環境が入る 1b に移した |
 | 1b | 字句アドレスの深さと添字のビット幅、または実装制限として報告する閾値 |
 | 1f | フレーム数に上限を設けるかどうか、設けるなら設定手段 |
 | 1g | GCの起動の閾値、予約領域の具体的なバイト数、ヒープ外ペイロードと所有者の確保の巻き戻しの単位、作業リストの予約サイズ |
@@ -71,6 +71,10 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 | `zig build test-wasm` | 1i |
 | `zig build report` | 1e(準拠マトリクスに載る識別子が増え始めるところ) |
 | `zig build check-report` | 1e |
+
+1a で `build.zig` の `current_stage` を1に上げたので、段階1の全コミットの行は `zig build check-docs` が CI に要求する。そのため 1a の時点で表にあった `wasm`・`test-wasm`・`report`・`check-report` の4行をいったん外した。上の表の切片で戻す。
+
+戻す行の意味は次のとおり。`zig build test-wasm` は Node.js 上でエクスポートを呼び出す往復テストである([ADR-0010](../adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([design/r7rs-coverage.md](../design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
 
 `.github/workflows/ci.yml` の変更を伴うので、各切片でユーザーの承認を得てから行う([AGENTS.md](../../AGENTS.md) のセキュリティの節)。
 
