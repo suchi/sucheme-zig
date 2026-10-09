@@ -81,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
             try out.print(
                 "{s} {s}\n\nUsage: {s} [--version] [--help|-h]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
-                    "Integers, booleans, lists, variables, procedures and + only for now;\n" ++
+                    "Integers, booleans, lists, variables, procedures and arithmetic only for now;\n" ++
                     "see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
             );
