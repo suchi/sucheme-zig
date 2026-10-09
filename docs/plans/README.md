@@ -6,6 +6,8 @@
 | --- | --- |
 | [0001-sow.md](0001-sow.md) | プロジェクト全体の作業範囲、成果物、進め方、リスク |
 | [0002-phase0-scaffolding.md](0002-phase0-scaffolding.md) | 段階0(足場)の実装計画 |
+| [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) | 段階1(最小の縦切り)の切片への分割と進捗 |
+| [0004-slice-1f-cek-machine.md](0004-slice-1f-cek-machine.md) | 切片 1f(CEK 機械への移行)の実装計画 |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
