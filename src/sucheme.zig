@@ -22,8 +22,8 @@ const printer = @import("printer.zig");
 /// conditions, a Scheme error is one of these too.
 pub const Error = reader.Error || eval.Error || printer.Error;
 
-/// One interpreter: what outlives a single line of input, which is the symbol
-/// table and the global environment.
+/// One interpreter: what outlives a single line of input, which is the data the
+/// reader builds, the symbol table and the global environment.
 ///
 /// Those live in an arena of its own until the GC heap arrives in slice 1g;
 /// docs/design/architecture.md records the exception. The context points into
