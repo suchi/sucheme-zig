@@ -32,7 +32,7 @@ error: unexpected end of input
 )
 error: unexpected )
 
-#t
+#z
 error: unreadable token
 
 9223372036854775808

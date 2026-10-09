@@ -21,9 +21,10 @@
 //! program never ran.
 //!
 //! The REPL writes a `> ` prompt and each result to stdout, and an error to
-//! stderr as `error: ` and a message such as `unbound variable: foo`; an error ends that line's evaluation and
-//! not the REPL. A line holds whole data: one that ends inside a list is an
-//! error, until continuation lines arrive (ADR-0014). The status stays 0
+//! stderr as `error: ` and a message such as `unbound variable: foo`; an error
+//! ends that line's evaluation and not the REPL. A line holds whole data: one
+//! that ends inside a list or after a `'` is an error, until continuation lines
+//! arrive (ADR-0014). The status stays 0
 //! after an error, because the REPL went on to read the rest of its input.
 
 const std = @import("std");
@@ -46,8 +47,10 @@ pub const Request = union(enum) {
 /// docs/design/architecture.md: the arena holds the argument vector and the
 /// output buffer, both needed only to start up and shut down. No Scheme value
 /// is allocated here. The REPL gives `sucheme` a per-line arena for what one
-/// line needs and an `Interpreter`, which keeps its own arena for the symbols
-/// and definitions that outlive a line, until the heap arrives in slice 1g.
+/// line needs while it runs, and an `Interpreter`, which keeps its own arena
+/// for what outlives a line: the data the reader builds, the symbols and the
+/// definitions. Until the heap arrives in slice 1g, nothing in that arena is
+/// freed, so the memory of a session grows with what it reads.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -76,7 +79,8 @@ pub fn main(init: std.process.Init) !void {
             try out.print(
                 "{s} {s}\n\nUsage: {s} [--version] [--help|-h]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
-                    "Integers, global variables, define and + only for now; see docs/roadmap.md.\n",
+                    "Integers, booleans, lists, variables, quote, if, define and + only for now;\n" ++
+                    "see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
             );
             try out.flush();
@@ -130,8 +134,9 @@ pub const max_line = 64 * 1024;
 
 /// Reads lines from `in` until it ends, and evaluates and prints each.
 ///
-/// Every line gets a fresh arena, so what one line allocates is gone before the
-/// next is read.
+/// Every line gets a fresh arena for what evaluating it needs while it runs.
+/// What the reader builds and what a definition keeps is not in it: that lives
+/// in the interpreter until the session ends.
 pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
