@@ -233,6 +233,17 @@ test "the literal ends at a delimiter and pos stops before it" {
     }
 }
 
+test "every whitespace character ends the literal" {
+    // space, tab, newline, vertical tab, form feed, carriage return
+    const whitespace = [_]u8{ ' ', '\t', '\n', 0x0b, 0x0c, '\r' };
+    for (whitespace) |ws| {
+        const src = [_]u8{ '#', '\\', 'a', ws, 'b' };
+        var pos: usize = 0;
+        try std.testing.expectEqual(@as(u21, 'a'), try read(&src, &pos));
+        try std.testing.expectEqual(@as(usize, 3), pos);
+    }
+}
+
 test "read starts at pos" {
     var pos: usize = 3;
     try std.testing.expectEqual(@as(u21, 'b'), try read("(a #\\b)", &pos));
