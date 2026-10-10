@@ -97,11 +97,40 @@ const max_scalar_value = 0x10FFFF;
 
 /// Writes the string `bytes` as `write` (in quotes, with escapes) or as
 /// `display` (the bytes as they are) would.
+///
+/// `write` escapes what the reader would take for something else: `"` and `\\`,
+/// and the control characters, with the escape of R7RS where there is one and
+/// as `\x<hex>;` where there is not. Everything else, a non-ASCII character
+/// included, is written as the bytes it is, which the reader reads back.
 pub fn write(out: *std.Io.Writer, mode: Mode, bytes: []const u8) std.Io.Writer.Error!void {
-    _ = out;
-    _ = mode;
-    _ = bytes;
-    @panic("slice 1h: writing a string is not written yet");
+    if (mode == .display) return out.writeAll(bytes);
+    try out.writeByte('"');
+    // The bytes that need no escape are written in runs.
+    var run_start: usize = 0;
+    for (bytes, 0..) |c, i| {
+        if (!needsEscape(c)) continue;
+        try out.writeAll(bytes[run_start..i]);
+        run_start = i + 1;
+        switch (c) {
+            '"' => try out.writeAll("\\\""),
+            '\\' => try out.writeAll("\\\\"),
+            7 => try out.writeAll("\\a"),
+            8 => try out.writeAll("\\b"),
+            '\t' => try out.writeAll("\\t"),
+            '\n' => try out.writeAll("\\n"),
+            '\r' => try out.writeAll("\\r"),
+            else => try out.print("\\x{x};", .{c}),
+        }
+    }
+    try out.writeAll(bytes[run_start..]);
+    try out.writeByte('"');
+}
+
+/// Whether `write` escapes the byte: `"`, `\\`, the C0 controls and DEL. A byte
+/// of a multi-byte character is never one of these, since they are all 0x80 or
+/// more.
+fn needsEscape(c: u8) bool {
+    return c == '"' or c == '\\' or c < 0x20 or c == 0x7f;
 }
 
 test {
@@ -260,4 +289,71 @@ test "read: a scratch allocation that fails is an out of memory, and nothing lea
     var ok: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     _ = try read("\"abc\"", &pos, ok.allocator(), &heap);
     try std.testing.expectEqual(ok.allocated_bytes, ok.freed_bytes);
+}
+
+fn expectWritten(expected: []const u8, mode: Mode, bytes: []const u8) !void {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try write(&out.writer, mode, bytes);
+    try std.testing.expectEqualStrings(expected, out.written());
+}
+
+test "write: quotes, and an empty or plain string" {
+    try expectWritten("\"\"", .write, "");
+    try expectWritten("\"abc\"", .write, "abc");
+    try expectWritten("\"hello world\"", .write, "hello world");
+}
+
+test "write: a quote and a backslash are escaped" {
+    try expectWritten("\"\\\"\"", .write, "\"");
+    try expectWritten("\"\\\\\"", .write, "\\");
+    try expectWritten("\"say \\\"hi\\\" a\\\\b\"", .write, "say \"hi\" a\\b");
+}
+
+test "write: the controls that have an escape are written with it" {
+    try expectWritten("\"\\a\\b\\t\\n\\r\"", .write, "\x07\x08\x09\x0a\x0d");
+    try expectWritten("\"a\\nb\"", .write, "a\nb");
+}
+
+test "write: the other controls and DEL are written as lowercase hex with no padding" {
+    try expectWritten("\"\\x0;\"", .write, "\x00");
+    try expectWritten("\"\\x1;\"", .write, "\x01");
+    try expectWritten("\"\\xb;\\xc;\"", .write, "\x0b\x0c");
+    try expectWritten("\"\\x10;\"", .write, "\x10");
+    try expectWritten("\"\\x1f;\"", .write, "\x1f");
+    try expectWritten("\"\\x7f;\"", .write, "\x7f");
+    // The byte after an escape is not taken for a digit of it: `;` ends it.
+    try expectWritten("\"\\x1;a\"", .write, "\x01a");
+}
+
+test "write: a character that is not ASCII is written as it is" {
+    try expectWritten("\"\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\"", .write, "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}");
+    try expectWritten("\"a \u{3bb} \u{1F600}\"", .write, "a \u{3bb} \u{1F600}");
+    try expectWritten("\"\u{80}\u{7ff}\"", .write, "\u{80}\u{7ff}");
+}
+
+test "write: display writes the bytes as they are" {
+    try expectWritten("", .display, "");
+    try expectWritten("abc", .display, "abc");
+    try expectWritten("say \"hi\" a\\b\n\t\x00\x7f", .display, "say \"hi\" a\\b\n\t\x00\x7f");
+    try expectWritten("a \u{3bb}", .display, "a \u{3bb}");
+}
+
+test "write then read then write gives the same text, for every ASCII byte and some others" {
+    var all: [128 + 9]u8 = undefined;
+    for (0..128) |i| all[i] = @intCast(i);
+    @memcpy(all[128..], "\u{3bb}\u{3053}\u{1F600}");
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var first: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer first.deinit();
+    try write(&first.writer, .write, &all);
+    var pos: usize = 0;
+    const s = try read(first.written(), &pos, std.testing.allocator, &heap);
+    try std.testing.expectEqual(first.written().len, pos);
+    try std.testing.expectEqualSlices(u8, &all, s.asString().?.bytes);
+    var second: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer second.deinit();
+    try write(&second.writer, .write, s.asString().?.bytes);
+    try std.testing.expectEqualStrings(first.written(), second.written());
 }
