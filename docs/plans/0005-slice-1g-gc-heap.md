@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1g)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-10
-- 状態: 合意済み(2026-10-10、PR #18 のマージ)。実装は `feature/phase1-slice-1g-gc-heap-impl`
+- 状態: 実装済み(2026-10-10、PR #21 でマージ。後半のレビュー対応は続きの PR)
 
 ## 解こうとしている問題
 
