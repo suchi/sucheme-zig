@@ -227,7 +227,7 @@ pub const Machine = struct {
     fn collect(self: *Machine, env: ?*Frame, kont: ?*const Kont, value: Value) Error!void {
         const ctx = self.ctx;
         ctx.heap.collect(Roots{ .ctx = ctx, .env = env, .kont = kont, .value = value });
-        if (ctx.heap.exhausted) return ctx.raise("heap limit exceeded", .{});
+        if (ctx.heap.exhausted) return ctx.raise(context.heap_limit_message, .{});
     }
 
     /// What the program holds at a safe point.

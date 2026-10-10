@@ -49,8 +49,8 @@ pub const Request = union(enum) {
 /// is allocated here. The REPL gives `sucheme` a per-line arena for what one
 /// line needs while it runs, and an `Interpreter`, which takes the objects of a
 /// program from the general purpose allocator (the pairs, closures, frames of
-/// calls and the continuation, which the collector frees, within a limit of
-/// 256 MiB) and keeps an arena of its own for the symbols, the definitions and
+/// calls and the continuation, which the collector frees, within the limit
+/// of `Options.limit`) and keeps an arena of its own for the symbols, the definitions and
 /// the code, which nothing frees before the session ends.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
