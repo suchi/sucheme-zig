@@ -1,0 +1,59 @@
+# Slice 1h: the reader reads a dotted pair, the printer already wrote one. A
+# list is the pairs ending in (); a dot makes the last cdr something else.
+
+'(1 . 2)
+(1 . 2)
+
+'(1 2 . 3)
+(1 2 . 3)
+
+# A pair whose tail is a list is that list, however it was written.
+'(a . (b c))
+(a b c)
+
+'(a . ())
+(a)
+
+'(a . (b . (c . d)))
+(a b c . d)
+
+# The dot ends a token only before a delimiter, so these are not dots.
+'(a ... b)
+(a ... b)
+
+'(a .b)
+(a .b)
+
+'(1 .(2))
+(1 2)
+
+# The tail is a datum like any other.
+'(1 . 'a)
+(1 quote a)
+
+'((1 . 2) . (3 . 4))
+((1 . 2) 3 . 4)
+
+# A dotted pair is not a form: it is data, and evaluating it says so.
+(1 . 2)
+error: bad syntax: a form must be a proper list
+
+# A dot that has no pair to end, or no datum after it, or one too many.
+( . 1)
+error: unexpected .
+
+'(1 . )
+error: unexpected .
+
+'(1 . 2 3)
+error: unexpected .
+
+.
+error: unexpected .
+
+'.
+error: unexpected .
+
+# The line is unfinished, not wrong, so the REPL asks for more.
+'(1 . 2
+error: unexpected end of input
