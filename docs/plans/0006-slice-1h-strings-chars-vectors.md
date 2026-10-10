@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0002](../adr/0002-value-representation.md), [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0008](../adr/0008-string-representation.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1h)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-10
-- 状態: 計画(合意待ち)
+- 状態: 合意済み(2026-10-10、「合意を求める点」の3つは、いずれも勧める案で合意)
 
 ## 解こうとしている問題
 
@@ -48,7 +48,7 @@
 
 ## 合意を求める点
 
-設計文書に直接の根拠がなく、この計画が選んだ。それぞれ、勧める案を先頭に置く。
+設計文書に直接の根拠がなく、この計画が選んだ。それぞれ、勧める案を先頭に置く。1から3は、勧める案で合意した。
 
 1. `write` と `display` を Scheme から呼べるようにするか。
    - 勧める案: プリンタの Zig の関数としてだけ入れる。REPL は結果を `write` で書く。Scheme の手続き `write`・`display` は、出力先のポートが入る段階5まで入れない。
@@ -137,5 +137,5 @@ ADR-0027 の費用側の停止の規則に従い、先に線を引く。レビ�
 
 ## 次にやること
 
-1. この計画書の合意を得る(上の「合意を求める点」の3つ)。
-2. 合意後、`feature/phase1-slice-1h-strings-chars-vectors` を最新の `origin/main` から作り、進め方の1から始める。
+1. この計画書の PR がマージされるのを待つ。「合意を求める点」の3つは合意済みで、利用者の確認を取らずに決めた点(同じ節の後半)に意見があれば、マージまでに受ける。
+2. マージ後、`feature/phase1-slice-1h-strings-chars-vectors` を最新の `origin/main` から作り、進め方の1から始める。
