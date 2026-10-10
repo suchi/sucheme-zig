@@ -14,6 +14,9 @@ pub const name = build_options.name;
 /// build.zig passes it through as a build option.
 pub const version = build_options.version;
 
+/// The GC heap, and the options that bound it.
+pub const heap = @import("heap.zig");
+
 const reader = @import("reader.zig");
 const expand = @import("syntax/expand.zig");
 const machine = @import("machine.zig");
