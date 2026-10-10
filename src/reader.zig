@@ -2,9 +2,10 @@
 //!
 //! Slice 1c reads decimal integers, booleans, identifiers, parenthesised lists
 //! and the `'` abbreviation. It builds `Value`s directly: pairs are allocated
-//! with the allocator it is given, and identifiers are interned in the symbol
-//! table it is given. Both outlive the line until the GC heap arrives (slice
-//! 1g), because `quote` can hand a datum to a definition.
+//! in the GC heap it is given, and identifiers are interned in the symbol table
+//! it is given. Reading is not a point where the heap collects, so a datum is
+//! whole when `next` returns it; it is garbage as soon as nothing refers to it,
+//! though `quote` can hand it to a definition that does.
 //!
 //! Nesting is handled with an explicit stack, not Zig recursion: the depth of
 //! the input decides how deep it goes (docs/design/runtime.md).
@@ -12,9 +13,12 @@
 const std = @import("std");
 const Value = @import("value.zig").Value;
 const symbol = @import("symbol.zig");
+const Heap = @import("heap.zig").Heap;
 
 pub const Error = error{
     OutOfMemory,
+    /// The pairs of the datum do not fit in the heap.
+    HeapLimit,
     /// The input ended inside a list or after a `'`. The REPL can ask for
     /// another line on this (ADR-0014), so it is kept apart from the other
     /// syntax errors.
@@ -31,7 +35,11 @@ pub const Error = error{
 
 /// Where what the reader builds goes. These outlive the call.
 pub const Sink = struct {
+    /// Where the names of new symbols are kept.
     alloc: std.mem.Allocator,
+    /// Where the pairs go. Reading is not a point where the heap collects, so
+    /// the datum is whole when the caller gets it.
+    heap: *Heap,
     symbols: *symbol.Table,
 };
 
@@ -125,7 +133,7 @@ fn listOf(sink: Sink, items: []const Value) Error!Value {
     var i = items.len;
     while (i > 0) {
         i -= 1;
-        result = try Value.cons(sink.alloc, items[i], result);
+        result = try sink.heap.cons(items[i], result);
     }
     return result;
 }
@@ -133,8 +141,8 @@ fn listOf(sink: Sink, items: []const Value) Error!Value {
 /// `(quote datum)`, which `'datum` abbreviates (R7RS 2.4).
 fn quoted(sink: Sink, datum: Value) Error!Value {
     const quote_symbol: Value = .fromSymbol(try sink.symbols.intern(sink.alloc, "quote"));
-    const tail = try Value.cons(sink.alloc, datum, Value.empty_list_value);
-    return Value.cons(sink.alloc, quote_symbol, tail);
+    const tail = try sink.heap.cons(datum, Value.empty_list_value);
+    return sink.heap.cons(quote_symbol, tail);
 }
 
 // Why: R7RS 7.1.1 <boolean>: `#t`, `#f`, `#true` and `#false`.
@@ -220,18 +228,20 @@ const printer = @import("printer.zig");
 /// A reader test's fixture: where data goes, and how it is printed back.
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
+    heap: Heap,
     symbols: symbol.Table = .{},
 
     fn init() Fixture {
-        return .{ .arena = .init(std.testing.allocator) };
+        return .{ .arena = .init(std.testing.allocator), .heap = .init(std.testing.allocator, .{}) };
     }
 
     fn deinit(self: *Fixture) void {
+        self.heap.deinit();
         self.arena.deinit();
     }
 
     fn sink(self: *Fixture) Sink {
-        return .{ .alloc = self.arena.allocator(), .symbols = &self.symbols };
+        return .{ .alloc = self.arena.allocator(), .heap = &self.heap, .symbols = &self.symbols };
     }
 
     /// Reads the only datum of `src`; any other count is an error.

@@ -1,0 +1,42 @@
+# Slice 1g: values live in a heap that a collector frees, and the heap has a
+# limit. A loop no longer grows the memory with the number of its iterations,
+# and a recursion that never returns ends in an error instead of using up the
+# process's memory.
+
+# A million iterations of a tail call, in memory that does not depend on the count.
+(define (loop n) (if (= n 0) 'done (loop (- n 1)))) (loop 1000000)
+done
+
+# The same through mutual recursion and through a procedure passed in.
+(define (ev? n) (if (= n 0) #t (od? (- n 1)))) (define (od? n) (if (= n 0) #f (ev? (- n 1)))) (ev? 100000)
+#t
+
+(define (run f n) (if (= n 0) 'ok (f f (- n 1)))) (run run 100000)
+ok
+
+# A closure made before the collector has run many times is still readable
+# after it, and so is the frame it keeps.
+(define (make n) (lambda () n)) (define k (make 42)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 100000) (k)
+ok
+42
+
+# A variable the closure shares is still shared after the collector has run.
+(define (counter) (define n 0) (lambda () (set! n (+ n 1)) n)) (define c (counter)) (c) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 100000) (c)
+1
+ok
+2
+
+# Data held by a global, and data quoted in the code of a procedure, survive.
+(define xs '(1 2 3)) (define (get) '(4 5 6)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 100000) xs (get)
+ok
+(1 2 3)
+(4 5 6)
+
+# A non-tail recursion that never returns runs into the limit of the heap and
+# reports it, instead of using up the memory of the process.
+(define (f n) (+ 1 (f n))) (f 0)
+error: heap limit exceeded
+
+# The deep recursion of slice 1f still returns.
+(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 100000)
+100000
