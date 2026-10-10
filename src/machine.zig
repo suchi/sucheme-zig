@@ -618,6 +618,19 @@ test "a recursion that never returns ends in an error at the limit of the heap, 
     try f.expectInt(500, "(count 500)");
 }
 
+test "a recursion that never returns reaches the limit with few collections, because the collection that leaves no room ends the line" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    defer f.deinit();
+    _ = try f.eval("(define (forever n) (+ 1 (forever n)))");
+    try f.expectFails("heap limit exceeded", "(forever 0)");
+    // The threshold doubles up to the soft limit, which takes a few collections.
+    // Without the check after a collection, each step near the limit would
+    // collect again, until an allocation failed.
+    try std.testing.expect(f.ctx.heap.collections <= 40);
+    try std.testing.expect(f.ctx.heap.exhausted);
+}
+
 test "a single allocation the limit refuses is the same error" {
     var f: Fixture = undefined;
     // Room for the reader's pairs and no more than a few frames.
