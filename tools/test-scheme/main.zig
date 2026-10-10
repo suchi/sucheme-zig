@@ -191,10 +191,10 @@ fn isComment(line: []const u8) bool {
 /// The ways every case is run. The second collects at every step of the machine
 /// for as long as a case is short, so a root the machine does not tell the
 /// collector about is freed at once and not by luck (ADR-0031); a case that
-/// passes only in the first has a bug the first hides. Both give the heap
-/// 64 MiB, a quarter of the default: a recursion that never returns has to fill
-/// it before the error comes, and the deepest recursion of a case needs a third
-/// of it.
+/// passes only in the first has a bug the first hides. Both give the heap a
+/// smaller limit than the default: a recursion that never returns has to fill it
+/// before the error comes, and the limit stays above what the deepest recursion
+/// of a case needs.
 const modes = [_]struct { name: []const u8, options: sucheme.heap.Options }{
     .{ .name = "default", .options = .{ .limit = 64 * 1024 * 1024 } },
     .{ .name = "collect at every step", .options = .{ .limit = 64 * 1024 * 1024, .stress = true } },
