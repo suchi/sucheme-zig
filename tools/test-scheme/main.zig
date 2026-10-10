@@ -105,13 +105,15 @@ pub fn main(init: std.process.Init) !void {
             failed += 1;
         }
         for (cases.items) |c| {
-            if (try runCase(gpa, c)) |got| {
-                try err.print(
-                    "{s}:{d}: {s}\n  expected: {s}\n  got:      {s}\n",
-                    .{ path, c.line, c.input, c.expected, got },
-                );
-                failed += 1;
-            } else passed += 1;
+            for (modes) |mode| {
+                if (try runCaseWith(gpa, mode.options, c)) |got| {
+                    try err.print(
+                        "{s}:{d}: {s}\n  mode:     {s}\n  expected: {s}\n  got:      {s}\n",
+                        .{ path, c.line, c.input, mode.name, c.expected, got },
+                    );
+                    failed += 1;
+                } else passed += 1;
+            }
         }
     }
 
@@ -186,15 +188,35 @@ fn isComment(line: []const u8) bool {
     return std.mem.eql(u8, line, "#") or std.mem.startsWith(u8, line, "# ");
 }
 
+/// The ways every case is run. The second collects at every step of the machine
+/// for as long as a case is short, so a root the machine does not tell the
+/// collector about is freed at once and not by luck (ADR-0031); a case that
+/// passes only in the first has a bug the first hides. Both give the heap
+/// 64 MiB, a quarter of the default: a recursion that never returns has to fill
+/// it before the error comes, and the deepest recursion of a case needs a third
+/// of it.
+const modes = [_]struct { name: []const u8, options: sucheme.heap.Options }{
+    .{ .name = "default", .options = .{ .limit = 64 * 1024 * 1024 } },
+    .{ .name = "collect at every step", .options = .{ .limit = 64 * 1024 * 1024, .stress = true } },
+};
+
 /// Evaluates one case. Returns null when the output matches, and otherwise what
 /// was produced instead, so the report can show it. The caller owns the result.
 fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
+    return runCaseWith(gpa, modes[0].options, c);
+}
+
+fn runCaseWith(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) error{OutOfMemory}!?[]const u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var interp: sucheme.Interpreter = undefined;
-    try interp.init(gpa);
+    // The heap frees what the collector finds dead, so it needs an allocator that
+    // takes memory back, and `gpa` is an arena, which does not. The general
+    // purpose allocator of a debug build records a stack trace for every
+    // allocation, which makes a loop of a million calls take minutes.
+    try interp.initWithOptions(std.heap.smp_allocator, options);
     defer interp.deinit();
     interp.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
