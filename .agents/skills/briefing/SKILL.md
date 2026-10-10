@@ -17,8 +17,8 @@ description: 現在の状況を短いダッシュボードで報告する。Issu
 | --- | --- |
 | PR | GitHub MCP の `list_pull_requests`(state open)。各 PR に `pull_request_read` の `get`(draft、mergeable_state、head の sha)、`get_check_runs`(ジョブごとの結果)、`get_reviews` と `get_review_comments`(未解決のスレッド)を使う。CI の結果は、いまの head の sha に対するものだけを書く |
 | Issue | `list_issues`(state open)。PR と重複するものは PR 側に寄せる |
-| 別セッション | `list_sessions` に `mine: true`。動いているものに `get_session`(`status_bucket`、`post_turn_summary`)。`blocked` は承認待ちの可能性が高い |
-| サブエージェント | `ListAgents` |
+| 別セッション | `list_sessions` に `mine: true` と `limit: 10`。応答は大きい(1件が数KB)ので、読むのは `title`、`status_bucket`、`updated_at`、`post_turn_summary`、`parent_session_id` だけにする。載せるのは `working` と `blocked` のもの、および直近24時間に更新された `completed` のもの(結果をまだ受け取っていないか確かめる)。アーカイブ済みと古い `completed` は読み飛ばす。この会話自身のセッションは表に出さず、「私がやっていること」に回す。`blocked` は承認待ちの可能性が高い |
+| サブエージェント | `ListAgents`。「到達できる他のエージェントはいない」と返ったら、サブエージェントは0件と書く |
 | 予約 | `list_triggers`(`enabled: true`)。生存確認や PR の見守りの予約が残っているかを見る |
 | この会話の用事 | `TaskList`。会話の中でユーザーに聞いて、まだ答えが無いこと(判断待ち)を、直近の自分の発言から拾う |
 | ローカル | `git branch --show-current`、`git status --short`。[docs/plans/0003-phase1-minimal-slice.md](../../../docs/plans/0003-phase1-minimal-slice.md) の進捗表と「次にやること」(スライスの現在地) |
