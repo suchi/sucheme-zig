@@ -14,6 +14,8 @@ const std = @import("std");
 const Value = @import("value.zig").Value;
 const symbol = @import("symbol.zig");
 const Heap = @import("heap.zig").Heap;
+const char_syntax = @import("char_syntax.zig");
+const string_syntax = @import("string_syntax.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -32,6 +34,13 @@ pub const Error = error{
     UnexpectedDot,
     /// Text this reader cannot read as a datum.
     InvalidToken,
+    /// A string with a backslash that begins no escape (src/string_syntax.zig).
+    InvalidEscape,
+    /// A `#\` that does not begin a character (src/char_syntax.zig).
+    InvalidCharacter,
+    /// Input that is not valid UTF-8. Strings, characters and symbol names are
+    /// text, so it is refused whole, before anything is read from it.
+    InvalidUtf8,
     /// A decimal integer outside the fixnum range. R7RS 6.2.3 lets this be
     /// reported as an implementation restriction until bignums in stage 4.
     IntegerOutOfRange,
@@ -111,6 +120,8 @@ pub const Reader = struct {
                     }
                     continue;
                 } else try self.atom(sink),
+                '"' => try string_syntax.read(self.src, &self.pos, scratch, sink.heap),
+                '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos)) else try self.atom(sink),
                 '\'' => {
                     self.pos += 1;
                     try open.append(scratch, .quote);
@@ -144,6 +155,11 @@ pub const Reader = struct {
     fn atDot(self: *const Reader) bool {
         const after = self.pos + 1;
         return after == self.src.len or isDelimiter(self.src[after]);
+    }
+
+    /// Whether the input is at the `#\` that begins a character.
+    fn atCharacter(self: *const Reader) bool {
+        return self.pos + 1 < self.src.len and self.src[self.pos + 1] == '\\';
     }
 
     fn skipWhitespace(self: *Reader) void {
@@ -445,7 +461,7 @@ test "next reports a quote with nothing to quote" {
 test "next rejects text that is neither an integer, a boolean nor an identifier" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#(1)", "\"s\"", ";", "|x|", "+.1", "a'b" }) |src| {
+    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#(1)", ";", "|x|", "+.1", "a'b" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
 }

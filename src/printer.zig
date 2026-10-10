@@ -2,8 +2,9 @@
 //!
 //! Slice 1d prints integers, booleans, symbols, lists and procedures; the
 //! unspecified value has no external form, so callers that print results skip
-//! it. `write` and `display` differ first for strings and characters, which
-//! arrive in slice 1h.
+//! it. Slice 1h adds characters, strings and vectors, and with them the
+//! difference between `write` and `display` (R7RS 6.13.3): `write` gives the
+//! form `read` reads back, `display` the text a person reads.
 //!
 //! The depth of the data decides how deep printing goes, so it runs on an
 //! explicit stack and not on Zig recursion (docs/design/runtime.md).
@@ -13,6 +14,8 @@ const value_mod = @import("value.zig");
 const Value = value_mod.Value;
 const symbol = @import("symbol.zig");
 const Heap = @import("heap.zig").Heap;
+const char_syntax = @import("char_syntax.zig");
+const string_syntax = @import("string_syntax.zig");
 
 pub const Error = std.Io.Writer.Error || error{OutOfMemory};
 
@@ -27,6 +30,9 @@ const Item = union(enum) {
     text: []const u8,
 };
 
+/// Which of the two external forms of data to write (R7RS 6.13.3).
+pub const Mode = enum { write, display };
+
 /// Writes `v` as `write` would (R7RS 6.13.3). Symbol names come from `symbols`.
 /// `scratch` holds the stack of what is left to write; `write` frees what it
 /// takes from it before it returns.
@@ -35,6 +41,17 @@ const Item = union(enum) {
 /// need the `|...|` form; the procedures that make other symbols come with the
 /// slices that need it.
 pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value) Error!void {
+    return emit(out, scratch, symbols, v, .write);
+}
+
+/// Writes `v` as `display` would (R7RS 6.13.3): the same as `write`, except
+/// that a string is its characters and a character is itself, also inside the
+/// pairs and vectors that hold them.
+pub fn display(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value) Error!void {
+    return emit(out, scratch, symbols, v, .display);
+}
+
+fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value, mode: Mode) Error!void {
     var stack: std.ArrayList(Item) = .empty;
     defer stack.deinit(scratch);
     try stack.append(scratch, .{ .value = v });
@@ -45,6 +62,9 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             .boolean => try out.writeAll(if (x.isTrue()) "#t" else "#f"),
             .empty_list => try out.writeAll("()"),
             .symbol => try out.writeAll(symbols.nameOf(x.asSymbol().?)),
+            .character => try char_syntax.write(out, mode, x.asCharacter().?),
+            .string => try string_syntax.write(out, mode, x.asString().?.bytes),
+            .vector => @panic("slice 1h: printing a vector is not written yet"),
             // Why: R7RS leaves the external form of a procedure open; most
             // systems write it in a notation `read` rejects, and so do we.
             .closure => try out.writeAll("#<procedure>"),
