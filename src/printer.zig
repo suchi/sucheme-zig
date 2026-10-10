@@ -28,6 +28,11 @@ const Item = union(enum) {
     rest: Value,
     /// Text to write as it is.
     text: []const u8,
+    /// The rest of a vector from element `next` on: a space and that element,
+    /// or the closing parenthesis once there are none left.
+    elements: Elements,
+
+    const Elements = struct { items: []const Value, next: usize };
 };
 
 /// Which of the two external forms of data to write (R7RS 6.13.3).
@@ -57,6 +62,13 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
     try stack.append(scratch, .{ .value = v });
     while (stack.pop()) |item| switch (item) {
         .text => |t| try out.writeAll(t),
+        .elements => |e| if (e.next == e.items.len) {
+            try out.writeByte(')');
+        } else {
+            if (e.next != 0) try out.writeByte(' ');
+            try stack.append(scratch, .{ .elements = .{ .items = e.items, .next = e.next + 1 } });
+            try stack.append(scratch, .{ .value = e.items[e.next] });
+        },
         .value => |x| switch (x.kind()) {
             .fixnum => try out.print("{d}", .{x.asFixnum().?}),
             .boolean => try out.writeAll(if (x.isTrue()) "#t" else "#f"),
@@ -64,7 +76,10 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             .symbol => try out.writeAll(symbols.nameOf(x.asSymbol().?)),
             .character => try char_syntax.write(out, mode, x.asCharacter().?),
             .string => try string_syntax.write(out, mode, x.asString().?.bytes),
-            .vector => @panic("slice 1h: printing a vector is not written yet"),
+            .vector => {
+                try out.writeAll("#(");
+                try stack.append(scratch, .{ .elements = .{ .items = x.asVector().?.items, .next = 0 } });
+            },
             // Why: R7RS leaves the external form of a procedure open; most
             // systems write it in a notation `read` rejects, and so do we.
             .closure => try out.writeAll("#<procedure>"),
@@ -139,9 +154,19 @@ const Fixture = struct {
         return result;
     }
 
+    fn vector(self: *Fixture, items: []const Value) !Value {
+        return .fromVector(try self.heap.createVector(items));
+    }
+
     fn written(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
         var w: std.Io.Writer = .fixed(buf);
         try write(&w, std.testing.allocator, &self.symbols, v);
+        return w.buffered();
+    }
+
+    fn displayed(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
+        var w: std.Io.Writer = .fixed(buf);
+        try display(&w, std.testing.allocator, &self.symbols, v);
         return w.buffered();
     }
 };
@@ -262,4 +287,61 @@ test "write does not recurse on the depth of the data" {
     out.clearRetainingCapacity();
     try write(&out.writer, std.testing.allocator, &f.symbols, long);
     try std.testing.expectEqual(depth * 2 + 1, out.written().len);
+}
+
+test "write prints a vector as # and a parenthesised list of its elements" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("#()", try f.written(&buf, try f.vector(&.{})));
+    try std.testing.expectEqualStrings("#(1)", try f.written(&buf, try f.vector(&.{.fromFixnum(1)})));
+    const v = try f.vector(&.{ .fromFixnum(1), try f.sym("a"), .fromBool(true), Value.empty_list_value });
+    try std.testing.expectEqualStrings("#(1 a #t ())", try f.written(&buf, v));
+}
+
+test "write prints vectors and pairs nested in one another" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const inner = try f.vector(&.{ .fromFixnum(2), .fromFixnum(3) });
+    try std.testing.expectEqualStrings("#(1 #(2 3) #())", try f.written(&buf, try f.vector(&.{ .fromFixnum(1), inner, try f.vector(&.{}) })));
+    // A vector in a list, in the tail of a pair, and a list and a pair in a vector.
+    const in_list = try f.list(&.{ .fromFixnum(1), inner, .fromFixnum(4) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(1 #(2 3) 4)", try f.written(&buf, in_list));
+    try std.testing.expectEqualStrings("(a . #(2 3))", try f.written(&buf, try f.cons(try f.sym("a"), inner)));
+    const dotted = try f.cons(.fromFixnum(1), .fromFixnum(2));
+    const lst = try f.list(&.{ .fromFixnum(3), .fromFixnum(4) }, .fromFixnum(5));
+    try std.testing.expectEqualStrings("#((1 . 2) (3 4 . 5) (a))", try f.written(&buf, try f.vector(&.{ dotted, lst, try f.list(&.{try f.sym("a")}, Value.empty_list_value) })));
+}
+
+test "display prints what write prints for data without strings and characters" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var wbuf: [64]u8 = undefined;
+    var dbuf: [64]u8 = undefined;
+    const inner = try f.vector(&.{ .fromFixnum(2), try f.sym("b") });
+    const l = try f.list(&.{ .fromFixnum(1), inner, .fromBool(false) }, .fromFixnum(9));
+    const v = try f.vector(&.{ l, inner, Value.empty_list_value });
+    try std.testing.expectEqualStrings(try f.written(&wbuf, v), try f.displayed(&dbuf, v));
+    try std.testing.expectEqualStrings("#((1 #(2 b) #f . 9) #(2 b) ())", try f.displayed(&dbuf, v));
+}
+
+test "write does not recurse on the depth of a vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // A vector nested 200000 deep in its only element, and one 200000 long.
+    const depth = 200_000;
+    var deep: Value = try f.vector(&.{});
+    for (0..depth) |_| deep = try f.vector(&.{deep});
+    const items = try f.arena.allocator().alloc(Value, depth);
+    @memset(items, .fromFixnum(1));
+    const long = try f.vector(items);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try write(&out.writer, std.testing.allocator, &f.symbols, deep);
+    // Each level is `#(` and `)`, and the innermost is `#()`.
+    try std.testing.expectEqual((depth + 1) * 3, out.written().len);
+    out.clearRetainingCapacity();
+    try write(&out.writer, std.testing.allocator, &f.symbols, long);
+    try std.testing.expectEqual(depth * 2 + 2, out.written().len);
 }
