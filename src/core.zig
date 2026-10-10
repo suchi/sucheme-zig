@@ -10,6 +10,7 @@ const Value = value_mod.Value;
 const Node = value_mod.Node;
 const symbol = @import("symbol.zig");
 const printer = @import("printer.zig");
+const Heap = @import("heap.zig").Heap;
 
 pub const Error = std.Io.Writer.Error || error{OutOfMemory};
 
@@ -158,8 +159,10 @@ test "write prints a quoted datum with the printer" {
     defer arena.deinit();
     const a = arena.allocator();
     var symbols: symbol.Table = .{};
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
     const s = Value.fromSymbol(try symbols.intern(a, "a"));
-    const datum = try Value.cons(a, s, try Value.cons(a, .fromFixnum(2), Value.empty_list_value));
+    const datum = try heap.cons(s, try heap.cons(.fromFixnum(2), Value.empty_list_value));
     const n = try make(a, .{ .constant = datum });
     const text = try written(std.testing.allocator, &symbols, n);
     defer std.testing.allocator.free(text);

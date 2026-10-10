@@ -93,7 +93,7 @@ const Expander = struct {
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
             // Self-evaluating (R7RS 4.1.2).
-            .fixnum, .boolean, .unspecified, .uninitialized, .condition, .primitive, .closure => task.dest.* = .{ .constant = task.form },
+            .fixnum, .boolean, .unspecified, .uninitialized, .condition, .primitive, .closure => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol => try self.reference(task),
@@ -112,6 +112,14 @@ const Expander = struct {
                 try self.call(task, items);
             },
         }
+    }
+
+    /// Makes the node of `task` the constant `v`. The code is not in the GC heap
+    /// yet, so a constant that refers to the heap is told to the context, which
+    /// keeps it alive; these are the only two places a constant is made.
+    fn constant(self: *Expander, task: Task, v: Value) Error!void {
+        try self.ctx.keepConstant(v);
+        task.dest.* = .{ .constant = v };
     }
 
     /// Queues `form` to fill a new node, and returns the node.
@@ -165,7 +173,7 @@ const Expander = struct {
     fn quote(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 2)
             return self.ctx.raise("bad quote: expected (quote datum)", .{});
-        task.dest.* = .{ .constant = items[1] };
+        try self.constant(task, items[1]);
     }
 
     /// `(if test consequent [alternative])` (R7RS 4.1.5).
@@ -389,17 +397,18 @@ const Fixture = struct {
     fn init(self: *Fixture) !void {
         self.arena = .init(std.testing.allocator);
         errdefer self.arena.deinit();
-        self.ctx = try .init(self.arena.allocator());
+        self.ctx = try .init(self.arena.allocator(), std.testing.allocator);
     }
 
     fn deinit(self: *Fixture) void {
+        self.ctx.deinit();
         self.arena.deinit();
     }
 
     /// The first datum of `src`.
     fn read(self: *Fixture, src: []const u8) !Value {
         var r: @import("../reader.zig").Reader = .init(src);
-        const sink: @import("../reader.zig").Sink = .{ .alloc = self.ctx.persist, .symbols = &self.ctx.symbols };
+        const sink: @import("../reader.zig").Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
         return (try r.next(self.arena.allocator(), sink)).?;
     }
 
@@ -599,9 +608,9 @@ test "a form that is not a proper list is refused" {
     defer f.deinit();
     const a = f.arena.allocator();
     // The reader cannot write a dotted list, so build (+ 1 . 2) by hand.
-    const tail = try Value.cons(a, .fromFixnum(1), .fromFixnum(2));
+    const tail = try f.ctx.heap.cons(.fromFixnum(1), .fromFixnum(2));
     const plus: Value = .fromSymbol(try f.ctx.symbols.intern(a, "+"));
-    const form = try Value.cons(a, plus, tail);
+    const form = try f.ctx.heap.cons(plus, tail);
     try std.testing.expectError(error.Raised, expand(&f.ctx, a, form));
     try std.testing.expectEqualStrings("bad syntax: a form must be a proper list", f.ctx.diagnostic());
 }
@@ -614,6 +623,32 @@ test "quote gives the very datum it was read with, not a copy" {
     const form = try f.read("(quote (1 2))");
     const node = try expand(&f.ctx, a, form);
     try std.testing.expectEqual(form.asPair().?.cdr.asPair().?.car.asPair().?, node.constant.asPair().?);
+}
+
+test "a constant that refers to the heap is kept for the collector, and nothing else is" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // Constants that hold no heap object need no root.
+    for ([_][]const u8{ "5", "#t", "(quote foo)", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
+    try std.testing.expectEqual(0, f.ctx.code_roots.items.len);
+    f.ctx.collectIdle();
+    try std.testing.expectEqual(0, f.ctx.heap.count);
+    // A quoted list is one: the datum, not the pairs of the `quote` form around it.
+    const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
+    try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(4, f.ctx.heap.count);
+    f.ctx.collectIdle();
+    try std.testing.expectEqual(2, f.ctx.heap.count);
+    try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
+    // The other place a constant is made: a form that is a value already.
+    const closure = try f.ctx.heap.create(value_mod.Closure, .{ .lambda = undefined, .env = null });
+    const itself = try expand(&f.ctx, a, .fromClosure(closure));
+    try std.testing.expectEqual(closure, itself.constant.asClosure().?);
+    try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
+    f.ctx.collectIdle();
+    try std.testing.expectEqual(3, f.ctx.heap.count);
 }
 
 test "a program nested deeper than the Zig stack allows still expands" {

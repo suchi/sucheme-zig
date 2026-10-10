@@ -14,6 +14,9 @@ pub const name = build_options.name;
 /// build.zig passes it through as a build option.
 pub const version = build_options.version;
 
+/// The GC heap, and the options that bound it.
+pub const heap = @import("heap.zig");
+
 const reader = @import("reader.zig");
 const expand = @import("syntax/expand.zig");
 const machine = @import("machine.zig");
@@ -25,23 +28,29 @@ const printer = @import("printer.zig");
 /// the same way.
 pub const Error = reader.Error || expand.Error || machine.Error || printer.Error;
 
-/// One interpreter: what outlives a single line of input, which is the data the
-/// reader builds, the symbol table and the global environment.
-///
-/// Those live in an arena of its own until the GC heap arrives in slice 1g;
-/// docs/design/architecture.md records the exception. The context points into
-/// the arena, so an interpreter is initialised in place and not copied after.
+/// One interpreter: what outlives a single line of input. The data the reader
+/// builds and what a program makes while it runs are in the GC heap, which
+/// `gpa` supplies and the options bound; the symbol table, the global
+/// environment and the code are in an arena of the interpreter's own, which
+/// docs/design/architecture.md records as the exception. The context points
+/// into the arena, so an interpreter is initialised in place and not copied
+/// after.
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
     ctx: context.Context,
 
     pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
+        return self.initWithOptions(gpa, .{});
+    }
+
+    pub fn initWithOptions(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
         self.arena = .init(gpa);
         errdefer self.arena.deinit();
-        self.ctx = try .init(self.arena.allocator());
+        self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
     }
 
     pub fn deinit(self: *Interpreter) void {
+        self.ctx.deinit();
         self.arena.deinit();
     }
 
@@ -51,8 +60,9 @@ pub const Interpreter = struct {
     /// Stops at the first error. The results written before it stay written,
     /// and `diagnostic` describes the error. What this call needs only while it
     /// runs comes from `arena`, which the caller frees as a whole. The data the
-    /// reader builds, the symbols and what a definition keeps are allocated in
-    /// the interpreter's own arena and live until `deinit`.
+    /// reader builds are in the heap and live for as long as something refers
+    /// to them; the symbols and the code are allocated in the interpreter's own
+    /// arena and live until `deinit`.
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         self.ctx.clearDiagnostic();
         self.run(arena, source, out) catch |e| {
@@ -70,8 +80,13 @@ pub const Interpreter = struct {
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         var r: reader.Reader = .init(source);
         // What is read outlives the line: `quote` can hand it to a definition.
-        const sink: reader.Sink = .{ .alloc = self.ctx.persist, .symbols = &self.ctx.symbols };
-        while (try r.next(arena, sink)) |form| {
+        const sink: reader.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        while (true) {
+            // Between two forms nothing is held but what the context holds, so
+            // this is a safe point too. It is also where the garbage of a line
+            // that ended in an error is collected, before the next line reads.
+            if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
+            const form = try r.next(arena, sink) orelse break;
             const node = try expand.expand(&self.ctx, arena, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
@@ -93,6 +108,7 @@ fn describe(e: Error) []const u8 {
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
+        error.HeapLimit => "heap limit exceeded",
         else => @errorName(e),
     };
 }
@@ -208,4 +224,54 @@ test "a closure keeps its frame after the line that made it is gone" {
     defer second.deinit();
     try interp.evalPrint(second.allocator(), "(next) (next)", &w);
     try std.testing.expectEqualStrings("41\n42\n", w.buffered());
+}
+
+test "a line that ends at the limit of the heap does not end the session" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (forever n) (+ 1 (forever n))) (define keep 42)", &w);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(forever 0)", &w));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    // What the failed line left in the heap is garbage, and the next line starts
+    // by collecting it before it reads.
+    try interp.evalPrint(arena.allocator(), "(+ 1 2) keep", &w);
+    try std.testing.expectEqualStrings("3\n42\n", w.buffered());
+    try std.testing.expectEqualStrings("", interp.diagnostic());
+    // And again.
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(forever 0)", &w));
+    try interp.evalPrint(arena.allocator(), "(+ 20 22)", &w);
+    try std.testing.expectEqualStrings("3\n42\n42\n", w.buffered());
+}
+
+test "a datum too large for the heap is refused with the same message" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .limit = 1024, .min_threshold = 512 });
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.HeapLimit, interp.evalPrint(arena.allocator(), "'(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30)", &w));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    // The datum that did not fit is garbage, and a small one does.
+    try interp.evalPrint(arena.allocator(), "'(1 2)", &w);
+    try std.testing.expectEqualStrings("(1 2)\n", w.buffered());
+}
+
+test "the data of a quoted list survives the collections between the lines that use it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+    defer interp.deinit();
+    var buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define xs '(1 2 3)) (define (get) '(4 5 6))", &w);
+    try interp.evalPrint(arena.allocator(), "xs (get)", &w);
+    try std.testing.expectEqualStrings("(1 2 3)\n(4 5 6)\n", w.buffered());
 }

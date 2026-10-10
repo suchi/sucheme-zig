@@ -6,7 +6,8 @@
 //! the empty list, symbols and pairs, 1d the two kinds of procedure, and 1e adds
 //! the marker of a variable that is not defined yet. Slice 1f adds the condition,
 //! and the layouts of the core IR and of the continuation, which are not values
-//! but are walked all the same.
+//! but are walked all the same. Slice 1g puts the pairs, closures, frames,
+//! continuation frames and argument lists in the GC heap (src/heap.zig).
 //! The layouts of everything the GC will walk are defined here, so the one
 //! place that has to know them all is this file (docs/design/architecture.md).
 //!
@@ -24,8 +25,7 @@ pub const Value = union(enum) {
     /// The empty list `()`.
     empty_list,
     symbol: SymbolId,
-    /// A pair. It lives where its allocator put it; until the GC heap arrives
-    /// (slice 1g) that is the interpreter's arena, and nothing frees it.
+    /// A pair. It lives in the GC heap.
     pair: *Pair,
     /// A procedure implemented in Zig.
     primitive: *const Primitive,
@@ -73,15 +73,17 @@ pub const Value = union(enum) {
         return .{ .closure = c };
     }
 
-    /// A new pair of `car` and `cdr`, allocated with `alloc`.
-    pub fn cons(alloc: std.mem.Allocator, car: Value, cdr: Value) error{OutOfMemory}!Value {
-        const p = try alloc.create(Pair);
-        p.* = .{ .car = car, .cdr = cdr };
-        return .{ .pair = p };
-    }
-
     pub fn fromCondition(c: *Condition) Value {
         return .{ .condition = c };
+    }
+
+    /// Whether the value refers to an object in the GC heap, which the collector
+    /// has to be told about if the value is kept anywhere it cannot see.
+    pub fn pointsIntoHeap(self: Value) bool {
+        return switch (self) {
+            .pair, .closure => true,
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .condition => false,
+        };
     }
 
     pub fn kind(self: Value) Kind {
@@ -214,8 +216,8 @@ pub const Address = struct {
 
 /// A node of the core IR: what the expander produces and the machine runs
 /// (docs/design/runtime.md). Nodes are immutable, and a node refers to the nodes
-/// under it by pointer. They live where the expander allocated them, which until
-/// slice 1g is the interpreter's arena.
+/// under it by pointer. They live where the expander allocated them, which is
+/// the interpreter's arena until a later slice puts code in the GC heap.
 pub const Node = union(enum) {
     /// A literal, or the datum of a `quote`.
     constant: Value,
@@ -323,6 +325,17 @@ pub const Kont = struct {
     };
 };
 
+/// The types of the objects that live in the GC heap. A pointer to one of them
+/// is a reference the collector follows (src/trace.zig); the order is the one
+/// the heap numbers its kinds in.
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args };
+
+/// The types that are not in the GC heap but are pointed to from it: the core
+/// IR, which until a later slice stays where the expander allocated it, the
+/// procedures implemented in Zig, and the conditions. A pointer to one of them
+/// is not followed.
+pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Condition };
+
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition };
 
@@ -420,15 +433,4 @@ test "a node tree and a continuation chain can be built from the layouts" {
     const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call.call, .args = null, .received = 0 } } };
     try std.testing.expectEqual(2, top.depth);
     try std.testing.expectEqual(&base, top.next.?);
-}
-
-test "cons makes a pair that holds both halves" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const v = try Value.cons(arena.allocator(), .fromFixnum(1), Value.empty_list_value);
-    try std.testing.expectEqual(Kind.pair, v.kind());
-    const p = v.asPair().?;
-    try std.testing.expectEqual(1, p.car.asFixnum().?);
-    try std.testing.expectEqual(Kind.empty_list, p.cdr.kind());
-    try std.testing.expect(Value.fromFixnum(1).asPair() == null);
 }
