@@ -93,7 +93,7 @@ const Expander = struct {
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
             // Self-evaluating (R7RS 4.1.2).
-            .fixnum, .boolean, .unspecified, .uninitialized, .condition, .primitive, .closure => try self.constant(task, task.form),
+            .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol => try self.reference(task),

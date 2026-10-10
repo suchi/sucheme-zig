@@ -7,7 +7,8 @@
 //! the marker of a variable that is not defined yet. Slice 1f adds the condition,
 //! and the layouts of the core IR and of the continuation, which are not values
 //! but are walked all the same. Slice 1g puts the pairs, closures, frames,
-//! continuation frames and argument lists in the GC heap (src/heap.zig).
+//! continuation frames and argument lists in the GC heap (src/heap.zig). Slice
+//! 1h adds characters, strings and vectors.
 //! The layouts of everything the GC will walk are defined here, so the one
 //! place that has to know them all is this file (docs/design/architecture.md).
 //!
@@ -41,6 +42,12 @@ pub const Value = union(enum) {
     uninitialized,
     /// What a Scheme error is: an object that says what went wrong (R7RS 6.11).
     condition: *Condition,
+    /// A character: a Unicode scalar value (R7RS 6.6), so never a surrogate.
+    character: u21,
+    /// A string. It lives in the GC heap.
+    string: *String,
+    /// A vector. It lives in the GC heap.
+    vector: *Vector,
 
     /// The empty list. Named apart from the variant, which a constant of the
     /// same name would clash with.
@@ -77,12 +84,26 @@ pub const Value = union(enum) {
         return .{ .condition = c };
     }
 
+    /// The character `c`, which must be a scalar value (`isScalarValue`).
+    pub fn fromCharacter(c: u21) Value {
+        std.debug.assert(isScalarValue(c));
+        return .{ .character = c };
+    }
+
+    pub fn fromString(s: *String) Value {
+        return .{ .string = s };
+    }
+
+    pub fn fromVector(v: *Vector) Value {
+        return .{ .vector = v };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure => true,
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .condition => false,
+            .pair, .closure, .string, .vector => true,
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .condition, .character => false,
         };
     }
 
@@ -98,6 +119,9 @@ pub const Value = union(enum) {
             .unspecified => .unspecified,
             .uninitialized => .uninitialized,
             .condition => .condition,
+            .character => .character,
+            .string => .string,
+            .vector => .vector,
         };
     }
 
@@ -149,6 +173,30 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The character, or null when the value is not one.
+    pub fn asCharacter(self: Value) ?u21 {
+        return switch (self) {
+            .character => |c| c,
+            else => null,
+        };
+    }
+
+    /// The string, or null when the value is not one.
+    pub fn asString(self: Value) ?*String {
+        return switch (self) {
+            .string => |s| s,
+            else => null,
+        };
+    }
+
+    /// The vector, or null when the value is not one.
+    pub fn asVector(self: Value) ?*Vector {
+        return switch (self) {
+            .vector => |v| v,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent. Every value but `#f` is
     /// true, the empty list and zero included (R7RS 6.3).
     pub fn isTrue(self: Value) bool {
@@ -169,6 +217,26 @@ pub const Pair = struct {
     car: Value,
     cdr: Value,
 };
+
+/// A string: its characters as UTF-8, which the creator guarantees is valid
+/// (ADR-0008). The bytes are a payload the heap owns and accounts for.
+pub const String = struct {
+    bytes: []u8,
+};
+
+/// A vector: its elements in order. They are a payload the heap owns and
+/// accounts for, and the collector follows them.
+pub const Vector = struct {
+    items: []Value,
+};
+
+/// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
+/// #x10FFFF (R7RS 6.6), the code points a character can be. Everything that
+/// makes a character from a number asks this first, so a surrogate or a number
+/// past the range is a Scheme error and never a string that cannot be UTF-8.
+pub fn isScalarValue(cp: u32) bool {
+    return cp <= 0xD7FF or (cp >= 0xE000 and cp <= 0x10FFFF);
+}
 
 /// The ways a primitive can fail. It grows with the primitives: a failure the
 /// evaluator has to describe is named here.
@@ -328,7 +396,7 @@ pub const Kont = struct {
 /// The types of the objects that live in the GC heap. A pointer to one of them
 /// is a reference the collector follows (src/trace.zig); the order is the one
 /// the heap numbers its kinds in.
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, the
@@ -337,7 +405,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args };
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Condition };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector };
 
 test {
     std.testing.refAllDecls(@This());
@@ -387,6 +455,46 @@ test "a condition is its own kind, and carries its message" {
     try std.testing.expect(v.asClosure() == null);
     try std.testing.expect(Value.fromFixnum(1).asCondition() == null);
     try std.testing.expect(v.isTrue());
+}
+
+test "a character holds a scalar value and answers only to its own accessor" {
+    const c: Value = .fromCharacter(0x3BB);
+    try std.testing.expectEqual(Kind.character, c.kind());
+    try std.testing.expectEqual(0x3BB, c.asCharacter().?);
+    try std.testing.expect(c.asFixnum() == null);
+    try std.testing.expect(c.asString() == null);
+    try std.testing.expect(Value.fromFixnum(0x3BB).asCharacter() == null);
+    try std.testing.expect(c.isTrue());
+    try std.testing.expect(!c.pointsIntoHeap());
+    try std.testing.expectEqual(0x10FFFF, Value.fromCharacter(0x10FFFF).asCharacter().?);
+}
+
+test "isScalarValue refuses the surrogates and what is past the range" {
+    try std.testing.expect(isScalarValue(0));
+    try std.testing.expect(isScalarValue(0xD7FF));
+    try std.testing.expect(!isScalarValue(0xD800));
+    try std.testing.expect(!isScalarValue(0xDFFF));
+    try std.testing.expect(isScalarValue(0xE000));
+    try std.testing.expect(isScalarValue(0x10FFFF));
+    try std.testing.expect(!isScalarValue(0x110000));
+}
+
+test "a string and a vector are heap objects, each answering to its own accessor" {
+    var bytes = [_]u8{ 'h', 'i' };
+    var s: String = .{ .bytes = &bytes };
+    const sv: Value = .fromString(&s);
+    try std.testing.expectEqual(Kind.string, sv.kind());
+    try std.testing.expectEqualStrings("hi", sv.asString().?.bytes);
+    try std.testing.expect(sv.pointsIntoHeap());
+    try std.testing.expect(sv.asVector() == null);
+    var items = [_]Value{.fromFixnum(1)};
+    var v: Vector = .{ .items = &items };
+    const vv: Value = .fromVector(&v);
+    try std.testing.expectEqual(Kind.vector, vv.kind());
+    try std.testing.expectEqual(1, vv.asVector().?.items[0].asFixnum().?);
+    try std.testing.expect(vv.pointsIntoHeap());
+    try std.testing.expect(vv.asString() == null);
+    try std.testing.expect(vv.isTrue() and sv.isTrue());
 }
 
 test "each kind answers only to its own accessor" {
