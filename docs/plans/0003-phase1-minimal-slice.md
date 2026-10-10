@@ -8,7 +8,7 @@
 
 スライスは、段階を分けた、通しで動く縦切りの作業単位である。英語の vertical slice に当たり、読み取りから実行・表示までの全部の層を薄く貫いて動かす。コードのコメントとブランチ名は、英語の `slice` と書く。Zig の `slice`(`[]T`)とは別物である。
 
-以前の文書は、これを「切片」と書いていた。[ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md) と [ADR-0030](../adr/0030-lexical-address-width-u32.md) の本文に「切片」が残っているのは、`main` にある ADR の本文を書き換えない規則([adr/README.md](../adr/README.md))による。読み替えは、このスライスである。
+以前の文書は、これを「切片」と書いていた。[ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md) と [ADR-0030](../adr/0030-lexical-address-width-u32.md) の本文に「切片」が残っているのは、`main` にある ADR の本文を書き換えない規則([adr/README.md](../adr/README.md))による。読み替えは「切片」から「スライス」へである。
 
 ## この計画が解こうとしている問題
 
@@ -114,7 +114,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 スライス 1g(GC ヒープ)に進む。完了条件は上のスライスの表のとおり、GC が動き、100万回の末尾再帰が一定のメモリで完了すること。
 
-1. 1f の PR(#13)はマージ済み。最新の `origin/main` から `feature/phase1-slice-1g-gc-heap` を作る。「切片」を「スライス」に直す作業は [Issue #14](https://github.com/suchi/sucheme-zig/issues/14) にあり、このブランチの PR で行った。
+1. 1f の PR(#13)はマージ済み。最新の `origin/main` から `feature/phase1-slice-1g-gc-heap` を作る。「切片」を「スライス」に直す作業([Issue #14](https://github.com/suchi/sucheme-zig/issues/14))は、PR [#17](https://github.com/suchi/sucheme-zig/pull/17) で行った。
 2. 計画書 `0005-slice-1g-gc-heap.md` を先に書き、ユーザーの合意を得てから実装する(`AGENTS.md` の方針)。1f の計画書 0004 と同じ形で、完了条件、合意済みの決定、合意を求める点、範囲を狭める線、ファイル、作業順、テスト、リスクを書く。
 3. 計画書で決める事項: GC の起動の閾値、予約領域の具体的なバイト数、ヒープ外ペイロードと所有者の確保の巻き戻しの単位、作業リストの予約サイズ(いずれも [design/open-questions.md](../design/open-questions.md))。あわせて、フレーム数の上限を設けるかどうか(1g の計上の上限と二重になるかを実測で決める)。
 4. 参照する設計: [design/runtime.md](../design/runtime.md) のガベージコレクション、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)。永続アリーナを使っている箇所(`architecture.md` の評価の進行点の項が一覧する)を `heap.zig` に移す。
