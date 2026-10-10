@@ -294,3 +294,22 @@ test "a spec of its own sorts pointers by the types it lists" {
     const Other = Tracer(.{ .heap = &.{}, .code = &.{u8}, .symbol = SymbolId });
     try std.testing.expect(comptime Other.classify(Branch) == null);
 }
+
+test "of the code types only the node holds values, which the context's constants stand in for" {
+    // The collector does not follow a pointer to code. That is safe while no code
+    // type holds a heap object, and `Node` is the one that does (a constant), so
+    // the context keeps those constants itself. A value added to any other code
+    // type would be missed without a word, and this is where it shows.
+    inline for (value_mod.code_types) |T| {
+        const class = comptime interpreter.classify(T);
+        if (T == value_mod.Node) {
+            try std.testing.expectEqual(Class.follow, class.?);
+        } else if (T == value_mod.Primitive) {
+            // A Zig function pointer, which the walk has no class for and never walks.
+            try std.testing.expect(class == null);
+        } else {
+            // A symbol id is allowed: names are not collected yet. A heap object is not.
+            try std.testing.expect(class.? != .follow);
+        }
+    }
+}
