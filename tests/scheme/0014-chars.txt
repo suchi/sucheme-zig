@@ -1,0 +1,161 @@
+# Slice 1h: character literals. A character reads as itself, evaluates to
+# itself and prints the way write prints it: `#\` and the character, or the
+# name when the character has one, or `#\x` and its code for the other control
+# characters. A character that is not ASCII is printed as it is.
+
+# One character after `#\`.
+#\a
+#\a
+
+#\A
+#\A
+
+#\1
+#\1
+
+# `x` alone is the character x; it is a hex escape only when digits follow.
+#\x
+#\x
+
+# The names of R7RS, each printed back as its name.
+#\alarm
+#\alarm
+
+#\backspace
+#\backspace
+
+#\delete
+#\delete
+
+#\escape
+#\escape
+
+#\newline
+#\newline
+
+#\null
+#\null
+
+#\return
+#\return
+
+#\space
+#\space
+
+#\tab
+#\tab
+
+# The hex form reads as the character, and the printer prefers a name.
+#\x41
+#\A
+
+#\x61
+#\a
+
+#\x7
+#\alarm
+
+#\x0
+#\null
+
+#\x7f
+#\delete
+
+#\x1b
+#\escape
+
+#\x20
+#\space
+
+# A control character with no name is printed in the hex form.
+#\x1
+#\x1
+
+#\x10
+#\x10
+
+# Characters that are not ASCII are printed as they are.
+#\x3bb
+#\λ
+
+#\λ
+#\λ
+
+#\x10000
+#\𐀀
+
+# A delimiter after `#\` is the character, not the end of the datum.
+#\(
+#\(
+
+#\)
+#\)
+
+#\"
+#\"
+
+#\;
+#\;
+
+#\'
+#\'
+
+#\#
+#\#
+
+#\\
+#\\
+
+# A character ends at the next delimiter.
+'(#\a)
+(#\a)
+
+'(#\a #\b)
+(#\a #\b)
+
+'(#\( #\))
+(#\( #\))
+
+'(#\space #\x41 #\tab)
+(#\space #\A #\tab)
+
+# A character evaluates to itself, so quote changes nothing.
+'#\a
+#\a
+
+#\a #\b
+#\a
+#\b
+
+(if #\a 1 2)
+1
+
+(define c #\a) c
+#\a
+
+# A character is not a procedure.
+(#\a)
+error: not a procedure
+
+# A character outside the Unicode scalar values is rejected, and the REPL goes on.
+#\xD800
+error: invalid character
+
+#\xDFFF
+error: invalid character
+
+#\x110000
+error: invalid character
+
+# A name that is not one of the names is an error.
+#\foo
+error: invalid character
+
+#\spaces
+error: invalid character
+
+# A character defined before the collector has run many times is still
+# readable after it.
+(define ch #\x41) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 100000) ch
+ok
+#\A
