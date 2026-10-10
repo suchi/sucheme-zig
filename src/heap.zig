@@ -621,3 +621,24 @@ test "when the marking list cannot be allocated the marking rescans and still fi
     try std.testing.expectEqual(0, heap.work.len);
     try std.testing.expectEqual(2, heap.count);
 }
+
+test "in stress mode every safe point of a short run collects, and the gap grows as the run goes on" {
+    var heap: Heap = .init(std.testing.allocator, .{ .stress = true, .min_threshold = 1 << 30 });
+    defer heap.deinit();
+    // A short run: every one of the first `stress_ramp` safe points asks.
+    for (0..stress_ramp) |_| {
+        try std.testing.expect(heap.shouldCollect());
+        heap.collect(TestRoots{});
+    }
+    try std.testing.expectEqual(stress_ramp, heap.collections);
+    // A long run: each collection starts the count of safe points again, so the
+    // number of collections is far below the number of safe points. Left
+    // uncleared, the count would stay past every gap and each would collect.
+    const calls = 20_000;
+    for (0..calls) |_| {
+        if (heap.shouldCollect()) heap.collect(TestRoots{});
+    }
+    const after_ramp = heap.collections - stress_ramp;
+    try std.testing.expect(after_ramp < calls * 3 / 4);
+    try std.testing.expect(after_ramp > calls / 4);
+}
