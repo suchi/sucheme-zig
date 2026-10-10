@@ -3,8 +3,8 @@
 //!
 //! The reader interns every symbol it reads, so a name that is only ever
 //! referred to still takes a place in the table. The table lives as long as the
-//! interpreter and is never collected; the weak table of
-//! docs/design/runtime.md replaces it when the GC arrives (slice 1g).
+//! interpreter and is never collected, not even by the GC of slice 1g; the weak
+//! table of docs/design/runtime.md replaces it in a later slice.
 
 const std = @import("std");
 

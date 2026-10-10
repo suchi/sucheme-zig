@@ -47,12 +47,11 @@ pub const Request = union(enum) {
 /// docs/design/architecture.md: the arena holds the argument vector and the
 /// output buffer, both needed only to start up and shut down. No Scheme value
 /// is allocated here. The REPL gives `sucheme` a per-line arena for what one
-/// line needs while it runs, and an `Interpreter`, which keeps its own arena
-/// for what outlives a line: the data the reader builds, the symbols and the
-/// definitions, and the frame of every procedure call. Until the heap arrives in
-/// slice 1g, nothing in that arena is freed, so the memory of a session grows
-/// with what it reads and with how many calls it makes: a small program can use
-/// it up.
+/// line needs while it runs, and an `Interpreter`, which takes the objects of a
+/// program from the general purpose allocator (the pairs, closures, frames of
+/// calls and the continuation, which the collector frees, within a limit of
+/// 256 MiB) and keeps an arena of its own for the symbols, the definitions and
+/// the code, which nothing frees before the session ends.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());

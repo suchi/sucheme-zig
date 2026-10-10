@@ -12,6 +12,7 @@ const std = @import("std");
 const value_mod = @import("value.zig");
 const Value = value_mod.Value;
 const symbol = @import("symbol.zig");
+const Heap = @import("heap.zig").Heap;
 
 pub const Error = std.Io.Writer.Error || error{OutOfMemory};
 
@@ -87,13 +88,15 @@ test {
 /// A scratch space for the tests: symbols a, b, and pairs, all in one arena.
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
+    heap: Heap,
     symbols: symbol.Table = .{},
 
     fn init() Fixture {
-        return .{ .arena = .init(std.testing.allocator) };
+        return .{ .arena = .init(std.testing.allocator), .heap = .init(std.testing.allocator, .{}) };
     }
 
     fn deinit(self: *Fixture) void {
+        self.heap.deinit();
         self.arena.deinit();
     }
 
@@ -102,7 +105,7 @@ const Fixture = struct {
     }
 
     fn cons(self: *Fixture, car: Value, cdr: Value) !Value {
-        return Value.cons(self.arena.allocator(), car, cdr);
+        return self.heap.cons(car, cdr);
     }
 
     /// The list of `items`, ending in `tail`.
