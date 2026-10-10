@@ -158,6 +158,10 @@ const Fixture = struct {
         return .fromVector(try self.heap.createVector(items));
     }
 
+    fn string(self: *Fixture, bytes: []const u8) !Value {
+        return .fromString(try self.heap.createString(bytes));
+    }
+
     fn written(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
         var w: std.Io.Writer = .fixed(buf);
         try write(&w, std.testing.allocator, &self.symbols, v);
@@ -344,4 +348,76 @@ test "write does not recurse on the depth of a vector" {
     out.clearRetainingCapacity();
     try write(&out.writer, std.testing.allocator, &f.symbols, long);
     try std.testing.expectEqual(depth * 2 + 2, out.written().len);
+}
+
+test "write and display differ on a string and a character at the top" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const s = try f.string("a\"b");
+    try std.testing.expectEqualStrings("\"a\\\"b\"", try f.written(&buf, s));
+    try std.testing.expectEqualStrings("a\"b", try f.displayed(&buf, s));
+    const c: Value = .fromCharacter('b');
+    try std.testing.expectEqualStrings("#\\b", try f.written(&buf, c));
+    try std.testing.expectEqualStrings("b", try f.displayed(&buf, c));
+    const space: Value = .fromCharacter(' ');
+    try std.testing.expectEqualStrings("#\\space", try f.written(&buf, space));
+    try std.testing.expectEqualStrings(" ", try f.displayed(&buf, space));
+}
+
+test "write and display differ inside a list and a dotted pair" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const l = try f.list(&.{ try f.string("a"), .fromCharacter('b'), try f.sym("c") }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(\"a\" #\\b c)", try f.written(&buf, l));
+    try std.testing.expectEqualStrings("(a b c)", try f.displayed(&buf, l));
+    // The element after the dot is written in the same mode.
+    const pair = try f.cons(try f.string("a"), .fromCharacter('b'));
+    try std.testing.expectEqualStrings("(\"a\" . #\\b)", try f.written(&buf, pair));
+    try std.testing.expectEqualStrings("(a . b)", try f.displayed(&buf, pair));
+    const improper = try f.list(&.{ try f.string("x"), .fromCharacter('y') }, try f.string("z"));
+    try std.testing.expectEqualStrings("(\"x\" #\\y . \"z\")", try f.written(&buf, improper));
+    try std.testing.expectEqualStrings("(x y . z)", try f.displayed(&buf, improper));
+}
+
+test "write and display differ inside a vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const v = try f.vector(&.{ try f.string("a"), .fromCharacter('b'), .fromFixnum(1) });
+    try std.testing.expectEqualStrings("#(\"a\" #\\b 1)", try f.written(&buf, v));
+    try std.testing.expectEqualStrings("#(a b 1)", try f.displayed(&buf, v));
+    // The empty string is an element that writes as nothing.
+    const empties = try f.vector(&.{ try f.string(""), try f.string("") });
+    try std.testing.expectEqualStrings("#(\"\" \"\")", try f.written(&buf, empties));
+    try std.testing.expectEqualStrings("#( )", try f.displayed(&buf, empties));
+    try std.testing.expectEqualStrings("#(\"\")", try f.written(&buf, try f.vector(&.{try f.string("")})));
+    try std.testing.expectEqualStrings("#()", try f.displayed(&buf, try f.vector(&.{try f.string("")})));
+}
+
+test "write and display differ at every level of nested data" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // (#("a" (#\b . "c")) "d")
+    const inner_pair = try f.cons(.fromCharacter('b'), try f.string("c"));
+    const inner_list = try f.list(&.{inner_pair}, Value.empty_list_value);
+    const vec = try f.vector(&.{ try f.string("a"), inner_list });
+    const outer = try f.list(&.{ vec, try f.string("d") }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(#(\"a\" ((#\\b . \"c\"))) \"d\")", try f.written(&buf, outer));
+    try std.testing.expectEqualStrings("(#(a ((b . c))) d)", try f.displayed(&buf, outer));
+    // A vector of vectors of strings, and a list of lists of characters.
+    const vv = try f.vector(&.{ try f.vector(&.{try f.string("p")}), try f.vector(&.{ .fromCharacter('q'), try f.string("r") }) });
+    try std.testing.expectEqualStrings("#(#(\"p\") #(#\\q \"r\"))", try f.written(&buf, vv));
+    try std.testing.expectEqualStrings("#(#(p) #(q r))", try f.displayed(&buf, vv));
+}
+
+test "write escapes a string and a character in data as read would need" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const v = try f.vector(&.{ try f.string("a\nb\\"), .fromCharacter('\n'), .fromCharacter(0x3bb), try f.string("\u{3bb}") });
+    try std.testing.expectEqualStrings("#(\"a\\nb\\\\\" #\\newline #\\\u{3bb} \"\u{3bb}\")", try f.written(&buf, v));
+    try std.testing.expectEqualStrings("#(a\nb\\ \n \u{3bb} \u{3bb})", try f.displayed(&buf, v));
 }
