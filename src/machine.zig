@@ -304,9 +304,12 @@ const Fixture = struct {
         const sink: reader_mod.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
         var last: Value = .unspecified_value;
         while (true) {
-            // Between two forms nothing is held but what the context holds, as in
-            // `Interpreter.run`.
-            if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
+            // Between two forms nothing is held but what the context holds and
+            // the value of the form that just ran, which the caller still gets.
+            // (`Interpreter.run` has printed it by now.)
+            if (self.ctx.heap.shouldCollect()) {
+                self.ctx.heap.collect(Machine.Roots{ .ctx = &self.ctx, .env = null, .kont = null, .value = last });
+            }
             const form = try r.next(self.arena.allocator(), sink) orelse break;
             const node = try expand.expand(&self.ctx, self.arena.allocator(), form);
             last = try self.machine.run(node);
@@ -552,6 +555,18 @@ test "the programs give the same results with a collection at every step, whatev
         // It really collected, and at every step of the small programs.
         try std.testing.expect(f.ctx.heap.collections > 1000);
     }
+}
+
+test "the value a run gives back is still there after the collection that follows it" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .stress = true });
+    defer f.deinit();
+    // A closure made by the last form, held by nothing but the result.
+    const closure = try f.eval("(lambda (x y) x)");
+    try std.testing.expectEqual(2, closure.asClosure().?.lambda.arity);
+    const made = try f.eval("((lambda (n) (lambda () n)) 7)");
+    try std.testing.expectEqual(0, made.asClosure().?.lambda.arity);
+    try std.testing.expectEqual(7, made.asClosure().?.env.?.values[0].asFixnum().?);
 }
 
 test "what a global and what the code quote hold survives the collections of a long loop" {
