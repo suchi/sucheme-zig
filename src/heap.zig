@@ -20,9 +20,9 @@ const Frame = value_mod.Frame;
 const Kont = value_mod.Kont;
 const Args = value_mod.Args;
 
-/// The types that live in the heap. A pointer to one of them is followed by the
-/// collector; the index of a type here is the `kind` its header records.
-pub const object_types = [_]type{ Pair, Closure, Frame, Kont, Args };
+/// The types that live in the heap; the index of a type here is the `kind` its
+/// header records.
+const object_types = value_mod.heap_types;
 
 pub const Error = error{
     OutOfMemory,
@@ -170,6 +170,7 @@ pub const Heap = struct {
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("trace.zig");
 }
 
 test "an allocation adds its bytes to the account, and the peak follows it" {

@@ -323,6 +323,17 @@ pub const Kont = struct {
     };
 };
 
+/// The types of the objects that live in the GC heap. A pointer to one of them
+/// is a reference the collector follows (src/trace.zig); the order is the one
+/// the heap numbers its kinds in.
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args };
+
+/// The types that are not in the GC heap but are pointed to from it: the core
+/// IR, which until a later slice stays where the expander allocated it, the
+/// procedures implemented in Zig, and the conditions. A pointer to one of them
+/// is not followed.
+pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Condition };
+
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition };
 
