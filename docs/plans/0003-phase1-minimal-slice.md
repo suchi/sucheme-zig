@@ -49,7 +49,8 @@
 | 1d | マージ済み | #10 |
 | 1e | マージ済み | #11 |
 | 1f | マージ済み | #13(計画書 0004 は #12) |
-| 1g から 1j | 未着手 | - |
+| 1g | 計画書の合意待ち。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | - |
+| 1h から 1j | 未着手 | - |
 
 ## 再開の手がかり
 
@@ -114,9 +115,9 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 スライス 1g(GC ヒープ)に進む。完了条件は上のスライスの表のとおり、GC が動き、100万回の末尾再帰が一定のメモリで完了すること。
 
-1. 1f の PR(#13)はマージ済み。最新の `origin/main` から `feature/phase1-slice-1g-gc-heap` を作る。「切片」を「スライス」に直す作業([Issue #14](https://github.com/suchi/sucheme-zig/issues/14))は、PR [#17](https://github.com/suchi/sucheme-zig/pull/17) で行った。
-2. 計画書 `0005-slice-1g-gc-heap.md` を先に書き、ユーザーの合意を得てから実装する(`AGENTS.md` の方針)。1f の計画書 0004 と同じ形で、完了条件、合意済みの決定、合意を求める点、範囲を狭める線、ファイル、作業順、テスト、リスクを書く。
-3. 計画書で決める事項: GC の起動の閾値、予約領域の具体的なバイト数、ヒープ外ペイロードと所有者の確保の巻き戻しの単位、作業リストの予約サイズ(いずれも [design/open-questions.md](../design/open-questions.md))。あわせて、フレーム数の上限を設けるかどうか(1g の計上の上限と二重になるかを実測で決める)。
-4. 参照する設計: [design/runtime.md](../design/runtime.md) のガベージコレクション、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)。永続アリーナを使っている箇所(`architecture.md` の評価の進行点の項が一覧する)を `heap.zig` に移す。
+1. 計画書 [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) を書いた。ユーザーの合意を得てから実装する(`AGENTS.md` の方針)。合意を求める点は、計画書の「この計画が決めて、合意を求める点」にある。
+2. 合意後、計画書の「作業の順序」の1(Red: `tests/scheme/0012-gc.txt`)から始める。ブランチは `feature/phase1-slice-1g-gc-heap`。
+3. 計画書で決めた事項(GC の起動の閾値、ヒープ外ペイロードと所有者の確保の巻き戻しの単位、作業リストの容量、フレーム数の上限なし)は、実装の PR で [design/open-questions.md](../design/open-questions.md) を更新する。予約領域の具体的なバイト数は段階2に移す。
+4. 参照する設計: [design/runtime.md](../design/runtime.md) のガベージコレクション、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い、条件は `error.Raised` の脱出でハンドラは無い。
