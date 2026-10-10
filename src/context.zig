@@ -16,6 +16,10 @@ const Value = value_mod.Value;
 /// `Context.raised`. The failures of the host, such as memory, are the other one.
 pub const Error = error{ OutOfMemory, Raised };
 
+/// What the error is called when the heap cannot hold more. One place, so the
+/// message is the same whichever path reaches it.
+pub const heap_limit_message = "heap limit exceeded";
+
 /// What the interpreter carries between lines: the heap and the arena, the
 /// symbols and global bindings, the constants of the code, and the condition of
 /// the most recent error.
@@ -99,7 +103,7 @@ pub const Context = struct {
     pub fn heapFailure(self: *Context, e: heap_mod.Error) Error {
         return switch (e) {
             error.OutOfMemory => error.OutOfMemory,
-            error.HeapLimit => self.raise("heap limit exceeded", .{}),
+            error.HeapLimit => self.raise(heap_limit_message, .{}),
         };
     }
 
