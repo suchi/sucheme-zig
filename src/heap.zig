@@ -468,6 +468,8 @@ test "a frame too large to account for is refused, not wrapped around" {
     defer heap.deinit();
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize), null));
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize) / @sizeOf(Value), null));
+    // A count whose size wraps around to a small one must not pass for it.
+    try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize) / @sizeOf(Value) + 2, null));
     try std.testing.expectEqual(0, heap.accounted);
 }
 
