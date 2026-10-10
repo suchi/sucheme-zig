@@ -7,6 +7,9 @@
 //! whole when `next` returns it; it is garbage as soon as nothing refers to it,
 //! though `quote` can hand it to a definition that does.
 //!
+//! A vector `#(` ... `)` is collected like a list and made in the heap when it
+//! closes; a dot inside one is an error.
+//!
 //! Nesting is handled with an explicit stack, not Zig recursion: the depth of
 //! the input decides how deep it goes (docs/design/runtime.md).
 
@@ -59,6 +62,9 @@ pub const Sink = struct {
 /// What is open at this point of the input.
 const Frame = union(enum) {
     list: List,
+    /// A `#(` whose elements so far are these. A dot has no meaning in a
+    /// vector, so there is nothing but the elements to keep.
+    vector: std.ArrayList(Value),
     /// A `'` waiting for its datum.
     quote,
 
@@ -112,7 +118,9 @@ pub const Reader = struct {
                     // one element and the single datum that ends the list.
                     if (open.items.len == 0) return error.UnexpectedDot;
                     switch (open.items[open.items.len - 1]) {
-                        .quote => return error.UnexpectedDot,
+                        // Why: R7RS 7.1.2 <vector> is `#(` <datum>* `)`, with no
+                        // place for a dot.
+                        .quote, .vector => return error.UnexpectedDot,
                         .list => |*l| {
                             if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
                             l.dot = true;
@@ -121,7 +129,11 @@ pub const Reader = struct {
                     continue;
                 } else try self.atom(sink),
                 '"' => try string_syntax.read(self.src, &self.pos, scratch, sink.heap),
-                '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos)) else try self.atom(sink),
+                '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos)) else if (self.atVectorOpen()) {
+                    self.pos += 2;
+                    try open.append(scratch, .{ .vector = .empty });
+                    continue;
+                } else try self.atom(sink),
                 '\'' => {
                     self.pos += 1;
                     try open.append(scratch, .quote);
@@ -136,6 +148,7 @@ pub const Reader = struct {
                             if (l.dot and l.tail == null) return error.UnexpectedDot;
                             break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
                         },
+                        .vector => |items| break :blk .fromVector(try sink.heap.createVector(items.items)),
                     }
                 },
                 else => try self.atom(sink),
@@ -146,8 +159,17 @@ pub const Reader = struct {
                 datum = try quoted(sink, datum);
             }
             if (open.items.len == 0) return datum;
-            try open.items[open.items.len - 1].list.add(scratch, datum);
+            switch (open.items[open.items.len - 1]) {
+                .list => |*l| try l.add(scratch, datum),
+                .vector => |*items| try items.append(scratch, datum),
+                .quote => unreachable,
+            }
         }
+    }
+
+    /// Whether the input is at the `#(` that begins a vector.
+    fn atVectorOpen(self: *const Reader) bool {
+        return self.pos + 1 < self.src.len and self.src[self.pos + 1] == '(';
     }
 
     /// Whether the input is at a `.` that stands alone: the next character is a
@@ -461,7 +483,7 @@ test "next reports a quote with nothing to quote" {
 test "next rejects text that is neither an integer, a boolean nor an identifier" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#(1)", ";", "|x|", "+.1", "a'b" }) |src| {
+    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", ";", "|x|", "+.1", "a'b" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
 }
@@ -532,4 +554,98 @@ test "next reads a long chain of quotes and a long list" {
     var count: usize = 0;
     while (l.asPair()) |p| : (count += 1) l = p.cdr;
     try std.testing.expectEqual(n, count);
+}
+
+test "next reads a vector of data, the empty vector and nesting" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("#(1 2 3)", try f.roundTrip(" #(1\t2\r\n3) ", &buf));
+    try std.testing.expectEqualStrings("#()", try f.roundTrip("#()", &buf));
+    try std.testing.expectEqualStrings("#()", try f.roundTrip("#( )", &buf));
+    try std.testing.expectEqualStrings("#(a #t -1)", try f.roundTrip("#(a #t -1)", &buf));
+    try std.testing.expectEqualStrings("#(1 #(2 3) ())", try f.roundTrip("#(1 #(2 3) ())", &buf));
+    try std.testing.expectEqualStrings("#(#(#()))", try f.roundTrip("#(#(#()))", &buf));
+    try std.testing.expectEqualStrings("(1 #(2) (3 #()))", try f.roundTrip("(1 #(2) (3 #()))", &buf));
+    try std.testing.expectEqualStrings("#((1 . 2) (3 4 . 5))", try f.roundTrip("#((1 . 2) (3 4 . 5))", &buf));
+    try std.testing.expectEqualStrings("(a . #(1))", try f.roundTrip("(a . #(1))", &buf));
+    // `(` is a delimiter, so a vector may directly follow another datum.
+    try std.testing.expectEqualStrings("(#(1) #(2))", try f.roundTrip("(#(1)#(2))", &buf));
+    const v = try f.readOne("#(1 2)");
+    try std.testing.expectEqual(.vector, v.kind());
+    try std.testing.expectEqual(2, v.asVector().?.items.len);
+    try std.testing.expectEqual(2, v.asVector().?.items[1].asFixnum().?);
+}
+
+test "next reads a quote before and inside a vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(quote #(1 2))", try f.roundTrip("'#(1 2)", &buf));
+    try std.testing.expectEqualStrings("#((quote a) b)", try f.roundTrip("#('a b)", &buf));
+    try std.testing.expectEqualStrings("#((quote #(1)))", try f.roundTrip("#('#(1))", &buf));
+    try std.testing.expectEqualStrings("(quote (quote #()))", try f.roundTrip("''#()", &buf));
+}
+
+test "next reports a dot in a vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "#(1 . 2)", "#(. 1)", "#(1 .)", "#(.)", "'#(a . b)", "#(1 (2) . 3)", "(#(1 . 2))" }) |src| {
+        try std.testing.expectError(error.UnexpectedDot, f.readOne(src));
+    }
+    // A dot in a list inside a vector is still the list's own.
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("#((1 . 2))", try f.roundTrip("#((1 . 2))", &buf));
+    // `...` and `.a` are identifiers, also in a vector.
+    try std.testing.expectEqualStrings("#(... .a)", try f.roundTrip("#(... .a)", &buf));
+}
+
+test "next tells an unclosed vector from a stray close paren" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    for ([_][]const u8{ "#(", "#(1 2", "#(1 (2)", "(#(1)", "#(#(1)", "#('", "#(1 'a" }) |src| {
+        var r: Reader = .init(src);
+        try std.testing.expectError(error.Incomplete, r.next(a, f.sink()));
+    }
+    try std.testing.expectError(error.UnexpectedCloseParen, f.readOne("#(1 2))"));
+    try std.testing.expectError(error.MissingDatum, f.readOne("#(')"));
+    // A `#` that begins neither `#(` nor `#\` is still not a datum.
+    try std.testing.expectError(error.InvalidToken, f.readOne("#"));
+    try std.testing.expectError(error.InvalidToken, f.readOne("#)"));
+    try std.testing.expectError(error.InvalidToken, f.readOne("#u8(1)"));
+}
+
+test "next reads vectors nested far deeper than a recursive reader could" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const depth = 100_000;
+    const src = try f.arena.allocator().alloc(u8, depth * 3);
+    for (0..depth) |k| @memcpy(src[2 * k ..][0..2], "#(");
+    @memset(src[depth * 2 ..], ')');
+    var d = try f.readOne(src);
+    // The innermost `#()` has no element, so there are `depth` vectors in the
+    // chain and one fewer links between them.
+    var vectors: usize = 0;
+    while (d.asVector()) |v| : (vectors += 1) {
+        if (v.items.len == 0) break;
+        d = v.items[0];
+    }
+    try std.testing.expectEqual(depth - 1, vectors);
+    try std.testing.expectEqual(.vector, d.kind());
+}
+
+test "next reads a long vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const n = 100_000;
+    const src = try f.arena.allocator().alloc(u8, 2 * n + 3);
+    @memcpy(src[0..2], "#(");
+    for (0..n) |k| {
+        src[2 + 2 * k] = '1';
+        src[3 + 2 * k] = ' ';
+    }
+    src[2 * n + 2] = ')';
+    const v = try f.readOne(src);
+    try std.testing.expectEqual(n, v.asVector().?.items.len);
 }
