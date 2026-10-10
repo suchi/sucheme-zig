@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0002](../adr/0002-value-representation.md), [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0008](../adr/0008-string-representation.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1h)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-10
-- 状態: 合意済み(2026-10-10、「合意を求める点」の3つは、いずれも勧める案で合意)
+- 状態: 実装済み、PR のレビュー待ち(2026-10-10)。「合意を求める点」の3つは、いずれも勧める案で合意した
 
 ## 解こうとしている問題
 
@@ -175,7 +175,19 @@ ADR-0027 の費用側の停止の規則に従い、先に線を引く。レビ�
 2. `write` と `display` のうち、`display` の入れ子の規則。外すと、トップレベルの値にだけ `display` を適用する。
 3. ベクタ。1h の行にあるが、文字列と独立しているので、次のスライス(1h の2)に切り出せる。
 
+## 実装での差分
+
+計画からの差分と、実装で決めたこと。
+
+- 文字列の `\x<16進>;` が範囲外のとき、文字列の中の誤りなので `invalid escape in string` にした。`#\x…` が範囲外のときは `invalid character`。16進の出力は小文字で桁を埋めない。
+- 文字列の行継続(`\` に改行)は、1h の範囲外として `invalid escape in string` にした。
+- `char_syntax.zig` と `string_syntax.zig` に、読み取りと出力の両方を置いた。名前とエスケープの表が1つになり、リーダとプリンタが食い違わない。
+- `#\` の直後で入力が終わるとき、閉じていない文字列のとき、閉じていないベクタのときは、いずれも `unexpected end of input` で、REPL が次の行を求める。
+- ミューテーションテストは、土台(`heap.zig`・`value.zig`・リーダのドット対)、`char_syntax.zig`、`string_syntax.zig`、ベクタ(`reader.zig`・`printer.zig`)に行った。生き残ったものは、振る舞いが変わらない同値なものを除いて、テストを足して捕まえた。足したテストは、各ファイルの末尾にある。
+- 乗算が桁あふれして小さな値に戻る要素数の拒否(`reserveWithPayload`)、16進エスケープの最大値の張り付き、`isDelimiter` の空白の種類が、ミューテーションテストで見つかった穴だった。
+- Windows の引数の WTF-8 は、`utf8ValidateSlice` が拒否することを単体テストで確かめた(`sucheme.zig` の入力の検査)。Windows 実機での実行は未確認で、`zig-api-notes.md` に書いた。
+
 ## 次にやること
 
-1. この計画書の PR がマージされるのを待つ。「合意を求める点」の3つは合意済みで、利用者の確認を取らずに決めた点(同じ節の後半)に意見があれば、マージまでに受ける。
-2. マージ後、`feature/phase1-slice-1h-strings-chars-vectors` を最新の `origin/main` から作り、進め方の図の順に始める。
+1. この PR のレビューとマージ。
+2. マージ後、スライス 1i(ブラウザで `(fact 10)` が動く)の計画書を書く。計画は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正。
