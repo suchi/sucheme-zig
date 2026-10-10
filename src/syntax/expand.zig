@@ -129,8 +129,8 @@ const Expander = struct {
         return node;
     }
 
-    /// The elements of the list `form`. A form is a proper list; the reader
-    /// cannot write any other, so this fails only for a datum built by hand.
+    /// The elements of the list `form`. A form is a proper list; a dotted pair
+    /// reads as data but is not a form, so it fails here.
     fn itemsOf(self: *Expander, form: Value) Error![]const Value {
         var items: std.ArrayList(Value) = .empty;
         var rest = form;

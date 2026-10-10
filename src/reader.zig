@@ -26,6 +26,10 @@ pub const Error = error{
     UnexpectedCloseParen,
     /// A `'` followed by `)`: there is nothing to quote.
     MissingDatum,
+    /// A `.` that does not stand between the last element of a list and the
+    /// one datum that ends it: at the top level, first in a list, after a `'`,
+    /// before the `)`, or followed by more than one datum.
+    UnexpectedDot,
     /// Text this reader cannot read as a datum.
     InvalidToken,
     /// A decimal integer outside the fixnum range. R7RS 6.2.3 lets this be
@@ -45,10 +49,26 @@ pub const Sink = struct {
 
 /// What is open at this point of the input.
 const Frame = union(enum) {
-    /// A list whose elements so far are these.
-    list: std.ArrayList(Value),
+    list: List,
     /// A `'` waiting for its datum.
     quote,
+
+    const List = struct {
+        /// The elements so far.
+        items: std.ArrayList(Value) = .empty,
+        /// Whether a `.` has been read, so that the next datum is the tail.
+        dot: bool = false,
+        /// The datum after the dot, once it has been read.
+        tail: ?Value = null,
+
+        /// Takes a finished datum as the next element, or as the tail if a dot
+        /// came before it. A second datum after the dot is an error.
+        fn add(self: *List, scratch: std.mem.Allocator, datum: Value) Error!void {
+            if (!self.dot) return self.items.append(scratch, datum);
+            if (self.tail != null) return error.UnexpectedDot;
+            self.tail = datum;
+        }
+    };
 };
 
 pub const Reader = struct {
@@ -74,9 +94,23 @@ pub const Reader = struct {
             var datum: Value = switch (self.src[self.pos]) {
                 '(' => {
                     self.pos += 1;
-                    try open.append(scratch, .{ .list = .empty });
+                    try open.append(scratch, .{ .list = .{} });
                     continue;
                 },
+                '.' => if (self.atDot()) {
+                    self.pos += 1;
+                    // Why: R7RS 7.1.2 <list> allows `.` only between at least
+                    // one element and the single datum that ends the list.
+                    if (open.items.len == 0) return error.UnexpectedDot;
+                    switch (open.items[open.items.len - 1]) {
+                        .quote => return error.UnexpectedDot,
+                        .list => |*l| {
+                            if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
+                            l.dot = true;
+                        },
+                    }
+                    continue;
+                } else try self.atom(sink),
                 '\'' => {
                     self.pos += 1;
                     try open.append(scratch, .quote);
@@ -87,7 +121,10 @@ pub const Reader = struct {
                     if (open.items.len == 0) return error.UnexpectedCloseParen;
                     switch (open.pop().?) {
                         .quote => return error.MissingDatum,
-                        .list => |items| break :blk try listOf(sink, items.items),
+                        .list => |l| {
+                            if (l.dot and l.tail == null) return error.UnexpectedDot;
+                            break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
+                        },
                     }
                 },
                 else => try self.atom(sink),
@@ -98,8 +135,15 @@ pub const Reader = struct {
                 datum = try quoted(sink, datum);
             }
             if (open.items.len == 0) return datum;
-            try open.items[open.items.len - 1].list.append(scratch, datum);
+            try open.items[open.items.len - 1].list.add(scratch, datum);
         }
+    }
+
+    /// Whether the input is at a `.` that stands alone: the next character is a
+    /// delimiter or the end. `...` and `.a` are identifiers, not dots.
+    fn atDot(self: *const Reader) bool {
+        const after = self.pos + 1;
+        return after == self.src.len or isDelimiter(self.src[after]);
     }
 
     fn skipWhitespace(self: *Reader) void {
@@ -127,9 +171,10 @@ pub const Reader = struct {
     }
 };
 
-/// The list of `items`, as pairs allocated in `sink`.
-fn listOf(sink: Sink, items: []const Value) Error!Value {
-    var result: Value = Value.empty_list_value;
+/// The pairs of `items` ending in `tail`, allocated in `sink`. A tail of `()`
+/// makes a list.
+fn listOf(sink: Sink, items: []const Value, tail: Value) Error!Value {
+    var result = tail;
     var i = items.len;
     while (i > 0) {
         i -= 1;
@@ -322,6 +367,44 @@ test "next reads ' as a quote form, and nests it" {
     try std.testing.expectEqualStrings(try f.roundTrip("(quote a)", &buf), "(quote a)");
 }
 
+test "next reads a dotted pair and a dotted tail" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(1 . 2)", try f.roundTrip("(1 . 2)", &buf));
+    try std.testing.expectEqualStrings("(1 2 . 3)", try f.roundTrip("(1 2 . 3)", &buf));
+    try std.testing.expectEqualStrings("(a b c)", try f.roundTrip("(a . (b c))", &buf));
+    try std.testing.expectEqualStrings("(a)", try f.roundTrip("(a . ())", &buf));
+    try std.testing.expectEqualStrings("(1 2)", try f.roundTrip("(1 .(2))", &buf));
+    try std.testing.expectEqualStrings("(a quote b)", try f.roundTrip("(a . 'b)", &buf));
+    // A dot is a token of its own: these are identifiers.
+    try std.testing.expectEqualStrings("(a ... .b)", try f.roundTrip("(a ... .b)", &buf));
+    const pair = (try f.readOne("(1 . 2)")).asPair().?;
+    try std.testing.expectEqual(1, pair.car.asFixnum().?);
+    try std.testing.expectEqual(2, pair.cdr.asFixnum().?);
+}
+
+test "next rejects a dot that is not between an element and one datum" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ ".", "'.", "( . 1)", "(1 . )", "(1 . 2 3)", "(1 . . 2)", "(1 . 2 .)", "(. )", "(1 . ' )" }) |src| {
+        if (f.readOne(src)) |_| {
+            std.debug.print("accepted {s}\n", .{src});
+            return error.TestUnexpectedResult;
+        } else |e| {
+            if (e != error.UnexpectedDot and e != error.MissingDatum) {
+                std.debug.print("{s}: {s}\n", .{ src, @errorName(e) });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+    // Unfinished is not wrong.
+    var r: Reader = .init("(1 . 2");
+    try std.testing.expectError(error.Incomplete, r.next(f.arena.allocator(), f.sink()));
+    var r2: Reader = .init("(1 .");
+    try std.testing.expectError(error.Incomplete, r2.next(f.arena.allocator(), f.sink()));
+}
+
 test "next reads the data of one source in turn, then null" {
     var f: Fixture = .init();
     defer f.deinit();
@@ -362,7 +445,7 @@ test "next reports a quote with nothing to quote" {
 test "next rejects text that is neither an integer, a boolean nor an identifier" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#(1)", "\"s\"", ";", "|x|", ".", "+.1", "a'b" }) |src| {
+    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#(1)", "\"s\"", ";", "|x|", "+.1", "a'b" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
 }

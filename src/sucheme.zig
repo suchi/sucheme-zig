@@ -105,6 +105,7 @@ fn describe(e: Error) []const u8 {
         error.Incomplete => "unexpected end of input",
         error.UnexpectedCloseParen => "unexpected )",
         error.MissingDatum => "quote needs a datum",
+        error.UnexpectedDot => "unexpected .",
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
