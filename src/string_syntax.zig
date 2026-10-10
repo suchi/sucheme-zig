@@ -2,8 +2,8 @@
 //! reads between double quotes and what `write` writes. Reading and writing are
 //! here together, so the table of escapes is one table.
 //!
-//! Slice 1h, the strings. Not written yet: the reader's `"` and the printer
-//! both call into this file, which is where they are filled in.
+//! Slice 1h, the strings. The reader's `"` and the printer both call into this
+//! file.
 
 const std = @import("std");
 const value = @import("value.zig");

@@ -193,7 +193,7 @@ pub const Reader = struct {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
-            // A delimiter this slice does not read: `"`, `;` or `|`.
+            // A delimiter this slice does not read: `;` or `|`.
             self.pos += 1;
             return error.InvalidToken;
         }
