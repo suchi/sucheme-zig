@@ -2,11 +2,12 @@
 //! reader reads after `#\` and what `write` writes. Reading and writing are
 //! here together, so the table of names is one table.
 //!
-//! Slice 1h, the characters. Not written yet: the reader's `#\` and the
-//! printer both call into this file, which is where they are filled in.
+//! Slice 1h, the characters. The reader's `#\` and the printer both call into
+//! this file.
 
 const std = @import("std");
 const Mode = @import("printer.zig").Mode;
+const value = @import("value.zig");
 
 pub const ReadError = error{
     /// The text after `#\` is not a character: an unknown name, a hexadecimal
@@ -20,19 +21,100 @@ pub const ReadError = error{
 /// Reads the character literal that starts at `src[pos.*]`, which is the `#` of
 /// `#\`, and moves `pos` past it. The literal ends at a delimiter or the end of
 /// the input.
+///
+/// The caller guarantees that `src` is valid UTF-8 and that `src[pos.*..]`
+/// starts with `#\`. The character right after the backslash is always taken as
+/// the first character of the token, even when it is a delimiter (`#\(`).
 pub fn read(src: []const u8, pos: *usize) ReadError!u21 {
-    _ = src;
-    _ = pos;
+    const start = pos.* + 2;
+    std.debug.assert(src[pos.*] == '#' and src[pos.* + 1] == '\\');
+    if (start >= src.len) return error.Incomplete;
+
+    const first_len = std.unicode.utf8ByteSequenceLength(src[start]) catch return error.InvalidCharacter;
+    if (start + first_len > src.len) return error.InvalidCharacter;
+    const first = std.unicode.utf8Decode(src[start..][0..first_len]) catch return error.InvalidCharacter;
+
+    // The delimiters are all ASCII, so scanning bytes cannot stop inside a
+    // multi-byte sequence.
+    var end = start + first_len;
+    while (end < src.len and !isDelimiter(src[end])) end += 1;
+    const token = src[start..end];
+
+    const c = try decode(token, first_len, first);
+    pos.* = end;
+    return c;
+}
+
+/// The character a token (the text after `#\` up to the next delimiter) stands
+/// for. `first` is the token's first code point, `first_len` its length in bytes.
+fn decode(token: []const u8, first_len: usize, first: u21) ReadError!u21 {
+    if (token.len == first_len) return first;
+    if (token[0] == 'x') return parseHex(token[1..]);
+    for (names) |entry| {
+        if (std.mem.eql(u8, entry.name, token)) return entry.c;
+    }
     return error.InvalidCharacter;
+}
+
+/// The value of `digits`, which must be hexadecimal digits only and a scalar
+/// value. `std.fmt.parseInt` is not used: it also takes a sign and `_`.
+fn parseHex(digits: []const u8) ReadError!u21 {
+    var v: u32 = 0;
+    for (digits) |d| {
+        const digit = std.fmt.charToDigit(d, 16) catch return error.InvalidCharacter;
+        v = v * 16 + digit;
+        // Stop before the accumulator can overflow: leading zeros keep it at
+        // zero, so anything past the last scalar value is out of range already.
+        if (v > 0x10FFFF) return error.InvalidCharacter;
+    }
+    if (!value.isScalarValue(v)) return error.InvalidCharacter;
+    return @intCast(v);
+}
+
+/// Whether `byte` ends a token: whitespace, `(`, `)`, `"`, `;` or `|`.
+fn isDelimiter(byte: u8) bool {
+    return std.ascii.isWhitespace(byte) or switch (byte) {
+        '(', ')', '"', ';', '|' => true,
+        else => false,
+    };
+}
+
+/// The names of the characters that have one. Reading and writing both use this
+/// table, so they cannot disagree.
+const names = [_]struct { name: []const u8, c: u21 }{
+    .{ .name = "alarm", .c = 0x07 },
+    .{ .name = "backspace", .c = 0x08 },
+    .{ .name = "delete", .c = 0x7f },
+    .{ .name = "escape", .c = 0x1b },
+    .{ .name = "newline", .c = 0x0a },
+    .{ .name = "null", .c = 0x00 },
+    .{ .name = "return", .c = 0x0d },
+    .{ .name = "space", .c = 0x20 },
+    .{ .name = "tab", .c = 0x09 },
+};
+
+fn nameOf(c: u21) ?[]const u8 {
+    for (names) |entry| {
+        if (entry.c == c) return entry.name;
+    }
+    return null;
 }
 
 /// Writes `c` as `write` (`#\a`, `#\space`, `#\x7f`) or as `display` (the
 /// character itself, as UTF-8) would.
 pub fn write(out: *std.Io.Writer, mode: Mode, c: u21) std.Io.Writer.Error!void {
-    _ = out;
-    _ = mode;
-    _ = c;
-    @panic("slice 1h: writing a character is not written yet");
+    if (mode == .write) {
+        try out.writeAll("#\\");
+        if (nameOf(c)) |name| return out.writeAll(name);
+        // The other C0 controls and DEL have no name. Other characters, ASCII
+        // or not, are written as they are: there is no table of which are
+        // printable until the Unicode tables of stage 4.
+        if (c < 0x20 or c == 0x7f) return out.print("x{x}", .{c});
+    }
+    std.debug.assert(value.isScalarValue(c));
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(c, &buf) catch unreachable;
+    try out.writeAll(buf[0..n]);
 }
 
 test {
