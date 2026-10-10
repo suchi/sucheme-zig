@@ -108,7 +108,7 @@ fn describe(e: Error) []const u8 {
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
-        error.HeapLimit => "heap limit exceeded",
+        error.HeapLimit => context.heap_limit_message,
         else => @errorName(e),
     };
 }
