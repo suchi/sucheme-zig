@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階1(通しで動く最小の縦切り)。切片は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
+| 現在の段階 | 段階1(通しで動く最小の縦切り)。スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階3から生成される) |
@@ -53,7 +53,7 @@
 
 ### 段階1: 通しで動く最小の縦切り
 
-作業は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が10個の切片に割っている。下のチェックボックスは段階の全体で、切片ごとの完了条件はその計画書が正である。1つの PR に段階1の全部を入れると段階0の経緯が繰り返されるので、切片ごとにマージする。
+作業は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が10個のスライスに割っている。下のチェックボックスは段階の全体で、スライスごとの完了条件はその計画書が正である。1つの PR に段階1の全部を入れると段階0の経緯が繰り返されるので、スライスごとにマージする。
 
 意図的に小さくする。10進整数と記号と手続き呼び出しだけで `(define (fact n) ...)` が動く状態を目標にする。この時点で値表現、ヒープ、GC、機械、リーダ、プリンタ、REPL、WASM、Web UI、CI がすべて最小の形でそろう。以降の段階はこの縦切りを太らせる作業になる。
 
