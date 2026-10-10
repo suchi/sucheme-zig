@@ -19,6 +19,8 @@ const Closure = value_mod.Closure;
 const Frame = value_mod.Frame;
 const Kont = value_mod.Kont;
 const Args = value_mod.Args;
+const SymbolId = @import("symbol.zig").SymbolId;
+const trace = @import("trace.zig");
 
 /// The types that live in the heap; the index of a type here is the `kind` its
 /// header records.
@@ -36,6 +38,10 @@ pub const Options = struct {
     /// The account at which the first collection is asked for, and the least
     /// that any later one is asked for at.
     min_threshold: usize = 1024 * 1024,
+    /// How many objects the marking keeps to scan. When more are waiting the
+    /// marking does not stop: it rescans the heap for them (see `Marker`). The
+    /// tests set 0, so that the rescan is what runs.
+    work_capacity: usize = 4096,
 };
 
 /// 256 MiB: far above what a program that returns needs, and far below the
@@ -46,6 +52,8 @@ const Header = struct {
     next: ?*Header,
     /// An index into `object_types`.
     kind: u8,
+    /// Set by the marking, cleared by the sweep.
+    marked: bool,
 };
 
 fn Cell(comptime T: type) type {
@@ -73,6 +81,20 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
     return if (T == Frame) object.values.len * @sizeOf(Value) else 0;
 }
 
+/// What `Heap.work` is while no list has been allocated, or the allocation
+/// failed: a list that holds nothing, which makes every marking a rescan.
+var no_work: [0]*Header = .{};
+
+/// The share of the limit kept free of live data: a collection that leaves more
+/// than the rest live has gained too little to be worth asking for again.
+const reserve_divisor = 16;
+
+/// The account a collection is asked for at the latest. The margin to the limit
+/// is what one step of the machine may allocate between two safe points.
+fn softLimit(limit: usize) usize {
+    return limit - limit / reserve_divisor;
+}
+
 pub const Heap = struct {
     backing: std.mem.Allocator,
     options: Options,
@@ -84,9 +106,23 @@ pub const Heap = struct {
     peak: usize = 0,
     /// The number of objects in `objects`.
     count: usize = 0,
+    /// The account at which `shouldCollect` says yes.
+    threshold: usize,
+    /// Whether the collection that last ran left the heap too full to go on:
+    /// what is live is within a margin of the limit, so the next allocation
+    /// would fail whatever a collection did.
+    exhausted: bool = false,
+    /// How many collections have run.
+    collections: usize = 0,
+    /// The marking's list of objects still to scan, kept between collections.
+    work: []*Header = &no_work,
 
     pub fn init(backing: std.mem.Allocator, options: Options) Heap {
-        return .{ .backing = backing, .options = options };
+        return .{
+            .backing = backing,
+            .options = options,
+            .threshold = @min(softLimit(options.limit), options.min_threshold),
+        };
     }
 
     /// Frees every object, reachable or not.
@@ -99,6 +135,8 @@ pub const Heap = struct {
         self.objects = null;
         self.accounted = 0;
         self.count = 0;
+        if (self.work.len != 0) self.backing.free(self.work);
+        self.work = &no_work;
     }
 
     /// A new object holding `value`.
@@ -137,6 +175,56 @@ pub const Heap = struct {
         return .{ .pair = pair };
     }
 
+    /// Whether a collection is due. The machine asks between two steps.
+    pub fn shouldCollect(self: *const Heap) bool {
+        return self.accounted >= self.threshold;
+    }
+
+    /// Frees every object that cannot be reached from `roots`.
+    ///
+    /// `roots.mark(marker)` tells the marker where the program can start from.
+    /// Nothing else is a root, so this must be called only where no value is
+    /// held anywhere but in what `roots` names: between two steps of the machine
+    /// (ADR-0031).
+    pub fn collect(self: *Heap, roots: anytype) void {
+        self.ensureWork();
+        var marker: Marker = .{ .heap = self, .work = self.work };
+        roots.mark(&marker);
+        marker.finish();
+        self.sweep();
+        self.collections += 1;
+        const live = self.accounted;
+        const soft = softLimit(self.options.limit);
+        self.threshold = @min(soft, @max(self.options.min_threshold, live *| 2));
+        self.exhausted = live +| (self.options.limit / reserve_divisor) > soft;
+    }
+
+    /// Makes the marking's list the size the options ask for. If memory for it
+    /// cannot be had the list stays empty, and the marking rescans instead of
+    /// stopping.
+    fn ensureWork(self: *Heap) void {
+        if (self.work.len == self.options.work_capacity) return;
+        if (self.work.len != 0) self.backing.free(self.work);
+        self.work = &no_work;
+        if (self.options.work_capacity == 0) return;
+        self.work = self.backing.alloc(*Header, self.options.work_capacity) catch &no_work;
+    }
+
+    /// Frees the objects the marking did not reach, and clears the mark of the
+    /// rest.
+    fn sweep(self: *Heap) void {
+        var slot: *?*Header = &self.objects;
+        while (slot.*) |header| {
+            if (header.marked) {
+                header.marked = false;
+                slot = &header.next;
+            } else {
+                slot.* = header.next;
+                self.free(header);
+            }
+        }
+    }
+
     /// Fails with `HeapLimit` when `bytes` more would pass the limit.
     fn reserve(self: *const Heap, bytes: usize) error{HeapLimit}!void {
         const total = std.math.add(usize, self.accounted, bytes) catch return error.HeapLimit;
@@ -144,7 +232,7 @@ pub const Heap = struct {
     }
 
     fn link(self: *Heap, comptime T: type, cell: *Cell(T), bytes: usize) void {
-        cell.header = .{ .next = self.objects, .kind = kindOf(T) };
+        cell.header = .{ .next = self.objects, .kind = kindOf(T), .marked = false };
         self.objects = &cell.header;
         self.accounted += bytes;
         self.count += 1;
@@ -161,6 +249,87 @@ pub const Heap = struct {
                 self.count -= 1;
                 if (T == Frame) self.backing.free(cell.value.values);
                 self.backing.destroy(cell);
+                return;
+            }
+        }
+        unreachable;
+    }
+};
+
+/// The marking of one collection. `roots` hands it the values the program can
+/// start from, and `finish` follows them to everything they reach.
+///
+/// Reaching an object marks it and, if there is room, puts it on a list to scan
+/// later; scanning it reaches what it refers to. The list has the capacity the
+/// options give. When an object is reached and the list is full it is marked and
+/// the marking only notes that it was lost, and `finish` goes over every marked
+/// object in the heap again until a pass loses nothing. A marked object is
+/// scanned once the list has room, or by the pass, so none is missed, and the
+/// size of the list changes how long marking takes and not what it marks.
+pub const Marker = struct {
+    heap: *Heap,
+    work: []*Header,
+    len: usize = 0,
+    /// An object was marked and not put on the list.
+    lost: bool = false,
+
+    /// Marks what `v` refers to.
+    pub fn value(self: *Marker, v: Value) void {
+        trace.interpreter.walk(self, Value, v);
+    }
+
+    /// Marks `f` and, through it, what it refers to.
+    pub fn frame(self: *Marker, f: ?*Frame) void {
+        trace.interpreter.walk(self, ?*Frame, f);
+    }
+
+    /// Marks `k` and, through it, what it refers to.
+    pub fn kont(self: *Marker, k: ?*const Kont) void {
+        trace.interpreter.walk(self, ?*const Kont, k);
+    }
+
+    /// What `trace.walk` calls for a heap object.
+    pub fn object(self: *Marker, comptime T: type, pointer: *const T) void {
+        const cell: *Cell(T) = @constCast(@fieldParentPtr("value", pointer));
+        const header = &cell.header;
+        if (header.marked) return;
+        header.marked = true;
+        if (self.len < self.work.len) {
+            self.work[self.len] = header;
+            self.len += 1;
+        } else {
+            self.lost = true;
+        }
+    }
+
+    /// What `trace.walk` calls for a symbol id. The symbol table is not weak
+    /// yet, so there is nothing to record.
+    pub fn symbol(_: *Marker, _: SymbolId) void {}
+
+    fn finish(self: *Marker) void {
+        self.drain();
+        while (self.lost) {
+            self.lost = false;
+            var it = self.heap.objects;
+            while (it) |header| : (it = header.next) {
+                if (header.marked) self.scan(header);
+            }
+            self.drain();
+        }
+    }
+
+    fn drain(self: *Marker) void {
+        while (self.len > 0) {
+            self.len -= 1;
+            self.scan(self.work[self.len]);
+        }
+    }
+
+    fn scan(self: *Marker, header: *Header) void {
+        inline for (object_types, 0..) |T, i| {
+            if (header.kind == i) {
+                const cell: *Cell(T) = @fieldParentPtr("header", header);
+                trace.interpreter.children(self, T, &cell.value);
                 return;
             }
         }
@@ -251,4 +420,176 @@ test "deinit frees every object, frames and their slots included" {
     heap.deinit();
     try std.testing.expectEqual(0, heap.accounted);
     try std.testing.expectEqual(0, heap.count);
+}
+
+/// Roots for a test: values, a frame and a continuation held by the test.
+const TestRoots = struct {
+    values: []const Value = &.{},
+    frame: ?*Frame = null,
+    kont: ?*const Kont = null,
+
+    pub fn mark(self: TestRoots, marker: *Marker) void {
+        for (self.values) |v| marker.value(v);
+        marker.frame(self.frame);
+        marker.kont(self.kont);
+    }
+};
+
+test "a collection frees what the roots do not reach and keeps what they do" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const kept = try heap.cons(.fromFixnum(1), .empty_list_value);
+    _ = try heap.cons(.fromFixnum(2), .empty_list_value);
+    _ = try heap.cons(.fromFixnum(3), .empty_list_value);
+    try std.testing.expectEqual(3, heap.count);
+    heap.collect(TestRoots{ .values = &.{kept} });
+    try std.testing.expectEqual(1, heap.count);
+    try std.testing.expectEqual(cellBytes(Pair), heap.accounted);
+    try std.testing.expectEqual(1, kept.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(1, heap.collections);
+}
+
+test "what a root reaches through pairs, closures, frames and continuations survives" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const deep = try heap.cons(.fromFixnum(7), .empty_list_value);
+    const frame = try heap.createFrame(2, null);
+    frame.values[0] = deep;
+    const closure = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
+    const arg = try heap.create(Args, .{ .value = .{ .closure = closure }, .next = null });
+    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = &.{} } });
+    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = undefined, .args = arg, .received = 1 } } });
+    _ = try heap.cons(.fromFixnum(0), .empty_list_value);
+    const garbage_frame = try heap.createFrame(100, null);
+    _ = garbage_frame;
+    const before = heap.count;
+    // Only the continuation is a root: the rest is reached through it.
+    heap.collect(TestRoots{ .kont = top });
+    try std.testing.expectEqual(before - 2, heap.count);
+    try std.testing.expectEqual(7, frame.values[0].asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(frame, closure.env.?);
+    try std.testing.expectEqual(arg, top.step.call.args.?);
+    try std.testing.expectEqual(cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
+        cellBytes(Args) + 2 * cellBytes(Kont), heap.accounted);
+}
+
+test "an unreachable frame takes its slots off the account with it" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const kept = try heap.cons(.fromFixnum(1), .fromFixnum(2));
+    _ = try heap.createFrame(100, null);
+    try std.testing.expectEqual(cellBytes(Pair) + cellBytes(Frame) + 100 * @sizeOf(Value), heap.accounted);
+    heap.collect(TestRoots{ .values = &.{kept} });
+    try std.testing.expectEqual(cellBytes(Pair), heap.accounted);
+}
+
+test "a cycle is marked once, and freed when nothing reaches it" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const a = try heap.cons(.fromFixnum(1), .empty_list_value);
+    const b = try heap.cons(.fromFixnum(2), a);
+    a.asPair().?.cdr = b;
+    heap.collect(TestRoots{ .values = &.{a} });
+    try std.testing.expectEqual(2, heap.count);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "the mark is cleared, so a second collection can free what the first kept" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const a = try heap.cons(.fromFixnum(1), .empty_list_value);
+    heap.collect(TestRoots{ .values = &.{a} });
+    try std.testing.expectEqual(1, heap.count);
+    heap.collect(TestRoots{ .values = &.{a} });
+    try std.testing.expectEqual(1, heap.count);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+}
+
+test "a list is marked whole whatever the capacity of the marking list, and whichever way its links run" {
+    for ([_]usize{ 0, 1, 3, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        // Links to older objects: each pair is made pointing at the one before.
+        var older: Value = .empty_list_value;
+        for (0..200) |i| older = try heap.cons(.fromFixnum(@intCast(i)), older);
+        // Links to newer objects: the pairs are made first and joined after, so the
+        // head is the oldest and every link runs to a newer pair.
+        var cells: [200]Value = undefined;
+        for (&cells, 0..) |*cell, i| cell.* = try heap.cons(.fromFixnum(@intCast(1000 + i)), .empty_list_value);
+        for (cells[0..199], cells[1..]) |from, to| from.asPair().?.cdr = to;
+        for (0..50) |_| _ = try heap.cons(.fromFixnum(-1), .empty_list_value);
+        heap.collect(TestRoots{ .values = &.{ older, cells[0] } });
+        try std.testing.expectEqual(400, heap.count);
+        var n: usize = 0;
+        var it = cells[0];
+        while (it.asPair()) |p| : (it = p.cdr) n += 1;
+        try std.testing.expectEqual(200, n);
+        // And the second collection, with a fresh start, does the same.
+        heap.collect(TestRoots{ .values = &.{ older, cells[0] } });
+        try std.testing.expectEqual(400, heap.count);
+    }
+}
+
+test "the threshold follows what is live, within the limit" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1600, .min_threshold = 160 });
+    defer heap.deinit();
+    // The soft limit is the limit less a sixteenth of it.
+    try std.testing.expectEqual(1500, softLimit(1600));
+    try std.testing.expectEqual(160, heap.threshold);
+    try std.testing.expect(!heap.shouldCollect());
+    // Make the account reach the threshold.
+    var keep: Value = .empty_list_value;
+    while (!heap.shouldCollect()) keep = try heap.cons(.fromFixnum(1), keep);
+    heap.collect(TestRoots{ .values = &.{keep} });
+    // Everything was live: twice that, since it is more than the least.
+    try std.testing.expectEqual(@min(1500, heap.accounted * 2), heap.threshold);
+    try std.testing.expect(!heap.shouldCollect());
+    try std.testing.expect(!heap.exhausted);
+    // With nothing live, the threshold falls back to the least.
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(160, heap.threshold);
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a collection that leaves the heap nearly full says it is exhausted" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1600, .min_threshold = 160 });
+    defer heap.deinit();
+    var keep: Value = .empty_list_value;
+    while (true) keep = heap.cons(.fromFixnum(1), keep) catch break;
+    // Past the soft limit, with everything live.
+    try std.testing.expect(heap.shouldCollect());
+    heap.collect(TestRoots{ .values = &.{keep} });
+    try std.testing.expect(heap.exhausted);
+    // Once what was live is dropped the heap has room again.
+    heap.collect(TestRoots{});
+    try std.testing.expect(!heap.exhausted);
+}
+
+test "the list the marking keeps is made to the size the options ask for" {
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 8 });
+    defer heap.deinit();
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(8, heap.work.len);
+    heap.options.work_capacity = 0;
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.work.len);
+}
+
+test "when the marking list cannot be allocated the marking rescans and still finishes" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    // Objects come from the testing allocator directly; only the list comes from
+    // the failing one, which fails its first allocation.
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 64 });
+    defer heap.deinit();
+    const a = try heap.cons(.fromFixnum(1), .empty_list_value);
+    const b = try heap.cons(.fromFixnum(2), a);
+    _ = try heap.cons(.fromFixnum(3), .empty_list_value);
+    heap.backing = failing.allocator();
+    heap.collect(TestRoots{ .values = &.{b} });
+    heap.backing = std.testing.allocator;
+    try std.testing.expectEqual(0, heap.work.len);
+    try std.testing.expectEqual(2, heap.count);
 }
