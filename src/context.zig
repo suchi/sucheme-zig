@@ -177,3 +177,19 @@ test "a context binds each primitive to its name" {
     const id = try ctx.symbols.intern(arena.allocator(), "+");
     try std.testing.expectEqualStrings("+", ctx.globals.lookup(id).?.asPrimitive().?.name);
 }
+
+test "an allocation the limit refuses is the error heap limit exceeded, for an object and for a frame" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // A limit no object fits in.
+    var ctx = try Context.initWithOptions(arena.allocator(), std.testing.allocator, .{ .limit = 1 });
+    defer ctx.deinit();
+    try std.testing.expectEqual(error.Raised, ctx.create(value_mod.Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value }));
+    try std.testing.expectEqualStrings("heap limit exceeded", ctx.diagnostic());
+    ctx.clearDiagnostic();
+    try std.testing.expectEqual(error.Raised, ctx.createFrame(2, null));
+    try std.testing.expectEqualStrings("heap limit exceeded", ctx.diagnostic());
+    // Nothing was allocated, and a failure of the host is not this error.
+    try std.testing.expectEqual(0, ctx.heap.count);
+    try std.testing.expectEqual(error.OutOfMemory, ctx.heapFailure(error.OutOfMemory));
+}
