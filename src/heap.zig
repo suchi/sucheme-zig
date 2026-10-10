@@ -42,11 +42,25 @@ pub const Options = struct {
     /// marking does not stop: it rescans the heap for them (see `Marker`). The
     /// tests set 0, so that the rescan is what runs.
     work_capacity: usize = 4096,
+    /// Ask for a collection at every safe point of the start of a run, and less
+    /// and less often as it goes on (see `stress_ramp`). A root a safe point
+    /// forgot to name is freed at once and not by luck, so the tests run the
+    /// machine this way (ADR-0031).
+    stress: bool = false,
 };
 
 /// 256 MiB: far above what a program that returns needs, and far below the
 /// memory of the machines the interpreter runs on.
 pub const default_limit: usize = 256 * 1024 * 1024;
+
+/// In stress mode a collection is asked for after a gap of safe points. The gap
+/// is one for the first `stress_ramp` safe points, which is all of a small
+/// program. After that it grows with the number that have passed, so a loop of
+/// millions of steps costs thousands of collections and not millions, and it is
+/// at least one safe point for each `stress_objects_per_step` objects in the
+/// heap, which bounds the work a step is charged however much is live.
+const stress_ramp = 4096;
+const stress_objects_per_step = 16;
 
 const Header = struct {
     next: ?*Header,
@@ -114,6 +128,10 @@ pub const Heap = struct {
     exhausted: bool = false,
     /// How many collections have run.
     collections: usize = 0,
+    /// How many times `shouldCollect` was asked since the last collection, and
+    /// in all. Only stress mode counts.
+    steps: usize = 0,
+    total_steps: usize = 0,
     /// The marking's list of objects still to scan, kept between collections.
     work: []*Header = &no_work,
 
@@ -176,7 +194,16 @@ pub const Heap = struct {
     }
 
     /// Whether a collection is due. The machine asks between two steps.
-    pub fn shouldCollect(self: *const Heap) bool {
+    pub fn shouldCollect(self: *Heap) bool {
+        if (self.options.stress) {
+            self.steps +|= 1;
+            self.total_steps +|= 1;
+            const gap = if (self.total_steps <= stress_ramp) 1 else @max(
+                self.total_steps / stress_ramp,
+                self.count / stress_objects_per_step,
+            );
+            if (self.steps >= gap) return true;
+        }
         return self.accounted >= self.threshold;
     }
 
@@ -193,6 +220,7 @@ pub const Heap = struct {
         marker.finish();
         self.sweep();
         self.collections += 1;
+        self.steps = 0;
         const live = self.accounted;
         const soft = softLimit(self.options.limit);
         self.threshold = @min(soft, @max(self.options.min_threshold, live *| 2));

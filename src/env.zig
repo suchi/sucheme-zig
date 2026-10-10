@@ -10,6 +10,7 @@
 const std = @import("std");
 const SymbolId = @import("symbol.zig").SymbolId;
 const Value = @import("value.zig").Value;
+const Marker = @import("heap.zig").Marker;
 
 pub const Global = struct {
     bindings: std.AutoHashMapUnmanaged(SymbolId, Value) = .empty,
@@ -23,6 +24,12 @@ pub const Global = struct {
     /// The value bound to `id`, or null when it is unbound.
     pub fn lookup(self: *const Global, id: SymbolId) ?Value {
         return self.bindings.get(id);
+    }
+
+    /// Tells the collector of every value a binding holds: they are roots.
+    pub fn mark(self: *const Global, marker: *Marker) void {
+        var it = self.bindings.valueIterator();
+        while (it.next()) |value| marker.value(value.*);
     }
 
     /// Replaces the value of an existing binding. Returns false, and changes
