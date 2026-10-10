@@ -199,6 +199,11 @@ test "read: a hex escape that is not a scalar value, or not an escape, is invali
     // So many digits that a 32-bit value would wrap around into range.
     try expectReadError(error.InvalidEscape, "\"\\x100000041;\"");
     try expectReadError(error.InvalidEscape, "\"\\x1000000000000000041;\"");
+    // A digit after the last scalar value leaves the value out of range; it
+    // does not stay at the last scalar value, which is itself a valid one.
+    try expectReadError(error.InvalidEscape, "\"\\x10ffff0;\"");
+    try expectReadError(error.InvalidEscape, "\"\\x10fffff;\"");
+    try expectReadError(error.InvalidEscape, "\"\\x10ffff00000000;\"");
 }
 
 test "read: a backslash that begins no escape is invalid" {
