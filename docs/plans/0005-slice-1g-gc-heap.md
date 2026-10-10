@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1g)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-10
-- 状態: 実装済み(2026-10-10、PR #21 でマージ。後半のレビュー対応は続きの PR)
+- 状態: 実装済み(2026-10-10、PR #21 と #22 でマージ)
 
 ## 解こうとしている問題
 
@@ -104,7 +104,7 @@ flowchart LR
 ## テスト
 
 - 単体(`zig build test`): `heap.zig`(計上・上限・巻き戻し・回収)、`trace.zig`(分類・期待集合との一致)、機械(ストレスモードで全テストを通す、1,000,000 回の末尾ループの計上量の最大値)。
-- Scheme の振る舞い(`zig build test-scheme`): 完了条件の最初の3つ、`0001` から `0012` の全ケース。
+- Scheme の振る舞い(`zig build test-scheme`): 完了条件の最初の3つ、`tests/scheme` の全ケース。
 - ミューテーションテスト: 判定を機械的に変えてテストが落ちることを確かめる。対象は、ルートの列挙(4レジスタ・大域環境・コードの定数のどれかを外す)、マーク済みの印の判定、スイープの計上の減算、閾値の判定、ペイロードの巻き戻し、走査の分類。
 
 ## 検証コマンドの追加
