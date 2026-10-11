@@ -761,20 +761,57 @@ const fuzz_max_input = 1024;
 /// A corpus entry for `fuzzReader` that holds `text` as its input.
 /// `Smith.slice` が読む形は、4 バイトのリトルエンディアンの長さに、その長さのバイト列が
 /// 続くものである。
+///
+/// Why: 配列はコンパイル時に作る。実行時に作った配列のアドレスを返すと、関数が戻った
+/// あとの死んだスタックを指し、初期入力がテストに届かない(PR #57 のレビューで見つかった)。
 fn fuzzSeed(comptime text: []const u8) []const u8 {
-    const prefix = std.mem.toBytes(std.mem.nativeToLittle(u32, text.len));
-    return &(prefix ++ text[0..text.len].*);
+    comptime std.debug.assert(text.len <= fuzz_max_input);
+    const bytes = comptime std.mem.toBytes(std.mem.nativeToLittle(u32, text.len)) ++ text[0..text.len].*;
+    return &bytes;
 }
+
+/// The inputs `zig build test` reads, as text.
+/// `zig build test` は、ここにある入力だけを 1 回ずつ通る。入力の終わりで止まる
+/// トークン(`.` `#`)と、不正な UTF-8 を含む。
+const fuzz_inputs = [_][]const u8{
+    "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))",
+    "'(1 . (2 3)) #(1 #(2)) ''() #t #false",
+    "\"a\\tb\\x41;\" #\\a #\\space #\\x41 #\\(",
+    "1 ; comment\n  foo ; (\n",
+    "(a . b c)",
+    "(1 . ",
+    ")",
+    "'",
+    "\"unterminated",
+    "99999999999999999999 -1 +1 ... +.5 1/2",
+    "#( . ) ( . 1) '. # #\\",
+    // 入力の終わりで止まるトークン。終わりの 1 つ先を読む誤りは、ここで見つかる。
+    ".",
+    "(a .",
+    "#",
+    "'#",
+    "\"λ\" #\\λ あ #\\x3bb",
+    "\"\xff\" #\\\xff #\\\xc3 \xe3\x81",
+};
+
+/// `fuzz_inputs` as corpus entries.
+const fuzz_corpus: []const []const u8 = blk: {
+    var seeds: [fuzz_inputs.len][]const u8 = undefined;
+    for (fuzz_inputs, 0..) |text, i| seeds[i] = fuzzSeed(text);
+    const done = seeds;
+    break :blk &done;
+};
 
 /// Reads `src` the way the interpreter does: datum after datum, up to the end or
 /// the first error, with `gpa` behind everything the reader allocates.
 ///
 /// 読めたデータは `printer` に通す。`next` が返してよいエラーは `Error` の中だけで、
 /// 型が保証する。下の `switch` は `else` を持たないので、`Error` に足したエラーは、
-/// ここで扱いを決めるまでコンパイルが通らない。確かめるのは、データを返した `next` が
-/// 入力を進めること(進まなければ、読み取りの繰り返しが終わらない)と、終端を返した
-/// ときに入力を読み切っていることである。エラーのときの `pos` は、文字や文字列の
-/// リテラルが元の位置に戻すので、何も言わない。
+/// ここで扱いを決めるまでコンパイルが通らない。
+///
+/// 確かめるのは、データを返した `next` が入力を進めること(進まなければ、読み取りの
+/// 繰り返しが終わらない)と、終端を返したときに入力を読み切っていることである。
+/// エラーのときの `pos` は、文字や文字列のリテラルが元の位置に戻すので、何も言わない。
 fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
@@ -832,35 +869,30 @@ fn fuzzReader(_: void, smith: *std.testing.Smith) anyerror!void {
 }
 
 test "fuzz: the reader returns a datum, the end or a specified error for any input" {
-    // `zig build test` は下の初期入力だけを通る。`zig build test --fuzz=<N>` は、ここから探索を広げる。
-    try std.testing.fuzz({}, fuzzReader, .{
-        .corpus = &.{
-            fuzzSeed("(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))"),
-            fuzzSeed("'(1 . (2 3)) #(1 #(2)) ''() #t #false"),
-            fuzzSeed("\"a\\tb\\x41;\" #\\a #\\space #\\x41 #\\("),
-            fuzzSeed("1 ; comment\n  foo ; (\n"),
-            fuzzSeed("(a . b c)"),
-            fuzzSeed("(1 . "),
-            fuzzSeed(")"),
-            fuzzSeed("'"),
-            fuzzSeed("\"unterminated"),
-            fuzzSeed("99999999999999999999 -1 +1 ... +.5 1/2"),
-            fuzzSeed("#( . ) ( . 1) '. # #\\"),
-            // 入力の終わりで止まるトークン。終わりの 1 つ先を読む誤りは、ここで見つかる。
-            fuzzSeed("."),
-            fuzzSeed("(a ."),
-            fuzzSeed("#"),
-            fuzzSeed("'#"),
-            fuzzSeed("\"λ\" #\\λ あ #\\x3bb"),
-            fuzzSeed("\"\xff\" #\\\xff #\\\xc3 \xe3\x81"),
-        },
-    });
+    // `zig build test` は `fuzz_corpus` だけを通る。`zig build test --fuzz=<N>` は、そこから探索を広げる。
+    try std.testing.fuzz({}, fuzzReader, .{ .corpus = fuzz_corpus });
+}
+
+test "fuzz: every corpus entry reaches the fuzz test as the input it was written as" {
+    // 初期入力が意図どおりに届かなければ、ファジングのテストは何も固定しないまま緑になる。
+    // `fuzzReader` が `Smith` から読むのと同じ読み方で、1 件ずつ取り出して比べる。
+    try std.testing.expect(fuzz_corpus.len == fuzz_inputs.len);
+    for (fuzz_corpus, fuzz_inputs) |entry, text| {
+        var smith: std.testing.Smith = .{ .in = entry };
+        var buf: [fuzz_max_input]u8 = undefined;
+        const n = smith.slice(&buf);
+        try std.testing.expectEqualSlices(u8, text, buf[0..n]);
+        // 初期入力の実行では、確保の失敗の番号は 0 である。
+        try std.testing.expectEqual(0, smith.valueRangeAtMost(u16, 0, 512));
+    }
 }
 
 test "fuzz: the reader leaks nothing wherever an allocation fails" {
-    // ファザーの確保の失敗は入力の乱数で決まるので、`zig build test` では当たらない
-    // かもしれない。ここでは固定の入力で、n 回目の確保の失敗を、失敗が起きなくなる
-    // まで 1 つずつ試す。
+    // 初期入力を使う実行では、確保の失敗の番号が 0 になる。当たるのはアリーナの最初の
+    // 確保だけで、ヒープのセル、文字列、ベクタ、プリンタのスタックの確保の失敗は
+    // 当たらない。それを担うのはこのテストで、固定の入力に対し、n 回目の確保の失敗を、
+    // 失敗が起きなくなるまで 1 つずつ試す。ヒープの上限は既定で 256 MiB で、この入力では
+    // 届かないので、`HeapLimit` は試さない。
     const src = "(a #(1 \"s\") 'b . c) foo \"str\" (1 2 3) #\\x";
     var n: usize = 0;
     while (true) : (n += 1) {
