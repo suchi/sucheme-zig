@@ -17,7 +17,7 @@
 | プロセス終了 | `std.process.exit` | ホストへの通知とトラップ |
 | メモリ確保 | `std.heap.SafeAllocator` または `page_allocator` | `std.heap.wasm_allocator` |
 
-`sucheme_init` が受け取る `heap_limit_bytes` は、[runtime.md](runtime.md) の計上の対象に挙げたすべての合計に対する上限である。オブジェクト本体だけの上限ではない。対象の一覧をここに複製せず、同文書を参照する。上限に達した場合の扱いは後述の状態コードの節で定める。
+`sucheme_init` が受け取る `heap_limit_bytes` は、[runtime.md](runtime.md) の計上の対象に挙げたすべての合計に対する上限である。オブジェクト本体だけの上限ではない。対象の一覧をここに複製せず、同文書を参照する。上限に達した場合の扱いは後述の状態コードの節で定める。1 GiB を超える値は 1 GiB に丸める。wasm32 の線形メモリは全体で 4 GiB で、計上は実メモリの約半分なので、丸めないと上限に届く前に実メモリが尽きて trap する。
 
 選択はコンパイル時に行う。仮想関数テーブルは使わない。
 
