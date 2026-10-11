@@ -11,13 +11,14 @@ const heap_mod = @import("heap.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
 
-/// What a step can fail with. `Raised` is not a Zig-level failure: it says that
-/// a Scheme error was raised, and the condition that describes it is in
-/// `Context.raised`. The failures of the host, such as memory, are the other one.
+/// What a step can fail with.
+/// `Raised` は Zig レベルの失敗ではない。Scheme のエラーが送出されたことを表し、
+/// それを説明する条件オブジェクトは `Context.raised` にある。メモリのような
+/// ホストの失敗は、もう一方である。
 pub const Error = error{ OutOfMemory, Raised };
 
-/// What the error is called when the heap cannot hold more. One place, so the
-/// message is the same whichever path reaches it.
+/// What the error is called when the heap cannot hold more.
+/// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。
 pub const heap_limit_message = "heap limit exceeded";
 
 /// What the interpreter carries between lines: the heap and the arena, the
@@ -28,24 +29,25 @@ pub const Context = struct {
     /// the pairs, the closures, the frames of calls and the continuation.
     heap: Heap,
     /// Where what the heap does not hold is allocated: the symbols, the global
-    /// bindings, the core IR the expander builds, and the conditions. Nothing in
-    /// it is freed before the interpreter is, and it is outside the limit of the
-    /// heap, so an error can be reported when the heap is full.
+    /// bindings, the core IR the expander builds, and the conditions.
+    /// この中のものは、インタプリタが解放されるまで解放されない。またヒープの上限の外に
+    /// あるので、ヒープが満杯でもエラーを報告できる。
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     globals: env.Global = .{},
-    /// The constants of the code that refer to the heap: a quoted list, say. The
-    /// code is not in the heap yet, so the collector cannot find them through it,
-    /// and the expander lists them here. The slice that moves the code into the
-    /// heap needs no list.
+    /// The constants of the code that refer to the heap: a quoted list, say.
+    /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
+    /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
+    /// 要らなくなる。
     code_roots: std.ArrayList(Value) = .empty,
     /// The condition raised by the most recent error, if the line was cut short
     /// by one.
     raised: ?*value_mod.Condition = null,
 
     /// A context whose global environment binds each primitive to its name.
-    /// `persist` is the arena that outlives it and `gpa` the allocator the heap
-    /// takes its objects from; `deinit` frees the heap and not the arena.
+    /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
+    /// オブジェクトを確保するアロケータである。`deinit` が解放するのはヒープで、
+    /// アリーナではない。
     pub fn init(persist: std.mem.Allocator, gpa: std.mem.Allocator) error{OutOfMemory}!Context {
         return initWithOptions(persist, gpa, .{});
     }
@@ -65,7 +67,8 @@ pub const Context = struct {
     }
 
     /// Tells the collector of the roots the context holds: the values of the
-    /// global bindings and the constants of the code. The machine adds its own.
+    /// global bindings and the constants of the code.
+    /// 機械は自分のルートを加える。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
         for (self.code_roots.items) |v| marker.value(v);
@@ -108,7 +111,8 @@ pub const Context = struct {
     }
 
     /// The message of the condition raised by the most recent error, or empty
-    /// when none was. Valid until the next `raise` or `clearDiagnostic`.
+    /// when none was.
+    /// 次の `raise` または `clearDiagnostic` まで有効である。
     pub fn diagnostic(self: *const Context) []const u8 {
         return if (self.raised) |c| c.message else "";
     }
@@ -119,10 +123,9 @@ pub const Context = struct {
 
     /// Raises an error: makes the condition with the message and keeps it in
     /// `raised`, and returns `error.Raised` for the caller to return, so a call
-    /// site reads `return ctx.raise("...", .{})`. Nothing handles a raise yet, so
-    /// it leaves the machine for the line it came from, which is the escape to
-    /// the outermost continuation (docs/design/runtime.md, unhandled
-    /// exceptions).
+    /// site reads `return ctx.raise("...", .{})`.
+    /// 送出を処理するものはまだないので、送出は機械を抜けて、その行の読み取りまで戻る。
+    /// これは最も外側の継続への脱出である(docs/design/runtime.md の未処理の例外)。
     pub fn raise(self: *Context, comptime fmt: []const u8, args: anytype) Error {
         const message = std.fmt.allocPrint(self.persist, fmt, args) catch return error.OutOfMemory;
         const condition = self.persist.create(value_mod.Condition) catch return error.OutOfMemory;
@@ -185,7 +188,7 @@ test "a context binds each primitive to its name" {
 test "an allocation the limit refuses is the error heap limit exceeded, for an object and for a frame" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    // A limit no object fits in.
+    // どのオブジェクトも入らない上限。
     var ctx = try Context.initWithOptions(arena.allocator(), std.testing.allocator, .{ .limit = 1 });
     defer ctx.deinit();
     try std.testing.expectEqual(error.Raised, ctx.create(value_mod.Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value }));
@@ -193,7 +196,7 @@ test "an allocation the limit refuses is the error heap limit exceeded, for an o
     ctx.clearDiagnostic();
     try std.testing.expectEqual(error.Raised, ctx.createFrame(2, null));
     try std.testing.expectEqualStrings("heap limit exceeded", ctx.diagnostic());
-    // Nothing was allocated, and a failure of the host is not this error.
+    // 何も確保されておらず、ホストの失敗はこのエラーではない。
     try std.testing.expectEqual(0, ctx.heap.count);
     try std.testing.expectEqual(error.OutOfMemory, ctx.heapFailure(error.OutOfMemory));
 }

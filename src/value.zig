@@ -1,21 +1,18 @@
 //! The Scheme value.
 //!
-//! A tagged union (ADR-0002). The full set of kinds is the table in
-//! docs/design/runtime.md; each arrives with the slice that first creates it.
-//! Slice 1a had fixed-length integers, 1b the unspecified value, 1c booleans,
-//! the empty list, symbols and pairs, 1d the two kinds of procedure, and 1e adds
-//! the marker of a variable that is not defined yet. Slice 1f adds the condition,
-//! and the layouts of the core IR and of the continuation, which are not values
-//! but are walked all the same. Slice 1g puts the pairs, closures, frames,
-//! continuation frames and argument lists in the GC heap (src/heap.zig). Slice
-//! 1h adds characters, strings and vectors.
-//! The layouts of everything the GC will walk are defined here, so the one
-//! place that has to know them all is this file (docs/design/architecture.md).
+//! タグ付き共用体である(ADR-0002)。種別の全体は docs/design/runtime.md の表に
+//! あり、各種別は、それを最初に作るスライスで加わる。スライス 1a は固定長の整数、
+//! 1b は未規定値、1c は真偽値・空リスト・シンボル・ペア、1d は2種類の手続きを持ち、
+//! 1e は未定義の変数の目印を加える。スライス 1f は条件オブジェクトと、コア IR と
+//! 継続のレイアウトを加える。この2つは値ではないが、同じようにたどられる。
+//! スライス 1g は、ペア・クロージャ・フレーム・継続フレーム・引数リストを GC ヒープ
+//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。
+//! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
+//! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
-//! Code outside this file does not switch on the union's tag. It asks `kind`
-//! and reads through the accessors, which keeps the representation replaceable
-//! while still letting a `switch` on `Kind` list every place a new kind has to
-//! be handled.
+//! このファイルの外のコードは、共用体のタグで switch しない。`kind` に問い合わせ、
+//! アクセサ経由で読む。こうすると、表現を差し替え可能に保ったまま、`Kind` に対する
+//! `switch` が、新しい種別を扱うべき箇所をすべて列挙してくれる。
 
 const std = @import("std");
 const SymbolId = @import("symbol.zig").SymbolId;
@@ -26,38 +23,42 @@ pub const Value = union(enum) {
     /// The empty list `()`.
     empty_list,
     symbol: SymbolId,
-    /// A pair. It lives in the GC heap.
+    /// A pair.
+    /// GC ヒープにある。
     pair: *Pair,
     /// A procedure implemented in Zig.
     primitive: *const Primitive,
     /// A procedure made by `lambda`.
     closure: *Closure,
-    /// What an expression with no useful value returns, such as `define`. It
-    /// has no external representation.
+    /// What an expression with no useful value returns, such as `define`.
+    /// 外部表現を持たない。
     unspecified,
     /// What a local variable holds between the start of its body and its
     /// definition (R7RS 5.3.2 binds the names of a body as `letrec*` does).
-    /// Reading the variable while it holds this is an error, so the marker never
-    /// reaches a program as a value.
+    /// 変数がこれを保持している間に読むとエラーになるので、この目印が値として
+    /// プログラムに届くことはない。
     uninitialized,
     /// What a Scheme error is: an object that says what went wrong (R7RS 6.11).
     condition: *Condition,
     /// A character: a Unicode scalar value (R7RS 6.6), so never a surrogate.
     character: u21,
-    /// A string. It lives in the GC heap.
+    /// A string.
+    /// GC ヒープにある。
     string: *String,
-    /// A vector. It lives in the GC heap.
+    /// A vector.
+    /// GC ヒープにある。
     vector: *Vector,
 
-    /// The empty list. Named apart from the variant, which a constant of the
-    /// same name would clash with.
+    /// The empty list.
+    /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
     pub const empty_list_value: Value = .empty_list;
 
-    /// The unspecified value. Named apart from the variant for the same reason.
+    /// The unspecified value.
+    /// 同じ理由で、バリアントとは別の名前にしてある。
     pub const unspecified_value: Value = .unspecified;
 
-    /// The marker of a variable that is not defined yet. Named apart from the
-    /// variant for the same reason.
+    /// The marker of a variable that is not defined yet.
+    /// 同じ理由で、バリアントとは別の名前にしてある。
     pub const uninitialized_value: Value = .uninitialized;
 
     pub fn fromFixnum(n: i64) Value {
@@ -197,8 +198,8 @@ pub const Value = union(enum) {
         };
     }
 
-    /// Whether a conditional takes the consequent. Every value but `#f` is
-    /// true, the empty list and zero included (R7RS 6.3).
+    /// Whether a conditional takes the consequent.
+    /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
         return switch (self) {
             .boolean => |b| b,
@@ -207,8 +208,9 @@ pub const Value = union(enum) {
     }
 };
 
-/// The object an error is. Slice 1f has the message only; stage 2 adds the kind
-/// of error and the irritants that `error` takes (R7RS 6.11).
+/// The object an error is.
+/// スライス 1f はメッセージだけを持つ。段階2で、エラーの種類と、`error` が取る
+/// irritant を加える(R7RS 6.11)。
 pub const Condition = struct {
     message: []const u8,
 };
@@ -219,83 +221,89 @@ pub const Pair = struct {
 };
 
 /// A string: its characters as UTF-8, which the creator guarantees is valid
-/// (ADR-0008). The bytes are a payload the heap owns and accounts for.
+/// (ADR-0008).
+/// バイト列は、ヒープが所有し、計上するペイロードである。
 pub const String = struct {
     bytes: []u8,
 };
 
-/// A vector: its elements in order. They are a payload the heap owns and
-/// accounts for, and the collector follows them.
+/// A vector: its elements in order.
+/// 要素は、ヒープが所有し、計上するペイロードで、GC はそれをたどる。
 pub const Vector = struct {
     items: []Value,
 };
 
 /// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
-/// #x10FFFF (R7RS 6.6), the code points a character can be. Everything that
-/// makes a character from a number asks this first, so a surrogate or a number
-/// past the range is a Scheme error and never a string that cannot be UTF-8.
+/// #x10FFFF (R7RS 6.6), the code points a character can be.
+/// 数から文字を作るものはすべて、まずこれを問い合わせる。そのため、サロゲートや範囲外
+/// の数は Scheme のエラーになり、UTF-8 にならない文字列が作られることはない。
 pub fn isScalarValue(cp: u32) bool {
     return cp <= 0xD7FF or (cp >= 0xE000 and cp <= 0x10FFFF);
 }
 
-/// The ways a primitive can fail. It grows with the primitives: a failure the
-/// evaluator has to describe is named here.
+/// The ways a primitive can fail.
+/// プリミティブとともに増える。評価器が説明しなければならない失敗は、ここで名前を
+/// 付ける。
 pub const PrimitiveError = error{
     /// An argument is not of the type the primitive takes.
     WrongType,
-    /// The exact result does not fit a fixnum. R7RS 6.2.3 lets an
-    /// implementation report this as a violation of an implementation
-    /// restriction; bignums arrive in stage 4.
+    /// The exact result does not fit a fixnum.
+    /// R7RS 6.2.3 は、処理系がこれを実装制限の違反として報告してよいとしている。
+    /// 多倍長整数(bignum)は段階4で入る。
     IntegerOverflow,
     /// A number of arguments the primitive does not take, such as `(-)`.
     WrongArgumentCount,
 };
 
-/// A procedure implemented in Zig. The table of them is in prim/.
+/// A procedure implemented in Zig.
+/// それらの表は prim/ にある。
 pub const Primitive = struct {
     name: []const u8,
     call: *const fn (args: []const Value) PrimitiveError!Value,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
-/// evaluated in. A call makes a frame behind `env`, and the variables of the
-/// body are found in it and the frames behind it by lexical address.
+/// evaluated in.
+/// 呼び出しは `env` を親とするフレームを作り、本体の変数は、そのフレームと、その
+/// 親のフレームたちから、レキシカルアドレスで見つかる。
 pub const Closure = struct {
     lambda: *const Lambda,
     env: ?*Frame,
 };
 
 /// The variables of one call, in the slots the expander assigned: the
-/// parameters, then the names the body defines at its start. `parent` is the
-/// frame the closure was made in.
+/// parameters, then the names the body defines at its start.
+/// `parent` は、クロージャが作られたフレームである。
 pub const Frame = struct {
     values: []Value,
     parent: ?*Frame,
 };
 
 /// Where a local variable lives: how many frames out from the one being run, and
-/// which slot in that frame. The expander resolves it (docs/design/runtime.md,
-/// the environment); `u32` is the width the expander reports an overflow of as
-/// an implementation restriction (R7RS 1.3.2).
+/// which slot in that frame.
+/// 展開器がこれを解決する(docs/design/runtime.md の「環境」)。`u32` は、あふれたとき
+/// 展開器が実装制限(R7RS 1.3.2)として報告する幅である。
 pub const Address = struct {
     depth: u32,
     index: u32,
 };
 
 /// A node of the core IR: what the expander produces and the machine runs
-/// (docs/design/runtime.md). Nodes are immutable, and a node refers to the nodes
-/// under it by pointer. They live where the expander allocated them, which is
-/// the interpreter's arena until a later slice puts code in the GC heap.
+/// (docs/design/runtime.md).
+/// ノードは不変で、ノードは配下のノードをポインタで参照する。ノードは展開器が確保
+/// した場所にあり、後のスライスがコードを GC ヒープに置くまでは、そこはインタプリタの
+/// アリーナである。
 pub const Node = union(enum) {
     /// A literal, or the datum of a `quote`.
     constant: Value,
     local_ref: LocalRef,
     /// A global variable, found by name until stage 2 gives it a cell.
     global_ref: SymbolId,
-    /// `set!` of a local variable. The variable must have a value.
+    /// `set!` of a local variable.
+    /// 変数は値を持っていなければならない。
     local_set: LocalAssign,
-    /// The definition of a local variable, at the start of a body. It gives the
-    /// first value to a slot that holds `uninitialized`.
+    /// The definition of a local variable, at the start of a body.
+    /// `uninitialized` を保持しているスロットに、最初の値を与える。
     local_define: LocalAssign,
     global_set: GlobalAssign,
     global_define: GlobalAssign,
@@ -307,8 +315,8 @@ pub const Node = union(enum) {
     call: Call,
 };
 
-/// A local variable read. The name is for the message when the slot is still
-/// uninitialized.
+/// A local variable read.
+/// 名前は、スロットがまだ未初期化のときのメッセージ用である。
 pub const LocalRef = struct {
     address: Address,
     name: SymbolId,
@@ -343,24 +351,25 @@ pub const Lambda = struct {
     body: *const Node,
 };
 
-/// A procedure call. The operator is evaluated first, then the operands from
-/// left to right.
+/// A procedure call.
+/// 演算子を最初に評価し、次にオペランドを左から右へ評価する。
 pub const Call = struct {
     operator: *const Node,
     operands: []const *const Node,
 };
 
-/// Values already evaluated for a call, most recent first. Immutable, so a
-/// continuation captured while a call evaluates its operands can be resumed more
-/// than once, each time from the same operands (ADR-0004).
+/// Values already evaluated for a call, most recent first.
+/// 不変なので、呼び出しがオペランドを評価している間に捕捉された継続は、何度でも
+/// 再開でき、そのたびに同じオペランドから始まる(ADR-0004)。
 pub const Args = struct {
     value: Value,
     next: ?*const Args,
 };
 
 /// One frame of the continuation: what to do with the value that arrives, and
-/// the frame to do it in. The frames form a chain, and are never changed once
-/// made, which is what lets a continuation be captured in constant time.
+/// the frame to do it in.
+/// フレームは鎖をなし、一度作られたら変更されない。そのため、継続を定数時間で
+/// 捕捉できる。
 pub const Kont = struct {
     next: ?*const Kont,
     /// The local frame to resume in.
@@ -372,16 +381,17 @@ pub const Kont = struct {
     pub const Step = union(enum) {
         /// The value is the condition of this `if`.
         branch: *const If,
-        /// The value is dropped, and these nodes run next. Never empty: the
-        /// last node of a sequence runs with this frame already gone, which is
-        /// what makes a call in tail position cost no frame.
+        /// The value is dropped, and these nodes run next.
+        /// 空にならない。シーケンスの最後のノードは、この継続フレームがすでに無い状態で
+        /// 実行される。これにより、末尾位置の呼び出しはフレームを消費しない。
         sequence: []const *const Node,
         local_set: *const LocalAssign,
         local_define: *const LocalAssign,
         global_set: *const GlobalAssign,
         global_define: *const GlobalAssign,
         /// The value is the next one of the call: the operator first, then each
-        /// operand. `args` holds those that came before it.
+        /// operand.
+        /// `args` には、それより前に届いた値が入る。
         call: CallStep,
     };
 
@@ -393,15 +403,15 @@ pub const Kont = struct {
     };
 };
 
-/// The types of the objects that live in the GC heap. A pointer to one of them
-/// is a reference the collector follows (src/trace.zig); the order is the one
-/// the heap numbers its kinds in.
+/// The types of the objects that live in the GC heap.
+/// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
+/// 種別に番号を振る順序である。
 pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, the
-/// procedures implemented in Zig, and the conditions. A pointer to one of them
-/// is not followed.
+/// procedures implemented in Zig, and the conditions.
+/// それらへのポインタはたどらない。
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Condition };
 
 /// What a value is, without how it is stored.
