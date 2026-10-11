@@ -13,6 +13,7 @@
 | [0007-test-tiers.md](0007-test-tiers.md) | テストの層と実行タイミングの設計(リードタイムの短縮) |
 | [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | スライス 1i(WASM と Web UI の最小版)の実装計画 |
 | [0009-slice-1j-release-v0-1-0.md](0009-slice-1j-release-v0-1-0.md) | スライス 1j(リリース v0.1.0)の実装計画 |
+| [0010-slices-1k-1l-primitives-and-repl-continuation.md](0010-slices-1k-1l-primitives-and-repl-continuation.md) | スライス 1k(プリミティブ)と 1l(REPL の継続行)の実装計画 |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
