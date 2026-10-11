@@ -56,3 +56,4 @@ jobs:
           key: zig-cache-v1-${{ runner.os }}-${{ hashFiles('.zigversion', 'build.zig', 'build.zig.zon') }}
       - run: zig build test -Dslow=true --summary all
       - run: zig build test-scheme -Dslow=true
+      - run: zig build test-wasm -Dslow=true

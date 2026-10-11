@@ -96,7 +96,7 @@ CI の置き場所は、2 つの案を比べる。
 
 | 用途 | コマンド | 使えるようになる段階 | CIで実行 |
 | --- | --- | --- | --- |
-| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` | 1 | PR が ready のとき、`main` への push、手動 |
+| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR が ready のとき、`main` への push、手動 |
 
 ## 作業の順序
 
@@ -120,4 +120,4 @@ CI の置き場所は、2 つの案を比べる。
 - スキームの遅いケースは、別の step にせず、`zig build test-scheme -Dslow=true` で同じランナーが `tests/scheme-slow/` も読む形にした。ランナーを 2 つにすると、`build.zig` の「検証が黙って止まる」ための検査(ランナーを 1 つだけ要求する)を広げることになるためである。
 - 単体テストで層2 に移したのは、`machine.zig` の 2 つ(10 万段の非末尾再帰、20 万回の末尾呼び出しの計上)だけである。リーダ・プリンタ・展開器の深さのテストは、アロケータを速いものにしたあとでは短く、層1 に残した。
 - スキームの `0012-gc.txt` は、縮小版(3 万回のループ、3000 段の再帰、2 万回のループ)を層1 に残し、100 万回のループ、上限までの無限再帰、10 万段の再帰を `tests/scheme-slow/0012-gc-scale.txt` に移した。
-- WebAssembly の往復テストにも層2 がある。ホストが 4 GiB 近い上限を渡したときに、計上が 1 GiB で止まること(約1分)を確かめるテストで、`zig build test-wasm -Dslow=true` のときだけ走る。`build.zig` が環境変数 `SUCHEME_SLOW` を `tools/test-wasm/main.mjs` に渡す。`full.yml` はこの step をまだ走らせていない(足すにはユーザーの承認が要る。[review/stage1-slice-1i-round2.md](../review/stage1-slice-1i-round2.md))。
+- WebAssembly の往復テストにも層2 がある。ホストが 4 GiB 近い上限を渡したときに、計上が 1 GiB で止まること(約1分)を確かめるテストで、`zig build test-wasm -Dslow=true` のときだけ走る。`build.zig` が環境変数 `SUCHEME_SLOW` を `tools/test-wasm/main.mjs` に渡す。`full.yml` がこの step を走らせる(ユーザーが 2026-10-11 に承認した。[review/stage1-slice-1i-round2.md](../review/stage1-slice-1i-round2.md))。
