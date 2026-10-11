@@ -216,6 +216,38 @@ test("reset forgets definitions", () => {
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// 非末尾再帰は、深さに比例してヒープを使う。小さい上限では溢れ、既定の上限では溢れない。
+const deep_recursion = "(define (f n) (if (= n 0) 0 (+ 1 (f (- n 1))))) (f 10000)";
+const small_limit = 65536;
+
+test("init with a small heap limit makes a deep recursion run out of heap", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(small_limit), OK);
+  const [status, text] = h.run(deep_recursion);
+  assert.equal(status, SCHEME_ERROR);
+  assert.match(text, /heap limit exceeded/);
+  // 同じ式は、既定の上限(0)では通る。上限が効いていることの対照である。
+  const control = instantiate().init();
+  assert.deepEqual(control.run(deep_recursion), [OK, "10000\n"]);
+});
+
+test("reset keeps the heap limit that init was given", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(small_limit), OK);
+  assert.equal(h.x.sucheme_reset(), OK);
+  const [status, text] = h.run(deep_recursion);
+  assert.equal(status, SCHEME_ERROR);
+  assert.match(text, /heap limit exceeded/);
+});
+
+test("reset empties an output that was not taken", () => {
+  const h = instantiate().init();
+  assert.equal(h.eval("(+ 1 2)"), OK);
+  assert.ok(h.x.sucheme_output_len() > 0);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.equal(h.x.sucheme_output_len(), 0);
+});
+
 test("characters, strings and vectors are written in the write form", () => {
   const h = instantiate().init();
   assert.deepEqual(h.run('"a\\nb" #\\a #(1 "x")'), [OK, '"a\\nb"\n#\\a\n#(1 "x")\n']);
