@@ -57,21 +57,21 @@
 
 意図的に小さくする。10進整数と記号と手続き呼び出しだけで `(define (fact n) ...)` が動く状態を目標にする。この時点で値表現、ヒープ、GC、機械、リーダ、プリンタ、REPL、WASM、Web UI、CI がすべて最小の形でそろう。以降の段階はこの縦切りを太らせる作業になる。
 
-- [ ] 値表現とシンボルのインターン([design/runtime.md](design/runtime.md) の値の表現の段階1の行)
-- [ ] GCヒープの骨格とマーク・スイープ、ルート登録 API
-- [ ] リーダの最小集合(行コメント、真偽値、10進整数、識別子、文字列、リスト、ベクタ、`'`)
-- [ ] プリンタ(`write` と `display`)
-- [ ] コアIRと展開器の最小集合(`quote` `if` `lambda` `set!` `define` `begin` と呼び出し)
-- [ ] CEK機械の実行ループと、段階1の機構に必要な継続フレーム([design/runtime.md](design/runtime.md) の必要なフレームの種類の段階1の行)
-- [ ] 最外の継続への脱出による未処理例外の報告(継続と条件オブジェクトの最小形)
-- [ ] プリミティブ約30個。算術は固定長整数に限る
-- [ ] REPL(素朴な行読み取り、完結判定による継続行)
-- [ ] リーダのファジングのワークフロー(定期実行と手動起動)
-- [ ] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版
-- [ ] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める)
-- [ ] aarch64 を自動テストの対象に加えるかの判断と ADR の作成([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる)
-- [ ] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md)
-- [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う
+- [x] 値表現とシンボルのインターン([design/runtime.md](design/runtime.md) の値の表現の段階1の行) (スライス 1a・1b・1h)
+- [x] GCヒープの骨格とマーク・スイープ、ルート登録 API (スライス 1g)
+- [ ] リーダの最小集合(行コメント、真偽値、10進整数、識別子、文字列、リスト、ベクタ、`'`) (スライス 1a・1c・1h。行コメント `;` だけが残り、1l の L1 で入れる)
+- [x] プリンタ(`write` と `display`) (スライス 1a・1h)
+- [x] コアIRと展開器の最小集合(`quote` `if` `lambda` `set!` `define` `begin` と呼び出し) (スライス 1f)
+- [x] CEK機械の実行ループと、段階1の機構に必要な継続フレーム([design/runtime.md](design/runtime.md) の必要なフレームの種類の段階1の行) (スライス 1f)
+- [x] 最外の継続への脱出による未処理例外の報告(継続と条件オブジェクトの最小形) (スライス 1b・1f)
+- [ ] プリミティブ約30個。算術は固定長整数に限る (スライス 1a・1d・1e。現在は `+ - * < <= = > >=` の8個だけで、リスト操作などの残りはスライス 1k で入れる)
+- [ ] REPL(素朴な行読み取り、完結判定による継続行) (スライス 1a は素朴な行読み取りまで。継続行はスライス 1l で入れる)
+- [ ] リーダのファジングのワークフロー(定期実行と手動起動) (スライス 1j-1)
+- [x] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版 (スライス 1i)
+- [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)
+- [ ] aarch64 を自動テストの対象に加えるかの判断と ADR の作成([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
+- [ ] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
+- [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3)
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 

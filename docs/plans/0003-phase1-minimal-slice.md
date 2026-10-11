@@ -44,7 +44,7 @@
 
 ## 進捗
 
-スライスごとの状態。スライスの PR を出すときに、この表と下の「次にやること」を同じ PR で更新する。会話が途切れても、リポジトリの文書だけから現状に戻れるようにするためである。
+スライスごとの状態。スライスの PR を出すときに、この表と下の「次にやること」を同じ PR で更新し、そのスライスが完了させる [roadmap.md](../roadmap.md) の段階1の項目にチェックを入れる。会話が途切れても、リポジトリの文書だけから現状に戻れるようにするためである。
 
 | スライス | 状態 | PR |
 | --- | --- | --- |
@@ -56,10 +56,10 @@
 | 1f | マージ済み | #13(計画書 0004 は #12) |
 | 1g | マージ済み。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | 実装が #21、後半のレビュー対応が #22(計画書 0005 は #18) |
 | 1h | マージ済み。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装が [#24](https://github.com/suchi/sucheme-zig/pull/24) |
-| 1i | 実装済み、PR のレビュー待ち。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が [#29](https://github.com/suchi/sucheme-zig/pull/29)、実装は 1i の PR |
-| 1j | 計画は合意済み。1i のマージ後に、1j-1 から 1j-3 を 1k・1l と並行して実装し、1j-4 と 1j-5 は段階1の全項目がそろってから実装する。計画は [0009-slice-1j-release-v0-1-0.md](0009-slice-1j-release-v0-1-0.md) | 計画書が [#33](https://github.com/suchi/sucheme-zig/pull/33)、実装は 1j-1 から 1j-5 の PR |
-| 1k | 計画書 0010 の合意待ち。1i のマージ後に実装する。計画は [0010-slices-1k-1l-primitives-and-repl-continuation.md](0010-slices-1k-1l-primitives-and-repl-continuation.md) | 計画書の PR は作成後に追記、実装は 1k の PR |
-| 1l | 同上 | 同上 |
+| 1i | マージ済み。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が [#29](https://github.com/suchi/sucheme-zig/pull/29)、実装が [#36](https://github.com/suchi/sucheme-zig/pull/36) |
+| 1j | 計画は合意済み。1j-1 から 1j-3 を 1k・1l と並行して実装し、1j-4 と 1j-5 は段階1の全項目がそろってから実装する。計画は [0009-slice-1j-release-v0-1-0.md](0009-slice-1j-release-v0-1-0.md) | 計画書が [#33](https://github.com/suchi/sucheme-zig/pull/33)、実装は 1j-1 から 1j-5 の PR |
+| 1k | 計画は合意済み(2026-10-11)。K0(呼び出し規約)から実装する。計画は [0010-slices-1k-1l-primitives-and-repl-continuation.md](0010-slices-1k-1l-primitives-and-repl-continuation.md) | 計画書が [#39](https://github.com/suchi/sucheme-zig/pull/39)、実装は 1k の PR |
+| 1l | 計画は合意済み(2026-10-11)。最初の単位 L1(行コメント)は独立した PR として、1k・1j より先にマージする。L2(完結判定)と L3(REPL の継続行)はそのあと | 計画書が [#39](https://github.com/suchi/sucheme-zig/pull/39)、実装は L1 の PR と 1l の PR |
 | 1m | 実装済み、PR のレビュー待ち。1k・1l・1j とは独立で、順序を問わない。計画は [0011-slice-1m-conformance-report-early.md](0011-slice-1m-conformance-report-early.md) | 1m の PR |
 
 ## 再開の手がかり
@@ -125,10 +125,10 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 スライス 1h(文字・文字列・ベクタ、ドット対)は PR #24 で `main` に入っている。テストの層([0007](0007-test-tiers.md))は PR #25 から #28 で入っている(`full.yml` は #28)。
 
-1. スライス 1i(ブラウザで `(fact 10)` が動く)の PR のレビューとマージ。計画は [0008](0008-slice-1i-wasm-web-ui.md)。マージされたら、`build.zig` と `src/wasm.zig` のコメントを日本語にする([Issue #30](https://github.com/suchi/sucheme-zig/issues/30))。
-2. スライス 1k(プリミティブ)と 1l(REPL の継続行と行コメント)の計画書 [0010](0010-slices-1k-1l-primitives-and-repl-continuation.md) の合意。「合意を求める点」の9つに答えをもらう。
-3. スライス 1j(リリース v0.1.0)は、計画書 [0009](0009-slice-1j-release-v0-1-0.md) が合意済みである。1i のマージと 0010 の合意のあと、1k、1l、1j-1(ファジング)から 1j-3 を並行して実装に入る。1j-4 と 1j-5 は、段階1の全項目(1k と 1l を含む)がそろってから出す。
-4. スライス 1m(準拠マトリクスの最小版)の PR のレビューとマージ。計画は [0011](0011-slice-1m-conformance-report-early.md)。1k と 1l と 1j からは独立で、順序を問わない。束縛を増やす PR(1k を含む)は、`zig build report` を実行して `docs/status/conformance.md` を更新する。
-5. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトはヒープの外にある(段階2)。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。1k は、大きさを数で決める生成(`make-vector` など)を入れないので、見直さない。見直しは、それらが入る段階3の最初のスライスで行う([0010](0010-slices-1k-1l-primitives-and-repl-continuation.md))。
+1. 行コメント(1l の L1)を、独立した小さな PR で最初にマージする。計画は [0010](0010-slices-1k-1l-primitives-and-repl-continuation.md)。
+2. スライス 1k(プリミティブ)は K0(呼び出し規約)から実装する。1l の残り(L2、L3)と、1j-1(ファジング)から 1j-3 は、L1 と並行して進めてよい。1j-4 と 1j-5 は、段階1の全項目(1k と 1l を含む)がそろってから出す。計画は [0009](0009-slice-1j-release-v0-1-0.md) と 0010。
+3. `build.zig` などのコメントの日本語化の残りは [Issue #30](https://github.com/suchi/sucheme-zig/issues/30) の PR で進めている。スライス 1i は [#36](https://github.com/suchi/sucheme-zig/pull/36) で `main` に入っている。
+4. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトはヒープの外にある(段階2)。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。1k は、大きさを数で決める生成(`make-vector` など)を入れないので、見直さない。見直しは、それらが入る段階3の最初のスライスで行う([0010](0010-slices-1k-1l-primitives-and-repl-continuation.md))。
+5. スライス 1m(準拠マトリクスの最小版)の PR のレビューとマージ。計画は [0011](0011-slice-1m-conformance-report-early.md)。1k と 1l と 1j からは独立で、順序を問わない。束縛を増やす PR(1k を含む)は、`zig build report` を実行して `docs/status/conformance.md` を更新する。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い、条件は `error.Raised` の脱出でハンドラは無い。
