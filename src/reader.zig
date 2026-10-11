@@ -520,6 +520,8 @@ test "next skips a line comment up to the end of the line" {
     // コメントは、データのあいだのどこにでも置ける。
     try std.testing.expectEqualStrings("(quote a)", try f.roundTrip("'; c\na", &buf));
     try std.testing.expectEqualStrings("(1 . 2)", try f.roundTrip("(1 ;a\n. ;b\n2 ;c\n)", &buf));
+    // `.` の直後が `;` でも、`.` はそこで終わる(`atDot` の区切りの判定)。
+    try std.testing.expectEqualStrings("(1 . 2)", try f.roundTrip("(1 .;c\n2)", &buf));
     try std.testing.expectEqualStrings("#(1 2)", try f.roundTrip("#(1 ;a\n2)", &buf));
     // 空白だけの行とコメントだけの行が続いても、次のデータに届く。
     try std.testing.expectEqualStrings("x", try f.roundTrip(";a\n\n  ;b\n\t;c\nx", &buf));
