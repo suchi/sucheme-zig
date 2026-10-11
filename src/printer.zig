@@ -1,10 +1,10 @@
 //! Writes values in their external representation.
 //!
 //! スライス 1d が表示するのは、整数、真偽値、シンボル、リスト、手続きである。
-//! 未指定値(unspecified value)には外部表現がないので、結果を表示する側はこれを
-//! 飛ばす。スライス 1h で文字、文字列、ベクタを足し、それとともに `write` と
-//! `display` の違いが入った(R7RS 6.13.3)。`write` は `read` が読み戻せる形を出し、
-//! `display` は人が読むテキストを出す。
+//! 未指定値(unspecified value)は `#<unspecified>` と書く。最上位の未指定値を表示
+//! しないのは、結果を表示する側の判断である。スライス 1h で文字、文字列、ベクタを
+//! 足し、それとともに `write` と `display` の違いが入った(R7RS 6.13.3)。`write` は
+//! `read` が読み戻せる形を出し、`display` は人が読むテキストを出す。
 //!
 //! どこまで深く進むかはデータの深さで決まるので、Zig の再帰でなく、明示的な
 //! スタックで動く(docs/design/runtime.md)。
@@ -89,8 +89,10 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
                 try stack.append(scratch, .{ .rest = p.cdr });
                 try stack.append(scratch, .{ .value = p.car });
             },
-            // 書くものはない。この値をまったく表示しないことは、呼び出し側が決める。
-            .unspecified => {},
+            // Why: データの中の未規定値(`(list (if #f #f))` など)を何も書かないと、
+            // `(1 . )` のように読めない出力になる。読めない表記で書く。最上位の値を
+            // 表示しないことは、プリンタでなく呼び出し側(`Interpreter`)が決める。
+            .unspecified => try out.writeAll("#<unspecified>"),
             // これを持つ変数を読むとエラーになるので、プログラムがこれを目にすることは
             // ない。漏れたときに分かるよう、それでも書く。
             .uninitialized => try out.writeAll("#<uninitialized>"),
@@ -206,11 +208,25 @@ test "write shows a condition that leaked" {
     try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
 }
 
-test "write writes nothing for the unspecified value" {
+test "write prints the unspecified value as #<unspecified>" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("", try f.written(&buf, .unspecified_value));
+    try std.testing.expectEqualStrings("#<unspecified>", try f.written(&buf, .unspecified_value));
+    try std.testing.expectEqualStrings("#<unspecified>", try f.displayed(&buf, .unspecified_value));
+}
+
+test "write prints the unspecified value inside data" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const u: Value = .unspecified_value;
+    // 読める形のまま、リストの要素・ペアの末尾・ベクタの要素になる。
+    const l = try f.list(&.{ .fromFixnum(1), u, .fromFixnum(3) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(1 #<unspecified> 3)", try f.written(&buf, l));
+    try std.testing.expectEqualStrings("(1 . #<unspecified>)", try f.written(&buf, try f.cons(.fromFixnum(1), u)));
+    try std.testing.expectEqualStrings("(#<unspecified> . 2)", try f.written(&buf, try f.cons(u, .fromFixnum(2))));
+    try std.testing.expectEqualStrings("#(#<unspecified> 1)", try f.written(&buf, try f.vector(&.{ u, .fromFixnum(1) })));
 }
 
 test "write prints booleans, the empty list and symbols" {
