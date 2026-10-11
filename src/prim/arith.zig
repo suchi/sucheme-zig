@@ -1,5 +1,6 @@
-//! Arithmetic primitives. Fixed-length integers only until stage 4
-//! (docs/design/runtime.md, ADR-0007).
+//! Arithmetic primitives.
+//!
+//! 段階4までは固定長の整数だけを扱う(docs/design/runtime.md, ADR-0007)。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -20,43 +21,49 @@ pub const primitives = [_]Primitive{
     .{ .name = ">=", .call = comparison(.gte) },
 };
 
-/// A result of the wide arithmetic, as a fixnum if it fits (R7RS 6.2.3 lets an
-/// implementation report an exact result it cannot represent as a violation of
-/// an implementation restriction; bignums arrive in stage 4).
+/// A result of the wide arithmetic, as a fixnum if it fits.
+///
+/// R7RS 6.2.3 は、表現できない正確な結果を、実装上の制限の違反として報告する
+/// ことを実装に許している。多倍長整数は段階4で入る。
 fn fromWide(n: i128) Error!Value {
     return .fromFixnum(std.math.cast(i64, n) orelse return error.IntegerOverflow);
 }
 
-/// `(+ z1 ...)`. With no argument the sum is 0 (R7RS 6.2.6).
+/// `(+ z1 ...)`.
+///
+/// 引数がなければ和は 0 である(R7RS 6.2.6)。
 fn add(args: []const Value) Error!Value {
-    // Wide enough that no argument list a program can build overflows it, so
-    // only the result is held to the fixnum range: `(+ max 1 -1)` is `max`.
+    // プログラムが作れるどの引数リストでもあふれない幅にしてある。このため
+    // fixnum の範囲に収めるのは結果だけで、`(+ max 1 -1)` は `max` になる。
     var sum: i128 = 0;
     for (args) |a| sum += a.asFixnum() orelse return error.WrongType;
     return .fromFixnum(std.math.cast(i64, sum) orelse return error.IntegerOverflow);
 }
 
 /// `(- z)` negates, and `(- z1 z2 ...)` subtracts the rest from the first
-/// (R7RS 6.2.6). It takes at least one argument.
+/// (R7RS 6.2.6).
+///
+/// 引数は1つ以上要る。
 fn subtract(args: []const Value) Error!Value {
     if (args.len == 0) return error.WrongArgumentCount;
     const first = args[0].asFixnum() orelse return error.WrongType;
-    // Negating the smallest fixnum does not fit, and nor does `(- 0 min)`.
+    // 最小の fixnum の符号反転は収まらない。`(- 0 min)` も同じである。
     if (args.len == 1) return fromWide(-@as(i128, first));
     var difference: i128 = first;
     for (args[1..]) |a| difference -= a.asFixnum() orelse return error.WrongType;
     return fromWide(difference);
 }
 
-/// `(* z1 ...)`. With no argument the product is 1 (R7RS 6.2.6).
+/// `(* z1 ...)`.
 ///
-/// The product is kept in 128 bits so that a partial product that does not fit
-/// a fixnum can still be brought back by a later factor, as in `(* big big 0)`.
-/// A partial product that does not fit 128 bits is reported, even if a later
-/// zero would have made the result fit.
+/// 引数がなければ積は 1 である(R7RS 6.2.6)。
+///
+/// 積は128ビットで保持する。fixnum に収まらない部分積を、`(* big big 0)` のように
+/// 後の因数で収まる値に戻せるようにするためである。128ビットに収まらない部分積は、
+/// 後に 0 が来れば結果が収まる場合でも、エラーとして報告する。
 fn multiply(args: []const Value) Error!Value {
-    // Every argument is checked first, so the error does not depend on whether
-    // an earlier factor already overflowed.
+    // 先にすべての引数を検査する。エラーが、前の因数がすでにあふれたかどうかに
+    // 左右されないようにするためである。
     for (args) |a| _ = a.asFixnum() orelse return error.WrongType;
     var product: i128 = 1;
     for (args) |a| {
@@ -68,9 +75,11 @@ fn multiply(args: []const Value) Error!Value {
 }
 
 /// `(= z1 z2 z3 ...)` and its relatives (R7RS 6.2.6): true when `op` holds for
-/// every neighbouring pair. One argument is true, none is an error. Every
-/// argument is checked to be a number, including those after the first pair
-/// that fails, so the error does not depend on the values.
+/// every neighbouring pair.
+///
+/// 引数が1つなら真、なしならエラーである。最初に成り立たなかった組より後の
+/// ものも含め、すべての引数が数であることを検査する。エラーが値に左右されない
+/// ようにするためである。
 fn comparison(comptime op: std.math.CompareOperator) *const fn ([]const Value) Error!Value {
     return &struct {
         fn call(args: []const Value) Error!Value {
@@ -149,7 +158,7 @@ test "- reports a result that does not fit, and needs an argument" {
     try std.testing.expectError(error.IntegerOverflow, call("-", &.{ 0, std.math.minInt(i64) }));
     try std.testing.expectError(error.IntegerOverflow, call("-", &.{ std.math.maxInt(i64), -1 }));
     try std.testing.expectError(error.WrongArgumentCount, call("-", &.{}));
-    // A partial difference may leave the fixnum range if the result returns.
+    // 結果が範囲に戻るなら、途中の差は fixnum の範囲を出てよい。
     try std.testing.expectEqual(std.math.maxInt(i64), try callInt("-", &.{ std.math.maxInt(i64), -1, 1 }));
 }
 
@@ -167,7 +176,7 @@ test "* reports a product that does not fit, but lets a zero bring a partial one
     const big = std.math.maxInt(i64);
     try std.testing.expectEqual(0, try callInt("*", &.{ big, big, 0 }));
     try std.testing.expectError(error.IntegerOverflow, call("*", &.{ big, big, big }));
-    // 2^128 wraps to 0 in 128 bits, which would fit a fixnum.
+    // 2^128 は128ビットでは 0 に巻き戻り、fixnum に収まってしまう。
     const two_32 = 1 << 32;
     try std.testing.expectError(error.IntegerOverflow, call("*", &.{ two_32, two_32, two_32, two_32 }));
 }
@@ -206,7 +215,8 @@ test "a comparison checks the type of every argument, however the pairs came out
     for ([_][]const u8{ "=", "<", ">", "<=", ">=" }) |name| {
         for (primitives) |p| {
             if (!std.mem.eql(u8, p.name, name)) continue;
-            // The first pair already decides the answer; the third is no number.
+            // 最初の組ですでに答えは決まっている。3番目は数ではない。
+
             const args = [_]Value{ .fromFixnum(2), .fromFixnum(1), .unspecified_value };
             try std.testing.expectError(error.WrongType, p.call(&args));
         }
