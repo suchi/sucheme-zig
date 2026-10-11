@@ -1,0 +1,358 @@
+# スライス 1k の単位 K4: 整数除算と `number?`。
+# `quotient` と `remainder` は0に向かう切り捨て除算、`modulo` は床除算である
+# (R7RS 6.2.6)。`remainder` の符号は被除数に、`modulo` の符号は除数に従う。
+# 除数が0なら0除算のエラーである。最小の整数を -1 で割る `quotient` だけは、結果が
+# 固定長整数に収まらないのであふれる。`remainder` と `modulo` は 0 になる。
+
+(quotient 7 2)
+3
+
+(quotient 13 4)
+3
+
+(quotient -13 4)
+-3
+
+(quotient 13 -4)
+-3
+
+(quotient -13 -4)
+3
+
+(quotient 12 4)
+3
+
+(quotient 0 5)
+0
+
+(quotient 3 7)
+0
+
+(quotient -3 7)
+0
+
+(remainder 13 4)
+1
+
+(remainder -13 4)
+-1
+
+(remainder 13 -4)
+1
+
+(remainder -13 -4)
+-1
+
+(remainder 12 4)
+0
+
+(remainder -12 4)
+0
+
+(remainder 0 5)
+0
+
+(remainder 3 7)
+3
+
+(remainder -3 7)
+-3
+
+# 原文の例: (modulo -13 4) は 3、(modulo 13 -4) は -3、(modulo -13 -4) は -1。
+(modulo 13 4)
+1
+
+(modulo -13 4)
+3
+
+(modulo 13 -4)
+-3
+
+(modulo -13 -4)
+-1
+
+(modulo 12 4)
+0
+
+(modulo -12 4)
+0
+
+(modulo 12 -4)
+0
+
+(modulo 0 5)
+0
+
+(modulo 3 7)
+3
+
+(modulo -3 7)
+4
+
+(modulo 3 -7)
+-4
+
+# 境目。最小値は -9223372036854775808、最大値は 9223372036854775807 である。
+(quotient 9223372036854775807 1)
+9223372036854775807
+
+(quotient -9223372036854775808 1)
+-9223372036854775808
+
+(quotient 9223372036854775807 -1)
+-9223372036854775807
+
+(quotient -9223372036854775808 2)
+-4611686018427387904
+
+(quotient -9223372036854775808 3)
+-3074457345618258602
+
+(quotient 9223372036854775807 -9223372036854775808)
+0
+
+(quotient -9223372036854775808 9223372036854775807)
+-1
+
+(quotient -9223372036854775808 -9223372036854775808)
+1
+
+(remainder -9223372036854775808 3)
+-2
+
+(remainder 9223372036854775807 -9223372036854775808)
+9223372036854775807
+
+(remainder -9223372036854775808 9223372036854775807)
+-1
+
+(remainder -9223372036854775808 -9223372036854775808)
+0
+
+(modulo -9223372036854775808 3)
+1
+
+(modulo 9223372036854775807 -9223372036854775808)
+-1
+
+(modulo -9223372036854775808 9223372036854775807)
+9223372036854775806
+
+(modulo -9223372036854775808 -9223372036854775808)
+0
+
+# 最小値を -1 で割る。`quotient` だけが結果の 2^63 を表せず、あふれる。
+(quotient -9223372036854775808 -1)
+error: integer overflow in quotient
+
+(remainder -9223372036854775808 -1)
+0
+
+(modulo -9223372036854775808 -1)
+0
+
+(quotient 0 0)
+error: division by zero in quotient
+
+(quotient 1 0)
+error: division by zero in quotient
+
+(quotient -9223372036854775808 0)
+error: division by zero in quotient
+
+(remainder 1 0)
+error: division by zero in remainder
+
+(remainder 0 0)
+error: division by zero in remainder
+
+(modulo 1 0)
+error: division by zero in modulo
+
+(modulo 0 0)
+error: division by zero in modulo
+
+(modulo -13 0)
+error: division by zero in modulo
+
+# 型の検査は値の検査より先である。除数が0でも、型の誤りが報告される。
+(quotient 'a 1)
+error: wrong type of argument to quotient
+
+(quotient 1 'a)
+error: wrong type of argument to quotient
+
+(quotient 'a 0)
+error: wrong type of argument to quotient
+
+(quotient 1 #t)
+error: wrong type of argument to quotient
+
+(remainder 'a 1)
+error: wrong type of argument to remainder
+
+(remainder 1 'a)
+error: wrong type of argument to remainder
+
+(remainder 'a 0)
+error: wrong type of argument to remainder
+
+(modulo 'a 1)
+error: wrong type of argument to modulo
+
+(modulo 1 "2")
+error: wrong type of argument to modulo
+
+(modulo 'a 0)
+error: wrong type of argument to modulo
+
+(quotient 1 '())
+error: wrong type of argument to quotient
+
+(quotient (quote (1)) 1)
+error: wrong type of argument to quotient
+
+(quotient)
+error: wrong number of arguments to quotient
+
+(quotient 1)
+error: wrong number of arguments to quotient
+
+(quotient 1 2 3)
+error: wrong number of arguments to quotient
+
+(remainder)
+error: wrong number of arguments to remainder
+
+(remainder 1)
+error: wrong number of arguments to remainder
+
+(remainder 1 2 3)
+error: wrong number of arguments to remainder
+
+(modulo)
+error: wrong number of arguments to modulo
+
+(modulo 1)
+error: wrong number of arguments to modulo
+
+(modulo 1 2 3)
+error: wrong number of arguments to modulo
+
+# 個数の誤りは、引数の型や値より先に報告される。
+(quotient 'a)
+error: wrong number of arguments to quotient
+
+(modulo 1 0 'a)
+error: wrong number of arguments to modulo
+
+(number? 0)
+#t
+
+(number? 42)
+#t
+
+(number? -42)
+#t
+
+(number? 9223372036854775807)
+#t
+
+(number? -9223372036854775808)
+#t
+
+(number? 'a)
+#f
+
+(number? #t)
+#f
+
+(number? #f)
+#f
+
+(number? '())
+#f
+
+(number? "1")
+#f
+
+(number? #\1)
+#f
+
+(number? '(1))
+#f
+
+(number? '#(1))
+#f
+
+(number? (if #f #f))
+#f
+
+(number? number?)
+#f
+
+(number? (lambda (x) x))
+#f
+
+(number? (quotient 7 2))
+#t
+
+(number?)
+error: wrong number of arguments to number?
+
+(number? 1 2)
+error: wrong number of arguments to number?
+
+# プリミティブは値である。名前を付けて渡せる。
+(define q quotient) (q 7 2)
+3
+
+(define m modulo) (m -13 4)
+3
+
+(define r remainder) (r -13 4)
+-1
+
+(define n? number?) (n? 1)
+#t
+
+# 合成。
+(+ (* (quotient 17 5) 5) (remainder 17 5))
+17
+
+(+ (* (quotient -17 5) 5) (remainder -17 5))
+-17
+
+# 実演。最大公約数。
+(define (gcd2 a b) (if (= b 0) a (gcd2 b (remainder a b)))) (gcd2 48 18)
+6
+
+(define (gcd2 a b) (if (= b 0) a (gcd2 b (remainder a b)))) (gcd2 17 5)
+1
+
+(define (gcd2 a b) (if (= b 0) a (gcd2 b (remainder a b)))) (gcd2 0 9)
+9
+
+# 実演。素数判定。
+(define (prime? n) (define (go d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (go (+ d 1))))) (if (< n 2) #f (go 2))) (prime? 97)
+#t
+
+(define (prime? n) (define (go d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (go (+ d 1))))) (if (< n 2) #f (go 2))) (prime? 91)
+#f
+
+(define (prime? n) (define (go d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (go (+ d 1))))) (if (< n 2) #f (go 2))) (prime? 1)
+#f
+
+(define (prime? n) (define (go d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (go (+ d 1))))) (if (< n 2) #f (go 2))) (prime? 2)
+#t
+
+# 実演。階乗。20 は収まり、21 はあふれる。あふれても REPL は止まらない。
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20)
+2432902008176640000
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 21)
+error: integer overflow in *
+
+# 実演。10進の桁の和。`quotient` と `modulo` で桁を取り出す。
+(define (digits n) (if (= n 0) 0 (+ (modulo n 10) (digits (quotient n 10))))) (digits 9876)
+30
