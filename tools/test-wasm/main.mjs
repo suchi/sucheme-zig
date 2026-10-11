@@ -92,6 +92,13 @@ function test(name, body) {
   tests.push({ name, body });
 }
 
+// 規模を確かめるテストは、`zig build test-wasm -Dslow=true` のときだけ走る
+// (build.zig が環境変数 SUCHEME_SLOW を渡す。docs/plans/0007-test-tiers.md)。
+const slowTier = process.env.SUCHEME_SLOW === "1";
+function slowTest(name, body) {
+  tests.push({ name, body, slow: true });
+}
+
 test("version string is not empty", () => {
   const h = instantiate();
   const len = h.x.sucheme_version_len();
@@ -247,6 +254,19 @@ test("reset keeps the heap limit that init was given", () => {
   assert.match(text, /heap limit exceeded/);
 });
 
+// 4 GiB に近い上限を渡しても、計上の上限は 1 GiB に丸められる(`heap.max_host_limit`)。
+// 丸めが無いと、計上が上限に届く前に wasm32 の線形メモリ(4 GiB)が尽きて trap する。
+// 上限まで使い切るので 1 分以上かかる。
+slowTest("init with a limit near 4 GiB runs the heap up to its limit and reports it, not a trap", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(0xffffffff), OK);
+  const [status, text] = h.run("(define (f n) (+ 1 (f n))) (f 0)");
+  assert.equal(status, SCHEME_ERROR);
+  assert.match(text, /heap limit exceeded/);
+  // 使い切ったあとも、インスタンスは使える。
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 test("reset empties an output that was not taken", () => {
   const h = instantiate().init();
   assert.equal(h.eval("(+ 1 2)"), OK);
@@ -293,7 +313,13 @@ test("web/serve.mjs --self-test passes", () => {
 
 let passed = 0;
 let failed = 0;
-for (const { name, body } of tests) {
+let skipped = 0;
+for (const { name, body, slow } of tests) {
+  if (slow && !slowTier) {
+    skipped += 1;
+    console.log(`skip ${name} (slow tier)`);
+    continue;
+  }
   try {
     body();
     passed += 1;
@@ -306,7 +332,7 @@ for (const { name, body } of tests) {
 }
 
 if (failed > 0) {
-  console.log(`test-wasm: ${passed} passed, ${failed} failed`);
+  console.log(`test-wasm: ${passed} passed, ${failed} failed, ${skipped} skipped`);
   process.exit(1);
 }
-console.log(`test-wasm: ${passed} passed`);
+console.log(`test-wasm: ${passed} passed, ${skipped} skipped`);
