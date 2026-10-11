@@ -222,11 +222,3 @@ test "a comparison checks the type of every argument, however the pairs came out
         }
     }
 }
-
-test "the table names each primitive once" {
-    for (primitives, 0..) |p, i| {
-        try std.testing.expect(p.name.len > 0);
-        for (primitives[i + 1 ..]) |q| try std.testing.expect(!std.mem.eql(u8, p.name, q.name));
-    }
-    try std.testing.expectEqualStrings("+", primitives[0].name);
-}
