@@ -314,7 +314,7 @@ pub const Heap = struct {
     fn free(self: *Heap, header: *Header) void {
         inline for (object_types, 0..) |T, i| {
             if (header.kind == i) {
-                const cell: *Cell(T) = @fieldParentPtr("header", header);
+                const cell: *Cell(T) = @alignCast(@fieldParentPtr("header", header));
                 self.accounted -= cellBytes(T) + payloadBytes(T, &cell.value);
                 self.count -= 1;
                 switch (T) {
@@ -403,7 +403,7 @@ pub const Marker = struct {
     fn scan(self: *Marker, header: *Header) void {
         inline for (object_types, 0..) |T, i| {
             if (header.kind == i) {
-                const cell: *Cell(T) = @fieldParentPtr("header", header);
+                const cell: *Cell(T) = @alignCast(@fieldParentPtr("header", header));
                 trace.interpreter.children(self, T, &cell.value);
                 return;
             }
