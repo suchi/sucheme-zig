@@ -433,11 +433,28 @@ K0 は私が直列に作る。呼び出し規約、アリティ表、エラー�
 | 1j-1 は `src/reader.zig` を触る。[0009](0009-slice-1j-release-v0-1-0.md) のファイルの表に書かれている | 読んだ |
 | `src/main.zig` の REPL の既存のテストが、`(+ 1` の次の行を別の行として評価する動作を固定している | 読んだ |
 
+原文で確かめた事実(2026-10-11)。出典は <https://raw.githubusercontent.com/johnwcowan/r7rs-spec/master/spec/procs.tex>(第6章の LaTeX の原文。取得日 2026-10-11)。K1 から K5 の実装は、これを根拠にする。
+
+| 事柄 | 原文の規定 | 実装の方針 |
+| --- | --- | --- |
+| `length` | 「Returns the length of list」。例は `(a b c)`、`(a (b) (c d e))`、`()`。不正なリストの扱いは書かれていない | 循環と不正なリスト(尾が空リストでない)は `WrongType`。段階1に循環は作れない(変更する手続きが無い)が、不正なリストの検査は要る |
+| `list?` | 「all lists have finite length and are terminated by the empty list」。`(a . b)` は偽。循環は偽(例は `set-cdr!` で作る) | 尾が空リストで終わる有限の鎖だけが真。循環の検出(段階3)は、変更する手続きと一緒に入れる |
+| `eqv?` | 同じ記号、真偽値、空リスト、同じ位置のペア・ベクタ・文字列、同じ手続きは真。厳密と不正確の混在、`=` が偽の数、`char=?` が偽の文字、別々の位置のペア・ベクタ・文字列は偽。空の文字列・ベクタ、`+nan.0` は未規定 | 段階1に数は固定長整数だけ。数と文字は値の同一、それ以外は参照の同一 |
+| `eq?` | 記号、真偽値、空リスト、ペア、手続き、空でない文字列・ベクタでは `eqv?` と同じ。数と文字では実装依存だが、真を返すのは `eqv?` が真のときだけ | `eqv?` と同じ実装でよい(値の同一性) |
+| `equal?` | ペア、ベクタ、文字列を再帰的に比べ、ほかは `eqv?`。`eqv?` なら `equal?` も真 | 作業スタックで再帰を避ける |
+| `quotient` `remainder` `modulo` | `quotient` `remainder` は切り捨て除算(`truncate-quotient` `truncate-remainder`)、`modulo` は床除算(`floor-remainder`)。`(modulo -13 4)` は 3、`(modulo 13 -4)` は -3、`(modulo -13 -4)` は -1。除数 0 は「error」 | 除数 0 は `DivisionByZero`。固定長整数の最小値を -1 で割ると溢れるので `IntegerOverflow` |
+| `number?` | 数の型の述語は、非数の引数にも使え、偽を返す | 段階1は固定長整数だけなので、整数なら真 |
+| `integer->char` `char->integer` | `char->integer` は 0 から `#xD7FF`、または `#xE000` から `#x10FFFF` の整数を返す。`integer->char` はその逆 | 範囲外(サロゲートと `#x10FFFF` 超)は `OutOfRange`。1h の `isScalarValue` を使う |
+| `string-ref` `vector-ref` | 添字は 0 起点。「It is an error if k is not a valid index」 | 範囲外は `OutOfRange` |
+| `procedure?` | 手続きなら真、そうでなければ偽。`(procedure? car)` は真、`(procedure? 'car)` は偽 | プリミティブとクロージャが真 |
+| `not` | 偽のときだけ真 | 偽値だけが真になる |
+| `quotient` などの所属 | 付録Aの一覧で `(scheme base)` に `quotient` `remainder` `modulo` がある | 行の追加先は `base` |
+
 確かめられなかったこと:
 
 | 事柄 | 状態 |
 | --- | --- |
-| R7RS の本文の各節(6.1 から 6.8 と 6.10)の規定 | 実行環境から `standards.scheme.org` に届かなかった(プロキシが拒否した)。`length` と `list?` の循環・不正なリストの扱い、`eq?` の小さい数と文字の扱い、`integer->char` の範囲、`modulo` の符号、節番号は、既存の文書の引用と記憶に基づく。実装の最初の Red の前に原文で確かめ、結果を PR に書く |
+| 誤記修正版の HTML(`standards.scheme.org`)との一致 | 実行環境から `standards.scheme.org` に届かなかった(プロキシが拒否した)。下の「原文で確かめた事実」は、R7RS の編集者のリポジトリにある LaTeX の原文を読んだものである。誤記修正版と一致するかは、確かめていない |
 | `wasm32` での実行 | 1i が未マージで、ビルドしていない。添字の `usize` への変換は、設計で予防しただけで、実行して確かめていない |
 | 規模のテストの所要時間、`isIncomplete` の最悪の入力での所要時間 | 測っていない。実装時に測り、層の目標([0007](0007-test-tiers.md))に収まらなければ縮小版を小さくする |
 | ADR-0031 の余裕(上限の16分の1)に対する、引数の多い `list` や `vector` の確保量 | 測っていない。引数は呼び出しの鎖としてすでにヒープに計上されているので、結果は同じ桁の確保になると推測している |
