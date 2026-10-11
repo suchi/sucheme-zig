@@ -1,13 +1,13 @@
 //! Writes values in their external representation.
 //!
-//! Slice 1d prints integers, booleans, symbols, lists and procedures; the
-//! unspecified value has no external form, so callers that print results skip
-//! it. Slice 1h adds characters, strings and vectors, and with them the
-//! difference between `write` and `display` (R7RS 6.13.3): `write` gives the
-//! form `read` reads back, `display` the text a person reads.
+//! スライス 1d が表示するのは、整数、真偽値、シンボル、リスト、手続きである。
+//! 未指定値(unspecified value)には外部表現がないので、結果を表示する側はこれを
+//! 飛ばす。スライス 1h で文字、文字列、ベクタを足し、それとともに `write` と
+//! `display` の違いが入った(R7RS 6.13.3)。`write` は `read` が読み戻せる形を出し、
+//! `display` は人が読むテキストを出す。
 //!
-//! The depth of the data decides how deep printing goes, so it runs on an
-//! explicit stack and not on Zig recursion (docs/design/runtime.md).
+//! どこまで深く進むかはデータの深さで決まるので、Zig の再帰でなく、明示的な
+//! スタックで動く(docs/design/runtime.md)。
 
 const std = @import("std");
 const value_mod = @import("value.zig");
@@ -38,13 +38,12 @@ const Item = union(enum) {
 /// Which of the two external forms of data to write (R7RS 6.13.3).
 pub const Mode = enum { write, display };
 
-/// Writes `v` as `write` would (R7RS 6.13.3). Symbol names come from `symbols`.
-/// `scratch` holds the stack of what is left to write; `write` frees what it
-/// takes from it before it returns.
+/// Writes `v` as `write` would (R7RS 6.13.3).
+/// シンボル名は `symbols` から取る。`scratch` は、まだ書いていないものを積むスタックを
+/// 持ち、`write` は、戻る前にそこから取ったものを解放する。
 ///
-/// A symbol is written by its name alone. The names the reader produces never
-/// need the `|...|` form; the procedures that make other symbols come with the
-/// slices that need it.
+/// シンボルは名前だけで書く。リーダが作る名前に `|...|` の形は要らない。ほかのシンボルを
+/// 作る手続きは、それを必要とするスライスで入れる。
 pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value) Error!void {
     return emit(out, scratch, symbols, v, .write);
 }
@@ -80,8 +79,8 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
                 try out.writeAll("#(");
                 try stack.append(scratch, .{ .elements = .{ .items = x.asVector().?.items, .next = 0 } });
             },
-            // Why: R7RS leaves the external form of a procedure open; most
-            // systems write it in a notation `read` rejects, and so do we.
+            // Why: R7RS は手続きの外部表現を決めていない。多くの処理系は `read` が
+            // 受け付けない表記で書き、ここでもそうする。
             .closure => try out.writeAll("#<procedure>"),
             .primitive => try out.print("#<procedure {s}>", .{x.asPrimitive().?.name}),
             .pair => {
@@ -90,13 +89,13 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
                 try stack.append(scratch, .{ .rest = p.cdr });
                 try stack.append(scratch, .{ .value = p.car });
             },
-            // Nothing to write. The caller decides not to print the value at all.
+            // 書くものはない。この値をまったく表示しないことは、呼び出し側が決める。
             .unspecified => {},
-            // Reading a variable that holds it is an error, so no program sees
-            // it; written anyway so that a leak shows.
+            // これを持つ変数を読むとエラーになるので、プログラムがこれを目にすることは
+            // ない。漏れたときに分かるよう、それでも書く。
             .uninitialized => try out.writeAll("#<uninitialized>"),
-            // Nothing reads a condition as a value yet: an error leaves the
-            // machine and is reported. Written anyway so that a leak shows.
+            // 条件オブジェクトを値として読むものはまだない。エラーは機械を出て、
+            // 報告される。漏れたときに分かるよう、それでも書く。
             .condition => try out.writeAll("#<condition>"),
         },
         .rest => |tail| switch (tail.kind()) {
@@ -238,7 +237,7 @@ test "write prints a procedure in a form read rejects" {
         }
     }.call };
     try std.testing.expectEqualStrings("#<procedure plus>", try f.written(&buf, .fromPrimitive(&prim)));
-    // Inside a list it is one element like any other.
+    // リストの中では、ほかと同じ 1 つの要素である。
     const l = try f.list(&.{ .fromPrimitive(&prim), .fromFixnum(1) }, Value.empty_list_value);
     try std.testing.expectEqualStrings("(#<procedure plus> 1)", try f.written(&buf, l));
 }
@@ -270,7 +269,7 @@ test "write prints a list that does not end in the empty list with a dot" {
     try std.testing.expectEqualStrings("(1 2 . 3)", try f.written(&buf, improper));
     const pair = try f.cons(.fromFixnum(1), .fromFixnum(2));
     try std.testing.expectEqualStrings("(1 . 2)", try f.written(&buf, pair));
-    // The tail can itself be a list that needs the closing parenthesis.
+    // 末尾は、閉じ括弧を必要とするリストであってもよい。
     const nested_tail = try f.cons(.fromFixnum(1), try f.cons(.fromFixnum(2), try f.sym("t")));
     try std.testing.expectEqualStrings("(1 2 . t)", try f.written(&buf, nested_tail));
 }
@@ -278,7 +277,7 @@ test "write prints a list that does not end in the empty list with a dot" {
 test "write does not recurse on the depth of the data" {
     var f: Fixture = .init();
     defer f.deinit();
-    // A list nested 200000 deep in its first element, and one 200000 long.
+    // 先頭の要素に 200000 段ネストしたリストと、長さ 200000 のリスト。
     const depth = 200_000;
     var deep: Value = Value.empty_list_value;
     for (0..depth) |_| deep = try f.cons(deep, Value.empty_list_value);
@@ -309,7 +308,7 @@ test "write prints vectors and pairs nested in one another" {
     var buf: [64]u8 = undefined;
     const inner = try f.vector(&.{ .fromFixnum(2), .fromFixnum(3) });
     try std.testing.expectEqualStrings("#(1 #(2 3) #())", try f.written(&buf, try f.vector(&.{ .fromFixnum(1), inner, try f.vector(&.{}) })));
-    // A vector in a list, in the tail of a pair, and a list and a pair in a vector.
+    // リストの中のベクタ、ペアの末尾のベクタ、ベクタの中のリストとペア。
     const in_list = try f.list(&.{ .fromFixnum(1), inner, .fromFixnum(4) }, Value.empty_list_value);
     try std.testing.expectEqualStrings("(1 #(2 3) 4)", try f.written(&buf, in_list));
     try std.testing.expectEqualStrings("(a . #(2 3))", try f.written(&buf, try f.cons(try f.sym("a"), inner)));
@@ -333,7 +332,7 @@ test "display prints what write prints for data without strings and characters" 
 test "write does not recurse on the depth of a vector" {
     var f: Fixture = .init();
     defer f.deinit();
-    // A vector nested 200000 deep in its only element, and one 200000 long.
+    // 唯一の要素に 200000 段ネストしたベクタと、長さ 200000 のベクタ。
     const depth = 200_000;
     var deep: Value = try f.vector(&.{});
     for (0..depth) |_| deep = try f.vector(&.{deep});
@@ -343,7 +342,7 @@ test "write does not recurse on the depth of a vector" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try write(&out.writer, std.testing.allocator, &f.symbols, deep);
-    // Each level is `#(` and `)`, and the innermost is `#()`.
+    // 各段は `#(` と `)` で、一番内側は `#()` である。
     try std.testing.expectEqual((depth + 1) * 3, out.written().len);
     out.clearRetainingCapacity();
     try write(&out.writer, std.testing.allocator, &f.symbols, long);
@@ -372,7 +371,7 @@ test "write and display differ inside a list and a dotted pair" {
     const l = try f.list(&.{ try f.string("a"), .fromCharacter('b'), try f.sym("c") }, Value.empty_list_value);
     try std.testing.expectEqualStrings("(\"a\" #\\b c)", try f.written(&buf, l));
     try std.testing.expectEqualStrings("(a b c)", try f.displayed(&buf, l));
-    // The element after the dot is written in the same mode.
+    // ドットの後の要素も、同じモードで書く。
     const pair = try f.cons(try f.string("a"), .fromCharacter('b'));
     try std.testing.expectEqualStrings("(\"a\" . #\\b)", try f.written(&buf, pair));
     try std.testing.expectEqualStrings("(a . b)", try f.displayed(&buf, pair));
@@ -388,7 +387,7 @@ test "write and display differ inside a vector" {
     const v = try f.vector(&.{ try f.string("a"), .fromCharacter('b'), .fromFixnum(1) });
     try std.testing.expectEqualStrings("#(\"a\" #\\b 1)", try f.written(&buf, v));
     try std.testing.expectEqualStrings("#(a b 1)", try f.displayed(&buf, v));
-    // The empty string is an element that writes as nothing.
+    // 空文字列は、何も書かない要素である。
     const empties = try f.vector(&.{ try f.string(""), try f.string("") });
     try std.testing.expectEqualStrings("#(\"\" \"\")", try f.written(&buf, empties));
     try std.testing.expectEqualStrings("#( )", try f.displayed(&buf, empties));
@@ -407,7 +406,7 @@ test "write and display differ at every level of nested data" {
     const outer = try f.list(&.{ vec, try f.string("d") }, Value.empty_list_value);
     try std.testing.expectEqualStrings("(#(\"a\" ((#\\b . \"c\"))) \"d\")", try f.written(&buf, outer));
     try std.testing.expectEqualStrings("(#(a ((b . c))) d)", try f.displayed(&buf, outer));
-    // A vector of vectors of strings, and a list of lists of characters.
+    // 文字列のベクタのベクタと、文字のリストのリスト。
     const vv = try f.vector(&.{ try f.vector(&.{try f.string("p")}), try f.vector(&.{ .fromCharacter('q'), try f.string("r") }) });
     try std.testing.expectEqualStrings("#(#(\"p\") #(#\\q \"r\"))", try f.written(&buf, vv));
     try std.testing.expectEqualStrings("#(#(p) #(q r))", try f.displayed(&buf, vv));

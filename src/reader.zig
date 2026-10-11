@@ -1,17 +1,16 @@
 //! Reads the external representation of data (R7RS 7.1.2).
 //!
-//! Slice 1c reads decimal integers, booleans, identifiers, parenthesised lists
-//! and the `'` abbreviation. It builds `Value`s directly: pairs are allocated
-//! in the GC heap it is given, and identifiers are interned in the symbol table
-//! it is given. Reading is not a point where the heap collects, so a datum is
-//! whole when `next` returns it; it is garbage as soon as nothing refers to it,
-//! though `quote` can hand it to a definition that does.
+//! スライス 1c が読むのは、10 進整数、真偽値、識別子、丸括弧のリスト、`'` の略記である。
+//! `Value` を直接作る。ペアは渡された GC ヒープに確保し、識別子は渡されたシンボル表に
+//! インターンする。読み取りの途中でヒープは GC しないので、`next` が返した時点で
+//! データは完全な形をしている。何からも参照されなくなればすぐにゴミになるが、
+//! `quote` が、参照を持つ定義にデータを渡すことはある。
 //!
-//! A vector `#(` ... `)` is collected like a list and made in the heap when it
-//! closes; a dot inside one is an error.
+//! ベクタ `#(` ... `)` はリストと同じように集め、閉じたときにヒープに作る。
+//! ベクタの中のドットはエラーである。
 //!
-//! Nesting is handled with an explicit stack, not Zig recursion: the depth of
-//! the input decides how deep it goes (docs/design/runtime.md).
+//! ネストは Zig の再帰でなく、明示的なスタックで処理する。どこまで深く進めるかは
+//! 入力の深さで決まる(docs/design/runtime.md)。
 
 const std = @import("std");
 const Value = @import("value.zig").Value;
@@ -24,9 +23,9 @@ pub const Error = error{
     OutOfMemory,
     /// The pairs of the datum do not fit in the heap.
     HeapLimit,
-    /// The input ended inside a list or after a `'`. The REPL can ask for
-    /// another line on this (ADR-0014), so it is kept apart from the other
-    /// syntax errors.
+    /// The input ended inside a list or after a `'`.
+    /// REPL はこれを見て、続きの 1 行を求められる(ADR-0014)。そのため、ほかの構文
+    /// エラーとは分けてある。
     Incomplete,
     UnexpectedCloseParen,
     /// A `'` followed by `)`: there is nothing to quote.
@@ -41,20 +40,23 @@ pub const Error = error{
     InvalidEscape,
     /// A `#\` that does not begin a character (src/char_syntax.zig).
     InvalidCharacter,
-    /// Input that is not valid UTF-8. Strings, characters and symbol names are
-    /// text, so it is refused whole, before anything is read from it.
+    /// Input that is not valid UTF-8.
+    /// 文字列・文字・シンボル名はテキストなので、何かを読む前に、入力全体を拒否する。
     InvalidUtf8,
-    /// A decimal integer outside the fixnum range. R7RS 6.2.3 lets this be
-    /// reported as an implementation restriction until bignums in stage 4.
+    /// A decimal integer outside the fixnum range.
+    /// R7RS 6.2.3 は、段階4で多倍長整数(bignum)を入れるまで、これを実装上の制限として
+    /// 報告してよいとしている。
     IntegerOutOfRange,
 };
 
-/// Where what the reader builds goes. These outlive the call.
+/// Where what the reader builds goes.
+/// これらは呼び出しより長く生きる。
 pub const Sink = struct {
     /// Where the names of new symbols are kept.
     alloc: std.mem.Allocator,
-    /// Where the pairs go. Reading is not a point where the heap collects, so
-    /// the datum is whole when the caller gets it.
+    /// Where the pairs go.
+    /// 読み取りの途中でヒープは GC しないので、呼び出し側が受け取る時点でデータは
+    /// 完全な形をしている。
     heap: *Heap,
     symbols: *symbol.Table,
 };
@@ -62,8 +64,8 @@ pub const Sink = struct {
 /// What is open at this point of the input.
 const Frame = union(enum) {
     list: List,
-    /// A `#(` whose elements so far are these. A dot has no meaning in a
-    /// vector, so there is nothing but the elements to keep.
+    /// A `#(` whose elements so far are these.
+    /// ドットはベクタの中では意味を持たないので、持っておくのは要素だけでよい。
     vector: std.ArrayList(Value),
     /// A `'` waiting for its datum.
     quote,
@@ -77,7 +79,8 @@ const Frame = union(enum) {
         tail: ?Value = null,
 
         /// Takes a finished datum as the next element, or as the tail if a dot
-        /// came before it. A second datum after the dot is an error.
+        /// came before it.
+        /// ドットの後の 2 つ目のデータは、エラーである。
         fn add(self: *List, scratch: std.mem.Allocator, datum: Value) Error!void {
             if (!self.dot) return self.items.append(scratch, datum);
             if (self.tail != null) return error.UnexpectedDot;
@@ -96,8 +99,8 @@ pub const Reader = struct {
 
     /// Reads the next datum, or returns null at the end of the input.
     ///
-    /// The datum is allocated in `sink`. `scratch` holds what is open while a
-    /// datum is read, and the caller frees it as a whole.
+    /// データは `sink` に確保する。`scratch` は、データを読んでいる間に開いているものを
+    /// 持ち、呼び出し側がまとめて解放する。
     pub fn next(self: *Reader, scratch: std.mem.Allocator, sink: Sink) Error!?Value {
         var open: std.ArrayList(Frame) = .empty;
         while (true) {
@@ -114,12 +117,12 @@ pub const Reader = struct {
                 },
                 '.' => if (self.atDot()) {
                     self.pos += 1;
-                    // Why: R7RS 7.1.2 <list> allows `.` only between at least
-                    // one element and the single datum that ends the list.
+                    // Why: R7RS 7.1.2 の <list> が `.` を許すのは、1 つ以上の要素と、
+                    // リストを終える 1 つだけのデータとの間である。
                     if (open.items.len == 0) return error.UnexpectedDot;
                     switch (open.items[open.items.len - 1]) {
-                        // Why: R7RS 7.1.2 <vector> is `#(` <datum>* `)`, with no
-                        // place for a dot.
+                        // Why: R7RS 7.1.2 の <vector> は `#(` <datum>* `)` で、
+                        // ドットを置く場所がない。
                         .quote, .vector => return error.UnexpectedDot,
                         .list => |*l| {
                             if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
@@ -153,7 +156,7 @@ pub const Reader = struct {
                 },
                 else => try self.atom(sink),
             };
-            // A finished datum closes every `'` waiting for it.
+            // 完成したデータは、それを待っているすべての `'` を閉じる。
             while (open.items.len != 0 and open.items[open.items.len - 1] == .quote) {
                 _ = open.pop();
                 datum = try quoted(sink, datum);
@@ -173,7 +176,8 @@ pub const Reader = struct {
     }
 
     /// Whether the input is at a `.` that stands alone: the next character is a
-    /// delimiter or the end. `...` and `.a` are identifiers, not dots.
+    /// delimiter or the end.
+    /// `...` と `.a` は識別子であり、ドットではない。
     fn atDot(self: *const Reader) bool {
         const after = self.pos + 1;
         return after == self.src.len or isDelimiter(self.src[after]);
@@ -193,7 +197,7 @@ pub const Reader = struct {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
-            // A delimiter this slice does not read: `;` or `|`.
+            // このスライスが読まない区切り文字: `;` と `|`。
             self.pos += 1;
             return error.InvalidToken;
         }
@@ -209,8 +213,8 @@ pub const Reader = struct {
     }
 };
 
-/// The pairs of `items` ending in `tail`, allocated in `sink`. A tail of `()`
-/// makes a list.
+/// The pairs of `items` ending in `tail`, allocated in `sink`.
+/// `tail` が `()` ならリストになる。
 fn listOf(sink: Sink, items: []const Value, tail: Value) Error!Value {
     var result = tail;
     var i = items.len;
@@ -228,26 +232,26 @@ fn quoted(sink: Sink, datum: Value) Error!Value {
     return sink.heap.cons(quote_symbol, tail);
 }
 
-// Why: R7RS 7.1.1 <boolean>: `#t`, `#f`, `#true` and `#false`.
+// Why: R7RS 7.1.1 の <boolean> は `#t`、`#f`、`#true`、`#false` である。
 fn booleanOf(token: []const u8) ?bool {
     if (std.mem.eql(u8, token, "#t") or std.mem.eql(u8, token, "#true")) return true;
     if (std.mem.eql(u8, token, "#f") or std.mem.eql(u8, token, "#false")) return false;
     return null;
 }
 
-// Why: R7RS 7.1.1 defines whitespace as intraline whitespace (space, tab) and
-// line endings; a CR is part of a CRLF line ending.
+// Why: R7RS 7.1.1 は、空白を、行内の空白(スペース、タブ)と改行とに定めている。
+// CR は CRLF による改行の一部である。
 fn isWhitespace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
-// Why: R7RS 7.1.1 <delimiter> is whitespace, a vertical line, a parenthesis, a
-// double quote or a semicolon.
+// Why: R7RS 7.1.1 の <delimiter> は、空白、縦線、丸括弧、二重引用符、セミコロンである。
 fn isDelimiter(c: u8) bool {
     return isWhitespace(c) or c == '|' or c == '(' or c == ')' or c == '"' or c == ';';
 }
 
-/// `[+-]?[0-9]+`. Other number syntax arrives with the numeric tower.
+/// `[+-]?[0-9]+`.
+/// ほかの数の構文は、数値タワーと一緒に入る。
 fn isDecimalInteger(token: []const u8) bool {
     const digits = if (token[0] == '+' or token[0] == '-') token[1..] else token;
     if (digits.len == 0) return false;
@@ -256,10 +260,10 @@ fn isDecimalInteger(token: []const u8) bool {
 }
 
 /// Numbers whose syntax matches a <peculiar identifier> but which R7RS 7.1.1
-/// reads as numbers: <infnan> and the complex units `+i` and `-i`. They arrive
-/// with the numeric tower in stage 4; until then they are rejected, not read as
-/// identifiers a program could bind. Other number syntax (`1.5`, `1/2`, `#x1F`)
-/// does not look like an identifier, so `isIdentifier` already refuses it.
+/// reads as numbers: <infnan> and the complex units `+i` and `-i`.
+/// これらは段階4で数値タワーと一緒に入る。それまでは、プログラムが束縛できる識別子として
+/// 読まずに、拒否する。ほかの数の構文(`1.5`、`1/2`、`#x1F`)は識別子の形をしていないので、
+/// `isIdentifier` がすでに拒否している。
 fn isUnsupportedNumber(token: []const u8) bool {
     for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i" }) |n| {
         if (std.ascii.eqlIgnoreCase(token, n)) return true;
@@ -267,10 +271,10 @@ fn isUnsupportedNumber(token: []const u8) bool {
     return false;
 }
 
-// Why: R7RS 7.1.1 <identifier>, restricted to ASCII and without the
-// `|...|` form: an <initial> followed by <subsequent>s, or a <peculiar
-// identifier>. Integers are recognised before this is asked, and
-// `isUnsupportedNumber` takes the other numbers that look like one.
+// Why: R7RS 7.1.1 の <identifier> を、ASCII に限り、`|...|` の形を除いて実装している。
+// <initial> に <subsequent> が続くものか、<peculiar identifier> である。整数は、
+// これを尋ねる前に判別してあり、識別子の形をしたほかの数は `isUnsupportedNumber` が
+// 引き受ける。
 fn isIdentifier(token: []const u8) bool {
     if (isInitial(token[0])) return allSubsequent(token[1..]);
     // <peculiar identifier>
@@ -281,7 +285,7 @@ fn isIdentifier(token: []const u8) bool {
         if (isSignSubsequent(rest[0])) return allSubsequent(rest[1..]);
         if (rest[0] != '.') return false;
     }
-    // `.` <dot subsequent> <subsequent>*, with or without a sign before it.
+    // `.` <dot subsequent> <subsequent>*。手前の符号はあってもなくてもよい。
     if (rest[0] != '.' or rest.len < 2) return false;
     if (!isSignSubsequent(rest[1]) and rest[1] != '.') return false;
     return allSubsequent(rest[2..]);
@@ -375,7 +379,7 @@ test "next reads an identifier as the one symbol of its name" {
     const a = (try f.readOne("abc")).asSymbol().?;
     try std.testing.expectEqual(a, (try f.readOne("abc")).asSymbol().?);
     try std.testing.expect(a != (try f.readOne("abd")).asSymbol().?);
-    // Identifiers are case sensitive (R7RS 2.1).
+    // 識別子は大文字と小文字を区別する(R7RS 2.1)。
     try std.testing.expect(a != (try f.readOne("ABC")).asSymbol().?);
     try std.testing.expectEqualStrings("abc", f.symbols.nameOf(a));
 }
@@ -401,7 +405,7 @@ test "next reads ' as a quote form, and nests it" {
     try std.testing.expectEqualStrings("(quote (quote a))", try f.roundTrip("''a", &buf));
     try std.testing.expectEqualStrings("(a (quote b) c)", try f.roundTrip("(a 'b c)", &buf));
     try std.testing.expectEqualStrings("(quote ())", try f.roundTrip("'()", &buf));
-    // `'a` and `(quote a)` are the same datum.
+    // `'a` と `(quote a)` は同じデータである。
     try std.testing.expectEqualStrings(try f.roundTrip("(quote a)", &buf), "(quote a)");
 }
 
@@ -415,7 +419,7 @@ test "next reads a dotted pair and a dotted tail" {
     try std.testing.expectEqualStrings("(a)", try f.roundTrip("(a . ())", &buf));
     try std.testing.expectEqualStrings("(1 2)", try f.roundTrip("(1 .(2))", &buf));
     try std.testing.expectEqualStrings("(a quote b)", try f.roundTrip("(a . 'b)", &buf));
-    // A dot is a token of its own: these are identifiers.
+    // ドットは単独のトークンである。これらは識別子だ。
     try std.testing.expectEqualStrings("(a ... .b)", try f.roundTrip("(a ... .b)", &buf));
     const pair = (try f.readOne("(1 . 2)")).asPair().?;
     try std.testing.expectEqual(1, pair.car.asFixnum().?);
@@ -436,7 +440,7 @@ test "next rejects a dot that is not between an element and one datum" {
             }
         }
     }
-    // Unfinished is not wrong.
+    // 未完了は誤りではない。
     var r: Reader = .init("(1 . 2");
     try std.testing.expectError(error.Incomplete, r.next(f.arena.allocator(), f.sink()));
     var r2: Reader = .init("(1 .");
@@ -461,7 +465,7 @@ test "next tells an unfinished input from a stray close paren" {
     var f: Fixture = .init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // `next` itself, not readOne, which turns a missing datum into Incomplete.
+    // readOne ではなく `next` そのものを使う。readOne は、データがないことを Incomplete にしてしまう。
     var r: Reader = .init("(+ 1 (2)");
     try std.testing.expectError(error.Incomplete, r.next(a, f.sink()));
     var q: Reader = .init("'");
@@ -494,7 +498,7 @@ test "next rejects the numbers that are spelled like peculiar identifiers" {
     for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i", "+INF.0" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
-    // Close neighbours stay identifiers.
+    // 綴りの近いものは、識別子のままである。
     for ([_][]const u8{ "+in", "-inf", "+inf.01", "+ia", "i" }) |src| {
         _ = try f.readOne(src);
     }
@@ -523,8 +527,7 @@ test "next reads nesting far deeper than a recursive reader could" {
     @memset(src[0..depth], '(');
     @memset(src[depth..], ')');
     var d = try f.readOne(src);
-    // The innermost `()` is the empty list, so there is one pair fewer than
-    // there are pairs of parentheses.
+    // 一番内側の `()` は空リストなので、ペアの数は括弧の対の数より 1 つ少ない。
     var pairs: usize = 0;
     while (d.asPair()) |p| : (pairs += 1) d = p.car;
     try std.testing.expectEqual(depth - 1, pairs);
@@ -569,7 +572,7 @@ test "next reads a vector of data, the empty vector and nesting" {
     try std.testing.expectEqualStrings("(1 #(2) (3 #()))", try f.roundTrip("(1 #(2) (3 #()))", &buf));
     try std.testing.expectEqualStrings("#((1 . 2) (3 4 . 5))", try f.roundTrip("#((1 . 2) (3 4 . 5))", &buf));
     try std.testing.expectEqualStrings("(a . #(1))", try f.roundTrip("(a . #(1))", &buf));
-    // `(` is a delimiter, so a vector may directly follow another datum.
+    // `(` は区切り文字なので、ベクタは別のデータのすぐ後に続けてよい。
     try std.testing.expectEqualStrings("(#(1) #(2))", try f.roundTrip("(#(1)#(2))", &buf));
     const v = try f.readOne("#(1 2)");
     try std.testing.expectEqual(.vector, v.kind());
@@ -593,10 +596,10 @@ test "next reports a dot in a vector" {
     for ([_][]const u8{ "#(1 . 2)", "#(. 1)", "#(1 .)", "#(.)", "'#(a . b)", "#(1 (2) . 3)", "(#(1 . 2))" }) |src| {
         try std.testing.expectError(error.UnexpectedDot, f.readOne(src));
     }
-    // A dot in a list inside a vector is still the list's own.
+    // ベクタの中のリストにあるドットは、やはりそのリスト自身のものである。
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("#((1 . 2))", try f.roundTrip("#((1 . 2))", &buf));
-    // `...` and `.a` are identifiers, also in a vector.
+    // `...` と `.a` は、ベクタの中でも識別子である。
     try std.testing.expectEqualStrings("#(... .a)", try f.roundTrip("#(... .a)", &buf));
 }
 
@@ -610,7 +613,7 @@ test "next tells an unclosed vector from a stray close paren" {
     }
     try std.testing.expectError(error.UnexpectedCloseParen, f.readOne("#(1 2))"));
     try std.testing.expectError(error.MissingDatum, f.readOne("#(')"));
-    // A `#` that begins neither `#(` nor `#\` is still not a datum.
+    // `#(` でも `#\` でもない `#` は、やはりデータではない。
     try std.testing.expectError(error.InvalidToken, f.readOne("#"));
     try std.testing.expectError(error.InvalidToken, f.readOne("#)"));
     try std.testing.expectError(error.InvalidToken, f.readOne("#u8(1)"));
@@ -624,8 +627,8 @@ test "next reads vectors nested far deeper than a recursive reader could" {
     for (0..depth) |k| @memcpy(src[2 * k ..][0..2], "#(");
     @memset(src[depth * 2 ..], ')');
     var d = try f.readOne(src);
-    // The innermost `#()` has no element, so there are `depth` vectors in the
-    // chain and one fewer links between them.
+    // 一番内側の `#()` には要素がないので、連なるベクタは `depth` 個で、その間の
+    // つながりは 1 つ少ない。
     var vectors: usize = 0;
     while (d.asVector()) |v| : (vectors += 1) {
         if (v.items.len == 0) break;

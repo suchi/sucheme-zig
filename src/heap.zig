@@ -1,15 +1,14 @@
 //! The GC heap: where the objects of a running program live
 //! (docs/design/runtime.md, ADR-0003).
 //!
-//! Every object is a `Cell`: a header, then the object. The headers are linked
-//! in one list, which is what the sweep walks. The heap accounts for the bytes
-//! of its cells and of the payloads they own, and refuses an allocation that
-//! would take the account past its limit; the interpreter's arena, where the
-//! code and the symbols are, is outside the account.
+//! すべてのオブジェクトは `Cell` である。ヘッダの後ろにオブジェクト本体が続く。
+//! ヘッダは1本のリストにつながれていて、スイープはこのリストをたどる。ヒープは、
+//! セルと、セルが所有するペイロードのバイト数を計上し、計上量が上限を超える確保を
+//! 拒否する。コードとシンボルを置くインタプリタのアリーナは、計上の外にある。
 //!
-//! The heap never collects inside an allocation. A collection is asked for by
-//! `shouldCollect` and run by `collect`, both of which the machine calls between
-//! two steps, where no value is half-made (ADR-0031).
+//! ヒープは確保の内部では GC を実行しない。GC は `shouldCollect` で要求され、
+//! `collect` で実行される。どちらも、機械が2つのステップの間、つまり作りかけの値が
+//! 存在しない場所から呼ぶ(ADR-0031)。
 
 const std = @import("std");
 const value_mod = @import("value.zig");
@@ -40,27 +39,29 @@ pub const Options = struct {
     /// The account at which the first collection is asked for, and the least
     /// that any later one is asked for at.
     min_threshold: usize = 1024 * 1024,
-    /// How many objects the marking keeps to scan. When more are waiting the
-    /// marking does not stop: it rescans the heap for them (see `Marker`). The
-    /// tests set 0, so that the rescan is what runs.
+    /// How many objects the marking keeps to scan.
+    /// これを超えて待つオブジェクトがあっても、マークは止まらず、ヒープを走査し直して
+    /// 拾う(`Marker` を参照)。テストは 0 にして、再走査の経路を走らせる。
     work_capacity: usize = 4096,
     /// Ask for a collection at every safe point of the start of a run, and less
-    /// and less often as it goes on (see `stress_ramp`). A root a safe point
-    /// forgot to name is freed at once and not by luck, so the tests run the
-    /// machine this way (ADR-0031).
+    /// and less often as it goes on (see `stress_ramp`).
+    /// セーフポイントが挙げ忘れたルートは、運よく残ることなく、すぐに解放される。
+    /// そのためテストは機械をこのモードで動かす(ADR-0031)。
     stress: bool = false,
 };
 
-/// 256 MiB: far above what a program that returns needs, and far below the
-/// memory of the machines the interpreter runs on.
+/// 256 MiB.
+/// 終了するプログラムが必要とする量をはるかに上回り、インタプリタが動く機械の
+/// メモリをはるかに下回る。
 pub const default_limit: usize = 256 * 1024 * 1024;
 
-/// In stress mode a collection is asked for after a gap of safe points. The gap
-/// is one for the first `stress_ramp` safe points, which is all of a small
-/// program. After that it grows with the number that have passed, so a loop of
-/// millions of steps costs thousands of collections and not millions, and it is
-/// at least one safe point for each `stress_objects_per_step` objects in the
-/// heap, which bounds the work a step is charged however much is live.
+/// In stress mode a collection is asked for after a gap of safe points.
+/// 間隔は、最初の `stress_ramp` 回のセーフポイントでは1である。小さなプログラム
+/// なら、実行の全体がこの範囲に収まる。それ以降は、経過したセーフポイントの数に
+/// 応じて広がるので、数百万ステップのループでも GC は数百万回でなく数千回で済む。
+/// また、ヒープ内の `stress_objects_per_step` 個のオブジェクトにつき最低1回の
+/// セーフポイントを置くので、生きているものがどれだけ多くても、1ステップに課す
+/// 仕事が抑えられる。
 const stress_ramp = 4096;
 const stress_objects_per_step = 16;
 
@@ -92,8 +93,8 @@ fn cellBytes(comptime T: type) usize {
 }
 
 /// The bytes the object owns beyond its cell: the slots of a frame, the bytes
-/// of a string, the elements of a vector. The payload is allocated apart from
-/// the cell and given back with it.
+/// of a string, the elements of a vector.
+/// ペイロードはセルとは別に確保され、セルと一緒に返される。
 fn payloadBytes(comptime T: type, object: *const T) usize {
     return switch (T) {
         Frame => object.values.len * @sizeOf(Value),
@@ -104,15 +105,17 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
 }
 
 /// What `Heap.work` is while no list has been allocated, or the allocation
-/// failed: a list that holds nothing, which makes every marking a rescan.
+/// failed.
+/// 何も入らないリストなので、すべてのマークが再走査になる。
 var no_work: [0]*Header = .{};
 
-/// The share of the limit kept free of live data: a collection that leaves more
-/// than the rest live has gained too little to be worth asking for again.
+/// The share of the limit kept free of live data.
+/// GC のあと、これを除いた残りより多くが生きているなら、その GC で得たものが
+/// 少なすぎて、再び要求する価値がない。
 const reserve_divisor = 16;
 
-/// The account a collection is asked for at the latest. The margin to the limit
-/// is what one step of the machine may allocate between two safe points.
+/// The account a collection is asked for at the latest.
+/// 上限までの余裕は、機械の1ステップが2つのセーフポイントの間に確保してよい量である。
 fn softLimit(limit: usize) usize {
     return limit - limit / reserve_divisor;
 }
@@ -130,14 +133,15 @@ pub const Heap = struct {
     count: usize = 0,
     /// The account at which `shouldCollect` says yes.
     threshold: usize,
-    /// Whether the collection that last ran left the heap too full to go on:
-    /// what is live is within a margin of the limit, so the next allocation
-    /// would fail whatever a collection did.
+    /// Whether the collection that last ran left the heap too full to go on.
+    /// 生きているものが上限との余裕の内側まで来ているので、GC で何をしても、次の確保は
+    /// 失敗する。
     exhausted: bool = false,
     /// How many collections have run.
     collections: usize = 0,
     /// How many times `shouldCollect` was asked since the last collection, and
-    /// in all. Only stress mode counts.
+    /// in all.
+    /// ストレスモードだけが数える。
     steps: usize = 0,
     total_steps: usize = 0,
     /// The marking's list of objects still to scan, kept between collections.
@@ -167,8 +171,8 @@ pub const Heap = struct {
 
     /// A new object holding `value`.
     ///
-    /// An object with a payload is made by the function for it: `createFrame`,
-    /// `createString`, `createVector`.
+    /// ペイロードを持つオブジェクトは、専用の関数 `createFrame`、`createString`、
+    /// `createVector` で作る。
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
         comptime std.debug.assert(T != Frame and T != String and T != Vector);
         try self.reserve(cellBytes(T));
@@ -180,9 +184,9 @@ pub const Heap = struct {
 
     /// A new frame of `size` slots, all `uninitialized`, behind `parent`.
     ///
-    /// The slots are allocated first and the cell second. If the cell cannot be
-    /// allocated the slots are given back, so a failed call leaves the heap as
-    /// it was. That is the unit of the rollback: one call.
+    /// スロットを先に確保し、セルを後に確保する。セルを確保できなければスロットを
+    /// 返すので、失敗した呼び出しはヒープを元のままにする。巻き戻しの単位は、この
+    /// 1回の呼び出しである。
     pub fn createFrame(self: *Heap, size: usize, parent: ?*Frame) Error!*Frame {
         const bytes = try self.reserveWithPayload(Frame, size, @sizeOf(Value));
         const values = try self.backing.alloc(Value, size);
@@ -195,8 +199,8 @@ pub const Heap = struct {
     }
 
     /// A new string of a copy of `bytes`, which must be valid UTF-8 (ADR-0008).
-    /// The copy is the payload: allocated first and given back if the cell
-    /// cannot be allocated, as `createFrame` does.
+    /// コピーがペイロードで、先に確保し、セルを確保できなければ返す。
+    /// `createFrame` と同じである。
     pub fn createString(self: *Heap, bytes: []const u8) Error!*String {
         const total = try self.reserveWithPayload(String, bytes.len, 1);
         const copy = try self.backing.dupe(u8, bytes);
@@ -207,8 +211,8 @@ pub const Heap = struct {
         return &cell.value;
     }
 
-    /// A new vector of a copy of `items`. The copy is the payload, as the bytes
-    /// of a string are.
+    /// A new vector of a copy of `items`.
+    /// コピーがペイロードで、文字列のバイト列と同じ扱いである。
     pub fn createVector(self: *Heap, items: []const Value) Error!*Vector {
         const total = try self.reserveWithPayload(Vector, items.len, @sizeOf(Value));
         const copy = try self.backing.dupe(Value, items);
@@ -220,8 +224,8 @@ pub const Heap = struct {
     }
 
     /// Checks that a cell of `T` and `count` payload elements of `size` bytes
-    /// fit under the limit, and returns the bytes they account for. A size that
-    /// overflows is over the limit, not wrapped around.
+    /// fit under the limit, and returns the bytes they account for.
+    /// 桁あふれする大きさは、回り込ませず、上限超過として扱う。
     fn reserveWithPayload(self: *Heap, comptime T: type, count: usize, size: usize) Error!usize {
         const payload = std.math.mul(usize, count, size) catch return error.HeapLimit;
         const bytes = std.math.add(usize, cellBytes(T), payload) catch return error.HeapLimit;
@@ -235,7 +239,8 @@ pub const Heap = struct {
         return .{ .pair = pair };
     }
 
-    /// Whether a collection is due. The machine asks between two steps.
+    /// Whether a collection is due.
+    /// 機械は2つのステップの間に問い合わせる。
     pub fn shouldCollect(self: *Heap) bool {
         if (self.options.stress) {
             self.steps +|= 1;
@@ -251,10 +256,9 @@ pub const Heap = struct {
 
     /// Frees every object that cannot be reached from `roots`.
     ///
-    /// `roots.mark(marker)` tells the marker where the program can start from.
-    /// Nothing else is a root, so this must be called only where no value is
-    /// held anywhere but in what `roots` names: between two steps of the machine
-    /// (ADR-0031).
+    /// `roots.mark(marker)` が、プログラムの出発点をマーカに伝える。ほかにルートは
+    /// ないので、`roots` が挙げるもの以外のどこにも値が保持されていない場所、つまり
+    /// 機械の2つのステップの間でだけ呼ぶこと(ADR-0031)。
     pub fn collect(self: *Heap, roots: anytype) void {
         self.ensureWork();
         var marker: Marker = .{ .heap = self, .work = self.work };
@@ -269,9 +273,9 @@ pub const Heap = struct {
         self.exhausted = live +| (self.options.limit / reserve_divisor) > soft;
     }
 
-    /// Makes the marking's list the size the options ask for. If memory for it
-    /// cannot be had the list stays empty, and the marking rescans instead of
-    /// stopping.
+    /// Makes the marking's list the size the options ask for.
+    /// リスト用のメモリを確保できなければ、リストは空のままになり、マークは止まらずに
+    /// 再走査する。
     fn ensureWork(self: *Heap) void {
         if (self.work.len == self.options.work_capacity) return;
         if (self.work.len != 0) self.backing.free(self.work);
@@ -310,7 +314,8 @@ pub const Heap = struct {
     }
 
     /// Gives an object and its payload back to the allocator, and takes them
-    /// off the account. The header must already be off the list.
+    /// off the account.
+    /// ヘッダは、呼ぶ前にリストから外しておくこと。
     fn free(self: *Heap, header: *Header) void {
         inline for (object_types, 0..) |T, i| {
             if (header.kind == i) {
@@ -331,16 +336,17 @@ pub const Heap = struct {
     }
 };
 
-/// The marking of one collection. `roots` hands it the values the program can
-/// start from, and `finish` follows them to everything they reach.
+/// The marking of one collection.
+/// `roots` がプログラムの出発点となる値を渡し、`finish` がそこからたどれるすべてに
+/// 到達する。
 ///
-/// Reaching an object marks it and, if there is room, puts it on a list to scan
-/// later; scanning it reaches what it refers to. The list has the capacity the
-/// options give. When an object is reached and the list is full it is marked and
-/// the marking only notes that it was lost, and `finish` goes over every marked
-/// object in the heap again until a pass loses nothing. A marked object is
-/// scanned once the list has room, or by the pass, so none is missed, and the
-/// size of the list changes how long marking takes and not what it marks.
+/// オブジェクトに到達するとマークを付け、余地があれば、後で走査するためのリストに
+/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの容量は、
+/// オプションで決まる。到達したときリストが満杯なら、マークだけ付けて、取りこぼした
+/// ことを記録する。`finish` は、取りこぼしがなくなるまで、ヒープ内のマーク済みの
+/// 全オブジェクトを走査し直す。マーク済みのオブジェクトは、リストに載れば順に、
+/// 載らなければ再走査で走査されるので、漏れるものはない。リストの大きさが変えるのは、
+/// マークにかかる時間であって、マークする対象ではない。
 pub const Marker = struct {
     heap: *Heap,
     work: []*Header,
@@ -377,8 +383,8 @@ pub const Marker = struct {
         }
     }
 
-    /// What `trace.walk` calls for a symbol id. The symbol table is not weak
-    /// yet, so there is nothing to record.
+    /// What `trace.walk` calls for a symbol id.
+    /// シンボル表はまだ弱参照ではないので、記録するものはない。
     pub fn symbol(_: *Marker, _: SymbolId) void {}
 
     fn finish(self: *Marker) void {
@@ -446,7 +452,7 @@ test "an allocation past the limit fails and leaves the account as it was" {
     var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Pair) * 2 });
     defer heap.deinit();
     _ = try heap.cons(.fromFixnum(1), .fromFixnum(2));
-    // The limit is on the sum, and reaching it exactly is allowed.
+    // 上限は合計に対するもので、ちょうど達するのは許される。
     _ = try heap.cons(.fromFixnum(3), .fromFixnum(4));
     try std.testing.expectEqual(cellBytes(Pair) * 2, heap.accounted);
     try std.testing.expectError(error.HeapLimit, heap.cons(.fromFixnum(5), .fromFixnum(6)));
@@ -468,13 +474,13 @@ test "a frame too large to account for is refused, not wrapped around" {
     defer heap.deinit();
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize), null));
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize) / @sizeOf(Value), null));
-    // A count whose size wraps around to a small one must not pass for it.
+    // 大きさが回り込んで小さくなる個数を、小さい個数として通してはならない。
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize) / @sizeOf(Value) + 2, null));
     try std.testing.expectEqual(0, heap.accounted);
 }
 
 test "when the cell cannot be allocated the slots are given back" {
-    // The first allocation (the slots) succeeds and the second (the cell) fails.
+    // 1回目の確保(スロット)は成功し、2回目(セル)は失敗する。
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
     var heap: Heap = .init(failing.allocator(), .{});
     defer heap.deinit();
@@ -482,7 +488,7 @@ test "when the cell cannot be allocated the slots are given back" {
     try std.testing.expectEqual(0, heap.accounted);
     try std.testing.expectEqual(0, heap.count);
     try std.testing.expect(heap.objects == null);
-    // The slots were allocated and given back: nothing is left for the leak check.
+    // スロットは確保されて返された。リーク検査に残るものはない。
     try std.testing.expectEqual(1, failing.allocations);
     try std.testing.expectEqual(1, failing.deallocations);
     try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
@@ -610,7 +616,7 @@ test "what a root reaches through pairs, closures, frames and continuations surv
     const garbage_frame = try heap.createFrame(100, null);
     _ = garbage_frame;
     const before = heap.count;
-    // Only the continuation is a root: the rest is reached through it.
+    // ルートは継続だけで、残りはそこからたどって到達する。
     heap.collect(TestRoots{ .kont = top });
     try std.testing.expectEqual(before - 2, heap.count);
     try std.testing.expectEqual(7, frame.values[0].asPair().?.car.asFixnum().?);
@@ -659,11 +665,11 @@ test "a list is marked whole whatever the capacity of the marking list, and whic
     for ([_]usize{ 0, 1, 3, 4096 }) |capacity| {
         var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
         defer heap.deinit();
-        // Links to older objects: each pair is made pointing at the one before.
+        // 古いオブジェクトへのリンク。各ペアは、その前に作ったペアを指すように作る。
         var older: Value = .empty_list_value;
         for (0..200) |i| older = try heap.cons(.fromFixnum(@intCast(i)), older);
-        // Links to newer objects: the pairs are made first and joined after, so the
-        // head is the oldest and every link runs to a newer pair.
+        // 新しいオブジェクトへのリンク。ペアを先に作ってから後で連結するので、先頭が
+        // 最も古く、すべてのリンクは新しいペアへ向かう。
         var cells: [200]Value = undefined;
         for (&cells, 0..) |*cell, i| cell.* = try heap.cons(.fromFixnum(@intCast(1000 + i)), .empty_list_value);
         for (cells[0..199], cells[1..]) |from, to| from.asPair().?.cdr = to;
@@ -674,7 +680,7 @@ test "a list is marked whole whatever the capacity of the marking list, and whic
         var it = cells[0];
         while (it.asPair()) |p| : (it = p.cdr) n += 1;
         try std.testing.expectEqual(200, n);
-        // And the second collection, with a fresh start, does the same.
+        // 2回目の GC も、最初からやり直して同じ結果になる。
         heap.collect(TestRoots{ .values = &.{ older, cells[0] } });
         try std.testing.expectEqual(400, heap.count);
     }
@@ -683,19 +689,19 @@ test "a list is marked whole whatever the capacity of the marking list, and whic
 test "the threshold follows what is live, within the limit" {
     var heap: Heap = .init(std.testing.allocator, .{ .limit = 1600, .min_threshold = 160 });
     defer heap.deinit();
-    // The soft limit is the limit less a sixteenth of it.
+    // ソフトリミット(soft limit)は、上限からその16分の1を引いたもの。
     try std.testing.expectEqual(1500, softLimit(1600));
     try std.testing.expectEqual(160, heap.threshold);
     try std.testing.expect(!heap.shouldCollect());
-    // Make the account reach the threshold.
+    // 計上量を閾値に到達させる。
     var keep: Value = .empty_list_value;
     while (!heap.shouldCollect()) keep = try heap.cons(.fromFixnum(1), keep);
     heap.collect(TestRoots{ .values = &.{keep} });
-    // Everything was live: twice that, since it is more than the least.
+    // すべてが生きていた。最小値より大きいので、その2倍になる。
     try std.testing.expectEqual(@min(1500, heap.accounted * 2), heap.threshold);
     try std.testing.expect(!heap.shouldCollect());
     try std.testing.expect(!heap.exhausted);
-    // With nothing live, the threshold falls back to the least.
+    // 生きているものがなければ、閾値は最小値に戻る。
     heap.collect(TestRoots{});
     try std.testing.expectEqual(160, heap.threshold);
     try std.testing.expectEqual(0, heap.accounted);
@@ -706,11 +712,11 @@ test "a collection that leaves the heap nearly full says it is exhausted" {
     defer heap.deinit();
     var keep: Value = .empty_list_value;
     while (true) keep = heap.cons(.fromFixnum(1), keep) catch break;
-    // Past the soft limit, with everything live.
+    // ソフトリミットを超え、すべてが生きている。
     try std.testing.expect(heap.shouldCollect());
     heap.collect(TestRoots{ .values = &.{keep} });
     try std.testing.expect(heap.exhausted);
-    // Once what was live is dropped the heap has room again.
+    // 生きていたものを手放せば、ヒープに再び余裕ができる。
     heap.collect(TestRoots{});
     try std.testing.expect(!heap.exhausted);
 }
@@ -727,8 +733,8 @@ test "the list the marking keeps is made to the size the options ask for" {
 
 test "when the marking list cannot be allocated the marking rescans and still finishes" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
-    // Objects come from the testing allocator directly; only the list comes from
-    // the failing one, which fails its first allocation.
+    // オブジェクトはテスト用アロケータから直接確保する。リストだけが、最初の確保で
+    // 失敗するアロケータから来る。
     var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 64 });
     defer heap.deinit();
     const a = try heap.cons(.fromFixnum(1), .empty_list_value);
@@ -744,15 +750,15 @@ test "when the marking list cannot be allocated the marking rescans and still fi
 test "in stress mode every safe point of a short run collects, and the gap grows as the run goes on" {
     var heap: Heap = .init(std.testing.allocator, .{ .stress = true, .min_threshold = 1 << 30 });
     defer heap.deinit();
-    // A short run: every one of the first `stress_ramp` safe points asks.
+    // 短い実行。最初の `stress_ramp` 回のセーフポイントはすべて GC を要求する。
     for (0..stress_ramp) |_| {
         try std.testing.expect(heap.shouldCollect());
         heap.collect(TestRoots{});
     }
     try std.testing.expectEqual(stress_ramp, heap.collections);
-    // A long run: each collection starts the count of safe points again, so the
-    // number of collections is far below the number of safe points. Left
-    // uncleared, the count would stay past every gap and each would collect.
+    // 長い実行。GC のたびにセーフポイントの数え直しが始まるので、GC の回数はセーフ
+    // ポイントの数よりはるかに少ない。数えをクリアしなければ、数はどの間隔も超えた
+    // ままになり、毎回 GC が走ってしまう。
     const calls = 20_000;
     for (0..calls) |_| {
         if (heap.shouldCollect()) heap.collect(TestRoots{});

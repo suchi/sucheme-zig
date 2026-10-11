@@ -1,17 +1,16 @@
 //! The expander: data in, core IR out.
 //!
-//! Slice 1f has the six special forms and no macros, so this is a translation
-//! of `quote`, `if`, `lambda`, `set!`, `define` and `begin`, and of calls. What
-//! stage 2 adds (syntactic bindings, `syntax-rules`) replaces `Keyword` with a
-//! syntactic environment; docs/design/frontend.md describes where it goes.
+//! スライス 1f にあるのは 6 つの特殊形式だけで、マクロはない。したがって仕事は、
+//! `quote`、`if`、`lambda`、`set!`、`define`、`begin` と、呼び出しの変換である。
+//! 段階2で足すもの(構文束縛、`syntax-rules`)は、`Keyword` を構文環境に置き換える。
+//! その置き場所は docs/design/frontend.md に書いてある。
 //!
-//! The expander resolves every variable. A name that a `lambda` binds becomes a
-//! lexical address (how many frames out, which slot), and any other name is a
-//! global one, found by name when the machine runs it.
+//! 展開器はすべての変数を解決する。`lambda` が束縛する名前は字句的番地(lexical
+//! address。何個外側のフレームの、どのスロットか)になる。それ以外の名前は大域変数で、
+//! 機械が実行するときに名前で探される。
 //!
-//! The work is kept on a stack of its own and never recurses, so a program
-//! nested as deep as the reader can read it does not overflow the Zig stack
-//! (docs/design/frontend.md).
+//! 作業は専用のスタックに積んで進め、再帰しない。したがって、リーダが読める深さまで
+//! ネストしたプログラムでも、Zig のスタックはあふれない(docs/design/frontend.md)。
 
 const std = @import("std");
 const value_mod = @import("../value.zig");
@@ -25,15 +24,15 @@ const core = @import("../core.zig");
 
 pub const Error = context.Error;
 
-/// What the representation of a lexical address holds. The default is the width
-/// of the address; a test passes a smaller figure to reach the limit.
+/// What the representation of a lexical address holds.
+/// 既定は番地の幅いっぱいの値である。テストは上限に届かせるために、より小さい値を渡す。
 pub const Limits = struct {
     address: u32 = std.math.maxInt(u32),
 };
 
-/// Expands `form`, which is at the top level of a program. The node and what it
-/// refers to are allocated in `ctx.persist`; what the expansion needs only while
-/// it runs comes from `scratch`. On an error `ctx` holds the message.
+/// Expands `form`, which is at the top level of a program.
+/// 節点と、節点が指すものは `ctx.persist` に確保する。展開の実行中だけ要るものは
+/// `scratch` から取る。エラーのときは `ctx` がメッセージを持つ。
 pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*const Node {
     return expandWith(ctx, scratch, form, .{});
 }
@@ -46,9 +45,9 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
     return root;
 }
 
-/// The special forms. A keyword cannot be shadowed, redefined, assigned or used
-/// as a variable or a parameter; stage 2 replaces this enum with syntactic
-/// bindings.
+/// The special forms.
+/// キーワードは、隠す(シャドウ)・再定義・代入ができず、変数や仮引数としても使えない。
+/// 段階2でこの列挙型は構文束縛に置き換わる。
 const Keyword = enum {
     define,
     quote,
@@ -74,9 +73,8 @@ const Scope = struct {
     parent: ?*const Scope,
 };
 
-/// A form still to expand, and the node to fill in with the result. The node is
-/// allocated before its children are known, which is what lets the work go on a
-/// stack instead of in recursion.
+/// A form still to expand, and the node to fill in with the result.
+/// 節点は、子が決まる前に確保する。これによって、仕事を再帰でなくスタックに積める。
 const Task = struct {
     form: Value,
     scope: ?*const Scope,
@@ -92,9 +90,9 @@ const Expander = struct {
 
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
-            // Self-evaluating (R7RS 4.1.2).
+            // 自己評価式(R7RS 4.1.2)。
             .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure => try self.constant(task, task.form),
-            // Why: R7RS 4.1.3 gives a procedure call a nonempty list.
+            // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol => try self.reference(task),
             .pair => {
@@ -114,9 +112,9 @@ const Expander = struct {
         }
     }
 
-    /// Makes the node of `task` the constant `v`. The code is not in the GC heap
-    /// yet, so a constant that refers to the heap is told to the context, which
-    /// keeps it alive; these are the only two places a constant is made.
+    /// Makes the node of `task` the constant `v`.
+    /// コードはまだ GC ヒープの中にない。そのため、ヒープを指す定数はコンテキストに
+    /// 知らせ、コンテキストが生かしておく。定数を作る箇所は、この 2 つだけである。
     fn constant(self: *Expander, task: Task, v: Value) Error!void {
         try self.ctx.keepConstant(v);
         task.dest.* = .{ .constant = v };
@@ -129,8 +127,9 @@ const Expander = struct {
         return node;
     }
 
-    /// The elements of the list `form`. A form is a proper list; a dotted pair
-    /// reads as data but is not a form, so it fails here.
+    /// The elements of the list `form`.
+    /// 形式はプロパーリスト(proper list)である。ドット付きのペアはデータとしては
+    /// 読めるが形式ではないので、ここで失敗する。
     fn itemsOf(self: *Expander, form: Value) Error![]const Value {
         var items: std.ArrayList(Value) = .empty;
         var rest = form;
@@ -169,7 +168,8 @@ const Expander = struct {
             .{ .global_ref = id };
     }
 
-    /// `(quote datum)` (R7RS 4.1.2). The datum, unexpanded.
+    /// `(quote datum)` (R7RS 4.1.2).
+    /// データは展開せず、そのまま使う。
     fn quote(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 2)
             return self.ctx.raise("bad quote: expected (quote datum)", .{});
@@ -180,15 +180,15 @@ const Expander = struct {
     fn conditional(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3 and items.len != 4)
             return self.ctx.raise("bad if: expected (if test consequent) or (if test consequent alternative)", .{});
-        // Pushed last first, so the test is expanded first.
+        // 後ろのものから先に積むので、判定が最初に展開される。
         const alternative = if (items.len == 4) try self.child(items[3], task.scope, .expression) else null;
         const consequent = try self.child(items[2], task.scope, .expression);
         const condition = try self.child(items[1], task.scope, .expression);
         task.dest.* = .{ .@"if" = .{ .condition = condition, .consequent = consequent, .alternative = alternative } };
     }
 
-    /// `(begin expression ...)` (R7RS 4.2.3). At the top level its forms are at
-    /// the top level too, so a definition in it is allowed (R7RS 5.3).
+    /// `(begin expression ...)` (R7RS 4.2.3).
+    /// トップレベルでは、中の形式もトップレベルにあるので、そこに定義を書ける(R7RS 5.3)。
     fn begin(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len < 2)
             return self.ctx.raise("bad begin: expected (begin expression ...)", .{});
@@ -197,15 +197,16 @@ const Expander = struct {
     }
 
     /// Fills `dest` with `forms` run in order: `defines` of them at the start
-    /// are definitions of a body, the rest are in `pos`. One form is that form
-    /// itself (a body never has only definitions, so it is never one of them).
+    /// are definitions of a body, the rest are in `pos`.
+    /// 形式が 1 つなら、その形式そのものになる(本体が定義だけということはないので、
+    /// その 1 つが定義になることはない)。
     fn sequence(self: *Expander, dest: *Node, forms: []const Value, scope: ?*const Scope, pos: Position, defines: usize) Error!void {
         if (forms.len == 1) {
             try self.stack.append(self.scratch, .{ .form = forms[0], .scope = scope, .pos = pos, .dest = dest });
             return;
         }
         const nodes = try self.ctx.persist.alloc(*const Node, forms.len);
-        // The nodes are made in order, and queued last first.
+        // 節点は順に作り、後ろのものから先にスタックに積む。
         for (nodes) |*n| n.* = try self.ctx.persist.create(Node);
         var i = forms.len;
         while (i > 0) {
@@ -220,8 +221,8 @@ const Expander = struct {
         dest.* = .{ .sequence = nodes };
     }
 
-    /// `(set! name expression)` (R7RS 4.1.6). The nearest binding of `name`,
-    /// local or global.
+    /// `(set! name expression)` (R7RS 4.1.6).
+    /// 対象は `name` の最も近い束縛で、局所でも大域でもよい。
     fn set(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3)
             return self.ctx.raise("bad set!: expected (set! name expression)", .{});
@@ -238,16 +239,16 @@ const Expander = struct {
     }
 
     /// `(define name expression)` and `(define (name parameter ...) body ...)`
-    /// (R7RS 5.3.1). At the top level it binds a global; at the start of a body
-    /// it gives a value to the local variable that `lambdaNode` made for it.
+    /// (R7RS 5.3.1).
+    /// トップレベルでは大域変数を束縛する。本体の先頭では、`lambdaNode` が作った
+    /// 局所変数に値を与える。
     fn define(self: *Expander, task: Task, items: []const Value) Error!void {
-        // Why: R7RS 5.3 allows a definition at the top level and at the start of
-        // a body. Anything else would bind a name from inside an expression that
-        // may go on to fail.
+        // Why: R7RS 5.3 が定義を許すのは、トップレベルと本体の先頭だけである。それ以外で
+        // 許すと、あとで失敗するかもしれない式の中から名前を束縛することになる。
         if (task.pos == .expression)
             return self.ctx.raise("bad define: a definition is only allowed at the top level or at the start of a body", .{});
-        // `(define (name parameter ...) body ...)` is `(define name (lambda
-        // (parameter ...) body ...))` (R7RS 5.3.1).
+        // `(define (name parameter ...) body ...)` は
+        // `(define name (lambda (parameter ...) body ...))` と同じである(R7RS 5.3.1)。
         const shorthand = items.len >= 2 and items[1].kind() == .pair;
         if (shorthand and items.len < 3)
             return self.ctx.raise("bad define: expected (define (name parameter ...) body ...)", .{});
@@ -267,8 +268,8 @@ const Expander = struct {
         }
         switch (task.pos) {
             .top => task.dest.* = .{ .global_define = .{ .name = id, .value = value } },
-            // `collectDefinitions` made the variable when the lambda was made,
-            // and the scope is that lambda's own.
+            // `collectDefinitions` が lambda を作るときに変数を作ってあり、
+            // スコープはその lambda 自身のものである。
             .body => {
                 const index = std.mem.indexOfScalar(SymbolId, task.scope.?.names, id).?;
                 task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = @intCast(index) }, .name = id, .value = value } };
@@ -285,13 +286,13 @@ const Expander = struct {
     }
 
     /// Fills `dest` with the procedure whose parameters are `params_form` and
-    /// whose body is `body`, made in `scope`. `form_name` is the form it was
-    /// written as, for the messages: `(define (f x) ...)` is a `define` with a
-    /// parameter list of its own.
+    /// whose body is `body`, made in `scope`.
+    /// `form_name` は、メッセージのための、その手続きが書かれた形式の名前である。
+    /// `(define (f x) ...)` は、自前の仮引数リストを持つ `define` である。
     ///
-    /// A variable number of arguments is not supported yet: `(lambda args ...)`
-    /// is refused until the machine takes it, and `(lambda (a . rest) ...)` also
-    /// waits for the reader to read a dotted list.
+    /// 可変個の引数にはまだ対応していない。`(lambda args ...)` は機械が受け付ける
+    /// ようになるまで拒否する。`(lambda (a . rest) ...)` は、さらに、リーダが
+    /// ドット付きリストを読めるようになるのも待っている。
     fn lambdaNode(
         self: *Expander,
         dest: *Node,
@@ -321,9 +322,8 @@ const Expander = struct {
             return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
         const arity = names.items.len;
         const defines = try self.collectDefinitions(body, &names);
-        // Why: R7RS 5.3.2 gives a body definitions followed by expressions, and
-        // at least one expression: a body that only defines has no value to
-        // return.
+        // Why: R7RS 5.3.2 の本体は、定義のあとに式が続く形で、式は 1 つ以上要る。
+        // 定義だけの本体には、返す値がない。
         if (defines == body.len)
             return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
         if (names.items.len > self.limits.address)
@@ -338,9 +338,9 @@ const Expander = struct {
     }
 
     /// Adds the names that the definitions at the start of `body` define to
-    /// `names`, and returns how many forms they are. A name that is already
-    /// there, as a parameter or an earlier definition, is an error. The
-    /// definitions themselves are checked when they are expanded.
+    /// `names`, and returns how many forms they are.
+    /// すでにある名前(仮引数か、先の定義)と重なるとエラーになる。定義そのものの検査は、
+    /// 展開するときに行う。
     fn collectDefinitions(self: *Expander, body: []const Value, names: *std.ArrayList(SymbolId)) Error!usize {
         var count: usize = 0;
         for (body) |form| {
@@ -349,7 +349,7 @@ const Expander = struct {
             if (Keyword.of(self.ctx.symbols.nameOf(keyword_id)) != .define) break;
             const rest = head.cdr.asPair() orelse
                 return self.ctx.raise("bad define: expected (define name expression)", .{});
-            // `(define (name parameter ...) body ...)` names what its header starts with.
+            // `(define (name parameter ...) body ...)` は、ヘッダの先頭にあるものを名前とする。
             const target = if (rest.car.asPair()) |header| header.car else rest.car;
             const id = target.asSymbol() orelse
                 return self.ctx.raise("bad define: the name must be an identifier", .{});
@@ -369,8 +369,8 @@ const Expander = struct {
     }
 
     /// A procedure call (R7RS 4.1.3): the operator, then the operands from left
-    /// to right. Why: R7RS leaves the order of evaluation unspecified; left to
-    /// right is the one a reader expects.
+    /// to right.
+    /// Why: R7RS は評価順を規定していない。読み手が期待するのは左から右である。
     fn call(self: *Expander, task: Task, items: []const Value) Error!void {
         const operands = try self.ctx.persist.alloc(*const Node, items.len - 1);
         for (operands) |*n| n.* = try self.ctx.persist.create(Node);
@@ -447,7 +447,7 @@ test "quote gives its datum unexpanded" {
     defer f.deinit();
     try f.expectExpands("(quote x)", "(const x)");
     try f.expectExpands("'(a (b 2) ())", "(const (a (b 2) ()))");
-    // A form inside a quote is data, so it is not read as a call.
+    // quote の中の形式はデータなので、呼び出しとして読まれない。
     try f.expectExpands("'(if 1)", "(const (if 1))");
 }
 
@@ -488,7 +488,7 @@ test "a lambda binds its parameters at depth 0, and the frame outside at depth 1
         "(lambda (x) (lambda (y) (+ x y)))",
         "(lambda 1 1 (lambda 1 1 (call (global +) (local x 1 0) (local y 0 0))))",
     );
-    // The nearer binding hides the farther one, and a local hides a global.
+    // 近いほうの束縛が遠いほうを隠し、局所変数が大域変数を隠す。
     try f.expectExpands("(lambda (x) (lambda (x) x))", "(lambda 1 1 (lambda 1 1 (local x 0 0)))");
     try f.expectExpands("(lambda (+) +)", "(lambda 1 1 (local + 0 0))");
 }
@@ -509,7 +509,7 @@ test "begin is a sequence, and one form is that form" {
     defer f.deinit();
     try f.expectExpands("(begin 1 2)", "(seq (const 1) (const 2))");
     try f.expectExpands("(begin 1)", "(const 1)");
-    // At the top level its forms are at the top level too (R7RS 5.3).
+    // トップレベルでは、中の形式もトップレベルにある(R7RS 5.3)。
     try f.expectExpands("(begin (define x 1) x)", "(seq (define-global x (const 1)) (global x))");
 }
 
@@ -521,12 +521,12 @@ test "definitions at the start of a body make slots after the parameters" {
         "(lambda (n) (define a 1) (define (g) a) (g))",
         "(lambda 1 3 (seq (define-local a 0 1 (const 1)) (define-local g 0 2 (lambda 0 0 (local a 1 1))) (call (local g 0 2))))",
     );
-    // A name defined later is already visible to a procedure defined earlier.
+    // 後で定義する名前は、先に定義した手続きからすでに見える。
     try f.expectExpands(
         "(lambda () (define (even? n) (odd? n)) (define (odd? n) n) 1)",
         "(lambda 0 2 (seq (define-local even? 0 0 (lambda 1 1 (call (local odd? 1 1) (local n 0 0)))) (define-local odd? 0 1 (lambda 1 1 (local n 0 0))) (const 1)))",
     );
-    // A definition after an expression is refused, before any of the body runs.
+    // 式のあとの定義は、本体が少しも実行されないうちに拒否される。
     try f.expectFails(
         "(lambda () (+ a 1) (define a 1) a)",
         "bad define: a definition is only allowed at the top level or at the start of a body",
@@ -578,14 +578,14 @@ test "an address that does not fit the width is reported, and one that just fits
     try f.init();
     defer f.deinit();
     const limits: Limits = .{ .address = 1 };
-    // Depth 1 is the last that fits.
+    // 深さ 1 が収まる最後の値である。
     try std.testing.expectEqualStrings(
         "(lambda 1 1 (lambda 1 1 (local a 1 0)))",
         try f.expandText("(lambda (a) (lambda (b) a))", limits),
     );
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (lambda (b) (lambda (c) a)))", limits));
     try std.testing.expectEqualStrings("implementation restriction: procedures are nested too deeply", f.ctx.diagnostic());
-    // A frame of one slot is the last that fits, and two do not.
+    // 1 スロットのフレームが収まる最後で、2 スロットは収まらない。
     try std.testing.expectEqualStrings("(lambda 1 1 (local a 0 0))", try f.expandText("(lambda (a) a)", limits));
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a b) a)", limits));
     try std.testing.expectEqualStrings("implementation restriction: a procedure has too many variables", f.ctx.diagnostic());
@@ -607,7 +607,7 @@ test "a form that is not a proper list is refused" {
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // The reader cannot write a dotted list, so build (+ 1 . 2) by hand.
+    // リーダはドット付きリストを書けないので、(+ 1 . 2) は手で組み立てる。
     const tail = try f.ctx.heap.cons(.fromFixnum(1), .fromFixnum(2));
     const plus: Value = .fromSymbol(try f.ctx.symbols.intern(a, "+"));
     const form = try f.ctx.heap.cons(plus, tail);
@@ -630,19 +630,19 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // Constants that hold no heap object need no root.
+    // ヒープオブジェクトを持たない定数には、ルートは要らない。
     for ([_][]const u8{ "5", "#t", "(quote foo)", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
     try std.testing.expectEqual(0, f.ctx.code_roots.items.len);
     f.ctx.collectIdle();
     try std.testing.expectEqual(0, f.ctx.heap.count);
-    // A quoted list is one: the datum, not the pairs of the `quote` form around it.
+    // クォートしたリストがその例である。対象はデータそのもので、周りの `quote` 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
     try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
     try std.testing.expectEqual(4, f.ctx.heap.count);
     f.ctx.collectIdle();
     try std.testing.expectEqual(2, f.ctx.heap.count);
     try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
-    // The other place a constant is made: a form that is a value already.
+    // 定数を作るもう一方の箇所: すでに値である形式。
     const closure = try f.ctx.heap.create(value_mod.Closure, .{ .lambda = undefined, .env = null });
     const itself = try expand(&f.ctx, a, .fromClosure(closure));
     try std.testing.expectEqual(closure, itself.constant.asClosure().?);

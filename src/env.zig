@@ -1,11 +1,10 @@
 //! The global environment: which symbols are bound, and to what.
 //!
-//! A name that is absent is unbound, so no marker value is needed for it. Local
-//! variables live in the frames of calls and are found by lexical address; the
-//! "uninitialized" state of an internal definition is a `Value` of its own
-//! (`Value.uninitialized`), set when a call starts. The cells of
-//! docs/design/runtime.md, shared by `import`, arrive with the library system in
-//! stage 2.
+//! 存在しない名前は未束縛であり、そのための印の値は要らない。ローカル変数は
+//! 呼び出しのフレームにあり、レキシカルアドレスで見つける。内部定義の「未初期化」
+//! の状態は専用の `Value`(`Value.uninitialized`)であり、呼び出しの開始時に
+//! 設定する。`import` で共有する docs/design/runtime.md のセルは、段階2の
+//! ライブラリシステムとともに入る。
 
 const std = @import("std");
 const SymbolId = @import("symbol.zig").SymbolId;
@@ -15,8 +14,9 @@ const Marker = @import("heap.zig").Marker;
 pub const Global = struct {
     bindings: std.AutoHashMapUnmanaged(SymbolId, Value) = .empty,
 
-    /// Binds `id` to `value`, replacing any earlier binding. Redefinition is
-    /// allowed at the top level (R7RS 5.3.1).
+    /// Binds `id` to `value`, replacing any earlier binding.
+    ///
+    /// トップレベルでは再定義が許される(R7RS 5.3.1)。
     pub fn define(self: *Global, alloc: std.mem.Allocator, id: SymbolId, value: Value) error{OutOfMemory}!void {
         try self.bindings.put(alloc, id, value);
     }
@@ -32,8 +32,9 @@ pub const Global = struct {
         while (it.next()) |value| marker.value(value.*);
     }
 
-    /// Replaces the value of an existing binding. Returns false, and changes
-    /// nothing, when `id` is unbound: `set!` does not create a variable.
+    /// Replaces the value of an existing binding.
+    ///
+    /// `id` が未束縛なら何も変えずに false を返す。`set!` は変数を作らない。
     pub fn assign(self: *Global, id: SymbolId, value: Value) bool {
         const slot = self.bindings.getPtr(id) orelse return false;
         slot.* = value;
