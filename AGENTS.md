@@ -43,6 +43,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - 編集のたび: 書き換えたファイルの `zig test src/<ファイル>.zig` と `zig fmt`。数秒から十数秒。
 - コミット前と push のたび: 表の「全コミット」の行。1 分以内を目標にする。`zig build test` と `zig build test-scheme` は、規模を試すテストを飛ばす。飛ばした数が出るのは `zig build test --summary all` の概要だけで(`ci.yml` は付けている)、素の `zig build test` は成功すると何も出さず、`zig build test-scheme` は走らせた件数だけを出す。
 - PR を ready にする前と `main` へのマージ前: 規模を試すテスト(`-Dslow=true`)、変更したファイルのミューテーションテスト、敵対的レビュー。
+  - PR はドラフトで開き、ready にしたときに層2 が走る。`full.yml` の起動は `ready_for_review` なので、最初から ready で開いた PR では、層2 は `main` への push まで走らない。その場合は手動(`workflow_dispatch`)で走らせる。
 - 定期: ファジングなど。待たない。
 
 規模を試すテスト(深さ・個数・上限に比例して壊れる種類の誤りを見るもの)は、小さい規模で同じ論理を通す縮小版を層1 に残したうえで、`tier.slow()`(単体テスト)か `tests/scheme-slow/`(Scheme のテスト)に置く。検証が目標より遅いときは、待つ前に、並行にする前に、1 件あたりの時間を測る。
