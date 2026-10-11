@@ -2,15 +2,15 @@
 
 sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Scheme インタプリタです。衛生的マクロ、完全な継続、適切な末尾再帰、完全な数値塔までの準拠を目指します。
 
-単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールの両方を、同一のコアから生成することを目指しています。現時点で動くのはビルドの足場だけで、Scheme の評価はまだできません。
+単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールの両方を、同一のコアから生成することを目指しています。現在の到達点は [docs/roadmap.md](docs/roadmap.md) の「現在地」にあります。
 
 名前はリポジトリオーナーに由来しています(`scheme` の打ち間違いではありません)。
 
 ## 状態
 
-設計フェーズが完了し、実装の段階0(足場)まで進んでいます。`zig build` で実行ファイルができ、`--version` に答えます。Scheme の評価は段階1からです。
+設計フェーズが完了し、実装は段階1(通しで動く最小の縦切り)に入っています。`zig build run` で REPL が動き、Scheme の式を評価できます。どこまで動くかは [docs/roadmap.md](docs/roadmap.md) の「現在地」が正です。
 
-進捗の単一のソースは [docs/roadmap.md](docs/roadmap.md) です。現在の段階、最新リリース、段階ごとのチェックリストはそこにあります。R7RS 準拠の達成度は [docs/status/](docs/status/) にあります。固定している Zig のバージョンは `.zigversion` が正です。
+進捗の単一のソースは [docs/roadmap.md](docs/roadmap.md) です。現在の段階、最新リリース、段階ごとのチェックリストはそこにあります。R7RS の必須識別子のうちインタプリタが束縛しているものの表(段階1の最小版の準拠マトリクス)は [docs/status/](docs/status/) にあります。固定している Zig のバージョンは `.zigversion` が正です。
 
 同じ数値を README にも書くと必ず食い違うため、ここには転記しません。
 
@@ -57,7 +57,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 | [docs/plans/0001-sow.md](docs/plans/0001-sow.md) | 作業範囲、成果物、進め方、リスク |
 | [docs/design/](docs/design/) | アーキテクチャと各領域の設計 |
 | [docs/adr/](docs/adr/) | 技術選択と設計判断の記録 |
-| [docs/status/](docs/status/) | R7RS 準拠マトリクス(生成物) |
+| [docs/status/](docs/status/) | R7RS 準拠マトリクス(生成物。段階1の最小版) |
 
 設計の中心となる判断は次の3つです。評価器は明示的な継続を持つ CEK 機械とし([ADR-0004](docs/adr/0004-cek-machine-evaluator.md))、GC は非移動型の精密マーク・スイープとし([ADR-0003](docs/adr/0003-precise-mark-sweep-gc.md))、コア言語で表現できるものは Scheme で書きます([ADR-0006](docs/adr/0006-library-system-and-scheme-level-stdlib.md))。いずれも WebAssembly を一級の対象とする制約から導かれています。
 

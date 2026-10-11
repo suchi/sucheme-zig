@@ -15,7 +15,7 @@
 | 現在の段階 | 段階1(通しで動く最小の縦切り)。スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | なし |
 | 固定 Zig バージョン | `.zigversion` を参照 |
-| R7RS 準拠マトリクス | [status/](status/)(段階3から生成される) |
+| R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
 
 段階ごとの進み具合は下の段階の節のチェックボックスが正である。ここに件数や割合を書くと必ず古くなる。
 
@@ -70,6 +70,7 @@
 - [x] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版 (スライス 1i)
 - [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)
 - [ ] aarch64 を自動テストの対象に加えるかの判断と ADR の作成([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
+- [ ] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
 - [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3)
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
@@ -107,7 +108,7 @@
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
-- [ ] 準拠マトリクスの生成(`zig build report`)と、生成し直した結果との同期検査(`zig build check-report`)。`lib/` のエクスポート節が実在するこの段階で入れる。`.github/workflows/` の変更なのでユーザーの承認を得てから行う
+- [ ] 準拠マトリクスの入力に、`lib/` のエクスポート節を足す。`lib/` のエクスポート節が実在するこの段階で入れる。段階1の最小版は、`tests/r7rs-required` の識別子をインタプリタが束縛しているかだけを見ている
 
 完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。リリース v0.3.0 を出す。
 
@@ -146,13 +147,13 @@
 
 - [ ] `(chibi test)` 互換の最小実装
 - [ ] `r7rs-tests.scm` の取り込みと実行
-- [ ] 準拠マトリクスの生成と `docs/status/` への反映、CI による同期検査
+- [ ] 準拠マトリクスに、準拠スイート(`r7rs-tests.scm`)の結果の列を足す。`(scheme r5rs)` の再エクスポートによる識別子の重複は、この列を足すときに解く
 - [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消
 - [ ] 不合格項目の issue 化と解消
 - [ ] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
 - [ ] BSD 3条項の第3条項(名前の宣伝利用)について、出典として述べることと推奨として用いることの線を引く新ADRの作成([ADR-0022](adr/0022-unlicensed-proprietary.md))。記録形式が2つ併存することを定める件も同じ ADR で扱う
 
-完了条件: 準拠マトリクスが `docs/status/` に生成され、`r7rs-tests.scm` の不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
+完了条件: 準拠マトリクスに `r7rs-tests.scm` の結果の列があり、その不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
 
 残していること: [design/open-questions.md](design/open-questions.md) の「段階を定めずに保留しているもの」のうち、性能測定を根拠にする行。
 
