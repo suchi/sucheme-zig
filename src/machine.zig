@@ -177,10 +177,10 @@ pub const Machine = struct {
             if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount);
             var small: [8]Value = undefined;
             const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
-            // Why: オペランドはスクラッチ領域から最後に取ったものであり、プリミティブは
-            // そこから何も取らない。だから、呼び出しの直後に返せば、アリーナがそれを
-            // 再利用できる。返さずに残すと、オペランドの多いプリミティブを呼ぶループは、
-            // 1 周ごとに領域を広げてしまう。
+            // Why: スクラッチ領域は1行ぶんのアリーナで、`free` が効くのは最後の確保だけである。
+            // オペランドを最初に取り、プリミティブは取ったものを確保と逆の順に返す約束なので、
+            // 呼び出しの直後にオペランドを返せば、アリーナがそれを再利用できる。返さずに
+            // 残すと、オペランドの多いプリミティブを呼ぶループは、1 周ごとに領域を広げてしまう。
             defer if (count > small.len) self.scratch.free(operands);
             fill(operands, args);
             const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
@@ -287,6 +287,8 @@ const reader_mod = @import("reader.zig");
 /// What the tests share: a context, and a machine that runs source text.
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
+    /// 機械のスクラッチ領域。本番では永続のアリーナと別物なので、テストでも分ける。
+    scratch_arena: std.heap.ArenaAllocator,
     ctx: Context,
     machine: Machine,
 
@@ -304,12 +306,15 @@ const Fixture = struct {
     fn initIn(self: *Fixture, gpa: std.mem.Allocator, options: heap_mod.Options) !void {
         self.arena = .init(std.testing.allocator);
         errdefer self.arena.deinit();
+        self.scratch_arena = .init(std.testing.allocator);
+        errdefer self.scratch_arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
-        self.machine = .init(&self.ctx, self.arena.allocator());
+        self.machine = .init(&self.ctx, self.scratch_arena.allocator());
     }
 
     fn deinit(self: *Fixture) void {
         self.ctx.deinit();
+        self.scratch_arena.deinit();
         self.arena.deinit();
     }
 
@@ -574,6 +579,9 @@ test "a primitive is given the heap and the scratch space of the machine" {
     const result = try f.eval("(probe 7)");
     try std.testing.expectEqual(&f.ctx.heap, Probe.heap.?);
     try std.testing.expectEqual(f.machine.scratch.ptr, Probe.scratch.?.ptr);
+    // 永続のアリーナ(`ctx.persist`)とは別物である。差し替えると、一時領域がセッションの
+    // 終わりまで残ってしまう。
+    try std.testing.expect(Probe.scratch.?.ptr != f.ctx.persist.ptr);
     // プリミティブが渡されたヒープに確保したペアは、機械が持つヒープのものである。
     try std.testing.expect(result.pointsIntoHeap());
     try std.testing.expect(f.ctx.heap.count > before);
