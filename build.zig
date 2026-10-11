@@ -340,6 +340,7 @@ pub fn build(b: *std.Build) void {
         wasm_step,
         test_wasm_step,
         check_extract_step,
+        check_report_step,
     };
     for (required_steps) |s| {
         run_check_docs.addArg("--requires");

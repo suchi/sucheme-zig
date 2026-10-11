@@ -31,6 +31,8 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | 実行 | `zig build run -- <引数>` | 0 | - |
 | ドキュメントの検査 | `zig build check-docs` | 0 | 全コミット |
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
+| 準拠マトリクスの同期検査 | `zig build check-report` | 1 | 全コミット |
+| 準拠マトリクスの生成 | `zig build report` | 1 | - |
 
 コミット前に必ずテスト・リントを実行する。この表が正であり、他の文書はコマンド名を列挙せずここを参照する。新しいコマンドを足したらこの表に追加する。表にないコマンドは検証とレビューの対象外になる。
 
