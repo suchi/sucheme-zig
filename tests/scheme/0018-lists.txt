@@ -1,0 +1,212 @@
+# Slice 1k, unit K2: what a list is, and how long. A list is the empty list, or a
+# pair whose cdr is a list. `list?` asks whether a value is one, `length`
+# counts it, and a chain of pairs that does not end in () is not a list.
+
+# length counts the elements.
+(length '())
+0
+
+(length '(1))
+1
+
+(length (list 1 2 3))
+3
+
+(length '(a (b) (c d e)))
+3
+
+(length (cons 1 (cons 2 '())))
+2
+
+(length (list '() '() '()))
+3
+
+(length (list (list 1 2 3)))
+1
+
+(length (cdr (list 1 2 3)))
+2
+
+(length (list (if #f #f)))
+1
+
+(length (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20))
+20
+
+# list? is true of () and of a chain of pairs that ends in ().
+(list? '())
+#t
+
+(list? (list))
+#t
+
+(list? '(1))
+#t
+
+(list? (list 1 2 3))
+#t
+
+(list? (list '() (list)))
+#t
+
+(list? (cdr (list 1)))
+#t
+
+# A chain that ends in anything else is not a list, though it is made of pairs.
+(list? (cons 1 2))
+#f
+
+(list? '(1 . 2))
+#f
+
+(list? '(1 2 . 3))
+#f
+
+(list? (cons 1 (cons 2 3)))
+#f
+
+(list? (cons 1 (cons 2 #f)))
+#f
+
+# And what is not a pair is not a list, the empty list excepted.
+(list? 1)
+#f
+
+(list? 'a)
+#f
+
+(list? #f)
+#f
+
+(list? "ab")
+#f
+
+(list? #\a)
+#f
+
+(list? #(1 2))
+#f
+
+(list? #())
+#f
+
+(list? car)
+#f
+
+(list? (lambda (x) x))
+#f
+
+# pair? and list? differ at the ends: a pair that is not a list, and the list
+# that is not a pair.
+(pair? '(1 . 2))
+#t
+
+(pair? '())
+#f
+
+# length takes a list and nothing else, so the same values as above are errors.
+(length 1)
+error: wrong type of argument to length
+
+(length 'a)
+error: wrong type of argument to length
+
+(length #f)
+error: wrong type of argument to length
+
+(length "ab")
+error: wrong type of argument to length
+
+(length #\a)
+error: wrong type of argument to length
+
+(length #(1 2))
+error: wrong type of argument to length
+
+(length car)
+error: wrong type of argument to length
+
+(length (cons 1 2))
+error: wrong type of argument to length
+
+(length '(1 . 2))
+error: wrong type of argument to length
+
+(length '(1 2 . 3))
+error: wrong type of argument to length
+
+(length (cons 1 (cons 2 (cons 3 4))))
+error: wrong type of argument to length
+
+(length (cons 1 (cons 2 #f)))
+error: wrong type of argument to length
+
+# The number of arguments is checked by the machine.
+(length)
+error: wrong number of arguments to length
+
+(length '() '())
+error: wrong number of arguments to length
+
+(length '(1) '(2))
+error: wrong number of arguments to length
+
+(list?)
+error: wrong number of arguments to list?
+
+(list? '() '())
+error: wrong number of arguments to list?
+
+# An error in the argument comes first.
+(length (car '()))
+error: wrong type of argument to car
+
+(list? (foo))
+error: unbound variable: foo
+
+# The procedures are values.
+length
+#<procedure length>
+
+list?
+#<procedure list?>
+
+(define n length) (n (list 1 2))
+2
+
+(define l? list?) (l? '(1))
+#t
+
+# A length that the program counts by hand is the one `length` returns.
+(define (len xs) (if (null? xs) 0 (+ 1 (len (cdr xs))))) (len (list 1 2 3))
+3
+
+(define (len xs) (if (null? xs) 0 (+ 1 (len (cdr xs))))) (= (len '(a b c d)) (length '(a b c d)))
+#t
+
+(define (len xs) (if (null? xs) 0 (+ 1 (len (cdr xs))))) (= (len '()) (length '()))
+#t
+
+# The test that `length` makes is the one a program writes with pair? and null?.
+(define (proper? xs) (if (null? xs) #t (if (pair? xs) (proper? (cdr xs)) #f))) (list (proper? '(1 2)) (list? '(1 2)) (proper? '(1 . 2)) (list? '(1 . 2)))
+(#t #t #f #f)
+
+# A list of a few hundred pairs, made while the collector runs. The runner also
+# runs every case with a collection at each step. A long list is in
+# tests/scheme-slow/.
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (length (build 500 '()))
+500
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (list? (build 500 '()))
+#t
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 400 '())) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (list (length xs) (list? xs) (car xs))
+ok
+(400 #t 1)
+
+# A long chain that ends in something that is not (), found only at the end.
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (list (list? (build 500 0)) (pair? (build 500 0)))
+(#f #t)
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (length (build 500 0))
+error: wrong type of argument to length
