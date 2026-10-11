@@ -357,3 +357,103 @@ test "input that is not valid UTF-8 is refused whole, and the next line is read"
     try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
     try std.testing.expectEqualStrings("3\n", w.buffered());
 }
+
+/// Evaluates `line` on `interp` and expects it to fail with `message`.
+fn expectLineFails(interp: *Interpreter, line: []const u8, message: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line, &w));
+    try std.testing.expectEqualStrings(message, interp.diagnostic());
+}
+
+/// Evaluates `line` on `interp` and expects it to write `output`.
+fn expectLinePrints(interp: *Interpreter, line: []const u8, output: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), line, &w);
+    try std.testing.expectEqualStrings(output, w.buffered());
+}
+
+test "every primitive reports a wrong argument count, and the next line is read" {
+    // 行ごとの列は REPL の読み取りと同じ形である(tests/scheme/ は1ケース1行で、
+    // この続行を書けない)。表から数えるので、足したプリミティブは自動で含まれる。
+    const table = @import("prim/table.zig");
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define keep (list 1 \"あ\" #(2)))", "");
+        var checked: usize = 0;
+        for (table.all) |p| {
+            var line: std.ArrayList(u8) = .empty;
+            defer line.deinit(std.testing.allocator);
+            try line.print(std.testing.allocator, "({s}", .{p.name});
+            if (p.min_args > 0) {
+                // 下限に1つ足りない。
+                for (0..p.min_args - 1) |_| try line.appendSlice(std.testing.allocator, " 1");
+            } else if (p.max_args) |max| {
+                // 上限を1つ超える。
+                for (0..@as(usize, max) + 1) |_| try line.appendSlice(std.testing.allocator, " 1");
+            } else continue; // 何個でも取る(`+` `*` `list` `vector`)。
+            try line.append(std.testing.allocator, ')');
+            var expected: std.ArrayList(u8) = .empty;
+            defer expected.deinit(std.testing.allocator);
+            try expected.print(std.testing.allocator, "wrong number of arguments to {s}", .{p.name});
+            try expectLineFails(&interp, line.items, expected.items);
+            // エラーのあとも、定義と評価が続く。
+            try expectLinePrints(&interp, "(+ 1 2)", "3\n");
+            checked += 1;
+        }
+        try std.testing.expect(checked > 0);
+        try expectLinePrints(&interp, "keep", "(1 \"あ\" #(2))\n");
+    }
+}
+
+test "an error of each kind leaves the interpreter and its definitions usable" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define xs (list 1 2 3)) (define (len l) (if (null? l) 0 (+ 1 (len (cdr l)))))", "");
+        const failures = [_]struct { line: []const u8, message: []const u8 }{
+            .{ .line = "(car 1)", .message = "wrong type of argument to car" },
+            .{ .line = "(vector-ref (vector 1) 1)", .message = "argument out of range in vector-ref" },
+            .{ .line = "(string-ref \"あ\" 1)", .message = "argument out of range in string-ref" },
+            .{ .line = "(integer->char 55296)", .message = "argument out of range in integer->char" },
+            .{ .line = "(quotient 1 0)", .message = "division by zero in quotient" },
+            .{ .line = "(modulo 1 0)", .message = "division by zero in modulo" },
+            .{ .line = "(quotient -9223372036854775808 -1)", .message = "integer overflow in quotient" },
+            .{ .line = "(* 9223372036854775807 2)", .message = "integer overflow in *" },
+            .{ .line = "(length (cons 1 2))", .message = "wrong type of argument to length" },
+            .{ .line = "(len 5)", .message = "wrong type of argument to cdr" },
+            .{ .line = "(vector-ref (vector 1) 4294967296)", .message = "argument out of range in vector-ref" },
+        };
+        for (failures) |f| {
+            try expectLineFails(&interp, f.line, f.message);
+            // 失敗した行のデータはゴミになり、次の行の前に回収される。定義したものは残る。
+            try expectLinePrints(&interp, "(len xs) xs", "3\n(1 2 3)\n");
+        }
+        // 1行の中のエラーは、その行の残りを評価しない。前の結果は残る。
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        var buf: [64]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(len xs) (car 1) (len xs)", &w));
+        try std.testing.expectEqualStrings("3\n", w.buffered());
+    }
+}
+
+test "a primitive that runs the heap out of room ends only its line" {
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define (grow-cons n acc) (grow-cons (+ n 1) (cons n acc))) (define (grow-list acc) (grow-list (list acc acc))) (define (grow-vector acc) (grow-vector (vector acc 1 2))) (define keep 42)", "");
+    for ([_][]const u8{ "(grow-cons 0 '())", "(grow-list '())", "(grow-vector '())" }) |line| {
+        try expectLineFails(&interp, line, "heap limit exceeded");
+        try expectLinePrints(&interp, "(+ keep 1)", "43\n");
+    }
+}

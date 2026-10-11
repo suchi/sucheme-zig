@@ -1,0 +1,1067 @@
+# スライス 1k の単位 K6: プリミティブのエラーの一覧。
+# 1k の各プリミティブ × エラーの種類(個数、型、範囲、0 除算、整数の溢れ)の表である。
+# 検査の順序は、引数の個数(機械が表で検査する)、すべての引数の型、値の範囲で、
+# 値に左右されずエラーが決まる。引数の式は呼び出しより先に評価される。
+# 0017 から 0023 に同じ入力のケースがあるものは、ここに重ねない。ここは
+# それらを補い、全プリミティブと全種類の組を埋める。ケースは機械的に作った
+# 部分(個数と型)と、手で書いた部分(範囲、溢れ、順序、呼び出しの経路)に分かれる。
+# エラーのあとも REPL が続行することは、1ケース1行のこの形式では書けないので、
+# src/sucheme.zig の単体テストが固定する。
+
+# 個数の誤り。下限を下回る場合、上限を超える場合。個数は型より先に検査されるので、
+# 引数が型の合わない値でも個数のエラーになる。+ * list vector は何個でも取る。
+
+(quotient 1 1 1)
+error: wrong number of arguments to quotient
+
+(quotient 'a 'a 'a)
+error: wrong number of arguments to quotient
+
+(remainder 1 1 1)
+error: wrong number of arguments to remainder
+
+(remainder 'a 'a 'a)
+error: wrong number of arguments to remainder
+
+(modulo 1 1 1)
+error: wrong number of arguments to modulo
+
+(modulo 'a 'a 'a)
+error: wrong number of arguments to modulo
+
+(number? 1 1)
+error: wrong number of arguments to number?
+
+(number? 'a 'a)
+error: wrong number of arguments to number?
+
+(cons 1 1 1)
+error: wrong number of arguments to cons
+
+(cons 'a 'a 'a)
+error: wrong number of arguments to cons
+
+(car 1 1)
+error: wrong number of arguments to car
+
+(car 'a 'a)
+error: wrong number of arguments to car
+
+(cdr 1 1)
+error: wrong number of arguments to cdr
+
+(cdr 'a 'a)
+error: wrong number of arguments to cdr
+
+(pair? 1 1)
+error: wrong number of arguments to pair?
+
+(pair? 'a 'a)
+error: wrong number of arguments to pair?
+
+(null? 1 1)
+error: wrong number of arguments to null?
+
+(null? 'a 'a)
+error: wrong number of arguments to null?
+
+(length 1 1)
+error: wrong number of arguments to length
+
+(length 'a 'a)
+error: wrong number of arguments to length
+
+(list? 1 1)
+error: wrong number of arguments to list?
+
+(list? 'a 'a)
+error: wrong number of arguments to list?
+
+(eq? 1 1 1)
+error: wrong number of arguments to eq?
+
+(eq? 'a 'a 'a)
+error: wrong number of arguments to eq?
+
+(eqv?)
+error: wrong number of arguments to eqv?
+
+(eqv? 1 1 1)
+error: wrong number of arguments to eqv?
+
+(eqv? 'a 'a 'a)
+error: wrong number of arguments to eqv?
+
+(equal?)
+error: wrong number of arguments to equal?
+
+(equal? 1 1 1)
+error: wrong number of arguments to equal?
+
+(equal? 'a 'a 'a)
+error: wrong number of arguments to equal?
+
+(not 1 1)
+error: wrong number of arguments to not
+
+(not 'a 'a)
+error: wrong number of arguments to not
+
+(boolean? 1 1)
+error: wrong number of arguments to boolean?
+
+(boolean? 'a 'a)
+error: wrong number of arguments to boolean?
+
+(symbol? 1 1)
+error: wrong number of arguments to symbol?
+
+(symbol? 'a 'a)
+error: wrong number of arguments to symbol?
+
+(procedure? 1 1)
+error: wrong number of arguments to procedure?
+
+(procedure? 'a 'a)
+error: wrong number of arguments to procedure?
+
+(char? 1 1)
+error: wrong number of arguments to char?
+
+(char? 'a 'a)
+error: wrong number of arguments to char?
+
+(char->integer 1 1)
+error: wrong number of arguments to char->integer
+
+(char->integer 'a 'a)
+error: wrong number of arguments to char->integer
+
+(integer->char 1 1)
+error: wrong number of arguments to integer->char
+
+(integer->char 'a 'a)
+error: wrong number of arguments to integer->char
+
+(string? 1 1)
+error: wrong number of arguments to string?
+
+(string? 'a 'a)
+error: wrong number of arguments to string?
+
+(string-length 1 1)
+error: wrong number of arguments to string-length
+
+(string-length 'a 'a)
+error: wrong number of arguments to string-length
+
+(string-ref 1)
+error: wrong number of arguments to string-ref
+
+(string-ref 1 1 1)
+error: wrong number of arguments to string-ref
+
+(string-ref 'a 'a 'a)
+error: wrong number of arguments to string-ref
+
+(vector? 1 1)
+error: wrong number of arguments to vector?
+
+(vector? 'a 'a)
+error: wrong number of arguments to vector?
+
+(vector-length 1 1)
+error: wrong number of arguments to vector-length
+
+(vector-length 'a 'a)
+error: wrong number of arguments to vector-length
+
+(vector-ref 1)
+error: wrong number of arguments to vector-ref
+
+(vector-ref 1 1 1)
+error: wrong number of arguments to vector-ref
+
+(vector-ref 'a 'a 'a)
+error: wrong number of arguments to vector-ref
+
+# 型の誤り。引数の位置ごとに、型の合わない値の種類を変える。種類は真偽値、
+# シンボル、文字列、文字、空リスト、ペア、ベクタ、プリミティブ、クロージャ、
+# 未規定値である。算術と比較の手続きは同じ形の検査を持つので、最初の位置の
+# 種類を絞る。cons eq? eqv? equal? not list vector と述語は、どの型でも受けるので、
+# 型のエラーが無い。
+
+(+ #t 1 1)
+error: wrong type of argument to +
+
+(+ #\a 1 1)
+error: wrong type of argument to +
+
+(+ '() 1 1)
+error: wrong type of argument to +
+
+(+ (if #f #f) 1 1)
+error: wrong type of argument to +
+
+(+ 1 'a 1)
+error: wrong type of argument to +
+
+(+ 1 "s" 1)
+error: wrong type of argument to +
+
+(+ 1 (if #f #f) 1)
+error: wrong type of argument to +
+
+(+ 1 1 'a)
+error: wrong type of argument to +
+
+(+ 1 1 "s")
+error: wrong type of argument to +
+
+(+ 1 1 (if #f #f))
+error: wrong type of argument to +
+
+(- #t 1 1)
+error: wrong type of argument to -
+
+(- #\a 1 1)
+error: wrong type of argument to -
+
+(- '() 1 1)
+error: wrong type of argument to -
+
+(- (if #f #f) 1 1)
+error: wrong type of argument to -
+
+(- 1 'a 1)
+error: wrong type of argument to -
+
+(- 1 "s" 1)
+error: wrong type of argument to -
+
+(- 1 (if #f #f) 1)
+error: wrong type of argument to -
+
+(- 1 1 'a)
+error: wrong type of argument to -
+
+(- 1 1 "s")
+error: wrong type of argument to -
+
+(- 1 1 (if #f #f))
+error: wrong type of argument to -
+
+(- #t)
+error: wrong type of argument to -
+
+(- (if #f #f))
+error: wrong type of argument to -
+
+(* #t 1 1)
+error: wrong type of argument to *
+
+(* #\a 1 1)
+error: wrong type of argument to *
+
+(* '() 1 1)
+error: wrong type of argument to *
+
+(* (if #f #f) 1 1)
+error: wrong type of argument to *
+
+(* 1 'a 1)
+error: wrong type of argument to *
+
+(* 1 "s" 1)
+error: wrong type of argument to *
+
+(* 1 (if #f #f) 1)
+error: wrong type of argument to *
+
+(* 1 1 'a)
+error: wrong type of argument to *
+
+(* 1 1 "s")
+error: wrong type of argument to *
+
+(* 1 1 (if #f #f))
+error: wrong type of argument to *
+
+(= #t 1 1)
+error: wrong type of argument to =
+
+(= #\a 1 1)
+error: wrong type of argument to =
+
+(= '() 1 1)
+error: wrong type of argument to =
+
+(= (if #f #f) 1 1)
+error: wrong type of argument to =
+
+(= 1 'a 1)
+error: wrong type of argument to =
+
+(= 1 "s" 1)
+error: wrong type of argument to =
+
+(= 1 (if #f #f) 1)
+error: wrong type of argument to =
+
+(= 1 1 'a)
+error: wrong type of argument to =
+
+(= 1 1 "s")
+error: wrong type of argument to =
+
+(= 1 1 (if #f #f))
+error: wrong type of argument to =
+
+(= #t)
+error: wrong type of argument to =
+
+(= 'a)
+error: wrong type of argument to =
+
+(= (if #f #f))
+error: wrong type of argument to =
+
+(< #t 1 1)
+error: wrong type of argument to <
+
+(< #\a 1 1)
+error: wrong type of argument to <
+
+(< '() 1 1)
+error: wrong type of argument to <
+
+(< (if #f #f) 1 1)
+error: wrong type of argument to <
+
+(< 1 'a 1)
+error: wrong type of argument to <
+
+(< 1 "s" 1)
+error: wrong type of argument to <
+
+(< 1 (if #f #f) 1)
+error: wrong type of argument to <
+
+(< 1 1 'a)
+error: wrong type of argument to <
+
+(< 1 1 "s")
+error: wrong type of argument to <
+
+(< 1 1 (if #f #f))
+error: wrong type of argument to <
+
+(< #t)
+error: wrong type of argument to <
+
+(< 'a)
+error: wrong type of argument to <
+
+(< (if #f #f))
+error: wrong type of argument to <
+
+(> #t 1 1)
+error: wrong type of argument to >
+
+(> #\a 1 1)
+error: wrong type of argument to >
+
+(> '() 1 1)
+error: wrong type of argument to >
+
+(> (if #f #f) 1 1)
+error: wrong type of argument to >
+
+(> 1 'a 1)
+error: wrong type of argument to >
+
+(> 1 "s" 1)
+error: wrong type of argument to >
+
+(> 1 (if #f #f) 1)
+error: wrong type of argument to >
+
+(> 1 1 'a)
+error: wrong type of argument to >
+
+(> 1 1 "s")
+error: wrong type of argument to >
+
+(> 1 1 (if #f #f))
+error: wrong type of argument to >
+
+(> #t)
+error: wrong type of argument to >
+
+(> 'a)
+error: wrong type of argument to >
+
+(> (if #f #f))
+error: wrong type of argument to >
+
+(<= #t 1 1)
+error: wrong type of argument to <=
+
+(<= #\a 1 1)
+error: wrong type of argument to <=
+
+(<= '() 1 1)
+error: wrong type of argument to <=
+
+(<= (if #f #f) 1 1)
+error: wrong type of argument to <=
+
+(<= 1 'a 1)
+error: wrong type of argument to <=
+
+(<= 1 "s" 1)
+error: wrong type of argument to <=
+
+(<= 1 (if #f #f) 1)
+error: wrong type of argument to <=
+
+(<= 1 1 'a)
+error: wrong type of argument to <=
+
+(<= 1 1 "s")
+error: wrong type of argument to <=
+
+(<= 1 1 (if #f #f))
+error: wrong type of argument to <=
+
+(<= #t)
+error: wrong type of argument to <=
+
+(<= 'a)
+error: wrong type of argument to <=
+
+(<= (if #f #f))
+error: wrong type of argument to <=
+
+(>= #t 1 1)
+error: wrong type of argument to >=
+
+(>= #\a 1 1)
+error: wrong type of argument to >=
+
+(>= '() 1 1)
+error: wrong type of argument to >=
+
+(>= (if #f #f) 1 1)
+error: wrong type of argument to >=
+
+(>= 1 'a 1)
+error: wrong type of argument to >=
+
+(>= 1 "s" 1)
+error: wrong type of argument to >=
+
+(>= 1 (if #f #f) 1)
+error: wrong type of argument to >=
+
+(>= 1 1 'a)
+error: wrong type of argument to >=
+
+(>= 1 1 "s")
+error: wrong type of argument to >=
+
+(>= 1 1 (if #f #f))
+error: wrong type of argument to >=
+
+(>= #t)
+error: wrong type of argument to >=
+
+(>= 'a)
+error: wrong type of argument to >=
+
+(>= (if #f #f))
+error: wrong type of argument to >=
+
+(quotient #t 2)
+error: wrong type of argument to quotient
+
+(quotient 'a 2)
+error: wrong type of argument to quotient
+
+(quotient "s" 2)
+error: wrong type of argument to quotient
+
+(quotient #\a 2)
+error: wrong type of argument to quotient
+
+(quotient '() 2)
+error: wrong type of argument to quotient
+
+(quotient '(1) 2)
+error: wrong type of argument to quotient
+
+(quotient #(1) 2)
+error: wrong type of argument to quotient
+
+(quotient car 2)
+error: wrong type of argument to quotient
+
+(quotient (lambda (x) x) 2)
+error: wrong type of argument to quotient
+
+(quotient (if #f #f) 2)
+error: wrong type of argument to quotient
+
+(quotient 7 'a)
+error: wrong type of argument to quotient
+
+(quotient 7 "s")
+error: wrong type of argument to quotient
+
+(quotient 7 (if #f #f))
+error: wrong type of argument to quotient
+
+(remainder #t 2)
+error: wrong type of argument to remainder
+
+(remainder 'a 2)
+error: wrong type of argument to remainder
+
+(remainder "s" 2)
+error: wrong type of argument to remainder
+
+(remainder #\a 2)
+error: wrong type of argument to remainder
+
+(remainder '() 2)
+error: wrong type of argument to remainder
+
+(remainder '(1) 2)
+error: wrong type of argument to remainder
+
+(remainder #(1) 2)
+error: wrong type of argument to remainder
+
+(remainder car 2)
+error: wrong type of argument to remainder
+
+(remainder (lambda (x) x) 2)
+error: wrong type of argument to remainder
+
+(remainder (if #f #f) 2)
+error: wrong type of argument to remainder
+
+(remainder 7 'a)
+error: wrong type of argument to remainder
+
+(remainder 7 "s")
+error: wrong type of argument to remainder
+
+(remainder 7 (if #f #f))
+error: wrong type of argument to remainder
+
+(modulo #t 2)
+error: wrong type of argument to modulo
+
+(modulo 'a 2)
+error: wrong type of argument to modulo
+
+(modulo "s" 2)
+error: wrong type of argument to modulo
+
+(modulo #\a 2)
+error: wrong type of argument to modulo
+
+(modulo '() 2)
+error: wrong type of argument to modulo
+
+(modulo '(1) 2)
+error: wrong type of argument to modulo
+
+(modulo #(1) 2)
+error: wrong type of argument to modulo
+
+(modulo car 2)
+error: wrong type of argument to modulo
+
+(modulo (lambda (x) x) 2)
+error: wrong type of argument to modulo
+
+(modulo (if #f #f) 2)
+error: wrong type of argument to modulo
+
+(modulo 7 'a)
+error: wrong type of argument to modulo
+
+(modulo 7 "s")
+error: wrong type of argument to modulo
+
+(modulo 7 (if #f #f))
+error: wrong type of argument to modulo
+
+(car #t)
+error: wrong type of argument to car
+
+(car 'a)
+error: wrong type of argument to car
+
+(car "s")
+error: wrong type of argument to car
+
+(car #\a)
+error: wrong type of argument to car
+
+(car #(1))
+error: wrong type of argument to car
+
+(car (lambda (x) x))
+error: wrong type of argument to car
+
+(car (if #f #f))
+error: wrong type of argument to car
+
+(cdr #t)
+error: wrong type of argument to cdr
+
+(cdr 'a)
+error: wrong type of argument to cdr
+
+(cdr "s")
+error: wrong type of argument to cdr
+
+(cdr #\a)
+error: wrong type of argument to cdr
+
+(cdr #(1))
+error: wrong type of argument to cdr
+
+(cdr car)
+error: wrong type of argument to cdr
+
+(cdr (lambda (x) x))
+error: wrong type of argument to cdr
+
+(cdr (if #f #f))
+error: wrong type of argument to cdr
+
+(length #t)
+error: wrong type of argument to length
+
+(length "s")
+error: wrong type of argument to length
+
+(length #(1))
+error: wrong type of argument to length
+
+(length (lambda (x) x))
+error: wrong type of argument to length
+
+(length (if #f #f))
+error: wrong type of argument to length
+
+(char->integer #t)
+error: wrong type of argument to char->integer
+
+(char->integer "s")
+error: wrong type of argument to char->integer
+
+(char->integer '())
+error: wrong type of argument to char->integer
+
+(char->integer '(1))
+error: wrong type of argument to char->integer
+
+(char->integer #(1))
+error: wrong type of argument to char->integer
+
+(char->integer car)
+error: wrong type of argument to char->integer
+
+(char->integer (lambda (x) x))
+error: wrong type of argument to char->integer
+
+(char->integer (if #f #f))
+error: wrong type of argument to char->integer
+
+(char->integer 1)
+error: wrong type of argument to char->integer
+
+(integer->char #t)
+error: wrong type of argument to integer->char
+
+(integer->char 'a)
+error: wrong type of argument to integer->char
+
+(integer->char "s")
+error: wrong type of argument to integer->char
+
+(integer->char '(1))
+error: wrong type of argument to integer->char
+
+(integer->char #(1))
+error: wrong type of argument to integer->char
+
+(integer->char car)
+error: wrong type of argument to integer->char
+
+(integer->char (lambda (x) x))
+error: wrong type of argument to integer->char
+
+(integer->char (if #f #f))
+error: wrong type of argument to integer->char
+
+(string-length #t)
+error: wrong type of argument to string-length
+
+(string-length 'a)
+error: wrong type of argument to string-length
+
+(string-length '(1))
+error: wrong type of argument to string-length
+
+(string-length #(1))
+error: wrong type of argument to string-length
+
+(string-length car)
+error: wrong type of argument to string-length
+
+(string-length (lambda (x) x))
+error: wrong type of argument to string-length
+
+(string-length (if #f #f))
+error: wrong type of argument to string-length
+
+(string-ref #t 0)
+error: wrong type of argument to string-ref
+
+(string-ref 'a 0)
+error: wrong type of argument to string-ref
+
+(string-ref #\a 0)
+error: wrong type of argument to string-ref
+
+(string-ref '() 0)
+error: wrong type of argument to string-ref
+
+(string-ref '(1) 0)
+error: wrong type of argument to string-ref
+
+(string-ref #(1) 0)
+error: wrong type of argument to string-ref
+
+(string-ref car 0)
+error: wrong type of argument to string-ref
+
+(string-ref (lambda (x) x) 0)
+error: wrong type of argument to string-ref
+
+(string-ref (if #f #f) 0)
+error: wrong type of argument to string-ref
+
+(string-ref 1 0)
+error: wrong type of argument to string-ref
+
+(string-ref "abc" 'a)
+error: wrong type of argument to string-ref
+
+(string-ref "abc" "s")
+error: wrong type of argument to string-ref
+
+(string-ref "abc" (if #f #f))
+error: wrong type of argument to string-ref
+
+(vector-length #t)
+error: wrong type of argument to vector-length
+
+(vector-length 'a)
+error: wrong type of argument to vector-length
+
+(vector-length "s")
+error: wrong type of argument to vector-length
+
+(vector-length #\a)
+error: wrong type of argument to vector-length
+
+(vector-length '(1))
+error: wrong type of argument to vector-length
+
+(vector-length car)
+error: wrong type of argument to vector-length
+
+(vector-length (lambda (x) x))
+error: wrong type of argument to vector-length
+
+(vector-length (if #f #f))
+error: wrong type of argument to vector-length
+
+(vector-length 1)
+error: wrong type of argument to vector-length
+
+(vector-ref #t 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref 'a 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref "s" 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref #\a 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref '() 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref '(1) 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref car 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref (lambda (x) x) 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref (if #f #f) 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref 1 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref #(1 2) 'a)
+error: wrong type of argument to vector-ref
+
+(vector-ref #(1 2) "s")
+error: wrong type of argument to vector-ref
+
+(vector-ref #(1 2) (if #f #f))
+error: wrong type of argument to vector-ref
+
+# 範囲、0 除算、整数の溢れ、検査の順序、呼び出しの経路。手で書いた部分である。
+# 添字の 2^32 を超える値は、wasm32 の usize(32 ビット)への変換が切り捨てなら
+# 有効な添字に見える値である。範囲のエラーでなければならない。
+# tools/test-wasm が wasm32 でも同じことを固定する。
+
+(string-ref "abc" 4294967297)
+error: argument out of range in string-ref
+
+(string-ref "abc" 4294967298)
+error: argument out of range in string-ref
+
+(string-ref "あいう" 4294967298)
+error: argument out of range in string-ref
+
+(string-ref "abc" 8589934592)
+error: argument out of range in string-ref
+
+(vector-ref (vector 1 2 3) 4294967297)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) 4294967298)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) 8589934592)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1) 4294967296)
+error: argument out of range in vector-ref
+
+(integer->char 4294967361)
+error: argument out of range in integer->char
+
+(integer->char 8589934592)
+error: argument out of range in integer->char
+
+(quotient 9223372036854775807 0)
+error: division by zero in quotient
+
+(quotient -7 0)
+error: division by zero in quotient
+
+(remainder -9223372036854775808 0)
+error: division by zero in remainder
+
+(remainder -7 0)
+error: division by zero in remainder
+
+(modulo 9223372036854775807 0)
+error: division by zero in modulo
+
+(modulo -9223372036854775808 0)
+error: division by zero in modulo
+
+(modulo -7 0)
+error: division by zero in modulo
+
+(+ -9223372036854775808 -1)
+error: integer overflow in +
+
+(+ 4611686018427387904 4611686018427387904)
+error: integer overflow in +
+
+(+ 9223372036854775807 9223372036854775807 9223372036854775807)
+error: integer overflow in +
+
+(+ 1 2 9223372036854775807)
+error: integer overflow in +
+
+(- -9223372036854775808 1)
+error: integer overflow in -
+
+(- 0 -9223372036854775808)
+error: integer overflow in -
+
+(- 9223372036854775807 -9223372036854775808)
+error: integer overflow in -
+
+(* -9223372036854775808 -1)
+error: integer overflow in *
+
+(* -9223372036854775808 2)
+error: integer overflow in *
+
+(* 3037000500 3037000500)
+error: integer overflow in *
+
+(* 2 3 4611686018427387904)
+error: integer overflow in *
+
+# 合計が収まるなら、途中の和が収まらなくてもエラーにならない。
+(+ 9223372036854775807 1 -1)
+9223372036854775807
+
+(- -9223372036854775808 1 -1)
+-9223372036854775808
+
+# 溢れる演算の直後に、収まる演算が使える。値は壊れていない。
+(define x 9223372036854775807) (+ x 0)
+9223372036854775807
+
+# 型のエラーは、溢れや 0 除算より先に報告される。すべての引数の型を調べてから計算する。
+(+ 9223372036854775807 1 'a)
+error: wrong type of argument to +
+
+(+ 'a 9223372036854775807 1)
+error: wrong type of argument to +
+
+(* 9223372036854775807 2 'a)
+error: wrong type of argument to *
+
+(* 'a 9223372036854775807 2)
+error: wrong type of argument to *
+
+(- 9223372036854775807 -1 'a)
+error: wrong type of argument to -
+
+(quotient -9223372036854775808 'a)
+error: wrong type of argument to quotient
+
+(quotient 'a -9223372036854775808)
+error: wrong type of argument to quotient
+
+(remainder 1 'a)
+error: wrong type of argument to remainder
+
+(modulo "1" 0)
+error: wrong type of argument to modulo
+
+# 範囲のエラーは、型のエラーより後に報告される。
+(vector-ref #(1 2) "0")
+error: wrong type of argument to vector-ref
+
+(string-ref "abc" #\a)
+error: wrong type of argument to string-ref
+
+(vector-ref 'v 4294967296)
+error: wrong type of argument to vector-ref
+
+(string-ref 'abc 4294967296)
+error: wrong type of argument to string-ref
+
+# 個数のエラーは、型のエラーと範囲のエラーより先に報告される。
+(vector-ref 'v 4294967296 0)
+error: wrong number of arguments to vector-ref
+
+(string-ref "abc" 99 99)
+error: wrong number of arguments to string-ref
+
+(integer->char -1 -1)
+error: wrong number of arguments to integer->char
+
+(quotient 1 0 0)
+error: wrong number of arguments to quotient
+
+(quotient 0)
+error: wrong number of arguments to quotient
+
+# 引数の式のエラーは、呼び出しより先に起きる。呼び出しのエラーにならない。
+(quotient 1 (car 1))
+error: wrong type of argument to car
+
+(car (quotient 1 0))
+error: division by zero in quotient
+
+(+ 1 (integer->char -1))
+error: argument out of range in integer->char
+
+(vector-ref (vector 1 2) (length 5))
+error: wrong type of argument to length
+
+(car (cdr (cdr (list 1 2))))
+error: wrong type of argument to car
+
+(cons 1 (vector-ref (vector) 0))
+error: argument out of range in vector-ref
+
+# エラーの前に出した結果は残り、エラーのあとの式は評価されない。
+1 (car 1) 2
+1
+error: wrong type of argument to car
+
+(list 1 2) (quotient 1 0) (list 3)
+(1 2)
+error: division by zero in quotient
+
+"a" (string-ref "a" 1) "b"
+"a"
+error: argument out of range in string-ref
+
+# 手続きの値として呼んでも、エラーはプリミティブの名前で報告される。
+(define f quotient) (f 1 0)
+error: division by zero in quotient
+
+(define f quotient) (f 1)
+error: wrong number of arguments to quotient
+
+(define f car) (f 1)
+error: wrong type of argument to car
+
+((lambda (g) (g)) cdr)
+error: wrong number of arguments to cdr
+
+((lambda (g) (g 1 2)) integer->char)
+error: wrong number of arguments to integer->char
+
+(define (apply1 f x) (f x)) (apply1 string-length 'abc)
+error: wrong type of argument to string-length
+
+(define (apply1 f x) (f x)) (apply1 vector-ref 1)
+error: wrong number of arguments to vector-ref
+
+(define (apply2 f x y) (f x y)) (apply2 vector-ref (vector 1 2 3) 3)
+error: argument out of range in vector-ref
+
+# 手続きの中で起きたエラーは、深い再帰と末尾呼び出しの途中でも報告される。
+(define (sum-all xs) (if (null? xs) 0 (+ (car xs) (sum-all (cdr xs))))) (sum-all (list 1 2 'x 4))
+error: wrong type of argument to +
+
+(define (count xs) (if (null? xs) 0 (+ 1 (count (cdr xs))))) (count 5)
+error: wrong type of argument to cdr
+
+(define (down n) (if (= n 0) (car '()) (+ 1 (down (- n 1))))) (down 10000)
+error: wrong type of argument to car
+
+(define (tail n) (if (= n 0) (vector-ref (vector) 0) (tail (- n 1)))) (tail 100000)
+error: argument out of range in vector-ref
+
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (define (fact-all n) (if (= n 0) '() (cons (fact n) (fact-all (- n 1))))) (fact-all 22)
+error: integer overflow in *
