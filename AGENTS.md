@@ -20,12 +20,14 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | セットアップ | `scoop install zig`(`.zigversion` の値と一致することを確認する) | - | - |
 | テスト(単体) | `zig build test` | 0 | 全コミット |
 | テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 | 全コミット |
+| テスト(WASM の往復) | `zig build test-wasm`(Node.js 上で `sucheme.wasm` のエクスポートを呼ぶ) | 1 | 全コミット |
 | テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` | 1 | PR を ready にするとき、`main` への push、手動 |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
 | テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
 | ビルド | `zig build` | 0 | 全コミット |
+| ビルド(WASM) | `zig build wasm` | 1 | 全コミット |
 | 実行 | `zig build run -- <引数>` | 0 | - |
 | ドキュメントの検査 | `zig build check-docs` | 0 | 全コミット |
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
