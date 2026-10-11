@@ -78,6 +78,11 @@ pub const Interpreter = struct {
     }
 
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
+        // Why: strings, characters and symbol names are valid UTF-8 (ADR-0008),
+        // and this is the one place the bytes of a program enter. The check is
+        // the standard library's, not a list of the ways to be invalid
+        // (docs/design/platform-and-web.md).
+        if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
         var r: reader.Reader = .init(source);
         // What is read outlives the line: `quote` can hand it to a definition.
         const sink: reader.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
@@ -105,6 +110,10 @@ fn describe(e: Error) []const u8 {
         error.Incomplete => "unexpected end of input",
         error.UnexpectedCloseParen => "unexpected )",
         error.MissingDatum => "quote needs a datum",
+        error.UnexpectedDot => "unexpected .",
+        error.InvalidEscape => "invalid escape in string",
+        error.InvalidCharacter => "invalid character",
+        error.InvalidUtf8 => "invalid UTF-8 input",
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
@@ -274,4 +283,24 @@ test "the data of a quoted list survives the collections between the lines that 
     try interp.evalPrint(arena.allocator(), "(define xs '(1 2 3)) (define (get) '(4 5 6))", &w);
     try interp.evalPrint(arena.allocator(), "xs (get)", &w);
     try std.testing.expectEqualStrings("(1 2 3)\n(4 5 6)\n", w.buffered());
+}
+
+test "input that is not valid UTF-8 is refused whole, and the next line is read" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // Each of these is invalid for a different reason: a lone continuation
+    // byte, an overlong encoding, a surrogate (what WTF-8 holds for an unpaired
+    // UTF-16 surrogate), a byte that no sequence starts with, a cut-off one.
+    for ([_][]const u8{ "1 \x80", "\xC0\x80", "\xED\xA0\x80", "\xFF", "\xE3\x81" }) |src| {
+        try std.testing.expectError(error.InvalidUtf8, interp.evalPrint(arena.allocator(), src, &w));
+        try std.testing.expectEqualStrings("", w.buffered());
+        try std.testing.expectEqualStrings("invalid UTF-8 input", interp.diagnostic());
+    }
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
 }

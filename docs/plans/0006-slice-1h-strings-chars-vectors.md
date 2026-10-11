@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0002](../adr/0002-value-representation.md), [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0008](../adr/0008-string-representation.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1h)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-10
-- 状態: 合意済み(2026-10-10、「合意を求める点」の3つは、いずれも勧める案で合意)
+- 状態: 実装済み、PR のレビュー待ち(2026-10-10)。「合意を求める点」の3つは、いずれも勧める案で合意した
 
 ## 解こうとしている問題
 
@@ -73,7 +73,7 @@
 - `display` の規則: 文字列は引用符もエスケープも付けずに内容をそのまま、文字はその文字そのものを書く。ペア・ベクタの中の要素にも同じ規則を適用する(`(display '("a" #\b))` は `(a b)`)。
 - 読み取りの新しいエラーは、`UnexpectedDot`(位置の悪い `.`)・`InvalidEscape`(文字列の中の未知のエスケープ)・`InvalidCharacter`(`#\` の名前の誤りや範囲外)・`InvalidUtf8` の4つ。文字列が行末で閉じていないときは `Incomplete` を返し、REPL が次の行を求める([ADR-0014](../adr/0014-repl-line-editor-boundary.md))。
 - 文字列とベクタを作る関数は、バイト列(要素列)を渡されて複製する。ペイロードを先に確保し、セルの確保が失敗したら返す(`createFrame` と同じ巻き戻しの単位)。`create`・`createFrame` と並ぶ `createString`・`createVector` を `heap.zig` に足し、ペイロードの計上と解放は `payloadBytes` と `free` の分岐を一般化して扱う。
-- 実装は、ドット対、文字、文字列、ベクタ、GC とストレスの確認の順に、コミットを分けて進める。
+- 実装の順序は、下の「進め方」にある。土台を作ってから、文字・文字列・ベクタを並行に進める。
 
 ## 仕様の根拠について
 
@@ -118,14 +118,54 @@ flowchart LR
 
 ## 進め方
 
-TDD で、コミットを分ける。各コミットの前に、検証コマンド表の該当する行を通す。
+文字・文字列・ベクタは、値の種類が違うだけで互いに依存しない。そこで、共通の土台を先に1つ作り、そのあとの3つを並行に進める。並行にするのは、独立した作業を同時に走らせて待ち時間を減らすためである。ただし同じファイルを同時に書くと統合で衝突するので、作業ごとに書いてよいファイルを分ける。
 
-1. ドット対: Red(`tests/scheme/0013-dotted-pairs.txt` と読み取りの単体テスト)、Green(リーダの `list` の枠に尾を持たせる)。
-2. UTF-8 の検査と文字: 値・リーダ・プリンタ(`write`・`display` の2つの形の骨組みもここ)。
-3. 文字列: `createString`、ペイロードの一般化、リーダ・展開器・プリンタ。
-4. ベクタ: `createVector`、リーダの `#(`、プリンタ。
-5. GC: ストレスモードのケース(文字列とベクタを持つ定義が GC をまたいで読める)、計上と上限の単体テスト、ミューテーションテスト。
-6. 文書: 進捗の表と「次にやること」、zig-api-notes・runtime・open-questions、PR。
+```mermaid
+flowchart TD
+    dot[1. ドット対] --> base[2. 土台]
+    base --> chars[3a. 文字]
+    base --> strings[3b. 文字列]
+    base --> vectors[3c. ベクタ]
+    base --> notes[3d. 文書と Red テスト]
+    chars --> merge[4. 統合]
+    strings --> merge
+    vectors --> merge
+    notes --> merge
+    merge --> gc[5. GC・ストレス・ミューテーションテスト]
+    gc --> pr[6. 文書・PR・レビュー]
+```
+
+土台(2)は直列に私が作る。ヒープのペイロードの計上と巻き戻しは、3つの作業の全部が頼る部分で、誤りの影響が大きいので並行にしない。土台に入れたものは次のとおり。
+
+- `value.zig`: `character`・`string`・`vector` の変種、`String`・`Vector`、`isScalarValue`、`heap_types` への登録。
+- `heap.zig`: `createString`・`createVector`、ペイロードの計上と解放の一般化。単体テストつき。
+- `printer.zig`: `Mode`(`write`・`display`)と、種類ごとの出力の呼び出し口。
+- `reader.zig`: `"` と `#\` から `string_syntax.zig`・`char_syntax.zig` を呼ぶ口、読み取りエラーの名前、入力全体の UTF-8 検査。
+- `syntax/expand.zig`: 3種を自己評価する定数にする。
+- `char_syntax.zig`・`string_syntax.zig`: 読み取りと出力を同じファイルに置く骨組み。中身は未実装。エスケープと名前の表が1つになり、リーダとプリンタが食い違わない。
+
+3つの並行作業(3a から 3c)は、それぞれ別のワークツリーとブランチで、次のファイルだけを書く。他のファイルを変える必要が出たら、変えずに報告する。
+
+| 作業 | 書いてよいファイル | 内容 |
+| --- | --- | --- |
+| 3a 文字 | `src/char_syntax.zig`、`tests/scheme/0014-chars.txt` | `#\` の読み取り(1文字、名前、`#\x<16進>`、範囲外は `invalid character`)、`write` の `#\a`・名前・`#\x<16進>`、`display` の文字そのもの。単体テストは同じファイルの中 |
+| 3b 文字列 | `src/string_syntax.zig`、`tests/scheme/0015-strings.txt` | `"..."` の読み取りとエスケープ、`write` のエスケープ、`display` の素のバイト列。単体テストは同じファイルの中 |
+| 3c ベクタ | `src/reader.zig`、`src/printer.zig`、`tests/scheme/0016-vectors.txt` | `#(` の枠と閉じ、要素のドットは `unexpected .`、`write`・`display` の `#(...)`。単体テストはそれぞれのファイルの中 |
+| 3d 文書と Red テスト | `tests/scheme/0014` から `0016`、`docs/design/zig-api-notes.md` | 完了済み。土台より前に済ませた |
+
+決めておく規則(3a と 3b が食い違わないように、この計画で固定する)。
+
+- 16進の出力は小文字で、桁を埋めない(`#\x1`、`#\x7f`、`"\x1;"`)。読み取りは大文字も受ける。
+- 文字列の `\x<16進>;` が範囲外のときは、文字列の中の誤りなので `invalid escape in string` にする。`#\x…` が範囲外のときは `invalid character`。
+- `#\` の直後で入力が終わるときは `Incomplete`(REPL が次の行を求める)。`#\` の直後が改行なら、改行の文字である。
+- 閉じていない文字列は `Incomplete`。文字列は改行を含んでよい。
+- 非 ASCII の文字は `write` でもそのまま出す(Unicode の表が入る段階4まで)。
+
+統合(4)は私が行う。3つのブランチを土台の上に順に取り込み、衝突は私が解く。衝突の見込みは、`reader.zig` と `printer.zig` を書くのが3c だけなので小さい。統合のあとで、全検証コマンドを通す。
+
+GC とストレス・ミューテーションテスト(5)は、統合した状態に対して行う。文字列とベクタが GC をまたいで読める確認は、各 Red テストに1ケースずつ入っているので、ストレスモードの実行で自動的に走る。ミューテーションテストはファイルごとに独立しているので、`char_syntax.zig`・`string_syntax.zig`・`heap.zig` の3グループを別々のワークツリーで並行に走らせる。
+
+文書(6)は、進捗の表と「次にやること」、`runtime.md`・`open-questions.md` の整理、PR である。敵対的レビューは、別セッションに任せる。
 
 ## 範囲を狭める線
 
@@ -135,7 +175,19 @@ ADR-0027 の費用側の停止の規則に従い、先に線を引く。レビ�
 2. `write` と `display` のうち、`display` の入れ子の規則。外すと、トップレベルの値にだけ `display` を適用する。
 3. ベクタ。1h の行にあるが、文字列と独立しているので、次のスライス(1h の2)に切り出せる。
 
+## 実装での差分
+
+計画からの差分と、実装で決めたこと。
+
+- 文字列の `\x<16進>;` が範囲外のとき、文字列の中の誤りなので `invalid escape in string` にした。`#\x…` が範囲外のときは `invalid character`。16進の出力は小文字で桁を埋めない。
+- 文字列の行継続(`\` に改行)は、1h の範囲外として `invalid escape in string` にした。
+- `char_syntax.zig` と `string_syntax.zig` に、読み取りと出力の両方を置いた。名前とエスケープの表が1つになり、リーダとプリンタが食い違わない。
+- `#\` の直後で入力が終わるとき、閉じていない文字列のとき、閉じていないベクタのときは、いずれも `unexpected end of input` で、REPL が次の行を求める。
+- ミューテーションテストは、土台(`heap.zig`・`value.zig`・リーダのドット対)、`char_syntax.zig`、`string_syntax.zig`、ベクタ(`reader.zig`・`printer.zig`)に行った。生き残ったものは、振る舞いが変わらない同値なものを除いて、テストを足して捕まえた。足したテストは、各ファイルの末尾にある。
+- 乗算が桁あふれして小さな値に戻る要素数の拒否(`reserveWithPayload`)、16進エスケープの最大値の張り付き、`isDelimiter` の空白の種類が、ミューテーションテストで見つかった穴だった。
+- Windows の引数の WTF-8 は、`utf8ValidateSlice` が拒否することを単体テストで確かめた(`sucheme.zig` の入力の検査)。Windows 実機での実行は未確認で、`zig-api-notes.md` に書いた。
+
 ## 次にやること
 
-1. この計画書の PR がマージされるのを待つ。「合意を求める点」の3つは合意済みで、利用者の確認を取らずに決めた点(同じ節の後半)に意見があれば、マージまでに受ける。
-2. マージ後、`feature/phase1-slice-1h-strings-chars-vectors` を最新の `origin/main` から作り、進め方の1から始める。
+1. この PR のレビューとマージ。
+2. マージ後、スライス 1i(ブラウザで `(fact 10)` が動く)の計画書を書く。計画は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正。
