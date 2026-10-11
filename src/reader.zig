@@ -752,3 +752,122 @@ test "next reads a long vector" {
     const v = try f.readOne(src);
     try std.testing.expectEqual(n, v.asVector().?.items.len);
 }
+
+/// The longest input one fuzz run reads, in bytes.
+/// 長い入力はファザーの探索を遅くするだけで、深いネストなどの大きさに比例する誤りは、
+/// 規模を試すテストが受け持つ。
+const fuzz_max_input = 1024;
+
+/// A corpus entry for `fuzzReader` that holds `text` as its input.
+/// `Smith.slice` が読む形は、4 バイトのリトルエンディアンの長さに、その長さのバイト列が
+/// 続くものである。
+fn fuzzSeed(comptime text: []const u8) []const u8 {
+    const prefix = std.mem.toBytes(std.mem.nativeToLittle(u32, text.len));
+    return &(prefix ++ text[0..text.len].*);
+}
+
+/// Reads `src` the way the interpreter does: datum after datum, up to the end or
+/// the first error, with `gpa` behind everything the reader allocates.
+///
+/// 読めたデータは `printer` に通す。`next` が返してよいエラーは `Error` の中だけで、
+/// 型が保証する。下の `switch` は `else` を持たないので、`Error` に足したエラーは、
+/// ここで扱いを決めるまでコンパイルが通らない。確かめるのは、データを返した `next` が
+/// 入力を進めること(進まなければ、読み取りの繰り返しが終わらない)と、終端を返した
+/// ときに入力を読み切っていることである。エラーのときの `pos` は、文字や文字列の
+/// リテラルが元の位置に戻すので、何も言わない。
+fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var heap: Heap = .init(gpa, .{});
+    defer heap.deinit();
+    var symbols: symbol.Table = .{};
+    const sink: Sink = .{ .alloc = arena.allocator(), .heap = &heap, .symbols = &symbols };
+    var r: Reader = .init(src);
+    while (true) {
+        const before = r.pos;
+        const datum = r.next(arena.allocator(), sink) catch |err| switch (err) {
+            // 確保の失敗はこちらが起こしたもので、読み取りはそこで終わる。
+            error.OutOfMemory,
+            error.HeapLimit,
+            error.Incomplete,
+            error.UnexpectedCloseParen,
+            error.MissingDatum,
+            error.UnexpectedDot,
+            error.InvalidToken,
+            error.InvalidEscape,
+            error.InvalidCharacter,
+            error.InvalidUtf8,
+            error.IntegerOutOfRange,
+            => return,
+        } orelse {
+            try std.testing.expectEqual(src.len, r.pos);
+            return;
+        };
+        try std.testing.expect(r.pos > before);
+        var sunk: std.Io.Writer.Discarding = .init(&.{});
+        printer.write(&sunk.writer, gpa, &symbols, datum) catch |err| switch (err) {
+            error.OutOfMemory => return,
+            error.WriteFailed => return error.TestUnexpectedResult,
+        };
+        try std.testing.expect(sunk.fullCount() > 0);
+    }
+}
+
+/// One fuzz run: the reader on one input, then on the same input with an
+/// allocation that fails.
+fn fuzzReader(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buf: [fuzz_max_input]u8 = undefined;
+    const src = buf[0..smith.slice(&buf)];
+    // Why: 入力が妥当な UTF-8 であることは、リーダの呼び出し側が検査する前提である
+    // (src/sucheme.zig の `run` と src/wasm.zig の `sucheme_eval_begin`)。ここでは
+    // その検査を通さず、任意のバイト列を渡す。検査が外れても、リーダがパニックや
+    // 不正なメモリアクセスを起こさないことを見る(多層防御)。不正な UTF-8 を読んだ
+    // 結果が正しいかは、確かめない。
+    try fuzzReadAll(std.testing.allocator, src);
+    // 確保が n 回目に失敗する場合。リークは `std.testing.allocator` が見る。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{
+        .fail_index = smith.valueRangeAtMost(u16, 0, 512),
+    });
+    try fuzzReadAll(failing.allocator(), src);
+}
+
+test "fuzz: the reader returns a datum, the end or a specified error for any input" {
+    // `zig build test` は下の初期入力だけを通る。`zig build test --fuzz=<N>` は、ここから探索を広げる。
+    try std.testing.fuzz({}, fuzzReader, .{
+        .corpus = &.{
+            fuzzSeed("(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))"),
+            fuzzSeed("'(1 . (2 3)) #(1 #(2)) ''() #t #false"),
+            fuzzSeed("\"a\\tb\\x41;\" #\\a #\\space #\\x41 #\\("),
+            fuzzSeed("1 ; comment\n  foo ; (\n"),
+            fuzzSeed("(a . b c)"),
+            fuzzSeed("(1 . "),
+            fuzzSeed(")"),
+            fuzzSeed("'"),
+            fuzzSeed("\"unterminated"),
+            fuzzSeed("99999999999999999999 -1 +1 ... +.5 1/2"),
+            fuzzSeed("#( . ) ( . 1) '. # #\\"),
+            // 入力の終わりで止まるトークン。終わりの 1 つ先を読む誤りは、ここで見つかる。
+            fuzzSeed("."),
+            fuzzSeed("(a ."),
+            fuzzSeed("#"),
+            fuzzSeed("'#"),
+            fuzzSeed("\"λ\" #\\λ あ #\\x3bb"),
+            fuzzSeed("\"\xff\" #\\\xff #\\\xc3 \xe3\x81"),
+        },
+    });
+}
+
+test "fuzz: the reader leaks nothing wherever an allocation fails" {
+    // ファザーの確保の失敗は入力の乱数で決まるので、`zig build test` では当たらない
+    // かもしれない。ここでは固定の入力で、n 回目の確保の失敗を、失敗が起きなくなる
+    // まで 1 つずつ試す。
+    const src = "(a #(1 \"s\") 'b . c) foo \"str\" (1 2 3) #\\x";
+    var n: usize = 0;
+    while (true) : (n += 1) {
+        var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = n });
+        try fuzzReadAll(failing.allocator(), src);
+        if (!failing.has_induced_failure) break;
+    }
+    // 入力が確保をしなければ、何も試していない。
+    try std.testing.expect(n > 0);
+}
