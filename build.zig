@@ -261,6 +261,18 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "build web/sucheme.wasm under zig-out");
     wasm_step.dependOn(&install_wasm.step);
 
+    // The round-trip test of the exports, run under Node.js (tools/test-wasm/).
+    // It reads the installed file, so the install step comes first; the run is
+    // not cached, because a system command with no output argument has side
+    // effects as far as the build graph can tell. checkSystemStepRuns holds the
+    // step to that shape at the end of `build`.
+    const run_test_wasm = b.addSystemCommand(&.{ "node", test_wasm_script });
+    run_test_wasm.setCwd(b.path("."));
+    run_test_wasm.addFileArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "web/sucheme.wasm" } });
+    run_test_wasm.step.dependOn(&install_wasm.step);
+    const test_wasm_step = b.step("test-wasm", "call the wasm exports from Node.js");
+    test_wasm_step.dependOn(&run_test_wasm.step);
+
     const test_step = b.step("test", "run the unit tests");
 
     var targets: std.ArrayList(TestTarget) = .empty;
@@ -336,6 +348,62 @@ pub fn build(b: *std.Build) void {
     // Exactly the artifact too: an argument is how a filter or a narrower
     // directory would get in.
     checkStepRuns(test_scheme_step, test_scheme, 1);
+    // The wasm file is an argument and the script is fixed: a third argument is
+    // how a narrower selection of tests would get in.
+    checkSystemStepRuns(test_wasm_step, test_wasm_script, &install_wasm.step, 3);
+}
+
+/// The script `zig build test-wasm` hands to Node.js.
+const test_wasm_script = "tools/test-wasm/main.mjs";
+
+/// Fails the configure step unless `step` runs `node <script>` after
+/// `installed` and lets the result of that run decide whether the step succeeds.
+///
+/// `checkStepRuns` finds a run by the artifact it was built from, and a system
+/// command has none. The same edits can still empty the step: deleting
+/// `test_wasm_step.dependOn(&run_test_wasm.step)` leaves `zig build test-wasm`
+/// exiting 0 having run nothing, and `stdio = .{ .check = .empty }` keeps the
+/// run while its exit code stops being read. The run must also come after the
+/// install step, or it would test a stale file or none.
+///
+/// `want_argv` counts every argument, `node` and the script included.
+fn checkSystemStepRuns(
+    step: *std.Build.Step,
+    script: []const u8,
+    installed: *std.Build.Step,
+    want_argv: usize,
+) void {
+    var found = false;
+    for (step.dependencies.items) |dep| {
+        const run = dep.cast(std.Build.Step.Run) orelse continue;
+        if (run.producer != null) continue;
+        if (run.argv.items.len < 2) continue;
+        const arg = run.argv.items[1];
+        if (arg != .bytes or !std.mem.eql(u8, arg.bytes, script)) continue;
+        found = true;
+        checkRunIsHeard(step, run);
+        if (run.argv.items.len != want_argv) {
+            std.debug.print(
+                "[sucheme] the {s} step runs {s} with {d} argument(s), not {d}\n",
+                .{ step.name, script, run.argv.items.len, want_argv },
+            );
+            std.process.exit(1);
+        }
+        var after_install = false;
+        for (run.step.dependencies.items) |d| {
+            if (d == installed) after_install = true;
+        }
+        if (!after_install) {
+            std.debug.print(
+                "[sucheme] the run of {s} in the {s} step does not wait for the install of the wasm file\n",
+                .{ script, step.name },
+            );
+            std.process.exit(1);
+        }
+    }
+    if (found) return;
+    std.debug.print("[sucheme] the {s} step does not run {s}\n", .{ step.name, script });
+    std.process.exit(1);
 }
 
 /// Fails the configure step unless `step` runs the artifact built from `exe` and
