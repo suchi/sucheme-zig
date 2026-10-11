@@ -1,14 +1,14 @@
 //! Which tier a test runs in (docs/plans/0007-test-tiers.md).
 //!
-//! `zig build test` is the tier that runs on every commit, and has to stay
-//! quick. A test that checks a scale (a recursion a hundred thousand deep, a
-//! loop of a million steps) finds the faults that grow with the size of the
-//! input, and finds almost none of the logic faults a small input does not
-//! find; it waits for `zig build test -Dslow=true`. Each such test keeps a
-//! smaller twin in the quick tier that runs the same logic.
+//! `zig build test` は全コミットで走る段であり、速いままでなければならない。
+//! 規模を確かめるテスト(10万段の再帰、100万回のループなど)は、入力の大きさに
+//! 伴って増える欠陥を見つける。小さな入力で見つからない論理上の欠陥は、ほとんど
+//! 見つけない。そのため `zig build test -Dslow=true` まで待たせる。そうしたテスト
+//! には、同じ論理を走らせる小さな双子を、速い段に残す。
 //!
-//! A test that is skipped says so: the summary of the run counts it as
-//! skipped, so a quick run never hides that the rest exists.
+//! スキップしたテストは、`zig build test --summary all` が出す要約にスキップとして
+//! 数えられる。素の `zig build test` は成功すると何も出さないので、この数が見えるのは、
+//! そのフラグを付けたときだけである。
 
 const build_options = @import("build_options");
 
