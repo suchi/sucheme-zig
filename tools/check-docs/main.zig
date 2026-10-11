@@ -1591,7 +1591,7 @@ fn identifierCount(body: []const u8) usize {
 const RecordedCount = union(enum) {
     one: usize,
     none,
-    /// ラベルが複数の行に現れ、値が食い違っている。
+    /// The label appears on more than one row, with values that disagree.
     ambiguous,
 };
 
@@ -2147,10 +2147,11 @@ fn closingBacktickRun(line: []const u8, from: usize, len: usize) ?usize {
 /// 形式で書いたリンクは、リンク先を誰も読まなかった。描画されたページは
 /// 存在しないファイルを指すのに、何も報告されなかった。
 const Definition = union(enum) {
-    /// ラベルと同じ行にあるリンク先。
+    /// The link target on the same line as the label.
     target: []const u8,
-    /// この検査が読めない定義。CommonMark はリンク先を次の行に置くことを
-    /// 許すが、この検査は1行ずつ読むためである。読み飛ばさず、報告する。
+    /// A definition this check cannot read.
+    /// CommonMark はリンク先を次の行に置くことを許すが、この検査は1行ずつ読む
+    /// ためである。読み飛ばさず、報告する。
     /// 読み飛ばすと、描画されるリンクについて黙ることになる。これは、
     /// このプログラムにあった穴のすべてに共通する形である。
     unreadable,
@@ -2285,9 +2286,8 @@ fn hasUriScheme(text: []const u8) bool {
 
 const Walk = enum { flat, recursive };
 
-/// Collects paths under `root` whose name ends with `suffix`. パスはリポジトリ
-/// からの相対で、どのプラットフォームでも `/` を使う。
 /// Collects the files under `root` whose name ends in `suffix`.
+/// パスはリポジトリからの相対で、どのプラットフォームでも `/` を使う。
 ///
 /// `.gitignore` が名指しするエントリは、ファイルもディレクトリも除く。追跡
 /// されていないので、検査の対象ではないからである。無視されたディレクトリ
@@ -2329,7 +2329,7 @@ fn collectFiles(
     }
 }
 // ---------------------------------------------------------------------------
-// Tests
+// テスト
 //
 // ここで扱うのは、純粋な判定関数である。ここを間違えると、検査が黙って何も
 // 捉えなくなる。以下のケースはどれも、このファイルの以前の版に対して敵対的

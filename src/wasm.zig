@@ -12,7 +12,8 @@
 const std = @import("std");
 const sucheme = @import("sucheme");
 
-/// ホストが提供する標準エラーへの書き込み。1i ではパニックのときだけ使う。
+/// A write to the standard error the host provides.
+/// 1i ではパニックのときだけ使う。
 extern "env" fn host_write_stderr(ptr: [*]const u8, len: u32) void;
 
 pub const panic = std.debug.FullPanic(wasmPanic);
@@ -22,7 +23,8 @@ fn wasmPanic(msg: []const u8, _: ?usize) noreturn {
     @trap();
 }
 
-/// 状態コード(設計文書の表)。1i の関数が返すものだけを置く。
+/// Status codes (the table of the design document).
+/// 1i の関数が返すものだけを置く。
 const Status = struct {
     const ok: i32 = 0;
     const scheme_error: i32 = -1;
@@ -33,7 +35,8 @@ const Status = struct {
     const bad_region: i32 = -8;
 };
 
-/// 出力バッファの大きさ。初期化のときに1回だけ確保し、伸ばさない。
+/// The size of the output buffer.
+/// 初期化のときに1回だけ確保し、伸ばさない。
 const output_capacity = 256 * 1024;
 
 const allocator = std.heap.wasm_allocator;
@@ -41,15 +44,18 @@ const allocator = std.heap.wasm_allocator;
 var interp: sucheme.Interpreter = undefined;
 var initialized = false;
 
-/// 出力バッファの本体と、そこへ書くライター。`out.end` が出力の長さである。
+/// The output buffer and the writer into it.
+/// `out.end` が出力の長さである。
 var output: []u8 = &.{};
 var out: std.Io.Writer = undefined;
 
-/// 初期化前に出力を書く、小さな静的バッファ。`sucheme_init` が失敗したときの説明もここに入る。
+/// A small static buffer for output written before initialization.
+/// `sucheme_init` が失敗したときの説明もここに入る。
 var early_buffer: [512]u8 = undefined;
 var early: std.Io.Writer = std.Io.Writer.fixed(&early_buffer);
 
-/// `sucheme_alloc` で確保した領域の記録。(ptr, len) の検査と、`sucheme_free` の突き合わせに使う。
+/// The record of the regions `sucheme_alloc` handed out.
+/// (ptr, len) の検査と、`sucheme_free` の突き合わせに使う。
 const Region = struct { ptr: u32, len: u32, size: u32 };
 var regions: std.ArrayList(Region) = .empty;
 
@@ -57,8 +63,9 @@ fn currentOutput() *std.Io.Writer {
     return if (initialized) &out else &early;
 }
 
-/// 出力に `bytes` を、入る分だけ書く。溢れるときは、手前の出力の末尾を削って `bytes` を残す。
-/// エラーの一行(短い)を確実に残すために使う。
+/// Writes `bytes` to the output, as much as fits.
+/// 溢れるときは、手前の出力の末尾を削って `bytes` を残す。エラーの一行(短い)を
+/// 確実に残すために使う。
 fn appendTail(w: *std.Io.Writer, buffer: []u8, bytes: []const u8) void {
     const len = @min(bytes.len, buffer.len);
     if (w.end + len > buffer.len) w.end = buffer.len - len;
@@ -74,7 +81,8 @@ fn addressOf(bytes: []const u8) u32 {
     return @intCast(@intFromPtr(bytes.ptr));
 }
 
-/// インタプリタを初期化する。`heap_limit_bytes` は GC ヒープの計上の上限である(0 なら既定)。
+/// Initializes the interpreter.
+/// `heap_limit_bytes` は GC ヒープの計上の上限である(0 なら既定)。
 ///
 /// 1 GiB を超える値は 1 GiB に丸める(`heap.hostOptions`、`heap.max_host_limit`)。
 export fn sucheme_init(heap_limit_bytes: u32) i32 {
@@ -96,7 +104,7 @@ export fn sucheme_init(heap_limit_bytes: u32) i32 {
     return Status.ok;
 }
 
-/// 状態を捨てて、初期化したあとの状態に戻す。
+/// Resets the interpreter to its state just after initialization.
 ///
 /// `sucheme_alloc` で確保した領域はホストのものなので、触らない。リセットのあとも
 /// `sucheme_free` で返せる。記録を捨てると、返せなくなって漏れるうえ、返したときに
@@ -118,7 +126,8 @@ export fn sucheme_reset() i32 {
     return Status.ok;
 }
 
-/// 入力文字列を置く領域を確保する。失敗と初期化前は 0 を返す。
+/// Allocates a region for an input string.
+/// 失敗と初期化前は 0 を返す。
 export fn sucheme_alloc(len: u32) u32 {
     if (!initialized) return 0;
     const size = @max(len, 1);
@@ -130,7 +139,8 @@ export fn sucheme_alloc(len: u32) u32 {
     return addressOf(bytes);
 }
 
-/// `sucheme_alloc` で確保した領域を返す。`len` が確保時の値と違えば panic する。
+/// Returns a region that `sucheme_alloc` allocated.
+/// `len` が確保時の値と違えば panic する。
 export fn sucheme_free(ptr: u32, len: u32) void {
     if (!initialized) return;
     for (regions.items, 0..) |r, i| {
@@ -144,7 +154,8 @@ export fn sucheme_free(ptr: u32, len: u32) void {
     @panic("sucheme_free: ptr was not returned by sucheme_alloc");
 }
 
-/// (ptr, len) が確保した領域の中に収まっているか。長さ 0 は常に収まる。
+/// Whether (ptr, len) lies inside an allocated region.
+/// 長さ 0 は常に収まる。
 fn insideRegion(ptr: u32, len: u32) bool {
     if (len == 0) return true;
     for (regions.items) |r| {
@@ -153,7 +164,8 @@ fn insideRegion(ptr: u32, len: u32) bool {
     return false;
 }
 
-/// UTF-8 として妥当でない最初のバイトの位置。妥当なら null。
+/// The position of the first byte that is not valid UTF-8.
+/// 妥当なら null。
 fn firstInvalidUtf8(bytes: []const u8) ?usize {
     var i: usize = 0;
     while (i < bytes.len) {
@@ -165,7 +177,7 @@ fn firstInvalidUtf8(bytes: []const u8) ?usize {
     return null;
 }
 
-/// 入力のすべての式を評価し、結果を出力バッファに書く。
+/// Evaluates every expression of the input and writes the results to the output buffer.
 ///
 /// 返す値は 0(完了)、-1(Scheme のエラー。`error: ...` の一行を出力に書く)、
 /// -3(不正な UTF-8。位置を出力に書き、状態は変えない)、-4、-5、-8。
