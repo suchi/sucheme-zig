@@ -50,7 +50,7 @@
 | 1e | マージ済み | #11 |
 | 1f | マージ済み | #13(計画書 0004 は #12) |
 | 1g | マージ済み。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | 実装が #21、後半のレビュー対応が #22(計画書 0005 は #18) |
-| 1h | マージ済み。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装は 1h の PR |
+| 1h | マージ済み。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装が [#24](https://github.com/suchi/sucheme-zig/pull/24) |
 | 1i | 実装済み、PR のレビュー待ち。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が [#29](https://github.com/suchi/sucheme-zig/pull/29)、実装は 1i の PR |
 | 1j | 未着手 | - |
 
@@ -115,10 +115,10 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 ## 次にやること
 
-スライス 1h(文字・文字列・ベクタ、ドット対)は PR #24 で `main` に入っている。テストの層([0007](0007-test-tiers.md))は PR #25 から #28 で入っている。
+スライス 1h(文字・文字列・ベクタ、ドット対)は PR #24 で `main` に入っている。テストの層([0007](0007-test-tiers.md))は PR #25 から #28 で入っている(`full.yml` は #28)。
 
 1. スライス 1i(ブラウザで `(fact 10)` が動く)の PR のレビューとマージ。計画は [0008](0008-slice-1i-wasm-web-ui.md)。マージされたら、`build.zig` と `src/wasm.zig` のコメントを日本語にする([Issue #30](https://github.com/suchi/sucheme-zig/issues/30))。
-2. 1h の敵対的レビューの2巡目(文書と AGENTS.md)の結果が来たら、指摘を直す。
+2. スライス 1j(リリース v0.1.0)の計画書([#33](https://github.com/suchi/sucheme-zig/pull/33))の合意を得てから、実装に入る。
 3. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトはヒープの外にある(段階2)。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い、条件は `error.Raised` の脱出でハンドラは無い。
