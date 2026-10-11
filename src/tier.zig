@@ -7,8 +7,9 @@
 //! find; it waits for `zig build test -Dslow=true`. Each such test keeps a
 //! smaller twin in the quick tier that runs the same logic.
 //!
-//! A test that is skipped says so: the summary of the run counts it as
-//! skipped, so a quick run never hides that the rest exists.
+//! A test that is skipped is counted as skipped in the summary that
+//! `zig build test --summary all` prints. A plain `zig build test` prints
+//! nothing when it succeeds, so the count shows only when that flag is given.
 
 const build_options = @import("build_options");
 

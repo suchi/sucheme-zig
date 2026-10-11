@@ -41,7 +41,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 テストは実行の頻度で層に分ける([docs/plans/0007-test-tiers.md](docs/plans/0007-test-tiers.md))。
 
 - 編集のたび: 書き換えたファイルの `zig test src/<ファイル>.zig` と `zig fmt`。数秒から十数秒。
-- コミット前と push のたび: 表の「全コミット」の行。1 分以内を目標にする。`zig build test` と `zig build test-scheme` は、規模を試すテストを飛ばす(飛ばした数は実行の概要に出る)。
+- コミット前と push のたび: 表の「全コミット」の行。1 分以内を目標にする。`zig build test` と `zig build test-scheme` は、規模を試すテストを飛ばす。飛ばした数が出るのは `zig build test --summary all` の概要だけで(`ci.yml` は付けている)、素の `zig build test` は成功すると何も出さず、`zig build test-scheme` は走らせた件数だけを出す。
 - PR を ready にする前と `main` へのマージ前: 規模を試すテスト(`-Dslow=true`)、変更したファイルのミューテーションテスト、敵対的レビュー。
 - 定期: ファジングなど。待たない。
 
