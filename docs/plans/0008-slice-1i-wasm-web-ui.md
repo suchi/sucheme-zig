@@ -50,7 +50,7 @@
 | --- | --- |
 | `sucheme_init(heap_limit_bytes)` | 実装する。0、-4、-7 を返す |
 | `sucheme_eval_begin(ptr, len)` | 入力のすべての式を評価して終わる(合意を求める点の1の案による)。0、-1、-3、-4、-5、-8 を返す |
-| `sucheme_reset()` | 実装する。0、-7 |
+| `sucheme_reset()` | 実装する。0、-5(初期化前。何も捨てない)、-7 |
 | `sucheme_alloc(len)` と `sucheme_free(ptr, len)` | 実装する。不一致の `free` は panic |
 | `sucheme_output_ptr()` `sucheme_output_len()` `sucheme_output_clear()` | 実装する |
 | `sucheme_version_ptr()` `sucheme_version_len()` | 実装する |
