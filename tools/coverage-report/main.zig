@@ -24,6 +24,34 @@ const report_path = "docs/status/conformance.md";
 
 const usage = "usage: coverage-report [--check | --write]\n";
 
+/// What the program is asked to do.
+const Mode = enum { check, write };
+
+/// What the arguments ask for: a mode, or the first argument this program does
+/// not know.
+const Parsed = union(enum) {
+    mode: Mode,
+    unknown: []const u8,
+};
+
+/// Reads the arguments after the program name.
+/// 既定は比較である。書き込みになるのは `--write` があるときだけで、これを純粋な
+/// 関数にして単体テストで固定するのは、ここを1トークン書き換えるだけで、検査が
+/// 黙って書き換えに変わるからである(build.zig の引数の検査はこの内側を見ない)。
+fn parseArgs(args: []const [:0]const u8) Parsed {
+    var mode: Mode = .check;
+    for (args) |arg| {
+        // `--check` は受け付け、既定と同じ意味にする。
+        if (std.mem.eql(u8, arg, "--check")) continue;
+        if (std.mem.eql(u8, arg, "--write")) {
+            mode = .write;
+            continue;
+        }
+        return .{ .unknown = arg };
+    }
+    return .{ .mode = mode };
+}
+
 /// One standard library and the identifiers R7RS requires it to export.
 const Library = struct {
     /// The file name without `.txt`, such as `base` for `(scheme base)`.
@@ -41,20 +69,16 @@ pub fn main(init: std.process.Init) !void {
     const err = &stderr.interface;
 
     const argv = try init.minimal.args.toSlice(gpa);
-    var check_only = true;
-    for (argv[1..]) |arg| {
-        // `--check` は受け付け、既定と同じ意味にする。
-        if (std.mem.eql(u8, arg, "--check")) continue;
-        if (std.mem.eql(u8, arg, "--write")) {
-            check_only = false;
-            continue;
-        }
-        // 綴りを間違えたフラグを無視すると、呼び出し側は、得られていないものを
-        // 頼んだつもりになってしまう。
-        try err.print("unknown argument {s}\n{s}", .{ arg, usage });
-        try err.flush();
-        std.process.exit(2);
-    }
+    const mode: Mode = switch (parseArgs(argv[1..])) {
+        .mode => |m| m,
+        .unknown => |arg| {
+            // 綴りを間違えたフラグを無視すると、呼び出し側は、得られていないものを
+            // 頼んだつもりになってしまう。
+            try err.print("unknown argument {s}\n{s}", .{ arg, usage });
+            try err.flush();
+            std.process.exit(2);
+        },
+    };
 
     var libs: std.ArrayList(Library) = .empty;
     var dir = cwd.openDir(io, required_dir, .{ .iterate = true }) catch |e| {
@@ -94,7 +118,7 @@ pub fn main(init: std.process.Init) !void {
     try render(gpa, &report.writer, &interp, libs.items);
     const generated = report.written();
 
-    if (check_only) {
+    if (mode == .check) {
         const existing = cwd.readFileAlloc(io, report_path, gpa, .unlimited) catch |e| {
             try err.print("cannot read {s}: {t}\n", .{ report_path, e });
             try staleHelp(err);
@@ -259,4 +283,24 @@ test "libraries are ordered by name" {
     try std.testing.expectEqualStrings("base", libs[0].name);
     try std.testing.expectEqualStrings("r5rs", libs[1].name);
     try std.testing.expectEqualStrings("write", libs[2].name);
+}
+
+test "parseArgs defaults to the comparison, and only --write writes" {
+    const none = parseArgs(&.{});
+    try std.testing.expectEqual(Mode.check, none.mode);
+    const check = parseArgs(&.{"--check"});
+    try std.testing.expectEqual(Mode.check, check.mode);
+    const write = parseArgs(&.{"--write"});
+    try std.testing.expectEqual(Mode.write, write.mode);
+    // 順序によらず、`--write` があれば書き込みである。
+    const both = parseArgs(&.{ "--write", "--check" });
+    try std.testing.expectEqual(Mode.write, both.mode);
+}
+
+test "parseArgs names the first argument it does not know" {
+    const bogus = parseArgs(&.{"--bogus"});
+    try std.testing.expectEqualStrings("--bogus", bogus.unknown);
+    // 綴りを間違えた `--write` を、既定の比較として黙って受け付けない。
+    const typo = parseArgs(&.{ "--check", "--wirte", "--write" });
+    try std.testing.expectEqualStrings("--wirte", typo.unknown);
 }
