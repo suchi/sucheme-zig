@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
 const wasmPath = process.argv[2];
@@ -90,6 +91,13 @@ function instantiate() {
 const tests = [];
 function test(name, body) {
   tests.push({ name, body });
+}
+
+// 規模を確かめるテストは、`zig build test-wasm -Dslow=true` のときだけ走る
+// (build.zig が環境変数 SUCHEME_SLOW を渡す。docs/plans/0007-test-tiers.md)。
+const slowTier = process.env.SUCHEME_SLOW === "1";
+function slowTest(name, body) {
+  tests.push({ name, body, slow: true });
 }
 
 test("version string is not empty", () => {
@@ -247,6 +255,19 @@ test("reset keeps the heap limit that init was given", () => {
   assert.match(text, /heap limit exceeded/);
 });
 
+// 4 GiB に近い上限を渡しても、計上の上限は 1 GiB に丸められる(`heap.max_host_limit`)。
+// 丸めが無いと、計上が上限に届く前に wasm32 の線形メモリ(4 GiB)が尽きて trap する。
+// 上限まで使い切るので時間がかかる。
+slowTest("init with a limit near 4 GiB runs the heap up to its limit and reports it, not a trap", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(0xffffffff), OK);
+  const [status, text] = h.run("(define (f n) (+ 1 (f n))) (f 0)");
+  assert.equal(status, SCHEME_ERROR);
+  assert.match(text, /heap limit exceeded/);
+  // 使い切ったあとも、インスタンスは使える。
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 test("reset empties an output that was not taken", () => {
   const h = instantiate().init();
   assert.equal(h.eval("(+ 1 2)"), OK);
@@ -283,17 +304,27 @@ test("a region allocated before reset is still the host's: it can be used and fr
 // web/serve.mjs の自己検査(パストラバーサルなど)は、ほかの検証コマンドに結ばれていないので、
 // ここから走らせる。
 test("web/serve.mjs --self-test passes", () => {
-  const script = new URL("../../web/serve.mjs", import.meta.url);
-  const r = spawnSync(process.execPath, [script.pathname.replace(/^\/([A-Za-z]:)/, "$1"), "--self-test"], {
+  // `URL.pathname` は空白や非 ASCII を %XX のまま返すので、ファイルパスには使えない。
+  const script = fileURLToPath(new URL("../../web/serve.mjs", import.meta.url));
+  // 自己検査は1秒かからない。待ち続けて検証を止めないよう、30 秒で打ち切る。
+  const r = spawnSync(process.execPath, [script, "--self-test"], {
     encoding: "utf8",
+    timeout: 30_000,
   });
-  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  // 打ち切られると status は null で、理由は error に入る。
+  assert.equal(r.status, 0, `${r.error ?? ""}${r.stdout}${r.stderr}`);
   assert.match(r.stdout, /self-test passed/);
 });
 
 let passed = 0;
 let failed = 0;
-for (const { name, body } of tests) {
+let skipped = 0;
+for (const { name, body, slow } of tests) {
+  if (slow && !slowTier) {
+    skipped += 1;
+    console.log(`skip ${name} (slow tier)`);
+    continue;
+  }
   try {
     body();
     passed += 1;
@@ -306,7 +337,7 @@ for (const { name, body } of tests) {
 }
 
 if (failed > 0) {
-  console.log(`test-wasm: ${passed} passed, ${failed} failed`);
+  console.log(`test-wasm: ${passed} passed, ${failed} failed, ${skipped} skipped`);
   process.exit(1);
 }
-console.log(`test-wasm: ${passed} passed`);
+console.log(`test-wasm: ${passed} passed, ${skipped} skipped`);
