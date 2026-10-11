@@ -60,7 +60,7 @@
 テストの層([0007](0007-test-tiers.md))の割り当て:
 
 - 層1: `zig build test`(`isBound`、`isKeyword`、ツールの純粋な関数のテスト)、`zig build check-report`、`zig build check-docs`。`check-docs` が、表の行と `ci.yml` の対応を見る。
-- ミューテーションテスト: `isBound` と `isKeyword`、ツールの数え上げと並べ替えを機械的に変えて、テストが落ちることを確かめた。`build.zig` の `check-report` について、step が run を持たない、引数を取る、終了コードが読まれない、の3つの編集で configure が止まることを確かめた。
+- ミューテーションテスト: `isBound` と `isKeyword`、ツールの数え上げ、引数の読み取り(`parseArgs`。既定の動作が比較であること)を機械的に変えて、テストが落ちることを確かめた。並べ替えの呼び出し自体と、書き込みの分岐(`--write` のとき `writeAll` を呼ぶ部分)は、テストで固定していない。並べ替えを落とすと `check-report` が赤になるので、検証が黙って止まることはない。`build.zig` の `check-report` について、step が run を持たない、引数を取る、終了コードが読まれない、の3つの編集で configure が止まることを確かめた。
 - 手作業の確認: 生成物の数値を書き換える、生成物を消す、`tests/r7rs-required` から識別子を1つ消す、のそれぞれで `check-report` が落ちる。`ci.yml` から足した行を消すと `check-docs` が落ちる。
 - Windows: 改行は `.gitattributes` が LF に固定する。ツールは `/` のパスだけを使う。CI の Windows のジョブで確かめる。作業した環境では確かめられない。
 
