@@ -43,6 +43,12 @@ test "the table names each primitive once" {
     }
 }
 
+test "the table gives each primitive a range of argument counts that can be met" {
+    for (all) |p| {
+        if (p.max_args) |max| try std.testing.expect(p.min_args <= max);
+    }
+}
+
 test "the table holds every primitive of every family" {
     var n: usize = 0;
     for (families) |family| n += family.len;

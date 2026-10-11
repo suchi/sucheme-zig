@@ -281,7 +281,8 @@ pub const Services = struct {
     heap: *Heap,
     /// Memory a primitive needs only while it runs. It is the arena the machine puts
     /// the arguments in, and is outside the accounting of the heap. A primitive
-    /// frees what it takes before it returns.
+    /// frees what it takes before it returns, in the reverse order of taking it.
+    /// 1行ぶんのアリーナなので、`free` が効くのは最後の確保だけである。
     scratch: std.mem.Allocator,
 };
 
