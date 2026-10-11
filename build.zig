@@ -288,6 +288,10 @@ pub fn build(b: *std.Build) void {
     run_test_wasm.setCwd(b.path("."));
     run_test_wasm.addFileArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "web/sucheme.wasm" } });
     run_test_wasm.step.dependOn(&install_wasm.step);
+    // Why: ヒープを上限まで使い切るテストは時間がかかるので、規模を試す他のテストと
+    // 同じオプションに従わせる。引数でなく環境変数にするのは、checkSystemStepRuns が
+    // 引数列を1つの形に固定しているからである。
+    if (slow) run_test_wasm.setEnvironmentVariable("SUCHEME_SLOW", "1");
     const test_wasm_step = b.step("test-wasm", "call the wasm exports from Node.js");
     test_wasm_step.dependOn(&run_test_wasm.step);
 

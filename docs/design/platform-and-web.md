@@ -167,7 +167,9 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 | `sucheme_step` | 1、2、0、-1、-2、-4、-5、-6 |
 | `sucheme_provide_input` | 1、-1、-2、-3、-4、-5、-6、-8 |
 | `sucheme_provide_eof` | 1、-4、-5 |
-| `sucheme_reset` | 0、-7 |
+| `sucheme_reset` | 0、-5、-7 |
+
+`sucheme_reset` が -5 を返すのは、初期化の前に呼ばれたときである。何も捨てず、起動前バッファに説明を書く。リセットは初期化済みの状態を前提にするので、-5 の行の指示どおり `sucheme_init` を呼ぶ。
 
 `sucheme_init` が成功したときに 0 を返すのは、その後に呼べるのが `sucheme_eval_begin` だからである。0 の行の「直後に呼べる関数」と一致する。
 
