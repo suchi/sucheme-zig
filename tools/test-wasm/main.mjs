@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
 const wasmPath = process.argv[2];
@@ -303,8 +304,9 @@ test("a region allocated before reset is still the host's: it can be used and fr
 // web/serve.mjs の自己検査(パストラバーサルなど)は、ほかの検証コマンドに結ばれていないので、
 // ここから走らせる。
 test("web/serve.mjs --self-test passes", () => {
-  const script = new URL("../../web/serve.mjs", import.meta.url);
-  const r = spawnSync(process.execPath, [script.pathname.replace(/^\/([A-Za-z]:)/, "$1"), "--self-test"], {
+  // `URL.pathname` は空白や非 ASCII を %XX のまま返すので、ファイルパスには使えない。
+  const script = fileURLToPath(new URL("../../web/serve.mjs", import.meta.url));
+  const r = spawnSync(process.execPath, [script, "--self-test"], {
     encoding: "utf8",
   });
   assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
