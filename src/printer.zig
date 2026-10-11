@@ -231,8 +231,8 @@ test "write prints a procedure in a form read rejects" {
     const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
     var closure: value_mod.Closure = .{ .lambda = &lambda, .env = null };
     try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
-    const prim: value_mod.Primitive = .{ .name = "plus", .call = struct {
-        fn call(_: []const Value) value_mod.PrimitiveError!Value {
+    const prim: value_mod.Primitive = .{ .name = "plus", .min_args = 0, .max_args = null, .call = struct {
+        fn call(_: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
             return .unspecified_value;
         }
     }.call };

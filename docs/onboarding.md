@@ -81,7 +81,7 @@ flowchart TB
 ### プリミティブ手続きを追加する
 
 1. `tests/scheme/` に、その手続きの振る舞いを確かめる失敗するテストを書く。
-2. `src/prim/` の該当ファイルに実装を追加し、登録表に加える。
+2. `src/prim/` の該当ファイルに実装を追加し、そのファイルの `primitives` に `.{ .name, .min_args, .max_args, .call }` の1行を足す。個数の範囲は省略できず、機械が呼び出しの前に検査する(`call` の中で個数を検査しない)。新しいファイルなら、`src/prim/table.zig` の `families` に1行足す。確保するなら `call` が受け取る `Services` のヒープを使う。
 3. R7RS の該当節を `Why:` コメントで引く(非自明な振る舞いの場合)。
 4. `tests/r7rs-required/` の一覧に含まれる識別子なら、準拠マトリクスの数値が動くことを確認する(`zig build report` で `docs/status/conformance.md` を生成し直し、差分をコミットに含める)。
 

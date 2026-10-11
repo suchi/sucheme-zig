@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const SymbolId = @import("symbol.zig").SymbolId;
+// ポインタ越しに名指すだけで、`Heap` のレイアウトには依存しない。
+const Heap = @import("heap.zig").Heap;
 
 pub const Value = union(enum) {
     fixnum: i64,
@@ -243,7 +245,8 @@ pub fn isScalarValue(cp: u32) bool {
 
 /// The ways a primitive can fail.
 /// プリミティブとともに増える。評価器が説明しなければならない失敗は、ここで名前を
-/// 付ける。
+/// 付ける。機械が条件に写す(`Machine.apply`)。メッセージの形は、ここにある名前ごとに
+/// 1つである。
 pub const PrimitiveError = error{
     /// An argument is not of the type the primitive takes.
     WrongType,
@@ -252,14 +255,60 @@ pub const PrimitiveError = error{
     /// 多倍長整数(bignum)は段階4で入る。
     IntegerOverflow,
     /// A number of arguments the primitive does not take, such as `(-)`.
+    /// 機械が、`Primitive` の個数の範囲から返す。プリミティブの本体は、個数を検査
+    /// しない。
     WrongArgumentCount,
+    /// The divisor is zero.
+    DivisionByZero,
+    /// An argument is of the right type but outside what the primitive takes,
+    /// such as an index past the end of a vector.
+    OutOfRange,
+    /// The allocation would take the heap past its limit.
+    /// `Heap` のエラーと同じ名前である。そのまま返してよい。
+    HeapLimit,
+    /// The host has no memory left.
+    /// 条件にならない。機械はそのまま返す。
+    OutOfMemory,
+};
+
+/// What the machine gives a primitive besides its arguments: the means to
+/// allocate.
+/// プリミティブは `heap` の API(`cons` `createString` `createVector`)だけで確保し、
+/// `std.mem.Allocator` を直接使わない。GC は機械のステップの境目で走り、プリミティブの
+/// 途中では走らない(ADR-0031)。
+pub const Services = struct {
+    /// Where the objects a primitive makes are allocated, and counted.
+    heap: *Heap,
+    /// Memory a primitive needs only while it runs. It is the arena the machine puts
+    /// the arguments in, and is outside the accounting of the heap. A primitive
+    /// frees what it takes before it returns, in the reverse order of taking it.
+    /// 1行ぶんのアリーナなので、`free` が効くのは最後の確保だけである。
+    scratch: std.mem.Allocator,
 };
 
 /// A procedure implemented in Zig.
-/// それらの表は prim/ にある。
+/// それらの表は prim/ にある(`prim/table.zig` が全体を1つの配列にする)。
+///
+/// 引数の個数の範囲は、省略できない。省略時の既定を可変長にすると、書き忘れた関数が
+/// 範囲外の添字を読む。個数は機械が呼び出しの前に検査する(`Machine.apply`)ので、
+/// `call` が受け取る `args` は、必ずこの範囲に収まる。
 pub const Primitive = struct {
+    /// The type of the function that is the primitive.
+    pub const Fn = *const fn (services: *const Services, args: []const Value) PrimitiveError!Value;
+
     name: []const u8,
-    call: *const fn (args: []const Value) PrimitiveError!Value,
+    /// The fewest arguments the primitive takes.
+    min_args: u8,
+    /// The most arguments the primitive takes, or null when there is no limit.
+    max_args: ?u8,
+    call: Fn,
+
+    /// Whether the primitive takes `count` arguments.
+    pub fn acceptsCount(self: *const Primitive, count: usize) bool {
+        if (count < self.min_args) return false;
+        const max = self.max_args orelse return true;
+        return count <= max;
+    }
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -519,8 +568,8 @@ test "each kind answers only to its own accessor" {
 }
 
 test "procedures answer only to their own accessor" {
-    const prim: Primitive = .{ .name = "p", .call = struct {
-        fn f(_: []const Value) PrimitiveError!Value {
+    const prim: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .call = struct {
+        fn f(_: *const Services, _: []const Value) PrimitiveError!Value {
             return .unspecified_value;
         }
     }.f };
@@ -551,4 +600,32 @@ test "a node tree and a continuation chain can be built from the layouts" {
     const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call.call, .args = null, .received = 0 } } };
     try std.testing.expectEqual(2, top.depth);
     try std.testing.expectEqual(&base, top.next.?);
+}
+
+test "a primitive takes the numbers of arguments from its minimum to its maximum" {
+    const nop = struct {
+        fn f(_: *const Services, _: []const Value) PrimitiveError!Value {
+            return .unspecified_value;
+        }
+    }.f;
+    const one_or_two: Primitive = .{ .name = "a", .min_args = 1, .max_args = 2, .call = &nop };
+    try std.testing.expect(!one_or_two.acceptsCount(0));
+    try std.testing.expect(one_or_two.acceptsCount(1));
+    try std.testing.expect(one_or_two.acceptsCount(2));
+    try std.testing.expect(!one_or_two.acceptsCount(3));
+    const none: Primitive = .{ .name = "b", .min_args = 0, .max_args = 0, .call = &nop };
+    try std.testing.expect(none.acceptsCount(0));
+    try std.testing.expect(!none.acceptsCount(1));
+    // 上限がなければ、`u8` を超える個数でも受け付ける。
+    const any: Primitive = .{ .name = "c", .min_args = 0, .max_args = null, .call = &nop };
+    try std.testing.expect(any.acceptsCount(0));
+    try std.testing.expect(any.acceptsCount(1000));
+    const two_or_more: Primitive = .{ .name = "d", .min_args = 2, .max_args = null, .call = &nop };
+    try std.testing.expect(!two_or_more.acceptsCount(1));
+    try std.testing.expect(two_or_more.acceptsCount(2));
+    try std.testing.expect(two_or_more.acceptsCount(1000));
+    // `u8` の上限は、usize の個数と比べても回り込まない。
+    const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .call = &nop };
+    try std.testing.expect(max.acceptsCount(255));
+    try std.testing.expect(!max.acceptsCount(256));
 }
