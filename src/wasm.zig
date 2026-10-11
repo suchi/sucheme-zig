@@ -75,12 +75,17 @@ fn addressOf(bytes: []const u8) u32 {
 }
 
 /// インタプリタを初期化する。`heap_limit_bytes` は GC ヒープの計上の上限である(0 なら既定)。
+///
+/// 1 GiB を超える値は 1 GiB に丸める(`heap.max_host_limit`)。
 export fn sucheme_init(heap_limit_bytes: u32) i32 {
-    if (initialized) return Status.wrong_order;
+    if (initialized) {
+        appendTail(&out, output, "error: sucheme_init was called twice\n");
+        return Status.wrong_order;
+    }
     const options: sucheme.heap.Options = if (heap_limit_bytes == 0)
         .{}
     else
-        .{ .limit = heap_limit_bytes };
+        .{ .limit = sucheme.heap.clampHostLimit(heap_limit_bytes) };
     interp.initWithOptions(allocator, options) catch {
         appendTail(&early, &early_buffer, "error: out of memory while initializing\n");
         return Status.out_of_memory;
@@ -95,9 +100,16 @@ export fn sucheme_init(heap_limit_bytes: u32) i32 {
     return Status.ok;
 }
 
-/// 状態を捨てて、初期化したあとの状態に戻す。確保した領域の記録も捨てる。
+/// 状態を捨てて、初期化したあとの状態に戻す。
+///
+/// `sucheme_alloc` で確保した領域はホストのものなので、触らない。リセットのあとも
+/// `sucheme_free` で返せる。記録を捨てると、返せなくなって漏れるうえ、返したときに
+/// panic する。
 export fn sucheme_reset() i32 {
-    if (!initialized) return Status.not_initialized;
+    if (!initialized) {
+        appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
+        return Status.not_initialized;
+    }
     const limit = interp.ctx.heap.options.limit;
     interp.deinit();
     interp.initWithOptions(allocator, .{ .limit = limit }) catch {
@@ -107,7 +119,6 @@ export fn sucheme_reset() i32 {
         return Status.out_of_memory;
     };
     out.end = 0;
-    regions.clearRetainingCapacity();
     return Status.ok;
 }
 
@@ -163,8 +174,14 @@ fn firstInvalidUtf8(bytes: []const u8) ?usize {
 /// 返す値は 0(完了)、-1(Scheme のエラー。`error: ...` の一行を出力に書く)、
 /// -3(不正な UTF-8。位置を出力に書き、状態は変えない)、-4、-5、-8。
 export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
-    if (!initialized) return Status.not_initialized;
-    if (!insideRegion(ptr, len)) return Status.bad_region;
+    if (!initialized) {
+        appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
+        return Status.not_initialized;
+    }
+    if (!insideRegion(ptr, len)) {
+        appendTail(&out, output, "error: the region was not returned by sucheme_alloc\n");
+        return Status.bad_region;
+    }
     const source: []const u8 = if (len == 0) &.{} else blk: {
         const p: [*]const u8 = @ptrFromInt(ptr);
         break :blk p[0..len];

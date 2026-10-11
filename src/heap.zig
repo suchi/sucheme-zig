@@ -50,6 +50,24 @@ pub const Options = struct {
     stress: bool = false,
 };
 
+/// The most a host may ask the heap to account for: 1 GiB.
+/// wasm32 の線形メモリは全体で 4 GiB であり、計上は実メモリの約半分なので、
+/// ホストが 4 GiB に近い値を渡すと、上限に届く前に実メモリが尽きて trap する。
+/// それを順序立ったエラー(`heap limit exceeded`)にするため、ホストの指定をここで丸める。
+pub const max_host_limit: usize = 1024 * 1024 * 1024;
+
+/// Clamps a limit a host asked for to `max_host_limit`.
+pub fn clampHostLimit(requested: usize) usize {
+    return @min(requested, max_host_limit);
+}
+
+test "clampHostLimit leaves a small limit and caps a large one" {
+    try std.testing.expectEqual(@as(usize, 65536), clampHostLimit(65536));
+    try std.testing.expectEqual(max_host_limit, clampHostLimit(max_host_limit));
+    try std.testing.expectEqual(max_host_limit, clampHostLimit(max_host_limit + 1));
+    try std.testing.expectEqual(max_host_limit, clampHostLimit(std.math.maxInt(u32)));
+}
+
 /// 256 MiB.
 /// 終了するプログラムが必要とする量をはるかに上回り、インタプリタが動く機械の
 /// メモリをはるかに下回る。
