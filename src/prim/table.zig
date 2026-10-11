@@ -7,11 +7,13 @@ const std = @import("std");
 const Primitive = @import("../value.zig").Primitive;
 const arith = @import("arith.zig");
 const char = @import("char.zig");
+const string = @import("string.zig");
 
 /// The primitives of each family, in the order they are bound.
 const families = [_][]const Primitive{
     &arith.primitives,
     &char.primitives,
+    &string.primitives,
 };
 
 const total = blk: {

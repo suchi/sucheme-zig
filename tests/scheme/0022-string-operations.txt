@@ -1,0 +1,253 @@
+# スライス 1k の単位 K5: 文字列の操作(R7RS 6.7)。`string-length` と
+# `string-ref` は文字(Unicode スカラ値)の数と位置で数える。バイトではない。
+# 文字列は UTF-8 のバイト列で、全部が ASCII かどうかのフラグを持つ(ADR-0008)。
+# ASCII だけの文字列は文字の位置がバイトの位置と同じで、そうでなければ UTF-8 を
+# 走査する。どちらの経路も同じ答えを返さなければならない。検査の順序は、引数の
+# 個数、型、値の範囲である。
+
+# 型の述語。
+(string? "abc")
+#t
+
+(string? "")
+#t
+
+(string? "あ")
+#t
+
+(string? #\a)
+#f
+
+(string? 'abc)
+#f
+
+(string? 1)
+#f
+
+(string? '())
+#f
+
+(string? #(1 2))
+#f
+
+(string? '("a"))
+#f
+
+# 長さ。ASCII の文字列は文字の数である。
+(string-length "")
+0
+
+(string-length "a")
+1
+
+(string-length "hello")
+5
+
+(string-length "hello world")
+11
+
+# ASCII でない文字を含む文字列は、バイトの数でなく文字の数で数える。
+(string-length "あ")
+1
+
+(string-length "あいう")
+3
+
+(string-length "aあb")
+3
+
+(string-length "λx")
+2
+
+# 2バイト、3バイト、4バイトの文字が混ざる。
+(string-length "aλあ𐀀")
+4
+
+(string-length "𐀀")
+1
+
+(string-length "𐀀𐀀𐀀")
+3
+
+# エスケープで作った文字列もフラグが正しい。ASCII のソースから ASCII でない文字が、
+# ASCII でない文字を含むソースから ASCII だけの文字列が、できる。
+(string-length "\x3bb;")
+1
+
+(string-length "\x41;\x42;")
+2
+
+(string-length "a\x3bb;b")
+3
+
+(string-ref "\x3bb;b" 1)
+#\b
+
+(string-ref "a\x41;" 1)
+#\A
+
+# 要素を取り出す。ASCII の文字列。
+(string-ref "abc" 0)
+#\a
+
+(string-ref "abc" 1)
+#\b
+
+(string-ref "abc" 2)
+#\c
+
+(string-ref "a" 0)
+#\a
+
+# ASCII でない文字列は、文字の位置で数える。
+(string-ref "あいう" 0)
+#\あ
+
+(string-ref "あいう" 1)
+#\い
+
+(string-ref "あいう" 2)
+#\う
+
+(string-ref "aあb" 0)
+#\a
+
+(string-ref "aあb" 1)
+#\あ
+
+(string-ref "aあb" 2)
+#\b
+
+(string-ref "aλあ𐀀z" 3)
+#\𐀀
+
+(string-ref "aλあ𐀀z" 4)
+#\z
+
+(string-ref "𐀀𐀀" 1)
+#\𐀀
+
+# 文字の位置は 0 から長さの手前まで。
+(string-ref "abc" 3)
+error: argument out of range in string-ref
+
+(string-ref "abc" 100)
+error: argument out of range in string-ref
+
+(string-ref "あいう" 3)
+error: argument out of range in string-ref
+
+(string-ref "あいう" 4)
+error: argument out of range in string-ref
+
+# バイトの数は長さを超えるが、文字の位置の範囲外である。
+(string-ref "あ" 1)
+error: argument out of range in string-ref
+
+(string-ref "あ" 2)
+error: argument out of range in string-ref
+
+(string-ref "" 0)
+error: argument out of range in string-ref
+
+(string-ref "abc" -1)
+error: argument out of range in string-ref
+
+(string-ref "あいう" -1)
+error: argument out of range in string-ref
+
+(string-ref "abc" 9223372036854775807)
+error: argument out of range in string-ref
+
+(string-ref "abc" -9223372036854775808)
+error: argument out of range in string-ref
+
+(string-ref "abc" 4294967296)
+error: argument out of range in string-ref
+
+# 型の誤り。範囲より先に調べるので、範囲外の添字でも型のエラーが先に出る。
+(string-length 1)
+error: wrong type of argument to string-length
+
+(string-length #\a)
+error: wrong type of argument to string-length
+
+(string-length 'abc)
+error: wrong type of argument to string-length
+
+(string-length #(1 2))
+error: wrong type of argument to string-length
+
+(string-length '())
+error: wrong type of argument to string-length
+
+(string-ref 'abc 0)
+error: wrong type of argument to string-ref
+
+(string-ref #(1 2) 0)
+error: wrong type of argument to string-ref
+
+(string-ref "abc" #\a)
+error: wrong type of argument to string-ref
+
+(string-ref "abc" "0")
+error: wrong type of argument to string-ref
+
+(string-ref "abc" '())
+error: wrong type of argument to string-ref
+
+(string-ref 'abc 100)
+error: wrong type of argument to string-ref
+
+(string-ref 'abc -1)
+error: wrong type of argument to string-ref
+
+# 引数の個数は機械が検査する。
+(string?)
+error: wrong number of arguments to string?
+
+(string? "a" "b")
+error: wrong number of arguments to string?
+
+(string-length)
+error: wrong number of arguments to string-length
+
+(string-length "a" "b")
+error: wrong number of arguments to string-length
+
+(string-ref)
+error: wrong number of arguments to string-ref
+
+(string-ref "abc")
+error: wrong number of arguments to string-ref
+
+(string-ref "abc" 0 1)
+error: wrong number of arguments to string-ref
+
+# 文字列は変数に束縛され、式の中でそのまま使える。
+(define s "あいう") (string-length s) (string-ref s 2)
+3
+#\う
+
+(define (last-char s) (string-ref s (- (string-length s) 1))) (last-char "abc") (last-char "あいう") (last-char "x")
+#\c
+#\う
+#\x
+
+# 文字列を作る経路(リテラル)が、GC を越えても長さと文字を保つ。ストレスモードでは
+# 1ステップごとに GC が走り、通常のモードでも 2 万回の反復の間に何度か走る。
+(define s "aλあ𐀀z") (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (string-length s) (string-ref s 3)
+ok
+5
+#\𐀀
+
+(define t "abc") (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (string-length t) (string-ref t 2)
+ok
+3
+#\c
+
+# 文字列を使う再帰。
+(define (count-a s i n) (if (= i (string-length s)) n (count-a s (+ i 1) (if (= (char->integer (string-ref s i)) 97) (+ n 1) n)))) (count-a "banana" 0 0) (count-a "あaいaう" 0 0) (count-a "" 0 0)
+3
+2
+0
