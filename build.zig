@@ -22,7 +22,13 @@ const pinned_zig_version = @embedFile(".zigversion");
 /// rather than inconvenient. Making the reason machine-checked is recorded as an
 /// implementation-time question in docs/design/open-questions.md, to settle when
 /// the first real entry arrives.
-const test_excluded = [_][]const u8{};
+const test_excluded = [_][]const u8{
+    // The root of the wasm32-freestanding build. Its tests cannot be a native
+    // target (the file declares `extern "env"` functions the native linker does
+    // not have), and a wasm32-freestanding test runner does not compile. It is
+    // exercised by `zig build test-wasm`, which calls its exports from Node.js.
+    "src/wasm.zig",
+};
 
 /// The stage this repository has reached, as docs/roadmap.md numbers them.
 ///
@@ -227,6 +233,33 @@ pub fn build(b: *std.Build) void {
     run_test_scheme.setCwd(b.path("."));
     const test_scheme_step = b.step("test-scheme", "run the Scheme behaviour tests");
     test_scheme_step.dependOn(&run_test_scheme.step);
+
+    // The WebAssembly build (docs/plans/0008-slice-1i-wasm-web-ui.md). The
+    // interpreter is a module of its own for the wasm target, because a module
+    // has one target. ReleaseSafe: Debug makes a large module with stack traces
+    // the host cannot read, and ReleaseSmall drops the checks.
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const sucheme_wasm = b.createModule(.{
+        .root_source_file = b.path("src/sucheme.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSafe,
+    });
+    sucheme_wasm.addOptions("build_options", options);
+    const wasm_exe = b.addExecutable(.{
+        .name = "sucheme",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "sucheme", .module = sucheme_wasm }},
+        }),
+    });
+    // A library of exported functions: no `main`, and the exports stay.
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+    const install_wasm = b.addInstallArtifact(wasm_exe, .{ .dest_dir = .{ .override = .{ .custom = "web" } } });
+    const wasm_step = b.step("wasm", "build web/sucheme.wasm under zig-out");
+    wasm_step.dependOn(&install_wasm.step);
 
     const test_step = b.step("test", "run the unit tests");
 
