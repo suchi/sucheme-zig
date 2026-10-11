@@ -1,31 +1,30 @@
 //! Extracts the identifiers exported by each standard library from R7RS
 //! Appendix A and writes them to tests/r7rs-required/<library>.txt.
 //!
-//! Comparing is what it does by default: each file is read and checked against
-//! what this program extracts, and a difference exits non-zero. `zig build
-//! check-extract` runs that. Writing takes `--write`, as in `zig run
-//! tools/extract-r7rs-required/main.zig -- --write`.
+//! 既定の動作は比較である。各ファイルを読み、このプログラムが抽出するものと
+//! 照らし合わせ、差があれば非ゼロで終了する。`zig build check-extract` がこれを
+//! 走らせる。書き込みは `--write` で行う(`zig run
+//! tools/extract-r7rs-required/main.zig -- --write` のように)。
 //!
-//! Comparing is the default because the other way round left a one-line hole:
-//! deleting the `--check` argument from build.zig turned the check into a
-//! rewrite, so the comparison could never fail. Dropping an argument now leaves
-//! it comparing. The input HTML is committed (see SOURCE.md); nothing is fetched
-//! at build time, so the build stays reproducible and offline (ADR-0013).
+//! 比較を既定にしたのは、逆にすると1行で穴が開いたからである。build.zig から
+//! `--check` 引数を消すと、検査が書き換えに変わり、比較が失敗しえなくなった。
+//! いまは引数を落としても比較のままになる。入力の HTML はコミットしてある
+//! (SOURCE.md を参照)。ビルド時には何も取得しないので、ビルドは再現可能で
+//! オフラインのままである(ADR-0013)。
 //!
-//! Without this comparison, the only thing holding the generated lists to the
-//! input was a SHA-256 pasted into SOURCE.md by hand, so editing a list and
-//! pasting the new hash left every verification command green with an
-//! identifier silently gone from the conformance denominator.
+//! この比較がなかったころ、生成した一覧を入力に結びつけていたのは、SOURCE.md に
+//! 手で貼った SHA-256 だけだった。そのため、一覧を編集して新しいハッシュを貼ると、
+//! 検証コマンドがすべて緑のまま、識別子が準拠の分母から黙って消えた。
 //!
-//! This is extracted rather than typed out because the design phase produced
-//! one fabricated spec quote and one non-existent procedure name when writing
-//! from memory. See docs/review/adversarial-review-baseline.md.
+//! 手で書かず抽出するのは、設計段階で記憶から書いたときに、仕様からの引用の
+//! 捏造が1件と、実在しない手続き名が1件出たからである。
+//! docs/review/adversarial-review-baseline.md を参照。
 //!
-//! How Appendix A is shaped: each library's prose names it as
-//! `(scheme X)</span>`, which marks the start of that library's section. The
-//! exported identifiers appear as monospace spans whose text begins with a
-//! non-breaking space. Inline code in the prose uses the same span but with no
-//! leading non-breaking space, which is what separates the two.
+//! 付録Aの構造は次のとおりである。各ライブラリの本文は `(scheme X)</span>` として
+//! そのライブラリを名指し、これがそのライブラリの節の始まりを示す。エクスポート
+//! される識別子は、テキストがノーブレークスペースで始まる等幅の span として
+//! 現れる。本文中のインラインコードは同じ span だが先頭にノーブレークスペースが
+//! なく、これで両者を区別する。
 
 const std = @import("std");
 
@@ -33,28 +32,32 @@ const html_path = "tools/extract-r7rs-required/appendix-a.html";
 const out_dir_path = "tests/r7rs-required";
 const source_url = "https://standards.scheme.org/corrected-r7rs/r7rs-Z-H-10.html";
 
-/// The number of standard libraries R7RS appendix A defines. A mismatch means
-/// the parse drifted, so it is checked rather than merely reported. Update it
-/// together with the input when a new R7RS revision changes the set; SOURCE.md
-/// names this constant in its re-extraction procedure.
+/// The number of standard libraries R7RS appendix A defines.
+///
+/// 食い違いは、解析がずれたことを意味する。報告するだけでなく検査する。R7RS の
+/// 新しい版で集合が変わったら、入力と一緒に更新する。SOURCE.md の再抽出の手順は
+/// この定数を名指ししている。
 const expected_library_count = 16;
 
-/// Closes the block that holds the export lists. Used as the upper bound of the
-/// last library's span, which has no following library marker to stop at.
+/// Closes the block that holds the export lists.
 ///
-/// The document opens with the same marker, and the bound is searched from the
-/// last library's start, so the trailing one is the one found. If the marker
-/// ever disappears the bound falls back to the end of the document, which is
-/// where it was before; the per-library checks are what then catch a footer
-/// span being read as an identifier.
+/// 最後のライブラリの範囲の上限に使う。最後のライブラリには、止まる先となる
+/// 次のライブラリの印がないからである。
+///
+/// 文書の冒頭にも同じ印があるが、上限は最後のライブラリの開始位置から探すので、
+/// 見つかるのは末尾の印である。この印が消えた場合、上限は文書の末尾に戻る。
+/// これは以前の挙動であり、フッタの span が識別子として読まれることは、その
+/// ときライブラリごとの検査が捕まえる。
 const list_end = "<div class=navigation>";
 
 const lib_marker = "(scheme ";
 const id_open = "<span style=\"font-family: monospace\">&#xa0;";
 
-/// Auxiliary syntax that (scheme base) must export. If the parse drifts, these
-/// are the first entries to disappear, and docs/design/frontend.md bases the
-/// denotation kinds on their existence.
+/// Auxiliary syntax that (scheme base) must export.
+///
+/// 解析がずれると、真っ先に消えるのがこれらの項目である。また
+/// docs/design/frontend.md は、これらが存在することを前提に、指示対象(denotation)の
+/// 種類を定めている。
 const base_must_have = [_][]const u8{ "...", "=>", "_", "else", "unquote", "unquote-splicing" };
 
 pub fn main(init: std.process.Init) !void {
@@ -69,15 +72,15 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(gpa);
     var check_only = true;
     for (argv[1..]) |arg| {
-        // `--check` is accepted and means the default, so a caller that passes
-        // it keeps working.
+        // `--check` は受け付け、既定と同じ意味にする。渡している呼び出し側が
+        // そのまま動くようにするためである。
         if (std.mem.eql(u8, arg, "--check")) continue;
         if (std.mem.eql(u8, arg, "--write")) {
             check_only = false;
             continue;
         }
-        // Reported rather than ignored: a misspelled flag would otherwise leave
-        // the caller believing it had asked for something it did not get.
+        // 無視せず報告する。綴りを間違えたフラグを無視すると、呼び出し側は、
+        // 得られていないものを頼んだつもりになってしまう。
         try out.print("unknown argument {s}\n", .{arg});
         try out.print("usage: extract-r7rs-required [--check | --write]\n", .{});
         try out.flush();
@@ -100,9 +103,9 @@ pub fn main(init: std.process.Init) !void {
         const tail = "</span>";
         if (std.mem.startsWith(u8, html[close + 1 ..], tail)) {
             const name = html[after..close];
-            // The output file name comes from parsed HTML, which is external
-            // input: a crafted name would otherwise write outside the output
-            // directory. Reject anything that is not a plain library name.
+            // 出力ファイル名は解析した HTML から来る。これは外部入力であり、細工された
+            // 名前は出力ディレクトリの外に書き込みかねない。単純なライブラリ名でない
+            // ものは拒否する。
             if (!isPlainLibraryName(name)) {
                 try out.print("library name {s} is not a plain name\n", .{name});
                 try out.flush();
@@ -127,11 +130,10 @@ pub fn main(init: std.process.Init) !void {
     var stale = false;
     for (names.items, 0..) |name, i| {
         const from = starts.items[i];
-        // The last library's span is bounded like the others. Letting it run to
-        // the end of the document made it asymmetric: any monospace span that
-        // tex2page emits in the trailing navigation or footer would be read as
-        // one of its identifiers, and neither the library count nor the
-        // auxiliary-syntax check would notice.
+        // 最後のライブラリの範囲も、他と同じように上限を設ける。文書の末尾まで
+        // 伸ばすと非対称になった。tex2page が末尾のナビゲーションやフッタに出す
+        // 等幅の span が、そのライブラリの識別子として読まれ、ライブラリ数も
+        // 補助構文の検査も気づかなかった。
         const to = if (i + 1 < starts.items.len)
             starts.items[i + 1]
         else
@@ -156,21 +158,20 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // A library with no identifiers is the failure that matters most and
-        // the one nothing was watching. If R7RS changes the markup of one
-        // export list, this program still reports 16 libraries and succeeds,
-        // and the file holds only its header comments. The conformance matrix
-        // takes these files as its denominator, so that library would read as
-        // fully conformant with nothing implemented.
+        // 識別子が1つもないライブラリは、最も重大でありながら、誰も見ていなかった
+        // 失敗である。R7RS がエクスポート一覧の1つのマークアップを変えても、
+        // このプログラムは16ライブラリを報告して成功し、ファイルにはヘッダの
+        // コメントしか残らない。準拠の表はこれらのファイルを分母にするので、その
+        // ライブラリは、何も実装していないのに完全準拠と読めてしまう。
         if (ids.items.len == 0) {
             try out.print("(scheme {s}) yielded no identifier; the markup of its export list changed\n", .{name});
             try out.flush();
             std.process.exit(1);
         }
 
-        // A duplicate means one span was read twice, or two spans decoded to
-        // the same name. Either way the count is wrong, and a count is what the
-        // provenance document records.
+        // 重複は、1つの span を2回読んだか、2つの span が同じ名前にデコード
+        // されたことを意味する。どちらでも数が間違っており、来歴の文書が
+        // 記録しているのは数である。
         for (ids.items, 0..) |id, a| {
             for (ids.items[a + 1 ..]) |other| {
                 if (!std.mem.eql(u8, id, other)) continue;
@@ -195,8 +196,8 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const file_name = try std.fmt.allocPrint(gpa, "{s}.txt", .{name});
-        // Built in memory first, so the same bytes can be written or compared.
-        // Writing and then hashing would have compared the file with itself.
+        // 先にメモリ上で組み立てる。同じバイト列を書くことも比較することもできる。
+        // 書いてからハッシュを取ると、ファイルを自分自身と比較することになる。
         var content: std.ArrayList(u8) = .empty;
         try content.appendSlice(gpa, try std.fmt.allocPrint(
             gpa,
@@ -247,16 +248,18 @@ pub fn main(init: std.process.Init) !void {
     try out.flush();
 }
 
-/// Resolves the character references Appendix A uses. The page writes `<` and
-/// `>` as the numeric references `&#x3c;` and `&#x3e;`, so a decoder that only
-/// knows the named forms silently drops `=>` and `char<=?`.
+/// Resolves the character references Appendix A uses.
 ///
-/// U+200B is dropped: tex2page inserts zero-width spaces after `?` and `<`, and
-/// keeping them would stop `binary-port?` and `char<?` from ever matching a
-/// library's export list. U+00A0 becomes a plain space so the whitespace check
-/// below can reject it.
-/// The caller owns the result. Returning a trimmed slice into the accumulator
-/// would hand back a pointer the caller cannot free.
+/// このページは `<` と `>` を数値参照 `&#x3c;` と `&#x3e;` で書く。名前付きの形
+/// しか知らないデコーダは、`=>` と `char<=?` を黙って落とす。
+///
+/// U+200B は捨てる。tex2page は `?` や `<` の後にゼロ幅スペースを入れるので、
+/// 残すと `binary-port?` や `char<?` がライブラリのエクスポート一覧と永久に
+/// 一致しなくなる。U+00A0 は普通のスペースにする。後の空白の検査が拒否できる
+/// ようにするためである。
+///
+/// 結果は呼び出し側が所有する。アキュムレータの中を指すトリム済みのスライスを
+/// 返すと、呼び出し側が解放できないポインタを渡すことになる。
 fn decode(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
     var acc: std.ArrayList(u8) = .empty;
     defer acc.deinit(gpa);
@@ -284,8 +287,8 @@ fn decode(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
             };
             try acc.appendSlice(gpa, utf8[0..n]);
         } else {
-            // Unknown reference: keep it verbatim so the whitespace and
-            // auxiliary-syntax checks notice rather than silently accepting it.
+            // 未知の参照はそのまま残す。空白と補助構文の検査が、黙って受け入れず
+            // 気づけるようにするためである。
             try acc.append(gpa, '&');
             try acc.appendSlice(gpa, entity);
             try acc.append(gpa, ';');
@@ -295,8 +298,10 @@ fn decode(gpa: std.mem.Allocator, raw: []const u8) ![]const u8 {
 }
 
 /// Library names become output file names, so only lowercase letters, digits
-/// and internal hyphens are allowed. This keeps a crafted or corrupted input
-/// from building a path that escapes the output directory.
+/// and internal hyphens are allowed.
+///
+/// これにより、細工された入力や壊れた入力が、出力ディレクトリの外へ出るパスを
+/// 作ることを防ぐ。
 fn isPlainLibraryName(name: []const u8) bool {
     if (name.len == 0 or name.len > 32) return false;
     if (name[0] == '-' or name[name.len - 1] == '-') return false;
@@ -330,14 +335,14 @@ fn codePointOf(entity: []const u8) ?u21 {
 // ---------------------------------------------------------------------------
 // Tests
 //
-// Appendix A's markup has two traps that silently corrupt identifiers, and the
-// output file name comes from parsed HTML. These cover both.
+// 付録Aのマークアップには、識別子を黙って壊す罠が2つあり、出力ファイル名は
+// 解析した HTML から来る。以下のテストはその両方を扱う。
 // ---------------------------------------------------------------------------
 
 test "decode resolves the numeric references appendix A actually uses" {
     const gpa = std.testing.allocator;
-    // The page writes < and > as &#x3c; and &#x3e;, not the named forms. A
-    // decoder that only knew the named forms dropped => and char<=? entirely.
+    // このページは < と > を、名前付きの形でなく &#x3c; と &#x3e; で書く。名前付きの
+    // 形しか知らないデコーダは、=> と char<=? をまるごと落とした。
     const arrow = try decode(gpa, "=&#x3e;");
     defer gpa.free(arrow);
     try std.testing.expectEqualStrings("=>", arrow);
@@ -349,8 +354,8 @@ test "decode resolves the numeric references appendix A actually uses" {
 
 test "decode drops the zero-width spaces tex2page inserts" {
     const gpa = std.testing.allocator;
-    // Keeping U+200B would stop binary-port? from ever matching an export
-    // list, so it would read as unimplemented forever.
+    // U+200B を残すと、binary-port? がエクスポート一覧と永久に一致せず、
+    // いつまでも未実装と読まれる。
     const got = try decode(gpa, "binary-port?&#x200b; &#x200b;");
     defer gpa.free(got);
     try std.testing.expectEqualStrings("binary-port?", got);
@@ -358,8 +363,8 @@ test "decode drops the zero-width spaces tex2page inserts" {
 
 test "decode keeps an unknown reference verbatim" {
     const gpa = std.testing.allocator;
-    // Silently dropping it would let a parse change pass unnoticed; keeping it
-    // makes the whitespace and auxiliary-syntax checks notice.
+    // 黙って捨てると、解析の変化が気づかれずに通ってしまう。残せば、空白と
+    // 補助構文の検査が気づける。
     const got = try decode(gpa, "a&weird;b");
     defer gpa.free(got);
     try std.testing.expectEqualStrings("a&weird;b", got);
@@ -379,7 +384,8 @@ test "isPlainLibraryName rejects anything that could escape the output directory
     try std.testing.expect(isPlainLibraryName("base"));
     try std.testing.expect(isPlainLibraryName("case-lambda"));
     try std.testing.expect(isPlainLibraryName("r5rs"));
-    // The name becomes a file name, and it comes from parsed HTML.
+    // 名前はファイル名になり、解析した HTML から来る。
+
     try std.testing.expect(!isPlainLibraryName("../etc"));
     try std.testing.expect(!isPlainLibraryName("CHAR"));
     try std.testing.expect(!isPlainLibraryName(""));

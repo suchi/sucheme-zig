@@ -1,8 +1,8 @@
 //! sucheme: an R7RS-small Scheme interpreter.
 //!
-//! The public entry to the interpreter. Each slice of stage 1 adds to what it
-//! reads and evaluates; docs/plans/0003-phase1-minimal-slice.md lists what each
-//! slice adds, and docs/design/architecture.md the modules it grows into.
+//! インタプリタの公開の入口である。段階1の各スライスが、読んで評価できるものを
+//! 増やしていく。各スライスが何を足すかは docs/plans/0003-phase1-minimal-slice.md に、
+//! 育っていく先のモジュールは docs/design/architecture.md にある。
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -10,8 +10,10 @@ const build_options = @import("build_options");
 /// Implementation name reported by `(features)` and the `--version` output.
 pub const name = build_options.name;
 
-/// Project version. build.zig.zon's `.version` is the single source of truth;
-/// build.zig passes it through as a build option.
+/// Project version.
+///
+/// build.zig.zon の `.version` が唯一の正であり、build.zig がビルドオプションとして
+/// そのまま渡す。
 pub const version = build_options.version;
 
 /// The GC heap, and the options that bound it.
@@ -23,18 +25,19 @@ const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
 
-/// Every way `evalPrint` can fail. `Raised` is a Scheme error, with its condition
-/// in the context; `diagnostic` describes it. The reader's errors are described
-/// the same way.
+/// Every way `evalPrint` can fail.
+///
+/// `Raised` は Scheme のエラーで、その条件オブジェクトはコンテキストにあり、
+/// `diagnostic` がそれを説明する。リーダのエラーも同じ形で説明する。
 pub const Error = reader.Error || expand.Error || machine.Error || printer.Error;
 
-/// One interpreter: what outlives a single line of input. The data the reader
-/// builds and what a program makes while it runs are in the GC heap, which
-/// `gpa` supplies and the options bound; the symbol table, the global
-/// environment and the code are in an arena of the interpreter's own, which
-/// docs/design/architecture.md records as the exception. The context points
-/// into the arena, so an interpreter is initialised in place and not copied
-/// after.
+/// One interpreter: what outlives a single line of input.
+///
+/// リーダが作るデータとプログラムが実行中に作るものは GC ヒープにあり、そのヒープは
+/// `gpa` が供給し、オプションが上限を定める。シンボルテーブル、グローバル環境、
+/// コードは、インタプリタ専用のアリーナにある。これは docs/design/architecture.md
+/// が例外として記録している。コンテキストはアリーナの中を指すので、インタプリタは
+/// その場で初期化し、あとでコピーしない。
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
     ctx: context.Context,
@@ -57,12 +60,11 @@ pub const Interpreter = struct {
     /// Reads every datum in `source`, evaluates each in turn, and writes each
     /// result followed by a newline to `out`.
     ///
-    /// Stops at the first error. The results written before it stay written,
-    /// and `diagnostic` describes the error. What this call needs only while it
-    /// runs comes from `arena`, which the caller frees as a whole. The data the
-    /// reader builds are in the heap and live for as long as something refers
-    /// to them; the symbols and the code are allocated in the interpreter's own
-    /// arena and live until `deinit`.
+    /// 最初のエラーで止まる。それより前に書いた結果は書かれたままで、エラーは
+    /// `diagnostic` が説明する。この呼び出しが実行中にだけ要るものは `arena` から
+    /// 取り、呼び出し側が丸ごと解放する。リーダが作るデータはヒープにあり、何かが
+    /// 参照している間は生きる。シンボルとコードはインタプリタ専用のアリーナに確保し、
+    /// `deinit` まで生きる。
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         self.ctx.clearDiagnostic();
         self.run(arena, source, out) catch |e| {
@@ -71,32 +73,32 @@ pub const Interpreter = struct {
         };
     }
 
-    /// The message for the error the last `evalPrint` returned. Valid until the
-    /// next call.
+    /// The message for the error the last `evalPrint` returned.
+    ///
+    /// 次の呼び出しまで有効である。
     pub fn diagnostic(self: *const Interpreter) []const u8 {
         return self.ctx.diagnostic();
     }
 
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
-        // Why: strings, characters and symbol names are valid UTF-8 (ADR-0008),
-        // and this is the one place the bytes of a program enter. The check is
-        // the standard library's, not a list of the ways to be invalid
-        // (docs/design/platform-and-web.md).
+        // Why: 文字列・文字・シンボル名は妥当な UTF-8 であり(ADR-0008)、プログラムの
+        // バイト列が入ってくるのはここ1か所だけである。検査は標準ライブラリのものを
+        // 使い、不正になりうる形を並べたりしない(docs/design/platform-and-web.md)。
         if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
         var r: reader.Reader = .init(source);
-        // What is read outlives the line: `quote` can hand it to a definition.
+        // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
         const sink: reader.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
         while (true) {
-            // Between two forms nothing is held but what the context holds, so
-            // this is a safe point too. It is also where the garbage of a line
-            // that ended in an error is collected, before the next line reads.
+            // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
+            // このためここもセーフポイントである。エラーで終わった行のゴミも、
+            // 次の行を読む前にここで回収される。
             if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
             const form = try r.next(arena, sink) orelse break;
             const node = try expand.expand(&self.ctx, arena, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
-            // A definition prints nothing. The REPL shows a value, and this one
-            // has no external form.
+            // 定義は何も出力しない。REPL が表示するのは値であり、これには
+            // 外部表現がない。
             if (v.kind() == .unspecified) continue;
             try printer.write(out, arena, &self.ctx.symbols, v);
             try out.writeByte('\n');
@@ -224,7 +226,7 @@ test "a closure keeps its frame after the line that made it is gone" {
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     {
-        // The arena of the first line is freed before the closure is called.
+        // 最初の行のアリーナは、クロージャを呼ぶ前に解放される。
         var first: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer first.deinit();
         try interp.evalPrint(first.allocator(), "(define make (lambda (n) (lambda () (set! n (+ n 1)) n))) (define next (make 40))", &w);
@@ -246,12 +248,12 @@ test "a line that ends at the limit of the heap does not end the session" {
     try interp.evalPrint(arena.allocator(), "(define (forever n) (+ 1 (forever n))) (define keep 42)", &w);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(forever 0)", &w));
     try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
-    // What the failed line left in the heap is garbage, and the next line starts
-    // by collecting it before it reads.
+    // 失敗した行がヒープに残したものはゴミであり、次の行は読む前にそれを
+    // 回収することから始まる。
     try interp.evalPrint(arena.allocator(), "(+ 1 2) keep", &w);
     try std.testing.expectEqualStrings("3\n42\n", w.buffered());
     try std.testing.expectEqualStrings("", interp.diagnostic());
-    // And again.
+    // もう一度。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(forever 0)", &w));
     try interp.evalPrint(arena.allocator(), "(+ 20 22)", &w);
     try std.testing.expectEqualStrings("3\n42\n42\n", w.buffered());
@@ -267,7 +269,7 @@ test "a datum too large for the heap is refused with the same message" {
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.HeapLimit, interp.evalPrint(arena.allocator(), "'(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30)", &w));
     try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
-    // The datum that did not fit is garbage, and a small one does.
+    // 収まらなかったデータはゴミであり、小さいものなら収まる。
     try interp.evalPrint(arena.allocator(), "'(1 2)", &w);
     try std.testing.expectEqualStrings("(1 2)\n", w.buffered());
 }
@@ -293,9 +295,10 @@ test "input that is not valid UTF-8 is refused whole, and the next line is read"
     defer arena.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    // Each of these is invalid for a different reason: a lone continuation
-    // byte, an overlong encoding, a surrogate (what WTF-8 holds for an unpaired
-    // UTF-16 surrogate), a byte that no sequence starts with, a cut-off one.
+    // これらは、それぞれ違う理由で不正である。単独の継続バイト、冗長な
+    // エンコード、サロゲート(WTF-8 が対にならない UTF-16 サロゲートに使う
+    // もの)、どの列も始まらないバイト、途中で切れた列。
+
     for ([_][]const u8{ "1 \x80", "\xC0\x80", "\xED\xA0\x80", "\xFF", "\xE3\x81" }) |src| {
         try std.testing.expectError(error.InvalidUtf8, interp.evalPrint(arena.allocator(), src, &w));
         try std.testing.expectEqualStrings("", w.buffered());

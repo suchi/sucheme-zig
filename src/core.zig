@@ -1,8 +1,8 @@
 //! The core IR: helpers over the nodes of value.zig.
 //!
-//! The layouts are in value.zig, where everything the GC will walk is defined
-//! (docs/design/architecture.md). This file makes nodes and writes them as text,
-//! which is how the tests of the expander read what it produced.
+//! 配置(レイアウト)は value.zig にある。GC が辿るものはすべてそこで定義する
+//! (docs/design/architecture.md)。このファイルはノードを作り、テキストとして
+//! 書き出す。展開器のテストは、展開器が作ったものをこれで読む。
 
 const std = @import("std");
 const value_mod = @import("value.zig");
@@ -22,11 +22,13 @@ pub fn make(alloc: std.mem.Allocator, n: Node) error{OutOfMemory}!*const Node {
 }
 
 /// Writes `node` as a list that names the kind of node first, for the tests of
-/// the expander. Not a form `read` takes back: the IR is not source.
+/// the expander.
 ///
-/// A node is written by recursion, which is as deep as the node tree. The tests
-/// are the only caller, so a deep input is not a concern here; a caller that
-/// takes a program's input must not use it.
+/// `read` が読み戻せる形ではない。IR はソースではない。
+///
+/// ノードは再帰で書き、その深さはノードの木の深さに等しい。呼び出し側はテスト
+/// だけなので、深い入力はここでは問題にならない。プログラムの入力を受け取る
+/// 呼び出し側は、これを使ってはならない。
 pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, node: *const Node) Error!void {
     switch (node.*) {
         .constant => |v| {
