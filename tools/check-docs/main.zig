@@ -360,11 +360,31 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
 /// 一致を受理すると、コマンドを定期実行のワークフローに移しても緑のままになる。
 const per_commit_workflow = ".github/workflows/ci.yml";
 
+/// The workflow that runs the slow tier (docs/plans/0007-test-tiers.md).
+const slow_workflow = ".github/workflows/full.yml";
+
+/// The commands of the table's slow-tier row, which `slow_workflow` has to run.
+///
+/// この行は全コミットと印が付いていないので、コミットごとのワークフローとの
+/// 照合はこれを読まない。ここで名指しするのはそのためである。名指ししないと、
+/// ワークフローから `-Dslow=true` を落としても、step を消しても、全コマンドが
+/// 緑のまま、規模を試すテストがどこでも走らなくなる。名前は `build.zig` が
+/// `slow` オプションと2つのテスト step に付けたものなので、1つ落とすことは、
+/// それが走らせるものを落とすことになる。
+const slow_commands = [_][]const u8{
+    "zig build test -Dslow=true",
+    "zig build test-scheme -Dslow=true",
+};
+
 /// A row of the verification command table, as this check reads it.
 ///
 /// この検査が読み取る、検証コマンド表の1行。
 const CommandRow = struct {
     command: []const u8,
+    /// The whole command cell, for rows that name more than one command.
+    ///
+    /// 複数のコマンドを名指しする行のために、コマンドのセル全体を持つ。
+    cell: []const u8,
     /// The stage the command starts existing at, or null if the cell is not a
     /// number.
     ///
@@ -401,6 +421,7 @@ fn checkCiRunsTheTable(
     // 対するこの検査の読み取りが信用できなくなるからである。コマンドを集めるのは、
     // コミットごとに走るワークフローからだけである。
     var run_lines: std.ArrayList([]const u8) = .empty;
+    var slow_run_lines: std.ArrayList([]const u8) = .empty;
     // コミットごとのワークフローが実際に持つキーと値。ワークフローが走るかどうかを
     // 決めるものを、閉じた集合に固定できるようにする。
     var seen: std.ArrayList(struct { key: []const u8, value: []const u8 }) = .empty;
@@ -503,6 +524,7 @@ fn checkCiRunsTheTable(
                 value = value[1 .. value.len - 1];
             }
             if (per_commit) try run_lines.append(gpa, value);
+            if (std.mem.eql(u8, path, slow_workflow)) try slow_run_lines.append(gpa, value);
         }
     }
 
@@ -552,14 +574,37 @@ fn checkCiRunsTheTable(
         const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
         if (row.len == 0 or row[0] != '|') continue;
         if (cellCount(row) < 4) continue;
-        const command = backtickedSpan(cellAt(row, 1).?) orelse continue;
+        const command_cell = cellAt(row, 1).?;
+        const command = backtickedSpan(command_cell) orelse continue;
         const stage_cell = std.mem.trim(u8, cellAt(row, 2).?, &std.ascii.whitespace);
         const ci_cell = std.mem.trim(u8, cellAt(row, 3).?, &std.ascii.whitespace);
         try table_rows.append(gpa, .{
             .command = command,
+            .cell = command_cell,
             .stage = std.fmt.parseInt(usize, stage_cell, 10) catch null,
             .every_commit = std.mem.eql(u8, ci_cell, "全コミット"),
         });
+    }
+
+    // 層2には全コミットと印を付けた行がないので、下のループはそれを読まない。
+    // その行は各コマンドを名指しし、層2のワークフローはそれを実行しなければならない。
+    for (slow_commands) |command| {
+        var in_table = false;
+        for (table_rows.items) |row| {
+            if (hasBacktickedSpan(row.cell, command)) in_table = true;
+        }
+        if (!in_table) rep.fail(
+            "AGENTS.md's table has no row naming `{s}`, the slow tier's command",
+            .{command},
+        );
+        var ran = false;
+        for (slow_run_lines.items) |line| {
+            if (runsCommand(line, command)) ran = true;
+        }
+        if (!ran) rep.fail(
+            "the slow tier's command `{s}` is not run by {s}",
+            .{ command, slow_workflow },
+        );
     }
 
     // ビルドが提供するから、表がそれを要求し、ワークフローがそれを実行する。
@@ -639,6 +684,21 @@ fn backtickedSpan(cell: []const u8) ?[]const u8 {
     const rest = cell[open + 1 ..];
     const close = std.mem.indexOfScalar(u8, rest, '`') orelse return null;
     return if (close == 0) null else rest[0..close];
+}
+
+/// Whether `command` is one of the spans between backticks in `cell`.
+///
+/// 1つの行が2つのコマンドを名指しすることがあり、`backtickedSpan` は最初の1つしか
+/// 読まない。
+fn hasBacktickedSpan(cell: []const u8, command: []const u8) bool {
+    var rest = cell;
+    while (std.mem.indexOfScalar(u8, rest, '`')) |open| {
+        const after = rest[open + 1 ..];
+        const close = std.mem.indexOfScalar(u8, after, '`') orelse return false;
+        if (std.mem.eql(u8, after[0..close], command)) return true;
+        rest = after[close + 1 ..];
+    }
+    return false;
 }
 
 /// Keys a workflow may use. Anything else is reported.
@@ -2756,6 +2816,23 @@ test "backtickedSpan: the command, not the note beside it" {
     );
     try std.testing.expect(backtickedSpan(" no backticks ") == null);
     try std.testing.expect(backtickedSpan(" `` ") == null);
+}
+
+test "hasBacktickedSpan: every span of the cell counts, not only the first" {
+    const cell = " `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` ";
+    try std.testing.expect(hasBacktickedSpan(cell, "zig build test -Dslow=true"));
+    try std.testing.expect(hasBacktickedSpan(cell, "zig build test-scheme -Dslow=true"));
+    // スパンの前半や、バッククォートの外の文字列は、コマンドではない。
+    try std.testing.expect(!hasBacktickedSpan(cell, "zig build test"));
+    try std.testing.expect(!hasBacktickedSpan(" zig build test `other` ", "zig build test"));
+    try std.testing.expect(!hasBacktickedSpan(" `unclosed", "unclosed"));
+}
+
+test "runsCommand: the slow commands are told apart from the plain ones" {
+    try std.testing.expect(runsCommand("zig build test -Dslow=true --summary all", "zig build test -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test --summary all", "zig build test -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test-scheme -Dslow=true", "zig build test -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test-scheme", "zig build test-scheme -Dslow=true"));
 }
 
 test "stripComment: a hash opens a comment only at the start or after whitespace" {
