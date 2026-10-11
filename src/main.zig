@@ -44,7 +44,9 @@
 //!
 //! 保留の合計は、改行を含めて 65536 バイト(`max_line`)までである。超えたら
 //! `error: the input does not fit in 65536 bytes, newline included` を報告して、
-//! 保留を捨てる。同じ式の残りの行は新しい入力として読まれるので、エラーが続きうる。
+//! 保留を捨てる。捨てた式の残りの行は新しい入力として読まれる。その中で完結した
+//! 断片は、そのまま評価される(`set!` や `define` の副作用も起きる)。閉じていない
+//! 断片は継続行になり、構文エラーの断片はエラーを報告する。
 //! 1行が `max_line` に収まらないときも、報告して読み飛ばし、保留を捨てる。
 //!
 //! 入力が尽きたとき、保留が残っていれば `error: unexpected end of input` を
@@ -490,6 +492,29 @@ test "repl reads the lines after a dropped expression as new input" {
     try std.testing.expectEqualStrings("error: the input does not fit in 65536 bytes, newline included\n", r.err);
     try std.testing.expectEqual(64, std.mem.count(u8, r.out, "... "));
     try std.testing.expect(std.mem.endsWith(u8, r.out, "> 7\n> \n"));
+}
+
+test "repl evaluates the finished pieces of a dropped expression" {
+    var ob: [1024]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const blank = try spaces(1023);
+    defer std.testing.allocator.free(blank);
+    var input: std.ArrayList(u8) = .empty;
+    defer input.deinit(std.testing.allocator);
+    try input.appendSlice(std.testing.allocator, "(define total 5)\n(begin\n");
+    for (0..70) |_| {
+        try input.appendSlice(std.testing.allocator, blank);
+        try input.append(std.testing.allocator, '\n');
+    }
+    // 捨てた式 `(begin ...)` の尾である。`(set! total 0)` は完結しているので最上位で
+    // 評価され、total が変わる。閉じ括弧は構文エラーとして報告される。
+    try input.appendSlice(std.testing.allocator, "(set! total 0)\n)\ntotal\n");
+    const r = try replOver(input.items, &ob, &eb);
+    try std.testing.expectEqualStrings(
+        "error: the input does not fit in 65536 bytes, newline included\nerror: unexpected )\n",
+        r.err,
+    );
+    try std.testing.expect(std.mem.endsWith(u8, r.out, "> > > 0\n> \n"));
 }
 
 test "repl drops what it kept when a line is longer than it reads" {
