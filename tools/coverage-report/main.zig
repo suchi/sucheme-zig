@@ -237,11 +237,14 @@ test "render counts bound identifiers per library and counts the shared ones onc
     try interp.init(std.testing.allocator);
     defer interp.deinit();
 
-    // `+` と `define` は束縛済み、`car` と `vector-map` は未束縛である。`+` は
-    // 両方のライブラリにあり、合計では1回だけ数える。
+    // `+` と `define` は束縛済み、`no-such-procedure` と `no-such-syntax` は未束縛である。
+    // `+` は両方のライブラリにあり、合計では1回だけ数える。
+    // Why: 未束縛の例は、どの段階でも束縛されない名前でなければならない。R7RS の名前は
+    // いつか束縛される(`car` はスライス 1k で、`call/cc` は段階2で束縛される)ので、
+    // 例に使うとそのたびにテストが落ちる。
     const libs = [_]Library{
-        .{ .name = "base", .ids = &.{ "+", "define", "car" } },
-        .{ .name = "r5rs", .ids = &.{ "+", "car", "vector-map" } },
+        .{ .name = "base", .ids = &.{ "+", "define", "no-such-procedure" } },
+        .{ .name = "r5rs", .ids = &.{ "+", "no-such-procedure", "no-such-syntax" } },
     };
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
@@ -252,7 +255,7 @@ test "render counts bound identifiers per library and counts the shared ones onc
     const got = out.written();
     try std.testing.expect(std.mem.indexOf(u8, got, "| `(scheme base)` | 2 | 3 |\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "| `(scheme r5rs)` | 1 | 3 |\n") != null);
-    // 一意の識別子は {+, define, car, vector-map} の4個で、束縛済みは {+, define} の2個。
+    // 一意の識別子は {+, define, no-such-procedure, no-such-syntax} の4個で、束縛済みは {+, define} の2個。
     try std.testing.expect(std.mem.endsWith(u8, got, "| 一意の識別子の合計 | 2 | 4 |\n"));
 }
 
