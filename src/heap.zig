@@ -253,6 +253,11 @@ pub const Heap = struct {
     /// コピーがペイロードで、先に確保し、セルを確保できなければ返す。
     /// `createFrame` と同じである。ASCII 判定のフラグを計算するのも、ここである。
     pub fn createString(self: *Heap, bytes: []const u8) Error!*String {
+        // Why: `string-length` と `string-ref` は、バイト列が妥当な UTF-8 であることを前提に
+        // 文字を数える。入口(リーダ、`Interpreter` の全体検査)で保証しているので、
+        // 将来の `string-append` などがこの前提を破ったとき、デバッグビルドで作った場所で
+        // 見つける。
+        std.debug.assert(std.unicode.utf8ValidateSlice(bytes));
         const total = try self.reserveWithPayload(String, bytes.len, 1);
         const copy = try self.backing.dupe(u8, bytes);
         errdefer self.backing.free(copy);
