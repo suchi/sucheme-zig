@@ -50,8 +50,9 @@
 | 1e | マージ済み | #11 |
 | 1f | マージ済み | #13(計画書 0004 は #12) |
 | 1g | マージ済み。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | 実装が #21、後半のレビュー対応が #22(計画書 0005 は #18) |
-| 1h | 実装済み、PR のレビュー待ち。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装は 1h の PR |
-| 1i から 1j | 未着手 | - |
+| 1h | マージ済み。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装は 1h の PR |
+| 1i | 計画は合意済み、実装中。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が本 PR |
+| 1j | 未着手 | - |
 
 ## 再開の手がかり
 
@@ -114,10 +115,10 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 ## 次にやること
 
-スライス 1g(GC ヒープ)の実装は、PR #21 で `main` に入っている。完了条件(100万回の末尾再帰が計上量の最大値を一定にして完了する、非末尾の無限再帰が `heap limit exceeded` で止まって REPL が続く、到達不能なオブジェクトが回収される、1a から 1f のテストがストレスモードでも通る)は、`zig build test` と `zig build test-scheme` で確かめる。
+スライス 1h(文字・文字列・ベクタ、ドット対)は PR #24 で `main` に入っている。テストの層([0007](0007-test-tiers.md))は PR #25 から #28 で入っている。
 
-1. PR [#21](https://github.com/suchi/sucheme-zig/pull/21) の後半のレビュー対応は [#22](https://github.com/suchi/sucheme-zig/pull/22) で入り、どちらもマージ済みである。
-2. スライス 1h(文字・文字列・ベクタ、ドット対)は実装済みで、PR のレビューとマージを待つ([0006](0006-slice-1h-strings-chars-vectors.md))。マージ後、スライス 1i(ブラウザで `(fact 10)` が動く)の計画書を書き、合意を得てから実装する。
+1. スライス 1i(ブラウザで `(fact 10)` が動く)の計画書 [0008](0008-slice-1i-wasm-web-ui.md) の合意を得てから、実装に入る。
+2. 1h の敵対的レビューの2巡目(文書と AGENTS.md)の結果が来たら、指摘を直す。
 3. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトはヒープの外にある(段階2)。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い、条件は `error.Raised` の脱出でハンドラは無い。
