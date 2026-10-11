@@ -172,6 +172,9 @@ pub const Machine = struct {
         while (operator_node.next) |n| operator_node = n;
         const operator = operator_node.value;
         if (operator.asPrimitive()) |prim| {
+            // 個数の検査はここにしかない。プリミティブの本体は、`args` が表の範囲に
+            // 収まることを前提にしてよい。
+            if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount);
             var small: [8]Value = undefined;
             const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
             // Why: オペランドはスクラッチ領域から最後に取ったものであり、プリミティブは
@@ -180,11 +183,8 @@ pub const Machine = struct {
             // 1 周ごとに領域を広げてしまう。
             defer if (count > small.len) self.scratch.free(operands);
             fill(operands, args);
-            const result = prim.call(operands) catch |e| return switch (e) {
-                error.WrongType => ctx.raise("wrong type of argument to {s}", .{prim.name}),
-                error.IntegerOverflow => ctx.raise("integer overflow in {s}", .{prim.name}),
-                error.WrongArgumentCount => ctx.raise("wrong number of arguments to {s}", .{prim.name}),
-            };
+            const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
+            const result = prim.call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e);
             return .{ .value = result };
         }
         const closure = operator.asClosure() orelse
@@ -201,6 +201,20 @@ pub const Machine = struct {
         const frame = try ctx.createFrame(lambda.frame_size, closure.env);
         fill(frame.values[0..count], args);
         return .{ .body = .{ .env = frame, .body = lambda.body } };
+    }
+
+    /// The error a failure of `prim` is: a condition with the message the failure
+    /// has, or the failure of the host as it is.
+    fn primitiveFailure(ctx: *Context, prim: *const value_mod.Primitive, e: value_mod.PrimitiveError) Error {
+        return switch (e) {
+            error.WrongType => ctx.raise("wrong type of argument to {s}", .{prim.name}),
+            error.IntegerOverflow => ctx.raise("integer overflow in {s}", .{prim.name}),
+            error.WrongArgumentCount => ctx.raise("wrong number of arguments to {s}", .{prim.name}),
+            error.DivisionByZero => ctx.raise("division by zero in {s}", .{prim.name}),
+            error.OutOfRange => ctx.raise("argument out of range in {s}", .{prim.name}),
+            // ヒープの失敗は、ほかの経路と同じ文言になるよう `Context` を通す。
+            error.HeapLimit, error.OutOfMemory => |heap_error| ctx.heapFailure(heap_error),
+        };
     }
 
     /// Copies the operands in `args`, which holds them last first and the
@@ -457,6 +471,149 @@ test "the errors of a call keep the messages the evaluator gave" {
     try f.expectFails("wrong number of arguments to -", "(-)");
     try f.expectFails("wrong number of arguments: expected 1, got 2", "((lambda (x) x) 1 2)");
     try f.expectFails("wrong number of arguments: expected 2, got 1", "((lambda (x y) x) 1)");
+}
+
+/// Primitives that record how the machine called them.
+/// 引数の個数の検査が機械にあること、`Services` が機械のものであること、プリミティブの
+/// 失敗が条件に写ることを確かめる。
+const Probe = struct {
+    var calls: usize = 0;
+    var heap: ?*heap_mod.Heap = null;
+    var scratch: ?std.mem.Allocator = null;
+    var failure: ?value_mod.PrimitiveError = null;
+
+    /// Takes one or two arguments.
+    const primitive: value_mod.Primitive = .{ .name = "probe", .min_args = 1, .max_args = 2, .call = &call };
+    /// Takes two arguments or more.
+    const variadic: value_mod.Primitive = .{ .name = "probe*", .min_args = 2, .max_args = null, .call = &call };
+    /// Takes no argument.
+    const nullary: value_mod.Primitive = .{ .name = "probe0", .min_args = 0, .max_args = 0, .call = &call };
+
+    fn call(services: *const value_mod.Services, args: []const Value) value_mod.PrimitiveError!Value {
+        calls += 1;
+        heap = services.heap;
+        scratch = services.scratch;
+        if (failure) |e| return e;
+        return services.heap.cons(.fromFixnum(@intCast(args.len)), .empty_list_value);
+    }
+
+    /// Allocates until the limit refuses.
+    /// GC はプリミティブの途中では走らない。
+    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = 0, .call = &fill };
+
+    fn fill(services: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
+        var list: Value = .empty_list_value;
+        while (true) list = try services.heap.cons(.fromFixnum(1), list);
+    }
+
+    fn reset() void {
+        calls = 0;
+        heap = null;
+        scratch = null;
+        failure = null;
+    }
+
+    fn bind(f: *Fixture) !void {
+        for ([_]*const value_mod.Primitive{ &primitive, &variadic, &nullary, &greedy }) |p| {
+            const id = try f.ctx.symbols.intern(f.ctx.persist, p.name);
+            try f.ctx.globals.define(f.ctx.persist, id, .fromPrimitive(p));
+        }
+    }
+
+    /// The number of arguments the primitive got in `src`: the car of its value.
+    fn count(f: *Fixture, src: []const u8) !i64 {
+        return (try f.eval(src)).asPair().?.car.asFixnum().?;
+    }
+};
+
+test "the machine checks the number of arguments, and the primitive is not called when it is wrong" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    Probe.reset();
+    try Probe.bind(&f);
+    // 下限を下回る。
+    try f.expectFails("wrong number of arguments to probe", "(probe)");
+    // 上限を上回る。
+    try f.expectFails("wrong number of arguments to probe", "(probe 1 2 3)");
+    // オペランドを小さな配列に収められない数でも、同じである。
+    try f.expectFails("wrong number of arguments to probe", "(probe 1 2 3 4 5 6 7 8 9 10)");
+    try f.expectFails("wrong number of arguments to probe*", "(probe* 1)");
+    try f.expectFails("wrong number of arguments to probe0", "(probe0 1)");
+    try std.testing.expectEqual(0, Probe.calls);
+    // 範囲の両端は呼べる。
+    try std.testing.expectEqual(1, try Probe.count(&f, "(probe 1)"));
+    try std.testing.expectEqual(2, try Probe.count(&f, "(probe 1 2)"));
+    try std.testing.expectEqual(2, try Probe.count(&f, "(probe* 1 2)"));
+    try std.testing.expectEqual(10, try Probe.count(&f, "(probe* 1 2 3 4 5 6 7 8 9 10)"));
+    try std.testing.expectEqual(0, try Probe.count(&f, "(probe0)"));
+    try std.testing.expectEqual(5, Probe.calls);
+    // 失敗のあとも、機械は次の呼び出しを受け付ける。
+    try f.expectFails("wrong number of arguments to probe", "(probe)");
+    try std.testing.expectEqual(5, Probe.calls);
+}
+
+test "the operands are evaluated before the count is checked" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    Probe.reset();
+    try Probe.bind(&f);
+    // オペランドは個数の検査より前に評価される。その中のエラーが先に報告される。
+    try f.expectFails("unbound variable: nope", "(probe nope 1 2)");
+    try std.testing.expectEqual(0, Probe.calls);
+}
+
+test "a primitive is given the heap and the scratch space of the machine" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    Probe.reset();
+    try Probe.bind(&f);
+    const before = f.ctx.heap.count;
+    const result = try f.eval("(probe 7)");
+    try std.testing.expectEqual(&f.ctx.heap, Probe.heap.?);
+    try std.testing.expectEqual(f.machine.scratch.ptr, Probe.scratch.?.ptr);
+    // プリミティブが渡されたヒープに確保したペアは、機械が持つヒープのものである。
+    try std.testing.expect(result.pointsIntoHeap());
+    try std.testing.expect(f.ctx.heap.count > before);
+    try std.testing.expectEqual(1, result.asPair().?.car.asFixnum().?);
+}
+
+test "the failures of a primitive become the conditions with their messages" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    Probe.reset();
+    try Probe.bind(&f);
+    const cases = [_]struct { failure: value_mod.PrimitiveError, message: []const u8 }{
+        .{ .failure = error.WrongType, .message = "wrong type of argument to probe" },
+        .{ .failure = error.WrongArgumentCount, .message = "wrong number of arguments to probe" },
+        .{ .failure = error.IntegerOverflow, .message = "integer overflow in probe" },
+        .{ .failure = error.DivisionByZero, .message = "division by zero in probe" },
+        .{ .failure = error.OutOfRange, .message = "argument out of range in probe" },
+        .{ .failure = error.HeapLimit, .message = "heap limit exceeded" },
+    };
+    for (cases) |c| {
+        Probe.failure = c.failure;
+        f.ctx.clearDiagnostic();
+        try f.expectFails(c.message, "(probe 1)");
+    }
+    // ホストの失敗は条件にならず、そのまま返る。
+    Probe.failure = error.OutOfMemory;
+    f.ctx.clearDiagnostic();
+    try std.testing.expectError(error.OutOfMemory, f.eval("(probe 1)"));
+    try std.testing.expect(f.ctx.raised == null);
+}
+
+test "a primitive that allocates past the limit ends the line with heap limit exceeded, and the next line runs" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 64 * 1024, .min_threshold = 16 * 1024 });
+    defer f.deinit();
+    Probe.reset();
+    try Probe.bind(&f);
+    try f.expectFails("heap limit exceeded", "(greedy)");
+    try f.expectInt(3, "(+ 1 2)");
 }
 
 test "an error raised deep in the recursion leaves the machine, and the next run is not affected" {
