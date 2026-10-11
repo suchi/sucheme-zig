@@ -61,6 +61,14 @@ const Keyword = enum {
     }
 };
 
+/// Whether `name` is the name of a special form.
+///
+/// 準拠マトリクスが、特殊形式を束縛済みと数えるために使う。エラー文言から
+/// 分類せず、展開器が使う判定と同じ関数で答える。
+pub fn isKeyword(name: []const u8) bool {
+    return Keyword.of(name) != null;
+}
+
 /// Where a form stands, which decides whether a definition is allowed there
 /// (R7RS 5.3): at the top level, or at the start of a body.
 const Position = enum { top, body, expression };
@@ -430,6 +438,15 @@ const Fixture = struct {
         try std.testing.expectEqualStrings(message, self.ctx.raised.?.message);
     }
 };
+
+test "isKeyword names the six special forms and nothing near them" {
+    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!" }) |name| {
+        try std.testing.expect(isKeyword(name));
+    }
+    for ([_][]const u8{ "set", "Define", "define ", "cond", "+", "" }) |name| {
+        try std.testing.expect(!isKeyword(name));
+    }
+}
 
 test "a literal is a constant, and a name is a global variable when nothing binds it" {
     var f: Fixture = undefined;
