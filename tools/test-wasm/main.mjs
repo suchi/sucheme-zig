@@ -306,10 +306,13 @@ test("a region allocated before reset is still the host's: it can be used and fr
 test("web/serve.mjs --self-test passes", () => {
   // `URL.pathname` は空白や非 ASCII を %XX のまま返すので、ファイルパスには使えない。
   const script = fileURLToPath(new URL("../../web/serve.mjs", import.meta.url));
+  // 自己検査は1秒かからない。待ち続けて検証を止めないよう、30 秒で打ち切る。
   const r = spawnSync(process.execPath, [script, "--self-test"], {
     encoding: "utf8",
+    timeout: 30_000,
   });
-  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  // 打ち切られると status は null で、理由は error に入る。
+  assert.equal(r.status, 0, `${r.error ?? ""}${r.stdout}${r.stderr}`);
   assert.match(r.stdout, /self-test passed/);
 });
 
