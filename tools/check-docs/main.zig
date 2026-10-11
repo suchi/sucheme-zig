@@ -1527,18 +1527,18 @@ fn identifierCount(body: []const u8) usize {
 const RecordedCount = union(enum) {
     one: usize,
     none,
-    /// The label appears in several rows with differing values.
+    /// ラベルが複数の行に現れ、値が食い違っている。
     ambiguous,
 };
 
 /// The integer recorded beside `label` in a Markdown table row.
 ///
-/// Only lines that open a table row are considered. Searching the whole
-/// document found the label in prose first and read whatever number happened
-/// to follow it: the sentence explaining the hash encoding names two
-/// libraries, and one of them is followed by its own count in words. Every
-/// matching row is read and the values must agree, for the same reason
-/// `sha256InMarkdown` refuses to pick one of several.
+/// 対象は表の行で始まる行だけである。文書全体から探すと、ラベルが先に地の文で
+/// 見つかり、その後ろにたまたま続く数を読んでしまった。ハッシュの符号化を説明する
+/// 文が2つのライブラリを挙げていて、その一方の後ろに、そのライブラリ自身の件数が
+/// 言葉で続いていたためである。一致する行はすべて読み、値が一致していなければ
+/// ならない。複数あるうちの1つを選ぶことを `sha256InMarkdown` が拒むのと同じ理由
+/// である。
 fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
     var found: ?usize = null;
     var lines = std.mem.splitScalar(u8, doc, '\n');
@@ -1552,10 +1552,10 @@ fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
         const digits_at = i;
         while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {}
         if (i == digits_at) continue;
-        // Parsed rather than accumulated by hand: accumulating overflowed on a
-        // long run of digits and panicked, losing every diagnostic gathered so
-        // far. A value that does not parse is not skipped either, or a record
-        // too large to be a count would read as no record at all.
+        // 手で桁を累積せず、パースする。累積すると長い数字列でオーバーフローして
+        // パニックし、それまでに集めた診断がすべて失われた。パースできない値も
+        // 読み飛ばさない。読み飛ばすと、件数としては大きすぎる記録が、記録なしと
+        // 同じに読まれてしまう。
         const value = std.fmt.parseInt(usize, line[digits_at..i], 10) catch return .ambiguous;
 
         if (found) |first| {
@@ -1567,22 +1567,23 @@ fn integerAfter(doc: []const u8, label: []const u8) RecordedCount {
 
 /// Reports anything in `dir` that the recorded hash does not cover.
 ///
-/// `collectFiles` in flat mode returns the directory's own files with the right
-/// extension, so a subdirectory or another extension would sit beside the
-/// generated lists uncovered. The provenance document claims the record fixes
-/// the directory, so the directory holds nothing else.
+/// フラットモードの `collectFiles` は、ディレクトリ直下の、拡張子が合うファイル
+/// だけを返す。そのため、サブディレクトリや別の拡張子のファイルは、生成された
+/// リストの隣にあっても、ハッシュに覆われないまま残る。出自の文書は、記録が
+/// ディレクトリの中身を固定すると主張している。だからディレクトリには、それ以外
+/// を置かない。
 ///
-/// Nothing else that is part of the repository, that is. An entry `.gitignore`
-/// ignores is left out, because a correct repository should not go red when
-/// macOS writes a `.DS_Store` or an editor leaves a `base.txt~`.
+/// ただし、リポジトリの一部であるものに限る。`.gitignore` が無視するエントリは
+/// 除く。macOS が `.DS_Store` を書いたり、エディタが `base.txt~` を残したりした
+/// だけで、正しいリポジトリが赤くなってはならないからである。
 ///
-/// The ignore test comes before the extension test, not after. Applying it only
-/// to entries whose extension did not match left `._base.txt` -- what macOS
-/// writes beside a tracked file, and what `.gitignore` names -- passing as a
-/// generated list: it entered the hash and the identifier counts, and a correct
-/// repository reported three problems. The same order is why `collectFiles`
-/// takes the ignore set too, so the file this check accepts and the files the
-/// hash covers are the same set.
+/// 無視の判定は、拡張子の判定の後ではなく前に行う。拡張子が合わなかった
+/// エントリにだけ無視の判定を当てていたときは、macOS が追跡対象のファイルの
+/// 隣に書く `._base.txt`(`.gitignore` が名指ししているもの)が、生成された
+/// リストとして通ってしまった。それがハッシュと識別子の件数に入り、正しい
+/// リポジトリが3件の問題を報告した。同じ順序にするために、`collectFiles` も
+/// 無視の集合を受け取る。この検査が受け入れるファイルと、ハッシュが覆う
+/// ファイルが、同じ集合になる。
 fn checkNothingElseInDir(
     io: std.Io,
     cwd: std.Io.Dir,
@@ -1606,34 +1607,35 @@ fn checkNothingElseInDir(
 
 /// Whether `.gitignore` ignores an entry of this name.
 ///
-/// Only the pattern shapes this repository writes are understood: an exact
-/// name, a trailing `/` for a directory, and a single leading or trailing `*`.
-/// A shape outside that set never matches, so an unrecognised pattern leaves
-/// the check as strict as it was. Erring that way means a new pattern shape
-/// shows up as a check failure to be looked at, not as a silent hole in what
-/// the recorded hash covers.
+/// 解釈するのは、このリポジトリが書くパターンの形だけである。完全一致の名前、
+/// ディレクトリを表す末尾の `/`、先頭か末尾に1つだけ付く `*` の3つ。この集合の
+/// 外の形は決して一致しない。そのため、解釈できないパターンがあっても、検査は
+/// それまでと同じ厳しさのままになる。そちらに倒すのは、新しい形のパターンが
+/// 検査の失敗として表に出て確認されるようにするためで、記録したハッシュが
+/// 覆う範囲に黙って穴があくことを避けるためである。
 ///
-/// A pattern that would match every name is one of the shapes left out. A bare
-/// `*` turned every check that consults this function off at once, which is a
-/// larger hole than any single name could open.
+/// すべての名前に一致するパターンも、解釈しない形に入れている。素の `*` は、
+/// この関数を参照するすべての検査を一度に無効にした。これは、特定の名前1つが
+/// あける穴より大きい。
 ///
-/// Negations are among the shapes left out: a `!` line is skipped, which keeps
-/// a pattern it re-includes ignored. The only negation here re-includes
-/// `.env.example`, which belongs in no generated directory.
+/// 否定も解釈しない形に入る。`!` で始まる行は読み飛ばす。その行が再び
+/// 含めるはずのパターンは、無視されたままになる。ここにある否定は
+/// `.env.example` を再び含めるものだけで、これは生成物のディレクトリには
+/// 現れない。
 fn isIgnored(gitignore: []const u8, name: []const u8, is_dir: bool) bool {
     var lines = std.mem.splitScalar(u8, gitignore, '\n');
     while (lines.next()) |raw| {
         var pattern = std.mem.trim(u8, raw, &std.ascii.whitespace);
         if (pattern.len == 0 or pattern[0] == '#' or pattern[0] == '!') continue;
 
-        // A trailing slash restricts the pattern to directories.
+        // 末尾の `/` は、パターンの対象をディレクトリに限る。
         if (pattern[pattern.len - 1] == '/') {
             if (!is_dir) continue;
             pattern = pattern[0 .. pattern.len - 1];
             if (pattern.len == 0) continue;
         }
 
-        // A path-shaped pattern is anchored, and this compares one entry name.
+        // パス形のパターンは位置が固定される。ここで比べるのはエントリ名1つだけ。
         if (std.mem.indexOfScalar(u8, pattern, '/') != null) continue;
 
         const stars = countOccurrences(pattern, "*");
@@ -1660,8 +1662,8 @@ fn checkSources(
     excluded: []const []const u8,
 ) !void {
     var files: std.ArrayList([]const u8) = .empty;
-    // tools/ holds most of stage 0's logic and is verification code itself, so
-    // it is subject to the same reachability and refAllDecls rules as src/.
+    // tools/ には段階0のロジックの大半があり、それ自体が検証用のコードでもある。
+    // そのため src/ と同じ到達可能性と refAllDecls の規則を適用する。
     for ([_][]const u8{ "src", "tools" }) |root|
         try collectFiles(gpa, io, cwd, ignore, root, ".zig", &files, .recursive);
 
@@ -1670,10 +1672,10 @@ fn checkSources(
         if (!pathIn(files.items, r)) rep.fail("test root {s} does not exist", .{r});
         try reachable.put(gpa, r, {});
     }
-    // A root with no test block of its own still contributes a run step, so
-    // build.zig's count of run steps would be satisfied while that module runs
-    // nothing. The count says a test was launched; this says there was a test
-    // to launch.
+    // 自前の test ブロックを持たないルートでも、run step は1つ増える。すると、
+    // build.zig の run step の数は満たされたまま、そのモジュールは何も実行
+    // しない。数が示すのはテストが起動されたことで、ここで検査するのは、
+    // 起動すべきテストが存在したことである。
     for (roots) |r| {
         const body = read(gpa, io, cwd, rep, r) orelse continue;
         if (!hasTestBlock(body))
@@ -1683,18 +1685,19 @@ fn checkSources(
         if (!pathIn(files.items, e)) rep.fail("excluded file {s} does not exist", .{e});
     }
 
-    // Every file is read once, before either loop below. Reading inside the
-    // fixpoint loop reported one unreadable file as several problems, because
-    // that loop revisits every reachable path on each pass. An exclusion keeps
-    // a file from being a test target; it does not make the file unreadable, so
-    // a read failure is reported whether or not the path is excluded.
-    // The sentinel is what lets zigImports hand a body to std.zig.Tokenizer.
+    // 各ファイルは、以下の2つのループより前に1回だけ読む。不動点ループの中で
+    // 読むと、読めないファイル1つが複数の問題として報告された。そのループは
+    // 1周ごとに到達可能なすべてのパスをもう一度たどるためである。除外は、
+    // ファイルをテスト対象から外すだけで、読めなくするわけではない。したがって
+    // 読み取りの失敗は、パスが除外されているかどうかに関わらず報告する。
+    // 番兵があるから、zigImports は本文を std.zig.Tokenizer に渡せる。
     var bodies: std.StringHashMapUnmanaged([:0]const u8) = .empty;
     for (files.items) |path| {
         if (read(gpa, io, cwd, rep, path)) |body| try bodies.put(gpa, path, body);
     }
 
-    // Repeat until nothing new is reached: imports form a DAG of unknown depth.
+    // 新たに到達するものがなくなるまで繰り返す。インポートは深さの分からない
+    // DAG を成すためである。
     var changed = true;
     while (changed) {
         changed = false;
@@ -1706,10 +1709,10 @@ fn checkSources(
             try zigImports(gpa, body, &imports);
             for (imports.items) |name| {
                 const joined = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, name });
-                // Normalise: an import written as "../other.zig" would
-                // otherwise produce src/sub/../other.zig and never match the
-                // collected src/other.zig, reporting a file whose tests do run
-                // as unreachable.
+                // 正規化する。しないと、"../other.zig" と書かれたインポートが
+                // src/sub/../other.zig になり、集めた src/other.zig と一致しない。
+                // そのせいで、テストが実際に走っているファイルが、到達不能と
+                // 報告されてしまう。
                 const key = try normalizePath(gpa, joined);
                 if (!reachable.contains(key)) {
                     try reachable.put(gpa, key, {});
@@ -1720,8 +1723,8 @@ fn checkSources(
     }
 
     for (files.items) |path| {
-        // Exclusions are full repository-relative paths: matching on the base
-        // name alone would also exclude src/platform/wasm.zig.
+        // 除外は、リポジトリからの相対パス全体で指定する。基底名だけで照合すると、
+        // src/platform/wasm.zig まで除外されてしまう。
         if (pathIn(excluded, path)) continue;
 
         if (!reachable.contains(path))
@@ -1740,7 +1743,7 @@ fn checkSources(
 }
 
 /// Resolves `.` and `..` segments so two spellings of one path compare equal.
-/// Separators are normalised to `/`.
+/// 区切り文字は `/` に正規化する。
 fn normalizePath(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(gpa);
@@ -1763,10 +1766,10 @@ fn pathIn(haystack: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// Collects the `*.zig` paths named by real `@import` expressions. Tokenizing
-/// keeps commented-out and string-embedded occurrences out of the result.
-/// Zig requires a string literal as the operand, so there is no way to hide an
-/// import behind a constant.
+/// Collects the `*.zig` paths named by real `@import` expressions.
+/// トークン化するので、コメントアウトされたものや文字列に埋め込まれたものは
+/// 結果に入らない。Zig は被演算子に文字列リテラルを要求するため、定数の陰に
+/// インポートを隠す方法はない。
 fn zigImports(gpa: std.mem.Allocator, source: [:0]const u8, out: *std.ArrayList([]const u8)) !void {
     var tok = std.zig.Tokenizer.init(source);
     var state: enum { idle, saw_import, saw_paren } = .idle;
@@ -1791,25 +1794,25 @@ fn zigImports(gpa: std.mem.Allocator, source: [:0]const u8, out: *std.ArrayList(
 
 /// True when a top-level `test` block contains the call `refAllDecls(@This())`.
 ///
-/// The argument must be `@This()`: passing another container compiles and reads
-/// like the convention but references the wrong declarations, so the imported
-/// file's tests still never run.
+/// 引数は `@This()` でなければならない。別のコンテナを渡してもコンパイルは
+/// 通り、慣習どおりに見えるが、参照されるのは別の宣言になる。その結果、
+/// インポートされたファイルのテストは、やはり一度も走らない。
 ///
-/// The call must also be qualified: a local `fn refAllDecls` shadowing the std
-/// one passes a bare-name check while referencing nothing.
+/// 呼び出しは修飾されていなければならない。std のものを覆い隠すローカルの
+/// `fn refAllDecls` は、素の名前だけを見る検査を通るが、何も参照しない。
 ///
-/// This cannot prove the call is reached. `comptime { if (false) ... }` inside a
-/// test block passes the check and has no effect. Nor can it prove the qualifier
-/// resolves to std.testing: a local `const fake = struct { fn refAllDecls(_:
-/// type) void {} };` referenced as `fake.refAllDecls(@This())` passes. Both
-/// limits are recorded as implementation-time questions in
-/// docs/design/open-questions.md.
+/// この関数は、呼び出しに到達することまでは証明できない。test ブロックの中の
+/// `comptime { if (false) ... }` は検査を通るが、何の効果もない。修飾子が
+/// std.testing に解決されることも証明できない。ローカルの
+/// `const fake = struct { fn refAllDecls(_: type) void {} };` を
+/// `fake.refAllDecls(@This())` として参照しても通る。この2つの限界は、
+/// docs/design/open-questions.md に、実装時の問いとして記録してある。
 fn hasRefAllDeclsTest(source: [:0]const u8) bool {
     var tok = std.zig.Tokenizer.init(source);
     var depth: usize = 0;
     var test_depth: ?usize = null;
-    // The call is five tokens: refAllDecls ( @This ( ) — the closing paren of
-    // refAllDecls follows.
+    // 呼び出しは5トークンである。refAllDecls ( @This ( ) で、この後に
+    // refAllDecls の閉じ括弧が続く。
     var seen: usize = 0;
     while (true) {
         const t = tok.next();
@@ -1835,8 +1838,8 @@ fn hasRefAllDeclsTest(source: [:0]const u8) bool {
         }
 
         seen = switch (seen) {
-            // `.refAllDecls` after a period: the call has to be qualified, so a
-            // locally defined function of the same name does not satisfy it.
+            // ピリオドの後の `.refAllDecls`。呼び出しは修飾されていなければ
+            // ならないので、同名のローカル関数では条件を満たさない。
             0 => if (t.tag == .period) 1 else 0,
             1 => if (t.tag == .identifier and std.mem.eql(u8, text, "refAllDecls")) 2 else 0,
             2 => if (t.tag == .l_paren) 3 else 0,
@@ -1850,11 +1853,12 @@ fn hasRefAllDeclsTest(source: [:0]const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Markdown: relative links resolve.
+// 4. Markdown: 相対リンクが解決できる。
 //
-// Links inside fenced code blocks are skipped: docs/adr/README.md shows a
-// deprecation template whose links are placeholders by design. An unclosed
-// fence would take the rest of the file with them, so it is reported.
+// フェンス付きコードブロックの中のリンクは読み飛ばす。docs/adr/README.md には
+// 非推奨化のテンプレートがあり、そのリンクは仕様上プレースホルダだからである。
+// 閉じていないフェンスは、ファイルの残りをそのブロックに巻き込んでしまうので、
+// 報告する。
 // ---------------------------------------------------------------------------
 
 fn checkMarkdown(
@@ -1864,8 +1868,8 @@ fn checkMarkdown(
     rep: *Reporter,
     ignore: []const u8,
 ) !void {
-    // Walk the whole repository: a fixed directory list left .agents/,
-    // .claude/ and .github/ unchecked, which is a quarter of the Markdown.
+    // リポジトリ全体をたどる。ディレクトリを固定のリストで指定すると、.agents/、
+    // .claude/、.github/ が検査されずに残った。これは Markdown の4分の1にあたる。
     var files: std.ArrayList([]const u8) = .empty;
     try collectFiles(gpa, io, cwd, ignore, ".", ".md", &files, .recursive);
 
@@ -1873,12 +1877,12 @@ fn checkMarkdown(
         const body = read(gpa, io, cwd, rep, path) orelse continue;
         const dir = std.fs.path.dirnamePosix(path) orelse ".";
 
-        // A fence is closed by a run of the same character at least as long as
-        // the opener, so ``` inside a ```` block does not end it.
+        // フェンスは、開く側と同じ文字で、開く側以上の長さの連なりで閉じる。
+        // したがって、```` のブロックの中の ``` はブロックを終わらせない。
         var fence: ?struct { ch: u8, len: usize } = null;
         var fence_line: usize = 0;
-        // The column the innermost open list item's content starts at, which is
-        // what CommonMark measures indentation against.
+        // 開いている最も内側のリスト項目の、内容が始まる桁。CommonMark は
+        // インデントをこの桁を基準にして測る。
         var content_col: usize = 0;
         var lines = std.mem.splitScalar(u8, body, '\n');
         var lineno: usize = 0;
@@ -1892,26 +1896,25 @@ fn checkMarkdown(
                 if (listContentColumn(run.cols, trimmed)) |col| {
                     content_col = col;
                 } else if (run.cols < content_col) {
-                    // A line shallower than the item's content closes it.
+                    // 項目の内容より浅い行は、その項目を閉じる。
                     content_col = 0;
                 }
             }
-            // Four columns past the containing block's content is an indented
-            // code block, not a fence and not prose. Allowing a fence at any
-            // indentation let a pair of them at four spaces hide the paragraph
-            // between them: the lines read as a fenced block, the paragraph
-            // inside it was never checked for links, and the fences were closed
-            // so nothing was reported. Measuring against the list item's
-            // content column keeps the fences docs/adr/README.md writes inside
-            // a numbered item, which sit five spaces in and zero columns past
-            // their content.
+            // 含んでいるブロックの内容より4桁以上深ければ、インデントされた
+            // コードブロックであり、フェンスでも地の文でもない。どの深さの
+            // フェンスも許すと、4スペースのフェンスが2つあるとき、その間の段落が
+            // 隠れた。2行はフェンス付きブロックとして読まれ、中の段落はリンクを
+            // 検査されず、フェンスは閉じているので何も報告されなかった。リスト
+            // 項目の内容の桁を基準に測れば、docs/adr/README.md が番号付きの項目の
+            // 中に書くフェンス(5スペース入っているが、内容の桁からは0桁しか
+            // 深くない)は、フェンスとして残る。
             const relative = run.cols - @min(run.cols, content_col);
             if (relative >= 4) continue;
 
             if (fenceRun(trimmed)) |opener| {
                 if (fence) |open| {
-                    // Only a bare run of the same character, at least as long,
-                    // closes the block. Anything else is content.
+                    // 閉じるのは、同じ文字で同じ長さ以上の、何も続かない連なり
+                    // だけである。それ以外は中身。
                     if (opener.bare and opener.ch == open.ch and opener.len >= open.len) {
                         fence = null;
                         continue;
@@ -1933,10 +1936,10 @@ fn checkMarkdown(
             };
             try checkLinksOnLine(gpa, io, cwd, rep, path, lineno, dir, line);
         }
-        // Reported because the link check stops at an open fence. ADR-0026 keeps
-        // the reachability of relative links; leaving a fence unclosed took the
-        // rest of the file out of that check and said nothing, which is the one
-        // thing the first of its three facts forbids.
+        // リンクの検査は、開いたままのフェンスで止まるので、報告する。ADR-0026 は
+        // 相対リンクの到達可能性を検査の対象に残している。フェンスを閉じ忘れると、
+        // ファイルの残りがその検査から外れるのに、何も言われない。これは、
+        // ADR-0026 の3つの事実の1つ目が禁じていることである。
         if (fence) |open| rep.fail(
             "{s}:{d}: this code fence of {d} '{c}' is never closed, so the links below it are not checked",
             .{ path, fence_line, open.len, open.ch },
@@ -1954,14 +1957,14 @@ fn fenceRun(trimmed: []const u8) ?struct { ch: u8, len: usize, bare: bool } {
     while (n < trimmed.len and trimmed[n] == ch) n += 1;
     if (n < 3) return null;
     // CommonMark: "The closing code fence ... may be followed only by spaces or
-    // tabs". A line like ```zig opens a block; treating it as a close turns one
-    // valid document into two false positives.
+    // tabs". ```zig のような行はブロックを開く。これを閉じる行として扱うと、
+    // 正しい文書1つが2件の誤検知になる。
     const rest = std.mem.trim(u8, trimmed[n..], " \t");
     // CommonMark: "If the info string comes after a backtick fence, it may not
-    // contain any backtick characters." So ```a`b` is a paragraph holding a code
-    // span, not a fence. Reading it as a fence opened a block that nothing
-    // closed, which both reported a fence that is not there and took every link
-    // below it out of the check.
+    // contain any backtick characters." したがって ```a`b` は、コードスパンを
+    // 含む段落であり、フェンスではない。これをフェンスとして読むと、閉じる
+    // ものがないブロックが開く。存在しないフェンスを報告し、しかもその下の
+    // すべてのリンクが検査から外れた。
     if (ch == '`' and std.mem.indexOfScalar(u8, rest, '`') != null) return null;
     return .{ .ch = ch, .len = n, .bare = rest.len == 0 };
 }
@@ -1977,20 +1980,21 @@ fn checkLinksOnLine(
     line: []const u8,
 ) !void {
     var i: usize = 0;
-    // Code spans are skipped by CommonMark's own rule: a run of backticks opens
-    // a span that only a run of the same length closes, and a backslash escapes
-    // the character after it.
+    // コードスパンは、CommonMark 自身の規則で読み飛ばす。バッククォートの
+    // 連なりがスパンを開き、同じ長さの連なりだけがそれを閉じる。バック
+    // スラッシュは直後の文字をエスケープする。
     //
-    // Two weaker rules came before this one and both failed silently. Toggling
-    // on every backtick let the parity of the line decide, so one unmatched
-    // backtick before a link took the link out of the check. Requiring a closing
-    // backtick anywhere on the line fixed that case and left two more: `\`` is
-    // an escaped literal that the toggle still counted, and a run of three or
-    // five backticks does not pair with a single one. Matching run lengths is
-    // the rule the renderer uses, so there is no shorter spelling left to find.
+    // これより弱い規則が2つ先にあり、どちらも黙って失敗した。バッククォート
+    // のたびに切り替える方式では、行内の個数の偶奇で決まるため、リンクの前に
+    // 対応のないバッククォートが1つあるだけで、そのリンクが検査から外れた。
+    // 行のどこかに閉じるバッククォートがあることを要求する方式は、その場合は
+    // 直したが、あと2つ残した。1つは `\`` で、これはエスケープされたリテラル
+    // なのに、切り替え方式は数えていた。もう1つは、3個や5個の連なりが1個
+    // とは対にならないことである。連なりの長さを合わせるのはレンダラが使う
+    // 規則そのものなので、これより短い綴りで見つかる穴はもう残っていない。
     while (i < line.len) {
         if (line[i] == '\\') {
-            i += 2; // the escaped character, backtick or not
+            i += 2; // エスケープされた文字(バッククォートかどうかを問わない)
             continue;
         }
         if (line[i] == '`') {
@@ -2000,8 +2004,8 @@ fn checkLinksOnLine(
             if (closingBacktickRun(line, run, len)) |close| {
                 i = close + len;
             } else {
-                // No run of the same length follows, so these backticks are
-                // text and what comes after them is read as usual.
+                // 同じ長さの連なりが後に続かないので、このバッククォートは
+                // ただの文字である。後ろは通常どおりに読む。
                 i = run;
             }
             continue;
@@ -2012,12 +2016,12 @@ fn checkLinksOnLine(
         }
         i += 2;
         const dest = linkDestination(line[i..]) orelse {
-            // Reported rather than skipped. CommonMark lets a newline sit
-            // between the parentheses, so a link whose destination or closing
-            // parenthesis is on the next line renders as a link while one line
-            // at a time cannot read it. Skipping it was silence on a link that
-            // renders, which is the shape of every hole this program has had,
-            // and the same decision was already taken for the reference form.
+            // 読み飛ばさず、報告する。CommonMark は括弧の間に改行を置くことを
+            // 許す。そのため、リンク先や閉じ括弧が次の行にあるリンクは、リンク
+            // として描画されるのに、1行ずつ読むこの検査には読めない。読み飛ばす
+            // と、描画されるリンクについて黙ることになる。これは、このプログラム
+            // にあった穴のすべてに共通する形で、参照形式についても同じ判断を
+            // すでにしている。
             rep.fail(
                 "{s}:{d}: this link does not close on its own line; write `[text](path)` on one line",
                 .{ path, lineno },
@@ -2031,10 +2035,10 @@ fn checkLinksOnLine(
 
 /// The column a list item's content starts at, when `trimmed` opens one.
 ///
-/// `indent` is where the marker starts and `trimmed` is the line from there.
-/// CommonMark measures everything inside an item against this column, which is
-/// why a fence five spaces in is a fence when it sits in an item whose content
-/// starts there.
+/// `indent` はマーカーが始まる桁で、`trimmed` はそこから先の行である。
+/// CommonMark は項目の中のすべてをこの桁を基準に測る。内容がそこから
+/// 始まる項目の中にあれば、5スペース入ったフェンスがフェンスになるのは
+/// このためである。
 fn listContentColumn(indent: usize, trimmed: []const u8) ?usize {
     if (trimmed.len < 2) return null;
     var marker: usize = 0;
@@ -2055,9 +2059,9 @@ fn listContentColumn(indent: usize, trimmed: []const u8) ?usize {
 
 /// Where a run of exactly `len` backticks starts, searching from `from`.
 ///
-/// Exactly that length: CommonMark closes a code span only with a run of the
-/// same size, so a single backtick does not close a run of three. A longer run
-/// is passed over rather than treated as a match, because it is not one.
+/// ちょうどその長さであること。CommonMark はコードスパンを同じ大きさの
+/// 連なりでしか閉じないので、1個のバッククォートは3個の連なりを閉じない。
+/// より長い連なりは、一致ではないので、一致として扱わず通り過ぎる。
 fn closingBacktickRun(line: []const u8, from: usize, len: usize) ?usize {
     var i = from;
     while (i < line.len) {
@@ -2075,30 +2079,30 @@ fn closingBacktickRun(line: []const u8, from: usize, len: usize) ?usize {
 
 /// What a reference link definition names, `[label]: dest`.
 ///
-/// `checkLinksOnLine` looks for `](`, which a definition does not carry, so a
-/// link written in the reference form had its destination read by nobody: the
-/// rendered page pointed at a file that is not there and nothing said so.
+/// `checkLinksOnLine` は `](` を探すが、定義にはそれがない。そのため、参照
+/// 形式で書いたリンクは、リンク先を誰も読まなかった。描画されたページは
+/// 存在しないファイルを指すのに、何も報告されなかった。
 const Definition = union(enum) {
-    /// The destination, on the same line as the label.
+    /// ラベルと同じ行にあるリンク先。
     target: []const u8,
-    /// A definition this check cannot read, because CommonMark allows the
-    /// destination on the next line and this reads one line at a time.
-    /// Reported rather than skipped: skipping it was silence on a link that
-    /// renders, which is the shape of every hole this program has had.
+    /// この検査が読めない定義。CommonMark はリンク先を次の行に置くことを
+    /// 許すが、この検査は1行ずつ読むためである。読み飛ばさず、報告する。
+    /// 読み飛ばすと、描画されるリンクについて黙ることになる。これは、
+    /// このプログラムにあった穴のすべてに共通する形である。
     unreadable,
 };
 
 fn referenceDefinition(raw: []const u8) ?Definition {
-    // A definition inside a block quote or a list item is still a definition,
-    // and the renderer resolves a reference to it. Reading only the line as it
-    // stands left `> [label]: dest` and `- [label]: dest` unread and unreported.
+    // 引用ブロックやリスト項目の中の定義も定義であり、レンダラはそれに対する
+    // 参照を解決する。行をそのまま読むだけでは、`> [label]: dest` と
+    // `- [label]: dest` が読まれず、報告もされなかった。
     var line = raw;
     while (true) {
         const before = line;
-        // A quote marker takes no space after it, and a list marker may be a
-        // number. Stripping only `> `, `- `, `* ` and `+ ` left `>[label]:`,
-        // `>> [label]:`, `1. [label]:` and a tab after the marker unread and
-        // unreported, which is the closed-set discipline failing open.
+        // 引用のマーカーの後ろには空白がなくてよく、リストのマーカーは数でも
+        // よい。`> `、`- `、`* `、`+ ` だけを取り除くと、`>[label]:`、
+        // `>> [label]:`、`1. [label]:`、マーカーの後ろのタブが、読まれず報告も
+        // されなかった。これは、閉じた集合の規律が開いたまま失敗する例である。
         if (line.len != 0 and line[0] == '>') {
             line = std.mem.trimStart(u8, line[1..], " \t");
         } else if (line.len >= 2 and
@@ -2120,9 +2124,9 @@ fn referenceDefinition(raw: []const u8) ?Definition {
     }
 
     if (line.len == 0 or line[0] != '[') return null;
-    // The label ends at the first `]` that is not escaped, as CommonMark reads
-    // it. Rejecting a label that holds any bracket let `[a\]b]: dest` through
-    // unread: the renderer takes it as a definition and this did not.
+    // ラベルは、CommonMark の読み方に従い、エスケープされていない最初の `]` で
+    // 終わる。括弧を含むラベルをすべて退けると、`[a\]b]: dest` が読まれずに
+    // 通り抜けた。レンダラはこれを定義として扱うが、この検査は扱わなかった。
     var close: ?usize = null;
     var i: usize = 1;
     while (i < line.len) : (i += 1) {
@@ -2130,7 +2134,7 @@ fn referenceDefinition(raw: []const u8) ?Definition {
             i += 1;
             continue;
         }
-        if (line[i] == '[') return null; // an unescaped bracket is not a label
+        if (line[i] == '[') return null; // エスケープされていない `[` を含むものはラベルではない
         if (line[i] == ']') {
             close = i;
             break;
@@ -2140,7 +2144,7 @@ fn referenceDefinition(raw: []const u8) ?Definition {
     if (label_end + 1 >= line.len or line[label_end + 1] != ':') return null;
     var rest = std.mem.trimStart(u8, line[label_end + 2 ..], " \t");
     if (rest.len == 0) return .unreadable;
-    // A title may follow the destination on the same line.
+    // リンク先の後ろに、同じ行でタイトルが続くことがある。
     if (std.mem.indexOfAny(u8, rest, " \t")) |space| rest = rest[0..space];
     if (rest.len >= 2 and rest[0] == '<' and rest[rest.len - 1] == '>')
         rest = rest[1 .. rest.len - 1];
@@ -2159,17 +2163,17 @@ fn checkLinkTarget(
     target: []const u8,
 ) !void {
     if (target.len == 0) return;
-    // Any URI scheme, matched case-insensitively: RFC 3986 makes schemes
-    // case-insensitive, and a bare "http" prefix would also skip the
-    // relative path http-guide.md.
+    // 任意の URI スキームを、大文字小文字を区別せずに照合する。RFC 3986 は
+    // スキームの大文字小文字を区別しないと定めている。また、単に "http" で
+    // 始まるかどうかを見ると、相対パスの http-guide.md まで読み飛ばしてしまう。
     if (hasUriScheme(target)) return;
     if (target[0] == '#') return;
     const file_part = std.mem.sliceTo(target, '#');
     if (file_part.len == 0) return;
-    // Reject characters a path cannot hold before touching the file system:
-    // std.Io.Dir.access panics on Windows for an invalid name rather than
-    // returning an error, which would turn one bad link into a crash that
-    // loses every other diagnostic.
+    // ファイルシステムに触れる前に、パスに含められない文字を退ける。
+    // std.Io.Dir.access は、Windows では不正な名前に対してエラーを返さず
+    // パニックする。それでは、悪いリンク1つがクラッシュになり、ほかの
+    // すべての診断が失われる。
     if (std.mem.indexOfAny(u8, file_part, "<>:\"|?*") != null or
         std.mem.indexOfScalar(u8, file_part, 0) != null)
     {
@@ -2183,7 +2187,7 @@ fn checkLinkTarget(
 }
 
 /// Splits a CommonMark inline link destination from its optional title.
-/// Handles `<dest>`, `dest`, `dest "title"`, `dest 'title'` and `dest (title)`.
+/// 扱う形は `<dest>`、`dest`、`dest "title"`、`dest 'title'`、`dest (title)`。
 fn linkDestination(rest: []const u8) ?struct { target: []const u8, consumed: usize } {
     if (rest.len == 0) return null;
     if (rest[0] == '<') {
@@ -2193,10 +2197,10 @@ fn linkDestination(rest: []const u8) ?struct { target: []const u8, consumed: usi
     }
     const close = std.mem.indexOfScalar(u8, rest, ')') orelse return null;
     var target = std.mem.trim(u8, rest[0..close], " \t");
-    // Strip a title. Backslash escapes are not handled: a destination such as
-    // `a\ b.md` is reported under the truncated name. No file in this
-    // repository needs one, and handling them means implementing CommonMark's
-    // escape rules.
+    // タイトルを取り除く。バックスラッシュのエスケープは扱わない。`a\ b.md`
+    // のようなリンク先は、切り詰められた名前で報告される。このリポジトリの
+    // ファイルにエスケープが必要なものはなく、扱うには CommonMark の
+    // エスケープ規則を実装することになる。
     if (std.mem.indexOfAny(u8, target, " \t")) |space|
         target = std.mem.trimEnd(u8, target[0..space], " \t");
     return .{ .target = target, .consumed = close };
@@ -2217,17 +2221,16 @@ fn hasUriScheme(text: []const u8) bool {
 
 const Walk = enum { flat, recursive };
 
-/// Collects paths under `root` whose name ends with `suffix`. Paths are
-/// repository-relative and use `/` on every platform.
+/// Collects paths under `root` whose name ends with `suffix`. パスはリポジトリ
+/// からの相対で、どのプラットフォームでも `/` を使う。
 /// Collects the files under `root` whose name ends in `suffix`.
 ///
-/// Entries `.gitignore` names are left out, files and directories alike. They
-/// are not tracked, so they are not what the checks are about: a scratch note
-/// under an ignored directory was failing the Markdown checks, and an
-/// AppleDouble file macOS writes beside a tracked one was entering the
-/// generated lists' hash. Reading the ignore set here keeps the set of files
-/// every check sees the same, and keeps `.gitignore` the one place that
-/// declares it.
+/// `.gitignore` が名指しするエントリは、ファイルもディレクトリも除く。追跡
+/// されていないので、検査の対象ではないからである。無視されたディレクトリ
+/// の下のメモが Markdown の検査を落としていたし、macOS が追跡対象のファイル
+/// の隣に書く AppleDouble ファイルが、生成されたリストのハッシュに入って
+/// いた。無視の集合をここで読むことで、すべての検査が見るファイルの集合が
+/// 同じになり、それを宣言する場所も `.gitignore` 1か所のままになる。
 fn collectFiles(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2264,15 +2267,15 @@ fn collectFiles(
 // ---------------------------------------------------------------------------
 // Tests
 //
-// These cover the pure decision functions: the parts whose mistakes show up as
-// a check that quietly stops catching things. Every case below is one that an
-// adversarial review actually produced against an earlier version of this
-// file, so a regression reintroduces a known hole rather than a hypothetical.
+// ここで扱うのは、純粋な判定関数である。ここを間違えると、検査が黙って何も
+// 捉えなくなる。以下のケースはどれも、このファイルの以前の版に対して敵対的
+// レビューが実際に出したものである。そのため、回帰が起きれば、仮定の穴では
+// なく、既知の穴が戻ってくる。
 // ---------------------------------------------------------------------------
 
 test "fenceRun: an info string means the line opens, never closes" {
-    // ```zig must not be read as a closing fence; doing so made one valid
-    // document report a stray link plus an unclosed fence.
+    // ```zig を閉じるフェンスとして読んではならない。読むと、正しい文書1つが、
+    // 迷子のリンクと閉じていないフェンスを報告した。
     const open = fenceRun("```zig").?;
     try std.testing.expect(!open.bare);
     const close = fenceRun("```").?;
@@ -2282,33 +2285,33 @@ test "fenceRun: an info string means the line opens, never closes" {
 }
 
 test "fenceRun: a backtick in the info string means it is not a fence" {
-    // The defect this pins: CommonMark forbids a backtick in a backtick fence's
-    // info string, so ```a`b is a paragraph holding a code span. Reading it as a
-    // fence opened a block nothing closed, which took every link below it out of
-    // the check.
+    // このテストが固定する欠陥。CommonMark はバッククォートのフェンスの
+    // 情報文字列にバッククォートを含めることを禁じているので、```a`b は
+    // コードスパンを含む段落である。これをフェンスとして読むと、閉じる
+    // ものがないブロックが開き、その下のすべてのリンクが検査から外れた。
     try std.testing.expect(fenceRun("```a`b") == null);
     try std.testing.expect(fenceRun("```[x](d.md)```") == null);
     try std.testing.expect(fenceRun("```zig") != null);
-    // A tilde fence may hold a backtick in its info string.
+    // チルダのフェンスは、情報文字列にバッククォートを含んでよい。
     try std.testing.expect(fenceRun("~~~a`b") != null);
 }
 
 test "closingBacktickRun: only a run of the same length closes a span" {
-    // The defect this pins: a single backtick does not close a run of three, and
-    // counting backticks one at a time let an escaped or longer run leave the
-    // scan inside a span for the rest of the line.
+    // このテストが固定する欠陥。1個のバッククォートは3個の連なりを閉じない。
+    // バッククォートを1個ずつ数える方式では、エスケープされた連なりや、より
+    // 長い連なりがあると、走査が行末までスパンの内側に取り残された。
     try std.testing.expectEqual(@as(?usize, 4), closingBacktickRun("a `b` c", 3, 1));
     try std.testing.expectEqual(@as(?usize, null), closingBacktickRun("``` x ` y", 3, 3));
     try std.testing.expectEqual(@as(?usize, 6), closingBacktickRun("``` x ``` y", 3, 3));
-    // A longer run is passed over, not taken as a match.
+    // より長い連なりは、一致として扱わず通り過ぎる。
     try std.testing.expectEqual(@as(?usize, 9), closingBacktickRun("a ```` b ` c", 2, 1));
     try std.testing.expectEqual(@as(?usize, null), closingBacktickRun("no ticks", 0, 1));
 }
 
 test "listContentColumn: where an item's content starts" {
-    // The column a fence inside the item is measured against. Without it, a pair
-    // of fences four spaces in read as a fenced block and hid the paragraph
-    // between them from the link check.
+    // 項目の中のフェンスは、この桁を基準に測る。これがないと、4スペース入った
+    // 2つのフェンスがフェンス付きブロックとして読まれ、その間の段落がリンクの
+    // 検査から隠れた。
     try std.testing.expectEqual(@as(?usize, 2), listContentColumn(0, "- a"));
     try std.testing.expectEqual(@as(?usize, 5), listContentColumn(2, "1. a"));
     try std.testing.expectEqual(@as(?usize, 3), listContentColumn(0, "1) a"));
@@ -2319,24 +2322,24 @@ test "listContentColumn: where an item's content starts" {
 }
 
 test "referenceDefinition: the markers a definition may sit behind" {
-    // The defect this pins: a quote marker takes no space after it and a list
-    // marker may be a number, so `>[l]:`, `>> [l]:` and `1. [l]:` are
-    // definitions the renderer resolves. Stripping only `> `, `- `, `* ` and
-    // `+ ` left them unread and unreported.
+    // このテストが固定する欠陥。引用のマーカーの後ろには空白がなくてよく、
+    // リストのマーカーは数でもよい。したがって `>[l]:`、`>> [l]:`、
+    // `1. [l]:` は、レンダラが解決する定義である。`> `、`- `、`* `、`+ ` だけを
+    // 取り除くと、これらは読まれず、報告もされなかった。
     try std.testing.expectEqualStrings("d.md", referenceDefinition("[l]: d.md").?.target);
     try std.testing.expectEqualStrings("d.md", referenceDefinition(">[l]: d.md").?.target);
     try std.testing.expectEqualStrings("d.md", referenceDefinition(">> [l]: d.md").?.target);
     try std.testing.expectEqualStrings("d.md", referenceDefinition("1. [l]: d.md").?.target);
     try std.testing.expectEqualStrings("d.md", referenceDefinition("- [l]: d.md").?.target);
-    // The label ends at the first unescaped bracket, as CommonMark reads it.
+    // ラベルは、CommonMark の読み方に従い、エスケープされていない最初の括弧で終わる。
     try std.testing.expectEqualStrings("d.md", referenceDefinition("[a\\]b]: d.md").?.target);
-    // A title after the destination is not part of it, and `<d>` is.
+    // リンク先の後ろのタイトルはリンク先に含まれない。`<d>` の `d` は含まれる。
     try std.testing.expectEqualStrings("d.md", referenceDefinition("[l]: d.md \"t\"").?.target);
     try std.testing.expectEqualStrings("d.md", referenceDefinition("[l]: <d.md>").?.target);
-    // No destination on the line is reported, not skipped.
+    // その行にリンク先がないものは、読み飛ばさず報告する。
     try std.testing.expect(referenceDefinition("[l]:").? == .unreadable);
     try std.testing.expect(referenceDefinition("[l]:   ").? == .unreadable);
-    // Prose that merely holds a bracket and a colon is not a definition.
+    // 括弧とコロンを含むだけの地の文は、定義ではない。
     try std.testing.expect(referenceDefinition("[参考] 次の節: 使い方") == null);
     try std.testing.expect(referenceDefinition("see [a](b.md): yes") == null);
     try std.testing.expect(referenceDefinition("no bracket here") == null);
@@ -2345,8 +2348,8 @@ test "referenceDefinition: the markers a definition may sit behind" {
 test "yamlKey: the spellings Actions treats as a bare key are refused" {
     try std.testing.expectEqualStrings("run", yamlKey("run: zig build").?);
     try std.testing.expectEqualStrings("on", yamlKey("on:").?);
-    // A quoted key and a space before the colon are spellings Actions accepts
-    // and this check refuses, so that they are reported rather than misread.
+    // 引用符付きのキーと、コロンの前の空白は、Actions が受け入れる綴りだが、
+    // この検査は拒む。誤読せずに報告するためである。
     try std.testing.expect(yamlKey("'if': false") == null);
     try std.testing.expect(yamlKey("run : zig build") == null);
     try std.testing.expect(yamlKey("- not a key") == null);
@@ -2358,7 +2361,7 @@ test "isTriggerNarrowing: the keys that change when a workflow runs" {
     try std.testing.expect(isTriggerNarrowing("workflow_dispatch"));
     try std.testing.expect(!isTriggerNarrowing("push"));
     try std.testing.expect(!isTriggerNarrowing("branches"));
-    // Known keys, so the slow-tier workflow can use them.
+    // 既知のキーである。低速の段のワークフローが使えるようにするため。
     try std.testing.expect(keyIsAllowed("types"));
     try std.testing.expect(keyIsAllowed("workflow_dispatch"));
 }
@@ -2366,8 +2369,8 @@ test "isTriggerNarrowing: the keys that change when a workflow runs" {
 test "keyIsAllowed: the set is closed and holds no conditional" {
     try std.testing.expect(keyIsAllowed("run"));
     try std.testing.expect(keyIsAllowed("jobs"));
-    try std.testing.expect(keyIsAllowed("test")); // the one allowed job name
-    // Absent on purpose: a verification that is skipped or forgiven has stopped.
+    try std.testing.expect(keyIsAllowed("test")); // 許されるジョブ名はこれだけ
+    // 意図して含めない。スキップされたり大目に見られたりする検証は、止まっている。
     try std.testing.expect(!keyIsAllowed("if"));
     try std.testing.expect(!keyIsAllowed("continue-on-error"));
     try std.testing.expect(!keyIsAllowed("needs"));
@@ -2394,7 +2397,7 @@ test "fenceRun: tildes and longer runs" {
     try std.testing.expectEqual(@as(usize, 4), fenceRun("````").?.len);
     try std.testing.expect(fenceRun("``") == null);
     try std.testing.expect(fenceRun("not a fence") == null);
-    // Trailing whitespace still closes.
+    // 末尾の空白があっても閉じる。
     try std.testing.expect(fenceRun("```   ").?.bare);
 }
 
@@ -2403,15 +2406,15 @@ test "hasUriScheme: a scheme needs a colon, and matching is case-insensitive" {
     try std.testing.expect(hasUriScheme("HTTPS://example.com"));
     try std.testing.expect(hasUriScheme("ftp://example.com"));
     try std.testing.expect(hasUriScheme("mailto:a@b"));
-    // A bare "http" prefix must not swallow a relative path.
+    // 単なる "http" の接頭辞が、相対パスを巻き込んではならない。
     try std.testing.expect(!hasUriScheme("http-guide.md"));
     try std.testing.expect(!hasUriScheme("docs/x.md"));
     try std.testing.expect(!hasUriScheme(""));
 }
 
 test "linkDestination: a title is not part of the destination" {
-    // A titled link is standard CommonMark; passing the title through to the
-    // file system crashed on Windows.
+    // タイトル付きのリンクは標準的な CommonMark である。タイトルをそのまま
+    // ファイルシステムに渡すと、Windows でクラッシュした。
     try std.testing.expectEqualStrings("README.md", linkDestination("README.md \"The readme\")").?.target);
     try std.testing.expectEqualStrings("README.md", linkDestination("README.md 'x')").?.target);
     try std.testing.expectEqualStrings("README.md", linkDestination("<README.md>)").?.target);
@@ -2423,7 +2426,8 @@ test "zigImports: only real import expressions count" {
     const gpa = std.testing.allocator;
     var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(gpa);
-    // A commented-out import once made an unreferenced file look reachable.
+    // コメントアウトされたインポートのせいで、どこからも参照されないファイルが
+    // 到達可能に見えたことがある。
     try zigImports(gpa,
         \\const a = @import("real.zig");
         \\// @import("commented.zig")
@@ -2435,8 +2439,8 @@ test "zigImports: only real import expressions count" {
 }
 
 test "hasRefAllDeclsTest: the argument must be @This()" {
-    // Passing another container compiles and reads like the convention but
-    // references the wrong declarations.
+    // 別のコンテナを渡してもコンパイルは通り、慣習どおりに見えるが、参照される
+    // のは別の宣言になる。
     try std.testing.expect(hasRefAllDeclsTest("test { std.testing.refAllDecls(@This()); }"));
     try std.testing.expect(!hasRefAllDeclsTest("test { std.testing.refAllDecls(std.ascii); }"));
     try std.testing.expect(!hasRefAllDeclsTest("// refAllDecls(@This())"));
@@ -2466,9 +2470,9 @@ test "workflowZigVersions: every setup-zig step gets its own entry" {
 }
 
 test "workflowZigVersions: only a version under the step's own with: counts" {
-    // The defect this pins: any line indented deeper than the step was
-    // accepted, so `env:` and every other key a step carries could supply
-    // the version that got checked.
+    // このテストが固定する欠陥。ステップより深くインデントされた行なら
+    // 何でも受け入れていたので、`env:` など、ステップが持つ他のあらゆる
+    // キーが、検査されるバージョンを供給できた。
     const gpa = std.testing.allocator;
     var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
@@ -2484,9 +2488,9 @@ test "workflowZigVersions: only a version under the step's own with: counts" {
 }
 
 test "workflowZigVersions: each step keeps its own version" {
-    // The defect this pins: versions were collected into one flat list and
-    // compared by count, so one step could supply the entry that satisfied
-    // the other while installing anything.
+    // このテストが固定する欠陥。バージョンを1つの平らなリストに集めて件数で
+    // 比べていたので、一方のステップが、もう一方を満たすエントリを供給でき、
+    // 実際には何をインストールしていてもよかった。
     const gpa = std.testing.allocator;
     var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
@@ -2536,7 +2540,7 @@ test "workflowZigVersions: comments and decoys on the step line supply nothing" 
     const gpa = std.testing.allocator;
     var out: std.ArrayList(StepVersion) = .empty;
     defer out.deinit(gpa);
-    // A comment carrying a version, and the real one below it.
+    // バージョンを含むコメントと、その下にある本物のバージョン。
     try workflowZigVersions(gpa,
         \\    steps:
         \\      - uses: mlugg/setup-zig@abc  # version: 0.17.0
@@ -2546,7 +2550,7 @@ test "workflowZigVersions: comments and decoys on the step line supply nothing" 
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
     try std.testing.expectEqualStrings("0.18.0", out.items[0].version.?);
 
-    // A flow mapping, which keeps the version off a line of its own.
+    // フローマッピング。バージョンが独立した行に現れない。
     out.clearRetainingCapacity();
     try workflowZigVersions(gpa,
         \\    steps:
@@ -2606,12 +2610,12 @@ test "visibleMarkdown: a record hidden from the reader is not a record" {
     ;
     const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
     defer gpa.free(seen);
-    // The visible row survives; the commented, fenced and indented ones do not.
+    // 見える行は残る。コメントの中、フェンスの中、インデントされた行は残らない。
     switch (integerAfter(seen, "| 合計 |")) {
         .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
         else => return error.TestExpectedOne,
     }
-    // Line structure is kept so diagnostics still line up.
+    // 診断の行がずれないように、行の構造は保つ。
     try std.testing.expectEqual(doc.len, seen.len);
     try std.testing.expectEqual(@as(usize, 0), rep.count);
 }
@@ -2620,9 +2624,9 @@ test "visibleMarkdown: a comment in a code span is reported, not obeyed" {
     const gpa = std.testing.allocator;
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var rep: Reporter = .{ .w = &sink.writer };
-    // There is no exception for code spans, so prose carrying the marker is an
-    // unclosed comment. Reporting it is what tells the author to write the
-    // sentence another way, instead of the rest of the document going quiet.
+    // コードスパンには例外がないので、そのマーカーを含む地の文は、閉じていない
+    // コメントになる。報告するのは、文書の残りが黙ってしまうのではなく、
+    // 著者に文を別の書き方にするよう伝えるためである。
     const doc =
         \\HTML コメントは `<!--` で開く。
         \\| 合計 | 557 |
@@ -2640,8 +2644,9 @@ test "visibleMarkdown: a comment part way along a line hides what it wraps" {
     const gpa = std.testing.allocator;
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var rep: Reporter = .{ .w = &sink.writer };
-    // A browser hides an inline comment as it hides a block one, so a reader
-    // sees 99 here. Reading 16 took a value nobody could see as the record.
+    // ブラウザはブロックのコメントと同じように行内のコメントも隠すので、
+    // 読者にはここで99が見える。16を読むと、誰にも見えない値を記録として
+    // 採ることになる。
     const doc = "| 合計 | <!--16--> 99 |";
     const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
     defer gpa.free(seen);
@@ -2656,8 +2661,8 @@ test "visibleMarkdown: an opener indented under four spaces still opens" {
     const gpa = std.testing.allocator;
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var rep: Reporter = .{ .w = &sink.writer };
-    // Blanking the indented lines first turned this opener into spaces, so the
-    // row it hides from the reader was read as present.
+    // インデントされた行を先に空白で潰すと、この開始が空白になり、読者には
+    // 隠れている行が、あるものとして読まれた。
     const doc =
         \\  <!--
         \\| 合計 | 557 |
@@ -2673,9 +2678,9 @@ test "visibleMarkdown: a record shallower than an indented fence is kept" {
     const gpa = std.testing.allocator;
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var rep: Reporter = .{ .w = &sink.writer };
-    // The fence is an indented code block's content rather than a fence, so the
-    // row between the two renders as a row. Blanking it here left nobody
-    // reading a table the page shows.
+    // このフェンスはフェンスではなく、インデントされたコードブロックの中身
+    // なので、2つの間の行は表の行として描画される。ここで潰すと、ページに
+    // 表示される表を、誰も読まないことになる。
     const doc =
         \\    ```
         \\| 合計 | 557 |
@@ -2701,8 +2706,8 @@ test "visibleMarkdown: an unclosed comment is reported, not obeyed" {
     const seen = try visibleMarkdown(gpa, &rep, "t.md", doc);
     defer gpa.free(seen);
     try std.testing.expectEqual(@as(usize, 1), rep.count);
-    // The rest of the document is left readable, so the records below are still
-    // compared rather than silently absent.
+    // 文書の残りは読める状態で残す。その下の記録が黙って消えるのではなく、
+    // 引き続き照合される。
     switch (integerAfter(seen, "| 合計 |")) {
         .one => |v| try std.testing.expectEqual(@as(usize, 557), v),
         else => return error.TestExpectedOne,
@@ -2714,8 +2719,8 @@ test "adrRow: the row is found by the link that opens it" {
         \\| [0005](0005-old.md) | ... | 非推奨([0019](0019-new.md)に置き換え) | 2026-10-04 |
         \\| [0019](0019-new.md) | ... | 採用 | 2026-10-05 |
     ;
-    // A 非推奨 row also links to its replacement, so matching any link on
-    // the row would find two rows for 0019.
+    // 非推奨の行は置き換え先へのリンクも持つ。行のどのリンクでも一致とすると、
+    // 0019 について2つの行が見つかってしまう。
     const row = adrRow(index, "0019-new.md").one;
     try std.testing.expect(std.mem.indexOf(u8, row, "採用") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "非推奨") == null);
@@ -2723,8 +2728,8 @@ test "adrRow: the row is found by the link that opens it" {
 }
 
 test "adrRow: a stale row left below the real one is reported" {
-    // The defect this pins: the first match won, so an outdated row showed
-    // a second status for the same ADR and nothing read it.
+    // このテストが固定する欠陥。最初に一致した行が採用されたので、古い行が
+    // 同じ ADR に別の状態を示していても、誰もそれを読まなかった。
     const index =
         \\| [0017](0017-a.md) | ... | 非推奨([0023](0023-b.md)に置き換え) | 2026-10-04 |
         \\| [0017](0017-a.md) | 古い行 | 採用 | 2026-10-04 |
@@ -2738,7 +2743,7 @@ test "adrRow: a stale row left below the real one is reported" {
 test "runsCommand: extra text is accepted only as a flag" {
     try std.testing.expect(runsCommand("zig build", "zig build"));
     try std.testing.expect(runsCommand("zig build test --summary all", "zig build test"));
-    // The test line must not stand in for the plain build row.
+    // test の行が、素の build の行の代わりになってはならない。
     try std.testing.expect(!runsCommand("zig build test --summary all", "zig build"));
     try std.testing.expect(!runsCommand("zig build check-docs", "zig build check"));
     try std.testing.expect(runsCommand("zig fmt --check .", "zig fmt --check ."));
@@ -2757,14 +2762,14 @@ test "stripComment: a hash opens a comment only at the start or after whitespace
     try std.testing.expectEqualStrings("", stripComment("# all of it"));
     try std.testing.expectEqualStrings("a: ", stripComment("a: # b"));
     try std.testing.expectEqualStrings("a: b", stripComment("a: b"));
-    // Not whitespace before it, so it belongs to the scalar.
+    // 前が空白ではないので、スカラーの一部である。
     try std.testing.expectEqualStrings("- name: step#3", stripComment("- name: step#3"));
 }
 
 test "stripComment: a hash inside a quoted scalar is not a comment" {
     try std.testing.expectEqualStrings("- name: \"a # b\"", stripComment("- name: \"a # b\""));
     try std.testing.expectEqualStrings("- name: 'a # b'", stripComment("- name: 'a # b'"));
-    // The quote closes, so the next hash does open a comment.
+    // 引用符が閉じているので、次の # はコメントを開く。
     try std.testing.expectEqualStrings("- name: \"a\" ", stripComment("- name: \"a\" # b"));
 }
 
@@ -2780,8 +2785,8 @@ test "hashLengthPrefixed: moving a boundary changes the digest" {
     var db: [Sha256.digest_length]u8 = undefined;
     a.final(&da);
     b.final(&db);
-    // Plain concatenation gives these two the same bytes, which is how one
-    // file's content moved into the file before it with the record unchanged.
+    // 単純に連結すると、この2つは同じバイト列になる。これは、あるファイルの
+    // 内容が、記録を変えないまま、その前のファイルへ移れる仕組みである。
     try std.testing.expect(!std.mem.eql(u8, &da, &db));
 }
 
@@ -2800,24 +2805,25 @@ test "isIgnored: the shapes this repository writes" {
     try std.testing.expect(isIgnored(patterns, "._base.txt", false));
     try std.testing.expect(isIgnored(patterns, "base.txt~", false));
     try std.testing.expect(isIgnored(patterns, "_work", false));
-    // A trailing slash matches a directory and nothing else.
+    // 末尾の `/` はディレクトリにだけ一致する。
     try std.testing.expect(isIgnored(patterns, "zig-out", true));
     try std.testing.expect(!isIgnored(patterns, "zig-out", false));
-    // What the record must keep covering.
+    // 記録が引き続き覆わなければならないもの。
     try std.testing.expect(!isIgnored(patterns, "base.txt", false));
     try std.testing.expect(!isIgnored(patterns, "notes.md", false));
     try std.testing.expect(!isIgnored(patterns, "sub", true));
-    // A comment is not a pattern.
+    // コメントはパターンではない。
     try std.testing.expect(!isIgnored(patterns, "# a comment", false));
-    // A `!` line is skipped, so what it re-includes stays ignored. This is the
-    // recorded limit, pinned so a later fix flips it visibly. `.env.example`
-    // belongs in no generated directory, which is why the limit is acceptable.
+    // `!` の行は読み飛ばすので、それが再び含めるはずのものは、無視されたまま
+    // になる。これは記録された上限であり、後で直したときにテストの結果が
+    // 目に見えて反転するように固定してある。`.env.example` は生成物の
+    // ディレクトリには現れないので、この上限は許容できる。
     try std.testing.expect(isIgnored(patterns, ".env.example", false));
 }
 
 test "isIgnored: an unrecognised shape leaves the check strict" {
-    // A pattern with a star in the middle, or more than one, is not understood.
-    // It must not match, or the record would stop covering what it names.
+    // 途中に `*` があるパターンや、`*` が複数あるパターンは解釈しない。
+    // 一致してはならない。一致すると、記録がそれの名指すものを覆わなくなる。
     try std.testing.expect(!isIgnored("ba*.txt", "base.txt", false));
     try std.testing.expect(!isIgnored("*ase*", "base.txt", false));
     try std.testing.expect(!isIgnored("tests/*.txt", "base.txt", false));
@@ -2827,14 +2833,14 @@ test "countOccurrences: every non-overlapping match counts" {
     try std.testing.expectEqual(@as(usize, 0), countOccurrences("abc", "x"));
     try std.testing.expectEqual(@as(usize, 1), countOccurrences("abc", "b"));
     try std.testing.expectEqual(@as(usize, 2), countOccurrences("abab", "ab"));
-    // Non-overlapping: "aaa" holds one "aa", not two.
+    // 重ならない一致だけを数える。"aaa" に "aa" は1つあり、2つではない。
     try std.testing.expectEqual(@as(usize, 1), countOccurrences("aaa", "aa"));
 }
 
 test "hasRefAllDeclsTest: the call must be qualified" {
-    // Loosening the period requirement left all other tests green, so the
-    // reason the doc comment gives for it was unpinned: a local fn of the same
-    // name satisfies a bare-name check while referencing nothing.
+    // ピリオドの要件を緩めても、ほかのテストはすべて緑のままだった。そのため、
+    // doc コメントが挙げているその理由が固定されていなかった。同名のローカル
+    // 関数は、素の名前だけを見る検査を満たすが、何も参照しない。
     try std.testing.expect(!hasRefAllDeclsTest(
         \\test {
         \\    refAllDecls(@This());
@@ -2843,9 +2849,9 @@ test "hasRefAllDeclsTest: the call must be qualified" {
 }
 
 test "hasRefAllDeclsTest: a container expression is not @This()" {
-    // The existing negative example falls at the token sequence rather than at
-    // the @This check, so loosening step 3 to accept any identifier left every
-    // test green. This one fails only while @This is required.
+    // 既存の否定例は、@This の検査ではなくトークン列の段階で落ちる。そのため、
+    // 手順3を緩めて任意の識別子を受け入れるようにしても、すべてのテストが
+    // 緑のままだった。このテストは、@This が要求されている間だけ失敗する。
     try std.testing.expect(!hasRefAllDeclsTest(
         \\test {
         \\    std.testing.refAllDecls(Container());
@@ -2859,9 +2865,10 @@ test "hasRefAllDeclsTest: a container expression is not @This()" {
 }
 
 test "hasRefAllDeclsTest: a local qualifier passes, which is the recorded limit" {
-    // Lexing cannot tell what `fake` resolves to. The check is satisfied while
-    // nothing is referenced. This is one of the two limits open-questions.md
-    // records; the test is here so a later fix flips it visibly.
+    // 字句解析では、`fake` が何に解決されるかを判別できない。何も参照して
+    // いなくても、検査は満たされる。これは open-questions.md が記録している
+    // 2つの限界の1つである。後で直したときにテストの結果が目に見えて反転
+    // するように、このテストを置いてある。
     try std.testing.expect(hasRefAllDeclsTest(
         \\const fake = struct {
         \\    fn refAllDecls(_: type) void {}
@@ -2882,27 +2889,27 @@ test "sha256InMarkdown: the recorded hash is the one the row shows" {
 
 test "sha256InMarkdown: nothing to record" {
     try std.testing.expect(sha256InMarkdown("| size | 67552 |", "入力の SHA-256") == .none);
-    // Names the record but shows no hash.
+    // 記録の名前はあるが、ハッシュが示されていない。
     try std.testing.expect(sha256InMarkdown("| 入力の SHA-256 | pending |", "入力の SHA-256") == .none);
 }
 
 test "sha256InMarkdown: a decoy makes the record ambiguous, not silently wrong" {
     const real = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const decoy = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    // Hidden ahead of the real one on the same row, where the rendered table
-    // still shows the real hash.
+    // 同じ行で、本物の前に隠してある。描画された表には、本物のハッシュが
+    // そのまま表示される。
     try std.testing.expect(sha256InMarkdown(
         "| 入力の SHA-256 | <!-- " ++ decoy ++ " --> `" ++ real ++ "` |",
         "入力の SHA-256",
     ) == .ambiguous);
-    // A second row carrying the same label with an older hash.
+    // 同じラベルで、古いハッシュを持つ2つ目の行。
     const two_rows = "| 入力の SHA-256 | `" ++ decoy ++ "` |\n| 入力の SHA-256 | `" ++ real ++ "` |";
     try std.testing.expect(sha256InMarkdown(two_rows, "入力の SHA-256") == .ambiguous);
 }
 
 test "sha256InMarkdown: each label finds its own record" {
-    // One document holds two hashes. Looking a row up by the word SHA-256
-    // alone would find both and call every document ambiguous.
+    // 1つの文書に2つのハッシュがある。SHA-256 という語だけで行を探すと、
+    // 両方が見つかり、どの文書も曖昧と判定されてしまう。
     const input = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const output = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const doc = "| 入力の SHA-256 | `" ++ input ++ "` |\n| 抽出結果の SHA-256 | `" ++ output ++ "` |";
@@ -2919,7 +2926,7 @@ test "sha256InMarkdown: each label finds its own record" {
 test "sha256InMarkdown: case is not part of the record" {
     const lower = "abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01";
     const upper = "ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01";
-    // One hash written twice in different case is one record, not two.
+    // 同じハッシュが大文字小文字を変えて2回書かれていても、記録は2つではなく1つである。
     switch (sha256InMarkdown("| 入力の SHA-256 | `" ++ lower ++ "` and `" ++ upper ++ "` |", "入力の SHA-256")) {
         .one => {},
         else => return error.TestExpectedOne,
@@ -2927,8 +2934,8 @@ test "sha256InMarkdown: case is not part of the record" {
 }
 
 test "fenceRun: a run of two is not a fence" {
-    // Reached only when the line is long enough but the run is not, which the
-    // length guard alone does not cover.
+    // 行は十分に長いが、連なりが短いときにだけ到達する。長さのガードだけでは
+    // 覆えない経路である。
     try std.testing.expect(fenceRun("``x") == null);
     try std.testing.expect(fenceRun("~~x") == null);
     try std.testing.expect(fenceRun("```") != null);
@@ -2937,7 +2944,7 @@ test "fenceRun: a run of two is not a fence" {
 test "pathIn compares whole paths" {
     const haystack = [_][]const u8{ "src/wasm.zig", "src/main.zig" };
     try std.testing.expect(pathIn(&haystack, "src/wasm.zig"));
-    // A base-name match would also exclude src/platform/wasm.zig.
+    // 基底名で照合すると、src/platform/wasm.zig まで除外してしまう。
     try std.testing.expect(!pathIn(&haystack, "src/platform/wasm.zig"));
     try std.testing.expect(!pathIn(&haystack, "wasm.zig"));
 }
