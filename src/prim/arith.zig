@@ -126,7 +126,7 @@ fn division(comptime kind: Division) Primitive.Fn {
             return fromWide(switch (kind) {
                 .quotient => @divTrunc(n, d),
                 .remainder => @rem(n, d),
-                // Zig の `@mod` は除数が正でなければならないので、床除算の商から引く。
+                // R7RS の modulo は floor-remainder で、n - d * floor(n / d) と定義される。その定義のまま書く。
                 .modulo => n - d * @divFloor(n, d),
             });
         }
