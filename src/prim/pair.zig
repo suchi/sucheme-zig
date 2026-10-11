@@ -19,7 +19,56 @@ pub const primitives = [_]Primitive{
     .{ .name = "pair?", .min_args = 1, .max_args = 1, .call = &isPair },
     .{ .name = "null?", .min_args = 1, .max_args = 1, .call = &isNull },
     .{ .name = "list", .min_args = 0, .max_args = null, .call = &list },
+    .{ .name = "length", .min_args = 1, .max_args = 1, .call = &length },
+    .{ .name = "list?", .min_args = 1, .max_args = 1, .call = &isList },
 };
+
+/// The number of pairs in the chain `v`, or null when `v` is not a list: when the
+/// chain ends in something other than the empty list, or never ends.
+///
+/// R7RS 6.4 は、リストを有限の長さを持ち空リストで終わるものと定めている。輪になった
+/// 鎖は、尾を無限に進むので、リストではない。段階1の Scheme からは輪を作れない
+/// (変更する手続きが無い)が、段階3の変更操作が入ったとき `length` と `list?` が止まる
+/// ことを、ここで保っておく。
+///
+/// 速い印は2歩ずつ、遅い印は1歩ずつ進める(Floyd の方法)。輪があれば2つの印はいずれ
+/// 同じペアで出会う。作業領域を使わず、長さに比例する時間で終わる。
+fn properLength(v: Value) ?usize {
+    var count: usize = 0;
+    var slow = v;
+    var fast = v;
+    while (true) {
+        for (0..2) |_| {
+            switch (fast.kind()) {
+                .empty_list => return count,
+                .pair => {
+                    fast = fast.asPair().?.cdr;
+                    count += 1;
+                },
+                else => return null,
+            }
+        }
+        slow = slow.asPair().?.cdr;
+        // 速い印が空リストに着いていれば、次の周回で `count` を返す。
+        if (fast.asPair()) |p| {
+            if (p == slow.asPair().?) return null;
+        }
+    }
+}
+
+/// `(length list)`: the number of elements of `list`.
+///
+/// R7RS 6.4 は `list` がリストでないときの動作を定めていない(誤りである)。ここでは、
+/// 末尾が空リストでない鎖と輪になった鎖を、型エラーにする。
+fn length(_: *const Services, args: []const Value) Error!Value {
+    const n = properLength(args[0]) orelse return error.WrongType;
+    return .fromFixnum(@intCast(n));
+}
+
+/// `(list? obj)`: whether `obj` is a list (R7RS 6.4).
+fn isList(_: *const Services, args: []const Value) Error!Value {
+    return .fromBool(properLength(args[0]) != null);
+}
 
 /// `(cons obj1 obj2)`: a new pair of `obj1` and `obj2`.
 ///
@@ -100,6 +149,8 @@ test "the pair primitives take the numbers of arguments the language gives them"
         .{ .name = "pair?", .min = 1, .max = 1 },
         .{ .name = "null?", .min = 1, .max = 1 },
         .{ .name = "list", .min = 0, .max = null },
+        .{ .name = "length", .min = 1, .max = 1 },
+        .{ .name = "list?", .min = 1, .max = 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
     for (expected, primitives) |e, p| {
@@ -253,4 +304,170 @@ test "cons and list report a heap that is full" {
     // 確保しない呼び出しは、満杯のヒープでも成り立つ。
     const l = try f.call(&primitives, "list", &.{});
     try std.testing.expectEqual(.empty_list, l.kind());
+}
+
+/// The list of `items` ending in `tail`.
+fn listOf(f: *test_support.Fixture, items: []const i64, tail: Value) !Value {
+    var result = tail;
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        result = try f.heap.cons(fix(items[i]), result);
+    }
+    return result;
+}
+
+/// The length `length` gives, or null if it reports a wrong type.
+fn lengthOf(f: *test_support.Fixture, v: Value) !?i64 {
+    const r = f.call(&primitives, "length", &.{v}) catch |e| switch (e) {
+        error.WrongType => return null,
+        else => return e,
+    };
+    return r.asFixnum().?;
+}
+
+fn isListTrue(f: *test_support.Fixture, v: Value) !bool {
+    const r = try f.call(&primitives, "list?", &.{v});
+    try std.testing.expectEqual(.boolean, r.kind());
+    return r.isTrue();
+}
+
+/// The last pair of the chain `v`, which must be a pair.
+fn lastPair(v: Value) *value.Pair {
+    var p = v.asPair().?;
+    while (p.cdr.asPair()) |next| p = next;
+    return p;
+}
+
+test "length counts the elements of a list, and makes nothing" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try std.testing.expectEqual(0, (try lengthOf(&f, Value.empty_list_value)).?);
+    try std.testing.expectEqual(1, (try lengthOf(&f, try listOf(&f, &.{7}, Value.empty_list_value))).?);
+    try std.testing.expectEqual(3, (try lengthOf(&f, try listOf(&f, &.{ 1, 2, 3 }, Value.empty_list_value))).?);
+    const before = f.heap.count;
+    _ = try lengthOf(&f, Value.empty_list_value);
+    try std.testing.expectEqual(before, f.heap.count);
+}
+
+test "length counts the pairs, not what they hold" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // 要素がリストでも、数えるのは外側の鎖である。
+    const inner = try listOf(&f, &.{ 1, 2, 3 }, Value.empty_list_value);
+    const outer = try f.heap.cons(inner, try f.heap.cons(Value.empty_list_value, Value.empty_list_value));
+    try std.testing.expectEqual(2, (try lengthOf(&f, outer)).?);
+}
+
+test "length of a chain that does not end in the empty list is a wrong type" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try std.testing.expectEqual(null, try lengthOf(&f, try f.heap.cons(fix(1), fix(2))));
+    try std.testing.expectEqual(null, try lengthOf(&f, try listOf(&f, &.{ 1, 2, 3 }, fix(4))));
+    try std.testing.expectEqual(null, try lengthOf(&f, try listOf(&f, &.{ 1, 2 }, Value.unspecified_value)));
+    try std.testing.expectEqual(null, try lengthOf(&f, try listOf(&f, &.{1}, .fromBool(false))));
+    for (try notPairs(&f)) |v| try std.testing.expectEqual(null, try lengthOf(&f, v));
+}
+
+test "length of a list that loops back on itself is a wrong type, and ends" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // 段階1の Scheme からは循環が作れない。ここでは Zig でペアを書き換えて作る。
+    const self_loop = try f.heap.cons(fix(1), Value.empty_list_value);
+    self_loop.asPair().?.cdr = self_loop;
+    try std.testing.expectEqual(null, try lengthOf(&f, self_loop));
+
+    const two = try listOf(&f, &.{ 1, 2 }, Value.empty_list_value);
+    lastPair(two).cdr = two;
+    try std.testing.expectEqual(null, try lengthOf(&f, two));
+
+    // 輪に入る前に長い尾がある形。
+    const loop = try listOf(&f, &.{ 10, 11, 12 }, Value.empty_list_value);
+    lastPair(loop).cdr = loop;
+    const with_tail = try listOf(&f, &.{ 1, 2, 3, 4, 5, 6, 7 }, loop);
+    try std.testing.expectEqual(null, try lengthOf(&f, with_tail));
+    // 輪の途中を指す形。
+    const mid = try listOf(&f, &.{ 1, 2, 3, 4 }, Value.empty_list_value);
+    lastPair(mid).cdr = mid.asPair().?.cdr.asPair().?.cdr;
+    try std.testing.expectEqual(null, try lengthOf(&f, mid));
+}
+
+test "length counts a list longer than the machine's arguments" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const n = 10_000;
+    var l: Value = Value.empty_list_value;
+    for (0..n) |i| l = try f.heap.cons(fix(@intCast(i)), l);
+    try std.testing.expectEqual(n, (try lengthOf(&f, l)).?);
+    try std.testing.expect(try isListTrue(&f, l));
+    // 末尾だけが違う長い鎖は、数え終わってから偽になる。
+    lastPair(l).cdr = fix(0);
+    try std.testing.expectEqual(null, try lengthOf(&f, l));
+    try std.testing.expect(!try isListTrue(&f, l));
+}
+
+test "list? is true of the empty list and of a chain that ends in it" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try std.testing.expect(try isListTrue(&f, Value.empty_list_value));
+    try std.testing.expect(try isListTrue(&f, try listOf(&f, &.{1}, Value.empty_list_value)));
+    try std.testing.expect(try isListTrue(&f, try listOf(&f, &.{ 1, 2, 3 }, Value.empty_list_value)));
+}
+
+test "list? is false of a chain that ends in anything else, and of what is not a pair" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try std.testing.expect(!try isListTrue(&f, try f.heap.cons(fix(1), fix(2))));
+    try std.testing.expect(!try isListTrue(&f, try listOf(&f, &.{ 1, 2 }, fix(3))));
+    try std.testing.expect(!try isListTrue(&f, try listOf(&f, &.{1}, Value.unspecified_value)));
+    for (try notPairs(&f)) |v| try std.testing.expect(!try isListTrue(&f, v));
+}
+
+test "list? is false of a list that loops back on itself, and ends" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const self_loop = try f.heap.cons(fix(1), Value.empty_list_value);
+    self_loop.asPair().?.cdr = self_loop;
+    try std.testing.expect(!try isListTrue(&f, self_loop));
+
+    const two = try listOf(&f, &.{ 1, 2 }, Value.empty_list_value);
+    lastPair(two).cdr = two;
+    try std.testing.expect(!try isListTrue(&f, two));
+
+    const loop = try listOf(&f, &.{ 10, 11, 12 }, Value.empty_list_value);
+    lastPair(loop).cdr = loop;
+    try std.testing.expect(!try isListTrue(&f, try listOf(&f, &.{ 1, 2, 3, 4, 5, 6, 7 }, loop)));
+}
+
+test "list? and length agree on every shape" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // 長さ 0 から 39 の、真のリストと、末尾が違う鎖と、輪。
+    for (0..40) |n| {
+        var items: [40]i64 = undefined;
+        for (items[0..n], 0..) |*it, i| it.* = @intCast(i);
+        const proper = try listOf(&f, items[0..n], Value.empty_list_value);
+        try std.testing.expect(try isListTrue(&f, proper));
+        try std.testing.expectEqual(@as(i64, @intCast(n)), (try lengthOf(&f, proper)).?);
+
+        const improper = try listOf(&f, items[0..n], fix(0));
+        // n が 0 のときは、鎖でなく数 0 そのものである。
+        try std.testing.expect(!try isListTrue(&f, improper));
+        try std.testing.expectEqual(null, try lengthOf(&f, improper));
+
+        if (n == 0) continue;
+        const ring = try listOf(&f, items[0..n], Value.empty_list_value);
+        lastPair(ring).cdr = ring;
+        try std.testing.expect(!try isListTrue(&f, ring));
+        try std.testing.expectEqual(null, try lengthOf(&f, ring));
+    }
 }
