@@ -397,7 +397,7 @@ const Fixture = struct {
     fn init(self: *Fixture) !void {
         self.arena = .init(std.testing.allocator);
         errdefer self.arena.deinit();
-        self.ctx = try .init(self.arena.allocator(), std.testing.allocator);
+        self.ctx = try .init(self.arena.allocator(), std.heap.smp_allocator);
     }
 
     fn deinit(self: *Fixture) void {

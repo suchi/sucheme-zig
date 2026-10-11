@@ -478,7 +478,7 @@ test "an error raised deep in the recursion leaves the machine, and the next run
 
 test "a call in tail position does not grow the continuation" {
     var f: Fixture = undefined;
-    try f.init();
+    try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
     _ = try f.eval("(define (loop n) (if (= n 0) 'done (loop (- n 1))))");
     f.machine.peak_depth = 0;
@@ -501,7 +501,7 @@ test "a call in tail position does not grow the continuation" {
 
 test "the operands of a primitive call with many operands do not pile up in the scratch space" {
     var f: Fixture = undefined;
-    try f.init();
+    try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
     // The machine's scratch space is its own, apart from the one the expander used.
     var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -516,7 +516,7 @@ test "the operands of a primitive call with many operands do not pile up in the 
 
 test "a call that is not in tail position holds a frame for each pending call" {
     var f: Fixture = undefined;
-    try f.init();
+    try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
     _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1)))))");
     f.machine.peak_depth = 0;

@@ -174,16 +174,20 @@ pub fn build(b: *std.Build) void {
 
     // One Compile per tool, reused by every run step and by the test targets.
     // Calling tool() at each use made two Compile steps from the same file.
-    const check_docs = tool(b, "check-docs");
-    const extractor = tool(b, "extract-r7rs-required");
-    const test_scheme = tool(b, "test-scheme");
+    const check_docs = tool(b, "check-docs", .Debug);
+    const extractor = tool(b, "extract-r7rs-required", .Debug);
+    // Why: the runner evaluates programs of a million steps, which a Debug
+    // build takes minutes over. ReleaseSafe keeps the checks (bounds, overflow,
+    // assertions) and runs the interpreter several times faster. The module
+    // below takes the optimize mode of the executable that imports it.
+    const test_scheme = tool(b, "test-scheme", .ReleaseSafe);
     // The runner evaluates each case in-process, so it is built against the
     // same source as the executable. For the host, not `target`: the runner
     // runs here, and `-Dtarget` names where the executable will run.
     const sucheme_host = b.createModule(.{
         .root_source_file = b.path("src/sucheme.zig"),
         .target = b.graph.host,
-        .optimize = .Debug,
+        .optimize = .ReleaseSafe,
     });
     sucheme_host.addOptions("build_options", options);
     test_scheme.root_module.addImport("sucheme", sucheme_host);
@@ -420,13 +424,13 @@ fn checkTestsAreRun(test_step: *std.Build.Step, targets: []const TestTarget) voi
 }
 
 /// Builds one of the helper programs under tools/.
-fn tool(b: *std.Build, name: []const u8) *std.Build.Step.Compile {
+fn tool(b: *std.Build, name: []const u8, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     return b.addExecutable(.{
         .name = name,
         .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tools/{s}/main.zig", .{name})),
             .target = b.graph.host,
-            .optimize = .Debug,
+            .optimize = optimize,
         }),
     });
 }

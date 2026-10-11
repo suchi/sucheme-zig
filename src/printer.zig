@@ -92,7 +92,7 @@ const Fixture = struct {
     symbols: symbol.Table = .{},
 
     fn init() Fixture {
-        return .{ .arena = .init(std.testing.allocator), .heap = .init(std.testing.allocator, .{}) };
+        return .{ .arena = .init(std.testing.allocator), .heap = .init(std.heap.smp_allocator, .{}) };
     }
 
     fn deinit(self: *Fixture) void {
