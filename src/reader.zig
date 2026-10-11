@@ -259,7 +259,9 @@ pub fn isIncomplete(gpa: std.mem.Allocator, source: []const u8) error{OutOfMemor
     }
 }
 
-/// 判定表の1行: 入力と、継続行が要るかどうか。
+/// One row of the judgement table: an input, and whether it asks for more.
+///
+/// 判定表のテストが使う。
 const Judgement = struct { []const u8, bool };
 
 test "isIncomplete asks for more input only for an unfinished datum" {
