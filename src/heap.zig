@@ -61,11 +61,44 @@ pub fn clampHostLimit(requested: usize) usize {
     return @min(requested, max_host_limit);
 }
 
+/// The options for a heap whose limit the host chose in bytes.
+/// 0 は「指定なし」で、既定の上限になる。それ以外は `clampHostLimit` で丸める。
+/// WebAssembly の `sucheme_init` が、ホストの `u32` をそのまま渡す。
+pub fn hostOptions(requested: u32) Options {
+    if (requested == 0) return .{};
+    return .{ .limit = clampHostLimit(requested) };
+}
+
+test "max_host_limit is 1 GiB" {
+    // 値そのものを固定する。大きくすると、wasm32 で 4 GiB に近い上限が通り、
+    // 上限に届く前に実メモリが尽きて trap する(`max_host_limit` の説明を参照)。
+    try std.testing.expectEqual(@as(usize, 1073741824), max_host_limit);
+}
+
 test "clampHostLimit leaves a small limit and caps a large one" {
     try std.testing.expectEqual(@as(usize, 65536), clampHostLimit(65536));
     try std.testing.expectEqual(max_host_limit, clampHostLimit(max_host_limit));
     try std.testing.expectEqual(max_host_limit, clampHostLimit(max_host_limit + 1));
     try std.testing.expectEqual(max_host_limit, clampHostLimit(std.math.maxInt(u32)));
+}
+
+test "hostOptions: 0 is the default, a small limit stays, a large one is capped" {
+    try std.testing.expectEqual(default_limit, hostOptions(0).limit);
+    try std.testing.expectEqual(@as(usize, 1), hostOptions(1).limit);
+    try std.testing.expectEqual(@as(usize, 65536), hostOptions(65536).limit);
+    try std.testing.expectEqual(@as(usize, 1073741824), hostOptions(1073741824).limit);
+    try std.testing.expectEqual(@as(usize, 1073741824), hostOptions(1073741825).limit);
+    // 3 GiB と、u32 の最大(4 GiB に1足りない)。
+    try std.testing.expectEqual(@as(usize, 1073741824), hostOptions(3 * 1024 * 1024 * 1024).limit);
+    try std.testing.expectEqual(@as(usize, 1073741824), hostOptions(std.math.maxInt(u32)).limit);
+}
+
+test "hostOptions leaves every other option at its default" {
+    const d: Options = .{};
+    const o = hostOptions(std.math.maxInt(u32));
+    try std.testing.expectEqual(d.min_threshold, o.min_threshold);
+    try std.testing.expectEqual(d.work_capacity, o.work_capacity);
+    try std.testing.expectEqual(d.stress, o.stress);
 }
 
 /// 256 MiB.
