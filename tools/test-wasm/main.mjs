@@ -281,6 +281,72 @@ test("characters, strings and vectors are written in the write form", () => {
   assert.deepEqual(h.run('"a\\nb" #\\a #(1 "x")'), [OK, '"a\\nb"\n#\\a\n#(1 "x")\n']);
 });
 
+test("pairs, lists, strings and vectors work in wasm32", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(cons 1 2) (list 1 (if #f #f)) (length (list 1 2 3))"), [OK, "(1 . 2)\n(1 #<unspecified>)\n3\n"]);
+  assert.deepEqual(h.run('(string-length "あい") (string-ref "あい" 1) (vector-ref (vector 1 2 3) 2)'), [OK, "2\n#\\い\n3\n"]);
+  assert.deepEqual(h.run('(equal? (list 1 (vector 2 "x")) (list 1 (vector 2 "x"))) (eq? (list) (list)) (integer->char 12354)'), [OK, "#t\n#t\n#\\あ\n"]);
+  assert.deepEqual(
+    h.run("(define (len xs) (if (null? xs) 0 (+ 1 (len (cdr xs))))) (len (list 1 2 3 4 5 6 7 8 9 10))"),
+    [OK, "10\n"],
+  );
+});
+
+// 添字は 64 ビットの整数で、wasm32 の usize は 32 ビットである。検査の前に usize へ
+// 切り捨てて変えると、2^32 の倍数に近い添字が有効な添字に化ける。ネイティブ(usize が
+// 64 ビット)のテストでは見えないので、ここで固定する。ネイティブの側の対応する
+// ケースは tests/scheme/0025-primitive-errors.txt にある。
+test("an index past 2^32 is out of range in wasm32, not truncated to a valid index", () => {
+  const h = instantiate().init();
+  const rangeError = (src, name) =>
+    assert.deepEqual(h.run(src), [SCHEME_ERROR, `error: argument out of range in ${name}\n`], src);
+  // 対照として、切り捨てた先の添字は有効で、値が取れる。
+  assert.deepEqual(h.run('(string-ref "abc" 0) (string-ref "abc" 2)'), [OK, "#\\a\n#\\c\n"]);
+  assert.deepEqual(h.run("(vector-ref (vector 5 6) 0) (vector-ref (vector 5 6) 1)"), [OK, "5\n6\n"]);
+  rangeError('(string-ref "abc" 4294967296)', "string-ref"); // 切り捨てると 0
+  rangeError('(string-ref "abc" 4294967298)', "string-ref"); // 切り捨てると 2
+  rangeError('(string-ref "あいう" 4294967297)', "string-ref"); // 切り捨てると 1
+  rangeError("(vector-ref (vector 1) 4294967296)", "vector-ref"); // 切り捨てると 0
+  rangeError("(vector-ref (vector 5 6) 4294967297)", "vector-ref"); // 切り捨てると 1
+  rangeError("(vector-ref (vector 5 6) 8589934592)", "vector-ref"); // 2^33。切り捨てると 0
+  rangeError("(vector-ref (vector 5 6) 9223372036854775807)", "vector-ref");
+  rangeError("(vector-ref (vector 5 6) -9223372036854775808)", "vector-ref");
+  rangeError('(string-ref "abc" -1)', "string-ref");
+  // 文字の値も 32 ビットを超える整数は範囲外である。切り捨てると 'A' になる。
+  rangeError("(integer->char 4294967361)", "integer->char");
+  rangeError("(integer->char 4294967296)", "integer->char");
+  // エラーのあとも、同じインスタンスが使える。
+  assert.deepEqual(h.run("(vector-ref (vector 5 6) 1)"), [OK, "6\n"]);
+});
+
+test("integer division and 128-bit arithmetic agree with the native results in wasm32", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(quotient -13 4) (quotient 13 -4) (remainder -13 4) (remainder 13 -4) (modulo -13 4) (modulo 13 -4) (modulo -13 -4)"),
+    [OK, "-3\n-3\n-1\n1\n3\n-3\n-1\n"],
+  );
+  // 64 ビットの境界の値。除算は 128 ビットで行う。
+  assert.deepEqual(h.run("(modulo -9223372036854775807 4) (modulo 9223372036854775807 -4) (quotient 9223372036854775807 -1)"), [
+    OK,
+    "1\n-1\n-9223372036854775807\n",
+  ]);
+  assert.deepEqual(h.run("(remainder -9223372036854775808 -1) (modulo -9223372036854775808 -1) (quotient -9223372036854775808 2)"), [
+    OK,
+    "0\n0\n-4611686018427387904\n",
+  ]);
+  // 最小の整数を -1 で割る quotient は、結果が 64 ビットに収まらない。
+  assert.deepEqual(h.run("(quotient -9223372036854775808 -1)"), [SCHEME_ERROR, "error: integer overflow in quotient\n"]);
+  assert.deepEqual(h.run("(quotient 1 0)"), [SCHEME_ERROR, "error: division by zero in quotient\n"]);
+  assert.deepEqual(h.run("(modulo -9223372036854775808 0)"), [SCHEME_ERROR, "error: division by zero in modulo\n"]);
+  // 128 ビットの積と和。途中の値が 64 ビットを超えても、結果が収まれば値を返す。
+  assert.deepEqual(h.run("(* 4294967296 2147483647) (+ 9223372036854775807 1 -1) (- -9223372036854775808 1 -1)"), [
+    OK,
+    "9223372032559808512\n9223372036854775807\n-9223372036854775808\n",
+  ]);
+  assert.deepEqual(h.run("(* 3037000500 3037000500)"), [SCHEME_ERROR, "error: integer overflow in *\n"]);
+  assert.deepEqual(h.run("(+ 9223372036854775807 1)"), [SCHEME_ERROR, "error: integer overflow in +\n"]);
+});
+
 test("a tail-recursive loop of 100000 iterations completes", () => {
   const h = instantiate().init();
   const [status, text] = h.run("(define (loop n) (if (= n 0) 'done (loop (- n 1)))) (loop 100000)");
