@@ -22,11 +22,30 @@
 //!
 //! REPL は、プロンプト `> ` と各結果を stdout に、エラーを stderr に
 //! `error: ` と `unbound variable: foo` のようなメッセージとして書く。エラーが
-//! 終わらせるのはその行の評価であり、REPL ではない。`;` から行末までは行コメント
-//! で、コメントだけの行は何も出力しない。1行は完結したデータを含む。
-//! リストの途中や `'` の直後で終わる行は、継続行が入るまでエラーになる
-//! (ADR-0014)。エラーのあとも終了ステータスは 0 のままである。REPL は入力の
-//! 残りを読み進めたからである。
+//! 終わらせるのはその式の評価であり、REPL ではない。`;` から行末までは行コメント
+//! で、コメントだけの行は何も出力しない。
+//!
+//! 閉じていない式(リストやベクタの途中、`'` の直後、文字列や `#\` の途中、
+//! ドットの直後)で終わる行は、継続行になる(ADR-0014)。継続行のプロンプトは
+//! `... ` で、次の行が、保留している入力の続きとして足される。足すとき改行を
+//! 戻すので、複数行の文字列リテラルは改行を含む。式が閉じたところで、保留の全体を
+//! 評価する。複数の式を含む行は、最後の式が閉じるまで評価されない。閉じた先頭の
+//! 式の出力も、そのときまで遅れる。継続を取り消す手段は無い。
+//!
+//! 構文エラー(`)` だけの行、`(a . )`、`#z`)は、続きを足しても直らないので、
+//! 継続行にならずにその行で報告される。
+//!
+//! 保留の合計は、改行を含めて 65536 バイト(`max_line`)までである。超えたら
+//! `error: the input does not fit in 65536 bytes, newline included` を報告して、
+//! 保留を捨てる。同じ式の残りの行は新しい入力として読まれるので、エラーが続きうる。
+//! 1行が `max_line` に収まらないときも、報告して読み飛ばし、保留を捨てる。
+//!
+//! 入力が尽きたとき、保留が残っていれば `error: unexpected end of input` を
+//! stderr に書いて終わる。保留が無ければ何も書かない。どちらの場合も、
+//! プロンプトの行を終わらせる改行を stdout に書く。
+//!
+//! エラーのあとも終了ステータスは 0 のままである。REPL は入力の残りを読み進めた
+//! からである。入力が尽きたときの `unexpected end of input` も同じである。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -136,27 +155,40 @@ pub fn classify(args: []const []const u8) Request {
 
 /// The size of the REPL's line buffer, newline included.
 ///
-/// 収まらない行は、報告してから読み飛ばす。
+/// 収まらない行は、報告してから読み飛ばす。継続行で保留する入力の合計の上限も、
+/// これと同じ値である。
 pub const max_line = 64 * 1024;
 
-/// Reads lines from `in` until it ends, and evaluates and prints each.
+/// The prompt for the first line of an expression.
+pub const prompt = "> ";
+
+/// The prompt for the lines that follow while an expression is open.
+pub const continuation_prompt = "... ";
+
+/// Reads lines from `in` until it ends, and evaluates and prints each expression.
 ///
-/// 各行には、評価中に要るものためのまっさらなアリーナを使う。リーダが作るものと
-/// 定義が保持するものはそこに入らず、インタプリタの中でセッションの終わりまで
-/// 生きる。
+/// 閉じていない式の行は、`sucheme.isIncomplete` が偽になるまで保留に足して
+/// 続きを読み、完結したところで評価する。各回には、評価中に要るものためのまっさらな
+/// アリーナを使う。リーダが作るものと定義が保持するものはそこに入らず、
+/// インタプリタの中でセッションの終わりまで生きる。
 pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var interp: sucheme.Interpreter = undefined;
     try interp.init(gpa);
     defer interp.deinit();
+    // 継続行の保留。エントリ層は確保を起動と終了に限るので、固定長にする。
+    var pending: [max_line]u8 = undefined;
+    var kept: usize = 0;
     while (true) {
-        try out.writeAll("> ");
+        try out.writeAll(if (kept == 0) prompt else continuation_prompt);
         try out.flush();
         const line = in.takeDelimiter('\n') catch |e| switch (e) {
             error.StreamTooLong => {
                 try err.print("error: the line does not fit in {d} bytes, newline included\n", .{max_line});
                 try err.flush();
+                // 続きを読んでも、保留していた式の残りが分からない。保留も捨てる。
+                kept = 0;
                 _ = in.discardDelimiterInclusive('\n') catch |d| switch (d) {
                     error.EndOfStream => break,
                     error.ReadFailed => return d,
@@ -165,8 +197,20 @@ pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err
             },
             error.ReadFailed => return e,
         } orelse break;
+        // `takeDelimiter` は改行を落とす。複数行の文字列リテラルが改行を含むように戻す。
+        if (kept + line.len + 1 > max_line) {
+            try err.print("error: the input does not fit in {d} bytes, newline included\n", .{max_line});
+            try err.flush();
+            kept = 0;
+            continue;
+        }
+        @memcpy(pending[kept..][0..line.len], line);
+        pending[kept + line.len] = '\n';
+        kept += line.len + 1;
+        // 足すたびに保留の全体を読み直す。費用は上限の2乗に抑えられる。
+        if (try sucheme.isIncomplete(gpa, pending[0..kept])) continue;
         _ = arena.reset(.retain_capacity);
-        interp.evalPrint(arena.allocator(), line, out) catch |e| switch (e) {
+        interp.evalPrint(arena.allocator(), pending[0..kept], out) catch |e| switch (e) {
             error.WriteFailed => return e,
             else => {
                 // エラーより前に書いた結果を先に出す。端末で2つのストリームの
@@ -176,10 +220,17 @@ pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err
                 try err.flush();
             },
         };
+        kept = 0;
     }
     // プロンプトの行を終わらせる。シェルのプロンプトがその行に続かないようにするためである。
     try out.writeAll("\n");
     try out.flush();
+    // 入力が尽きたとき保留が残っていれば、その式はもう閉じられない。
+    // 終了ステータスは変えない。エラーで終わったのは、REPL でなくその式である。
+    if (kept != 0) {
+        try err.writeAll("error: unexpected end of input\n");
+        try err.flush();
+    }
 }
 
 test "classify recognises --version" {
@@ -247,9 +298,191 @@ test "repl prints nothing for a line of only a comment and goes on" {
 test "repl reports an error and goes on to the next line" {
     var ob: [256]u8 = undefined;
     var eb: [256]u8 = undefined;
-    const r = try replOver("(foo)\n(+ 1\n42\n", &ob, &eb);
+    // 閉じていない式は継続行になるので、ここでは使わない。構文エラーは継続せず、
+    // その行で報告される。
+    const r = try replOver("(foo)\n)\n42\n", &ob, &eb);
     try std.testing.expectEqualStrings("> > > 42\n> \n", r.out);
-    try std.testing.expectEqualStrings("error: unbound variable: foo\nerror: unexpected end of input\n", r.err);
+    try std.testing.expectEqualStrings("error: unbound variable: foo\nerror: unexpected )\n", r.err);
+}
+
+test "repl joins the lines of an unfinished expression and prompts for each" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(+ 1\n2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... 3\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl reads a definition over several lines, then goes on" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(define (f x)\n  (+ x 1))\n(f 1)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... > 2\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl keeps asking while the expression stays open" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // 入れ子と空行。空行も継続の一部である。
+    const r = try replOver("(+ 1\n\n  (+ 2\n3))\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... ... ... 6\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+    // `'` の直後。
+    const q = try replOver("'\n(a)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... (a)\n> \n", q.out);
+    // ドットの直後。
+    const d = try replOver("'(1 .\n2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... (1 . 2)\n> \n", d.out);
+    // ベクタの途中。
+    const v = try replOver("'#(1\n2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... #(1 2)\n> \n", v.out);
+    try std.testing.expectEqualStrings("", v.err);
+}
+
+test "repl keeps the newline between lines, so a string can span them" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("\"a\nb\"\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... \"a\\nb\"\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl does not count a paren in a comment or a string when it decides to continue" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(+ 1 ; )\n2)\n(quote \")\"\n)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... 3\n> ... \")\"\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl reports a syntax error at once instead of asking for more" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver(")\n(a . )\n#z\n(a ')\n(+ 1 2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> > > > > 3\n> \n", r.out);
+    try std.testing.expectEqualStrings(
+        "error: unexpected )\nerror: unexpected .\nerror: unreadable token\nerror: quote needs a datum\n",
+        r.err,
+    );
+}
+
+test "repl drops what it kept when the expression ends in an error" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(foo\n)\n42\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... > 42\n> \n", r.out);
+    try std.testing.expectEqualStrings("error: unbound variable: foo\n", r.err);
+}
+
+test "repl prints nothing for a comment or a blank line while no expression is open" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("\n; c\n  \n(+ 1\n; c\n2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> > > > ... ... 3\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl evaluates a line with several expressions only once it is closed" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // 閉じた先頭の式の出力も、行全体が閉じるまで出ない。
+    const r = try replOver("1 (+ 1\n2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... 1\n3\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl reports unexpected end of input when the input ends inside an expression" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(+ 1\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... \n", r.out);
+    try std.testing.expectEqualStrings("error: unexpected end of input\n", r.err);
+    // 最後の行に改行が無くても、同じである。
+    var ob2: [256]u8 = undefined;
+    var eb2: [256]u8 = undefined;
+    const r2 = try replOver("1\n(+ 1\n 2", &ob2, &eb2);
+    try std.testing.expectEqualStrings("> 1\n> ... ... \n", r2.out);
+    try std.testing.expectEqualStrings("error: unexpected end of input\n", r2.err);
+}
+
+test "repl does not report the end of input after a finished expression" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(+ 1\n2)", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... 3\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+/// `n` spaces.
+fn spaces(n: usize) ![]u8 {
+    const s = try std.testing.allocator.alloc(u8, n);
+    @memset(s, ' ');
+    return s;
+}
+
+test "repl keeps an expression of exactly max_line bytes, newline included" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // "(+ 1\n" の 5 バイトと、空白と ")" と改行を足して max_line になる。
+    const pad = try spaces(max_line - 7);
+    defer std.testing.allocator.free(pad);
+    const input = try std.mem.concat(std.testing.allocator, u8, &.{ "(+ 1\n", pad, ")\n" });
+    defer std.testing.allocator.free(input);
+    const r = try replOver(input, &ob, &eb);
+    try std.testing.expectEqualStrings("> ... 1\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl drops an expression that is one byte over max_line and reports it" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const pad = try spaces(max_line - 6);
+    defer std.testing.allocator.free(pad);
+    const input = try std.mem.concat(std.testing.allocator, u8, &.{ "(+ 1\n", pad, ")\n7\n" });
+    defer std.testing.allocator.free(input);
+    const r = try replOver(input, &ob, &eb);
+    try std.testing.expectEqualStrings("> ... > 7\n> \n", r.out);
+    try std.testing.expectEqualStrings("error: the input does not fit in 65536 bytes, newline included\n", r.err);
+}
+
+test "repl reads the lines after a dropped expression as new input" {
+    var ob: [1024]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // 1024 バイトの空白の行を続けると、64 行目で上限を超える。残りの行は新しい入力になる。
+    const blank = try spaces(1023);
+    defer std.testing.allocator.free(blank);
+    var input: std.ArrayList(u8) = .empty;
+    defer input.deinit(std.testing.allocator);
+    try input.appendSlice(std.testing.allocator, "(\n");
+    for (0..70) |_| {
+        try input.appendSlice(std.testing.allocator, blank);
+        try input.append(std.testing.allocator, '\n');
+    }
+    try input.appendSlice(std.testing.allocator, "7\n");
+    const r = try replOver(input.items, &ob, &eb);
+    try std.testing.expectEqualStrings("error: the input does not fit in 65536 bytes, newline included\n", r.err);
+    try std.testing.expectEqual(64, std.mem.count(u8, r.out, "... "));
+    try std.testing.expect(std.mem.endsWith(u8, r.out, "> 7\n> \n"));
+}
+
+test "repl drops what it kept when a line is longer than it reads" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const long = try std.testing.allocator.alloc(u8, max_line + 1);
+    defer std.testing.allocator.free(long);
+    @memset(long, '1');
+    const input = try std.mem.concat(std.testing.allocator, u8, &.{ "(\n", long, "\n7\n" });
+    defer std.testing.allocator.free(input);
+    var in_buf: [max_line]u8 = undefined;
+    var src: std.Io.Reader = .fixed(input);
+    var in = src.limited(.unlimited, &in_buf);
+    var out: std.Io.Writer = .fixed(&ob);
+    var err: std.Io.Writer = .fixed(&eb);
+    try repl(std.testing.allocator, &in.interface, &out, &err);
+    // 保留の "(" は捨てられるので、7 は新しい入力として評価され、終わりでも報告されない。
+    try std.testing.expectEqualStrings("> ... > 7\n> \n", out.buffered());
+    try std.testing.expectEqualStrings("error: the line does not fit in 65536 bytes, newline included\n", err.buffered());
 }
 
 test "repl skips a line longer than it reads and goes on" {

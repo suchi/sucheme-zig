@@ -20,6 +20,12 @@ pub const version = build_options.version;
 pub const heap = @import("heap.zig");
 
 const reader = @import("reader.zig");
+
+/// Whether `source` ends inside a datum that more input could finish.
+///
+/// REPL の継続行の判定である(ADR-0014)。定義は `reader.isIncomplete` にある。
+pub const isIncomplete = reader.isIncomplete;
+
 const expand = @import("syntax/expand.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
