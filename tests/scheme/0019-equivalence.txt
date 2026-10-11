@@ -1,0 +1,616 @@
+# スライス 1k の K3: 等価の述語 eq? eqv? equal?(R7RS 6.1)。
+# ペアとベクタは `cons` や `vector` がまだ無いので、リテラルと quote で作る。
+# 1つのリテラルは1つのオブジェクトを作り、同じ綴りのリテラルが2つあれば別々の
+# オブジェクトになる。このインタプリタの動作であり、R7RS が未規定の部分は、ここでは
+# 内容が空でない場合だけを固定する。
+
+# 記号・真偽値・空リストは、同じものなら eq? も eqv? も真になる。
+(eq? 'a 'a)
+#t
+
+(eq? 'a 'b)
+#f
+
+(eq? '() '())
+#t
+
+(eq? #t #t)
+#t
+
+(eq? #f #f)
+#t
+
+(eq? #t #f)
+#f
+
+# 偽と空リストは別のものである。
+(eq? #f '())
+#f
+
+# 整数と文字は値で比べる。種類が違えば、数が同じでも偽である。
+(eq? 2 2)
+#t
+
+(eq? 2 3)
+#f
+
+(eq? -9223372036854775808 -9223372036854775808)
+#t
+
+(eq? #\a #\a)
+#t
+
+(eq? #\a #\b)
+#f
+
+(eq? 97 #\a)
+#f
+
+(eq? 'a "a")
+#f
+
+# 内容が同じでも、別々のペア・ベクタ・文字列は eq? で偽になる。同じオブジェクトは真。
+(eq? '(1) '(1))
+#f
+
+(define p '(1 2)) (eq? p p)
+#t
+
+(eq? '#(1) '#(1))
+#f
+
+(define v '#(1 2)) (eq? v v)
+#t
+
+(eq? "abc" "abc")
+#f
+
+(define s "abc") (eq? s s)
+#t
+
+# 手続きは、同じものだけが eq? で真になる。
+(eq? + +)
+#t
+
+(eq? + -)
+#f
+
+(define f (lambda (x) x)) (eq? f f)
+#t
+
+(eq? (lambda (x) x) (lambda (x) x))
+#f
+
+(define f (lambda (x) x)) (eq? f +)
+#f
+
+# eqv? は、段階1の値では eq? と同じ結果になる。
+(eqv? 'a 'a)
+#t
+
+(eqv? 'a 'b)
+#f
+
+(eqv? '() '())
+#t
+
+(eqv? #t #t)
+#t
+
+(eqv? #t #f)
+#f
+
+(eqv? 100000000 100000000)
+#t
+
+(eqv? 100000000 100000001)
+#f
+
+(eqv? 97 #\a)
+#f
+
+(eqv? #\a #\a)
+#t
+
+(eqv? #\a #\b)
+#f
+
+(eqv? '(1) '(1))
+#f
+
+(define p '(1 2)) (eqv? p p)
+#t
+
+(eqv? '#(1) '#(1))
+#f
+
+(define v '#(1 2)) (eqv? v v)
+#t
+
+(eqv? "abc" "abc")
+#f
+
+(define s "abc") (eqv? s s)
+#t
+
+(eqv? + +)
+#t
+
+(eqv? + -)
+#f
+
+(eqv? (lambda (x) x) (lambda (x) x))
+#f
+
+(define f (lambda (x) x)) (eqv? f f)
+#t
+
+# equal? は、eqv? が真のものを真にする。
+(equal? 'a 'a)
+#t
+
+(equal? 'a 'b)
+#f
+
+(equal? 2 2)
+#t
+
+(equal? 2 3)
+#f
+
+(equal? #\a #\a)
+#t
+
+(equal? #\a #\b)
+#f
+
+(equal? #t #t)
+#t
+
+(equal? #t #f)
+#f
+
+(equal? '() '())
+#t
+
+(equal? + +)
+#t
+
+(equal? + -)
+#f
+
+# 手続きは、内容でなく同一性で比べる。
+(equal? (lambda (x) x) (lambda (x) x))
+#f
+
+(define f (lambda (x) x)) (equal? f f)
+#t
+
+# 種類が違えば偽である。
+(equal? 97 #\a)
+#f
+
+(equal? "a" 'a)
+#f
+
+(equal? "a" #\a)
+#f
+
+(equal? '() #f)
+#f
+
+(equal? '(1) 1)
+#f
+
+(equal? 1 '(1))
+#f
+
+(equal? '#(1) '(1))
+#f
+
+(equal? '(1) '#(1))
+#f
+
+(equal? "a" '#(#\a))
+#f
+
+# 文字列は、内容で比べる。
+(equal? "abc" "abc")
+#t
+
+(equal? "abc" "abd")
+#f
+
+(equal? "abc" "abcd")
+#f
+
+(equal? "abcd" "abc")
+#f
+
+(equal? "" "")
+#t
+
+(equal? "" "a")
+#f
+
+(equal? "あい" "あい")
+#t
+
+(equal? "あい" "あう")
+#f
+
+# ペアは、car と cdr を再帰的に比べる。
+(equal? '(1 2 3) '(1 2 3))
+#t
+
+(equal? '(1 2 3) '(1 2 4))
+#f
+
+(equal? '(1 2 3) '(0 2 3))
+#f
+
+(equal? '(1 2 3) '(1 0 3))
+#f
+
+# 片方が短いリストは、どちら側が短くても偽になる。
+(equal? '(1 2 3) '(1 2))
+#f
+
+(equal? '(1 2) '(1 2 3))
+#f
+
+(equal? '() '(1))
+#f
+
+(equal? '(1) '())
+#f
+
+# ドット対は、car の違いも cdr の違いも見つける。
+(equal? '(1 . 2) '(1 . 2))
+#t
+
+(equal? '(1 . 2) '(0 . 2))
+#f
+
+(equal? '(1 . 2) '(1 . 3))
+#f
+
+(equal? '(1 . 2) '(1 2))
+#f
+
+(equal? '(a b . c) '(a b . c))
+#t
+
+(equal? '(a b . c) '(a b . d))
+#f
+
+# 入れ子のリストも比べる。入れ子の後ろの要素も比べる。
+(equal? '(1 (2 3) 4) '(1 (2 3) 4))
+#t
+
+(equal? '(1 (2 3) 4) '(1 (2 5) 4))
+#f
+
+(equal? '(1 (2 3) 4) '(1 (2 3) 5))
+#f
+
+(equal? '((1) 2) '((9) 2))
+#f
+
+(equal? '((1) 2) '((1) 3))
+#f
+
+(equal? '(((1) 2) 3) '(((1) 2) 3))
+#t
+
+(equal? '(((1) 2) 3) '(((1) 2) 4))
+#f
+
+(equal? '(((1) 2) 3) '(((1) 9) 3))
+#f
+
+(equal? '((1 . 2) . (3 . 4)) '((1 . 2) 3 . 4))
+#t
+
+# 同じペアは、自分自身と等しい。
+(define p '(1 (2 3))) (equal? p p)
+#t
+
+# ベクタは、長さと要素を比べる。
+(equal? '#(1 2 3) '#(1 2 3))
+#t
+
+(equal? '#(1 2 3) '#(1 2 4))
+#f
+
+(equal? '#(1 2 3) '#(0 2 3))
+#f
+
+(equal? '#(1 2 3) '#(1 0 3))
+#f
+
+(equal? '#() '#())
+#t
+
+(equal? '#() '#(1))
+#f
+
+(equal? '#(1) '#())
+#f
+
+(equal? '#(1) '#(1 2))
+#f
+
+(equal? '#(1 2) '#(1))
+#f
+
+(equal? '#(1 2 3) '#(1 2))
+#f
+
+(equal? '#(1 2) '#(1 2 3))
+#f
+
+# 入れ子のベクタ、ベクタの中のリスト、リストの中のベクタ。
+(equal? '#(1 #(2 3) 4) '#(1 #(2 3) 4))
+#t
+
+(equal? '#(1 #(2 3) 4) '#(1 #(2 5) 4))
+#f
+
+(equal? '#(1 #(2 3) 4) '#(1 #(2 3) 5))
+#f
+
+(equal? '#(#(1) #(2)) '#(#(1) #(2)))
+#t
+
+(equal? '#(#(1) #(2)) '#(#(1) #(3)))
+#f
+
+(equal? '#(#() #()) '#(#() #()))
+#t
+
+(equal? '#(#() #()) '#(#() #(1)))
+#f
+
+(equal? '#(1 (2 3)) '#(1 (2 3)))
+#t
+
+(equal? '#(1 (2 3)) '#(1 (2 4)))
+#f
+
+(equal? '(1 #(2 3)) '(1 #(2 3)))
+#t
+
+(equal? '(#(1) 2) '(#(1) 2))
+#t
+
+(equal? '(#(1) 2) '(#(1) 3))
+#f
+
+(equal? '(#(1) 2) '(#(9) 2))
+#f
+
+(equal? '#("ab" #\c) '#("ab" #\c))
+#t
+
+(equal? '#("ab" #\c) '#("ab" #\d))
+#f
+
+(equal? '#("ab" #\c) '#("ax" #\c))
+#f
+
+(equal? '("ab" . "cd") '("ab" . "cd"))
+#t
+
+(equal? '("ab" . "cd") '("ab" . "ce"))
+#f
+
+# 引数の個数は、機械が検査する。
+(eq? 1)
+error: wrong number of arguments to eq?
+
+(eq? 1 2 3)
+error: wrong number of arguments to eq?
+
+(eq?)
+error: wrong number of arguments to eq?
+
+(eqv? 1)
+error: wrong number of arguments to eqv?
+
+(eqv? 1 2 3)
+error: wrong number of arguments to eqv?
+
+(equal? 1)
+error: wrong number of arguments to equal?
+
+(equal? 1 2 3)
+error: wrong number of arguments to equal?
+
+# どの引数でもエラーにならない。手続きを引数に取れるので、述語の値としても使える。
+(eq? eq? eq?)
+#t
+
+(equal? equal? eqv?)
+#f
+
+# K3 の残り: 真偽・記号・手続きの型の述語(R7RS 6.3, 6.5, 6.10)。
+
+# not は、#f のときだけ真になる。空リストと 0 は偽ではない。
+(not #f)
+#t
+
+(not #t)
+#f
+
+(not 0)
+#f
+
+(not '())
+#f
+
+(not 'a)
+#f
+
+(not "")
+#f
+
+(not #\a)
+#f
+
+(not '(1))
+#f
+
+(not '#(1))
+#f
+
+(not +)
+#f
+
+(not (if #f #f))
+#f
+
+(not (not 3))
+#t
+
+(not (eq? 'a 'b))
+#t
+
+(not)
+error: wrong number of arguments to not
+
+(not 1 2)
+error: wrong number of arguments to not
+
+# boolean? は、#t と #f だけが真になる。
+(boolean? #t)
+#t
+
+(boolean? #f)
+#t
+
+(boolean? 0)
+#f
+
+(boolean? '())
+#f
+
+(boolean? 'a)
+#f
+
+(boolean? "#t")
+#f
+
+(boolean? #\t)
+#f
+
+(boolean? '(#t))
+#f
+
+(boolean? (not 1))
+#t
+
+(boolean? (boolean? 1))
+#t
+
+(boolean?)
+error: wrong number of arguments to boolean?
+
+(boolean? #t #f)
+error: wrong number of arguments to boolean?
+
+# symbol? は、記号だけが真になる。同じ綴りの文字列は記号ではない。
+(symbol? 'a)
+#t
+
+(symbol? 'nil)
+#t
+
+(symbol? 'a-longer-name?)
+#t
+
+(symbol? "a")
+#f
+
+(symbol? #\a)
+#f
+
+(symbol? 1)
+#f
+
+(symbol? #f)
+#f
+
+(symbol? '())
+#f
+
+(symbol? '(a))
+#f
+
+(symbol? '#(a))
+#f
+
+(symbol? symbol?)
+#f
+
+(symbol? (quote a))
+#t
+
+(symbol?)
+error: wrong number of arguments to symbol?
+
+(symbol? 'a 'b)
+error: wrong number of arguments to symbol?
+
+# procedure? は、クロージャとプリミティブで真になる。
+(procedure? +)
+#t
+
+(procedure? procedure?)
+#t
+
+(procedure? (lambda (x) x))
+#t
+
+(define f (lambda (x) x)) (procedure? f)
+#t
+
+(define (g x) x) (procedure? g)
+#t
+
+(procedure? 'car)
+#f
+
+(procedure? 1)
+#f
+
+(procedure? #f)
+#f
+
+(procedure? '())
+#f
+
+(procedure? "+")
+#f
+
+(procedure? '(+))
+#f
+
+(procedure? '#(1))
+#f
+
+(procedure? #\a)
+#f
+
+(procedure? (procedure? +))
+#f
+
+# 手続きを呼んだ結果は、手続きではない。
+(procedure? ((lambda (x) x) 1))
+#f
+
+(procedure?)
+error: wrong number of arguments to procedure?
+
+(procedure? + -)
+error: wrong number of arguments to procedure?
