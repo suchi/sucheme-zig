@@ -188,8 +188,22 @@ pub const Reader = struct {
         return self.pos + 1 < self.src.len and self.src[self.pos + 1] == '\\';
     }
 
+    /// Skips whitespace and line comments.
+    /// 行コメントは `;` から行末の改行の手前までである。改行は空白として次の周で
+    /// 読み飛ばす。文字列の中の `;` と `#\;` は、それぞれの読み取りが先に処理する
+    /// ので、ここには届かない。ブロックコメント `#|` とデータコメント `#;` は
+    /// 段階5で入る。
     fn skipWhitespace(self: *Reader) void {
-        while (self.pos < self.src.len and isWhitespace(self.src[self.pos])) self.pos += 1;
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (c == ';') {
+                while (self.pos < self.src.len and self.src[self.pos] != '\n') self.pos += 1;
+            } else if (isWhitespace(c)) {
+                self.pos += 1;
+            } else {
+                return;
+            }
+        }
     }
 
     /// Reads one token up to the next delimiter and classifies it.
@@ -197,7 +211,7 @@ pub const Reader = struct {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
-            // このスライスが読まない区切り文字: `;` と `|`。
+            // このスライスが読まない区切り文字: `|`。
             self.pos += 1;
             return error.InvalidToken;
         }
@@ -487,7 +501,91 @@ test "next reports a quote with nothing to quote" {
 test "next rejects text that is neither an integer, a boolean nor an identifier" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", ";", "|x|", "+.1", "a'b" }) |src| {
+    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", "|x|", "+.1", "a'b" }) |src| {
+        try std.testing.expectError(error.InvalidToken, f.readOne(src));
+    }
+}
+
+test "next skips a line comment up to the end of the line" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqual(1, (try f.readOne("1 ; コメント")).asFixnum().?);
+    try std.testing.expectEqual(1, (try f.readOne("; 前\n1")).asFixnum().?);
+    // コメントを終わらせるのは改行だけで、そこで読み取りは続きから再開する。
+    try std.testing.expectEqualStrings("(+ 1 2)", try f.roundTrip("(+ 1 ; ここ\n 2)", &buf));
+    try std.testing.expectEqualStrings("(+ 1 2)", try f.roundTrip("(+ 1 ; ここ\r\n 2)", &buf));
+    // コメントの中の括弧・引用符・`;` は何も開閉しない。
+    try std.testing.expectEqualStrings("(a b)", try f.roundTrip("(a ; ( ) \" ' ; #|\nb)", &buf));
+    // コメントは、データのあいだのどこにでも置ける。
+    try std.testing.expectEqualStrings("(quote a)", try f.roundTrip("'; c\na", &buf));
+    try std.testing.expectEqualStrings("(1 . 2)", try f.roundTrip("(1 ;a\n. ;b\n2 ;c\n)", &buf));
+    try std.testing.expectEqualStrings("#(1 2)", try f.roundTrip("#(1 ;a\n2)", &buf));
+    // 空白だけの行とコメントだけの行が続いても、次のデータに届く。
+    try std.testing.expectEqualStrings("x", try f.roundTrip(";a\n\n  ;b\n\t;c\nx", &buf));
+}
+
+test "next ends an identifier, a number and a boolean at a semicolon" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // `;` は区切り文字なので、トークンはそこで終わり、残りはコメントである。
+    try std.testing.expectEqualStrings("abc", f.symbols.nameOf((try f.readOne("abc;コメント")).asSymbol().?));
+    try std.testing.expectEqual(12, (try f.readOne("12;コメント")).asFixnum().?);
+    try std.testing.expect((try f.readOne("#t;コメント")).isTrue());
+    var r: Reader = .init("a;b\nc");
+    try std.testing.expectEqualStrings("a", f.symbols.nameOf((try r.next(a, f.sink())).?.asSymbol().?));
+    try std.testing.expectEqualStrings("c", f.symbols.nameOf((try r.next(a, f.sink())).?.asSymbol().?));
+    try std.testing.expect(try r.next(a, f.sink()) == null);
+}
+
+test "next reads an input of nothing but comments as no data" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    for ([_][]const u8{ ";", "; コメント", ";\n", "; a\n; b\n", "  ;a\n\n;b", ";\r\n;" }) |src| {
+        var r: Reader = .init(src);
+        try std.testing.expect(try r.next(a, f.sink()) == null);
+    }
+}
+
+test "next reports an unfinished datum when a comment hides the rest" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // `)` がコメントの中にあれば、閉じていない。
+    for ([_][]const u8{ "(+ 1 ; )", "(+ 1 2 ;)\n", "'; a", "(1 . ; c", "#(1 ; )" }) |src| {
+        var r: Reader = .init(src);
+        try std.testing.expectError(error.Incomplete, r.next(a, f.sink()));
+    }
+    // コメントは行の終わりまでなので、次の行の `)` は閉じる。
+    try std.testing.expectEqual(.pair, (try f.readOne("(+ 1 ; (\n)")).kind());
+}
+
+test "next does not read a semicolon in a string or a character as a comment" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("\"a;b\"", try f.roundTrip("\"a;b\"", &buf));
+    try std.testing.expectEqualStrings("\";\"", try f.roundTrip("\";\" ; 後", &buf));
+    // 文字列は複数行にまたがってよく、その中の `;` は行末まででも文字列の一部である。
+    try std.testing.expectEqualStrings("\"a ; b\\nc\"", try f.roundTrip("\"a ; b\nc\"", &buf));
+    try std.testing.expectEqual(';', (try f.readOne("#\\;")).asCharacter().?);
+    try std.testing.expectEqual(';', (try f.readOne("#\\; ; 後")).asCharacter().?);
+    try std.testing.expectEqualStrings("(#\\; 1)", try f.roundTrip("(#\\; 1)", &buf));
+    try std.testing.expectEqualStrings("(\"x\" 1)", try f.roundTrip("(\"x\" ; ( \n 1)", &buf));
+    // 文字や文字列のすぐ後の `;` は、やはりコメントを始める。
+    try std.testing.expectEqual(';', (try f.readOne("#\\;;後")).asCharacter().?);
+    try std.testing.expectEqual('a', (try f.readOne("#\\a;後")).asCharacter().?);
+    try std.testing.expectEqualStrings("\"x\"", try f.roundTrip("\"x\";後", &buf));
+    try std.testing.expectEqualStrings("(\"x\" #\\;)", try f.roundTrip("(\"x\";(\n#\\;)", &buf));
+}
+
+test "next still rejects block comments and datum comments" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 段階5まで入らない。行コメントの導入で、読めるようになってはならない。
+    for ([_][]const u8{ "#|x|#", "#| x", "#;1", "#; 1", "(#;1)" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
 }
