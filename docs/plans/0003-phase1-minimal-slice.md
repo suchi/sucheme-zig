@@ -33,7 +33,7 @@
 | 1g | GC が動く。100万回の末尾再帰が一定のメモリで完了する | GCヒープ、マーク・スイープ、ルート登録 |
 | 1h | 文字列・ベクタ・文字が読めて書ける | リーダとプリンタの残り(ドット対 `(1 . 2)` の読み取りを含む。1c のプリンタは書けるが、リーダは `.` を読めない)、`write` と `display` の区別 |
 | 1i | ブラウザで `(fact 10)` が動く | WASM のエクスポート、Web UI の最小版、ローカルで開く手段 |
-| 1j | リリース v0.1.0 | ファジングのワークフロー、aarch64 の判断と ADR、PR への成果物の添付 |
+| 1j | リリース v0.1.0。計画は [0009-slice-1j-release-v0-1-0.md](0009-slice-1j-release-v0-1-0.md) | ファジングのワークフロー、aarch64 の判断と ADR、PR への成果物の添付 |
 
 1a から 1e までは素朴な再帰下降の評価器で進め、1f で CEK 機械に置き換えた。先に CEK を入れなかったのは、評価器の形を決める前に継続の形を決めると、どちらも推測で書くことになるためである。置き換えのとき、1a から 1e のテストがそのまま通ることを移行の根拠にした。例外は3つある。`tests/scheme/0009-define-forms.txt` の `(loop 1)` は止まらなくなるので外し、`(fact 100)` は深さの上限でなく `integer overflow in *` を期待する。`tests/scheme/0010-internal-define.txt` の2ケースは、本体の途中の `define` を呼び出し時でなく `lambda` の展開時に報告するので、期待する時点が変わった。
 
@@ -51,8 +51,8 @@
 | 1f | マージ済み | #13(計画書 0004 は #12) |
 | 1g | マージ済み。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | 実装が #21、後半のレビュー対応が #22(計画書 0005 は #18) |
 | 1h | マージ済み。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装が [#24](https://github.com/suchi/sucheme-zig/pull/24) |
-| 1i | 計画書はマージ済み(合意済み)、実装は未マージ。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が [#29](https://github.com/suchi/sucheme-zig/pull/29)、実装は 1i の PR |
-| 1j | 未着手 | - |
+| 1i | 実装済み、PR のレビュー待ち。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が [#29](https://github.com/suchi/sucheme-zig/pull/29)、実装は 1i の PR |
+| 1j | 計画は合意済み。1i のマージ後に実装する。計画は [0009-slice-1j-release-v0-1-0.md](0009-slice-1j-release-v0-1-0.md) | 計画書が [#33](https://github.com/suchi/sucheme-zig/pull/33)、実装は 1j-1 から 1j-5 の PR |
 
 ## 再開の手がかり
 
@@ -117,8 +117,8 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 スライス 1h(文字・文字列・ベクタ、ドット対)は PR #24 で `main` に入っている。テストの層([0007](0007-test-tiers.md))は PR #25 から #28 で入っている(`full.yml` は #28)。
 
-1. スライス 1i(ブラウザで `(fact 10)` が動く)の実装に入る。計画書 [0008](0008-slice-1i-wasm-web-ui.md) は #29 で合意され `main` に入っている。
-2. 1h の敵対的レビューの2巡目の指摘を直した PR([#35](https://github.com/suchi/sucheme-zig/pull/35))のレビューとマージ。
+1. スライス 1i(ブラウザで `(fact 10)` が動く)の PR のレビューとマージ。計画は [0008](0008-slice-1i-wasm-web-ui.md)。マージされたら、`build.zig` と `src/wasm.zig` のコメントを日本語にする([Issue #30](https://github.com/suchi/sucheme-zig/issues/30))。
+2. スライス 1j(リリース v0.1.0)は、計画書 [0009](0009-slice-1j-release-v0-1-0.md) が合意済みである。1i のマージ後に、1j-1(ファジング)から実装に入る。
 3. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトはヒープの外にある(段階2)。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い、条件は `error.Raised` の脱出でハンドラは無い。
