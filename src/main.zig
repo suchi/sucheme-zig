@@ -1,31 +1,31 @@
 //! Native entry point.
 //!
-//! This doc comment is the contract for the command line and the exit status;
-//! AGENTS.md and the stage plan reference it rather than restating it.
+//! この doc コメントがコマンドラインと終了ステータスの契約である。
+//! AGENTS.md と段階の計画書は、これを書き写さずに参照する。
 //!
-//! | Arguments | Behaviour | Exit |
+//! | 引数 | 振る舞い | 終了ステータス |
 //! | --- | --- | --- |
-//! | `--version` | prints name and version to stdout | 0 |
-//! | `--help`, `-h` | prints usage to stdout | 0 |
-//! | an unknown option, two or more characters long and starting with `-` | names it on stderr | 64 |
-//! | none | runs the REPL on stdin until it ends | 0 |
-//! | `-` on its own | treated as a name, not an option | 69 |
-//! | anything else | says running a file is not implemented | 69 |
+//! | `--version` | 名前とバージョンを stdout に出す | 0 |
+//! | `--help`, `-h` | 使い方を stdout に出す | 0 |
+//! | 未知のオプション(2文字以上で `-` から始まるもの) | stderr にその名前を出す | 64 |
+//! | なし | stdin が尽きるまで REPL を走らせる | 0 |
+//! | `-` だけ | オプションでなく名前として扱う | 69 |
+//! | それ以外 | ファイルの実行は未実装だと伝える | 69 |
 //!
-//! The first argument that settles the request wins, so `--version --bogus`
-//! prints the version while `--bogus --version` names the unknown option. An
-//! unknown option settles the request too. Later arguments are not inspected.
+//! 要求を決める最初の引数が優先される。このため `--version --bogus` はバージョンを
+//! 出し、`--bogus --version` は未知のオプションとしてその名前を出す。未知の
+//! オプションも要求を決める。それ以降の引数は調べない。
 //!
-//! Diagnostics go to stderr and a request this stage cannot serve exits
-//! non-zero, so `sucheme prog.scm && echo ok` does not print ok while the
-//! program never ran.
+//! 診断は stderr に出し、この段階で応えられない要求は非ゼロで終了する。
+//! `sucheme prog.scm && echo ok` が、プログラムを実行しないまま ok を出すことを
+//! 防ぐためである。
 //!
-//! The REPL writes a `> ` prompt and each result to stdout, and an error to
-//! stderr as `error: ` and a message such as `unbound variable: foo`; an error
-//! ends that line's evaluation and not the REPL. A line holds whole data: one
-//! that ends inside a list or after a `'` is an error, until continuation lines
-//! arrive (ADR-0014). The status stays 0
-//! after an error, because the REPL went on to read the rest of its input.
+//! REPL は、プロンプト `> ` と各結果を stdout に、エラーを stderr に
+//! `error: ` と `unbound variable: foo` のようなメッセージとして書く。エラーが
+//! 終わらせるのはその行の評価であり、REPL ではない。1行は完結したデータを含む。
+//! リストの途中や `'` の直後で終わる行は、継続行が入るまでエラーになる
+//! (ADR-0014)。エラーのあとも終了ステータスは 0 のままである。REPL は入力の
+//! 残りを読み進めたからである。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -37,39 +37,42 @@ pub const Request = union(enum) {
     repl,
     /// A valid request this stage cannot serve yet.
     not_implemented,
-    /// An option this program does not know. Carried so the diagnostic can
-    /// name it: "not implemented" and "you typed it wrong" are different
-    /// failures, and a single state could not tell them apart.
+    /// An option this program does not know.
+    ///
+    /// 診断がその名前を出せるように運ぶ。「未実装」と「打ち間違い」は別の
+    /// 失敗であり、1つの状態では区別できない。
     unknown_option: []const u8,
 };
 
-/// Entry layer. What it allocates is not subject to the accounting invariant in
-/// docs/design/architecture.md: the arena holds the argument vector and the
-/// output buffer, both needed only to start up and shut down. No Scheme value
-/// is allocated here. The REPL gives `sucheme` a per-line arena for what one
-/// line needs while it runs, and an `Interpreter`, which takes the objects of a
-/// program from the general purpose allocator (the pairs, closures, frames of
-/// calls and the continuation, which the collector frees, within the limit
-/// of `Options.limit`) and keeps an arena of its own for the symbols, the definitions and
-/// the code, which nothing frees before the session ends.
+/// Entry layer.
+///
+/// ここで確保するものは、docs/design/architecture.md の計上の不変条件の対象外である。
+/// アリーナが持つのは引数ベクタと出力バッファで、どちらも起動と終了にしか要らない。
+/// Scheme の値はここでは確保しない。REPL は `sucheme` に、1行の評価中に要るものの
+/// ための行ごとのアリーナを渡す。また `Interpreter` には、プログラムのオブジェクト
+/// (ペア、クロージャ、呼び出しのフレーム、継続。コレクタが解放し、`Options.limit`
+/// の上限内に収まる)を汎用アロケータから確保させ、シンボル・定義・コードのための
+/// 専用のアリーナも持たせる。アリーナの中身はセッションが終わるまで解放されない。
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var out_buf: [512]u8 = undefined;
     var err_buf: [512]u8 = undefined;
-    // Streaming, not the default positional mode: positional starts at
-    // offset 0 and would overwrite the head of `sucheme --version >> log`.
+    // 既定の位置指定モードでなくストリーミングを使う。位置指定モードは
+    // オフセット 0 から始まるので、`sucheme --version >> log` の先頭を
+    // 上書きしてしまう。
+
     var stdout = std.Io.File.Writer.initStreaming(.stdout(), io, &out_buf);
     var stderr = std.Io.File.Writer.initStreaming(.stderr(), io, &err_buf);
     const out = &stdout.interface;
     const err = &stderr.interface;
 
-    // Diagnostics go to stderr and the status is non-zero: `sucheme prog.scm &&
-    // echo ok` must not print ok while the program never ran.
-    // `args` can be empty. POSIX allows execve with argc = 0, and `args[1..]`
-    // is a bounds panic in that case rather than the exit the contract above
-    // promises for "none".
+    // 診断は stderr に出し、終了ステータスは非ゼロにする。`sucheme prog.scm &&
+    // echo ok` が、プログラムを実行しないまま ok を出してはならない。
+    // `args` は空になりうる。POSIX は argc = 0 の execve を許す。その場合
+    // `args[1..]` は境界違反のパニックになり、上の契約が「なし」に約束する
+    // 終了にならない。
     const rest = if (args.len > 1) args[1..] else &[_][]const u8{};
     switch (classify(rest)) {
         .version => {
@@ -112,8 +115,9 @@ pub fn main(init: std.process.Init) !void {
 /// Exit status for a request this stage cannot serve.
 pub const exit_not_implemented: u8 = 69;
 
-/// Exit status for a command line this program cannot parse. 64 is EX_USAGE in
-/// sysexits.h, the closest thing to a convention here.
+/// Exit status for a command line this program cannot parse.
+///
+/// 64 は sysexits.h の EX_USAGE で、ここで慣習に最も近いものである。
 pub const exit_usage: u8 = 64;
 
 /// Classifies the arguments after the program name.
@@ -121,23 +125,24 @@ pub fn classify(args: []const []const u8) Request {
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--version")) return .version;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return .help;
-        // A leading dash with no match is a typo, not a file name -- except
-        // for `-` on its own, which by convention names standard input. It
-        // falls through to the name side, where stage 1 will give it a meaning.
+        // 先頭が `-` で一致しないものは、ファイル名でなく打ち間違いである。
+        // ただし `-` だけは別で、慣習では標準入力を指す。これは名前の側に
+        // 落ち、段階1で意味が与えられる。
         if (arg.len > 1 and arg[0] == '-') return .{ .unknown_option = arg };
     }
     return if (args.len == 0) .repl else .not_implemented;
 }
 
-/// The size of the REPL's line buffer, newline included. A line that does not
-/// fit is reported and skipped.
+/// The size of the REPL's line buffer, newline included.
+///
+/// 収まらない行は、報告してから読み飛ばす。
 pub const max_line = 64 * 1024;
 
 /// Reads lines from `in` until it ends, and evaluates and prints each.
 ///
-/// Every line gets a fresh arena for what evaluating it needs while it runs.
-/// What the reader builds and what a definition keeps is not in it: that lives
-/// in the interpreter until the session ends.
+/// 各行には、評価中に要るものためのまっさらなアリーナを使う。リーダが作るものと
+/// 定義が保持するものはそこに入らず、インタプリタの中でセッションの終わりまで
+/// 生きる。
 pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
@@ -163,15 +168,15 @@ pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err
         interp.evalPrint(arena.allocator(), line, out) catch |e| switch (e) {
             error.WriteFailed => return e,
             else => {
-                // Results written before the error go out first, so the two
-                // streams stay in order on a terminal.
+                // エラーより前に書いた結果を先に出す。端末で2つのストリームの
+                // 順序が保たれるようにするためである。
                 try out.flush();
                 try err.print("error: {s}\n", .{interp.diagnostic()});
                 try err.flush();
             },
         };
     }
-    // End the prompt's line, so the shell's prompt does not follow it.
+    // プロンプトの行を終わらせる。シェルのプロンプトがその行に続かないようにするためである。
     try out.writeAll("\n");
     try out.flush();
 }
@@ -192,7 +197,7 @@ test "classify runs the REPL with no argument and nothing yet for a name" {
 
 test "classify treats a bare dash as a name, not an unknown option" {
     try std.testing.expect(classify(&.{"-"}) == .not_implemented);
-    // One character more and it is an option again.
+    // 1文字増えると、またオプションになる。
     try std.testing.expect(classify(&.{"-x"}) == .unknown_option);
 }
 
@@ -246,8 +251,9 @@ test "repl skips a line longer than it reads and goes on" {
     @memset(long, '1');
     const input = try std.mem.concat(std.testing.allocator, u8, &.{ long, "\n7\n" });
     defer std.testing.allocator.free(input);
-    // A fixed reader's buffer is its whole input, so the limit is the stdin
-    // buffer's, not the reader's. Give the reader a buffer of max_line.
+    // 固定リーダのバッファは入力の全体なので、上限になるのはリーダのではなく
+    // stdin のバッファである。リーダに max_line のバッファを与える。
+
     var in_buf: [max_line]u8 = undefined;
     var src: std.Io.Reader = .fixed(input);
     var in = src.limited(.unlimited, &in_buf);

@@ -1,32 +1,36 @@
 //! The symbol table: each distinct name is interned once and named by a
 //! `SymbolId`, so comparing two symbols is comparing two integers.
 //!
-//! The reader interns every symbol it reads, so a name that is only ever
-//! referred to still takes a place in the table. The table lives as long as the
-//! interpreter and is never collected, not even by the GC of slice 1g; the weak
-//! table of docs/design/runtime.md replaces it in a later slice.
+//! リーダは読んだシンボルをすべてインターンする。そのため、参照されるだけの名前
+//! もテーブルに場所を取る。テーブルはインタプリタと同じ寿命で、スライス1g の GC
+//! でも回収されない。docs/design/runtime.md の弱テーブルが、後のスライスでこれを
+//! 置き換える。
 
 const std = @import("std");
 
 /// A symbol, by its index in the table that interned it.
 ///
-/// 32 bits: the table holds every name it interned, so it would exhaust memory
-/// long before 2^32 distinct names.
+/// 32 ビットである。テーブルはインターンした名前をすべて保持するので、2^32 個の
+/// 異なる名前に達するよりずっと前にメモリを使い果たす。
 pub const SymbolId = enum(u32) { _ };
 
 pub const Table = struct {
-    /// The name of each symbol, by id. The slices are owned by the table.
+    /// The name of each symbol, by id.
+    ///
+    /// スライスはテーブルが所有する。
     names: std.ArrayList([]const u8) = .empty,
     index: std.StringHashMapUnmanaged(SymbolId) = .empty,
 
-    /// The id for `name`, interning it first if it is new. The table keeps its
-    /// own copy of `name`, so the caller's buffer can go away.
+    /// The id for `name`, interning it first if it is new.
+    ///
+    /// テーブルは `name` の自前のコピーを持つので、呼び出し側のバッファは
+    /// なくなってもよい。
     pub fn intern(self: *Table, alloc: std.mem.Allocator, name: []const u8) error{OutOfMemory}!SymbolId {
         if (self.index.get(name)) |id| return id;
         const owned = try alloc.dupe(u8, name);
         const id: SymbolId = @fromBackingInt(@intCast(self.names.items.len));
         try self.names.append(alloc, owned);
-        // The key is the table's own copy, which stays valid as the table grows.
+        // キーはテーブル自前のコピーであり、テーブルが育っても有効なままである。
         try self.index.put(alloc, owned, id);
         return id;
     }
@@ -50,7 +54,8 @@ test "intern gives one id to one name and different ids to different names" {
     try std.testing.expect(x != y);
     try std.testing.expectEqual(x, try t.intern(a, "x"));
     try std.testing.expectEqual(y, try t.intern(a, "y"));
-    // Names differing in case or by a prefix are different names.
+    // 大文字小文字だけが違う名前や、接頭辞だけが違う名前は、別の名前である。
+
     try std.testing.expect(x != try t.intern(a, "X"));
     try std.testing.expect(x != try t.intern(a, "xx"));
 }
