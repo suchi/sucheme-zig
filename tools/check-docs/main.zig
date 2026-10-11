@@ -359,9 +359,26 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
 /// a command move to one driven by a schedule and stay green.
 const per_commit_workflow = ".github/workflows/ci.yml";
 
+/// The workflow that runs the slow tier (docs/plans/0007-test-tiers.md).
+const slow_workflow = ".github/workflows/full.yml";
+
+/// The commands of the table's slow-tier row, which `slow_workflow` has to run.
+///
+/// Named here because the row is not marked 全コミット, so the comparison with
+/// the per-commit workflow never reads it: a `-Dslow=true` dropped from the
+/// workflow, or the step removed, left every command green while the slow tests
+/// ran nowhere. The names are the ones `build.zig` gives the `slow` option and
+/// the two test steps, so removing one means removing the thing it runs.
+const slow_commands = [_][]const u8{
+    "zig build test -Dslow=true",
+    "zig build test-scheme -Dslow=true",
+};
+
 /// A row of the verification command table, as this check reads it.
 const CommandRow = struct {
     command: []const u8,
+    /// The whole command cell, for rows that name more than one command.
+    cell: []const u8,
     /// The stage the command starts existing at, or null if the cell is not a
     /// number -- the setup row writes `-`.
     stage: ?usize,
@@ -396,6 +413,7 @@ fn checkCiRunsTheTable(
     // makes this check's reading of that file untrustworthy. The commands are
     // collected only from the one that runs per commit.
     var run_lines: std.ArrayList([]const u8) = .empty;
+    var slow_run_lines: std.ArrayList([]const u8) = .empty;
     // The keys and values the per-commit workflow actually carries, so the ones
     // that decide whether it runs at all can be held to a closed set.
     var seen: std.ArrayList(struct { key: []const u8, value: []const u8 }) = .empty;
@@ -500,6 +518,7 @@ fn checkCiRunsTheTable(
                 value = value[1 .. value.len - 1];
             }
             if (per_commit) try run_lines.append(gpa, value);
+            if (std.mem.eql(u8, path, slow_workflow)) try slow_run_lines.append(gpa, value);
         }
     }
 
@@ -550,14 +569,37 @@ fn checkCiRunsTheTable(
         const row = std.mem.trim(u8, raw, &std.ascii.whitespace);
         if (row.len == 0 or row[0] != '|') continue;
         if (cellCount(row) < 4) continue;
-        const command = backtickedSpan(cellAt(row, 1).?) orelse continue;
+        const command_cell = cellAt(row, 1).?;
+        const command = backtickedSpan(command_cell) orelse continue;
         const stage_cell = std.mem.trim(u8, cellAt(row, 2).?, &std.ascii.whitespace);
         const ci_cell = std.mem.trim(u8, cellAt(row, 3).?, &std.ascii.whitespace);
         try table_rows.append(gpa, .{
             .command = command,
+            .cell = command_cell,
             .stage = std.fmt.parseInt(usize, stage_cell, 10) catch null,
             .every_commit = std.mem.eql(u8, ci_cell, "全コミット"),
         });
+    }
+
+    // The slow tier has no row marked 全コミット, so the loops below never see
+    // it. Its row has to name each command, and the slow workflow has to run it.
+    for (slow_commands) |command| {
+        var in_table = false;
+        for (table_rows.items) |row| {
+            if (hasBacktickedSpan(row.cell, command)) in_table = true;
+        }
+        if (!in_table) rep.fail(
+            "AGENTS.md's table has no row naming `{s}`, the slow tier's command",
+            .{command},
+        );
+        var ran = false;
+        for (slow_run_lines.items) |line| {
+            if (runsCommand(line, command)) ran = true;
+        }
+        if (!ran) rep.fail(
+            "the slow tier's command `{s}` is not run by {s}",
+            .{ command, slow_workflow },
+        );
     }
 
     // The build provides it, so the table requires it and the workflow runs it.
@@ -637,6 +679,20 @@ fn backtickedSpan(cell: []const u8) ?[]const u8 {
     const rest = cell[open + 1 ..];
     const close = std.mem.indexOfScalar(u8, rest, '`') orelse return null;
     return if (close == 0) null else rest[0..close];
+}
+
+/// Whether `command` is one of the spans between backticks in `cell`.
+///
+/// A row may name two commands, and `backtickedSpan` reads only the first.
+fn hasBacktickedSpan(cell: []const u8, command: []const u8) bool {
+    var rest = cell;
+    while (std.mem.indexOfScalar(u8, rest, '`')) |open| {
+        const after = rest[open + 1 ..];
+        const close = std.mem.indexOfScalar(u8, after, '`') orelse return false;
+        if (std.mem.eql(u8, after[0..close], command)) return true;
+        rest = after[close + 1 ..];
+    }
+    return false;
 }
 
 /// Keys a workflow may use. Anything else is reported.
@@ -2745,6 +2801,23 @@ test "backtickedSpan: the command, not the note beside it" {
     );
     try std.testing.expect(backtickedSpan(" no backticks ") == null);
     try std.testing.expect(backtickedSpan(" `` ") == null);
+}
+
+test "hasBacktickedSpan: every span of the cell counts, not only the first" {
+    const cell = " `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` ";
+    try std.testing.expect(hasBacktickedSpan(cell, "zig build test -Dslow=true"));
+    try std.testing.expect(hasBacktickedSpan(cell, "zig build test-scheme -Dslow=true"));
+    // A prefix of a span, or text outside the backticks, is not the command.
+    try std.testing.expect(!hasBacktickedSpan(cell, "zig build test"));
+    try std.testing.expect(!hasBacktickedSpan(" zig build test `other` ", "zig build test"));
+    try std.testing.expect(!hasBacktickedSpan(" `unclosed", "unclosed"));
+}
+
+test "runsCommand: the slow commands are told apart from the plain ones" {
+    try std.testing.expect(runsCommand("zig build test -Dslow=true --summary all", "zig build test -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test --summary all", "zig build test -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test-scheme -Dslow=true", "zig build test -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test-scheme", "zig build test-scheme -Dslow=true"));
 }
 
 test "stripComment: a hash opens a comment only at the start or after whitespace" {
