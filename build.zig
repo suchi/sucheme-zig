@@ -145,7 +145,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Why: the tests that check a scale (a hundred thousand levels of recursion,
+    // a million steps) take most of the time of a run and find the faults that
+    // grow with the size of the input. They run with `-Dslow=true`; the run of
+    // every commit leaves them out and keeps a smaller twin of each
+    // (docs/plans/0007-test-tiers.md). A skipped test is counted in the summary.
+    const slow = b.option(bool, "slow", "also run the tests that check a scale (slow)") orelse false;
+
     const options = b.addOptions();
+    options.addOption(bool, "slow", slow);
     options.addOption([]const u8, "name", @tagName(manifest.name));
     options.addOption([]const u8, "version", manifest.version);
 
@@ -191,6 +199,10 @@ pub fn build(b: *std.Build) void {
     });
     sucheme_host.addOptions("build_options", options);
     test_scheme.root_module.addImport("sucheme", sucheme_host);
+    // The runner reads tests/scheme-slow/ as well when the slow tier is asked for.
+    const tier_options = b.addOptions();
+    tier_options.addOption(bool, "slow", slow);
+    test_scheme.root_module.addOptions("tier", tier_options);
     const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme };
 
     const run_check_docs = b.addRunArtifact(check_docs);

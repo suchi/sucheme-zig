@@ -61,6 +61,7 @@ flowchart TB
 | `lib/` | Scheme で書く標準ライブラリ。ビルド時に実行ファイルへ埋め込む |
 | `web/` | Web UI。依存パッケージを持たない素の HTML/CSS/JS |
 | `tests/scheme/` | Scheme レベルの振る舞いテスト |
+| `tests/scheme-slow/` | 規模を試す Scheme レベルのテスト(`-Dslow=true` のときだけ走る。[plans/0007-test-tiers.md](plans/0007-test-tiers.md)) |
 | `tests/vendor/` | 外部から取り込んだ準拠テストスイート。改変しない |
 | `tools/` | テーブル生成などの補助プログラム |
 | `docs/` | 設計、決定、計画、進捗 |
