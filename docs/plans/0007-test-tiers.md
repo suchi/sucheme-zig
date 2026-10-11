@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md), [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)
 - 段階: 1(横断。スライスに属さない)
 - 日付: 2026-10-11
-- 状態: 合意済み(2026-10-11)。層0 から層2 の仕組みは実装済み、`full.yml` は別の PR で承認を得る
+- 状態: 合意済み(2026-10-11)。層0 から層2 の仕組みは実装済みで、`full.yml` も [#28](https://github.com/suchi/sucheme-zig/pull/28) で入った。層3(ファジングのスケジュール実行)は未着手
 
 ## 解こうとしている問題
 
