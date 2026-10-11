@@ -1,0 +1,164 @@
+# スライス 1k の単位 K5: 文字の操作(R7RS 6.6)。`char?` は型を調べ、
+# `char->integer` と `integer->char` は文字とそのコードポイントを行き来する。
+# 文字はスカラ値(0 から #xD7FF、#xE000 から #x10FFFF)に限るので、サロゲートと
+# 範囲の外の整数は `integer->char` の範囲エラーになる。検査の順序は、引数の個数、
+# 型、値の範囲である。
+
+# 型の述語。
+(char? #\a)
+#t
+
+(char? #\λ)
+#t
+
+(char? #\null)
+#t
+
+(char? "a")
+#f
+
+(char? 97)
+#f
+
+(char? 'a)
+#f
+
+(char? '())
+#f
+
+(char? #f)
+#f
+
+(char? '(#\a))
+#f
+
+# 文字から整数へ。
+(char->integer #\a)
+97
+
+(char->integer #\A)
+65
+
+(char->integer #\null)
+0
+
+(char->integer #\space)
+32
+
+(char->integer #\λ)
+955
+
+(char->integer #\あ)
+12354
+
+# 4バイトの UTF-8 になる文字。
+(char->integer #\x10000)
+65536
+
+(char->integer #\x10FFFF)
+1114111
+
+# 整数から文字へ。
+(integer->char 97)
+#\a
+
+(integer->char 0)
+#\null
+
+(integer->char 32)
+#\space
+
+(integer->char 955)
+#\λ
+
+(integer->char 12354)
+#\あ
+
+(integer->char 65536)
+#\𐀀
+
+# スカラ値の端。サロゲートの手前と先は文字になる。
+(char->integer (integer->char 55295))
+55295
+
+(char->integer (integer->char 57344))
+57344
+
+(char->integer (integer->char 1114111))
+1114111
+
+# 往復。
+(integer->char (char->integer #\x))
+#\x
+
+(char->integer (integer->char 20013))
+20013
+
+# サロゲートは文字ではない。
+(integer->char 55296)
+error: argument out of range in integer->char
+
+(integer->char 56320)
+error: argument out of range in integer->char
+
+(integer->char 57343)
+error: argument out of range in integer->char
+
+# #x10FFFF より大きい整数と、負の整数。
+(integer->char 1114112)
+error: argument out of range in integer->char
+
+(integer->char -1)
+error: argument out of range in integer->char
+
+(integer->char 4294967296)
+error: argument out of range in integer->char
+
+(integer->char 9223372036854775807)
+error: argument out of range in integer->char
+
+(integer->char -9223372036854775808)
+error: argument out of range in integer->char
+
+# 型の誤り。範囲より先に調べる。
+(char->integer 97)
+error: wrong type of argument to char->integer
+
+(char->integer "a")
+error: wrong type of argument to char->integer
+
+(char->integer 'a)
+error: wrong type of argument to char->integer
+
+(integer->char #\a)
+error: wrong type of argument to integer->char
+
+(integer->char "97")
+error: wrong type of argument to integer->char
+
+(integer->char '())
+error: wrong type of argument to integer->char
+
+# 引数の個数は機械が検査する。
+(char?)
+error: wrong number of arguments to char?
+
+(char? #\a #\b)
+error: wrong number of arguments to char?
+
+(char->integer)
+error: wrong number of arguments to char->integer
+
+(char->integer #\a #\b)
+error: wrong number of arguments to char->integer
+
+(integer->char)
+error: wrong number of arguments to integer->char
+
+(integer->char 97 98)
+error: wrong number of arguments to integer->char
+
+# エラーは、その行がそれまでに出力したものの後に続く。
+(char->integer #\a) (integer->char 55296)
+97
+error: argument out of range in integer->char
