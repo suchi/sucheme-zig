@@ -25,8 +25,8 @@
 //! 終わらせるのはその式の評価であり、REPL ではない。`;` から行末までは行コメント
 //! で、コメントだけの行は何も出力しない。
 //!
-//! 閉じていない式(リストやベクタの途中、`'` の直後、文字列や `#\` の途中、
-//! ドットの直後)で終わる行は、継続行になる(ADR-0014)。継続行のプロンプトは
+//! 閉じていない式(リストやベクタの途中、`'` の直後、ドットの直後、閉じていない
+//! 文字列)で終わる行は、継続行になる(ADR-0014)。継続行のプロンプトは
 //! `... ` で、次の行が、保留している入力の続きとして足される。足すとき改行を
 //! 戻すので、複数行の文字列リテラルは改行を含む。式が閉じたところで、保留の全体を
 //! 評価する。複数の式を含む行は、最後の式が閉じるまで評価されない。閉じた先頭の
@@ -34,6 +34,13 @@
 //!
 //! 構文エラー(`)` だけの行、`(a . )`、`#z`)は、続きを足しても直らないので、
 //! 継続行にならずにその行で報告される。
+//!
+//! 行がエスケープや文字の途中で終わっても、継続行にならないことがある。REPL は
+//! 保留に必ず改行を足すので、その改行がエスケープや文字の一部として読まれるからである。
+//! 最上位の行末の `#\` は、改行文字 `#\newline` になる(R7RS 7.1.1 の
+//! `#\<any character>` は改行を許す)。文字列の行末の `\` と `\x41` は、`\` + 改行、
+//! `\x41` + 改行として読まれて、`error: invalid escape in string` になる。リーダは
+//! 文字列の行継続 `\<行末>` をまだ読めない。
 //!
 //! 保留の合計は、改行を含めて 65536 バイト(`max_line`)までである。超えたら
 //! `error: the input does not fit in 65536 bytes, newline included` を報告して、
@@ -390,6 +397,25 @@ test "repl evaluates a line with several expressions only once it is closed" {
     const r = try replOver("1 (+ 1\n2)\n", &ob, &eb);
     try std.testing.expectEqualStrings("> ... 1\n3\n> \n", r.out);
     try std.testing.expectEqualStrings("", r.err);
+}
+
+test "repl does not continue a line that ends inside a character or an escape" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // REPL は保留に改行を足すので、行末の `#\` は改行文字になる。
+    const c = try replOver("#\\\n(+ 1 2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> #\\newline\n> 3\n> \n", c.out);
+    try std.testing.expectEqualStrings("", c.err);
+    // 行末の `\` と `\x41` は、改行と合わせて不正なエスケープになる。継続行にならず、
+    // 次の行は新しい入力である。
+    const b = try replOver("\"a\\\n(+ 1 2)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> > 3\n> \n", b.out);
+    try std.testing.expectEqualStrings("error: invalid escape in string\n", b.err);
+    var ob2: [256]u8 = undefined;
+    var eb2: [256]u8 = undefined;
+    const x = try replOver("\"a\\x41\n(+ 1 2)\n", &ob2, &eb2);
+    try std.testing.expectEqualStrings("> > 3\n> \n", x.out);
+    try std.testing.expectEqualStrings("error: invalid escape in string\n", x.err);
 }
 
 test "repl reports unexpected end of input when the input ends inside an expression" {
