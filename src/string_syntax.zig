@@ -1,9 +1,9 @@
 //! The external representation of a string (R7RS 6.7, 7.1.1): what the reader
-//! reads between double quotes and what `write` writes. Reading and writing are
-//! here together, so the table of escapes is one table.
+//! reads between double quotes and what `write` writes.
 //!
-//! Slice 1h, the strings. The reader's `"` and the printer both call into this
-//! file.
+//! 読みと書きをここにまとめてあるので、エスケープの表は1つである。
+//!
+//! スライス1h(文字列)にあたる。リーダの `"` もプリンタも、このファイルを呼ぶ。
 
 const std = @import("std");
 const value = @import("value.zig");
@@ -16,8 +16,9 @@ pub const ReadError = error{
     OutOfMemory,
     /// The string does not fit in the heap.
     HeapLimit,
-    /// The input ended before the closing quote. The REPL can ask for another
-    /// line on this (ADR-0014).
+    /// The input ended before the closing quote.
+    ///
+    /// REPL はこれを受けて別の行を求められる(ADR-0014)。
     Incomplete,
     /// A backslash followed by something that is not an escape, or a `\x`
     /// escape whose value is not a scalar value.
@@ -25,13 +26,14 @@ pub const ReadError = error{
 };
 
 /// Reads the string literal that starts at `src[pos.*]`, which is the opening
-/// `"`, and moves `pos` past the closing one. The string is made in `heap`;
-/// `scratch` holds its bytes while they are collected. On an error `pos` is
-/// where it was.
+/// `"`, and moves `pos` past the closing one.
 ///
-/// The input is valid UTF-8 (the interpreter checks it as a whole), so a byte
-/// that is not an escape is copied as it is: a raw newline, a tab and the bytes
-/// of a non-ASCII character all belong to the string.
+/// 文字列は `heap` に作る。`scratch` は、バイトを集めている間それを保持する。
+/// エラーのときは `pos` を元の位置のままにする。
+///
+/// 入力は妥当な UTF-8 である(インタプリタが全体を検査する)。そのため、エスケープ
+/// でないバイトはそのままコピーする。生の改行、タブ、非 ASCII 文字のバイトは、
+/// すべて文字列に含まれる。
 pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Heap) ReadError!Value {
     std.debug.assert(src[pos.*] == '"');
     var bytes: std.ArrayList(u8) = .empty;
@@ -53,7 +55,9 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
 }
 
 /// Reads the escape whose backslash has just been read, and appends what it
-/// stands for to `bytes`. `i` is the index after the backslash.
+/// stands for to `bytes`.
+///
+/// `i` はバックスラッシュの次の添字である。
 fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *std.ArrayList(u8)) ReadError!void {
     if (i.* >= src.len) return error.Incomplete;
     const c = src[i.*];
@@ -82,8 +86,8 @@ fn readHexEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: 
         i.* += 1;
         if (c == ';') break;
         const digit = std.fmt.charToDigit(c, 16) catch return error.InvalidEscape;
-        // Once the value is past the last scalar value it stays there, so a
-        // long run of digits cannot overflow and wrap around into range.
+        // 値が最後のスカラ値を超えたら、そこに留める。桁が長く続いても、あふれて
+        // 巻き戻り、範囲内に戻ってしまうことがない。
         if (code <= max_scalar_value) code = code * 16 + digit;
         digits += 1;
     }
@@ -98,14 +102,14 @@ const max_scalar_value = 0x10FFFF;
 /// Writes the string `bytes` as `write` (in quotes, with escapes) or as
 /// `display` (the bytes as they are) would.
 ///
-/// `write` escapes what the reader would take for something else: `"` and `\\`,
-/// and the control characters, with the escape of R7RS where there is one and
-/// as `\x<hex>;` where there is not. Everything else, a non-ASCII character
-/// included, is written as the bytes it is, which the reader reads back.
+/// `write` は、リーダが別のものと取り違えるものをエスケープする。`"` と `\\`、
+/// および制御文字で、R7RS のエスケープがあるものはそれを使い、ないものは
+/// `\x<hex>;` とする。それ以外は非 ASCII 文字も含め、バイトのまま書く。リーダは
+/// それを読み戻せる。
 pub fn write(out: *std.Io.Writer, mode: Mode, bytes: []const u8) std.Io.Writer.Error!void {
     if (mode == .display) return out.writeAll(bytes);
     try out.writeByte('"');
-    // The bytes that need no escape are written in runs.
+    // エスケープが要らないバイトは、連続した塊でまとめて書く。
     var run_start: usize = 0;
     for (bytes, 0..) |c, i| {
         if (!needsEscape(c)) continue;
@@ -126,9 +130,9 @@ pub fn write(out: *std.Io.Writer, mode: Mode, bytes: []const u8) std.Io.Writer.E
     try out.writeByte('"');
 }
 
-/// Whether `write` escapes the byte: `"`, `\\`, the C0 controls and DEL. A byte
-/// of a multi-byte character is never one of these, since they are all 0x80 or
-/// more.
+/// Whether `write` escapes the byte: `"`, `\\`, the C0 controls and DEL.
+///
+/// マルチバイト文字のバイトは、どれも 0x80 以上なので、これらに当たることはない。
 fn needsEscape(c: u8) bool {
     return c == '"' or c == '\\' or c < 0x20 or c == 0x7f;
 }
@@ -184,7 +188,7 @@ test "read: a hex escape is the character with that code, in either case" {
     try expectRead("\x00", "\"\\x0;\"");
     try expectRead("\u{10FFFF}", "\"\\x10ffff;\"");
     try expectRead("\u{7ff}\u{800}", "\"\\x7ff;\\x800;\"");
-    // Leading zeros are digits like the others, however many there are.
+    // 先頭の 0 も他の桁と同じ桁であり、いくつ続いても構わない。
     try expectRead("A", "\"\\x0000000000000000000000041;\"");
 }
 
@@ -196,11 +200,11 @@ test "read: a hex escape that is not a scalar value, or not an escape, is invali
     try expectReadError(error.InvalidEscape, "\"\\x110000;\"");
     try expectReadError(error.InvalidEscape, "\"\\x;\"");
     try expectReadError(error.InvalidEscape, "\"\\xg;\"");
-    // So many digits that a 32-bit value would wrap around into range.
+    // 桁が多すぎて、32ビットの値なら巻き戻って範囲内に戻ってしまう。
     try expectReadError(error.InvalidEscape, "\"\\x100000041;\"");
     try expectReadError(error.InvalidEscape, "\"\\x1000000000000000041;\"");
-    // A digit after the last scalar value leaves the value out of range; it
-    // does not stay at the last scalar value, which is itself a valid one.
+    // 最後のスカラ値の後ろに桁が続けば、値は範囲外になる。最後のスカラ値は
+    // それ自体が有効な値だが、そこに留まることはない。
     try expectReadError(error.InvalidEscape, "\"\\x10ffff0;\"");
     try expectReadError(error.InvalidEscape, "\"\\x10fffff;\"");
     try expectReadError(error.InvalidEscape, "\"\\x10ffff00000000;\"");
@@ -210,7 +214,7 @@ test "read: a backslash that begins no escape is invalid" {
     try expectReadError(error.InvalidEscape, "\"\\q\"");
     try expectReadError(error.InvalidEscape, "\"a\\zb\"");
     try expectReadError(error.InvalidEscape, "\"\\X41;\"");
-    // A line continuation is not read yet (slice 1h).
+    // 行継続はまだ読まない(スライス1h)。
     try expectReadError(error.InvalidEscape, "\"a\\\nb\"");
 }
 
@@ -243,7 +247,7 @@ test "read: the position is left after the closing quote, and what follows is no
     const second = try read(src, &pos, std.testing.allocator, &heap);
     try std.testing.expectEqualStrings("cd", second.asString().?.bytes);
     try std.testing.expectEqual(10, pos);
-    // A quote that is escaped does not close the string.
+    // エスケープされた引用符は、文字列を閉じない。
     pos = 0;
     const third = try read("\"a\\\"\" b", &pos, std.testing.allocator, &heap);
     try std.testing.expectEqualStrings("a\"", third.asString().?.bytes);
@@ -251,7 +255,7 @@ test "read: the position is left after the closing quote, and what follows is no
 }
 
 test "read: a string that does not fit under the limit gives the accounting back" {
-    // What a two-byte string accounts for, taken from a heap of its own.
+    // 2バイトの文字列の計上量を、専用のヒープから取る。
     var probe: Heap = .init(std.testing.allocator, .{});
     defer probe.deinit();
     _ = try probe.createString("ok");
@@ -259,7 +263,7 @@ test "read: a string that does not fit under the limit gives the accounting back
     defer heap.deinit();
     try expectReadErrorIn(&heap, error.HeapLimit, "\"a long string\"");
     try std.testing.expectEqual(0, heap.accounted);
-    // The small one still fits, so the failure left the heap usable.
+    // 小さいものはまだ収まる。失敗してもヒープは使えるままだった。
     try std.testing.expectEqualStrings("ok", try readBytes(&heap, "\"ok\""));
 }
 
@@ -270,8 +274,8 @@ fn expectReadErrorIn(heap: *Heap, expected: ReadError, src: []const u8) !void {
 }
 
 test "read: a scratch allocation that fails is an out of memory, and nothing leaks" {
-    // The first allocation is the byte list, the second the string's copy; the
-    // heap has its own allocator, so only the list is made to fail.
+    // 最初の確保はバイトのリスト、2番目は文字列のコピーである。ヒープは自前の
+    // アロケータを持つので、失敗させるのはリストだけである。
     var heap: Heap = .init(std.testing.allocator, .{});
     defer heap.deinit();
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
@@ -279,18 +283,18 @@ test "read: a scratch allocation that fails is an out of memory, and nothing lea
     try std.testing.expectError(error.OutOfMemory, read("\"abc\"", &pos, failing.allocator(), &heap));
     try std.testing.expectEqual(0, pos);
     try std.testing.expectEqual(0, heap.accounted);
-    // A failure later, while the list grows, frees what the list had.
-    // (The list's first allocation is 128 bytes, so the string is longer.)
+    // もっと後の失敗、つまりリストが育つ途中の失敗では、リストが持っていたものを
+    // 解放する。(リストの最初の確保は128バイトなので、文字列はそれより長くする。)
     var long: [302]u8 = undefined;
     @memset(&long, 'x');
     long[0] = '"';
     long[301] = '"';
-    // Growing in place is refused, so it takes a second allocation, which fails.
+    // その場での拡張は拒否されるので、2回目の確保が要り、それが失敗する。
     var later: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
     try std.testing.expectError(error.OutOfMemory, read(&long, &pos, later.allocator(), &heap));
     try std.testing.expectEqual(1, later.allocations);
     try std.testing.expectEqual(later.allocated_bytes, later.freed_bytes);
-    // The scratch is given back on success too.
+    // 成功したときも、スクラッチは返される。
     var ok: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     _ = try read("\"abc\"", &pos, ok.allocator(), &heap);
     try std.testing.expectEqual(ok.allocated_bytes, ok.freed_bytes);
@@ -327,7 +331,8 @@ test "write: the other controls and DEL are written as lowercase hex with no pad
     try expectWritten("\"\\x10;\"", .write, "\x10");
     try expectWritten("\"\\x1f;\"", .write, "\x1f");
     try expectWritten("\"\\x7f;\"", .write, "\x7f");
-    // The byte after an escape is not taken for a digit of it: `;` ends it.
+    // エスケープの次のバイトは、その桁とは取られない。`;` がエスケープを終わらせる。
+
     try expectWritten("\"\\x1;a\"", .write, "\x01a");
 }
 

@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0020](../adr/0020-repository-visibility-private.md), [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md), [ADR-0022](../adr/0022-unlicensed-proprietary.md), [ADR-0025](../adr/0025-permission-policy-guard-in-hooks.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1j)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-11
-- 状態: 合意待ち。「未解決の問い」の節の各項目に答えをもらってから実装に入る
+- 状態: 合意済み(2026-10-11、問い1から11に答えをもらった。問い2だけ、勧める案と違う答えだった。「合意した点と、検討した選択肢」の節の表を参照)
 
 ## 解こうとしている問題
 
@@ -36,7 +36,7 @@
 - リーダのファジングのテストと `fuzz.yml`。
 - 全ターゲットの実行ファイルを作る `zig build` の step、アーカイブとチェックサムを作る手段、`release.yml`。
 - PR に成果物を添付するワークフロー。
-- aarch64 の ADR(と、選んだ案に応じたワークフローの変更)。
+- aarch64 の ADR(動作確認はしないと決めた。ワークフローの変更は無い)。
 - リリースノート、版の付け替え、タグを打つ手順の文書。
 
 含めないもの(理由は括弧内):
@@ -111,14 +111,14 @@ flowchart TD
     pub --> j5[1j-5 リリース後: 版を 0.2.0-dev に付け替え、最新リリースを更新]
 ```
 
-1j-1 から 1j-3 は互いに依存しないが、`tools/check-docs` の許可キーの集合に触れるので、並行して書いても統合は直列にする(未解決の問い5)。PR の分け方は未解決の問い1にある。
+1j-1 から 1j-3 は互いに依存しないが、`tools/check-docs` の許可キーの集合に触れるので、並行して書いても統合は直列にする(問い5)。PR の分け方は問い1にある。
 
 並行できる単位と、書いてよいファイル(1i の計画 [0008](0008-slice-1i-wasm-web-ui.md) の形):
 
 | 作業 | 書いてよいファイル |
 | --- | --- |
 | 1j-1 ファジング | `src/reader.zig`(テストの追加)、`.github/workflows/fuzz.yml`、`AGENTS.md` の表の該当行 |
-| 1j-2 aarch64 | `docs/adr/`(新しい ADR と一覧)、`README.md`、選んだ案に応じて `.github/workflows/full.yml` |
+| 1j-2 aarch64 | `docs/adr/`(新しい ADR と一覧)、`README.md` |
 | 1j-3 成果物 | `build.zig`(`dist` step)、`tools/release/`、`.github/workflows/preview.yml`、`.github/workflows/release.yml`、`.github/workflows/full.yml`(リハーサル) |
 | 共通 | `tools/check-docs/main.zig`(許可キーとジョブ名の追加。1つの PR に集める) |
 | 1j-4, 1j-5 | `build.zig.zon`、`docs/releases/`、`docs/roadmap.md`、`README.md`、`docs/design/open-questions.md`、`docs/plans/0003-phase1-minimal-slice.md` |
@@ -142,13 +142,13 @@ flowchart TD
 
 ### aarch64(1j-2)
 
-[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の追記は、段階1に値表現・GC・WASM が入ってアライメント・ポインタ幅・エンディアンに依存する判断が現れるので、そこで対象に加えるかを決めると書いた。1i まで終わった時点のコードを読むと、依存は `@sizeOf`(`src/heap.zig`)と `@intFromPtr`(`src/trace.zig`)に限られ、`@ptrCast` `@alignCast` とエンディアンの操作は無い。1i の往復テストは wasm32(4バイトのポインタ)を通すので、64ビット以外の幅はすでに一度通っている。一方、配る aarch64 の実行ファイル(Linux と Windows)は、現状どこでも実行されない。選択肢は未解決の問い2にある。
+[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の追記は、段階1に値表現・GC・WASM が入ってアライメント・ポインタ幅・エンディアンに依存する判断が現れるので、そこで対象に加えるかを決めると書いた。1i まで終わった時点のコードを読むと、依存は `@sizeOf`(`src/heap.zig`)と `@intFromPtr`(`src/trace.zig`)に限られ、`@ptrCast` `@alignCast` とエンディアンの操作は無い。1i の往復テストは wasm32(4バイトのポインタ)を通すので、64ビット以外の幅はすでに一度通っている。一方、配る aarch64 の実行ファイル(Linux と Windows)は、現状どこでも実行されない。選択肢は問い2にあり、実行しない(動作確認をしない)と決めた。ビルドが通る前提で作り、本当に必要になったときに動作確認を加える。
 
 決めた内容は新しい ADR(次の空き番号、作成時に確かめる)に書く。[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の本文は書き換えず、追記もしない(追記は決定を変えないときに限る。ここは見直しの結果なので新しい ADR が要る)。README の対応プラットフォームの表と、aarch64 の理由の段落を、決定に合わせて直す。
 
 ### PR への成果物の添付(1j-3)
 
-[ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) と [platform-and-web.md](../design/platform-and-web.md) は、`sucheme.wasm` と `web/` を zip にして CI が上げると決めている。レビュアは展開し、1i の `serve.mjs` で開く。展開した先で追加の手順が要らないよう、`web/` の中身と `sucheme.wasm` と `serve.mjs` を1つのディレクトリに並べて上げる。`upload-artifact` が zip にまとめるので、zip を自前で作らない。置き場所は未解決の問い6にある。
+[ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) と [platform-and-web.md](../design/platform-and-web.md) は、`sucheme.wasm` と `web/` を zip にして CI が上げると決めている。レビュアは展開し、1i の `serve.mjs` で開く。展開した先で追加の手順が要らないよう、`web/` の中身と `sucheme.wasm` と `serve.mjs` を1つのディレクトリに並べて上げる。`upload-artifact` が zip にまとめるので、zip を自前で作らない。置き場所は問い6にある。
 
 ### リリース(1j-3, 1j-4)
 
@@ -165,7 +165,7 @@ flowchart TD
 
 `dist` は `build.zig` の step で、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の一覧のターゲットを作る。ターゲットの一覧はこの step だけが持つ(アーカイブ側は `zig-out/dist/` の下のディレクトリ名から導く)。最適化モードは `dist` が固定し、`-Doptimize` では変わらない。
 
-同じ手順をリハーサルとして `full.yml` に置く(未解決の問い7)。タグを打つ前に、`main` への push のたびに `dist` とアーカイブの組み立てが通っていることを確かめるためである。リリースのワークフローで試せないのは `gh release create` の1行だけになる。
+同じ手順をリハーサルとして `full.yml` に置く(問い7)。タグを打つ前に、`main` への push のたびに `dist` とアーカイブの組み立てが通っていることを確かめるためである。リリースのワークフローで試せないのは `gh release create` の1行だけになる。
 
 権限は、ワークフローごとに最小にする。
 
@@ -177,9 +177,27 @@ flowchart TD
 | `preview.yml` | PR | `contents: read` | 同上 | 1j-3 |
 | `release.yml` | タグ | `contents: write`(リリースの作成に要る。これだけ) | 既存の2つ。リリースの作成は `gh` | 1j-3 |
 
-## 未解決の問い
+## 合意した点と、検討した選択肢
 
-ユーザーの確認が要る点を、勧める案を先頭に置いて並べる。それぞれに選択肢の長所と短所を付ける。答えが出るまで、該当する実装は始めない。
+ユーザーの確認が要った11の点である。下の表が決定で、その下の各項は検討した選択肢の記録である(勧める案を先頭に置いた)。本文の「問い N」は、この項の番号を指す。
+
+| 問い | 決定 |
+| --- | --- |
+| 1. PR の分け方 | 勧める案どおり、5つに分ける(1j-1 から 1j-5) |
+| 2. aarch64 を自動テストの対象に加えるか | 加えない。勧める案とは違う。aarch64 でビルドが通るつもりで作るが、動作確認はしない。本当に必要になったときに加える。ADR に、この決定と、見直しの契機(必要になったとき)を書く。`full.yml` に aarch64 のジョブは足さない |
+| 3. ファジングの最適化モードと AGENTS.md の訂正 | 勧める案どおり。表を `--fuzz=<N> -Doptimize=ReleaseSafe` に直し、説明を訂正する。AGENTS.md の本文の変更を認める |
+| 4. ファジングの頻度・範囲 | 勧める案どおり。週1回の定期実行と手動起動、リーダだけ |
+| 5. `check-docs` のキーとジョブ名 | 勧める案どおり。必要な最小のものを閉じた集合に足す |
+| 6. PR の成果物を添付する場所 | 勧める案どおり。別ワークフロー `preview.yml` |
+| 7. リリースの組み立てと成果物の中身 | 勧める案どおり |
+| 8. 第三者の表示 | 勧める案どおり。`THIRD-PARTY-NOTICES.txt` を入れる |
+| 9. リリースの公開の形 | 勧める案どおり。下書きで作り、ユーザーが確認して公開する |
+| 10. タグの手順 | 勧める案どおり |
+| 11. open-questions の行 | 勧める案どおり。GC の閾値の実測は段階6へ移す |
+
+`.github/workflows/` の新規追加と変更(`fuzz.yml`、`preview.yml`、`release.yml`、`full.yml`)は、この合意に含まれない。PR ごとに別に承認を求める。
+
+aarch64 の実行ファイルは、ビルドが通るが動作確認をしていないものとして配る。リリースノートの動作保証の範囲に、この旨を書く。
 
 ### 1. PR の分け方
 
@@ -284,7 +302,7 @@ flowchart TD
 | `refAllDecls` の到達性の検査、修飾子が `std.testing` に解決されることの検査 | 「段階を定めずに保留しているもの」へ移す。[0003](0003-phase1-minimal-slice.md) が、製品コードが育って同じ誤りが2回起きたときに決めると定めている |
 | フックの判定を機械検査にするか | 同上 |
 | `test_excluded` に理由を要求する仕組み | 同上。1i の `src/wasm.zig` が最初の実例になる。2件目が出たときに決める |
-| CI が表の行を走らせることの検査の範囲 | 未解決の問い5の決定で `schedule` と `workflow_dispatch` の部分を閉じ、残り(`uses:` の差し替え、段のならび順、`permissions` の値)を同上へ移す |
+| CI が表の行を走らせることの検査の範囲 | 問い5の決定で `schedule` と `workflow_dispatch` の部分を閉じ、残り(`uses:` の差し替え、段のならび順、`permissions` の値)を同上へ移す |
 | GC の起動の閾値の倍率と最小値 | 下のとおり、ユーザーに選んでもらう |
 
 GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わりまでに実測で見直す」と書いた。
@@ -301,7 +319,7 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 テストの層([0007](0007-test-tiers.md))の割り当て。
 
 - 層1(全コミット): `zig fmt --check .`、`zig build`、`zig build test`、`zig build test-scheme`、`zig build check-docs`、`zig build check-extract`。1i が足す `zig build wasm` と `zig build test-wasm` も同じ層に入る。リーダのファジングのテストは初期入力だけで通るので、ここに入る。
-- 層2(PR を準備完了にする前、`main` へのマージ前): `-Dslow=true` の2つ。`dist` とアーカイブの組み立てのリハーサル(`full.yml`)。未解決の問い2の勧める案を採るなら aarch64 Linux のテスト。変更したファイルのミューテーションテスト(新しい純粋な判定を足したとき)。敵対的レビュー。
+- 層2(PR を準備完了にする前、`main` へのマージ前): `-Dslow=true` の2つ。`dist` とアーカイブの組み立てのリハーサル(`full.yml`)。変更したファイルのミューテーションテスト(新しい純粋な判定を足したとき)。敵対的レビュー。aarch64 の実行はしない(問い2)。
 - 層3(定期): `fuzz.yml`。
 - 手作業の確認(PR に結果を貼る): ファジングの失敗検出(仕込んだ失敗で、`f/crash` の検査の手順が失敗すること。実装の前に、今回の合成のテストで同じ形を確かめてある)。PR の成果物を展開して `node serve.mjs` で開き、`(fact 10)`。リリースの下書きから成果物を落として `sha256sum -c`、x86_64 Linux の実行ファイルで `--version` と `(fact 10)`。
 
@@ -309,7 +327,7 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 
 | 行 | 変更 | PR |
 | --- | --- | --- |
-| ファジング | コマンドを `--fuzz=<N>` つきに直す(未解決の問い3) | 1j-1 |
+| ファジング | コマンドを `--fuzz=<N>` つきに直す(問い3) | 1j-1 |
 | `zig build dist` | 新しい行。CI の列は「PR を ready にするとき、`main` への push、手動、タグの push」 | 1j-3 |
 
 `zig build check-docs` は全コミットの行だけを `ci.yml` に要求するので、上の2行はどちらも `ci.yml` の変更を要しない。
@@ -323,12 +341,12 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 | `AGENTS.md` | 表の行と説明の訂正 | 変更 | 1j-1, 1j-3 |
 | `tools/check-docs/main.zig` | 許可キーとジョブ名の追加、単体テスト | 変更 | 1j-1 から 1j-3 |
 | `docs/adr/` | aarch64 の ADR。リリースの形の ADR(下の注) | 新規 | 1j-2, 1j-3 |
-| `.github/workflows/full.yml` | リハーサルのジョブ。選んだ案に応じて aarch64 のジョブ | 変更(承認) | 1j-2, 1j-3 |
+| `.github/workflows/full.yml` | `dist` とアーカイブの組み立てのリハーサルのジョブ | 変更(承認) | 1j-3 |
 | `build.zig` | `dist` step | 変更 | 1j-3 |
 | `tools/release/package.py` | アーカイブ、チェックサム、読み直し | 新規 | 1j-3 |
 | `.github/workflows/preview.yml` | PR への成果物の添付 | 新規(承認) | 1j-3 |
 | `.github/workflows/release.yml` | タグからの下書きのリリース | 新規(承認) | 1j-3 |
-| `THIRD-PARTY-NOTICES.txt` | 第三者の表示(未解決の問い8の案による) | 新規 | 1j-3 |
+| `THIRD-PARTY-NOTICES.txt` | 第三者の表示(問い8の案による) | 新規 | 1j-3 |
 | `build.zig.zon` | 版を `0.1.0` にし、リリース後に `0.2.0-dev` へ | 変更 | 1j-4, 1j-5 |
 | `docs/releases/v0.1.0.md` | リリースノート | 新規 | 1j-4 |
 | `README.md`, `docs/roadmap.md`, `docs/design/open-questions.md`, `docs/plans/0003-phase1-minimal-slice.md` | 実態への追従 | 変更 | 1j-2, 1j-4, 1j-5 |
@@ -340,14 +358,13 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md) の費用側の停止の規則に従い、先に線を引く。レビューが収束しない兆候が出たら、次を上から順に外してやり残しに記録する。
 
 1. アーカイブの組み立てが自分の出力を読み直す検査。外すと、組み立てた結果の確認はリハーサルの煙試験と手作業になる。
-2. aarch64 のジョブ(未解決の問い2の勧める案を採った場合)。外すと、「加えない」案の ADR にする。
-3. 定期実行の契機。外すと、手動起動だけのファジングにする。
-4. PR への成果物の添付。外すと、レビュアは `zig build wasm` の手順で自分で作る。
+2. 定期実行の契機。外すと、手動起動だけのファジングにする。
+3. PR への成果物の添付。外すと、レビュアは `zig build wasm` の手順で自分で作る。
 
 外さないもの: リリースのワークフローと、そこで版を確かめる手順、ファジングの失敗検出、aarch64 の ADR。
 
 ## 次にやること
 
-1. この計画書の合意(上の「未解決の問い」の全項目)。
+1. この計画書の PR のマージ(合意は済んでいる)。
 2. 1i がマージされたら、`feature/phase1-slice-1j-1-reader-fuzzing` から始める。ブランチは各 PR ごとに最新の `origin/main` から作る。
 3. 実装の途中で、確かめられなかったこと(表)を順に確かめ、結果をこの計画書の表と PR に書く。
