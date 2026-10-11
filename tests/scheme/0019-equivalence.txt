@@ -433,3 +433,184 @@ error: wrong number of arguments to equal?
 
 (equal? equal? eqv?)
 #f
+
+# K3 の残り: 真偽・記号・手続きの型の述語(R7RS 6.3, 6.5, 6.10)。
+
+# not は、#f のときだけ真になる。空リストと 0 は偽ではない。
+(not #f)
+#t
+
+(not #t)
+#f
+
+(not 0)
+#f
+
+(not '())
+#f
+
+(not 'a)
+#f
+
+(not "")
+#f
+
+(not #\a)
+#f
+
+(not '(1))
+#f
+
+(not '#(1))
+#f
+
+(not +)
+#f
+
+(not (if #f #f))
+#f
+
+(not (not 3))
+#t
+
+(not (eq? 'a 'b))
+#t
+
+(not)
+error: wrong number of arguments to not
+
+(not 1 2)
+error: wrong number of arguments to not
+
+# boolean? は、#t と #f だけが真になる。
+(boolean? #t)
+#t
+
+(boolean? #f)
+#t
+
+(boolean? 0)
+#f
+
+(boolean? '())
+#f
+
+(boolean? 'a)
+#f
+
+(boolean? "#t")
+#f
+
+(boolean? #\t)
+#f
+
+(boolean? '(#t))
+#f
+
+(boolean? (not 1))
+#t
+
+(boolean? (boolean? 1))
+#t
+
+(boolean?)
+error: wrong number of arguments to boolean?
+
+(boolean? #t #f)
+error: wrong number of arguments to boolean?
+
+# symbol? は、記号だけが真になる。同じ綴りの文字列は記号ではない。
+(symbol? 'a)
+#t
+
+(symbol? 'nil)
+#t
+
+(symbol? 'a-longer-name?)
+#t
+
+(symbol? "a")
+#f
+
+(symbol? #\a)
+#f
+
+(symbol? 1)
+#f
+
+(symbol? #f)
+#f
+
+(symbol? '())
+#f
+
+(symbol? '(a))
+#f
+
+(symbol? '#(a))
+#f
+
+(symbol? symbol?)
+#f
+
+(symbol? (quote a))
+#t
+
+(symbol?)
+error: wrong number of arguments to symbol?
+
+(symbol? 'a 'b)
+error: wrong number of arguments to symbol?
+
+# procedure? は、クロージャとプリミティブで真になる。
+(procedure? +)
+#t
+
+(procedure? procedure?)
+#t
+
+(procedure? (lambda (x) x))
+#t
+
+(define f (lambda (x) x)) (procedure? f)
+#t
+
+(define (g x) x) (procedure? g)
+#t
+
+(procedure? 'car)
+#f
+
+(procedure? 1)
+#f
+
+(procedure? #f)
+#f
+
+(procedure? '())
+#f
+
+(procedure? "+")
+#f
+
+(procedure? '(+))
+#f
+
+(procedure? '#(1))
+#f
+
+(procedure? #\a)
+#f
+
+(procedure? (procedure? +))
+#f
+
+# 手続きを呼んだ結果は、手続きではない。
+(procedure? ((lambda (x) x) 1))
+#f
+
+(procedure?)
+error: wrong number of arguments to procedure?
+
+(procedure? + -)
+error: wrong number of arguments to procedure?
