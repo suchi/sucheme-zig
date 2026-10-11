@@ -258,8 +258,8 @@ error: unbound variable: foo
 3
 
 # A list of a few hundred pairs, made and read while the collector runs. The
-# runner also runs every case with a collection at each step. A long list is in
-# tests/scheme-slow/.
+# runner also runs every case with a collection at each step. The long-list
+# scale test is planned in docs/plans/0010 (K6) and is not here yet.
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (sum xs acc) (if (null? xs) acc (sum (cdr xs) (+ acc (car xs))))) (sum (build 500 '()) 0)
 125250
 
