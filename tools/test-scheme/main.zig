@@ -30,7 +30,13 @@
 const std = @import("std");
 const sucheme = @import("sucheme");
 
+const tier = @import("tier");
+
+/// Where the cases of every run are. The cases that check a scale are in the
+/// second directory, which a run reads only when asked for the slow tier
+/// (`-Dslow=true`); see docs/plans/0007-test-tiers.md.
 const tests_dir = "tests/scheme";
+const slow_dir = "tests/scheme-slow";
 
 /// The expected text of a case that prints nothing, such as a definition. A
 /// case needs an expected line, so an empty output has to be written down.
@@ -58,61 +64,64 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
 
-    var names: std.ArrayList([]const u8) = .empty;
-    var dir = cwd.openDir(io, tests_dir, .{ .iterate = true }) catch |e| {
-        try err.print("test-scheme: cannot open {s} ({t})\n", .{ tests_dir, e });
-        try err.flush();
-        std.process.exit(1);
-    };
-    defer dir.close(io);
-    var it = dir.iterate();
     var failed: usize = 0;
-    while (try it.next(io)) |entry| {
-        // Anything that is not a `.txt` file is reported, not skipped: a test
-        // saved as `0002.TXT`, `0002.scm` or inside a subdirectory would
-        // otherwise never run while the step stays green.
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) {
-            try err.print("{s}/{s}: not a `.txt` file, so its cases would never run\n", .{ tests_dir, entry.name });
-            failed += 1;
-            continue;
-        }
-        try names.append(gpa, try gpa.dupe(u8, entry.name));
-    }
-    // Directory order differs between hosts; sorting keeps the report stable.
-    std.mem.sort([]const u8, names.items, {}, lessThan);
-
     var passed: usize = 0;
-    for (names.items) |name| {
-        const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ tests_dir, name });
-        const body = cwd.readFileAlloc(io, path, gpa, .unlimited) catch |e| {
-            try err.print("{s}: cannot be read ({t})\n", .{ path, e });
-            failed += 1;
-            continue;
+    const dirs: []const []const u8 = if (tier.slow) &.{ tests_dir, slow_dir } else &.{tests_dir};
+    for (dirs) |dir_name| {
+        var names: std.ArrayList([]const u8) = .empty;
+        var dir = cwd.openDir(io, dir_name, .{ .iterate = true }) catch |e| {
+            try err.print("test-scheme: cannot open {s} ({t})\n", .{ dir_name, e });
+            try err.flush();
+            std.process.exit(1);
         };
-        var cases: std.ArrayList(Case) = .empty;
-        parse(gpa, body, &cases) catch |e| switch (e) {
-            error.MissingExpected => {
-                try err.print("{s}: a case has an input and no expected output\n", .{path});
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            // Anything that is not a `.txt` file is reported, not skipped: a test
+            // saved as `0002.TXT`, `0002.scm` or inside a subdirectory would
+            // otherwise never run while the step stays green.
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) {
+                try err.print("{s}/{s}: not a `.txt` file, so its cases would never run\n", .{ dir_name, entry.name });
                 failed += 1;
                 continue;
-            },
-            error.OutOfMemory => return e,
-        };
-        // A file with no case is as suspect as a missing one: a comment-only
-        // file, or a format change that parses everything as comments.
-        if (cases.items.len == 0) {
-            try err.print("{s}: no case found in this file\n", .{path});
-            failed += 1;
+            }
+            try names.append(gpa, try gpa.dupe(u8, entry.name));
         }
-        for (cases.items) |c| {
-            for (modes) |mode| {
-                if (try runCaseWith(gpa, mode.options, c)) |got| {
-                    try err.print(
-                        "{s}:{d}: {s}\n  mode:     {s}\n  expected: {s}\n  got:      {s}\n",
-                        .{ path, c.line, c.input, mode.name, c.expected, got },
-                    );
+        // Directory order differs between hosts; sorting keeps the report stable.
+        std.mem.sort([]const u8, names.items, {}, lessThan);
+
+        for (names.items) |name| {
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir_name, name });
+            const body = cwd.readFileAlloc(io, path, gpa, .unlimited) catch |e| {
+                try err.print("{s}: cannot be read ({t})\n", .{ path, e });
+                failed += 1;
+                continue;
+            };
+            var cases: std.ArrayList(Case) = .empty;
+            parse(gpa, body, &cases) catch |e| switch (e) {
+                error.MissingExpected => {
+                    try err.print("{s}: a case has an input and no expected output\n", .{path});
                     failed += 1;
-                } else passed += 1;
+                    continue;
+                },
+                error.OutOfMemory => return e,
+            };
+            // A file with no case is as suspect as a missing one: a comment-only
+            // file, or a format change that parses everything as comments.
+            if (cases.items.len == 0) {
+                try err.print("{s}: no case found in this file\n", .{path});
+                failed += 1;
+            }
+            for (cases.items) |c| {
+                for (modes) |mode| {
+                    if (try runCaseWith(gpa, mode.options, c)) |got| {
+                        try err.print(
+                            "{s}:{d}: {s}\n  mode:     {s}\n  expected: {s}\n  got:      {s}\n",
+                            .{ path, c.line, c.input, mode.name, c.expected, got },
+                        );
+                        failed += 1;
+                    } else passed += 1;
+                }
             }
         }
     }

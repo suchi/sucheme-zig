@@ -18,6 +18,7 @@
 //! other roots.
 
 const std = @import("std");
+const tier = @import("tier.zig");
 const value_mod = @import("value.zig");
 const Value = value_mod.Value;
 const Node = value_mod.Node;
@@ -522,7 +523,17 @@ test "a call that is not in tail position holds a frame for each pending call" {
     f.machine.peak_depth = 0;
     try f.expectInt(1000, "(count 1000)");
     try std.testing.expect(f.machine.peak_depth >= 1000);
-    // As deep as memory allows, and not as deep as the Zig stack does.
+    f.machine.peak_depth = 0;
+    try f.expectInt(5000, "(count 5000)");
+    try std.testing.expect(f.machine.peak_depth >= 5000);
+}
+
+test "slow: a recursion as deep as memory allows, and not as deep as the Zig stack does" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1)))))");
     try f.expectInt(100_000, "(count 100000)");
 }
 
@@ -584,22 +595,36 @@ test "what a global and what the code quote hold survives the collections of a l
     try std.testing.expectEqual(got.asPair().?, (try f.eval("(get)")).asPair().?);
 }
 
-test "a loop of tail calls holds the heap to a size that does not depend on how long it runs" {
+/// A loop of `long` tail calls holds the heap to a size that does not depend on
+/// how long it runs, after a short one of 2000. `collections` is how many
+/// collections the long one has to have caused, so that it cannot pass for want
+/// of any.
+fn expectBoundedHeapLoop(long: usize, collections: usize) !void {
     var f: Fixture = undefined;
     try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
     _ = try f.eval("(define (loop n) (if (= n 0) 'done (loop (- n 1))))");
     _ = try f.eval("(loop 2000)");
     const short = f.ctx.heap.peak;
-    _ = try f.eval("(loop 200000)");
+    var src: [32]u8 = undefined;
+    _ = try f.eval(try std.fmt.bufPrint(&src, "(loop {d})", .{long}));
     // Far more calls than the heap could hold, and no more in it than before
     // plus what one collection interval allows.
-    try std.testing.expect(f.ctx.heap.collections > 10);
+    try std.testing.expect(f.ctx.heap.collections > collections);
     try std.testing.expect(f.ctx.heap.peak <= 2 * f.ctx.heap.options.min_threshold);
     try std.testing.expect(f.ctx.heap.peak <= short + f.ctx.heap.options.min_threshold);
     // And what is left once it ends is next to nothing.
     f.ctx.collectIdle();
     try std.testing.expect(f.ctx.heap.accounted < 4096);
+}
+
+test "a loop of tail calls holds the heap to a size that does not depend on how long it runs" {
+    try expectBoundedHeapLoop(30_000, 2);
+}
+
+test "slow: a loop of two hundred thousand tail calls holds the heap to the same size" {
+    try tier.slow();
+    try expectBoundedHeapLoop(200_000, 10);
 }
 
 test "garbage is collected: the unreachable closures and frames of finished calls are freed" {
