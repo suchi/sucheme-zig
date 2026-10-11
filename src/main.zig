@@ -46,7 +46,10 @@
 //! `error: the input does not fit in 65536 bytes, newline included` を報告して、
 //! 保留を捨てる。捨てた式の残りの行は新しい入力として読まれる。その中で完結した
 //! 断片は、そのまま評価される(`set!` や `define` の副作用も起きる)。閉じていない
-//! 断片は継続行になり、構文エラーの断片はエラーを報告する。
+//! 断片は継続行になり、構文エラーの断片はエラーを報告する。上限を超えさせた行
+//! そのものも、丸ごと捨てられる。その行に、保留が閉じたあとの新しい入力になる
+//! はずだった部分があっても失われる(保留が上限の直前のとき、行 `) 7` は
+//! `)` で保留を閉じ、`7` を新しい入力にするはずだが、行ごと捨てられて `7` は評価されない)。
 //! 1行が `max_line` に収まらないときも、報告して読み飛ばし、保留を捨てる。
 //!
 //! 入力が尽きたとき、保留が残っていれば `error: unexpected end of input` を
@@ -492,6 +495,28 @@ test "repl reads the lines after a dropped expression as new input" {
     try std.testing.expectEqualStrings("error: the input does not fit in 65536 bytes, newline included\n", r.err);
     try std.testing.expectEqual(64, std.mem.count(u8, r.out, "... "));
     try std.testing.expect(std.mem.endsWith(u8, r.out, "> 7\n> \n"));
+}
+
+test "repl drops the line that goes over max_line whole, even its part after the close" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // 保留が max_line - 4 バイトのとき、行 ") 7" は改行を含めて 4 バイトで、ちょうど収まる。
+    // `)` が式を閉じて 1 を出し、7 が評価される。
+    const fits_pad = try spaces(max_line - 10);
+    defer std.testing.allocator.free(fits_pad);
+    const fits_input = try std.mem.concat(std.testing.allocator, u8, &.{ "(+ 1\n", fits_pad, "\n) 7\n" });
+    defer std.testing.allocator.free(fits_input);
+    const fits = try replOver(fits_input, &ob, &eb);
+    try std.testing.expectEqualStrings("> ... ... 1\n7\n> \n", fits.out);
+    try std.testing.expectEqualStrings("", fits.err);
+    // 保留が 1 バイト増えると同じ行が超え、行ごと捨てられる。7 は評価されない。
+    const over_pad = try spaces(max_line - 9);
+    defer std.testing.allocator.free(over_pad);
+    const over_input = try std.mem.concat(std.testing.allocator, u8, &.{ "(+ 1\n", over_pad, "\n) 7\n8\n" });
+    defer std.testing.allocator.free(over_input);
+    const over = try replOver(over_input, &ob, &eb);
+    try std.testing.expectEqualStrings("> ... ... > 8\n> \n", over.out);
+    try std.testing.expectEqualStrings("error: the input does not fit in 65536 bytes, newline included\n", over.err);
 }
 
 test "repl evaluates the finished pieces of a dropped expression" {
