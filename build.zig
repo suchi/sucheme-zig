@@ -22,7 +22,13 @@ const pinned_zig_version = @embedFile(".zigversion");
 /// rather than inconvenient. Making the reason machine-checked is recorded as an
 /// implementation-time question in docs/design/open-questions.md, to settle when
 /// the first real entry arrives.
-const test_excluded = [_][]const u8{};
+const test_excluded = [_][]const u8{
+    // The root of the wasm32-freestanding build. Its tests cannot be a native
+    // target (the file declares `extern "env"` functions the native linker does
+    // not have), and a wasm32-freestanding test runner does not compile. It is
+    // exercised by `zig build test-wasm`, which calls its exports from Node.js.
+    "src/wasm.zig",
+};
 
 /// The stage this repository has reached, as docs/roadmap.md numbers them.
 ///
@@ -229,6 +235,45 @@ pub fn build(b: *std.Build) void {
     const test_scheme_step = b.step("test-scheme", "run the Scheme behaviour tests");
     test_scheme_step.dependOn(&run_test_scheme.step);
 
+    // The WebAssembly build (docs/plans/0008-slice-1i-wasm-web-ui.md). The
+    // interpreter is a module of its own for the wasm target, because a module
+    // has one target. ReleaseSafe: Debug makes a large module with stack traces
+    // the host cannot read, and ReleaseSmall drops the checks.
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const sucheme_wasm = b.createModule(.{
+        .root_source_file = b.path("src/sucheme.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSafe,
+    });
+    sucheme_wasm.addOptions("build_options", options);
+    const wasm_exe = b.addExecutable(.{
+        .name = "sucheme",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "sucheme", .module = sucheme_wasm }},
+        }),
+    });
+    // A library of exported functions: no `main`, and the exports stay.
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+    const install_wasm = b.addInstallArtifact(wasm_exe, .{ .dest_dir = .{ .override = .{ .custom = "web" } } });
+    const wasm_step = b.step("wasm", "build web/sucheme.wasm under zig-out");
+    wasm_step.dependOn(&install_wasm.step);
+
+    // The round-trip test of the exports, run under Node.js (tools/test-wasm/).
+    // It reads the installed file, so the install step comes first; the run is
+    // not cached, because a system command with no output argument has side
+    // effects as far as the build graph can tell. checkSystemStepRuns holds the
+    // step to that shape at the end of `build`.
+    const run_test_wasm = b.addSystemCommand(&.{ "node", test_wasm_script });
+    run_test_wasm.setCwd(b.path("."));
+    run_test_wasm.addFileArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "web/sucheme.wasm" } });
+    run_test_wasm.step.dependOn(&install_wasm.step);
+    const test_wasm_step = b.step("test-wasm", "call the wasm exports from Node.js");
+    test_wasm_step.dependOn(&run_test_wasm.step);
+
     const test_step = b.step("test", "run the unit tests");
 
     var targets: std.ArrayList(TestTarget) = .empty;
@@ -272,6 +317,8 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep(),
         test_step,
         test_scheme_step,
+        wasm_step,
+        test_wasm_step,
         check_extract_step,
     };
     for (required_steps) |s| {
@@ -304,6 +351,73 @@ pub fn build(b: *std.Build) void {
     // Exactly the artifact too: an argument is how a filter or a narrower
     // directory would get in.
     checkStepRuns(test_scheme_step, test_scheme, 1);
+    // The wasm file is an argument and the script is fixed: a third argument is
+    // how a narrower selection of tests would get in.
+    checkSystemStepRuns(test_wasm_step, test_wasm_script, &install_wasm.step, 3);
+}
+
+/// The script `zig build test-wasm` hands to Node.js.
+const test_wasm_script = "tools/test-wasm/main.mjs";
+
+/// Fails the configure step unless `step` runs `node <script>` after
+/// `installed` and lets the result of that run decide whether the step succeeds.
+///
+/// `checkStepRuns` finds a run by the artifact it was built from, and a system
+/// command has none. The same edits can still empty the step: deleting
+/// `test_wasm_step.dependOn(&run_test_wasm.step)` leaves `zig build test-wasm`
+/// exiting 0 having run nothing, and `stdio = .{ .check = .empty }` keeps the
+/// run while its exit code stops being read. The run must also come after the
+/// install step, or it would test a stale file or none.
+///
+/// `want_argv` counts every argument, `node` and the script included.
+fn checkSystemStepRuns(
+    step: *std.Build.Step,
+    script: []const u8,
+    installed: *std.Build.Step,
+    want_argv: usize,
+) void {
+    var found = false;
+    for (step.dependencies.items) |dep| {
+        const run = dep.cast(std.Build.Step.Run) orelse continue;
+        if (run.producer != null) continue;
+        if (run.argv.items.len < 2) continue;
+        const arg = run.argv.items[1];
+        if (arg != .bytes or !std.mem.eql(u8, arg.bytes, script)) continue;
+        found = true;
+        // The program has to be Node.js. Swapping it for `true` left the
+        // argument count and the script name as they were, and the step
+        // exited 0 having run nothing.
+        const program = run.argv.items[0];
+        if (program != .bytes or !std.mem.eql(u8, program.bytes, "node")) {
+            std.debug.print(
+                "[sucheme] the {s} step runs {s} with a program other than node\n",
+                .{ step.name, script },
+            );
+            std.process.exit(1);
+        }
+        checkRunIsHeard(step, run);
+        if (run.argv.items.len != want_argv) {
+            std.debug.print(
+                "[sucheme] the {s} step runs {s} with {d} argument(s), not {d}\n",
+                .{ step.name, script, run.argv.items.len, want_argv },
+            );
+            std.process.exit(1);
+        }
+        var after_install = false;
+        for (run.step.dependencies.items) |d| {
+            if (d == installed) after_install = true;
+        }
+        if (!after_install) {
+            std.debug.print(
+                "[sucheme] the run of {s} in the {s} step does not wait for the install of the wasm file\n",
+                .{ script, step.name },
+            );
+            std.process.exit(1);
+        }
+    }
+    if (found) return;
+    std.debug.print("[sucheme] the {s} step does not run {s}\n", .{ step.name, script });
+    std.process.exit(1);
 }
 
 /// Fails the configure step unless `step` runs the artifact built from `exe` and
