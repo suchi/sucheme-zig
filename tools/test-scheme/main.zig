@@ -1,49 +1,52 @@
 //! Runs the Scheme behaviour tests under tests/scheme/.
 //!
-//! Run as `zig build test-scheme`. Every `*.txt` file in tests/scheme/ is read
-//! and each case in it is evaluated in-process through `sucheme.Interpreter.evalPrint`, the
-//! same entry the REPL uses, so a case exercises the reader, the evaluator and
-//! the printer together.
+//! `zig build test-scheme` で走らせる。tests/scheme/ の `*.txt` ファイルをすべて
+//! 読み、その中の各ケースを、REPL と同じ入口 `sucheme.Interpreter.evalPrint`
+//! を通してプロセス内で評価する。このため1つのケースが、リーダ、評価器、
+//! プリンタをまとめて試す。
 //!
-//! The file format:
+//! ファイルの形式は次のとおりである。
 //!
-//! - A line that is `#` alone or starts with `# ` is a comment. A bare leading
-//!   `#` is not enough, because `#t`, `#(1 2)` and `#\a` are data.
-//! - A blank line ends a case.
-//! - The first other line of a case is the input. Every line after it, up to
-//!   the blank line, is the expected output, joined with newlines.
+//! - `#` だけの行、または `# ` で始まる行はコメントである。行頭が `#` なだけでは
+//!   足りない。`#t`、`#(1 2)`、`#\a` はデータだからである。
+//! - 空行はケースを終わらせる。
+//! - ケースの最初のコメントでない行が入力である。その後ろから空行までの
+//!   各行が期待する出力で、改行でつないで1つにする。
 //!
-//! A case that prints nothing says `<no output>` as its expected line.
+//! 何も出力しないケースは、期待する行として `<no output>` と書く。
 //!
-//! An error is part of the output: after what the line printed before it, the
-//! text is `error: ` and the interpreter's message, as the REPL prints it.
+//! エラーは出力の一部である。その行がエラーより前に出力したものの後に、
+//! REPL が出すとおり、`error: ` とインタプリタのメッセージが続く。
 //!
-//! A case with an input and no expected output is reported, not skipped: a
-//! missing line would otherwise make the case compare against nothing.
+//! 入力があって期待する出力がないケースは、読み飛ばさず報告する。行が
+//! 欠けていると、そのケースは何とも比較されなくなるからである。
 //!
-//! No arguments are taken. build.zig checks that none are passed, because an
-//! argument naming a narrower directory or a filter would be the one-line way
-//! to make this step pass while running fewer cases. For the same reason an
-//! entry of tests/scheme/ that is not a `.txt` file, a file with no case and a
-//! run with no case at all are failures.
+//! 引数は取らない。build.zig が、引数が渡されていないことを検査する。より狭い
+//! ディレクトリやフィルタを指す引数は、実行するケースを減らしたままこの step を
+//! 通す、1行で済む手口になるからである。同じ理由で、tests/scheme/ の中の
+//! `.txt` でないエントリ、ケースのないファイル、ケースが1つもない実行は、
+//! 失敗とする。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
 
 const tier = @import("tier");
 
-/// Where the cases of every run are. The cases that check a scale are in the
-/// second directory, which a run reads only when asked for the slow tier
-/// (`-Dslow=true`); see docs/plans/0007-test-tiers.md.
+/// Where the cases of every run are.
+///
+/// 規模を確かめるケースは2つ目のディレクトリにある。これを読むのは、遅い段を
+/// 求められた実行(`-Dslow=true`)だけである。docs/plans/0007-test-tiers.md を
+/// 参照。
 const tests_dir = "tests/scheme";
 const slow_dir = "tests/scheme-slow";
 
-/// The expected text of a case that prints nothing, such as a definition. A
-/// case needs an expected line, so an empty output has to be written down.
-/// The value printer never writes this: a symbol with a space in it would be
-/// written with bars. Output that is not a value, such as the text `display`
-/// writes in slice 1h, can say it; when that arrives, this marker has to move
-/// to a spelling no output can have.
+/// The expected text of a case that prints nothing, such as a definition.
+///
+/// ケースには期待する行が要るので、空の出力は書き表す必要がある。値のプリンタは
+/// これを書かない。空白を含むシンボルは縦棒付きで書かれるからである。値でない
+/// 出力、たとえばスライス1h で入る `display` が書くテキストは、これと同じに
+/// なりうる。それが入るときは、この印を、どの出力にもなりえない綴りに移さ
+/// なければならない。
 const no_output = "<no output>";
 
 pub fn main(init: std.process.Init) !void {
@@ -52,8 +55,8 @@ pub fn main(init: std.process.Init) !void {
     const cwd = std.Io.Dir.cwd();
 
     var buf: [4096]u8 = undefined;
-    // Streaming, for the reason src/main.zig gives: a positional writer would
-    // overwrite the head of an appended log.
+    // src/main.zig が述べる理由でストリーミングにする。位置指定のライタは、
+    // 追記されるログの先頭を上書きしてしまう。
     var stderr = std.Io.File.Writer.initStreaming(.stderr(), io, &buf);
     const err = &stderr.interface;
 
@@ -77,9 +80,9 @@ pub fn main(init: std.process.Init) !void {
         defer dir.close(io);
         var it = dir.iterate();
         while (try it.next(io)) |entry| {
-            // Anything that is not a `.txt` file is reported, not skipped: a test
-            // saved as `0002.TXT`, `0002.scm` or inside a subdirectory would
-            // otherwise never run while the step stays green.
+            // `.txt` ファイルでないものは、読み飛ばさず報告する。`0002.TXT` や
+            // `0002.scm` として、あるいはサブディレクトリの中に保存されたテストは、
+            // 報告しなければ、step が緑のまま一度も走らない。
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) {
                 try err.print("{s}/{s}: not a `.txt` file, so its cases would never run\n", .{ dir_name, entry.name });
                 failed += 1;
@@ -87,7 +90,7 @@ pub fn main(init: std.process.Init) !void {
             }
             try names.append(gpa, try gpa.dupe(u8, entry.name));
         }
-        // Directory order differs between hosts; sorting keeps the report stable.
+        // ディレクトリの順序はホストごとに違う。ソートして報告を安定させる。
         std.mem.sort([]const u8, names.items, {}, lessThan);
 
         for (names.items) |name| {
@@ -106,8 +109,9 @@ pub fn main(init: std.process.Init) !void {
                 },
                 error.OutOfMemory => return e,
             };
-            // A file with no case is as suspect as a missing one: a comment-only
-            // file, or a format change that parses everything as comments.
+            // ケースのないファイルは、ファイルが欠けているのと同じくらい疑わしい。
+            // コメントだけのファイルや、すべてをコメントとして解析してしまう形式の
+            // 変更が考えられる。
             if (cases.items.len == 0) {
                 try err.print("{s}: no case found in this file\n", .{path});
                 failed += 1;
@@ -132,8 +136,10 @@ pub fn main(init: std.process.Init) !void {
     if (status != 0) std.process.exit(status);
 }
 
-/// The exit status for a run. Finding no case at all is a failure, because a
-/// runner that read nothing has verified nothing.
+/// The exit status for a run.
+///
+/// ケースが1つも見つからないのは失敗である。何も読まなかった実行器は、何も
+/// 検証していないからである。
 fn exitStatus(passed: usize, failed: usize) u8 {
     if (failed != 0 or passed == 0) return 1;
     return 0;
@@ -152,7 +158,9 @@ const Case = struct {
     expected: []const u8,
 };
 
-/// Splits a test file into its cases. See the file doc comment for the format.
+/// Splits a test file into its cases.
+///
+/// 形式はファイルの doc コメントを参照。
 fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) error{ OutOfMemory, MissingExpected }!void {
     var input: ?[]const u8 = null;
     var input_line: usize = 0;
@@ -164,7 +172,7 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) er
     while (true) {
         const next = lines.next();
         lineno += 1;
-        // A CRLF checkout must read the same as an LF one.
+        // CRLF でチェックアウトしたものも、LF のものと同じに読めなければならない。
         const line = if (next) |l| std.mem.trimEnd(u8, l, "\r") else "";
         if (next != null and isComment(line)) continue;
         if (line.len == 0) {
@@ -197,20 +205,22 @@ fn isComment(line: []const u8) bool {
     return std.mem.eql(u8, line, "#") or std.mem.startsWith(u8, line, "# ");
 }
 
-/// The ways every case is run. The second collects at every step of the machine
-/// for as long as a case is short, so a root the machine does not tell the
-/// collector about is freed at once and not by luck (ADR-0031); a case that
-/// passes only in the first has a bug the first hides. Both give the heap a
-/// smaller limit than the default: a recursion that never returns has to fill it
-/// before the error comes, and the limit stays above what the deepest recursion
-/// of a case needs.
+/// The ways every case is run.
+///
+/// 2つ目は、ケースが短い間、機械の1ステップごとに GC を走らせる。機械がコレクタに
+/// 知らせていないルートは、運によってではなく、すぐに解放される(ADR-0031)。
+/// 1つ目でしか通らないケースには、1つ目が隠しているバグがある。どちらも、ヒープの
+/// 上限を既定より小さくする。戻らない再帰は、エラーになる前にそれを埋めなければ
+/// ならない。一方で上限は、ケースの最も深い再帰が必要とする量より上に保つ。
 const modes = [_]struct { name: []const u8, options: sucheme.heap.Options }{
     .{ .name = "default", .options = .{ .limit = 64 * 1024 * 1024 } },
     .{ .name = "collect at every step", .options = .{ .limit = 64 * 1024 * 1024, .stress = true } },
 };
 
-/// Evaluates one case. Returns null when the output matches, and otherwise what
-/// was produced instead, so the report can show it. The caller owns the result.
+/// Evaluates one case.
+///
+/// 出力が一致すれば null を返し、そうでなければ代わりに出力されたものを返す。
+/// 報告に示すためである。結果は呼び出し側が所有する。
 fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
     return runCaseWith(gpa, modes[0].options, c);
 }
@@ -221,22 +231,22 @@ fn runCaseWith(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) e
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var interp: sucheme.Interpreter = undefined;
-    // The heap frees what the collector finds dead, so it needs an allocator that
-    // takes memory back, and `gpa` is an arena, which does not. The general
-    // purpose allocator of a debug build records a stack trace for every
-    // allocation, which makes a loop of a million calls take minutes.
+    // ヒープはコレクタが死んでいると判断したものを解放するので、メモリを返す
+    // アロケータが要る。`gpa` はアリーナであり、返さない。デバッグビルドの
+    // 汎用アロケータは確保のたびにスタックトレースを記録し、100万回の呼び出しの
+    // ループに数分かかってしまう。
     try interp.initWithOptions(std.heap.smp_allocator, options);
     defer interp.deinit();
     interp.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        // The writer allocates, so it can only fail for want of memory.
+        // ライタは確保を行うので、失敗するのはメモリ不足のときだけである。
         error.WriteFailed => return error.OutOfMemory,
-        // Printed the way the REPL prints it, after what the line wrote
-        // before it failed.
+        // REPL が出すとおりに出力する。その行が失敗する前に書いたものの後に置く。
         else => out.writer.print("error: {s}\n", .{interp.diagnostic()}) catch return error.OutOfMemory,
     };
-    // evalPrint ends every result with a newline; the expected text has none
-    // after its last line.
+    // evalPrint はすべての結果を改行で終える。期待するテキストは、最後の行の
+    // 後に改行を持たない。
+
     const got = std.mem.trimEnd(u8, out.written(), "\n");
     if (std.mem.eql(u8, got, c.expected)) return null;
     return try gpa.dupe(u8, got);
