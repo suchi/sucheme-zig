@@ -191,6 +191,7 @@ pub fn build(b: *std.Build) void {
     // Calling tool() at each use made two Compile steps from the same file.
     const check_docs = tool(b, "check-docs", .Debug);
     const extractor = tool(b, "extract-r7rs-required", .Debug);
+    const coverage = tool(b, "coverage-report", .Debug);
     // Why: the runner evaluates programs of a million steps, which a Debug
     // build takes minutes over. ReleaseSafe keeps the checks (bounds, overflow,
     // assertions) and runs the interpreter several times faster. The module
@@ -210,7 +211,10 @@ pub fn build(b: *std.Build) void {
     const tier_options = b.addOptions();
     tier_options.addOption(bool, "slow", slow);
     test_scheme.root_module.addOptions("tier", tier_options);
-    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme };
+    // 準拠マトリクスの生成器は、必須の識別子が束縛済みかをインタプリタに尋ねる。
+    // そのため、実行ファイルと同じソースに対して、ホスト向けに作る。
+    coverage.root_module.addImport("sucheme", sucheme_host);
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage };
 
     const run_check_docs = b.addRunArtifact(check_docs);
     // Run steps inherit the directory `zig build` was started from, not the
@@ -226,6 +230,22 @@ pub fn build(b: *std.Build) void {
     run_check_extract.setCwd(b.path("."));
     const check_extract_step = b.step("check-extract", "check the generated lists against the input");
     check_extract_step.dependOn(&run_check_extract.step);
+
+    // 準拠マトリクス(docs/status/conformance.md)。`check-report` はツールの既定の
+    // 動作である比較を走らせ、コミット済みのファイルがツールの生成結果と違えば
+    // 非ゼロで終わる。書き込むのは `report` だけで、`--write` を渡す。上の抽出
+    // プログラムと同じ形で、理由も同じである。比較が既定なので、引数を1つ落とした
+    // だけでは検査が書き換えに変わらない。
+    const run_check_report = b.addRunArtifact(coverage);
+    run_check_report.setCwd(b.path("."));
+    const check_report_step = b.step("check-report", "check docs/status/conformance.md against the interpreter");
+    check_report_step.dependOn(&run_check_report.step);
+
+    const run_report = b.addRunArtifact(coverage);
+    run_report.setCwd(b.path("."));
+    run_report.addArg("--write");
+    const report_step = b.step("report", "write docs/status/conformance.md");
+    report_step.dependOn(&run_report.step);
 
     // The runner takes no arguments and reads tests/scheme/ itself, so an
     // argument added here is the one way to narrow what it runs; see the
@@ -348,6 +368,9 @@ pub fn build(b: *std.Build) void {
     // Exactly the artifact: see checkStepRuns on why an argument here is the
     // one way to turn the comparison into a rewrite.
     checkStepRuns(check_extract_step, extractor, 1);
+    // 引数なしで、成果物だけを走らせる。理由は同じで、比較が生成器の既定であり、
+    // 書き込みには `--write` が要る。
+    checkStepRuns(check_report_step, coverage, 1);
     // Exactly the artifact too: an argument is how a filter or a narrower
     // directory would get in.
     checkStepRuns(test_scheme_step, test_scheme, 1);
