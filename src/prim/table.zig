@@ -7,6 +7,10 @@ const std = @import("std");
 const Primitive = @import("../value.zig").Primitive;
 const arith = @import("arith.zig");
 const pair = @import("pair.zig");
+const equiv = @import("equiv.zig");
+const boolean = @import("boolean.zig");
+const symbol = @import("symbol.zig");
+const procedure = @import("procedure.zig");
 const char = @import("char.zig");
 const string = @import("string.zig");
 const vector = @import("vector.zig");
@@ -15,6 +19,10 @@ const vector = @import("vector.zig");
 const families = [_][]const Primitive{
     &arith.primitives,
     &pair.primitives,
+    &equiv.primitives,
+    &boolean.primitives,
+    &symbol.primitives,
+    &procedure.primitives,
     &char.primitives,
     &string.primitives,
     &vector.primitives,
