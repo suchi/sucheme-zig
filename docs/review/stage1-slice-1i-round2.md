@@ -23,7 +23,8 @@
 | O6 | http で `sucheme.wasm` が 404 のとき、`file://` で開いた場合の案内が出る | `web/` の配信の整理と一緒に直す |
 | O7 | favicon が 404 になる | `web/` の整理と一緒に直す |
 | O8 | `sucheme_reset` の再初期化が確保に失敗する経路(-7)は、出力に説明を書かずに戻る。ホストは -7 だけで原因を知る。コードを読んで気づいたもので、レビュアの指摘ではない | 後のスライスで、`appendTail` で一行を残すかを決める |
+| O9 | `sucheme_reset` が `hostOptions` を使わず `limit` だけを引き継ぐ。今は `hostOptions` が `limit` しか決めないので正しいが、将来ほかの項目を決めると、reset のあとで失われる(この PR の敵対的レビュー) | `hostOptions` が項目を増やすときに、reset が `interp.ctx.heap.options` をそのまま引き継ぐ形にする |
 
 ## やり残し
 
-- 上限に届く確認(R1 の実挙動、約1分)は、`build.zig` が `-Dslow=true` のときだけ環境変数 `SUCHEME_SLOW` を渡して走らせる。`full.yml` に `zig build test-wasm -Dslow=true` の step を足した(ユーザーが 2026-10-11 に承認した)。検証コマンド表の「規模を試すもの」の行にも足した。
+- 上限に届く確認(R1 の実挙動。時間がかかる)は、`build.zig` が `-Dslow=true` のときだけ環境変数 `SUCHEME_SLOW` を渡して走らせる。`full.yml` に `zig build test-wasm -Dslow=true` の step を足した(ユーザーが 2026-10-11 に承認した)。検証コマンド表の「規模を試すもの」の行にも足した。
