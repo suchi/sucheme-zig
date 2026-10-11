@@ -20,6 +20,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | セットアップ | `scoop install zig`(`.zigversion` の値と一致することを確認する) | - | - |
 | テスト(単体) | `zig build test` | 0 | 全コミット |
 | テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 | 全コミット |
+| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` | 1 | PR を ready にするとき、`main` への push、手動 |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
 | テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
@@ -36,6 +37,15 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 `zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。引数なしの `zig build run` は標準入力を読む REPL になる。
 
 行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどのスライスで足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
+
+テストは実行の頻度で層に分ける([docs/plans/0007-test-tiers.md](docs/plans/0007-test-tiers.md))。
+
+- 編集のたび: 書き換えたファイルの `zig test src/<ファイル>.zig` と `zig fmt`。数秒から十数秒。
+- コミット前と push のたび: 表の「全コミット」の行。1 分以内を目標にする。`zig build test` と `zig build test-scheme` は、規模を試すテストを飛ばす(飛ばした数は実行の概要に出る)。
+- PR を ready にする前と `main` へのマージ前: 規模を試すテスト(`-Dslow=true`)、変更したファイルのミューテーションテスト、敵対的レビュー。
+- 定期: ファジングなど。待たない。
+
+規模を試すテスト(深さ・個数・上限に比例して壊れる種類の誤りを見るもの)は、小さい規模で同じ論理を通す縮小版を層1 に残したうえで、`tier.slow()`(単体テスト)か `tests/scheme-slow/`(Scheme のテスト)に置く。検証が目標より遅いときは、待つ前に、並行にする前に、1 件あたりの時間を測る。
 
 ## 進め方(Agentic Coding)
 
