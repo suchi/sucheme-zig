@@ -1,0 +1,151 @@
+# スライス 1k の単位 K6: 実演プログラム。
+# 1k で入った束縛(ペア、リスト、述語、整数除算、文字・文字列・ベクタの操作)と
+# `define` `lambda` `if` だけで書いたプログラムが、通しで動くことを固定する。
+# `let` `cond` `and` `or` `do` と可変長引数の `lambda` は段階3まで無いので、
+# 補助の手続きは `define` で並べる。1ケースは1行で、1つの `Interpreter` が評価する。
+# 各プリミティブの振る舞いと文言は 0017 から 0023 と 0025 が固定する。ここは、
+# それらを組み合わせたときに、結果が正しく、GC を越えても壊れないことを見る。
+# 実行器は全ケースを、1ステップごとに GC するモードでも走らせる。
+
+# 階乗。20 までは固定長整数に収まり、21 で溢れる。溢れる前に出した結果は
+# 出力に残り、エラーはそのあとに報告される。
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20) (fact 21)
+2432902008176640000
+error: integer overflow in *
+
+# 末尾再帰は反復と同じで、深さに比例した記憶を使わない。
+(define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc n)))) (loop 100000 0)
+5000050000
+
+# 末尾でない再帰は、深さの分だけ継続を作る。
+(define (sum-to n) (if (= n 0) 0 (+ n (sum-to (- n 1))))) (sum-to 10000)
+50005000
+
+# 相互再帰の末尾呼び出し。
+(define (even2? n) (if (= n 0) #t (odd2? (- n 1)))) (define (odd2? n) (if (= n 0) #f (even2? (- n 1)))) (list (even2? 100000) (odd2? 100000) (even2? 7))
+(#t #f #f)
+
+# 整数。素数の判定、べき乗(2 の 62 乗は収まり、63 乗は溢れる)、桁の和、コラッツ数列。
+(define (prime? n) (if (< n 2) #f (prime-from? n 2))) (define (prime-from? n d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (prime-from? n (+ d 1))))) (list (prime? 1) (prime? 2) (prime? 97) (prime? 91))
+(#f #t #t #f)
+
+(define (power b e) (if (= e 0) 1 (if (= (remainder e 2) 0) (power (* b b) (quotient e 2)) (* b (power b (- e 1)))))) (power 2 62)
+4611686018427387904
+
+(define (power b e) (if (= e 0) 1 (if (= (remainder e 2) 0) (power (* b b) (quotient e 2)) (* b (power b (- e 1)))))) (power 2 63)
+error: integer overflow in *
+
+(define (digit-sum n) (if (= n 0) 0 (+ (remainder n 10) (digit-sum (quotient n 10))))) (digit-sum 123456789)
+45
+
+(define (collatz n steps) (if (= n 1) steps (collatz (if (= (remainder n 2) 0) (quotient n 2) (+ (* 3 n) 1)) (+ steps 1)))) (collatz 27 0)
+111
+
+# 二重再帰。アッカーマン関数、竹内関数、ハノイの塔の手数。
+(define (ack m n) (if (= m 0) (+ n 1) (if (= n 0) (ack (- m 1) 1) (ack (- m 1) (ack m (- n 1)))))) (ack 2 3)
+9
+
+(define (tak x y z) (if (< y x) (tak (tak (- x 1) y z) (tak (- y 1) z x) (tak (- z 1) x y)) z)) (tak 12 8 4)
+5
+
+(define (hanoi n) (if (= n 0) 0 (+ 1 (* 2 (hanoi (- n 1)))))) (hanoi 20)
+1048575
+
+# リストの操作。引数に手続きを取る filter と畳み込み。
+(define (filter p xs) (if (null? xs) '() (if (p (car xs)) (cons (car xs) (filter p (cdr xs))) (filter p (cdr xs))))) (filter (lambda (x) (= (remainder x 2) 0)) (list 1 2 3 4 5 6))
+(2 4 6)
+
+(define (fold-left f acc xs) (if (null? xs) acc (fold-left f (f acc (car xs)) (cdr xs)))) (fold-left + 0 (list 1 2 3 4 5))
+15
+
+(define (fold-left f acc xs) (if (null? xs) acc (fold-left f (f acc (car xs)) (cdr xs)))) (fold-left (lambda (acc x) (cons x acc)) '() (list 1 2 3))
+(3 2 1)
+
+(define (fold-right f acc xs) (if (null? xs) acc (f (car xs) (fold-right f acc (cdr xs))))) (fold-right cons '() (list 1 2 3))
+(1 2 3)
+
+(define (compose f g) (lambda (x) (f (g x)))) ((compose (lambda (x) (* x 2)) (lambda (x) (+ x 1))) 5)
+12
+
+# 添字でたどる。範囲を超えると、`car` の型のエラーで止まる。
+(define (list-ref2 xs k) (if (= k 0) (car xs) (list-ref2 (cdr xs) (- k 1)))) (list-ref2 (list 'a 'b 'c) 2)
+c
+
+(define (list-ref2 xs k) (if (= k 0) (car xs) (list-ref2 (cdr xs) (- k 1)))) (list-ref2 (list 'a 'b 'c) 3)
+error: wrong type of argument to car
+
+(define (last xs) (if (null? (cdr xs)) (car xs) (last (cdr xs)))) (last (list 1 2 3))
+3
+
+(define (zip a b) (if (null? a) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b))))) (zip (list 1 2 3) (list 'a 'b 'c))
+((1 . a) (2 . b) (3 . c))
+
+(define (append2 a b) (if (null? a) b (cons (car a) (append2 (cdr a) b)))) (define (iota2 n) (if (= n 0) '() (append2 (iota2 (- n 1)) (list n)))) (iota2 5)
+(1 2 3 4 5)
+
+# 入れ子のリスト(木)。`pair?` で葉と枝を分ける。
+(define (append2 a b) (if (null? a) b (cons (car a) (append2 (cdr a) b)))) (define (flatten x) (if (null? x) '() (if (pair? x) (append2 (flatten (car x)) (flatten (cdr x))) (list x)))) (flatten '(1 (2 (3 4)) ((5)) ()))
+(1 2 3 4 5)
+
+(define (count-leaves t) (if (null? t) 0 (if (pair? t) (+ (count-leaves (car t)) (count-leaves (cdr t))) 1))) (count-leaves '((1 2) (3 (4 5)) 6))
+6
+
+# `equal?` を使う探索。ペアと文字列は内容で比べる。
+(define (member2 x xs) (if (null? xs) #f (if (equal? x (car xs)) xs (member2 x (cdr xs))))) (list (member2 '(b) '(a (b) c)) (member2 'z '(a b)))
+(((b) c) #f)
+
+(define (assoc2 k al) (if (null? al) #f (if (equal? k (car (car al))) (car al) (assoc2 k (cdr al))))) (assoc2 "b" '(("a" . 1) ("b" . 2)))
+("b" . 2)
+
+(define (rev xs acc) (if (null? xs) acc (rev (cdr xs) (cons (car xs) acc)))) (define (equal-rev? xs) (equal? xs (rev (rev xs '()) '()))) (list (equal-rev? (list 1 (list 2 3) "x" #(4))) (equal? (list 1 2) (rev (list 2 1) '())))
+(#t #t)
+
+# 整列。挿入ソートとクイックソート。
+(define (insert x sorted) (if (null? sorted) (list x) (if (< x (car sorted)) (cons x sorted) (cons (car sorted) (insert x (cdr sorted)))))) (define (isort xs) (if (null? xs) '() (insert (car xs) (isort (cdr xs))))) (isort (list 3 1 4 1 5 9 2 6))
+(1 1 2 3 4 5 6 9)
+
+(define (append2 a b) (if (null? a) b (cons (car a) (append2 (cdr a) b)))) (define (filter p xs) (if (null? xs) '() (if (p (car xs)) (cons (car xs) (filter p (cdr xs))) (filter p (cdr xs))))) (define (qsort xs) (if (null? xs) '() (append2 (qsort (filter (lambda (y) (< y (car xs))) (cdr xs))) (cons (car xs) (qsort (filter (lambda (y) (not (< y (car xs)))) (cdr xs))))))) (qsort (list 3 1 4 1 5 9 2 6 5 3 5))
+(1 1 2 3 3 4 5 5 5 6 9)
+
+# リストで作る二分探索木。
+(define (tree-insert t x) (if (null? t) (list x '() '()) (if (< x (car t)) (list (car t) (tree-insert (car (cdr t)) x) (car (cdr (cdr t)))) (list (car t) (car (cdr t)) (tree-insert (car (cdr (cdr t))) x))))) (define (build xs t) (if (null? xs) t (build (cdr xs) (tree-insert t (car xs))))) (build (list 5 3 8 1 4) '())
+(5 (3 (1 () ()) (4 () ())) (8 () ()))
+
+# クロージャ。`set!` で状態を持つ数え上げと、チャーチ数。
+(define (make-counter) ((lambda (n) (lambda () (set! n (+ n 1)) n)) 0)) (define c (make-counter)) (c) (c) (c)
+1
+2
+3
+
+(define (church n) (lambda (f) (lambda (x) (if (= n 0) x (f (((church (- n 1)) f) x)))))) (((church 5) (lambda (x) (+ x 1))) 0)
+5
+
+# ベクタ。`vector` で作り、添字で走査する。
+(define (v-sum v i acc) (if (= i (vector-length v)) acc (v-sum v (+ i 1) (+ acc (vector-ref v i))))) (v-sum (vector 1 2 3 4 5) 0 0)
+15
+
+(define (v->list v i) (if (= i (vector-length v)) '() (cons (vector-ref v i) (v->list v (+ i 1))))) (v->list (vector 'a 'b 'c) 0)
+(a b c)
+
+(define (v-max v i best) (if (= i (vector-length v)) best (v-max v (+ i 1) (if (> (vector-ref v i) best) (vector-ref v i) best)))) (v-max (vector 3 9 2 7) 1 (vector-ref (vector 3 9 2 7) 0))
+9
+
+(define (bsearch v x lo hi) (if (> lo hi) -1 (bsearch2 v x lo hi (quotient (+ lo hi) 2)))) (define (bsearch2 v x lo hi mid) (if (= (vector-ref v mid) x) mid (if (< (vector-ref v mid) x) (bsearch v x (+ mid 1) hi) (bsearch v x lo (- mid 1))))) (define v (vector 1 3 5 7 9 11)) (list (bsearch v 7 0 5) (bsearch v 1 0 5) (bsearch v 11 0 5) (bsearch v 4 0 5))
+(3 0 5 -1)
+
+# 文字と文字列。文字の位置で走査し、ASCII でない文字も同じに扱う。
+(define (str->list s i) (if (= i (string-length s)) '() (cons (string-ref s i) (str->list s (+ i 1))))) (str->list "aあ𐀀" 0)
+(#\a #\あ #\𐀀)
+
+(define (palindrome? s i j) (if (>= i j) #t (if (equal? (string-ref s i) (string-ref s j)) (palindrome? s (+ i 1) (- j 1)) #f))) (list (palindrome? "abcba" 0 4) (palindrome? "abca" 0 3) (palindrome? "あいあ" 0 2))
+(#t #f #t)
+
+(define (count-if p s i n) (if (= i (string-length s)) n (count-if p s (+ i 1) (if (p (string-ref s i)) (+ n 1) n)))) (count-if (lambda (c) (equal? c #\a)) "banana" 0 0)
+3
+
+# 文字の算術は、`char->integer` と `integer->char` を通す。
+(define (upcase c) (if (< 96 (char->integer c)) (if (< (char->integer c) 123) (integer->char (- (char->integer c) 32)) c) c)) (define (map-s f s i) (if (= i (string-length s)) '() (cons (f (string-ref s i)) (map-s f s (+ i 1))))) (map-s upcase "hello, World" 0)
+(#\H #\E #\L #\L #\O #\, #\space #\W #\O #\R #\L #\D)
+
+(define (caesar c k) (integer->char (+ 97 (modulo (+ (- (char->integer c) 97) k) 26)))) (list (caesar #\a 3) (caesar #\z 3) (caesar #\c -5))
+(#\d #\c #\x)
