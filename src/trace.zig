@@ -1,21 +1,20 @@
 //! What the collector follows: a walk over the fields of a heap object, made
 //! from the declaration of its type (docs/design/runtime.md, ADR-0003).
 //!
-//! Nothing here is written per type. `walk` reads `@typeInfo` and sorts every
-//! field into one of three classes, so a field added to `Frame` or `Kont` is
-//! followed without anyone remembering to say so, and a field of a kind this
-//! file does not know is a compile error and not a silent hole in the marking.
+//! 型ごとに書くものは、ここには何もない。`walk` は `@typeInfo` を読んで、すべての
+//! フィールドを3つの分類のどれかに振り分ける。そのため、`Frame` や `Kont` に足した
+//! フィールドは、誰も覚えていなくてもたどられ、このファイルが知らない種類の
+//! フィールドは、マークに黙って穴が開くのでなく、コンパイルエラーになる。
 //!
-//! - follow: a pointer to a heap object, or a value, slice or optional that
-//!   holds one. The visitor is told of the object.
-//! - symbol: a symbol id. The visitor is told of it; the symbol table is not
-//!   weak yet, so the collector ignores it, and the class is here for the slice
-//!   that makes it so.
-//! - ignore: numbers, booleans, and pointers to code or static data, which the
-//!   heap does not own.
+//! - follow: ヒープオブジェクトへのポインタ、またはそれを持つ値・スライス・
+//!   オプショナル。訪問者(visitor)にそのオブジェクトを知らせる。
+//! - symbol: シンボル ID。訪問者に知らせるが、シンボル表はまだ弱参照ではないので、
+//!   GC は無視する。この分類は、弱参照にするスライスのために置いてある。
+//! - ignore: 数値、真偽値、コードや静的データへのポインタ。ヒープはこれらを所有
+//!   しない。
 //!
-//! A pointer is sorted by what it points to. The types it knows are listed in
-//! `Spec`; src/value.zig lists the real ones, beside the layouts.
+//! ポインタは、指す先の型で振り分ける。知っている型は `Spec` に挙げる。実際の型は、
+//! レイアウトの隣の src/value.zig に挙げてある。
 
 const std = @import("std");
 const value_mod = @import("value.zig");
@@ -47,7 +46,8 @@ pub const Spec = struct {
 pub fn Tracer(comptime spec: Spec) type {
     return struct {
         /// The class of a field of type `T`, or null when the walk does not know
-        /// how to sort it. `walk` turns null into a compile error.
+        /// how to sort it.
+        /// `walk` は null をコンパイルエラーにする。
         pub fn classify(comptime T: type) ?Class {
             return classifyAt(T, "", false);
         }
@@ -175,8 +175,8 @@ fn addr(pointer: anytype) usize {
     return @intFromPtr(pointer);
 }
 
-// The sets below are written out by hand, apart from the rule that produces them:
-// a walk that dropped a field, or followed one it should not, differs from them.
+// 以下の集合は、それを導く規則とは別に、手で書き下してある。フィールドを落とした
+// walk や、たどるべきでないものをたどった walk は、これらと食い違う。
 
 test "a pair is followed through both of its halves, whatever they hold" {
     var a: Pair = .{ .car = .fromFixnum(0), .cdr = .empty_list_value };
@@ -185,7 +185,7 @@ test "a pair is followed through both of its halves, whatever they hold" {
     var r: Recorder = .{};
     interpreter.children(&r, Pair, &pair);
     try r.expect(&.{ addr(&a), addr(&b) });
-    // A half that is not a heap object is not reported.
+    // ヒープオブジェクトでない半分は報告されない。
     const flat: Pair = .{ .car = .fromFixnum(1), .cdr = .fromSymbol(@fromBackingInt(@intCast(7))) };
     var q: Recorder = .{};
     interpreter.children(&q, Pair, &flat);
@@ -215,7 +215,7 @@ test "a frame is followed through its slots and its parent" {
     const frame: Frame = .{ .values = &slots, .parent = &outer };
     var r: Recorder = .{};
     interpreter.children(&r, Frame, &frame);
-    // The slots in order, then the parent.
+    // スロットを順に、その後に親。
     try r.expect(&.{ addr(&p), addr(&c), addr(&outer) });
 }
 
@@ -233,7 +233,7 @@ test "a continuation frame is followed through its link, its environment and its
     interpreter.children(&r, Kont, &waiting);
     try r.expect(&.{ addr(&rest), addr(&env), addr(&arg) });
 
-    // The other steps hold code only, so only the link and the environment count.
+    // 他のステップはコードしか持たないので、リンクと環境だけが数えられる。
     const branching: Kont = .{ .next = &rest, .env = &env, .depth = 2, .step = .{ .branch = &condition } };
     var q: Recorder = .{};
     interpreter.children(&q, Kont, &branching);
@@ -260,7 +260,7 @@ test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Kont).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Args).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Value).?);
-    // Code and the plain data around it are never followed.
+    // コードと、その周りの単純なデータは、決してたどられない。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*value_mod.Condition).?);
@@ -272,8 +272,8 @@ test "the classes of the real types" {
 }
 
 test "a type the walk cannot sort has no class" {
-    // `walk` turns this into a compile error naming the field; here the same
-    // question is asked in a way a test can answer.
+    // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
+    // テストが答えられる形で行う。
     const unsorted = [_]type{
         *u8, // a pointer to something that is neither heap nor code
         [*]Pair, // a pointer with no length
@@ -290,25 +290,25 @@ test "a spec of its own sorts pointers by the types it lists" {
     const Branch = struct { left: ?*Leaf, label: *const u8 };
     const Mine = Tracer(.{ .heap = &.{Leaf}, .code = &.{u8}, .symbol = SymbolId });
     try std.testing.expectEqual(Class.follow, comptime Mine.classify(Branch).?);
-    // The same type under a spec that lists no heap types has a pointer it cannot sort.
+    // ヒープ型を挙げない spec のもとでは、同じ型が、分類できないポインタを持つ。
     const Other = Tracer(.{ .heap = &.{}, .code = &.{u8}, .symbol = SymbolId });
     try std.testing.expect(comptime Other.classify(Branch) == null);
 }
 
 test "of the code types only the node holds values, which the context's constants stand in for" {
-    // The collector does not follow a pointer to code. That is safe while no code
-    // type holds a heap object, and `Node` is the one that does (a constant), so
-    // the context keeps those constants itself. A value added to any other code
-    // type would be missed without a word, and this is where it shows.
+    // GC はコードへのポインタをたどらない。これが安全なのは、コードの型がヒープ
+    // オブジェクトを持たない間だけである。持つのは `Node`(定数)で、そのためコンテキスト
+    // がそれらの定数を自分で保持する。他のコード型に値を足すと、何も言わずに見落とされる。
+    // そのことがここで表に出る。
     inline for (value_mod.code_types) |T| {
         const class = comptime interpreter.classify(T);
         if (T == value_mod.Node) {
             try std.testing.expectEqual(Class.follow, class.?);
         } else if (T == value_mod.Primitive) {
-            // A Zig function pointer, which the walk has no class for and never walks.
+            // Zig の関数ポインタ。walk にはその分類がなく、たどることもない。
             try std.testing.expect(class == null);
         } else {
-            // A symbol id is allowed: names are not collected yet. A heap object is not.
+            // シンボル ID は許す。名前はまだ回収されない。ヒープオブジェクトは許さない。
             try std.testing.expect(class.? != .follow);
         }
     }
