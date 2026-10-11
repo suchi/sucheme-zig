@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0002](../adr/0002-value-representation.md), [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0008](../adr/0008-string-representation.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1h)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-10
-- 状態: 実装済み、PR のレビュー待ち(2026-10-10)。「合意を求める点」の3つは、いずれも勧める案で合意した
+- 状態: 実装済み、[#24](https://github.com/suchi/sucheme-zig/pull/24) で `main` にマージ済み(2026-10-11)。「合意を求める点」の3つは、いずれも勧める案で合意した
 
 ## 解こうとしている問題
 
@@ -189,5 +189,4 @@ ADR-0027 の費用側の停止の規則に従い、先に線を引く。レビ�
 
 ## 次にやること
 
-1. この PR のレビューとマージ。
-2. マージ後、スライス 1i(ブラウザで `(fact 10)` が動く)の計画書を書く。計画は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正。
+1h は完了している。次のスライス 1i(ブラウザで `(fact 10)` が動く)は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) が計画で、進捗は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正。

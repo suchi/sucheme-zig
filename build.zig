@@ -155,7 +155,8 @@ pub fn build(b: *std.Build) void {
     // a million steps) take most of the time of a run and find the faults that
     // grow with the size of the input. They run with `-Dslow=true`; the run of
     // every commit leaves them out and keeps a smaller twin of each
-    // (docs/plans/0007-test-tiers.md). A skipped test is counted in the summary.
+    // (docs/plans/0007-test-tiers.md). The count of skipped tests is in the
+    // summary of `zig build test --summary all`.
     const slow = b.option(bool, "slow", "also run the tests that check a scale (slow)") orelse false;
 
     const options = b.addOptions();
