@@ -9,6 +9,7 @@
 // テスト同士が状態を共有しない。
 
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 
 const wasmPath = process.argv[2];
@@ -99,10 +100,13 @@ test("version string is not empty", () => {
   assert.match(text, /\S/);
 });
 
-test("before init: eval_begin and reset return not_initialized", () => {
+test("before init: eval_begin and reset return not_initialized and say why", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_eval_begin(0, 0), NOT_INITIALIZED);
+  assert.match(h.output(), /not initialized/);
+  h.x.sucheme_output_clear();
   assert.equal(h.x.sucheme_reset(), NOT_INITIALIZED);
+  assert.match(h.output(), /not initialized/);
 });
 
 test("before init: alloc returns 0 and the output is empty", () => {
@@ -111,10 +115,11 @@ test("before init: alloc returns 0 and the output is empty", () => {
   assert.equal(h.x.sucheme_output_len(), 0);
 });
 
-test("init returns ok once and wrong_order the second time", () => {
+test("init returns ok once and wrong_order, with the reason, the second time", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_init(0), OK);
   assert.equal(h.x.sucheme_init(0), WRONG_ORDER);
+  assert.match(h.output(), /sucheme_init was called twice/);
 });
 
 test("factorial of 10 prints 3628800", () => {
@@ -152,9 +157,11 @@ test("invalid UTF-8 returns -3 with the position, and leaves the state unchanged
   assert.deepEqual(h.run("kept"), [OK, "42\n"]);
 });
 
-test("a region that was not allocated returns -8", () => {
+test("a region that was not allocated returns -8 and says so in the output", () => {
   const h = instantiate().init();
   assert.equal(h.x.sucheme_eval_begin(1, 4), BAD_REGION);
+  assert.match(h.output(), /region was not returned by sucheme_alloc/);
+  h.x.sucheme_output_clear();
   const ptr = h.x.sucheme_alloc(4);
   assert.notEqual(ptr, 0);
   assert.equal(h.x.sucheme_eval_begin(ptr, 5), BAD_REGION); // 確保した長さを超える
@@ -258,6 +265,30 @@ test("a tail-recursive loop of 100000 iterations completes", () => {
   const [status, text] = h.run("(define (loop n) (if (= n 0) 'done (loop (- n 1)))) (loop 100000)");
   assert.equal(status, OK);
   assert.equal(text, "done\n");
+});
+
+test("a region allocated before reset is still the host's: it can be used and freed", () => {
+  const h = instantiate().init();
+  const source = new TextEncoder().encode("(+ 1 2)");
+  const ptr = h.x.sucheme_alloc(source.length);
+  assert.notEqual(ptr, 0);
+  h.bytes(ptr, source.length).set(source);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.equal(h.x.sucheme_eval_begin(ptr, source.length), OK);
+  assert.equal(h.output(), "3\n");
+  // free は panic しない。リセットが領域の記録を捨てていると、ここで trap する。
+  h.x.sucheme_free(ptr, source.length);
+});
+
+// web/serve.mjs の自己検査(パストラバーサルなど)は、ほかの検証コマンドに結ばれていないので、
+// ここから走らせる。
+test("web/serve.mjs --self-test passes", () => {
+  const script = new URL("../../web/serve.mjs", import.meta.url);
+  const r = spawnSync(process.execPath, [script.pathname.replace(/^\/([A-Za-z]:)/, "$1"), "--self-test"], {
+    encoding: "utf8",
+  });
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /self-test passed/);
 });
 
 let passed = 0;
