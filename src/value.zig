@@ -223,11 +223,52 @@ pub const Pair = struct {
 };
 
 /// A string: its characters as UTF-8, which the creator guarantees is valid
-/// (ADR-0008).
+/// (ADR-0008), and whether all of them are ASCII.
 /// バイト列は、ヒープが所有し、計上するペイロードである。
 pub const String = struct {
     bytes: []u8,
+    /// Whether every character is ASCII, so that character `n` is byte `n`.
+    /// 文字列を作る `Heap.createString` の1か所だけが計算する。ここで既定値を持たない
+    /// のは、計算し忘れた作り方が、黙って誤った答えを返すのを避けるためである。
+    /// GC の走査にも、ヒープの計上にも関わらない(計上するのはバイト列の長さである)。
+    is_ascii: bool,
+
+    /// The number of characters, which is the number of bytes when they are all
+    /// ASCII.
+    /// ASCII だけなら定数時間で、そうでなければ UTF-8 の先頭バイトを数える。
+    pub fn length(self: *const String) usize {
+        if (self.is_ascii) return self.bytes.len;
+        var count: usize = 0;
+        for (self.bytes) |b| {
+            // 後続バイト(0b10xxxxxx)は文字の途中なので数えない。
+            if (b & 0xC0 != 0x80) count += 1;
+        }
+        return count;
+    }
+
+    /// The character at `index`, counted in characters, or null when `index` is
+    /// not less than `length`.
+    /// ASCII だけなら添字がそのままバイトの位置で、そうでなければ先頭から走査する。
+    pub fn charAt(self: *const String, index: usize) ?u21 {
+        if (self.is_ascii) {
+            if (index >= self.bytes.len) return null;
+            return self.bytes[index];
+        }
+        var it = std.unicode.Utf8View.initUnchecked(self.bytes).iterator();
+        var skipped: usize = 0;
+        while (skipped < index) : (skipped += 1) _ = it.nextCodepointSlice() orelse return null;
+        return it.nextCodepoint();
+    }
 };
+
+/// Whether every byte of `bytes` is ASCII.
+/// 妥当な UTF-8 では、最上位ビットが立つバイトがあれば、ASCII でない文字がある。
+pub fn allAscii(bytes: []const u8) bool {
+    for (bytes) |b| {
+        if (b >= 0x80) return false;
+    }
+    return true;
+}
 
 /// A vector: its elements in order.
 /// 要素は、ヒープが所有し、計上するペイロードで、GC はそれをたどる。
@@ -540,7 +581,7 @@ test "isScalarValue refuses the surrogates and what is past the range" {
 
 test "a string and a vector are heap objects, each answering to its own accessor" {
     var bytes = [_]u8{ 'h', 'i' };
-    var s: String = .{ .bytes = &bytes };
+    var s: String = .{ .bytes = &bytes, .is_ascii = true };
     const sv: Value = .fromString(&s);
     try std.testing.expectEqual(Kind.string, sv.kind());
     try std.testing.expectEqualStrings("hi", sv.asString().?.bytes);
@@ -554,6 +595,44 @@ test "a string and a vector are heap objects, each answering to its own accessor
     try std.testing.expect(vv.pointsIntoHeap());
     try std.testing.expect(vv.asString() == null);
     try std.testing.expect(vv.isTrue() and sv.isTrue());
+}
+
+test "allAscii looks at every byte" {
+    try std.testing.expect(allAscii(""));
+    try std.testing.expect(allAscii("abc\x00\x7f"));
+    try std.testing.expect(!allAscii("\x80"));
+    try std.testing.expect(!allAscii("abc\xff"));
+    try std.testing.expect(!allAscii("あ"));
+    try std.testing.expect(!allAscii("abcdefghijklあ"));
+}
+
+test "a string counts and indexes its characters, not its bytes" {
+    const Case = struct { text: []const u8, characters: []const u21 };
+    const cases = [_]Case{
+        .{ .text = "", .characters = &.{} },
+        .{ .text = "a", .characters = &.{'a'} },
+        .{ .text = "abc", .characters = &.{ 'a', 'b', 'c' } },
+        .{ .text = "あいう", .characters = &.{ 0x3042, 0x3044, 0x3046 } },
+        .{ .text = "aあb", .characters = &.{ 'a', 0x3042, 'b' } },
+        // 1バイトから4バイトまでの文字が混ざる。
+        .{ .text = "aλあ𐀀z", .characters = &.{ 'a', 0x3BB, 0x3042, 0x10000, 'z' } },
+        .{ .text = "𐀀𐀀", .characters = &.{ 0x10000, 0x10000 } },
+        .{ .text = "\u{80}\u{7ff}\u{800}\u{ffff}\u{10ffff}", .characters = &.{ 0x80, 0x7FF, 0x800, 0xFFFF, 0x10FFFF } },
+    };
+    for (cases) |c| {
+        var bytes: [64]u8 = undefined;
+        @memcpy(bytes[0..c.text.len], c.text);
+        // 本来のフラグ(ASCII だけなら立つ)と、立てない場合の両方の経路が同じ答えを返す。
+        // ASCII の文字列で立てないのは、走査の経路を試すためである。
+        for ([_]bool{ allAscii(c.text), false }) |flag| {
+            const s: String = .{ .bytes = bytes[0..c.text.len], .is_ascii = flag };
+            try std.testing.expectEqual(c.characters.len, s.length());
+            for (c.characters, 0..) |ch, i| try std.testing.expectEqual(ch, s.charAt(i).?);
+            try std.testing.expectEqual(null, s.charAt(c.characters.len));
+            try std.testing.expectEqual(null, s.charAt(c.characters.len + 1));
+            try std.testing.expectEqual(null, s.charAt(std.math.maxInt(usize)));
+        }
+    }
 }
 
 test "each kind answers only to its own accessor" {
