@@ -251,13 +251,14 @@ pub const Heap = struct {
 
     /// A new string of a copy of `bytes`, which must be valid UTF-8 (ADR-0008).
     /// コピーがペイロードで、先に確保し、セルを確保できなければ返す。
-    /// `createFrame` と同じである。
+    /// `createFrame` と同じである。ASCII 判定のフラグを計算するのも、ここである。
     pub fn createString(self: *Heap, bytes: []const u8) Error!*String {
         const total = try self.reserveWithPayload(String, bytes.len, 1);
         const copy = try self.backing.dupe(u8, bytes);
         errdefer self.backing.free(copy);
         const cell = try self.backing.create(Cell(String));
-        cell.value = .{ .bytes = copy };
+        // 文字列を作る経路はすべてここを通るので、フラグの計算はここだけにある。
+        cell.value = .{ .bytes = copy, .is_ascii = value_mod.allAscii(copy) };
         self.link(String, cell, total);
         return &cell.value;
     }
@@ -556,6 +557,51 @@ test "a string accounts for its bytes as well as its cell, and keeps a copy of t
     const empty = try heap.createString("");
     try std.testing.expectEqual(0, empty.bytes.len);
     try std.testing.expectEqual(cellBytes(String) * 2 + 3, heap.accounted);
+}
+
+test "createString records whether every character of the string is ASCII" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const cases = [_]struct { text: []const u8, ascii: bool }{
+        .{ .text = "", .ascii = true },
+        .{ .text = "a", .ascii = true },
+        .{ .text = "hello, world", .ascii = true },
+        // 0 と DEL は ASCII である。
+        .{ .text = "\x00\x7f", .ascii = true },
+        .{ .text = "あ", .ascii = false },
+        // 最小の非 ASCII 文字(U+0080、2バイト)。
+        .{ .text = "\u{80}", .ascii = false },
+        .{ .text = "𐀀", .ascii = false },
+        // 非 ASCII の文字が、先頭、途中、末尾のどこにあっても見つける。
+        .{ .text = "あabcdefghijklmnop", .ascii = false },
+        .{ .text = "abcdefgあhijklmnop", .ascii = false },
+        .{ .text = "abcdefghijklmnopあ", .ascii = false },
+    };
+    for (cases) |c| {
+        const s = try heap.createString(c.text);
+        try std.testing.expectEqualStrings(c.text, s.bytes);
+        try std.testing.expectEqual(c.ascii, s.is_ascii);
+    }
+}
+
+test "the ASCII flag changes neither the account nor what a collection keeps" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    // 計上するのはバイト列の長さで、文字の数ではない。
+    const wide = try heap.createString("あいう");
+    try std.testing.expectEqual(cellBytes(String) + 9, heap.accounted);
+    const narrow = try heap.createString("abc");
+    try std.testing.expectEqual(cellBytes(String) * 2 + 9 + 3, heap.accounted);
+    _ = try heap.createString("dropped あ");
+    heap.collect(TestRoots{ .values = &.{ .fromString(wide), .fromString(narrow) } });
+    try std.testing.expectEqual(2, heap.count);
+    try std.testing.expectEqual(cellBytes(String) * 2 + 9 + 3, heap.accounted);
+    try std.testing.expectEqualStrings("あいう", wide.bytes);
+    try std.testing.expect(!wide.is_ascii);
+    try std.testing.expectEqualStrings("abc", narrow.bytes);
+    try std.testing.expect(narrow.is_ascii);
+    try std.testing.expectEqual(3, wide.length());
+    try std.testing.expectEqual(3, narrow.length());
 }
 
 test "a vector accounts for its elements as well as its cell, and keeps a copy of them" {
