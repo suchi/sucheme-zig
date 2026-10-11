@@ -317,6 +317,8 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep(),
         test_step,
         test_scheme_step,
+        wasm_step,
+        test_wasm_step,
         check_extract_step,
     };
     for (required_steps) |s| {
@@ -382,6 +384,17 @@ fn checkSystemStepRuns(
         const arg = run.argv.items[1];
         if (arg != .bytes or !std.mem.eql(u8, arg.bytes, script)) continue;
         found = true;
+        // The program has to be Node.js. Swapping it for `true` left the
+        // argument count and the script name as they were, and the step
+        // exited 0 having run nothing.
+        const program = run.argv.items[0];
+        if (program != .bytes or !std.mem.eql(u8, program.bytes, "node")) {
+            std.debug.print(
+                "[sucheme] the {s} step runs {s} with a program other than node\n",
+                .{ step.name, script },
+            );
+            std.process.exit(1);
+        }
         checkRunIsHeard(step, run);
         if (run.argv.items.len != want_argv) {
             std.debug.print(
