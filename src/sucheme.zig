@@ -164,7 +164,9 @@ test "isBound answers for the primitives, the special forms and nothing else" {
     for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!" }) |keyword| {
         try std.testing.expect(interp.isBound(keyword));
     }
-    try std.testing.expect(!interp.isBound("car"));
+    // Why: 未束縛の例は、プリミティブが増えても束縛されない名前にする。`call/cc` は
+    // 段階2で入る(`car` はスライス 1k で束縛された)。
+    try std.testing.expect(!interp.isBound("call/cc"));
     try std.testing.expect(!interp.isBound("frobnicate"));
     try std.testing.expect(!interp.isBound(""));
     // 名前の綴りが完全に一致するものだけを束縛済みとする。
