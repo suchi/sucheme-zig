@@ -85,6 +85,16 @@ flowchart TB
 3. R7RS の該当節を `Why:` コメントで引く(非自明な振る舞いの場合)。
 4. `tests/r7rs-required/` の一覧に含まれる識別子なら、準拠マトリクスの数値が動くことを確認する(マトリクスは段階3から生成される)。
 
+### Web UI をローカルで開く
+
+`file://` ではブラウザが wasm と Worker を読ませないので、小さなサーバ経由で開く([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。Node.js だけが要り、依存パッケージはない。
+
+1. `zig build wasm` で `zig-out/web/sucheme.wasm` を作る。
+2. `node web/serve.mjs` で起動する。既定のポートは 8000 で、`node web/serve.mjs 8080` のように変えられる。`127.0.0.1` だけで待ち受ける。
+3. 標準出力に出る `http://127.0.0.1:<ポート>/` をブラウザで開く。
+
+PR の成果物の zip は、スライス 1j で添付する予定である([plans/0009-slice-1j-release-v0-1-0.md](plans/0009-slice-1j-release-v0-1-0.md))。添付されたら、展開したディレクトリで `node serve.mjs` を実行すれば開ける(Zig もリポジトリも要らない)。
+
 ### 派生構文を追加する
 
 Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md))。`lib/sucheme/derived.scm` に `syntax-rules` で定義し、衛生性を壊していないかを確認するテストを添える。
