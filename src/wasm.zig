@@ -84,17 +84,13 @@ fn addressOf(bytes: []const u8) u32 {
 /// Initializes the interpreter.
 /// `heap_limit_bytes` は GC ヒープの計上の上限である(0 なら既定)。
 ///
-/// 1 GiB を超える値は 1 GiB に丸める(`heap.max_host_limit`)。
+/// 1 GiB を超える値は 1 GiB に丸める(`heap.hostOptions`、`heap.max_host_limit`)。
 export fn sucheme_init(heap_limit_bytes: u32) i32 {
     if (initialized) {
         appendTail(&out, output, "error: sucheme_init was called twice\n");
         return Status.wrong_order;
     }
-    const options: sucheme.heap.Options = if (heap_limit_bytes == 0)
-        .{}
-    else
-        .{ .limit = sucheme.heap.clampHostLimit(heap_limit_bytes) };
-    interp.initWithOptions(allocator, options) catch {
+    interp.initWithOptions(allocator, sucheme.heap.hostOptions(heap_limit_bytes)) catch {
         appendTail(&early, &early_buffer, "error: out of memory while initializing\n");
         return Status.out_of_memory;
     };
