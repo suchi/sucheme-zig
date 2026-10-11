@@ -38,5 +38,21 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.17.0
+          use-cache: false
+      # Why: the Zig cache is kept by this step and not by setup-zig
+      # (use-cache: false above). setup-zig saves the cache at the end of every
+      # run, whatever its result, under a new key, and a restore takes the newest
+      # entry without checking it. A run cancelled while the cache was still
+      # being unpacked saved the half-unpacked directory, every later run
+      # restored it and failed, and each failed run saved it again
+      # (docs/adr/0032-ci-zig-cache-saved-only-by-successful-runs.md).
+      #
+      # actions/cache saves only when the job succeeded and only when this exact
+      # key was missing. The key holds what decides the cache's contents, so the
+      # number of entries stays small. To throw the cache away, change v1.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .zig-cache
+          key: zig-cache-v1-${{ runner.os }}-${{ hashFiles('.zigversion', 'build.zig', 'build.zig.zon') }}
       - run: zig build test -Dslow=true --summary all
       - run: zig build test-scheme -Dslow=true
