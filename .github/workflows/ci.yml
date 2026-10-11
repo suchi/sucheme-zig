@@ -79,5 +79,7 @@ jobs:
       - run: zig build
       - run: zig build test --summary all
       - run: zig build test-scheme
+      - run: zig build wasm
+      - run: zig build test-wasm
       - run: zig build check-docs
       - run: zig build check-extract

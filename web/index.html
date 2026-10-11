@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>sucheme</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <h1>sucheme <small id="version" aria-label="バージョン">読み込み中…</small></h1>
+
+    <form id="form" autocomplete="off">
+      <label for="source">入力(Scheme の式)</label>
+      <textarea id="source" name="source" rows="8" spellcheck="false" autocapitalize="off" autocorrect="off">(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+(fact 10)</textarea>
+
+      <div class="actions">
+        <button type="submit" id="run" class="primary" disabled>実行</button>
+        <button type="button" id="stop" class="danger" disabled>停止</button>
+        <button type="button" id="reset" disabled>リセット</button>
+        <span class="hint">Ctrl+Enter(Mac は Cmd+Enter)でも実行できます</span>
+      </div>
+    </form>
+
+    <h2 id="output-label">出力</h2>
+    <pre id="output" aria-labelledby="output-label" aria-live="polite" data-status="idle">WebAssembly を読み込んでいます…</pre>
+  </main>
+
+  <script>
+    // file:// では、モジュールスクリプトも Worker も WASM も取得できない。
+    // app.js が動かない場合でも案内が出るように、読み込みに頼らない classic script で書く。
+    if (location.protocol === "file:") {
+      var out = document.getElementById("output");
+      out.textContent = "ローカルのサーバ経由で開いてください: node web/serve.mjs";
+      out.setAttribute("data-status", "error");
+      document.getElementById("version").textContent = "未接続";
+    }
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
