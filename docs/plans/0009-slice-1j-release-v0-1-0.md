@@ -319,7 +319,7 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 テストの層([0007](0007-test-tiers.md))の割り当て。
 
 - 層1(全コミット): `zig fmt --check .`、`zig build`、`zig build test`、`zig build test-scheme`、`zig build check-docs`、`zig build check-extract`。1i が足す `zig build wasm` と `zig build test-wasm` も同じ層に入る。リーダのファジングのテストは初期入力だけで通るので、ここに入る。
-- 層2(PR を準備完了にする前、`main` へのマージ前): `-Dslow=true` の2つ。`dist` とアーカイブの組み立てのリハーサル(`full.yml`)。変更したファイルのミューテーションテスト(新しい純粋な判定を足したとき)。敵対的レビュー。aarch64 の実行はしない(問い2)。
+- 層2(PR を準備完了にする前、`main` へのマージ前): AGENTS.md の表の「規模を試すもの」の行。`dist` とアーカイブの組み立てのリハーサル(`full.yml`)。変更したファイルのミューテーションテスト(新しい純粋な判定を足したとき)。敵対的レビュー。aarch64 の実行はしない(問い2)。
 - 層3(定期): `fuzz.yml`。
 - 手作業の確認(PR に結果を貼る): ファジングの失敗検出(仕込んだ失敗で、`f/crash` の検査の手順が失敗すること。実装の前に、今回の合成のテストで同じ形を確かめてある)。PR の成果物を展開して `node serve.mjs` で開き、`(fact 10)`。リリースの下書きから成果物を落として `sha256sum -c`、x86_64 Linux の実行ファイルで `--version` と `(fact 10)`。
 
