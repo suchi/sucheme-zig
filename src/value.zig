@@ -208,6 +208,43 @@ pub const Value = union(enum) {
             else => true,
         };
     }
+
+    /// Whether `a` and `b` are the same value in the sense of `eqv?` (R7RS 6.1).
+    /// 整数・真偽値・空リスト・シンボル・文字は値で比べ、ペア・文字列・ベクタ・手続き
+    /// は同じオブジェクトかで比べる。種別が違えば偽である。内容が同じ別々のペアや
+    /// 文字列は偽で、それを比べるのは `equal?` である。値の表現を隠すため、この
+    /// ファイルの外は共用体のタグを見ずにこれを使う。
+    ///
+    /// 空の文字列と空のベクタは、R7RS が未規定とするので、同一性で比べる。
+    pub fn isEqv(a: Value, b: Value) bool {
+        return switch (a) {
+            .fixnum => |x| b.asFixnum() == x,
+            .boolean => |x| switch (b) {
+                .boolean => |y| x == y,
+                else => false,
+            },
+            .empty_list => b.kind() == .empty_list,
+            .symbol => |x| b.asSymbol() == x,
+            .character => |x| b.asCharacter() == x,
+            .unspecified => b.kind() == .unspecified,
+            .uninitialized => b.kind() == .uninitialized,
+            .pair => |x| b.asPair() == x,
+            .string => |x| b.asString() == x,
+            .vector => |x| b.asVector() == x,
+            .primitive => |x| b.asPrimitive() == x,
+            .closure => |x| b.asClosure() == x,
+            .condition => |x| b.asCondition() == x,
+        };
+    }
+
+    /// Whether `a` and `b` are the same value in the sense of `eq?` (R7RS 6.1).
+    ///
+    /// Why: R7RS 6.1 は、数と文字の `eq?` を実装依存とし、真を返してよいのは `eqv?` が
+    /// 真のときだけとする。段階1の数は固定長整数だけなので、`eqv?` と同じ関数でよい。
+    /// 段階4で数の種類が増えて `eqv?` が分かれたとき、`eq?` はここで別に決める。
+    pub fn isEq(a: Value, b: Value) bool {
+        return a.isEqv(b);
+    }
 };
 
 /// The object an error is.
@@ -707,4 +744,124 @@ test "a primitive takes the numbers of arguments from its minimum to its maximum
     const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .call = &nop };
     try std.testing.expect(max.acceptsCount(255));
     try std.testing.expect(!max.acceptsCount(256));
+}
+
+/// One of each kind of value, and a second distinct object for each kind that
+/// lives in a place. The tests of `isEqv` compare every pair of them.
+const Samples = struct {
+    pair_a: Pair = .{ .car = .{ .fixnum = 1 }, .cdr = .empty_list },
+    // 中身が pair_a と同じで、別の場所にある。
+    pair_b: Pair = .{ .car = .{ .fixnum = 1 }, .cdr = .empty_list },
+    bytes_a: [2]u8 = .{ 'h', 'i' },
+    bytes_b: [2]u8 = .{ 'h', 'i' },
+    string_a: String = undefined,
+    string_b: String = undefined,
+    items_a: [1]Value = .{.{ .fixnum = 1 }},
+    items_b: [1]Value = .{.{ .fixnum = 1 }},
+    vector_a: Vector = undefined,
+    vector_b: Vector = undefined,
+    prim_a: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .call = &nop },
+    prim_b: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .call = &nop },
+    body: Node = .{ .constant = .unspecified },
+    lambda: Lambda = undefined,
+    closure_a: Closure = undefined,
+    closure_b: Closure = undefined,
+    condition_a: Condition = .{ .message = "m" },
+    condition_b: Condition = .{ .message = "m" },
+
+    fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
+        return .unspecified_value;
+    }
+
+    /// Fills in what points into the struct itself. The struct must not move
+    /// after this.
+    fn link(self: *Samples) void {
+        self.string_a = .{ .bytes = &self.bytes_a, .is_ascii = true };
+        self.string_b = .{ .bytes = &self.bytes_b, .is_ascii = true };
+        self.vector_a = .{ .items = &self.items_a };
+        self.vector_b = .{ .items = &self.items_b };
+        self.lambda = .{ .arity = 0, .frame_size = 0, .body = &self.body };
+        self.closure_a = .{ .lambda = &self.lambda, .env = null };
+        self.closure_b = .{ .lambda = &self.lambda, .env = null };
+    }
+
+    /// Every sample, each different from all the others in the sense of `eqv?`.
+    fn all(self: *Samples) [26]Value {
+        return .{
+            .fromFixnum(0),
+            .fromFixnum(1),
+            .fromFixnum(97),
+            .fromFixnum(std.math.maxInt(i64)),
+            .fromFixnum(std.math.minInt(i64)),
+            .fromBool(true),
+            .fromBool(false),
+            .empty_list_value,
+            .fromSymbol(@fromBackingInt(@intCast(0))),
+            .fromSymbol(@fromBackingInt(@intCast(1))),
+            .unspecified_value,
+            .uninitialized_value,
+            .fromCharacter('a'),
+            .fromCharacter('b'),
+            .{ .pair = &self.pair_a },
+            .{ .pair = &self.pair_b },
+            .fromString(&self.string_a),
+            .fromString(&self.string_b),
+            .fromVector(&self.vector_a),
+            .fromVector(&self.vector_b),
+            .fromPrimitive(&self.prim_a),
+            .fromPrimitive(&self.prim_b),
+            .fromClosure(&self.closure_a),
+            .fromClosure(&self.closure_b),
+            .fromCondition(&self.condition_a),
+            .fromCondition(&self.condition_b),
+        };
+    }
+};
+
+test "a value is eqv? to itself and to nothing else among the samples" {
+    var s: Samples = .{};
+    s.link();
+    const all = s.all();
+    for (all, 0..) |a, i| {
+        for (all, 0..) |b, j| {
+            try std.testing.expectEqual(i == j, a.isEqv(b));
+        }
+    }
+}
+
+test "values of the kinds that are compared by what they are are eqv? when built apart" {
+    try std.testing.expect(Value.fromFixnum(-7).isEqv(.fromFixnum(-7)));
+    try std.testing.expect(Value.fromBool(true).isEqv(.fromBool(true)));
+    try std.testing.expect(Value.fromBool(false).isEqv(.fromBool(false)));
+    try std.testing.expect(Value.fromCharacter(0x3BB).isEqv(.fromCharacter(0x3BB)));
+    const id: SymbolId = @fromBackingInt(@intCast(5));
+    try std.testing.expect(Value.fromSymbol(id).isEqv(.fromSymbol(id)));
+    try std.testing.expect(Value.empty_list_value.isEqv(.empty_list_value));
+    try std.testing.expect(Value.unspecified_value.isEqv(.unspecified_value));
+}
+
+test "the same object is eqv? to itself, but an object with the same contents is not" {
+    var s: Samples = .{};
+    s.link();
+    const pair: Value = .{ .pair = &s.pair_a };
+    try std.testing.expect(pair.isEqv(.{ .pair = &s.pair_a }));
+    try std.testing.expect(!pair.isEqv(.{ .pair = &s.pair_b }));
+    const string: Value = .fromString(&s.string_a);
+    try std.testing.expect(string.isEqv(.fromString(&s.string_a)));
+    try std.testing.expect(!string.isEqv(.fromString(&s.string_b)));
+    const vector: Value = .fromVector(&s.vector_a);
+    try std.testing.expect(vector.isEqv(.fromVector(&s.vector_a)));
+    try std.testing.expect(!vector.isEqv(.fromVector(&s.vector_b)));
+}
+
+test "eq? agrees with eqv? on every pair of the samples" {
+    // Why: R7RS 6.1 は、`eq?` が真を返してよいのは `eqv?` が真のときだけとする。段階1の
+    // 値では2つは一致する。段階4で数の種類が増えて `eqv?` が分かれたとき、この対応を
+    // どちらに寄せるかを決め直す。
+    var s: Samples = .{};
+    s.link();
+    const all = s.all();
+    for (all) |a| {
+        for (all) |b| try std.testing.expectEqual(a.isEqv(b), a.isEq(b));
+    }
 }
