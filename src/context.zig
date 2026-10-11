@@ -26,7 +26,8 @@ pub const heap_limit_message = "heap limit exceeded";
 /// the most recent error.
 pub const Context = struct {
     /// Where what the reader and the machine make is allocated, and collected:
-    /// the pairs, the closures, the frames of calls and the continuation.
+    /// the pairs, the closures, the frames of calls, the continuations, the
+    /// argument lists, the strings and the vectors.
     heap: Heap,
     /// Where what the heap does not hold is allocated: the symbols, the global
     /// bindings, the core IR the expander builds, and the conditions.
