@@ -257,7 +257,7 @@ test("reset keeps the heap limit that init was given", () => {
 
 // 4 GiB に近い上限を渡しても、計上の上限は 1 GiB に丸められる(`heap.max_host_limit`)。
 // 丸めが無いと、計上が上限に届く前に wasm32 の線形メモリ(4 GiB)が尽きて trap する。
-// 上限まで使い切るので 1 分以上かかる。
+// 上限まで使い切るので時間がかかる。
 slowTest("init with a limit near 4 GiB runs the heap up to its limit and reports it, not a trap", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_init(0xffffffff), OK);
