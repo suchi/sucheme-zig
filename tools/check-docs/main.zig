@@ -445,6 +445,18 @@ fn checkCiRunsTheTable(
                 );
                 continue;
             }
+            // Why: `types:` narrows the events a trigger fires on, and
+            // `workflow_dispatch` adds a manual one. The slow-tier workflow
+            // (full.yml) uses both; the workflow that runs on every commit must
+            // not, because either would change when the commit's checks run
+            // while the table still says they run on every commit.
+            if (per_commit and isTriggerNarrowing(key)) {
+                rep.fail(
+                    "{s}:{d}: `{s}` is not allowed in the workflow that runs on every commit; it changes when the commit's checks run",
+                    .{ path, lineno, key },
+                );
+                continue;
+            }
             if (per_commit) try seen.append(gpa, .{
                 .key = key,
                 .value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace),
@@ -643,15 +655,15 @@ fn backtickedSpan(cell: []const u8) ?[]const u8 {
 /// running.
 const allowed_workflow_keys = [_][]const u8{
     // Workflow level.
-    "name",               "on",           "permissions", "concurrency", "jobs",
-    "push",               "pull_request", "branches",    "contents",    "group",
-    "cancel-in-progress",
+    "name",               "on",           "permissions",       "concurrency", "jobs",
+    "push",               "pull_request", "branches",          "contents",    "group",
+    "cancel-in-progress", "types",        "workflow_dispatch",
     // Job level.
-    "runs-on",      "strategy",    "fail-fast",   "matrix",
-    "steps",              "os",
+    "runs-on",     "strategy",
+    "fail-fast",          "matrix",       "steps",             "os",
     // Step level.
-              "uses",        "with",        "version",
-    "run",
+             "uses",
+    "with",               "version",      "run",
 };
 
 /// Whether `key` is one of the allowed keys, or a job name.
@@ -669,8 +681,14 @@ fn keyIsAllowed(key: []const u8) bool {
     return false;
 }
 
+/// Keys that change when a workflow runs, which the per-commit workflow may not
+/// carry.
+fn isTriggerNarrowing(key: []const u8) bool {
+    return std.mem.eql(u8, key, "types") or std.mem.eql(u8, key, "workflow_dispatch");
+}
+
 /// The job names this repository's workflows define.
-const allowed_job_names = [_][]const u8{"test"};
+const allowed_job_names = [_][]const u8{ "test", "slow" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
@@ -2327,6 +2345,16 @@ test "yamlKey: the spellings Actions treats as a bare key are refused" {
     try std.testing.expect(yamlKey("run : zig build") == null);
     try std.testing.expect(yamlKey("- not a key") == null);
     try std.testing.expect(yamlKey("no colon") == null);
+}
+
+test "isTriggerNarrowing: the keys that change when a workflow runs" {
+    try std.testing.expect(isTriggerNarrowing("types"));
+    try std.testing.expect(isTriggerNarrowing("workflow_dispatch"));
+    try std.testing.expect(!isTriggerNarrowing("push"));
+    try std.testing.expect(!isTriggerNarrowing("branches"));
+    // Known keys, so the slow-tier workflow can use them.
+    try std.testing.expect(keyIsAllowed("types"));
+    try std.testing.expect(keyIsAllowed("workflow_dispatch"));
 }
 
 test "keyIsAllowed: the set is closed and holds no conditional" {

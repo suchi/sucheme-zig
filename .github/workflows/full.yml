@@ -1,0 +1,42 @@
+# The slow tier (docs/plans/0007-test-tiers.md).
+#
+# ci.yml runs on every commit and leaves out the tests that check a scale
+# (a recursion a hundred thousand levels deep, a loop of a million steps). They
+# find the faults that grow with the size of the input, and they take most of
+# the time of a run. They run here instead: when a pull request is marked ready
+# for review, when main changes, and on request. The table in AGENTS.md lists
+# the commands.
+#
+# Linux only: the logic is the same on Windows, which ci.yml covers on every
+# commit.
+#
+# The Zig version below is a copy; .zigversion is the source of truth.
+
+name: Full
+
+on:
+  pull_request:
+    types: [ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  slow:
+    name: slow tests (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+      - run: zig build test -Dslow=true --summary all
+      - run: zig build test-scheme -Dslow=true
