@@ -810,6 +810,21 @@ const fuzz_corpus: []const []const u8 = blk: {
     break :blk &done;
 };
 
+/// Whether every string in `v` holds valid UTF-8 (ADR-0008).
+fn stringsAreUtf8(v: Value) bool {
+    var cur = v;
+    while (true) {
+        if (cur.asString()) |s| return std.unicode.utf8ValidateSlice(s.bytes);
+        if (cur.asVector()) |vec| {
+            for (vec.items) |item| if (!stringsAreUtf8(item)) return false;
+            return true;
+        }
+        const p = cur.asPair() orelse return true;
+        if (!stringsAreUtf8(p.car)) return false;
+        cur = p.cdr;
+    }
+}
+
 /// Reads `src` the way the interpreter does: datum after datum, up to the end or
 /// the first error, with `gpa` behind everything the reader allocates.
 ///
@@ -817,11 +832,13 @@ const fuzz_corpus: []const []const u8 = blk: {
 /// 型が保証する。下の `switch` は `else` を持たないので、`Error` に足したエラーは、
 /// ここで扱いを決めるまでコンパイルが通らない。
 ///
-/// 検出力のある性質は、パニックと確保の漏れが無いことと、データを返した `next` が入力を
-/// 進めること(進まなければ、読み取りの繰り返しが終わらない)である。終端を返したときに
-/// 入力を読み切っていることは、`next` の構造から自明で、検出力はほとんどない。
-/// エラーのときの `pos` は、文字や文字列のリテラルが元の位置に戻すので、何も言わない。
+/// 検出力のある性質は、パニックと確保の漏れが無いこと、データを返した `next` が入力を
+/// 進めること(進まなければ、読み取りの繰り返しが終わらない)、入力が妥当な UTF-8 なら
+/// 読めた文字列も妥当な UTF-8 であることである。終端を返したときに入力を読み切って
+/// いることは、`next` の構造から自明で、検出力はほとんどない。エラーのときの `pos` は、
+/// 文字や文字列のリテラルが元の位置に戻すので、何も言わない。
 fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
+    const utf8 = std.unicode.utf8ValidateSlice(src);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var heap: Heap = .init(gpa, .{});
@@ -850,6 +867,8 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             return;
         };
         try std.testing.expect(r.pos > before);
+        // 入力が不正な UTF-8 なら、文字列の中身は何でもよい。パニックしないことだけを見る。
+        if (utf8) try std.testing.expect(stringsAreUtf8(datum));
         var sunk: std.Io.Writer.Discarding = .init(&.{});
         printer.write(&sunk.writer, gpa, &symbols, datum) catch |err| switch (err) {
             error.OutOfMemory => return,
