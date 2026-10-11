@@ -1,0 +1,276 @@
+# Slice 1k, unit K1: the pairs and the list the programs make. `cons` makes a
+# pair, `car` and `cdr` take it apart, `pair?` and `null?` ask what a value is,
+# and `list` makes the pairs of a list in one call.
+
+# cons makes a pair, and a list is pairs that end in ().
+(cons 1 2)
+(1 . 2)
+
+(cons 1 '())
+(1)
+
+(cons 1 (cons 2 '()))
+(1 2)
+
+(cons 1 (cons 2 3))
+(1 2 . 3)
+
+(cons '(1) '(2))
+((1) 2)
+
+(cons 'a "s")
+(a . "s")
+
+# Any value can be either half.
+(cons #t #\a)
+(#t . #\a)
+
+(cons #(1) #(2))
+(#(1) . #(2))
+
+# car and cdr take a pair apart.
+(car (cons 1 2))
+1
+
+(cdr (cons 1 2))
+2
+
+(car '(1 2 3))
+1
+
+(cdr '(1 2 3))
+(2 3)
+
+(cdr '(1))
+()
+
+(car '((1 2) 3))
+(1 2)
+
+(car (cdr (list 1 2 3)))
+2
+
+(cdr (cdr (cdr (list 1 2 3))))
+()
+
+(cdr '(1 . 2))
+2
+
+# pair? is true of a pair and of nothing else, so not of ().
+(pair? (cons 1 2))
+#t
+
+(pair? '(1))
+#t
+
+(pair? '(1 . 2))
+#t
+
+(pair? '())
+#f
+
+(pair? 1)
+#f
+
+(pair? 'a)
+#f
+
+(pair? #f)
+#f
+
+(pair? "ab")
+#f
+
+(pair? #\a)
+#f
+
+(pair? #(1 2))
+#f
+
+(pair? car)
+#f
+
+(pair? (lambda (x) x))
+#f
+
+# null? is true of () and of nothing else, so not of #f or 0.
+(null? '())
+#t
+
+(null? (list))
+#t
+
+(null? (cdr '(1)))
+#t
+
+(null? '(1))
+#f
+
+(null? #f)
+#f
+
+(null? 0)
+#f
+
+(null? "")
+#f
+
+(null? #())
+#f
+
+# list makes a list of its arguments, in the order they were given.
+(list)
+()
+
+(list 1)
+(1)
+
+(list 1 2 3)
+(1 2 3)
+
+(list 3 2 1)
+(3 2 1)
+
+(list (list 1) (list) (list 2 3))
+((1) () (2 3))
+
+(list 'a "s" #\c #(1) #t)
+(a "s" #\c #(1) #t)
+
+(list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)
+(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)
+
+# The arguments are evaluated, and each call makes new pairs.
+(list (+ 1 2) (* 2 3))
+(3 6)
+
+# The procedures are values.
+car
+#<procedure car>
+
+list
+#<procedure list>
+
+(define f car) (f '(7 8))
+7
+
+(define g list) (g 1 2)
+(1 2)
+
+# An unspecified value in the data is written, so that the output can be told
+# from a pair that was cut short.
+(list 1 (if #f #f))
+(1 #<unspecified>)
+
+(cons (if #f #f) 2)
+(#<unspecified> . 2)
+
+(cons 1 (if #f #f))
+(1 . #<unspecified>)
+
+(define x 5) (list (set! x 6) x)
+(#<unspecified> 6)
+
+# The type is checked before anything is taken apart.
+(car '())
+error: wrong type of argument to car
+
+(cdr '())
+error: wrong type of argument to cdr
+
+(car 1)
+error: wrong type of argument to car
+
+(cdr 1)
+error: wrong type of argument to cdr
+
+(car #(1 2))
+error: wrong type of argument to car
+
+(cdr "ab")
+error: wrong type of argument to cdr
+
+(car (cdr '(1)))
+error: wrong type of argument to car
+
+(car car)
+error: wrong type of argument to car
+
+# The number of arguments is checked by the machine, for every primitive of the
+# family.
+(car)
+error: wrong number of arguments to car
+
+(car '(1) '(2))
+error: wrong number of arguments to car
+
+(cdr)
+error: wrong number of arguments to cdr
+
+(cdr '(1) '(2))
+error: wrong number of arguments to cdr
+
+(cons)
+error: wrong number of arguments to cons
+
+(cons 1)
+error: wrong number of arguments to cons
+
+(cons 1 2 3)
+error: wrong number of arguments to cons
+
+(pair?)
+error: wrong number of arguments to pair?
+
+(pair? 1 2)
+error: wrong number of arguments to pair?
+
+(null?)
+error: wrong number of arguments to null?
+
+(null? '() '())
+error: wrong number of arguments to null?
+
+# An error in an argument comes first, and the arguments of the list before it.
+(list 1 (car 1))
+error: wrong type of argument to car
+
+(cons 1 (foo))
+error: unbound variable: foo
+
+# Programs of these procedures and define, lambda and if. Each case is one line.
+(define (append2 a b) (if (null? a) b (cons (car a) (append2 (cdr a) b)))) (append2 (list 1 2) (list 3 4))
+(1 2 3 4)
+
+(define (append2 a b) (if (null? a) b (cons (car a) (append2 (cdr a) b)))) (append2 '() '(1))
+(1)
+
+(define (append2 a b) (if (null? a) b (cons (car a) (append2 (cdr a) b)))) (append2 '(1) '())
+(1)
+
+(define (rev xs acc) (if (null? xs) acc (rev (cdr xs) (cons (car xs) acc)))) (rev (list 1 2 3) '())
+(3 2 1)
+
+(define (map1 f xs) (if (null? xs) '() (cons (f (car xs)) (map1 f (cdr xs))))) (map1 (lambda (x) (* x x)) (list 1 2 3 4))
+(1 4 9 16)
+
+(define (len xs) (if (null? xs) 0 (+ 1 (len (cdr xs))))) (len (list 1 2 3))
+3
+
+# A list of a few hundred pairs, made and read while the collector runs. The
+# runner also runs every case with a collection at each step. A long list is in
+# tests/scheme-slow/.
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (sum xs acc) (if (null? xs) acc (sum (cdr xs) (+ acc (car xs))))) (sum (build 500 '()) 0)
+125250
+
+# A list made before the collector ran many times is still whole after it.
+(define keep (list 1 2 3)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) keep
+ok
+(1 2 3)
+
+# list builds its pairs in a call whose arguments are themselves made by calls.
+(define (iota n) (if (= n 0) '() (cons n (iota (- n 1))))) (list (iota 3) (iota 2) (iota 1) (iota 0))
+((3 2 1) (2 1) (1) ())
+
+(define (mk n) (list n (list n) (cons n n))) (define (go i acc) (if (= i 0) acc (go (- i 1) (cons (mk i) acc)))) (car (cdr (go 300 '())))
+(2 (2) (2 . 2))
