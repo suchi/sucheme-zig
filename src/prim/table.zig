@@ -6,6 +6,7 @@
 const std = @import("std");
 const Primitive = @import("../value.zig").Primitive;
 const arith = @import("arith.zig");
+const pair = @import("pair.zig");
 const char = @import("char.zig");
 const string = @import("string.zig");
 const vector = @import("vector.zig");
@@ -13,6 +14,7 @@ const vector = @import("vector.zig");
 /// The primitives of each family, in the order they are bound.
 const families = [_][]const Primitive{
     &arith.primitives,
+    &pair.primitives,
     &char.primitives,
     &string.primitives,
     &vector.primitives,
