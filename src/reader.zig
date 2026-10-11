@@ -227,6 +227,172 @@ pub const Reader = struct {
     }
 };
 
+/// Whether `source` ends inside a datum that more input could finish.
+///
+/// REPL の継続行の判定である(ADR-0014)。別の字句解析器を持たず、`source` を
+/// 使い捨てのヒープ・シンボル表・アリーナで `Reader` に最後まで読ませる。字句の規則が
+/// 1つなので、文字列・文字・行コメントの中の括弧で誤らず、リーダが育てば判定も追従する。
+///
+/// 真になるのは、`Reader` が `Incomplete` で止まるときだけである。データが尽きて終わる
+/// 入力(空やコメントだけを含む)も、`Incomplete` 以外の構文エラーで止まる入力も、
+/// 続きを足しても直らないので偽にする。そのエラーの報告は `evalPrint` に任せる。
+/// 不正な UTF-8 も偽である。リーダは入力が妥当な UTF-8 であることを前提にしている。
+///
+/// 読み直しの費用は `source` の長さに比例する。呼び出し側は、行を足すたびに全体を
+/// 渡し直すので、`source` の上限で費用を抑える。
+pub fn isIncomplete(gpa: std.mem.Allocator, source: []const u8) error{OutOfMemory}!bool {
+    if (!std.unicode.utf8ValidateSlice(source)) return false;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var heap: Heap = .init(gpa, .{});
+    defer heap.deinit();
+    var symbols: symbol.Table = .{};
+    const sink: Sink = .{ .alloc = arena.allocator(), .heap = &heap, .symbols = &symbols };
+    var r: Reader = .init(source);
+    while (true) {
+        const datum = r.next(arena.allocator(), sink) catch |e| switch (e) {
+            error.Incomplete => return true,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        if (datum == null) return false;
+    }
+}
+
+/// 判定表の1行: 入力と、継続行が要るかどうか。
+const Judgement = struct { []const u8, bool };
+
+test "isIncomplete asks for more input only for an unfinished datum" {
+    const table = [_]Judgement{
+        // リストかベクタが閉じていない。
+        .{ "(+ 1", true },
+        .{ "(a (b)", true },
+        .{ "#(1 2", true },
+        .{ "(", true },
+        .{ "#(", true },
+        .{ "((a) (b", true },
+        // `'` のあとにデータが無い。
+        .{ "'", true },
+        .{ "(a '", true },
+        .{ "''", true },
+        // 文字列が閉じていない。エスケープの途中も含む。
+        .{ "\"abc", true },
+        .{ "\"a\\", true },
+        .{ "\"a\\\"", true },
+        .{ "\"a\\x41", true },
+        .{ "\"a\nb", true },
+        // 文字の本体が無い。
+        .{ "#\\", true },
+        .{ "(a #\\", true },
+        // ドットのあとのデータが無い。
+        .{ "(a . ", true },
+        .{ "(a . b", true },
+        // 閉じた式のあとに、閉じていない式が続く。
+        .{ "1 (a", true },
+        .{ "(a) 'b '", true },
+        // コメントの中の `)` は数えないので、閉じていない。
+        .{ "(a ; )\n", true },
+        .{ "(a ; )", true },
+        .{ "(+ 1 2 ;)\n", true },
+        .{ "'; a", true },
+        .{ "(1 . ; c", true },
+        .{ "#(1 ; )\n", true },
+        // 区切り文字の `;` がトークンを終わらせても、リストは閉じていない。
+        .{ "(a;b\n", true },
+
+        // 閉じた式は完結している。
+        .{ "(+ 1 2)", false },
+        .{ "1", false },
+        .{ "1 2", false },
+        .{ "(a (b) c)", false },
+        .{ "#(1 2)", false },
+        .{ "'a", false },
+        .{ "'(a b)", false },
+        .{ "(a . b)", false },
+        .{ "abc", false },
+        .{ "\"abc\"", false },
+        .{ "\"a\\\"\"", false },
+        .{ "\"a\nb\"", false },
+        .{ "#\\a", false },
+        .{ "#\\space", false },
+        // 文字列、文字、コメントの中の括弧は、何も開かず閉じない。
+        .{ "\"(\"", false },
+        .{ "\")\"", false },
+        .{ "#\\(", false },
+        .{ "#\\)", false },
+        .{ "(a #\\()", false },
+        .{ "(a \"(\")", false },
+        .{ "(a #\\( 1", true },
+        .{ "(a) ; (", false },
+        .{ "(a ; (\n)", false },
+        .{ "\"a;b\"", false },
+        // 構文エラーは、続けても直らないので完結とする。
+        .{ ")", false },
+        .{ "(a))", false },
+        .{ "(a . )", false },
+        .{ "(a . b c)", false },
+        .{ "#z", false },
+        .{ "')", false },
+        .{ "(a ')", false },
+        .{ "#(1 . 2)", false },
+        .{ "#\\spa", false },
+        .{ "\"\\q\"", false },
+        .{ "9223372036854775808", false },
+        // 構文エラーのあとに閉じていない式があっても、先のエラーで完結とする。
+        .{ ") (a", false },
+        .{ "(a . ) (b", false },
+        // 段階5までは読めないものも、構文エラーである。
+        .{ "#| x", false },
+        .{ "(a #;1", false },
+        // 何も無い入力。
+        .{ "", false },
+        .{ "  ", false },
+        .{ "\n", false },
+        .{ "\n\n", false },
+        .{ "; コメント", false },
+        .{ "; コメント\n", false },
+        .{ ";\n;\n", false },
+        .{ "  ;a\n\n;b", false },
+        // 不正な UTF-8 は、続けても直らない。報告は evalPrint に任せる。
+        .{ "\xff", false },
+        .{ "(a \xff", false },
+        .{ "\"\xc3", false },
+    };
+    for (table) |row| {
+        const source, const expected = row;
+        std.testing.expectEqual(expected, try isIncomplete(std.testing.allocator, source)) catch |e| {
+            std.debug.print("isIncomplete({f}) should be {}\n", .{ std.zig.fmtString(source), expected });
+            return e;
+        };
+    }
+}
+
+test "isIncomplete gives back what it takes, and reports running out of memory" {
+    const check = struct {
+        fn run(gpa: std.mem.Allocator, source: []const u8) !void {
+            _ = try isIncomplete(gpa, source);
+        }
+    }.run;
+    for ([_][]const u8{ "(a (b \"c\" #(1 'd)", "(a (b \"c\" #(1 'd)))", "1" }) |source| {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, check, .{source});
+    }
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, isIncomplete(failing.allocator(), "(a (b"));
+}
+
+test "isIncomplete tells a line that a later line can finish from one it cannot" {
+    // REPL が行を足していく経路。足すたびに全体を読み直す。
+    const lines = [_][]const u8{ "(define (f x)\n", "  (+ x\n", "     1))\n" };
+    var buf: [64]u8 = undefined;
+    var len: usize = 0;
+    for (lines, 0..) |line, i| {
+        @memcpy(buf[len..][0..line.len], line);
+        len += line.len;
+        const expected = i + 1 < lines.len;
+        try std.testing.expectEqual(expected, try isIncomplete(std.testing.allocator, buf[0..len]));
+    }
+}
+
 /// The pairs of `items` ending in `tail`, allocated in `sink`.
 /// `tail` が `()` ならリストになる。
 fn listOf(sink: Sink, items: []const Value, tail: Value) Error!Value {
