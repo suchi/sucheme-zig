@@ -724,6 +724,9 @@ const allowed_workflow_keys = [_][]const u8{
     // step のレベル。
              "uses",
     "with",               "version",      "run",
+    // actions/cache の入力と、setup-zig の自動キャッシュを切る入力。ADR-0032。
+                  "path",        "key",
+    "use-cache",
 };
 
 /// Whether `key` is one of the allowed keys, or a job name.
@@ -2435,6 +2438,14 @@ test "keyIsAllowed: the set is closed and holds no conditional" {
     try std.testing.expect(!keyIsAllowed("continue-on-error"));
     try std.testing.expect(!keyIsAllowed("needs"));
     try std.testing.expect(!keyIsAllowed("verify"));
+}
+
+test "keyIsAllowed: the inputs of the cache step are known" {
+    try std.testing.expect(keyIsAllowed("path"));
+    try std.testing.expect(keyIsAllowed("key"));
+    try std.testing.expect(keyIsAllowed("use-cache"));
+    // 古いキャッシュへの復元は、不完全な保存を拾う道なので、許可に入れない。
+    try std.testing.expect(!keyIsAllowed("restore-keys"));
 }
 
 test "identifierCount: comments and blank lines are not identifiers" {
