@@ -1,0 +1,139 @@
+# Slice 1h: string literals. A string reads as itself, evaluates to itself and
+# prints the way write prints it: in double quotes, with `"` and `\` escaped,
+# the control characters with an escape of R7RS spelled as that escape, and a
+# newline as `\n`. A line of this file is one input, so a newline inside a
+# string is written as the escape `\n`.
+
+"abc"
+"abc"
+
+""
+""
+
+"hello world"
+"hello world"
+
+# The characters that end or start other data mean nothing inside a string.
+"(a . b) ; not a comment"
+"(a . b) ; not a comment"
+
+"#\\a"
+"#\\a"
+
+# The escapes of R7RS: the printer writes back what the reader took.
+"a\tb"
+"a\tb"
+
+"a\nb"
+"a\nb"
+
+"\a\b\t\n\r"
+"\a\b\t\n\r"
+
+"\""
+"\""
+
+"say \"hi\""
+"say \"hi\""
+
+"\\"
+"\\"
+
+"a\\b"
+"a\\b"
+
+# `\|` reads as a bar, and a bar needs no escape in a string.
+"\|"
+"|"
+
+# The hex escape reads as the character with that code.
+"\x41;"
+"A"
+
+"\x41;bc"
+"Abc"
+
+"a\x41;b"
+"aAb"
+
+"\x3bb;"
+"λ"
+
+# Characters with an escape are printed with it, whichever way they were read.
+"\x7;"
+"\a"
+
+"\x9;"
+"\t"
+
+"\xa;"
+"\n"
+
+# A control character with no escape of its own is printed in the hex form.
+"\x0;"
+"\x0;"
+
+"\x1;"
+"\x1;"
+
+"\x10;"
+"\x10;"
+
+# Characters that are not ASCII are printed as they are.
+"こんにちは"
+"こんにちは"
+
+"a λ b"
+"a λ b"
+
+# A string evaluates to itself, so quote changes nothing.
+'"abc"
+"abc"
+
+"a" "b"
+"a"
+"b"
+
+(if "" 1 2)
+1
+
+(define s "hi") s
+"hi"
+
+(define (f) "from a procedure") (f)
+"from a procedure"
+
+# Strings inside a list print the way write prints them.
+'("a" "b")
+("a" "b")
+
+'(a "b" #\c)
+(a "b" #\c)
+
+'("a\nb" . "c")
+("a\nb" . "c")
+
+# A string is not a procedure.
+("abc")
+error: not a procedure
+
+# A string that never closes asks for more input.
+"abc
+error: unexpected end of input
+
+"a\"
+error: unexpected end of input
+
+# An escape the reader does not know is an error, and the REPL goes on.
+"\q"
+error: invalid escape in string
+
+"a\zb"
+error: invalid escape in string
+
+# A string defined before the collector has run many times is still readable
+# after it, both as a global and as a constant in the code of a procedure.
+(define s "hello\nworld") (define (get) "in code") (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 100000) s (get)
+ok
+"hello\nworld"
+"in code"

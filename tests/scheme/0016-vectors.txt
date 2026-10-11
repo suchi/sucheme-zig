@@ -1,0 +1,98 @@
+# Slice 1h: vector literals. `#(` starts a vector whose elements are data, so a
+# vector evaluates to itself and its elements are not evaluated. A vector prints
+# as `#(` and its elements. There are no procedures on vectors yet, so these
+# cases read a vector and print it back.
+
+#(1 2 3)
+#(1 2 3)
+
+#()
+#()
+
+#(1)
+#(1)
+
+# Vectors nest, and hold any datum.
+#(1 #(2 3) ())
+#(1 #(2 3) ())
+
+#(#t #f)
+#(#t #f)
+
+#(a b c)
+#(a b c)
+
+#(#\a "s" 1)
+#(#\a "s" 1)
+
+'#(a (b) "c" #\d)
+#(a (b) "c" #\d)
+
+# The elements are data, not code: nothing is looked up and nothing is called.
+#((+ 1 2))
+#((+ 1 2))
+
+#(undefined-name)
+#(undefined-name)
+
+'#('a)
+#((quote a))
+
+# A vector evaluates to itself, so quote changes nothing.
+'#(1 2)
+#(1 2)
+
+#(1) #(2)
+#(1)
+#(2)
+
+(if #() 1 2)
+1
+
+(define v #(1 2 3)) v
+#(1 2 3)
+
+(define (f) #(1 2)) (f)
+#(1 2)
+
+# A vector in a list, and a list in a vector.
+'(1 #(2) 3)
+(1 #(2) 3)
+
+'(a . #(1))
+(a . #(1))
+
+'#((1 . 2) (3 4 . 5))
+#((1 . 2) (3 4 . 5))
+
+# A vector is not a procedure.
+(#(1))
+error: not a procedure
+
+# A dot has no meaning in a vector.
+#(1 . 2)
+error: unexpected .
+
+#(. 1)
+error: unexpected .
+
+#(1 .)
+error: unexpected .
+
+'#(a . b)
+error: unexpected .
+
+# A vector that never closes asks for more input, and a stray close is an error.
+#(1 2
+error: unexpected end of input
+
+#(1 2))
+#(1 2)
+error: unexpected )
+
+# A vector defined before the collector has run many times is still readable
+# after it, both as a global and as a constant in the code of a procedure.
+(define v #(1 "two" #\3 (4))) (define (get) #(5 6)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 100000) v (get)
+ok
+#(1 "two" #\3 (4))
+#(5 6)

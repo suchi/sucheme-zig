@@ -186,6 +186,37 @@ defer gpa.free(s);
 
 `std.Io.Terminal` は色付き出力のための書き込み側の抽象であり、入力の生モードは提供しない。段階7の行編集では `file.isTty(io)` と `file.enableAnsiEscapeCodes(io)` を使い、生モードの設定は自前のプラットフォーム別コードで行う。
 
+## Windows の引数と環境変数の符号化
+
+Windows は引数と環境変数を UTF-16 で渡す。Zig 0.17.0 の標準ライブラリは、これを UTF-8 ではなく WTF-8 に変換する。WTF-8 は、対になっていないサロゲート(U+D800 から U+DFFF)も3バイトで符号化できる UTF-8 の上位集合である。したがって、変換の結果は UTF-8 として妥当でない並びを含みうる。
+
+この節の確認は、標準ライブラリのソースを読んだものと、Linux 上の単体テストで実行したものに分かれる。Windows 実機では何も実行していない。
+
+ソースで確認したこと(`lib/std/process/Args.zig`、`lib/std/process/Environ.zig`、`lib/std/unicode.zig`):
+
+- Windows では `std.process.Args.Vector` が `[]const u16`(WTF-16)になる。
+- `Args.toSlice` と `Args.Iterator` の Windows 実装は、コマンドラインを WTF-8 に変換して返す。バッファの大きさは `std.unicode.calcWtf8Len` で求め、1つの UTF-16 の符号単位ごとに `std.unicode.wtf8Encode` で書く。ドキュメントコメントは「On Windows, the result is encoded as WTF-8」と書いている。Windows 以外では「opaque sequence of bytes with no particular encoding」で、符号化の保証がない。
+- 上位サロゲートに下位サロゲートが続くときは、対として UTF-8 の4バイトに直す(`emitCharacter`)。したがって、対になった文字は妥当な UTF-8 になる。不対のサロゲートだけが3バイトのまま残る。
+- 環境変数は `Environ.Map.putWindowsBlock` が `unicode.wtf16LeToWtf8Alloc` で、キーと値の両方を WTF-8 に変換する。
+- `std.unicode.wtf8ValidateSlice` は、WTF-8 として妥当かを調べる。サロゲートを許し、対になっているかは調べない。
+- `std.unicode.utf8ValidateSlice` は、UTF-8 として妥当かを調べる。サロゲートの符号化は拒否する。
+
+Linux 上の単体テストで実行したこと(Windows の変換関数そのものではなく、同じ標準ライブラリの変換と検査の関数を、WTF-16 の入力に直接適用した):
+
+- `std.unicode.wtf16LeToWtf8` は、`a`・U+D800・`b` の WTF-16 を5バイト(`61 ED A0 80 62`)に変換する。長さは `calcWtf8Len` の値と一致する。
+- その結果を `utf8ValidateSlice` に渡すと false になり、`wtf8ValidateSlice` に渡すと true になる(`"\xed\xa0\x80"` 単体でも同じ)。
+- 対になったサロゲート(U+D801 U+DC37)は4バイトの UTF-8 に変換され、`utf8ValidateSlice` が true を返す。
+
+実機で未確認のこと:
+
+- Windows の `std.process.Init` が実際に渡す `args.vector` に、不対サロゲートを含むコマンドラインが入ったときの `toSlice` の結果。ソースの経路と、上の単体テストが示す変換の結果から導いたものである。Windows 実機では実行していない。
+- 環境変数の経路(`putWindowsBlock`)の実行。ソースの読解だけである。
+
+このプロジェクトの扱い:
+
+- 妥当な UTF-8 であることを、引数や環境変数の値から Scheme の文字列を作る前に `utf8ValidateSlice` で検査する。この検査は WTF-8 の不対サロゲートを拒否する。自前で条件を列挙しない([platform-and-web.md](platform-and-web.md))。
+- 引数が Scheme の文字列になる経路は、`command-line` が入る段階5まで無い。検査を足す位置はその段階で決める。経緯は [plans/0006-slice-1h-strings-chars-vectors.md](../plans/0006-slice-1h-strings-chars-vectors.md) にある。
+
 ## テストとファジング
 
 ```zig

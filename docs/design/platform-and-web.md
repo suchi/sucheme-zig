@@ -89,7 +89,7 @@ sucheme_version_len() -> u32
 
 `string->symbol` と `string-append` のように、既存の文字列から文字列を作る経路は検証しない。入力の時点で妥当なので構成上妥当である。`integer->char` はスカラ値の範囲を検査するので、不正なスカラ値から文字列が作られることはない。
 
-Windows では引数と環境変数が UTF-16 で渡される。UTF-8 への変換で不対サロゲートがどう扱われるかによって検証の必要性が変わるため、Zig 0.17.0 の変換 API の挙動を実装時に実機で確認し、結果を [zig-api-notes.md](zig-api-notes.md) に記録する([open-questions.md](open-questions.md))。
+Windows では引数と環境変数が UTF-16 で渡される。Zig 0.17.0 はこれを WTF-8 に変換し、対になっていないサロゲートを3バイトで残す。この並びは `utf8ValidateSlice` が拒否するので、下の検査を通せば Scheme の文字列には入らない。標準ライブラリのソースの読解と Linux 上の単体テストで確かめた内容は [zig-api-notes.md](zig-api-notes.md) にあり、Windows 実機での実行は未確認である。引数が Scheme の文字列になる経路は `command-line` が入る段階5まで無いので、検査を足す位置はその段階で決める。
 
 妥当な UTF-8 でないものをすべて拒否する。判定は `std.unicode.utf8ValidateSlice` に委ね、自前で条件を列挙しない。列挙すると取りこぼす。実機で確認したところ、過長符号化(`0xC0 0x80`)、サロゲート符号位置の符号化、5バイト列、不完全な列、継続バイトの単独出現に加えて、`0xFE` と `0xFF` も `false` になる。後者2つは「過長」「サロゲート」「U+10FFFF 超過」のどれにも当てはまらないため、条件を数え上げる書き方では漏れる。
 

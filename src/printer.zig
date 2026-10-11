@@ -2,8 +2,9 @@
 //!
 //! Slice 1d prints integers, booleans, symbols, lists and procedures; the
 //! unspecified value has no external form, so callers that print results skip
-//! it. `write` and `display` differ first for strings and characters, which
-//! arrive in slice 1h.
+//! it. Slice 1h adds characters, strings and vectors, and with them the
+//! difference between `write` and `display` (R7RS 6.13.3): `write` gives the
+//! form `read` reads back, `display` the text a person reads.
 //!
 //! The depth of the data decides how deep printing goes, so it runs on an
 //! explicit stack and not on Zig recursion (docs/design/runtime.md).
@@ -13,6 +14,8 @@ const value_mod = @import("value.zig");
 const Value = value_mod.Value;
 const symbol = @import("symbol.zig");
 const Heap = @import("heap.zig").Heap;
+const char_syntax = @import("char_syntax.zig");
+const string_syntax = @import("string_syntax.zig");
 
 pub const Error = std.Io.Writer.Error || error{OutOfMemory};
 
@@ -25,7 +28,15 @@ const Item = union(enum) {
     rest: Value,
     /// Text to write as it is.
     text: []const u8,
+    /// The rest of a vector from element `next` on: a space and that element,
+    /// or the closing parenthesis once there are none left.
+    elements: Elements,
+
+    const Elements = struct { items: []const Value, next: usize };
 };
+
+/// Which of the two external forms of data to write (R7RS 6.13.3).
+pub const Mode = enum { write, display };
 
 /// Writes `v` as `write` would (R7RS 6.13.3). Symbol names come from `symbols`.
 /// `scratch` holds the stack of what is left to write; `write` frees what it
@@ -35,16 +46,40 @@ const Item = union(enum) {
 /// need the `|...|` form; the procedures that make other symbols come with the
 /// slices that need it.
 pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value) Error!void {
+    return emit(out, scratch, symbols, v, .write);
+}
+
+/// Writes `v` as `display` would (R7RS 6.13.3): the same as `write`, except
+/// that a string is its characters and a character is itself, also inside the
+/// pairs and vectors that hold them.
+pub fn display(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value) Error!void {
+    return emit(out, scratch, symbols, v, .display);
+}
+
+fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value, mode: Mode) Error!void {
     var stack: std.ArrayList(Item) = .empty;
     defer stack.deinit(scratch);
     try stack.append(scratch, .{ .value = v });
     while (stack.pop()) |item| switch (item) {
         .text => |t| try out.writeAll(t),
+        .elements => |e| if (e.next == e.items.len) {
+            try out.writeByte(')');
+        } else {
+            if (e.next != 0) try out.writeByte(' ');
+            try stack.append(scratch, .{ .elements = .{ .items = e.items, .next = e.next + 1 } });
+            try stack.append(scratch, .{ .value = e.items[e.next] });
+        },
         .value => |x| switch (x.kind()) {
             .fixnum => try out.print("{d}", .{x.asFixnum().?}),
             .boolean => try out.writeAll(if (x.isTrue()) "#t" else "#f"),
             .empty_list => try out.writeAll("()"),
             .symbol => try out.writeAll(symbols.nameOf(x.asSymbol().?)),
+            .character => try char_syntax.write(out, mode, x.asCharacter().?),
+            .string => try string_syntax.write(out, mode, x.asString().?.bytes),
+            .vector => {
+                try out.writeAll("#(");
+                try stack.append(scratch, .{ .elements = .{ .items = x.asVector().?.items, .next = 0 } });
+            },
             // Why: R7RS leaves the external form of a procedure open; most
             // systems write it in a notation `read` rejects, and so do we.
             .closure => try out.writeAll("#<procedure>"),
@@ -119,9 +154,23 @@ const Fixture = struct {
         return result;
     }
 
+    fn vector(self: *Fixture, items: []const Value) !Value {
+        return .fromVector(try self.heap.createVector(items));
+    }
+
+    fn string(self: *Fixture, bytes: []const u8) !Value {
+        return .fromString(try self.heap.createString(bytes));
+    }
+
     fn written(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
         var w: std.Io.Writer = .fixed(buf);
         try write(&w, std.testing.allocator, &self.symbols, v);
+        return w.buffered();
+    }
+
+    fn displayed(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
+        var w: std.Io.Writer = .fixed(buf);
+        try display(&w, std.testing.allocator, &self.symbols, v);
         return w.buffered();
     }
 };
@@ -242,4 +291,133 @@ test "write does not recurse on the depth of the data" {
     out.clearRetainingCapacity();
     try write(&out.writer, std.testing.allocator, &f.symbols, long);
     try std.testing.expectEqual(depth * 2 + 1, out.written().len);
+}
+
+test "write prints a vector as # and a parenthesised list of its elements" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("#()", try f.written(&buf, try f.vector(&.{})));
+    try std.testing.expectEqualStrings("#(1)", try f.written(&buf, try f.vector(&.{.fromFixnum(1)})));
+    const v = try f.vector(&.{ .fromFixnum(1), try f.sym("a"), .fromBool(true), Value.empty_list_value });
+    try std.testing.expectEqualStrings("#(1 a #t ())", try f.written(&buf, v));
+}
+
+test "write prints vectors and pairs nested in one another" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const inner = try f.vector(&.{ .fromFixnum(2), .fromFixnum(3) });
+    try std.testing.expectEqualStrings("#(1 #(2 3) #())", try f.written(&buf, try f.vector(&.{ .fromFixnum(1), inner, try f.vector(&.{}) })));
+    // A vector in a list, in the tail of a pair, and a list and a pair in a vector.
+    const in_list = try f.list(&.{ .fromFixnum(1), inner, .fromFixnum(4) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(1 #(2 3) 4)", try f.written(&buf, in_list));
+    try std.testing.expectEqualStrings("(a . #(2 3))", try f.written(&buf, try f.cons(try f.sym("a"), inner)));
+    const dotted = try f.cons(.fromFixnum(1), .fromFixnum(2));
+    const lst = try f.list(&.{ .fromFixnum(3), .fromFixnum(4) }, .fromFixnum(5));
+    try std.testing.expectEqualStrings("#((1 . 2) (3 4 . 5) (a))", try f.written(&buf, try f.vector(&.{ dotted, lst, try f.list(&.{try f.sym("a")}, Value.empty_list_value) })));
+}
+
+test "display prints what write prints for data without strings and characters" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var wbuf: [64]u8 = undefined;
+    var dbuf: [64]u8 = undefined;
+    const inner = try f.vector(&.{ .fromFixnum(2), try f.sym("b") });
+    const l = try f.list(&.{ .fromFixnum(1), inner, .fromBool(false) }, .fromFixnum(9));
+    const v = try f.vector(&.{ l, inner, Value.empty_list_value });
+    try std.testing.expectEqualStrings(try f.written(&wbuf, v), try f.displayed(&dbuf, v));
+    try std.testing.expectEqualStrings("#((1 #(2 b) #f . 9) #(2 b) ())", try f.displayed(&dbuf, v));
+}
+
+test "write does not recurse on the depth of a vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // A vector nested 200000 deep in its only element, and one 200000 long.
+    const depth = 200_000;
+    var deep: Value = try f.vector(&.{});
+    for (0..depth) |_| deep = try f.vector(&.{deep});
+    const items = try f.arena.allocator().alloc(Value, depth);
+    @memset(items, .fromFixnum(1));
+    const long = try f.vector(items);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try write(&out.writer, std.testing.allocator, &f.symbols, deep);
+    // Each level is `#(` and `)`, and the innermost is `#()`.
+    try std.testing.expectEqual((depth + 1) * 3, out.written().len);
+    out.clearRetainingCapacity();
+    try write(&out.writer, std.testing.allocator, &f.symbols, long);
+    try std.testing.expectEqual(depth * 2 + 2, out.written().len);
+}
+
+test "write and display differ on a string and a character at the top" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const s = try f.string("a\"b");
+    try std.testing.expectEqualStrings("\"a\\\"b\"", try f.written(&buf, s));
+    try std.testing.expectEqualStrings("a\"b", try f.displayed(&buf, s));
+    const c: Value = .fromCharacter('b');
+    try std.testing.expectEqualStrings("#\\b", try f.written(&buf, c));
+    try std.testing.expectEqualStrings("b", try f.displayed(&buf, c));
+    const space: Value = .fromCharacter(' ');
+    try std.testing.expectEqualStrings("#\\space", try f.written(&buf, space));
+    try std.testing.expectEqualStrings(" ", try f.displayed(&buf, space));
+}
+
+test "write and display differ inside a list and a dotted pair" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const l = try f.list(&.{ try f.string("a"), .fromCharacter('b'), try f.sym("c") }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(\"a\" #\\b c)", try f.written(&buf, l));
+    try std.testing.expectEqualStrings("(a b c)", try f.displayed(&buf, l));
+    // The element after the dot is written in the same mode.
+    const pair = try f.cons(try f.string("a"), .fromCharacter('b'));
+    try std.testing.expectEqualStrings("(\"a\" . #\\b)", try f.written(&buf, pair));
+    try std.testing.expectEqualStrings("(a . b)", try f.displayed(&buf, pair));
+    const improper = try f.list(&.{ try f.string("x"), .fromCharacter('y') }, try f.string("z"));
+    try std.testing.expectEqualStrings("(\"x\" #\\y . \"z\")", try f.written(&buf, improper));
+    try std.testing.expectEqualStrings("(x y . z)", try f.displayed(&buf, improper));
+}
+
+test "write and display differ inside a vector" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const v = try f.vector(&.{ try f.string("a"), .fromCharacter('b'), .fromFixnum(1) });
+    try std.testing.expectEqualStrings("#(\"a\" #\\b 1)", try f.written(&buf, v));
+    try std.testing.expectEqualStrings("#(a b 1)", try f.displayed(&buf, v));
+    // The empty string is an element that writes as nothing.
+    const empties = try f.vector(&.{ try f.string(""), try f.string("") });
+    try std.testing.expectEqualStrings("#(\"\" \"\")", try f.written(&buf, empties));
+    try std.testing.expectEqualStrings("#( )", try f.displayed(&buf, empties));
+    try std.testing.expectEqualStrings("#(\"\")", try f.written(&buf, try f.vector(&.{try f.string("")})));
+    try std.testing.expectEqualStrings("#()", try f.displayed(&buf, try f.vector(&.{try f.string("")})));
+}
+
+test "write and display differ at every level of nested data" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // (#("a" (#\b . "c")) "d")
+    const inner_pair = try f.cons(.fromCharacter('b'), try f.string("c"));
+    const inner_list = try f.list(&.{inner_pair}, Value.empty_list_value);
+    const vec = try f.vector(&.{ try f.string("a"), inner_list });
+    const outer = try f.list(&.{ vec, try f.string("d") }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(#(\"a\" ((#\\b . \"c\"))) \"d\")", try f.written(&buf, outer));
+    try std.testing.expectEqualStrings("(#(a ((b . c))) d)", try f.displayed(&buf, outer));
+    // A vector of vectors of strings, and a list of lists of characters.
+    const vv = try f.vector(&.{ try f.vector(&.{try f.string("p")}), try f.vector(&.{ .fromCharacter('q'), try f.string("r") }) });
+    try std.testing.expectEqualStrings("#(#(\"p\") #(#\\q \"r\"))", try f.written(&buf, vv));
+    try std.testing.expectEqualStrings("#(#(p) #(q r))", try f.displayed(&buf, vv));
+}
+
+test "write escapes a string and a character in data as read would need" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const v = try f.vector(&.{ try f.string("a\nb\\"), .fromCharacter('\n'), .fromCharacter(0x3bb), try f.string("\u{3bb}") });
+    try std.testing.expectEqualStrings("#(\"a\\nb\\\\\" #\\newline #\\\u{3bb} \"\u{3bb}\")", try f.written(&buf, v));
+    try std.testing.expectEqualStrings("#(a\nb\\ \n \u{3bb} \u{3bb})", try f.displayed(&buf, v));
 }

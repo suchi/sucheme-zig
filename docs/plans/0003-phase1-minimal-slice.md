@@ -50,7 +50,7 @@
 | 1e | マージ済み | #11 |
 | 1f | マージ済み | #13(計画書 0004 は #12) |
 | 1g | マージ済み。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | 実装が #21、後半のレビュー対応が #22(計画書 0005 は #18) |
-| 1h | 計画は合意済み、実装は未着手。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が本 PR |
+| 1h | 実装済み、PR のレビュー待ち。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装は 1h の PR |
 | 1i から 1j | 未着手 | - |
 
 ## 再開の手がかり
@@ -76,7 +76,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 | 1e | 内部値のうち未初期化の表現。`Value` の即値の変種 `.uninitialized` にした(ヒープオブジェクトにすると、読み取りのたびに種類の判定が要るうえ、1g で回収の対象が増える)。大域の束縛セルが入る段階2で、未束縛と合わせて再び決める |
 | 1f | 字句アドレスの深さと添字のビット幅: u32 にして、超える入れ子を実装制限として報告する([ADR-0030](../adr/0030-lexical-address-width-u32.md))。フレーム数の上限: 設けない。1g の計上の上限が入るときに決め直す |
 | 1g | 決めた: GC は機械のステップの境目で実行する([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。起動の閾値は、直前の GC のあとの計上量の倍率と最小値の大きいほうで、上限の手前で頭打ちにする。GC のあとの計上量が上限に近いときは `heap limit exceeded`。値は `src/heap.zig` の定数が正で、ベンチマークは未実施の暫定値。巻き戻しの単位は `Heap.createFrame` の1回の呼び出し(ペイロードを先に確保し、セルの確保が失敗したら返す)。作業リストの容量は `Options.work_capacity`(テストでは0)で、溢れたら全走査でマークし直す。フレーム数の上限は設けない(計上の上限が止める)。上限の既定は `Options.limit`。予約領域の具体的なバイト数は段階2に移した(1g は条件オブジェクトを上限の外のアリーナに作る) |
-| 1h | Windows の引数と環境変数を UTF-16 から変換したときの不対サロゲートの扱い |
+| 1h | 決めた: Windows の引数と環境変数は Zig 0.17.0 が WTF-8 に変換し、不対サロゲートは `utf8ValidateSlice` が拒否する([zig-api-notes.md](../design/zig-api-notes.md))。引数が Scheme の文字列になる経路は段階5の `command-line` まで無いので、検査の位置はそこで決める。Windows 実機での実行は未確認。1h で入る入力は `Interpreter.evalPrint` の先頭で検査する |
 | 1i | WASM の出力バッファの初期サイズと伸ばし方、Web UI をローカルで開く手段と PR の zip を開く手段 |
 | 1j | aarch64 を自動テストの対象に加えるか |
 
@@ -117,7 +117,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 スライス 1g(GC ヒープ)の実装は、PR #21 で `main` に入っている。完了条件(100万回の末尾再帰が計上量の最大値を一定にして完了する、非末尾の無限再帰が `heap limit exceeded` で止まって REPL が続く、到達不能なオブジェクトが回収される、1a から 1f のテストがストレスモードでも通る)は、`zig build test` と `zig build test-scheme` で確かめる。
 
 1. PR [#21](https://github.com/suchi/sucheme-zig/pull/21) の後半のレビュー対応は [#22](https://github.com/suchi/sucheme-zig/pull/22) で入り、どちらもマージ済みである。
-2. スライス 1h(文字・文字列・ベクタ、ドット対)の計画書 [0006](0006-slice-1h-strings-chars-vectors.md) は合意済みで、PR のマージ後に実装に入る。
+2. スライス 1h(文字・文字列・ベクタ、ドット対)は実装済みで、PR のレビューとマージを待つ([0006](0006-slice-1h-strings-chars-vectors.md))。マージ後、スライス 1i(ブラウザで `(fact 10)` が動く)の計画書を書き、合意を得てから実装する。
 3. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトはヒープの外にある(段階2)。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い、条件は `error.Raised` の脱出でハンドラは無い。

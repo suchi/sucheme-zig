@@ -19,6 +19,8 @@ const Closure = value_mod.Closure;
 const Frame = value_mod.Frame;
 const Kont = value_mod.Kont;
 const Args = value_mod.Args;
+const String = value_mod.String;
+const Vector = value_mod.Vector;
 const SymbolId = @import("symbol.zig").SymbolId;
 const trace = @import("trace.zig");
 
@@ -89,10 +91,16 @@ fn cellBytes(comptime T: type) usize {
     return @sizeOf(Cell(T));
 }
 
-/// The bytes the object owns beyond its cell. Only a frame owns any: the slots
-/// of its variables.
+/// The bytes the object owns beyond its cell: the slots of a frame, the bytes
+/// of a string, the elements of a vector. The payload is allocated apart from
+/// the cell and given back with it.
 fn payloadBytes(comptime T: type, object: *const T) usize {
-    return if (T == Frame) object.values.len * @sizeOf(Value) else 0;
+    return switch (T) {
+        Frame => object.values.len * @sizeOf(Value),
+        String => object.bytes.len,
+        Vector => object.items.len * @sizeOf(Value),
+        else => 0,
+    };
 }
 
 /// What `Heap.work` is while no list has been allocated, or the allocation
@@ -159,9 +167,10 @@ pub const Heap = struct {
 
     /// A new object holding `value`.
     ///
-    /// A frame has a payload, so it is made by `createFrame`.
+    /// An object with a payload is made by the function for it: `createFrame`,
+    /// `createString`, `createVector`.
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
-        comptime std.debug.assert(T != Frame);
+        comptime std.debug.assert(T != Frame and T != String and T != Vector);
         try self.reserve(cellBytes(T));
         const cell = try self.backing.create(Cell(T));
         cell.value = value;
@@ -175,9 +184,7 @@ pub const Heap = struct {
     /// allocated the slots are given back, so a failed call leaves the heap as
     /// it was. That is the unit of the rollback: one call.
     pub fn createFrame(self: *Heap, size: usize, parent: ?*Frame) Error!*Frame {
-        const payload = std.math.mul(usize, size, @sizeOf(Value)) catch return error.HeapLimit;
-        const bytes = std.math.add(usize, cellBytes(Frame), payload) catch return error.HeapLimit;
-        try self.reserve(bytes);
+        const bytes = try self.reserveWithPayload(Frame, size, @sizeOf(Value));
         const values = try self.backing.alloc(Value, size);
         errdefer self.backing.free(values);
         const cell = try self.backing.create(Cell(Frame));
@@ -185,6 +192,41 @@ pub const Heap = struct {
         cell.value = .{ .values = values, .parent = parent };
         self.link(Frame, cell, bytes);
         return &cell.value;
+    }
+
+    /// A new string of a copy of `bytes`, which must be valid UTF-8 (ADR-0008).
+    /// The copy is the payload: allocated first and given back if the cell
+    /// cannot be allocated, as `createFrame` does.
+    pub fn createString(self: *Heap, bytes: []const u8) Error!*String {
+        const total = try self.reserveWithPayload(String, bytes.len, 1);
+        const copy = try self.backing.dupe(u8, bytes);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(String));
+        cell.value = .{ .bytes = copy };
+        self.link(String, cell, total);
+        return &cell.value;
+    }
+
+    /// A new vector of a copy of `items`. The copy is the payload, as the bytes
+    /// of a string are.
+    pub fn createVector(self: *Heap, items: []const Value) Error!*Vector {
+        const total = try self.reserveWithPayload(Vector, items.len, @sizeOf(Value));
+        const copy = try self.backing.dupe(Value, items);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(Vector));
+        cell.value = .{ .items = copy };
+        self.link(Vector, cell, total);
+        return &cell.value;
+    }
+
+    /// Checks that a cell of `T` and `count` payload elements of `size` bytes
+    /// fit under the limit, and returns the bytes they account for. A size that
+    /// overflows is over the limit, not wrapped around.
+    fn reserveWithPayload(self: *Heap, comptime T: type, count: usize, size: usize) Error!usize {
+        const payload = std.math.mul(usize, count, size) catch return error.HeapLimit;
+        const bytes = std.math.add(usize, cellBytes(T), payload) catch return error.HeapLimit;
+        try self.reserve(bytes);
+        return bytes;
     }
 
     /// A new pair of `car` and `cdr`.
@@ -275,7 +317,12 @@ pub const Heap = struct {
                 const cell: *Cell(T) = @fieldParentPtr("header", header);
                 self.accounted -= cellBytes(T) + payloadBytes(T, &cell.value);
                 self.count -= 1;
-                if (T == Frame) self.backing.free(cell.value.values);
+                switch (T) {
+                    Frame => self.backing.free(cell.value.values),
+                    String => self.backing.free(cell.value.bytes),
+                    Vector => self.backing.free(cell.value.items),
+                    else => {},
+                }
                 self.backing.destroy(cell);
                 return;
             }
@@ -421,6 +468,8 @@ test "a frame too large to account for is refused, not wrapped around" {
     defer heap.deinit();
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize), null));
     try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize) / @sizeOf(Value), null));
+    // A count whose size wraps around to a small one must not pass for it.
+    try std.testing.expectError(error.HeapLimit, heap.createFrame(std.math.maxInt(usize) / @sizeOf(Value) + 2, null));
     try std.testing.expectEqual(0, heap.accounted);
 }
 
@@ -437,6 +486,76 @@ test "when the cell cannot be allocated the slots are given back" {
     try std.testing.expectEqual(1, failing.allocations);
     try std.testing.expectEqual(1, failing.deallocations);
     try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+}
+
+test "a string accounts for its bytes as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]u8{ 'a', 'b', 'c' };
+    const s = try heap.createString(&source);
+    source[0] = 'x';
+    try std.testing.expectEqualStrings("abc", s.bytes);
+    try std.testing.expectEqual(cellBytes(String) + 3, heap.accounted);
+    const empty = try heap.createString("");
+    try std.testing.expectEqual(0, empty.bytes.len);
+    try std.testing.expectEqual(cellBytes(String) * 2 + 3, heap.accounted);
+}
+
+test "a vector accounts for its elements as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+    const v = try heap.createVector(&source);
+    source[0] = .fromFixnum(9);
+    try std.testing.expectEqual(1, v.items[0].asFixnum().?);
+    try std.testing.expectEqual(2, v.items.len);
+    try std.testing.expectEqual(cellBytes(Vector) + 2 * @sizeOf(Value), heap.accounted);
+    const empty = try heap.createVector(&.{});
+    try std.testing.expectEqual(0, empty.items.len);
+}
+
+test "a string and a vector are held to the limit by their payload" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(String) + 4 });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createString("hello"));
+    try std.testing.expectEqual(0, heap.accounted);
+    _ = try heap.createString("four");
+    try std.testing.expectError(error.HeapLimit, heap.createVector(&.{}));
+    try std.testing.expectError(error.HeapLimit, heap.createString(""));
+    var small: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Vector) + @sizeOf(Value) });
+    defer small.deinit();
+    try std.testing.expectError(error.HeapLimit, small.createVector(&.{ .fromFixnum(1), .fromFixnum(2) }));
+    _ = try small.createVector(&.{.fromFixnum(1)});
+}
+
+test "when the cell cannot be allocated the copy of a string or a vector is given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    try std.testing.expectError(error.OutOfMemory, heap.createString("abc"));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(1, failing.deallocations);
+    var failing2: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap2: Heap = .init(failing2.allocator(), .{});
+    defer heap2.deinit();
+    try std.testing.expectError(error.OutOfMemory, heap2.createVector(&.{.fromFixnum(1)}));
+    try std.testing.expectEqual(0, heap2.accounted);
+    try std.testing.expectEqual(1, failing2.deallocations);
+    try std.testing.expectEqual(failing2.allocated_bytes, failing2.freed_bytes);
+}
+
+test "a collection frees a string and a vector the roots do not reach, payload included" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const kept = try heap.createVector(&.{ .fromString(try heap.createString("kept")), .fromFixnum(1) });
+    _ = try heap.createString("dropped");
+    _ = try heap.createVector(&.{.fromFixnum(2)});
+    const before = heap.accounted;
+    heap.collect(TestRoots{ .values = &.{.fromVector(kept)} });
+    try std.testing.expect(heap.accounted < before);
+    try std.testing.expectEqual(2, heap.count);
+    try std.testing.expectEqual(cellBytes(Vector) + 2 * @sizeOf(Value) + cellBytes(String) + 4, heap.accounted);
+    try std.testing.expectEqualStrings("kept", kept.items[0].asString().?.bytes);
 }
 
 test "deinit frees every object, frames and their slots included" {

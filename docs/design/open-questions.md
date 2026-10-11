@@ -22,7 +22,6 @@
 | GCの起動の閾値の倍率と最小値 | スライス 1g は、直前の GC のあとの計上量の倍率と最小値の暫定値で決めた(値は `src/heap.zig` の定数が正)。ベンチマークは未実施で、段階1の終わりまでに実測で見直す |
 | WASM の出力バッファの初期サイズと伸ばし方 | Web UI の体感で決める |
 | Web UI をローカルで開く手段と、PR の zip を開く手段 | `file://` から始まる取得は Fetch の対象外なので、`.wasm` もモジュールスクリプトも Worker も取得できない。ローカルの HTTP サーバを立てる形に絞られる。`zig build` の step で立てる形と、zip にサーバを同梱する形のどちらにするかを決める。zip を開くレビュアに何を要求するかが決まるので、2つを一緒に決める。段階1の計画で決める([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md)) |
-| Windows の引数と環境変数を UTF-16 から変換したときの不対サロゲートの扱い | Zig 0.17.0 の変換 API を実機で確認し、[zig-api-notes.md](zig-api-notes.md) に記録する。検証が必要なら [platform-and-web.md](platform-and-web.md) の表に従って拒否する |
 
 ## 段階2までに決める
 
