@@ -1,21 +1,19 @@
 //! The CEK machine: the only place evaluation advances
 //! (docs/design/architecture.md, ADR-0004).
 //!
-//! Four registers: the node to run (control), the frame of the procedure being
-//! run (environment), the chain of frames that say what to do with a value
-//! (continuation), and the value just produced. A step either takes the node in
-//! control apart, or hands the value to the top frame of the continuation, so
-//! nothing here recurses on Zig's stack and a program can be as deep as memory.
+//! レジスタは 4 つある。実行する節点(制御)、実行中の手続きのフレーム(環境)、
+//! 値をどうするかを表すフレームの連なり(継続)、直前に作られた値である。ステップは、
+//! 制御にある節点を分解するか、値を継続の先頭のフレームに渡すかのどちらかをする。
+//! そのため、ここには Zig のスタックで再帰するものがなく、プログラムはメモリの
+//! 許す限り深くなれる。
 //!
-//! Frames of the continuation are never changed once made. A call in tail
-//! position needs no frame: a procedure's body runs under the continuation of
-//! its caller, and the last node of a sequence, and either branch of an `if`,
-//! run after their own frame is gone.
+//! 継続のフレームは、一度作ったら変えない。末尾位置の呼び出しにフレームは要らない。
+//! 手続きの本体は呼び出し元の継続のもとで走り、列の最後の節点と `if` のどちらの枝も、
+//! 自分のフレームが外れてから走る。
 //!
-//! The heap collects between two steps, never inside one (ADR-0031). There the
-//! registers are the whole of what the program holds besides the global
-//! bindings and the constants of the code, which is why the collector needs no
-//! other roots.
+//! ヒープは2つのステップの間で GC し、ステップの中では GC しない(ADR-0031)。その時点で
+//! プログラムが持っているものは、大域束縛とコードの定数を除けばレジスタがすべてである。
+//! だから GC にほかのルートは要らない。
 
 const std = @import("std");
 const tier = @import("tier.zig");
@@ -38,15 +36,17 @@ pub const Machine = struct {
     /// What a step needs only while it runs, such as the arguments of a call.
     scratch: std.mem.Allocator,
     /// The most frames the continuation has held since the machine was made or
-    /// the figure was reset. A call in tail position adds none, so a loop that
-    /// calls itself leaves this where it was.
+    /// the figure was reset.
+    /// 末尾位置の呼び出しはフレームを足さないので、自分自身を呼ぶループがあっても
+    /// この値は変わらない。
     peak_depth: usize = 0,
 
     pub fn init(ctx: *Context, scratch: std.mem.Allocator) Machine {
         return .{ .ctx = ctx, .scratch = scratch };
     }
 
-    /// Runs `node` to its value. On an error `ctx` holds the message.
+    /// Runs `node` to its value.
+    /// エラーのときは `ctx` がメッセージを持つ。
     pub fn run(self: *Machine, root: *const Node) Error!Value {
         const ctx = self.ctx;
         var control: ?*const Node = root;
@@ -98,8 +98,8 @@ pub const Machine = struct {
                     },
                 }
             } else {
-                // The value goes to the top frame of the continuation, which is
-                // taken off first: whatever runs next runs without it.
+                // 値は継続の先頭のフレームに渡す。そのフレームは先に外すので、
+                // 次に走るものは、そのフレームなしで走る。
                 const k = kont orelse return value;
                 kont = k.next;
                 env = k.env;
@@ -114,7 +114,7 @@ pub const Machine = struct {
                         }
                     },
                     .sequence => |rest| {
-                        // The last node runs with no frame of this sequence left.
+                        // 最後の節点は、この列のフレームが残っていない状態で走る。
                         if (rest.len > 1) kont = try self.push(kont, env, .{ .sequence = rest[1..] });
                         control = rest[0];
                     },
@@ -144,8 +144,8 @@ pub const Machine = struct {
                             control = c.call.operands[received - 1];
                         } else switch (try self.apply(args, received - 1)) {
                             .value => |v| value = v,
-                            // A tail call: the body runs under the continuation of
-                            // the call, which is what is left of `kont`.
+                            // 末尾呼び出し: 本体は呼び出しの継続のもとで走る。その継続は
+                            // `kont` に残っているものである。
                             .body => |entry| {
                                 env = entry.env;
                                 control = entry.body;
@@ -163,8 +163,9 @@ pub const Machine = struct {
     };
 
     /// Applies the operator at the end of `args` to the `count` operands before
-    /// it. A primitive gives its value; a closure gives the frame of the call and
-    /// the body to run in it.
+    /// it.
+    /// プリミティブは値を返す。クロージャは、呼び出しのフレームと、そのフレームで
+    /// 走らせる本体を返す。
     fn apply(self: *Machine, args: *const Args, count: usize) Error!Applied {
         const ctx = self.ctx;
         var operator_node = args;
@@ -173,10 +174,10 @@ pub const Machine = struct {
         if (operator.asPrimitive()) |prim| {
             var small: [8]Value = undefined;
             const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
-            // Why: the operands are the last thing taken from the scratch space and
-            // the primitive takes nothing from it, so giving them back right after
-            // the call lets an arena reuse them. Left, a loop that calls a primitive
-            // with many operands would grow the space with each pass.
+            // Why: オペランドはスクラッチ領域から最後に取ったものであり、プリミティブは
+            // そこから何も取らない。だから、呼び出しの直後に返せば、アリーナがそれを
+            // 再利用できる。返さずに残すと、オペランドの多いプリミティブを呼ぶループは、
+            // 1 周ごとに領域を広げてしまう。
             defer if (count > small.len) self.scratch.free(operands);
             fill(operands, args);
             const result = prim.call(operands) catch |e| return switch (e) {
@@ -193,10 +194,10 @@ pub const Machine = struct {
             "wrong number of arguments: expected {d}, got {d}",
             .{ lambda.arity, count },
         );
-        // The frame outlives the call when a closure made in it does, so it is
-        // allocated where closures are. The names the body defines start out
-        // uninitialized (R7RS 5.3.2: a body is a `letrec*`), which is how the
-        // heap makes a frame.
+        // フレームは、その中で作ったクロージャが生き延びるとき、呼び出しより長く生きる。
+        // そのため、クロージャと同じ場所に確保する。本体が定義する名前は未初期化で
+        // 始まる(R7RS 5.3.2: 本体は `letrec*` である)。ヒープがフレームを作ると、
+        // そうなる。
         const frame = try ctx.createFrame(lambda.frame_size, closure.env);
         fill(frame.values[0..count], args);
         return .{ .body = .{ .env = frame, .body = lambda.body } };
@@ -221,10 +222,9 @@ pub const Machine = struct {
         return k;
     }
 
-    /// Collects, with the registers as the roots. When what is live still leaves
-    /// no room, the line ends with "heap limit exceeded" here and not at some
-    /// allocation, where the heap would be asked for the same room again and
-    /// again.
+    /// Collects, with the registers as the roots.
+    /// 生きているものを除いてもなお余裕がないときは、ここで "heap limit exceeded" として
+    /// 行を終える。どこかの確保で終えると、ヒープは同じ余裕を何度も求められることになる。
     fn collect(self: *Machine, env: ?*Frame, kont: ?*const Kont, value: Value) Error!void {
         const ctx = self.ctx;
         ctx.heap.collect(Roots{ .ctx = ctx, .env = env, .kont = kont, .value = value });
@@ -284,9 +284,9 @@ const Fixture = struct {
         try self.initIn(std.testing.allocator, options);
     }
 
-    /// The heap takes its objects from `gpa`. A test that makes millions of them
-    /// asks for an allocator that is quick: the testing allocator records a stack
-    /// trace for each.
+    /// The heap takes its objects from `gpa`.
+    /// 数百万個を作るテストは、速いアロケータを求める。テスト用のアロケータは、
+    /// 1 つごとにスタックトレースを記録するからだ。
     fn initIn(self: *Fixture, gpa: std.mem.Allocator, options: heap_mod.Options) !void {
         self.arena = .init(std.testing.allocator);
         errdefer self.arena.deinit();
@@ -305,9 +305,9 @@ const Fixture = struct {
         const sink: reader_mod.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
         var last: Value = .unspecified_value;
         while (true) {
-            // Between two forms nothing is held but what the context holds and
-            // the value of the form that just ran, which the caller still gets.
-            // (`Interpreter.run` has printed it by now.)
+            // 2つの形式の間で持っているものは、コンテキストが持つものと、いま走り終えた
+            // 形式の値だけである。その値は、呼び出し側がまだ受け取る。
+            // (`Interpreter.run` は、この時点までにその値を表示し終えている。)
             if (self.ctx.heap.shouldCollect()) {
                 self.ctx.heap.collect(Machine.Roots{ .ctx = &self.ctx, .env = null, .kont = null, .value = last });
             }
@@ -336,7 +336,7 @@ test "a constant is its own value, and a primitive is applied to its operands" {
     try f.expectInt(42, "42");
     try f.expectInt(3, "(+ 1 2)");
     try f.expectInt(10, "(+ (+ 1 2) (+ 3 4))");
-    // More operands than the machine keeps on its own stack for a primitive.
+    // プリミティブ用に機械が自前のスタックに持つ数より、多いオペランド。
     try f.expectInt(55, "(+ 1 2 3 4 5 6 7 8 9 10)");
     try f.expectInt(-53, "(- 1 2 3 4 5 6 7 8 9 10)");
     try std.testing.expect((try f.eval("#t")).isTrue());
@@ -373,7 +373,7 @@ test "a global is defined, read and assigned" {
     try f.expectInt(6, "(set! x 6) x");
     try f.expectFails("unbound variable: nope", "nope");
     try f.expectFails("unbound variable: nope", "(set! nope 1)");
-    // A failing definition leaves the name as it was.
+    // 失敗した定義は、名前をそのままにする。
     try f.expectFails("unbound variable: nope", "(define x nope)");
     try f.expectInt(6, "x");
 }
@@ -394,7 +394,7 @@ test "after a call returns, the caller's own variables are the ones in sight" {
     try f.init();
     defer f.deinit();
     _ = try f.eval("(define (id x) x)");
-    // The operand `x` is read after `(id 100)` has run in a frame of its own.
+    // オペランド `x` は、`(id 100)` が自分のフレームで走り終えたあとに読まれる。
     try f.expectInt(101, "((lambda (x) (+ (id 100) x)) 1)");
     try f.expectInt(7, "((lambda (x) (if (id #t) (+ x 6) 0)) 1)");
     try f.expectInt(12, "((lambda (x) (id 0) (id 0) (+ x 11)) 1)");
@@ -430,7 +430,7 @@ test "definitions at the start of a body are local, and uninitialized until they
     try f.expectFails("unbound variable: y", "y");
     try f.expectFails("variable used before its definition: b", "((lambda () (define a b) (define b 1) a))");
     try f.expectFails("variable used before its definition: b", "((lambda () (define a (set! b 1)) (define b 2) b))");
-    // Each call has frame of its own.
+    // 呼び出しごとに、自分のフレームがある。
     _ = try f.eval("(define (f n) (define cell n) (set! cell (+ cell 1)) cell)");
     try f.expectInt(2, "(f 1)");
     try f.expectInt(11, "(f 10)");
@@ -468,11 +468,11 @@ test "an error raised deep in the recursion leaves the machine, and the next run
     const condition = Value.fromCondition(f.ctx.raised.?);
     try std.testing.expectEqual(value_mod.Kind.condition, condition.kind());
     try std.testing.expectEqualStrings("unbound variable: nope", condition.asCondition().?.message);
-    // The continuation of the failed run is gone with it: a run starts empty.
+    // 失敗した実行の継続は、実行とともに消える。実行は空の継続から始まる。
     f.machine.peak_depth = 0;
     try f.expectInt(3, "(+ 1 2)");
     try std.testing.expect(f.machine.peak_depth <= 4);
-    // A later error raises a condition of its own.
+    // あとのエラーは、自前の条件オブジェクトを送出する。
     try f.expectFails("not a procedure", "(1)");
     try std.testing.expect(f.ctx.raised.? != condition.asCondition().?);
 }
@@ -488,7 +488,7 @@ test "a call in tail position does not grow the continuation" {
     f.machine.peak_depth = 0;
     _ = try f.eval("(loop 10000)");
     try std.testing.expectEqual(small, f.machine.peak_depth);
-    // The same through `begin`, a body with definitions, and a procedure passed in.
+    // `begin` を通しても、定義のある本体でも、渡された手続きでも、同じである。
     _ = try f.eval("(define (b n) (begin 1 (if (= n 0) 'ok (b (- n 1)))))");
     _ = try f.eval("(define (g n) (define k 1) (if (= n 0) 'ok (g (- n k))))");
     _ = try f.eval("(define (run h n) (if (= n 0) 'ok (h h (- n 1))))");
@@ -504,14 +504,14 @@ test "the operands of a primitive call with many operands do not pile up in the 
     var f: Fixture = undefined;
     try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
-    // The machine's scratch space is its own, apart from the one the expander used.
+    // 機械のスクラッチ領域は専用で、展開器が使ったものとは別である。
     var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer scratch.deinit();
     f.machine.scratch = scratch.allocator();
     _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (+ 1 2 3 4 5 6 7 8 9 10) (loop (- n 1)))))");
     _ = try f.eval("(loop 20000)");
-    // Each call may take its operands from the scratch space for as long as the
-    // call runs, and gives them back; the space does not grow with the loop.
+    // 呼び出しは、実行している間だけスクラッチ領域からオペランドを取ってよく、
+    // 終われば返す。領域はループとともには広がらない。
     try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
 }
 
@@ -537,9 +537,9 @@ test "slow: a recursion as deep as memory allows, and not as deep as the Zig sta
     try f.expectInt(100_000, "(count 100000)");
 }
 
-// The tests below are about the heap. The programs of the tests above run in the
-// same fixture with a collection at every step, so a value the machine holds
-// somewhere the collector does not look is freed at once and not by luck.
+// 以下のテストはヒープに関するものである。上のテストのプログラムを、毎ステップで
+// GC する同じフィクスチャで走らせる。そのため、機械が GC の見ない場所に持っている値は、
+// 運よく残るのでなく、すぐに解放される。
 
 /// Programs and what they give, covering closures, shared variables, quoted data,
 /// definitions at the start of a body and non-tail calls.
@@ -563,7 +563,7 @@ test "the programs give the same results with a collection at every step, whatev
         try f.initWith(.{ .stress = true, .work_capacity = capacity });
         defer f.deinit();
         for (stress_programs) |p| try f.expectInt(p.expected, p.src);
-        // It really collected, and at every step of the small programs.
+        // 実際に GC しており、小さなプログラムでは毎ステップで GC している。
         try std.testing.expect(f.ctx.heap.collections > 1000);
     }
 }
@@ -572,7 +572,7 @@ test "the value a run gives back is still there after the collection that follow
     var f: Fixture = undefined;
     try f.initWith(.{ .stress = true });
     defer f.deinit();
-    // A closure made by the last form, held by nothing but the result.
+    // 最後の形式が作ったクロージャで、結果以外の何からも持たれていない。
     const closure = try f.eval("(lambda (x y) x)");
     try std.testing.expectEqual(2, closure.asClosure().?.lambda.arity);
     const made = try f.eval("((lambda (n) (lambda () n)) 7)");
@@ -591,14 +591,14 @@ test "what a global and what the code quote hold survives the collections of a l
     try std.testing.expectEqual(3, xs.asPair().?.cdr.asPair().?.cdr.asPair().?.car.asFixnum().?);
     const got = try f.eval("(get)");
     try std.testing.expectEqual(4, got.asPair().?.car.asFixnum().?);
-    // The same datum each time: it is the constant of the code, not a copy.
+    // 毎回同じデータである。コピーでなく、コードの定数だからだ。
     try std.testing.expectEqual(got.asPair().?, (try f.eval("(get)")).asPair().?);
 }
 
 /// A loop of `long` tail calls holds the heap to a size that does not depend on
-/// how long it runs, after a short one of 2000. `collections` is how many
-/// collections the long one has to have caused, so that it cannot pass for want
-/// of any.
+/// how long it runs, after a short one of 2000.
+/// `collections` は、長いほうが起こさなければならない GC の回数である。1 回も GC
+/// しないまま合格することがないようにするためだ。
 fn expectBoundedHeapLoop(long: usize, collections: usize) !void {
     var f: Fixture = undefined;
     try f.initIn(std.heap.smp_allocator, .{});
@@ -608,12 +608,12 @@ fn expectBoundedHeapLoop(long: usize, collections: usize) !void {
     const short = f.ctx.heap.peak;
     var src: [32]u8 = undefined;
     _ = try f.eval(try std.fmt.bufPrint(&src, "(loop {d})", .{long}));
-    // Far more calls than the heap could hold, and no more in it than before
-    // plus what one collection interval allows.
+    // ヒープに収まりきらないほど多くの呼び出しをしても、ヒープの中身は、前の量に
+    // GC の1区間が許す分を足した以上にはならない。
     try std.testing.expect(f.ctx.heap.collections > collections);
     try std.testing.expect(f.ctx.heap.peak <= 2 * f.ctx.heap.options.min_threshold);
     try std.testing.expect(f.ctx.heap.peak <= short + f.ctx.heap.options.min_threshold);
-    // And what is left once it ends is next to nothing.
+    // 終わったあとに残るものは、ほとんどない。
     f.ctx.collectIdle();
     try std.testing.expect(f.ctx.heap.accounted < 4096);
 }
@@ -637,7 +637,7 @@ test "garbage is collected: the unreachable closures and frames of finished call
     try std.testing.expect(f.ctx.heap.collections > 0);
     f.ctx.collectIdle();
     try std.testing.expect(f.ctx.heap.count <= before + 8);
-    // What is still referred to is still there, and works.
+    // まだ参照されているものは残っていて、動く。
     try f.expectInt(1, "(keep)");
 }
 
@@ -649,11 +649,11 @@ test "a recursion that never returns ends in an error at the limit of the heap, 
     try f.expectFails("heap limit exceeded", "(forever 0)");
     try std.testing.expect(f.ctx.heap.peak <= 256 * 1024);
     try f.expectInt(3, "(+ 1 2)");
-    // The globals made before it are still there, and the error can happen again.
+    // その前に作った大域変数はまだあり、エラーはまた起こりうる。
     _ = try f.eval("(define (id x) x)");
     try f.expectFails("heap limit exceeded", "(forever 0)");
     try f.expectInt(5, "(id 5)");
-    // A deep recursion that does return still does, when the limit allows it.
+    // 戻ってくる深い再帰は、上限が許すなら、やはり戻ってくる。
     _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1)))))");
     try f.expectInt(500, "(count 500)");
 }
@@ -664,16 +664,16 @@ test "a recursion that never returns reaches the limit with few collections, bec
     defer f.deinit();
     _ = try f.eval("(define (forever n) (+ 1 (forever n)))");
     try f.expectFails("heap limit exceeded", "(forever 0)");
-    // The threshold doubles up to the soft limit, which takes a few collections.
-    // Without the check after a collection, each step near the limit would
-    // collect again, until an allocation failed.
+    // しきい値は、ソフトな上限まで倍々に増える。そのために数回の GC がかかる。
+    // GC のあとの検査がなければ、上限の近くでは毎ステップでまた GC し、確保が
+    // 失敗するまで続く。
     try std.testing.expect(f.ctx.heap.collections <= 40);
     try std.testing.expect(f.ctx.heap.exhausted);
 }
 
 test "a single allocation the limit refuses is the same error" {
     var f: Fixture = undefined;
-    // Room for the reader's pairs and no more than a few frames.
+    // リーダのペアと、数個のフレームぶんだけの余裕。
     try f.initWith(.{ .limit = 2048, .min_threshold = 1024 });
     defer f.deinit();
     _ = try f.eval("(define (wide a b c d e f g h) h)");
