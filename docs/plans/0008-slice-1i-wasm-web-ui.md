@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0009](../adr/0009-wasm-freestanding-and-zero-dependency-web-ui.md), [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1i)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-11
-- 状態: 計画(合意待ち)
+- 状態: 合意済み(2026-10-11、「合意を求める点」の4つは、いずれも勧める案で合意した)
 
 ## 解こうとしている問題
 
@@ -29,7 +29,7 @@
 含めるもの:
 
 - 通常の実行ファイルとは別に、`src/wasm.zig` をルートにした `wasm32-freestanding` のビルド。エクスポートは下の部分集合。
-- ホストの import 3つ(標準出力、標準エラー、現在時刻)。1i では標準エラーへの書き込みはパニックのときだけ使い、現在時刻は宣言だけして呼ばない。
+- ホストの import は標準エラーへの書き込み(パニックのときだけ使う)の1つだけ。標準出力と現在時刻の import は、使う手続き(`display` などのポート、時刻の手続き)が入るスライスで足す。使わない import は、モジュールに現れない。
 - `web/`(`index.html`・`style.css`・`sucheme.js`・`worker.js`・`app.js`)。入力欄、実行ボタン、出力欄。Web Worker 上で動かす。
 - Node.js で動く往復テスト。
 - ローカルで開く手段。
@@ -57,6 +57,8 @@
 | `sucheme_step` `sucheme_provide_input` `sucheme_provide_eof` `sucheme_set_command_line` `sucheme_exit_code` | 実装しない。後のスライスで、設計の契約どおりに足す |
 
 出力は、評価の結果をネイティブの REPL と同じ形(`write` の形で 1 行ずつ)で出力バッファに書く。エラーのときは `error: <メッセージ>` の 1 行を書き、-1 を返す。
+
+出力バッファの大きさ([open-questions.md](../design/open-questions.md) の行を、1i で決める): 初期化のときに 256 KiB を1回だけ確保し、伸ばさない。溢れたときは、書けた分を残してエラー(`output buffer full`)にする。伸ばさないのは、`eval_begin` が最後まで評価するので、伸ばす上限を決めるには計上の仕組みが要るためである。ホストは、`eval_begin` のたびに出力を取り出して `sucheme_output_clear` を呼ぶ。
 
 ## 合意を求める点
 
@@ -135,4 +137,4 @@ ADR-0027 の費用側の停止の規則に従い、先に線を引く。レビ�
 ## 次にやること
 
 1. この計画書の合意(上の「合意を求める点」の4つ)。
-2. 合意後、`feature/phase1-slice-1i-wasm-web-ui` を最新の `origin/main` から作り、Z から始める。
+2. 合意済み。`feature/phase1-slice-1i-wasm-web-ui` で Z から始める。この計画書の PR がマージされるまで、ブランチはこの PR のブランチの上に作る。

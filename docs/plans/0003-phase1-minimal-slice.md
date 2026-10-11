@@ -51,7 +51,7 @@
 | 1f | マージ済み | #13(計画書 0004 は #12) |
 | 1g | マージ済み。計画は [0005-slice-1g-gc-heap.md](0005-slice-1g-gc-heap.md) | 実装が #21、後半のレビュー対応が #22(計画書 0005 は #18) |
 | 1h | マージ済み。計画は [0006-slice-1h-strings-chars-vectors.md](0006-slice-1h-strings-chars-vectors.md) | 計画書が [#23](https://github.com/suchi/sucheme-zig/pull/23)、実装は 1h の PR |
-| 1i | 計画は合意待ち。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が本 PR |
+| 1i | 計画は合意済み、実装中。計画は [0008-slice-1i-wasm-web-ui.md](0008-slice-1i-wasm-web-ui.md) | 計画書が本 PR |
 | 1j | 未着手 | - |
 
 ## 再開の手がかり
