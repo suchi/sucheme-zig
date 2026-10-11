@@ -96,8 +96,10 @@ const Stack = struct {
 ///
 /// Zig の再帰を使わず、`Stack` に未比較の組を積んで進める。ペアは car を先に降り、
 /// cdr を積む。長いリストは cdr を積んでは取り出すので、積みは深くならない。ベクタは、
-/// 次の要素の位置を積む。データの変更が無いので循環は作れず、訪問済みの集合は要らない。
-/// 変更が入るスライスで入れる(docs/design/open-questions.md)。
+/// 次の要素の位置を積む。データの変更が無いので循環は作れず、止まらなくなることはない。
+/// 訪問済みの集合は持たない。そのため、同じ部分を何度も指すデータ(共有構造)では、
+/// 比較の回数が深さに対して指数に増える。循環の停止と合わせて、データの変更が入る
+/// 段階3の最初のスライスで入れる(docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
 ///
 /// 同じペアやベクタの比較は、中を見ずに真とする。`eqv?` が真なら `equal?` も真だからである。
 fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
@@ -132,7 +134,11 @@ fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bo
                 const y = right.asString() orelse return false;
                 if (!std.mem.eql(u8, left.asString().?.bytes, y.bytes)) return false;
             },
-            else => if (!left.isEqv(right)) return false,
+            // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
+            // `equal?` が中身を比べるべき種別(バイトベクタなど)を見落とさないようにする。
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character => {
+                if (!left.isEqv(right)) return false;
+            },
         }
         const work = stack.pop() orelse return true;
         switch (work) {
