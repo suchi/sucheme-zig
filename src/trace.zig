@@ -275,8 +275,8 @@ test "a type the walk cannot sort has no class" {
     // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
     // テストが答えられる形で行う。
     const unsorted = [_]type{
-        *u8, // a pointer to something that is neither heap nor code
-        [*]Pair, // a pointer with no length
+        *u8, // ヒープのものでもコードのものでもない何かへのポインタ
+        [*]Pair, // 長さを持たないポインタ
         struct { fine: u32, odd: *u8 },
         union(enum) { fine: bool, odd: error{Boom}!u8 },
         fn () void,
