@@ -22,7 +22,8 @@
 //!
 //! REPL は、プロンプト `> ` と各結果を stdout に、エラーを stderr に
 //! `error: ` と `unbound variable: foo` のようなメッセージとして書く。エラーが
-//! 終わらせるのはその行の評価であり、REPL ではない。1行は完結したデータを含む。
+//! 終わらせるのはその行の評価であり、REPL ではない。`;` から行末までは行コメント
+//! で、コメントだけの行は何も出力しない。1行は完結したデータを含む。
 //! リストの途中や `'` の直後で終わる行は、継続行が入るまでエラーになる
 //! (ADR-0014)。エラーのあとも終了ステータスは 0 のままである。REPL は入力の
 //! 残りを読み進めたからである。
@@ -233,6 +234,14 @@ test "repl reads a last line with no newline" {
     var eb: [256]u8 = undefined;
     const r = try replOver("(+ 1 2)", &ob, &eb);
     try std.testing.expectEqualStrings("> 3\n> \n", r.out);
+}
+
+test "repl prints nothing for a line of only a comment and goes on" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("; コメント\n(+ 1 2) ; 足す\n;\n\n  ; 空白つき\n42\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> > 3\n> > > > 42\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
 }
 
 test "repl reports an error and goes on to the next line" {
