@@ -369,11 +369,12 @@ const slow_workflow = ".github/workflows/full.yml";
 /// 照合はこれを読まない。ここで名指しするのはそのためである。名指ししないと、
 /// ワークフローから `-Dslow=true` を落としても、step を消しても、全コマンドが
 /// 緑のまま、規模を試すテストがどこでも走らなくなる。名前は `build.zig` が
-/// `slow` オプションと2つのテスト step に付けたものなので、1つ落とすことは、
+/// `slow` オプションとテスト step に付けたものなので、1つ落とすことは、
 /// それが走らせるものを落とすことになる。
 const slow_commands = [_][]const u8{
     "zig build test -Dslow=true",
     "zig build test-scheme -Dslow=true",
+    "zig build test-wasm -Dslow=true",
 };
 
 /// A row of the verification command table, as this check reads it.
@@ -2844,6 +2845,8 @@ test "runsCommand: the slow commands are told apart from the plain ones" {
     try std.testing.expect(!runsCommand("zig build test --summary all", "zig build test -Dslow=true"));
     try std.testing.expect(!runsCommand("zig build test-scheme -Dslow=true", "zig build test -Dslow=true"));
     try std.testing.expect(!runsCommand("zig build test-scheme", "zig build test-scheme -Dslow=true"));
+    try std.testing.expect(runsCommand("zig build test-wasm -Dslow=true", "zig build test-wasm -Dslow=true"));
+    try std.testing.expect(!runsCommand("zig build test-wasm", "zig build test-wasm -Dslow=true"));
 }
 
 test "stripComment: a hash opens a comment only at the start or after whitespace" {
