@@ -33,7 +33,8 @@ pub const Value = union(enum) {
     /// A procedure made by `lambda`.
     closure: *Closure,
     /// What an expression with no useful value returns, such as `define`.
-    /// 外部表現を持たない。
+    /// 最上位の値としては REPL が出力しない(`Interpreter` の判定)。ペアやベクタの
+    /// 要素になったときは、プリンタが `#<unspecified>` と書く。
     unspecified,
     /// What a local variable holds between the start of its body and its
     /// definition (R7RS 5.3.2 binds the names of a body as `letrec*` does).
