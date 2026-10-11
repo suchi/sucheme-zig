@@ -6,7 +6,7 @@ const std = @import("std");
 const symbol = @import("symbol.zig");
 const value_mod = @import("value.zig");
 const env = @import("env.zig");
-const arith = @import("prim/arith.zig");
+const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
@@ -56,7 +56,7 @@ pub const Context = struct {
     pub fn initWithOptions(persist: std.mem.Allocator, gpa: std.mem.Allocator, options: heap_mod.Options) error{OutOfMemory}!Context {
         var ctx: Context = .{ .heap = .init(gpa, options), .persist = persist };
         errdefer ctx.heap.deinit();
-        for (&arith.primitives) |*p| {
+        for (&table.all) |*p| {
             const id = try ctx.symbols.intern(persist, p.name);
             try ctx.globals.define(persist, id, .fromPrimitive(p));
         }
