@@ -1,0 +1,246 @@
+# スライス 1k の単位 K5: ベクタの操作(R7RS 6.8)。`vector` は引数を並べたベクタを
+# 作る。`vector-length` と `vector-ref` は要素の数と位置を扱う。`make-vector` や
+# `vector-set!` のように、大きさを数で決めるものや変更するものは段階3に送った。
+# 検査の順序は、引数の個数、型、値の範囲である。
+
+# 型の述語。
+(vector? #(1 2 3))
+#t
+
+(vector? #())
+#t
+
+(vector? (vector))
+#t
+
+(vector? (vector 1))
+#t
+
+(vector? '(1 2 3))
+#f
+
+(vector? "abc")
+#f
+
+(vector? 1)
+#f
+
+(vector? '())
+#f
+
+(vector? 'a)
+#f
+
+(vector? #\a)
+#f
+
+# `vector` は引数の値を、書いた順に並べて作る。
+(vector)
+#()
+
+(vector 1)
+#(1)
+
+(vector 1 2 3)
+#(1 2 3)
+
+(vector 3 2 1)
+#(3 2 1)
+
+(vector 'a "b" #\c 4 #t '())
+#(a "b" #\c 4 #t ())
+
+# 引数は評価される。リテラルのベクタと違い、要素は式である。
+(vector (+ 1 2) (* 2 3))
+#(3 6)
+
+(vector (vector 1 2) (vector))
+#(#(1 2) #())
+
+(vector '(1 2) "あい")
+#((1 2) "あい")
+
+# 8個を超える引数(機械が引数を置く小さな配列を超える)でも順序は保たれる。
+(vector 1 2 3 4 5 6 7 8 9 10)
+#(1 2 3 4 5 6 7 8 9 10)
+
+(vector 10 9 8 7 6 5 4 3 2 1 0 -1)
+#(10 9 8 7 6 5 4 3 2 1 0 -1)
+
+# 長さ。
+(vector-length (vector))
+0
+
+(vector-length #())
+0
+
+(vector-length (vector 1))
+1
+
+(vector-length (vector 1 2 3))
+3
+
+(vector-length #(1 2 3 4 5))
+5
+
+(vector-length (vector 1 2 3 4 5 6 7 8 9 10 11 12))
+12
+
+(vector-length (vector (vector 1 2 3)))
+1
+
+(vector-length '#(a b))
+2
+
+# 要素を取り出す。
+(vector-ref (vector 1 2 3) 0)
+1
+
+(vector-ref (vector 1 2 3) 1)
+2
+
+(vector-ref (vector 1 2 3) 2)
+3
+
+(vector-ref #(a b c) 1)
+b
+
+(vector-ref (vector 'a "b" #\c) 1)
+"b"
+
+(vector-ref (vector 'a "b" #\c) 2)
+#\c
+
+(vector-ref (vector (vector 1 2) 3) 0)
+#(1 2)
+
+(vector-ref (vector-ref (vector (vector 1 2) 3) 0) 1)
+2
+
+(vector-ref (vector 1 2 3 4 5 6 7 8 9 10) 9)
+10
+
+# 要素に式の値が入る。
+(vector-ref (vector (+ 1 2) (* 2 3)) 1)
+6
+
+# 文字列を要素にするベクタ。引用したリテラルと、`vector` で作ったものの両方で、
+# 要素の文字列は文字の数で数えられる。
+(string-length (vector-ref '#("あいう" "b") 0))
+3
+
+(string-length (vector-ref (vector "あい" "xyz") 0))
+2
+
+(string-length (vector-ref (vector "あい" "xyz") 1))
+3
+
+(string-ref (vector-ref (vector "あい" "xyz") 0) 1)
+#\い
+
+# 範囲外の添字。
+(vector-ref (vector 1 2 3) 3)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) 100)
+error: argument out of range in vector-ref
+
+(vector-ref (vector) 0)
+error: argument out of range in vector-ref
+
+(vector-ref #() 0)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) -1)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1) -1)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) 9223372036854775807)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) -9223372036854775808)
+error: argument out of range in vector-ref
+
+(vector-ref (vector 1 2 3) 4294967296)
+error: argument out of range in vector-ref
+
+# 型の誤り。範囲より先に調べるので、範囲外の添字でも型のエラーが先に出る。
+(vector-length '(1 2))
+error: wrong type of argument to vector-length
+
+(vector-length "abc")
+error: wrong type of argument to vector-length
+
+(vector-length 3)
+error: wrong type of argument to vector-length
+
+(vector-length '())
+error: wrong type of argument to vector-length
+
+(vector-ref '(1 2) 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref "abc" 0)
+error: wrong type of argument to vector-ref
+
+(vector-ref (vector 1 2) #\a)
+error: wrong type of argument to vector-ref
+
+(vector-ref (vector 1 2) "0")
+error: wrong type of argument to vector-ref
+
+(vector-ref (vector 1 2) '())
+error: wrong type of argument to vector-ref
+
+(vector-ref '(1 2) 100)
+error: wrong type of argument to vector-ref
+
+(vector-ref '(1 2) -1)
+error: wrong type of argument to vector-ref
+
+# 引数の個数は機械が検査する。`vector` は何個でも取るので、個数のエラーは無い。
+(vector?)
+error: wrong number of arguments to vector?
+
+(vector? #(1) #(2))
+error: wrong number of arguments to vector?
+
+(vector-length)
+error: wrong number of arguments to vector-length
+
+(vector-length #(1) #(2))
+error: wrong number of arguments to vector-length
+
+(vector-ref)
+error: wrong number of arguments to vector-ref
+
+(vector-ref #(1 2))
+error: wrong number of arguments to vector-ref
+
+(vector-ref #(1 2) 0 1)
+error: wrong number of arguments to vector-ref
+
+# ベクタは変数に束縛され、式の中でそのまま使える。
+(define v (vector 10 20 30)) (vector-length v) (vector-ref v 2)
+3
+30
+
+(define (sum v i acc) (if (= i (vector-length v)) acc (sum v (+ i 1) (+ acc (vector-ref v i))))) (sum (vector 1 2 3 4) 0 0) (sum (vector) 0 0)
+10
+0
+
+# ベクタは作った値を GC の間じゅう保つ。要素の文字列、ベクタ、ペアもたどられる。
+# ストレスモードでは1ステップごとに GC が走り、通常のモードでも 2 万回の反復の間に
+# 何度か走る。
+(define v (vector "あいう" (vector 1 2) '(7 8) #\x)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) v (vector-length v) (string-ref (vector-ref v 0) 2) (vector-ref (vector-ref v 1) 1)
+ok
+#("あいう" #(1 2) (7 8) #\x)
+4
+#\う
+2
+
+# ループの中で作ったベクタは捨てられ、結果の値だけが残る。
+(define (build n) (if (= n 0) (vector 'done) (begin (vector n n n) (build (- n 1))))) (build 20000)
+#(done)
