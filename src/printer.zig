@@ -221,7 +221,7 @@ test "write prints the unspecified value inside data" {
     defer f.deinit();
     var buf: [64]u8 = undefined;
     const u: Value = .unspecified_value;
-    // 読める形のまま、リストの要素・ペアの末尾・ベクタの要素になる。
+    // 読み戻せない表記(`#<procedure>` と同じ種類)で、リストの要素・ペアの末尾・ベクタの要素になる。
     const l = try f.list(&.{ .fromFixnum(1), u, .fromFixnum(3) }, Value.empty_list_value);
     try std.testing.expectEqualStrings("(1 #<unspecified> 3)", try f.written(&buf, l));
     try std.testing.expectEqualStrings("(1 . #<unspecified>)", try f.written(&buf, try f.cons(.fromFixnum(1), u)));

@@ -109,8 +109,8 @@ pub const Interpreter = struct {
             const node = try expand.expand(&self.ctx, arena, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
-            // 定義は何も出力しない。REPL が表示するのは値であり、これには
-            // 外部表現がない。
+            // 定義は何も出力しない。最上位の未規定値も表示しない。データの中の
+            // 未規定値は、プリンタが `#<unspecified>` と書く。
             if (v.kind() == .unspecified) continue;
             try printer.write(out, arena, &self.ctx.symbols, v);
             try out.writeByte('\n');
@@ -164,9 +164,9 @@ test "isBound answers for the primitives, the special forms and nothing else" {
     for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!" }) |keyword| {
         try std.testing.expect(interp.isBound(keyword));
     }
-    // Why: 未束縛の例は、プリミティブが増えても束縛されない名前にする。`call/cc` は
-    // 段階2で入る(`car` はスライス 1k で束縛された)。
-    try std.testing.expect(!interp.isBound("call/cc"));
+    // Why: 未束縛の例は、どの段階でも束縛されない名前にする。R7RS の名前は、いつか束縛される
+    // (`car` はスライス 1k で、`call/cc` は段階2で束縛される)ので、例に使うとそのたびに落ちる。
+    try std.testing.expect(!interp.isBound("no-such-procedure"));
     try std.testing.expect(!interp.isBound("frobnicate"));
     try std.testing.expect(!interp.isBound(""));
     // 名前の綴りが完全に一致するものだけを束縛済みとする。
