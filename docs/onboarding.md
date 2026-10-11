@@ -83,7 +83,7 @@ flowchart TB
 1. `tests/scheme/` に、その手続きの振る舞いを確かめる失敗するテストを書く。
 2. `src/prim/` の該当ファイルに実装を追加し、登録表に加える。
 3. R7RS の該当節を `Why:` コメントで引く(非自明な振る舞いの場合)。
-4. `tests/r7rs-required/` の一覧に含まれる識別子なら、準拠マトリクスの数値が動くことを確認する(マトリクスは段階3から生成される)。
+4. `tests/r7rs-required/` の一覧に含まれる識別子なら、準拠マトリクスの数値が動くことを確認する(`zig build report` で `docs/status/conformance.md` を生成し直し、差分をコミットに含める)。
 
 ### Web UI をローカルで開く
 
@@ -110,7 +110,7 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 ### 段階を完了させる
 
 1. 段階の完了条件([roadmap.md](roadmap.md))を満たしたことをテストで示す。
-2. 準拠マトリクス(`docs/status/`)を生成し直す。CI が同期を検査する(`zig build report` は段階3から。それまでは省く)。README には数値を置かないので対象外である。
+2. 準拠マトリクス(`docs/status/`)を `zig build report` で生成し直す。CI が `zig build check-report` で同期を検査する。README には数値を置かないので対象外である。
 3. `roadmap.md` のチェックを入れ、「現在地」を更新する。段階の節の「残していること」を、実際に残ったものに合わせる。
 4. その段階で確定したことを、該当する設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す([ADR-0018](adr/0018-incremental-vertical-slices.md))。
 5. リリースタグを打つ。

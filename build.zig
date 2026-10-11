@@ -190,6 +190,7 @@ pub fn build(b: *std.Build) void {
     // 使う箇所ごとに tool() を呼ぶと、同じファイルから Compile step が2つできた。
     const check_docs = tool(b, "check-docs", .Debug);
     const extractor = tool(b, "extract-r7rs-required", .Debug);
+    const coverage = tool(b, "coverage-report", .Debug);
     // Why: ランナーは100万ステップのプログラムを評価するので、Debug ビルドでは
     // 数分かかる。ReleaseSafe は検査(境界・オーバーフロー・アサーション)を残したまま、
     // インタプリタを数倍速く動かす。下のモジュールは、それを import する
@@ -209,7 +210,10 @@ pub fn build(b: *std.Build) void {
     const tier_options = b.addOptions();
     tier_options.addOption(bool, "slow", slow);
     test_scheme.root_module.addOptions("tier", tier_options);
-    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme };
+    // 準拠マトリクスの生成器は、必須の識別子が束縛済みかをインタプリタに尋ねる。
+    // そのため、実行ファイルと同じソースに対して、ホスト向けに作る。
+    coverage.root_module.addImport("sucheme", sucheme_host);
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage };
 
     const run_check_docs = b.addRunArtifact(check_docs);
     // run step が引き継ぐのは build root ではなく `zig build` を起動したディレクトリ
@@ -224,6 +228,22 @@ pub fn build(b: *std.Build) void {
     run_check_extract.setCwd(b.path("."));
     const check_extract_step = b.step("check-extract", "check the generated lists against the input");
     check_extract_step.dependOn(&run_check_extract.step);
+
+    // 準拠マトリクス(docs/status/conformance.md)。`check-report` はツールの既定の
+    // 動作である比較を走らせ、コミット済みのファイルがツールの生成結果と違えば
+    // 非ゼロで終わる。書き込むのは `report` だけで、`--write` を渡す。上の抽出
+    // プログラムと同じ形で、理由も同じである。比較が既定なので、引数を1つ落とした
+    // だけでは検査が書き換えに変わらない。
+    const run_check_report = b.addRunArtifact(coverage);
+    run_check_report.setCwd(b.path("."));
+    const check_report_step = b.step("check-report", "check docs/status/conformance.md against the interpreter");
+    check_report_step.dependOn(&run_check_report.step);
+
+    const run_report = b.addRunArtifact(coverage);
+    run_report.setCwd(b.path("."));
+    run_report.addArg("--write");
+    const report_step = b.step("report", "write docs/status/conformance.md");
+    report_step.dependOn(&run_report.step);
 
     // ランナーは引数を取らず、tests/scheme/ を自分で読む。だからここに引数を足すのは、
     // 走らせる範囲を狭める唯一の手段になる。末尾の checkStepRuns の呼び出しを参照。
@@ -319,6 +339,7 @@ pub fn build(b: *std.Build) void {
         wasm_step,
         test_wasm_step,
         check_extract_step,
+        check_report_step,
     };
     for (required_steps) |s| {
         run_check_docs.addArg("--requires");
@@ -347,6 +368,9 @@ pub fn build(b: *std.Build) void {
     // ちょうどその artifact だけ。ここに引数を足すと、比較を書き換えに変える唯一の
     // 手段になる理由は、checkStepRuns を参照。
     checkStepRuns(check_extract_step, extractor, 1);
+    // 引数なしで、成果物だけを走らせる。理由は同じで、比較が生成器の既定であり、
+    // 書き込みには `--write` が要る。
+    checkStepRuns(check_report_step, coverage, 1);
     // これもちょうどその artifact だけ。フィルタや狭いディレクトリは、引数から
     // 入り込む。
     checkStepRuns(test_scheme_step, test_scheme, 1);

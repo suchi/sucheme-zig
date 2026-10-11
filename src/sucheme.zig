@@ -80,6 +80,18 @@ pub const Interpreter = struct {
         return self.ctx.diagnostic();
     }
 
+    /// Whether `identifier` is bound: a global binding, or a special form.
+    ///
+    /// 準拠マトリクス(tools/coverage-report)が使う。名前を引くだけで、シンボルを
+    /// インターンしない。読まれただけの名前はシンボル表にあるが、束縛ではない。
+    /// 特殊形式は大域環境に束縛を持たず、展開器のキーワードである。キーワードは
+    /// 隠すことも再定義することもできないので、どのインタプリタでも束縛済みである。
+    pub fn isBound(self: *const Interpreter, identifier: []const u8) bool {
+        if (expand.isKeyword(identifier)) return true;
+        const id = self.ctx.symbols.index.get(identifier) orelse return false;
+        return self.ctx.globals.lookup(id) != null;
+    }
+
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         // Why: 文字列・文字・シンボル名は妥当な UTF-8 であり(ADR-0008)、プログラムの
         // バイト列が入ってくるのはここ1か所だけである。検査は標準ライブラリのものを
@@ -140,6 +152,42 @@ fn evalPrinted(src: []const u8) ![]const u8 {
     var w: std.Io.Writer = .fixed(&S.buf);
     try interp.evalPrint(arena.allocator(), src, &w);
     return w.buffered();
+}
+
+test "isBound answers for the primitives, the special forms and nothing else" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    // プリミティブは大域環境の束縛、特殊形式は展開器のキーワードである。
+    try std.testing.expect(interp.isBound("+"));
+    try std.testing.expect(interp.isBound(">="));
+    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!" }) |keyword| {
+        try std.testing.expect(interp.isBound(keyword));
+    }
+    try std.testing.expect(!interp.isBound("car"));
+    try std.testing.expect(!interp.isBound("frobnicate"));
+    try std.testing.expect(!interp.isBound(""));
+    // 名前の綴りが完全に一致するものだけを束縛済みとする。
+    try std.testing.expect(!interp.isBound("++"));
+    try std.testing.expect(!interp.isBound("Define"));
+}
+
+test "isBound follows definitions, and a name that was only read is not bound" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // リーダはシンボルをインターンするが、インターンは束縛ではない。
+    try interp.evalPrint(arena.allocator(), "'seen", &w);
+    try std.testing.expect(!interp.isBound("seen"));
+    try interp.evalPrint(arena.allocator(), "(define x 1)", &w);
+    try std.testing.expect(interp.isBound("x"));
+    // 失敗した行が定義しなかった名前は束縛されない。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(define y nope)", &w));
+    try std.testing.expect(!interp.isBound("y"));
 }
 
 test "evalPrint writes each result on its own line" {
