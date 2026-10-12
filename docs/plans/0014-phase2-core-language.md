@@ -18,7 +18,7 @@
 [roadmap.md](../roadmap.md) の段階2の完了条件が正である。この計画は次のように読む。
 
 - [frontend.md](../design/frontend.md) の衛生性の検証項目のうち、段階2で入力を書けるものがすべて通る。どの項目をどのスライスが通すかは「検証項目の割り当て」の表にある。
-- [runtime.md](../design/runtime.md) のテストに含める事例(例外の節の番号つきの一覧と、複数値の節の事例)がすべて通る。ただし、この条件はそのままでは満たせない。理由と扱いは合意を求める点の9にある。
+- [runtime.md](../design/runtime.md) のテストに含める事例がすべて通る。事例は3か所にある。マーク段階の節(作業リストの容量0)、例外の節の番号つきの一覧、複数値の節である。ただし、この条件はそのままでは満たせない。理由と扱いは合意を求める点の9にある。
 - 継続の多重起動と `dynamic-wind` の相互作用のテストが通る(スライス 2e)。
 - `include-ci` が対象ファイルを畳み込んで読む(スライス 2q)。
 - リリース v0.2.0 を出す(スライス 2r)。
@@ -30,7 +30,7 @@
 - roadmap の段階2の作業項目のすべて。項目とスライスの対応は「roadmap の項目の割り当て」の表にある。
 - 可変個引数の `lambda`。roadmap に無いが、段階2のテストと段階3の派生構文の両方が要る(合意を求める点の1)。
 - 条件オブジェクトの手続き(`error` `error-object?` `error-object-message` `error-object-irritants` `read-error?` `file-error?`)。1k の計画 [0010](0010-slices-1k-1l-primitives-and-repl-continuation.md) の「選ばなかったものと送り先」が段階2に送った。
-- `features`。`cond-expand` と同じフィーチャ一覧を返す([frontend.md](../design/frontend.md) の `cond-expand` のフィーチャ)。
+- `features`。`cond-expand` と同じフィーチャ一覧を返す([frontend.md](../design/frontend.md) の `cond-expand` のフィーチャ)。1k の計画 [0010](0010-slices-1k-1l-primitives-and-repl-continuation.md) の「選ばなかったものと送り先」の表は `features` を段階5に送っていた。この計画は段階2に移す(合意を求める点の11)。
 
 含めないもの(送り先は括弧の中):
 
@@ -67,7 +67,7 @@
 | 2a 可変個引数の `lambda` | `((lambda args args) 1 2)` が `(1 2)`、`((lambda (a . r) r) 1 2 3)` が `(2 3)` を返す | (roadmap に無い。合意を求める点の1) | 半日 |
 | 2b 条件オブジェクトのヒープ化と送出の予約領域 | 条件オブジェクトが GC ヒープにあり、上限に達した状態でも `heap limit exceeded` の条件を作れる。送出された値を `Value` として持つ | 精密GCの完成とルート管理規約の確立 | 1日 |
 | 2c 機械操作プリミティブの仕組みと `apply` | `(apply + 1 2 '(3 4))` が `10`。`apply` を通した末尾呼び出しの 100万回のループが一定の継続の深さで終わる | 機械操作プリミティブ(`apply`) | 半日 |
-| 2d 動的点と例外 | `(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))` が `42`。`(car 5)` の型エラーをハンドラで捕まえられる | 例外、動的点の単一リストと `handler_shift`、機械操作プリミティブ(`with-exception-handler` `raise` `raise-continuable`) | 1日 |
+| 2d 動的点と例外 | `(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))` が `42`。`(car 5)` の型エラーと上限超過をハンドラで捕まえられる | 例外、動的点の単一リストと `handler_shift`、機械操作プリミティブ(`with-exception-handler` `raise` `raise-continuable`) | 1日 |
 | 2e 完全な `call/cc` と `dynamic-wind` | `(call/cc (lambda (k) (+ 1 (k 42))))` が `42`。継続の多重起動と `dynamic-wind` の相互作用のテストが通る | 完全な `call/cc` と `dynamic-wind`、機械操作プリミティブ(`call/cc` `dynamic-wind`) | 1日 |
 | 2f 複数値 | `(call-with-values (lambda () (values 1 2)) list)` が `(1 2)` | `values` と `call-with-values`、複数値のオブジェクト | 半日 |
 | 2g パラメータ | `((make-parameter 10 (lambda (x) (* x 2))))` が `20`。`parameterize` が束縛を戻す | `make-parameter` と `parameterize`、機械操作プリミティブ(`make-parameter`) | 半日 |
@@ -122,8 +122,10 @@ flowchart TD
     s2p["2p cond-expand"]
     s2q["2q include-ci"]
     s2r["2r リリース v0.2.0"]
+    s2a --> s2b
     s2a --> s2c
     s2a --> s2i
+    s2k -.-> s2m
     s2b --> s2d
     s2c --> s2d
     s2d --> s2e
@@ -154,25 +156,29 @@ flowchart TD
 - 2d、2e、2f は直列: 3つとも `machine.zig` の実行ループと `Kont.Step` に手を入れる。2e の巻き戻しは 2d の動的点のレジスタを使い、2f の「そのまま渡す」群は 2e の wind の経路を含む。
 - 2g は 2e と 2i の後: `parameterize` は特殊形式で、構文環境(2i)の意味として登録する。パラメータの点の退出は 2e の巻き戻しを通る。
 - 2h は 2c の後: 2c が `Primitive` の形を変えるので、その後に新しいプリミティブのファイルを足す。ほかとは独立である。
+- 2a は 2b の前: 2a のあとで2つの系列に分かれる(2a が `machine.zig` の `apply` を触り、2b も `machine.zig` の失敗の写像を触る)。
 - 2i、2j は直列で、その後に2系列へ分かれる: マクロの系列(2k、2l)と、ライブラリの系列(2m から 2q)である。
+- 2k から 2m への破線: 2m の完了の確認のうち、マクロのエクスポートと `define-syntax` の禁止の部分だけが 2k を要る。2m の残りは 2k を待たずに始められる(2m の節)。
 
 ### 並行できるものと、できないもの
 
 系列は2つある。`machine.zig` を触る実行時の系列(2b から 2h)と、`expand.zig` を触るフロントエンドの系列(2i から 2q)である。2a のあとは、2つの系列を並行に進める。
 
-- 並行できる: 実行時の系列とフロントエンドの系列。2b と 2c。2h と、実行時の系列の残り。2i から 2j のあとの、マクロの系列(2k、2l)とライブラリの系列(2m、2n、2o、2p、2q)。
+- 並行できる: 実行時の系列とフロントエンドの系列。2b と 2c。2h と、実行時の系列の残り。2i から 2j のあとの、マクロの系列(2k、2l)とライブラリの系列(2m、2n、2o、2p、2q)。ただし、マクロのエクスポートと `define-syntax` の禁止のテストは 2k と 2m の両方を要るので、後にマージされるほうが足す(2m の節)。
 - 並行できない: 2d、2e、2f(`machine.zig` の同じ箇所)。2i と 2j(`expand.zig` の全体を書き換える)。2g は、2e と 2i の両方を待つ。
 
 ### 重なりの確認
 
 系列が分かれても、次のファイルは複数のスライスが触る。それぞれ手当てを決める。
 
-- `src/value.zig`: 新しい変種(`Value` の変種、ヒープの型)を、2b、2d、2e、2f、2g、2h、2i、2k、2m が足す。それぞれ `Value` の union と `heap_types` と `Kind` の末尾に1行ずつ足す。隣り合う行の衝突は機械的に解ける。`switch` の網羅性検査が、プリンタ、`isEqv`、真偽判定、`procedure?` の分岐の漏れを教える。
-- `src/printer.zig`: 新しい変種の外部表現(`#<continuation>` など)。同じく末尾に足す。
+- `src/value.zig`: 新しい変種(`Value` の変種、ヒープの型、節点)を、2a、2b、2c、2d、2e、2f、2g、2h、2i、2j、2k、2m が足すか変える。それぞれ `Value` の union と `heap_types` と `Kind` の末尾に1行ずつ足す。隣り合う行の衝突は機械的に解ける。`switch` の網羅性検査が、プリンタ、`isEqv`、真偽判定、`procedure?` の分岐の漏れを教える。
+- `src/printer.zig`: 新しい変種の外部表現(`#<continuation>` など)を、2d、2e、2f、2g、2h、2k が足す。同じく末尾に足す。
 - `src/prim/table.zig`: 族の行を、各スライスが1行ずつ足す。
-- `src/sucheme.zig`: 2b(診断の整形)、2i(`isBound`)、2m(読み込みの作業リスト)が触る。関数が別なので、衝突は機械的に解ける。
+- `src/sucheme.zig`: 2b(診断の整形)、2f(最上位の複数値の表示)、2i(`isBound`)、2m(読み込みの作業リスト)、2n(初期化にファイルを開く手段を渡す)が触る。関数が別なので、衝突は機械的に解ける。
+- `src/machine.zig` と `src/syntax/expand.zig` の系列をまたぐ変更: 2j(セルの参照と代入)と 2g(`parameterize`)は、フロントエンドの系列から `machine.zig` を触る。2j は大域の参照・代入・定義の分岐だけを、2g は新しい節点と継続フレームの分岐だけを書き換える。実行時の系列の 2d から 2f と同時に開いているときは、後にマージするほうが main を取り込んで解く。
+- `docs/design/runtime.md` と `docs/design/architecture.md`: 2b(ルート管理の規約、条件オブジェクトの例外の削除)、2d(プリミティブの失敗の形、エラー表現の区別)、2e(未処理例外の実装)が触る。いずれも実行時の系列で直列なので、衝突しない。
 - `docs/status/conformance.md`: 束縛を増やすスライスが、それぞれ `zig build report` で生成し直す。並行した PR が両方とも生成し直したときは、後からマージするほうが main を取り込んでから生成し直す。手で合わせない。
-- `tests/scheme/` の番号: スライスごとに範囲を分ける。2a は 0040 から 0049 を使い、以降は 2b が 0050 から、2c が 0060 から、のように、スライスの並び順に 10 ずつ進める(2q は 0200 から)。`tests/scheme-slow/` は、2c が 0014、2e が 0015、2k が 0016、2n が 0017 を使う。
+- `tests/scheme/` の番号: スライスごとに範囲を分ける。2a は 0040 から 0049 を使い、以降は 2b が 0050 から、2c が 0060 から、のように、スライスの並び順に 10 ずつ進める(2q は 0200 から)。`tests/scheme-slow/` は、2c が 0014、2e が 0015、2k が 0016 を使う。2n の規模のテストは、一時のディレクトリを要るので `tier.slow()` の Zig の単体テストに置く。
 - 進捗の表と roadmap: 各スライスの PR は、その PR の中で、この計画書の「進捗」の表の自分の行と、「次にやること」の自分の系列の行と、自分が完了させる roadmap の段階2のチェックボックスを更新する([AGENTS.md](../../AGENTS.md) の作業の区切りの規則)。「次にやること」は系列ごとに1行(実行時、マクロ、ライブラリ)に分けてあるので、並行した PR が同じ行を触らない。
 
 ## モジュール間のインタフェース
@@ -356,8 +362,9 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 ### 2b 条件オブジェクトのヒープ化と送出の予約領域
 
-- 対象: 条件オブジェクトを GC ヒープに移す(`heap_types` へ)。種別、メッセージ(文字列)、irritant のリストを持たせる。`Context.raised` を `?Value` にする。送出のための予約領域([runtime.md](../design/runtime.md))を作り、条件の確保地点から使う。予約領域のバイト数を実測で決める。ルート管理の規約を [runtime.md](../design/runtime.md) の「ルート集合」と「一時ルートの規約」に段階2の形で書く。
-- ファイル: `src/value.zig`、`src/heap.zig`(予約領域)、`src/context.zig`、`src/machine.zig`(写像の呼び出し先)、`src/sucheme.zig`(診断の整形)、`docs/design/runtime.md`、`docs/design/architecture.md`(例外の一覧から条件オブジェクトを外す)、[ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の追記(見直し条件の「条件オブジェクトをヒープに置く」に答えた内容)。
+- 対象: 条件オブジェクトを GC ヒープに移す(`heap_types` へ)。種別、メッセージ(文字列)、irritant のリストを持たせる。`Context.raised` を `?Value` にする。送出のための予約領域([runtime.md](../design/runtime.md))の仕組みと初期の大きさを入れ、条件オブジェクトとそのメッセージの確保地点から使う。runtime.md の必要量の表のうち、ほかの地点(ハンドラ切り替えの動的点、ハンドラの引数の環境、継続フレーム、巻き戻しのフレームと経路の配列)は 2d と 2e で入る。2d と 2e が、自分の地点を予約領域から確保するようにし、その時点で大きさを測って調整する。バイト数が決まるのは 2e である。ルート管理の規約を [runtime.md](../design/runtime.md) の「ルート集合」と「一時ルートの規約」に段階2の形で書く。
+- ファイル: `src/value.zig`、`src/heap.zig`(予約領域)、`src/context.zig`、`src/machine.zig`(写像の呼び出し先)、`src/sucheme.zig`(診断の整形)、`docs/design/runtime.md`、`docs/design/architecture.md`(例外の一覧から条件オブジェクトを外す)、`tools/test-wasm` の入力。[ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の見直し条件(条件オブジェクトをヒープに置く)に答える記録。追記で足りるか新しい ADR が要るかは、合意を求める点の4で決める。
+- WASM の往復: 2b の時点で `raise` はまだ無い。`(car 5)` の失敗が、ヒープの条件オブジェクトを通って、今までと同じ `error: wrong type of argument to car` として届くことを `tools/test-wasm` の入力で確かめる。
 - ルート管理の規約として書く内容: 段階2のルートは、機械のレジスタ(環境、継続、値、動的点)、大域環境(REPL とライブラリの登録表)、コードの定数、読み込みの作業リスト、送出された値(`Context.raised`)である。送出された値は `evalPrint` が失敗の時点で文字列に整形するが、次の行の GC の前に `raised` を空にしない限りヒープを指し続けるので、`Context.mark` に入れる。機械の実行をまたいで値を持つものは、`Context` のルートの表に入れる。展開器は、機械の実行をまたいで状態を持たない(合意を求める点の4)。新しいヒープの型は、走査関数の生成器の検査([runtime.md](../design/runtime.md) の「走査関数の生成」)を通す。
 - 最初の失敗するテスト: 単体テストで、上限の直前まで確保した状態から `(car 5)` を評価し、`wrong type of argument to car` の条件がヒープにあって、GC のあとも読めること。
 - 完了の確認: 既存の `tests/scheme/` のエラーのメッセージがすべて変わらない。条件オブジェクトがアリーナに作られない(アリーナの使用量で確かめる)。ストレスモードで、条件が回収されずに残る経路と、到達しなくなって回収される経路の両方を確かめる。
@@ -371,17 +378,17 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 ### 2d 動的点と例外
 
-- 対象: 動的点のレジスタ、ハンドラの点と `handler_shift` の点([ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md))。`with-exception-handler` `raise` `raise-continuable` `error` と、条件オブジェクトの述語と取り出し(`error-object?` `error-object-message` `error-object-irritants` `read-error?` `file-error?`)。純粋プリミティブの失敗を、機械の中の `raise` にする(合意を求める点の2)。ハンドラが無い `raise` は、この時点では今までどおり行を打ち切る(巻き戻しは 2e)。
-- ファイル: `src/value.zig`、`src/machine.zig`、`src/prim/condition.zig`(新規)、`src/prim/table.zig`、`src/printer.zig`(条件オブジェクトの外部表現)、`tests/scheme/0070-*.txt`。
+- 対象: 動的点のレジスタ、ハンドラの点と `handler_shift` の点([ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md))。`with-exception-handler` `raise` `raise-continuable` `error` と、条件オブジェクトの述語と取り出し(`error-object?` `error-object-message` `error-object-irritants` `read-error?` `file-error?`)。純粋プリミティブの失敗を、機械の中の `raise` にする(合意を求める点の2)。機械が自分で検出する失敗も、機械の中の `raise` にする。今は `error.Raised` で機械の外へ出て、ハンドラ(と、2e 以降は `dynamic-wind` の `after`)を迂回している。対象は、`Context.create` と `Context.createFrame` から `heapFailure` と `ctx.raise` を経る上限超過、`Machine.collect` が `exhausted` のときの `ctx.raise`、`not a procedure`、引数の個数、未束縛の変数、未初期化の変数である。[runtime.md](../design/runtime.md) の「上限超過と確保の失敗」(上限超過は捕まえられる Scheme のエラー)と「未処理例外」(脱出は巻き戻しの経路を通る)の設計に合わせる。展開器とリーダの誤りは、今までどおり機械の外のエラーである(`syntax-error` はハンドラで捕まらない、R7RS 4.3.3)。ハンドラ切り替えの点とハンドラの呼び出しの確保を、予約領域から行う(2b の仕組み)。ハンドラが無い `raise` は、この時点では今までどおり行を打ち切る(巻き戻しは 2e)。
+- ファイル: `src/value.zig`、`src/machine.zig`、`src/context.zig`(失敗を機械へ返す形)、`src/heap.zig`(予約領域の地点)、`src/prim/condition.zig`(新規)、`src/prim/table.zig`、`src/printer.zig`(条件オブジェクトの外部表現)、`docs/design/runtime.md` と `docs/design/architecture.md`(合意を求める点の2の答えに合わせた、プリミティブの失敗の形とエラー表現の区別の文)、`tests/scheme/0070-*.txt`。
 - 最初の失敗するテスト: `(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))` が `42`。
-- 完了の確認: [runtime.md](../design/runtime.md) の例外の事例 5、6、7、8、11 が通る。`raise` のハンドラが戻ったら二次例外になる。ハンドラの中の `raise` が外側のハンドラに届き、ループしない。
+- 完了の確認: [runtime.md](../design/runtime.md) の例外の事例 5、6、7、8、11 が通る。`raise` のハンドラが戻ったら二次例外になる。ハンドラの中の `raise` が外側のハンドラに届き、ループしない。小さな上限で、非末尾の無限再帰の `heap limit exceeded` を `with-exception-handler` のハンドラで捕まえ、ハンドラから継続で脱出せずに値を返すと二次例外になる(`raise` の規定どおり)ことと、`raise-continuable` でない上限超過がハンドラに条件オブジェクトとして届くことを確かめる。未束縛の変数と `not a procedure` もハンドラで捕まえられる。
 
 ### 2e 完全な `call/cc` と `dynamic-wind`
 
 - 対象: 継続オブジェクト(`kont` と `dyn` の保存)、`call-with-current-continuation` と `call/cc`、wind の点、`dynamic-wind`、継続の起動の巻き戻し(退出と進入、経路の配列)、未処理例外を最外の継続への脱出として巻き戻しの経路に通す。
 - ファイル: `src/value.zig`、`src/machine.zig`、`src/prim/procedure.zig`(登録)、`src/printer.zig`、`docs/design/runtime.md`(未処理例外の節の、スライス 1f の暫定の段落を実装に合わせる)、`tests/scheme/0080-*.txt`、`tests/scheme-slow/0015-*.txt`。
 - 最初の失敗するテスト: `(call/cc (lambda (k) (+ 1 (k 42))))` が `42`。
-- 完了の確認: 例外の事例 1、2、3、9、10。継続の多重起動(同じ継続を2回起動し、引数の評価の途中の状態が独立していること)。`dynamic-wind` の本体へ継続で再入したとき `before` が再び呼ばれ、脱出のたびに `after` が呼ばれる。REPL の前の行で捕捉した継続を後の行で起動したときの動作を、テストで固定する(その行の残りの計算だけが走り、後続の行は再実行されない)。
+- 完了の確認: 例外の事例 1、2、3、9、10。継続の多重起動(同じ継続を2回起動し、引数の評価の途中の状態が独立していること)。`dynamic-wind` の本体へ継続で再入したとき `before` が再び呼ばれ、脱出のたびに `after` が呼ばれる。REPL の前の行で捕捉した継続を後の行で起動したときの動作を、テストで固定する(その行の残りの計算だけが走り、後続の行は再実行されない)。機械が検出する失敗(2d で機械の中の `raise` にしたもの)と巻き戻しの結合: `dynamic-wind` の本体で上限超過が起き、ハンドラが無いとき、`after` が呼ばれてからプロンプトに戻る。`dynamic-wind` の本体の上限超過を、外側のハンドラから `call/cc` の継続で脱出して捕まえたとき、`after` が1回呼ばれる。巻き戻しのフレームと経路の配列を予約領域から確保し、予約領域のバイト数をここで測って決める。
 
 ### 2f 複数値
 
@@ -393,13 +400,13 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 ### 2g パラメータ
 
 - 対象: `make-parameter`(変換手続きを呼ぶフレーム)、パラメータオブジェクトの適用(引数なし。引数つきはエラー)、`parameterize` のコアIRの節点と特殊形式、パラメータの点。
-- ファイル: `src/value.zig`(`Node.parameterize`)、`src/machine.zig`、`src/syntax/expand.zig`(特殊形式)、`src/syntax/env.zig`(`Special` に足す)、`src/core.zig`、`src/prim/procedure.zig`、`tests/scheme/0100-*.txt`。
+- ファイル: `src/value.zig`(`Node.parameterize`)、`src/machine.zig`、`src/syntax/expand.zig`(特殊形式)、`src/syntax/env.zig`(`Special` に足す)、`src/core.zig`、`src/printer.zig`(パラメータの外部表現)、`src/prim/procedure.zig`、`tests/scheme/0100-*.txt`。
 - 最初の失敗するテスト: `((make-parameter 10 (lambda (x) (* x 2))))` が `20`。
 - 完了の確認: 例外の事例 4。`parameterize` の変換手続きが値ごとに1回だけ呼ばれる(冪等でない変換手続きで確かめる)。継続で脱出すると束縛が戻り、再入すると戻る。
 
 ### 2h レコードの基盤
 
-- 対象: レコード型とレコードのヒープの型、段階3の `define-record-type` の展開先が使うプリミティブ。プリミティブは低水準の形にする。型を作る、生成する(フィールドの値を並べて渡す)、型を判定する、添字でフィールドを読む、添字でフィールドに書く。添字は、段階3の `syntax-rules` の展開が、フィールド名の並びから求める。名前は、利用者の名前と衝突しない形(`%` で始まる名前など)を 2h で決め、`(sucheme core)` だけに置く。
+- 対象: レコード型とレコードのヒープの型、段階3の `define-record-type` の展開先が使うプリミティブ。プリミティブは低水準の形にする。型を作る、生成する(フィールドの値を並べて渡す)、型を判定する、添字でフィールドを読む、添字でフィールドに書く。添字は、段階3の `syntax-rules` の展開が、フィールド名の並びから求める。名前は、利用者の名前と衝突しない形(`%` で始まる名前など)を 2h で決める。2h の時点(2m より前)では、ほかのプリミティブと同じく `src/prim/table.zig` から大域環境に束縛され、REPL から呼べる。2m の後は `(sucheme core)` のエクスポートになる。段階3で `(scheme base)` を構成するとき、これらの名前を `(scheme base)` に入れない(R7RS 5.6.1 が `scheme` で始まるライブラリへの独自の識別子を禁じる)。
 - ファイル: `src/value.zig`、`src/heap.zig`(フィールドのペイロードの確保)、`src/prim/record.zig`(新規)、`src/prim/table.zig`、`src/printer.zig`、`tests/scheme/0110-*.txt`。
 - 最初の失敗するテスト: 型を作り、2つのフィールドを持つレコードを生成して、2つ目のフィールドを読む式が値を返す。
 - 完了の確認: 別の型のレコードや非レコードに読み書きすると型エラー。添字の範囲外は範囲エラー。`procedure?` はレコードで偽。
@@ -411,14 +418,14 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 - 構文環境のオブジェクトは GC ヒープに置く(合意を求める点の5)。展開の途中では GC が走らない(ADR-0031)ので、展開中の一時的な環境はルートにしなくてよい。
 - ファイル: `src/syntax/env.zig`(新規)、`src/syntax/expand.zig`、`src/value.zig`(ヒープの型)、`src/context.zig`(REPL の構文環境)、`src/sucheme.zig`(`isBound`)、`docs/status/conformance.md`、`tests/scheme/0120-*.txt`、既存の `tests/scheme/` のうちキーワードの拒否を期待するケースの書き換え。
 - 最初の失敗するテスト: `((lambda (if) (if 1 2)) list)` が `(1 2)`。今は `if is a syntactic keyword and cannot be a parameter` になる。
-- 完了の確認: 既存の展開器のテストが、キーワードの拒否を除いて通る。書き換えたケースは PR に一覧する。`(define if 5)` の後の `if` は変数で、R7RS 5.3.1 どおりである。構文環境の束縛の探索は線形で始め、測る。
+- 完了の確認: 既存の展開器のテストが、キーワードの拒否を除いて通る。書き換えたケースは PR に一覧する。構文環境の束縛の探索は線形で始め、測る。最上位の `(define if 5)` の確認は、REPL の束縛の表が入る 2j で行う。
 
 ### 2j 大域の束縛セル
 
 - 対象: セル、`Node` の大域の参照・代入・定義をセルに向ける、REPL の環境の束縛の表。[frontend.md](../design/frontend.md) の「REPL での扱い」の表(インポートした束縛は遮蔽し、REPL 自身の束縛は代入する)。プリミティブの束縛は、インポートした束縛として扱う。未束縛と未初期化の表し方を決める。
 - ファイル: `src/env.zig`(セルの表)、`src/value.zig`、`src/syntax/expand.zig`、`src/machine.zig`(参照と代入)、`src/context.zig`、`src/core.zig`、`tests/scheme/0130-*.txt`。
 - 最初の失敗するテスト: [frontend.md](../design/frontend.md) の `ping` と `pong` の例で、`(pong 2)` が `fixed` を返す。今は名前で引くので通るが、セルにした最初の形(定義のたびに新しいセル)では落ちる。Red は、REPL の束縛の表に対する単体テスト(REPL 自身の束縛への `define` が同じセルを返す)から始める。
-- 完了の確認: `(define car ...)` の後も、それ以前に定義した手続きの中の `car` はプリミティブを指す。`(set! car ...)` も同じく遮蔽する。
+- 完了の確認: `(define car ...)` の後も、それ以前に定義した手続きの中の `car` はプリミティブを指す。`(set! car ...)` も同じく遮蔽する。最上位の `(define if 5)` の後の `if` は変数で、R7RS 5.3.1 どおりである(構文キーワードへの定義は新しい場所を束縛する)。`(set! if 5)` はエラーである([frontend.md](../design/frontend.md) の REPL の表)。
 - 振る舞いの変更: 段階1では、プリミティブは大域環境の束縛で、REPL の `define` は束縛を置き換えた。そのため、先に定義した手続きの中の `car` も新しい値を見た。2j の後は、プリミティブはインポートした束縛なので、REPL の `define` は新しいセルで遮蔽し、先に定義した手続きは元のプリミティブを見続ける([frontend.md](../design/frontend.md) の REPL の表のとおり)。`tests/scheme/` の `(define + 5)` を含むケースは、1ケースの中で完結していて、この違いに依存しない(読んで確かめた)。[0003](0003-phase1-minimal-slice.md) の再開の手がかりの「プリミティブは大域環境の束縛で、`define` で隠せる」は、2j の PR で、遮蔽の意味に合わせて直す。v0.2.0 のリリースノートに書く。
 
 ### 2k `syntax-rules` の基本と `define-syntax`
@@ -427,6 +434,7 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 - ファイル: `src/syntax/rules.zig`(新規)、`src/syntax/expand.zig`、`src/syntax/env.zig`、`src/value.zig`(`Alias`、`Macro`)、`src/printer.zig`(別名は機械に届かないが、展開器のテストのために書ける形を持つ)、`tests/scheme/0140-*.txt`、`tests/scheme-slow/0016-*.txt`(深い入れ子の展開)。
 - 最初の失敗するテスト: `swap!` を定義し、`((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)` が `(2 1)`。`let` は段階3なので、`swap!` のテンプレートは一時変数を `((lambda (tmp) (set! a b) (set! b tmp)) a)` の形で束縛する。
 - 完了の確認: 衛生性の検証項目 1、2、3、8。照合器とテンプレート展開器が Zig の再帰を使わない(深い入れ子のテストが層2で通り、縮小版が層1にある)。剥離が共有構造の `eq?` を保つ(Zig の単体テストで、同じペアを2回指すデータを作って確かめる)。
+- 変換子の関数境界: [frontend.md](../design/frontend.md) の「変換子の実行」は、段階2で手続き的マクロへの拡張を想定した関数境界を作るとしている。2k は、展開器が変換子を呼ぶ箇所を `rules.transform` の1か所に閉じ、`Macro` に変換子の種類(段階2では `syntax-rules` だけ)を持たせる。この1か所が境界である。Scheme の手続きを変換子にする実装(展開器を継続フレームとして積む形)は作らず、要求が出るまで送る(R7RS-small は手続き的マクロを要求しない)。
 
 ### 2l `syntax-rules` の残りと `let-syntax` `letrec-syntax` `syntax-error`
 
@@ -438,18 +446,20 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 ### 2m ライブラリの登録表と `define-library` `import` `export`
 
 - 対象: ライブラリの登録表と読み込みの状態、`(sucheme core)` を Zig で登録する(コアの特殊形式、補助構文、プリミティブ)。`define-library`(ライブラリ宣言のうち `export` `import` `begin`)、`import` の5形式、`export` の `rename`、エクスポート表(外部名は独立に所有した文字列)、循環インポートの検出、[frontend.md](../design/frontend.md) の「インポートした束縛への書き込みの禁止」(本体の終わりの未束縛の検査を含む)、REPL の初期環境(合意を求める点の3)、読み込みの作業リスト(合意を求める点の4)。`define-library` は REPL と WASM の入力の最上位でも受け付ける(段階2でファイル無しに試すため)。
-- ファイル: `src/syntax/library.zig`(新規)、`src/syntax/expand.zig`、`src/syntax/env.zig`、`src/context.zig`、`src/sucheme.zig`(作業リスト)、`src/value.zig`、`tests/scheme/0160-*.txt`、`tools/test-wasm` の入力(ライブラリを定義して `import` する式を1つ足す)。
+- ファイル: `src/syntax/library.zig`(新規)、`src/syntax/expand.zig`、`src/syntax/env.zig`、`src/context.zig`、`src/sucheme.zig`(作業リスト)、`src/value.zig`、新しい ADR と ADR-0006 への案内の追記(合意を求める点の3で勧める案を採るとき。承認点)、`tests/scheme/0160-*.txt`、`tools/test-wasm` の入力(ライブラリを定義して `import` する式を1つ足す)。
 - 最初の失敗するテスト: `(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1)))`、`(import (t a))`、`(f)` が `1`。
-- 完了の確認: 5つの `import` の形式。`(rename internal external)` のエクスポート。マクロと特殊形式のエクスポートと改名(`(import (rename (sucheme core) (if when-true)))` の後に `when-true` が `if` として働く)。ライブラリの本体での、インポートした束縛への `define` と `set!` が構文エラー。同じ本体の後の `define` への前方参照は通り、最後まで未束縛の識別子は名前を挙げて報告される。
+- 完了の確認(2k に依存しない部分。2m の PR で確かめる): 5つの `import` の形式。`(rename internal external)` のエクスポート。特殊形式と補助構文のエクスポートと改名(`(import (rename (sucheme core) (if when-true)))` の後に `when-true` が `if` として働く)。ライブラリの本体での、インポートした束縛への `define` と `set!` が構文エラー。同じ本体の後の `define` への前方参照は通り、最後まで未束縛の識別子は名前を挙げて報告される。
+- 完了の確認(2k の `define-syntax` に依存する部分): ライブラリが `define-syntax` で定義したマクロのエクスポートと改名、インポートした束縛への `define-syntax` が構文エラーになること、REPL でインポートしたマクロを `define-syntax` で遮蔽すること。2k と 2m のうち後にマージされるほうの PR が、これらのテストを足す。2m が先なら、エクスポート表は意味の種類を問わずに持つ形で作り(マクロの意味を特別扱いしない)、テストだけを 2k に回す。2m の進捗の行は、この部分が済むまで「完了」にしない。
 
 ### 2n リゾルバとファイルからのライブラリの読み込み
 
-- 対象: リゾルバの関数、ライブラリ名からパスへの対応付け(`foo/bar.sld`)、成分の検証、予約デバイス名、探索ルートの配下にあることの確認、リンクと reparse point の追跡の禁止、読み込んだ `define-library` の名前と要求した名前の照合。探索ディレクトリの設定(合意を求める点の7)。ファイルを読むことが [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の見直し条件(1行の長さで抑えられない読み取り)に当たるので、その答えを ADR に書く。読み込みの作業リストが GC のルートになり、フォームの間で GC できる形にする。
-- 確かめること: Zig 0.17.0 の `std.Io.Dir` で、リンクを辿らずに1成分ずつ開く手段があるか。結果を [zig-api-notes.md](../design/zig-api-notes.md) に書く。手段が無ければ、[frontend.md](../design/frontend.md) の代わりの手段(開いたハンドルから実体のパスを得て確かめる)を試し、それも無ければ実装を止めてユーザーに諮る。
-- ファイル: `src/resolve.zig`(新規)、`src/syntax/library.zig`、`src/sucheme.zig`、`src/main.zig`(探索ディレクトリの指定を足すなら、doc コメントの契約の表も)、`docs/design/zig-api-notes.md`、ADR(追記か新規。承認点)、`tests/scheme-slow/0017-*.txt`(大きなライブラリのファイル)。`tests/scheme/0170-*.txt` は、ファイルを要らないケース(名前の検証のエラー)に使う。
+- 対象: リゾルバの関数、ライブラリ名からパスへの対応付け(`foo/bar.sld`)、成分の検証、予約デバイス名、探索ルートの配下にあることの確認、リンクと reparse point の追跡の禁止、読み込んだ `define-library` の名前と要求した名前の照合。探索ディレクトリの設定(合意を求める点の7)。ファイルを読むことが [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の見直し条件(1行の長さで抑えられない読み取り)に当たる。その答え(ファイルのフォームの間を GC の境目にすること)は 2b の記録が先に決めておき(合意を求める点の4)、2n はそれを実装する。読み込みの作業リストが GC のルートになり、フォームの間で GC できる形にする。
+- `std.Io` の受け渡し: `openSource` はファイルを開くために `std.Io` を要るが、今の `Interpreter.init` は受け取らない。`Interpreter` の初期化に、ファイルを開く手段(ネイティブでは `std.Io`、WASM では「無い」)を渡す形にする。`src/main.zig` と `src/wasm.zig` の初期化の呼び出しが変わる。
+- 確かめること: Zig 0.17.0 の `std.Io.Dir` の `follow_symlinks` と `resolve_beneath`(オプションがあることは確かめた。「確かめた事実」の表)で、リンクを辿らずに1成分ずつ開けるか、途中の成分のリンクと Windows の reparse point にも効くか。結果を [zig-api-notes.md](../design/zig-api-notes.md) に書く。手段が無ければ、[frontend.md](../design/frontend.md) の代わりの手段(開いたハンドルから実体のパスを得て確かめる)を試し、それも無ければ実装を止めてユーザーに諮る。
+- ファイル: `src/resolve.zig`(新規)、`src/syntax/library.zig`、`src/sucheme.zig`(初期化と作業リスト)、`src/main.zig`(初期化の呼び出し。探索ディレクトリの指定を足すなら、doc コメントの契約の表も)、`src/wasm.zig`(初期化の呼び出し)、`docs/design/zig-api-notes.md`。`tests/scheme/0170-*.txt` は、ファイルを要らないケース(名前の検証のエラー)に使う。規模を試すテスト(大きなライブラリのファイルを、フォームの間で GC しながら読む)は、一時のディレクトリを要るので、`tests/scheme-slow/` でなく、`tier.slow()` を呼ぶ Zig の単体テストに置き、縮小版を層1の単体テストに置く。
 - テストの置き場所: `tests/scheme/` の実行器は `.txt` 以外を拒否し、1ケースは1行である。ファイルを読むテストは、Zig の単体テストが `std.testing.tmpDir` に一時のディレクトリを作り、そこを探索ルートにして行う。実行器は育てない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))。
 - 最初の失敗するテスト: 一時のディレクトリに `foo/bar.sld` を置き、`(import (foo bar))` の後にエクスポートした手続きを呼べること。
-- 完了の確認: `..` や `/` を含む成分、空の成分、予約デバイス名(`CON` `con.scm`)、ルートの外へのリンクを、それぞれ拒否するテスト。縦棒で囲んだ識別子(`(|..| passwd)` など)はリーダが段階5まで読めないので、これらの名前はリゾルバの単体テストが Zig で組み立てて渡す。Scheme のケースは、今のリーダで書ける名前(`(import (CON))` など)に限る。正当な名前とリンクでない通常のファイルが通る対照も置く。WASM では「見つからない」のエラーになる(`zig build test-wasm` の入力に1つ足す)。
+- 完了の確認: `..` や `/` を含む成分、空の成分、`.` で始まる成分と `.` で終わる成分、予約デバイス名(`CON` `con.scm`)、ルートの外へのリンクを、それぞれ拒否するテスト。読んだファイルの `define-library` の名前が要求した名前と違うとき(大文字と小文字だけが違うときを含む)にエラーになるテスト。縦棒で囲んだ識別子(`(|..| passwd)` など)はリーダが段階5まで読めないので、これらの名前はリゾルバの単体テストが Zig で組み立てて渡す。Scheme のケースは、今のリーダで書ける名前(`(import (CON))` など)に限る。正当な名前とリンクでない通常のファイルが通る対照も置く。WASM では「見つからない」のエラーになる(`zig build test-wasm` の入力に1つ足す)。
 
 ### 2o `include` と `include-library-declarations`
 
@@ -498,10 +508,12 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 ### runtime.md の事例
 
-番号は [runtime.md](../design/runtime.md) の例外の節の「テストに含める事例」のものである。
+[runtime.md](../design/runtime.md) の「テストに含める事例」は3か所にある。番号は例外の節の一覧のものである。
 
 | 事例 | スライス |
 | --- | --- |
+| マーク段階の節: 作業リストの容量0でマークが完了すること、到達不能なオブジェクトが回収されること | 段階1(スライス 1g)で `src/heap.zig` と `src/machine.zig` のテストに入っている。段階2で足す新しいヒープの型も、各スライスがストレスモードと容量0で通す |
+| マーク段階の節: 容量0で `(eq? 'abc (string->symbol "abc"))` が成立し続けること | 段階3(合意を求める点の9)。`string->symbol` と、シンボル表を弱い表にすることが段階3なので、段階2では入力を書けず、確かめる対象(シンボルの回収)も無い |
 | 1、2、3、9、10 | 2e |
 | 4 | 2g |
 | 5、6、7、8、11 | 2d |
@@ -512,7 +524,7 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 roadmap は、衛生性の検証項目の5と9を、段階3と段階5の完了条件に含めると決めている。この計画はそれに従う。roadmap の段階3と段階5の完了条件には、すでにそれぞれの項目が書かれている。
 
-runtime.md の事例には、同じ扱いが roadmap に書かれていない。事例12は `exit`(段階5)を使い、複数値の節の事例のうち2つは `let` と `when`(段階3)を使う。roadmap の段階2の完了条件は「すべて通る」としているので、そのままでは段階2を完了できない。完了条件を変えるのはユーザーの判断なので、合意を求める点の9で諮る。
+runtime.md の事例には、同じ扱いが roadmap に書かれていない。例外の節の事例12は `exit`(段階5)を使い、マーク段階の節の事例の1つは `string->symbol`(段階3)を使い、複数値の節の事例のうち2つは `let` と `when`(段階3)を使う。roadmap の段階2の完了条件は「すべて通る」としているので、そのままでは段階2を完了できない。完了条件を変えるのはユーザーの判断なので、合意を求める点の9で諮る。
 
 ## open-questions の「段階2までに決める」の行の割り当て
 
@@ -520,7 +532,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 | 行 | スライス | 決め方 |
 | --- | --- | --- |
-| 予約領域の具体的なバイト数 | 2b | runtime.md の必要量の表を実測で埋める |
+| 予約領域の具体的なバイト数 | 2b、2d、2e | 2b が仕組みと初期の大きさを入れ、2d と 2e が自分の確保地点を足して測り直す。runtime.md の必要量の表の地点がそろう 2e で決める |
 | 未束縛と未初期化の表現を、大域の束縛セルでどう表すか | 2j | セルの状態として持つか、`Value.uninitialized` を共有するかを、機械の参照の分岐の数で比べて決める |
 | 本体の定義と同名の仮引数 | 2i | R7RS 5.3.2 と 4.1.4 の原文で確かめる。`standards.scheme.org` に届かないとき(0010 で起きた)は、R7RS の編集者のリポジトリの LaTeX の原文を読む。禁止の明文が無ければ、拒否を外して仮引数を隠す |
 | 構文キーワードの名前への `define`、最上位の空の `(begin)` | 2i | 構文環境に置き換えることで、R7RS 5.3.1 と 7.1.6 に合わせる |
@@ -547,7 +559,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 3. 段階2の REPL の初期環境と、利用者のライブラリが `import` できるもの。
    - 勧める案: Zig が `(sucheme core)` を登録し、段階2の間は利用者も `import` できるようにする。REPL の初期環境は `(sucheme core)` の全部をインポートしたものとする(今の大域環境と同じ束縛が見える)。段階3で `(scheme base)` ができたら、REPL の初期環境を `(scheme base)` などに替え、`(sucheme core)` を利用者から隠す。
      - 長所: `(scheme base)` を前倒しで作らない(段階3の作業項目のまま)。REPL の振る舞いと既存のテストが変わらない。段階2の利用者のライブラリの本体が、`define` や `lambda` を `import` で得られる。レコードの低水準のプリミティブ(2h)をテストから呼べる。
-     - 短所: [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md) の決定と [frontend.md](../design/frontend.md) の起動順序の節は、`(sucheme core)` を利用者に公開しないとしている。この案を採ると、ADR が実際にしていない決定を書いている状態になるので、ADR-0006 に、段階2の間だけの例外であることと、段階3で戻すことを追記する(決定の本体は変えない。承認点)。段階2の間だけ、内部用の名前が利用者に見える。段階2に書いた `(import (sucheme core))` を含むテストは、段階3で書き換える。v0.2.0 のリリースノートに、この名前が段階3で使えなくなることを書く必要がある。
+     - 短所: [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md) の決定と [frontend.md](../design/frontend.md) の起動順序の節は、`(sucheme core)` を利用者に公開しないとしている。期間を限っても決定の変更なので、追記では足りない。この案を採るなら、2m で新しい ADR(次の番号)を書き、ADR-0006 の該当部分(`(sucheme core)` を利用者に公開しない)を段階2の間だけ置き換えることと、段階3で戻す条件を決定として書く。ADR-0006 には、新しい ADR への案内の追記だけを置く(ADR-0031 が ADR-0003 の一部を置き換え、ADR-0003 に案内の追記を置いた前例と同じ形)。承認点である。段階2の間だけ、内部用の名前が利用者に見える。段階2に書いた `(import (sucheme core))` を含むテストは、段階3で書き換える。v0.2.0 のリリースノートに、この名前が段階3で使えなくなることを書く必要がある。
    - 別案: 最小の `lib/scheme/base.sld` を段階2で作り、`(sucheme core)` のうち `(scheme base)` にある名前だけを再エクスポートする。長所は、利用者のコードが段階3でも変わらないこと。短所は、段階3の作業(`(scheme base)` の骨格)と `lib/` の埋め込みを前倒しすること、レコードのプリミティブをテストから呼べないこと、準拠マトリクスの数え方が段階2で変わること。
    - 別案: ライブラリのテストを Zig の単体テストだけにし、利用者には何も開かない。長所は内部の名前が漏れないこと。短所は、REPL と Web UI でライブラリシステムを試せないこと。
 4. ライブラリの読み込みと機械の実行の関係。
@@ -556,7 +568,13 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
      - 短所: `import` を見つけるために、展開の前にフォームを調べる段が要る。`cond-expand` と `include-library-declarations` の中の `import` も、その段で解く必要がある(どちらも機械を使わずに解けるので、可能である)。
    - 別案: 展開器が `import` に出会った時点で、入れ子に機械を起動してライブラリの本体を走らせ、展開器の作業状態を一時ルートとして登録する。長所は実装が素直なこと。短所は、ADR-0031 が外した一時ルートの規約が戻り、登録漏れがメモリ破壊になる類型が復活すること。
    - 別案: 展開器を継続フレームとして機械に積む([architecture.md](../design/architecture.md) の第2の例外の形)。長所は、手続き的マクロへの拡張の道と同じ形になること。短所は、段階2で要らない機構が大きいこと。
-   - どの案でも、ADR-0031 の見直し条件に答える記録が要る。勧める案なら ADR-0031 への追記(決定を変えない)で足りる見込みで、2n で書く。別案2なら新しい ADR が要る。どちらも承認点である。
+   - ADR-0031 の扱い(この問いで一緒に決める): ADR-0031 の決定の文面は、GC の境目を「機械のステップの境目」と「`Interpreter` が1行の中の各フォームを読む前」に、ルートを「機械のレジスタのうち環境・継続・値」「大域環境の値」「コードの定数」に限っている。段階2は、勧める案でも、この文面の外にあるものを足す。
+     - ルートの追加: 動的点のレジスタ(2d)、送出された値 `Context.raised`(2b)、ライブラリの登録表と各ライブラリの大域環境(2m)、読み込みの作業リスト(2m、2n)。
+     - 境目の追加: ライブラリと `include` のファイルの、フォームの間(2n)。1行でなくファイルを読むので、ADR-0031 の追記の見直し条件(1行の長さで抑えられない読み取り)に当たる。
+     - 条件オブジェクトのヒープ化と予約領域(2b)。ADR-0031 の見直し条件そのものである。
+     - 勧める案: 新しい ADR を 2b で書き、ADR-0031 の決定のうちルートの一覧と境目の一覧を置き換える。段階2のルートと境目を、後のスライス(2m、2n)で入るものまで含めて先に決める。ADR-0031 には案内の追記だけを置く。理由は、ルートと境目の一覧が決定の本文で列挙されているので、足すことは決定を変えることだからである。追記で済ませると、ADR が実際にしていない決定を書いている状態になる。
+     - 別案: ADR-0031 への追記で済ませ、各スライスがそれぞれ追記する。長所は ADR が増えないこと。短所は上の理由である。
+     - どちらも承認点である。上の別案2(入れ子の機械)を採るなら、一時ルートの規約を戻すので、ADR-0003 と ADR-0031 の両方に関わる新しい ADR が要る。
 5. 「精密GCの完成」の範囲。
    - 勧める案: 段階2に入れるのは、条件オブジェクトのヒープ化と予約領域(2b)、段階2で入るヒープの型(動的点、継続、複数値、パラメータ、レコード、構文環境とその束縛、別名、マクロ、セル、ライブラリとエクスポート表)をすべて GC ヒープに置いて走査の検査を通すこと、ルート管理の規約の文書化である。コアIRをヒープに移すことと、シンボル表を弱い表にすることは入れず、roadmap の段階3に項目として足す。
      - 長所: 段階2の機構が作るものは、すべて回収される。コードとシンボルは、量がプログラムの大きさ(REPL で打った式と名前の数)に比例し、実行の回数には比例しない(段階1と同じ性質)。シンボル表を弱くする必要が生まれるのは、任意の文字列からシンボルを作る `string->symbol` が入る段階3である。
@@ -582,15 +600,20 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
    - 別案: ASCII だけを畳み込み、非 ASCII はそのまま通す。長所は読めるファイルが多いこと。短所は、誤読が黙って起きること。
    - 別案: 畳み込みの表のうち、`string-foldcase` に要る部分だけを段階2で入れる。長所は正しく読めること。短所は、段階4の Unicode の表の生成器を前倒しすること。
 9. runtime.md の事例のうち、段階2で入力を書けないものの扱い。roadmap の段階2の完了条件を変える。
-   - 勧める案: 事例12(`exit` と `dynamic-wind`)を、roadmap の段階5の完了条件に移す。複数値の節の事例のうち `let` と `when` を使うものは、段階2では `lambda` と `if` と `begin` で書いた同等の形で通し、元の形のテストを段階3の完了条件に加える。衛生性の検証項目と同じ扱いである。
+   - 勧める案: 例外の節の事例12(`exit` と `dynamic-wind`)を、roadmap の段階5の完了条件に移す。マーク段階の節の事例のうち、容量0で `(eq? 'abc (string->symbol "abc"))` が成立し続けることを、roadmap の段階3の完了条件に移す(`string->symbol` と弱いシンボル表が段階3)。複数値の節の事例のうち `let` と `when` を使うものは、段階2では `lambda` と `if` と `begin` で書いた同等の形で通し、元の形のテストを段階3の完了条件に加える。衛生性の検証項目と同じ扱いである。
      - 長所: 段階2で書けない入力のために、段階2の完了が止まらない。元の形のテストも失われない。
      - 短所: roadmap の段階3と段階5の完了条件が少し増える。
-   - 別案: 段階2で、テストの中だけで `let` と `when` を `define-syntax` で定義して書く。長所は元の形に近いこと。短所は、事例12は書けないままで、完了条件の変更はどのみち要ること。
+   - 別案: 段階2で、テストの中だけで `let` と `when` を `define-syntax` で定義して書く。長所は元の形に近いこと。短所は、事例12と `string->symbol` の事例は書けないままで、完了条件の変更はどのみち要ること。
 10. 進捗と並行の進め方。
-    - 勧める案: 2a の後、実行時の系列とフロントエンドの系列を並行に進め、2j の後はマクロの系列とライブラリの系列も並行にする。重なるファイルは「重なりの確認」の手当てで扱う。各 PR は進捗の表の自分の行と、自分が完了させる roadmap のチェックボックスだけを更新する。
+    - 勧める案: 2a の後、実行時の系列とフロントエンドの系列を並行に進め、2j の後はマクロの系列とライブラリの系列も並行にする。重なるファイルは「重なりの確認」の手当てで扱う。各 PR は、進捗の表の自分の行、「次にやること」の自分の系列の行、自分が完了させる roadmap のチェックボックスを更新する。
       - 長所: 段階2の暦日が短くなる([0012](0012-schedule-estimates-and-actuals.md) の見込みの幅に収まる)。
       - 短所: 同時に開く PR が増え、マージの順序と、`value.zig` と `conformance.md` の衝突を解く手間が増える。
     - 別案: すべて直列にする。長所は衝突が無いこと。短所は暦日が延びること。
+11. `features` 手続きを、段階5から段階2に移すか。1k の計画 [0010](0010-slices-1k-1l-primitives-and-repl-continuation.md) の「選ばなかったものと送り先」の表は、`features` を段階5(ポートと入出力、プロセス文脈の手続きと同じ行)に送っている。この計画は、それを段階2のスライス 2p に移す案を勧める。
+    - 勧める案: 2p で `cond-expand` と同時に入れる。
+      - 長所: `features` が返す一覧は、`cond-expand` が引くフィーチャ一覧と同じものである([frontend.md](../design/frontend.md) の `cond-expand` のフィーチャ)。同じスライスで入れると、一覧が1つの定義から作られ、2つが食い違わない。手続きは引数を取らず、ポートにもプロセス文脈にも依存しない。
+      - 短所: 0010 の送り先を変える。2p が少し大きくなる。
+    - 別案: 0010 のとおり段階5に置く。長所は決定を変えないこと。短所は、段階5で、`cond-expand` の一覧と同じものを返すことを改めて確かめる必要があること。
 
 ## 検証
 
@@ -599,15 +622,15 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 - 層1(全コミット): 各スライスの単体テストと `tests/scheme/` のケース。`tests/scheme/` の全ケースは、既存の2つの方式(既定と、ステップごとに GC するストレスモード)で走る。継続、動的点、マクロの展開の出力が GC を越えて読めることは、ストレスモードが確かめる。
 - 層2(PR を ready にする前): 規模を試すテスト(`apply` のループ、深い `call/cc` と巻き戻し、深い入れ子の展開、大きなライブラリのファイル)と、それぞれの縮小版を層1に置く。変更したファイルのミューテーションテスト。特に、`currentHandler` と巻き戻しの経路の位置(進入の各段で列のレジスタに入れる値)、識別子の同一性の判定(素のシンボルと別名を一致させない)、リゾルバの成分の検証は、1文字の書き換えで衛生性や安全性が壊れるので、ミューテーションで落ちることを確かめる。敵対的レビュー。
 - 手作業の確認(PR に結果を貼る): 各スライスの完了条件の式を `zig build run` と、`zig build wasm` と `node web/serve.mjs` で開いた Web UI で試す。2n と 2o と 2q は、実際のディレクトリを使ってネイティブの REPL で試す。
-- WASM の往復: 2b(`(raise 42)` の報告)、2e(`call/cc`)、2m(ライブラリを定義して `import`)、2n(ファイルを開く経路が「見つからない」になる)で、`tools/test-wasm` の入力に式を足す。
+- WASM の往復: 2b(`(car 5)` の失敗がヒープの条件オブジェクトを通って届く)、2d(`(raise 42)` の報告)、2e(`call/cc`)、2m(ライブラリを定義して `import`)、2n(ファイルを開く経路が「見つからない」になる)で、`tools/test-wasm` の入力に式を足す。
 
 検証コマンド表([AGENTS.md](../../AGENTS.md))の変更は無い見込みである。新しい `build.zig` の step は足さない。足す必要が出たら、`.github/workflows/ci.yml` の変更を伴うので、そのスライスでユーザーの承認を得る。`.github/workflows/` と `.claude/` は変更しない。
 
 承認点(この計画の合意とは別に、実施の時点でユーザーの承認を得るもの):
 
-- 2b と 2n の ADR-0031 への追記、または新しい ADR(合意を求める点の4)。
+- 2b の、ADR-0031 の決定の文面の外にあるもの(ルートと境目の追加、条件オブジェクトのヒープ化)の記録。勧める案は新しい ADR で、合意を求める点の4で決める。2n は、その ADR が決めた境目(ファイルのフォームの間)を実装する。
 - 2c の ADR-0029 への追記(決定を変えない)。
-- 2m の ADR-0006 への追記(合意を求める点の3で勧める案を採るとき。`(sucheme core)` を段階2の間だけ利用者に開く例外)。
+- 2m の新しい ADR と、ADR-0006 への案内の追記(合意を求める点の3で勧める案を採るとき。新しい ADR が、`(sucheme core)` を利用者に公開しないという ADR-0006 の決定の部分を、段階2の間だけ置き換える)。
 - 2n の `src/main.zig` の契約の変更(合意を求める点の7)。
 - 2r のタグの push。
 
@@ -628,20 +651,20 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | `src/syntax/env.zig` | 構文環境、束縛、意味、解決 | 新規 | 2i |
 | `src/syntax/rules.zig` | `syntax-rules` の照合器とテンプレート展開器 | 新規 | 2k、2l |
 | `src/syntax/library.zig` | ライブラリ、エクスポート表、`import`、`include`、`cond-expand` | 新規 | 2m から 2q |
-| `src/resolve.zig` | 第1類のファイルを開く経路 | 新規 | 2n |
+| `src/resolve.zig` | 第1類のファイルを開く経路。一時のディレクトリを使う単体テストと、`tier.slow()` の規模のテスト | 新規 | 2n |
 | `src/prim/condition.zig` | 条件オブジェクトの手続き | 新規 | 2d |
 | `src/prim/record.zig` | レコードのプリミティブ | 新規 | 2h |
 | `src/prim/procedure.zig` | 機械操作プリミティブの登録 | 変更 | 2c から 2g |
 | `src/prim/*.zig` `src/prim/test_support.zig` | `.call` から `.body` への置き換え | 変更 | 2c |
 | `src/prim/table.zig` | 族の行 | 変更 | 2c、2d、2h、2p |
-| `src/main.zig` | 探索ディレクトリの指定と、doc コメントの契約 | 変更(条件つき) | 2n |
+| `src/main.zig` | `Interpreter` の初期化にファイルを開く手段を渡す。探索ディレクトリの指定と doc コメントの契約(条件つき) | 変更 | 2n |
+| `src/wasm.zig` | `Interpreter` の初期化(ファイルを開く手段は「無い」) | 変更 | 2n |
 | `tools/test-wasm` の入力 | WASM の往復の式 | 変更 | 2b、2e、2m、2n |
 | `tests/scheme/0040-*.txt` から | 振る舞い | 新規 | 2a から 2q |
-| `tests/scheme-slow/0014-*.txt` から | 規模 | 新規 | 2c、2e、2k、2n |
+| `tests/scheme-slow/0014-*.txt` から | 規模 | 新規 | 2c、2e、2k |
 | `docs/status/conformance.md` | 生成し直し | 変更 | 束縛を増やすスライス |
-| `docs/design/runtime.md` `docs/design/architecture.md` | ルート管理の規約、プリミティブの失敗の形、未処理例外の実装 | 変更 | 2b、2d、2e |
-| `docs/design/zig-api-notes.md` | リンクを辿らずに開く手段 | 変更 | 2n |
-| `docs/adr/` | ADR-0029、ADR-0031、ADR-0006 への追記、または新しい ADR | 変更(承認点) | 2b、2c、2m、2n |
+| `docs/design/runtime.md` `docs/design/architecture.md` | ルート管理の規約、プリミティブの失敗の形、未処理例外の実装 | 変更 | 2b、2d、2e || `docs/design/zig-api-notes.md` | リンクを辿らずに開く手段 | 変更 | 2n |
+| `docs/adr/` | ADR-0029 への追記。段階2のルートと GC の境目を決める新しい ADR と ADR-0031 への案内の追記(合意を求める点の4)。`(sucheme core)` の段階2の扱いを決める新しい ADR と ADR-0006 への案内の追記(合意を求める点の3) | 新規、変更(承認点) | 2b、2c、2m |
 | `docs/roadmap.md` | チェックボックス、roadmap に無い項目の追加 | 変更 | 各スライス |
 | `docs/releases/v0.2.0.md` `build.zig.zon` | リリース | 新規、変更 | 2r |
 
@@ -662,6 +685,8 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 大域環境は `SymbolId` から `Value` への表で、セルは無い。`Node.global_ref` はシンボルである | `src/env.zig` と `src/value.zig` を読んだ |
 | `Interpreter.isBound` は `expand.isKeyword` と大域環境を引く | `src/sucheme.zig` を読んだ |
 | `src/main.zig` はファイル名の引数に終了ステータス 69 を返す | doc コメントの契約の表を読んだ |
+| `zig build test-scheme` の作業ディレクトリはリポジトリのルートである | `build.zig` の `run_test_scheme.setCwd(b.path("."))` を読んだ |
+| Zig 0.17.0 の `std.Io.Dir` の `OpenOptions`(ディレクトリ)と `OpenFileOptions`(ファイル)は `follow_symlinks` を持つ。`OpenFileOptions` は、ディレクトリの外へ出る解決を `error.AccessDenied` にする `resolve_beneath` も持つ(対応しない OS では無視される) | 固定の版の標準ライブラリの `std/Io/Dir.zig` を読んだ |
 | `src/wasm.zig` と `src/main.zig` は `Interpreter.diagnostic()` を文字列として読む | 読んだ |
 | `lib/` は無い | `ls` で確かめた |
 | `tests/scheme/` の実行器は `.txt` 以外を拒否し、1ケースは1行である | `tools/test-scheme/main.zig` の doc コメントを読んだ |
@@ -672,10 +697,10 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 事柄 | 状態 |
 | --- | --- |
 | R7RS の各節の原文 | この計画の R7RS の引用は、設計文書が引いたものである。各スライスの実装の最初に、原文(誤記修正版に届かなければ編集者のリポジトリの LaTeX)で確かめ、PR に書く |
-| Zig 0.17.0 でリンクを辿らずにファイルを開く手段 | 2n で確かめる |
-| 予約領域に要るバイト数 | 2b で測る |
+| `follow_symlinks = false` が途中の成分のリンクにも効くか、`resolve_beneath` がどの OS で効くか | 確かめていない。オプションがあることを読んだだけで、実行していない。2n で、Linux の一時のディレクトリで確かめる |
+| Windows の reparse point と junction の扱い | 確かめていない。Windows 実機での実行は段階1から未確認である([0003](0003-phase1-minimal-slice.md) の 1h の行)。2n で CI の windows ジョブのテストに入れられるかを見る |
+| 予約領域に要るバイト数 | 2b から 2e で測る |
 | 各スライスの見積り | 段階1の実績からの推定で、測っていない |
-| `zig build test-scheme` の作業ディレクトリ | 確かめていない。ファイルを読むテストを `tests/scheme/` に置かない理由の1つである |
 
 ## 見積り
 
@@ -687,20 +712,25 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md) と [AGENTS.md](../../AGENTS.md) の費用側の停止の規則に従い、先に線を引く。
 
-線を引き直す条件: スライスのレビューで次の兆候が1つでも出たら、巡を足す前に、下の順で外すか、そのスライスで必須とするものを狭めるかを決め、ユーザーに諮る。
+線を引き直す条件: スライスのレビューで次の兆候が1つでも出たら、巡を足す前に、(1) そのスライスで必須とするものを狭めるか、(2) 指摘を生んでいる機構そのものを外してやり残しとして記録するかを決め、ユーザーに諮る([AGENTS.md](../../AGENTS.md) の2つの手段)。
 
 - その巡の必須の件数が、前の巡より減っていない。
 - 指摘の中身が、レビュー自身の記録や検査ツール自身の読み方に移っている。
 - 修正が、新しい機構を足す形になっている。
 
-外す順(上から)と送り先:
+外す対象は、段階全体の固定の順ではなく、兆候が出たスライスの中で、その指摘を生んでいる機構である。各スライスで外せる機構と、外したときの送り先と、[open-questions.md](../design/open-questions.md) の「段階2までに決める」の行の移し先を、先に決めておく。外すたびに、roadmap の該当する段階に項目を足し、open-questions の行を移す。
 
-1. 探索ディレクトリの追加指定(`-I`)。外すと、探索ルートは作業ディレクトリだけになる。送り先は段階5(`load` と同じ経路で入れる)。
-2. `cond-expand` のフィーチャのうち、OS、エンディアン、版、`wasm`。外すと、`r7rs` と `sucheme` と `(library ...)` だけになる。`features` も同じ一覧を返す。送り先は段階3。
-3. レコードの基盤(2h)。送り先は段階3の、`define-record-type` を入れるスライス。roadmap の段階2の項目なので、外すにはユーザーの承認が要る。
-4. 送出の予約領域(2b の一部)。外すと、上限に達したときの `heap limit exceeded` は今までどおり行を打ち切り、ハンドラでは捕まらない。送り先は段階3の、`guard` を入れるスライス。
+| 兆候が出たスライス | 外せる機構 | 外したときの姿と送り先 | open-questions の行の移し先 |
+| --- | --- | --- | --- |
+| 2n | 探索ディレクトリの追加指定(`-I`) | 探索ルートは作業ディレクトリだけになる。送り先は段階5(`load` と同じ経路で入れる) | 「探索ディレクトリの設定手段」を段階5までに決めるへ移す |
+| 2n | リンクと reparse point の追跡の禁止のうち、Windows の reparse point | Linux と macOS のシンボリックリンクだけを禁止し、Windows では第1類のファイルの読み込みをエラーにする(黙って通さない)。送り先は段階5 | 「リンクと reparse point の追跡を禁止してファイルを開く手段」を段階5までに決めるへ移す |
+| 2p | `cond-expand` のフィーチャのうち、OS、エンディアン、版、`wasm` | `r7rs` と `sucheme` と `(library ...)` だけになり、`features` も同じ一覧を返す。送り先は段階3 | 該当なし |
+| 2h | レコードの基盤の全体 | 送り先は段階3の、`define-record-type` を入れるスライス。roadmap の段階2の項目なので、外すにはユーザーの承認が要る | 該当なし |
+| 2b、2d、2e | 送出の予約領域 | 上限に達した時点で条件オブジェクトの確保が上限に当たったときだけ、今までどおり行を打ち切る(ハンドラと `after` を迂回する)。上限より手前の失敗を機械の中の `raise` にすること(2d)は残す。送り先は段階3の、`guard` を入れるスライス | 「予約領域の具体的なバイト数」を段階3までに決めるへ移す |
+| 2l | 利用者指定の省略記号、リテラル一覧の `_` と省略記号 | 衛生性の検証項目に使われない要件だけを外す。項目7(省略記号のエスケープ)は外さない。送り先は段階3 | 該当なし |
+| 2q | 文字名の畳み込み | 識別子だけを畳み込む。送り先は段階5(`#!fold-case` 指令と同じ段階) | 該当なし |
 
-外さないもの: 完全な `call/cc` と `dynamic-wind`、例外とハンドラ、複数値、パラメータ、`syntax-rules` と構文環境、ライブラリの登録表と `import` `export`、リゾルバの検証、`include-ci`。これらは roadmap の段階2の完了条件か、その前提である。完了条件に含まれるもの(衛生性の検証項目、runtime.md の事例、継続の多重起動と `dynamic-wind` の相互作用、`include-ci`)は、完了条件をユーザーの承認を得て変えない限り外せない。
+外さないもの: 完全な `call/cc` と `dynamic-wind`、例外とハンドラ、複数値、パラメータ、`syntax-rules` と構文環境、ライブラリの登録表と `import` `export`、リゾルバの検証(上の表の Windows の行は、検証を緩めるのでなく、確かめられない環境で読み込みをエラーにする形である)、`include-ci`。これらは roadmap の段階2の完了条件か、その前提である。完了条件に含まれるもの(衛生性の検証項目、runtime.md の事例、継続の多重起動と `dynamic-wind` の相互作用、`include-ci`)は、完了条件をユーザーの承認を得て変えない限り外せない。
 
 ## 進捗
 
@@ -731,12 +761,12 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 ## 次にやること
 
 1. ユーザーが、この計画書の「合意を求める点」に答える。
-2. 答えに合わせてこの計画書を直し、状態を「合意済み」にする。[plans/README.md](README.md) の表にこの計画書の行を足す。roadmap の「現在地」の「段階2の実装計画書は未作成」を直す。この3つは同じ PR で行う。
-3. 合意を求める点の1、5、6、9の答えに従って、roadmap に項目を足すか「スライス未割り当て」と書き、段階3と段階5の完了条件を直す。各項目を引き受けるスライスの PR で行うものは、そのスライスに回す。
+2. 答えに合わせて、この計画書の PR の中でこの計画書を直し、状態を「合意済み」にする。[plans/README.md](README.md) の表の行は、この計画書の PR で足してある。この計画書の PR は roadmap を触らない(「roadmap に無い項目と、割り当ての無い項目」の節の規則)。
+3. この計画書の PR のマージ後に、roadmap を直す PR を1つ出す。中身は、「現在地」の「段階2の実装計画書は未作成」を、この計画書を指す文に直すことと、合意を求める点の1、5、6、9の答えに従って、roadmap に項目を足すか「スライス未割り当て」と書き、段階3と段階5の完了条件を直すことである。項目を引き受けるスライスの PR で足すと決めたもの(2a の可変個引数の `lambda` など)は、そのスライスに回す。
 4. 最新の `origin/main` から `feature/phase2-slice-2a-variadic-lambda` を作り、2a から始める。2a のマージ後に、実行時の系列(2b と 2c)とフロントエンドの系列(2i)を並行に始める。
 
 系列ごとの次の作業。各スライスの PR は、自分の系列の行だけを書き換える(「重なりの確認」)。
 
 - 実行時の系列(2b から 2h): 2a のマージ後に 2b と 2c から始める。
-- マクロの系列(2i から 2l): 2a のマージ後に 2i から始める。
+- マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2a のマージ後に 2i から始める。
 - ライブラリの系列(2m から 2q): 2j のマージ後に 2m から始める。
