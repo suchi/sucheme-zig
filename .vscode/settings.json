@@ -1,3 +1,19 @@
 {
-  "cSpell.words": ["Dtarget", "sucheme", "zigversion"]
+  "cSpell.words": [
+    "Codepoint",
+    "compnum",
+    "comptime",
+    "deinit",
+    "Dtarget",
+    "fixnum",
+    "flonum",
+    "foldcase",
+    "imag",
+    "infnan",
+    "mlugg",
+    "ratnum",
+    "SRFI",
+    "sucheme",
+    "zigversion"
+  ]
 }

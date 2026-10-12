@@ -1,0 +1,60 @@
+# tests/scheme-slow/0013-list-scale.txt の縮小版。同じ論理を、毎回の門で走る大きさで
+# 通す。数千要素のリストで GC が何度も走り(実行器は1ステップごとに GC するモードでも
+# 走らせる)、深さ数千の入れ子で `equal?` の作業スタックが一時領域に移る
+# (小さな固定の配列は8個で、それを超える)。Zig のスタックを使い切るかどうかは、
+# 規模の大きい側でしか見えない。
+
+# 数千要素のリストの作成と走査。作ったあとの長さ、`list?`、先頭、末尾、合計を見る。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (sum xs acc) (if (null? xs) acc (sum (cdr xs) (+ acc (car xs))))) (define (last xs) (if (null? (cdr xs)) (car xs) (last (cdr xs)))) (define xs (build 5000 '())) (list (length xs) (list? xs) (car xs) (last xs) (sum xs 0))
+(5000 #t 1 5000 12502500)
+
+# 作ったリストは、GC が何度も走ったあとも壊れない。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 3000 '())) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (list (length xs) (car xs))
+ok
+(3000 1)
+
+# 尾が () でない長い鎖。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define improper (build 5000 0)) (list (list? improper) (pair? improper))
+(#f #t)
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (length (build 5000 0))
+error: wrong type of argument to length
+
+# 長いリスト同士の `equal?`。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (equal? (build 5000 '()) (build 5000 '()))
+#t
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (equal? (build 5000 '()) (build 5000 '(0)))
+#f
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (equal? (build 5000 0) (build 5000 1))
+#f
+
+# 深さ数千の入れ子の `equal?`。car の方向の入れ子は作業スタックを深くする。
+(define (nest n acc) (if (= n 0) acc (nest (- n 1) (list acc)))) (equal? (nest 3000 '()) (nest 3000 '()))
+#t
+
+(define (nest n acc) (if (= n 0) acc (nest (- n 1) (list acc)))) (equal? (nest 3000 1) (nest 3000 2))
+#f
+
+# 深さの違う入れ子は、短いほうの底で食い違う。
+(define (nest n acc) (if (= n 0) acc (nest (- n 1) (list acc)))) (equal? (nest 3000 '()) (nest 2999 '()))
+#f
+
+# ベクタの入れ子。要素が2つ以上のベクタは作業スタックに積まれる。
+(define (vnest n acc) (if (= n 0) acc (vnest (- n 1) (vector acc 0)))) (equal? (vnest 3000 '()) (vnest 3000 '()))
+#t
+
+(define (vnest n acc) (if (= n 0) acc (vnest (- n 1) (vector acc 0)))) (equal? (vnest 3000 1) (vnest 3000 2))
+#f
+
+# ペアとベクタが交互に入れ子になる。
+(define (mnest n acc) (if (= n 0) acc (mnest (- n 1) (if (= (remainder n 2) 0) (cons acc n) (vector acc n))))) (equal? (mnest 3000 '()) (mnest 3000 '()))
+#t
+
+# 入れ子の底にある文字列は内容で比べる。底を取り出して、データが壊れていないことも確かめる。
+(define (nest n acc) (if (= n 0) acc (nest (- n 1) (list acc)))) (define (bottom x) (if (pair? x) (bottom (car x)) x)) (list (equal? (nest 3000 "あい") (nest 3000 "あい")) (equal? (nest 3000 "あい") (nest 3000 "あう")) (bottom (nest 3000 'seed)))
+(#t #f seed)
+
+(define (vnest n acc) (if (= n 0) acc (vnest (- n 1) (vector acc 0)))) (define (vbottom x) (if (vector? x) (vbottom (vector-ref x 0)) x)) (vbottom (vnest 3000 "底"))
+"底"

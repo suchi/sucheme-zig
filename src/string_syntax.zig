@@ -23,6 +23,10 @@ pub const ReadError = error{
     /// A backslash followed by something that is not an escape, or a `\x`
     /// escape whose value is not a scalar value.
     InvalidEscape,
+    /// The bytes between the quotes are not valid UTF-8.
+    ///
+    /// 生のバイトは検査せずに集めるので、閉じる引用符まで読んでから確かめる。
+    InvalidUtf8,
 };
 
 /// Reads the string literal that starts at `src[pos.*]`, which is the opening
@@ -31,8 +35,10 @@ pub const ReadError = error{
 /// 文字列は `heap` に作る。`scratch` は、バイトを集めている間それを保持する。
 /// エラーのときは `pos` を元の位置のままにする。
 ///
-/// 入力は妥当な UTF-8 である(インタプリタが全体を検査する)。そのため、エスケープ
-/// でないバイトはそのままコピーする。生の改行、タブ、非 ASCII 文字のバイトは、
+/// 入力は、普通はインタプリタが全体を検査した妥当な UTF-8 である。それでも、この関数は
+/// 入力に頼らず、集めたバイトが妥当でなければ `InvalidUtf8` を返す。ファズなどが
+/// リーダに任意のバイトを直接渡しても、不正な文字列がヒープに入らないようにするためである。
+/// エスケープでないバイトはそのままコピーする。生の改行、タブ、非 ASCII 文字のバイトは、
 /// すべて文字列に含まれる。
 pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Heap) ReadError!Value {
     std.debug.assert(src[pos.*] == '"');
@@ -49,6 +55,10 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
             else => try bytes.append(scratch, c),
         }
     }
+    // 他のエラー(閉じていない、エスケープの誤り)を先に返してから確かめる。リーダを
+    // 直接使うとき、途中で切れた入力は Incomplete として返す。REPL は、先に
+    // `isIncomplete` が入力全体を検査するので、不正なバイトを含む入力では続きを待たない。
+    if (!std.unicode.utf8ValidateSlice(bytes.items)) return error.InvalidUtf8;
     const s = try heap.createString(bytes.items);
     pos.* = i;
     return .fromString(s);
@@ -233,6 +243,29 @@ test "read: a raw newline, a tab and non-ASCII bytes belong to the string" {
     try expectRead("\t\r", "\"\t\r\"");
     try expectRead("\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}", "\"\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\"");
     try expectRead("a \u{3bb} \u{1F600}", "\"a \u{3bb} \u{1F600}\"");
+}
+
+test "read: bytes that are not valid UTF-8 are an error, not a string" {
+    // 生のバイトは検査せずにコピーするが、文字列にする前に妥当性を確かめる。
+    // 妥当でないまま `createString` に渡すと、その前提が壊れる。
+    try expectReadError(error.InvalidUtf8, "\"\xff\"");
+    // 過長符号化、途中で切れた列、サロゲートの符号化、継続バイトの単独出現。
+    try expectReadError(error.InvalidUtf8, "\"\xc0\x80\"");
+    try expectReadError(error.InvalidUtf8, "\"\xe3\x81\"");
+    try expectReadError(error.InvalidUtf8, "\"\xed\xa0\x80\"");
+    try expectReadError(error.InvalidUtf8, "\"a\x80b\"");
+    // 閉じる引用符の直前で切れた列も、引用符を飲み込まずに拒否する。
+    try expectReadError(error.InvalidUtf8, "\"\xe3\"");
+}
+
+test "read: the other errors of a literal come before the UTF-8 check" {
+    // リーダを直接使うとき、閉じていない文字列は Incomplete のままにする。
+    try expectReadError(error.Incomplete, "\"\xff");
+    try expectReadError(error.InvalidEscape, "\"\xff\\q\"");
+}
+
+test "read: a hex escape never makes invalid UTF-8, so it is not an UTF-8 error" {
+    try expectRead("\u{10FFFF}\u{3bb}\x00", "\"\\x10ffff;\\x3bb;\\x0;\"");
 }
 
 test "read: the position is left after the closing quote, and what follows is not read" {
