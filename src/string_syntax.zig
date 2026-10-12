@@ -55,8 +55,9 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
             else => try bytes.append(scratch, c),
         }
     }
-    // 他のエラー(閉じていない、エスケープの誤り)を先に返してから確かめる。REPL は
-    // 閉じていない文字列に続きの行を求められる。
+    // 他のエラー(閉じていない、エスケープの誤り)を先に返してから確かめる。リーダを
+    // 直接使うとき、途中で切れた入力は Incomplete として返す。REPL は、先に
+    // `isIncomplete` が入力全体を検査するので、不正なバイトを含む入力では続きを待たない。
     if (!std.unicode.utf8ValidateSlice(bytes.items)) return error.InvalidUtf8;
     const s = try heap.createString(bytes.items);
     pos.* = i;
@@ -258,7 +259,7 @@ test "read: bytes that are not valid UTF-8 are an error, not a string" {
 }
 
 test "read: the other errors of a literal come before the UTF-8 check" {
-    // 閉じていない文字列は、REPL が続きを求められるように Incomplete のままにする。
+    // リーダを直接使うとき、閉じていない文字列は Incomplete のままにする。
     try expectReadError(error.Incomplete, "\"\xff");
     try expectReadError(error.InvalidEscape, "\"\xff\\q\"");
 }

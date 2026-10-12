@@ -40,7 +40,8 @@ pub const Error = error{
     InvalidEscape,
     /// A `#\` that does not begin a character (src/char_syntax.zig).
     InvalidCharacter,
-    /// A string literal whose bytes are not valid UTF-8 (src/string_syntax.zig).
+    /// Input that is not valid UTF-8: the whole input, or, when the reader is used
+    /// on its own, the bytes of a string literal (src/string_syntax.zig).
     /// 通常の入口(インタプリタ、WASM の境界)は、リーダに渡す前に入力全体を検査する。
     /// それでもリーダは、生のバイトから文字列を作る前に自分で確かめる。
     InvalidUtf8,
