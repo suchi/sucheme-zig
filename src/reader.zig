@@ -40,8 +40,9 @@ pub const Error = error{
     InvalidEscape,
     /// A `#\` that does not begin a character (src/char_syntax.zig).
     InvalidCharacter,
-    /// Input that is not valid UTF-8.
-    /// 文字列・文字・シンボル名はテキストなので、何かを読む前に、入力全体を拒否する。
+    /// A string literal whose bytes are not valid UTF-8 (src/string_syntax.zig).
+    /// 通常の入口(インタプリタ、WASM の境界)は、リーダに渡す前に入力全体を検査する。
+    /// それでもリーダは、生のバイトから文字列を作る前に自分で確かめる。
     InvalidUtf8,
     /// A decimal integer outside the fixnum range.
     /// R7RS 6.2.3 は、段階4で多倍長整数(bignum)を入れるまで、これを実装上の制限として

@@ -254,9 +254,10 @@ pub const Heap = struct {
     /// `createFrame` と同じである。ASCII 判定のフラグを計算するのも、ここである。
     pub fn createString(self: *Heap, bytes: []const u8) Error!*String {
         // Why: `string-length` と `string-ref` は、バイト列が妥当な UTF-8 であることを前提に
-        // 文字を数える。入口(リーダ、`Interpreter` の全体検査)で保証しているので、
-        // 将来の `string-append` などがこの前提を破ったとき、デバッグビルドで作った場所で
-        // 見つける。
+        // 文字を数える。リーダは文字列リテラルのバイトを自分で検査し、その他の入口は
+        // `Interpreter` と WASM の境界が検査するので、ここで保証される。将来の
+        // `string-append` などがこの前提を破ったとき、Debug と ReleaseSafe のビルドで、
+        // 作った場所で見つける(ReleaseFast では検査が消える)。
         std.debug.assert(std.unicode.utf8ValidateSlice(bytes));
         const total = try self.reserveWithPayload(String, bytes.len, 1);
         const copy = try self.backing.dupe(u8, bytes);
