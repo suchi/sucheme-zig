@@ -190,16 +190,36 @@ pub const Machine = struct {
         const closure = operator.asClosure() orelse
             return ctx.raise("not a procedure", .{});
         const lambda = closure.lambda;
-        if (count != lambda.arity) return ctx.raise(
-            "wrong number of arguments: expected {d}, got {d}",
-            .{ lambda.arity, count },
-        );
+        if (!lambda.acceptsCount(count)) {
+            if (lambda.rest) return ctx.raise(
+                "wrong number of arguments: expected at least {d}, got {d}",
+                .{ lambda.arity, count },
+            );
+            return ctx.raise(
+                "wrong number of arguments: expected {d}, got {d}",
+                .{ lambda.arity, count },
+            );
+        }
         // フレームは、その中で作ったクロージャが生き延びるとき、呼び出しより長く生きる。
         // そのため、クロージャと同じ場所に確保する。本体が定義する名前は未初期化で
         // 始まる(R7RS 5.3.2: 本体は `letrec*` である)。ヒープがフレームを作ると、
         // そうなる。
         const frame = try ctx.createFrame(lambda.frame_size, closure.env);
-        fill(frame.values[0..count], args);
+        var required = args;
+        if (lambda.rest) {
+            // `args` は最後のオペランドから並ぶので、余りの引数はその先頭にある。
+            // 先頭から順に前へ継ぎ足すと、書いた順のリストになる。リストは呼び出しの
+            // たびに新しく作る(R7RS 4.1.4 の newly allocated list)。
+            // Why: GC はステップの間でしか走らない(ADR-0031)。ここで作るリストは、
+            // フレームのスロットに入るまでどのルートからも辿れないが、それまでに回収されない。
+            var list: Value = .empty_list_value;
+            for (0..count - lambda.arity) |_| {
+                list = ctx.heap.cons(required.value, list) catch |e| return ctx.heapFailure(e);
+                required = required.next.?;
+            }
+            frame.values[lambda.arity] = list;
+        }
+        fill(frame.values[0..lambda.arity], required);
         return .{ .body = .{ .env = frame, .body = lambda.body } };
     }
 
@@ -476,6 +496,70 @@ test "the errors of a call keep the messages the evaluator gave" {
     try f.expectFails("wrong number of arguments to -", "(-)");
     try f.expectFails("wrong number of arguments: expected 1, got 2", "((lambda (x) x) 1 2)");
     try f.expectFails("wrong number of arguments: expected 2, got 1", "((lambda (x y) x) 1)");
+    // 余りを受ける手続きは、必須の個数を下回るときだけ失敗する。
+    try f.expectFails("wrong number of arguments: expected at least 2, got 1", "((lambda (x y . r) x) 1)");
+    try f.expectFails("wrong number of arguments: expected at least 1, got 0", "((lambda (x . r) x))");
+}
+
+/// The length of the proper list `v`, and its elements as fixnums in `out`.
+fn fixnums(v: Value, out: []i64) usize {
+    var n: usize = 0;
+    var it = v;
+    while (it.asPair()) |p| : (it = p.cdr) {
+        out[n] = p.car.asFixnum().?;
+        n += 1;
+    }
+    std.debug.assert(it.kind() == .empty_list);
+    return n;
+}
+
+test "a rest parameter gets the arguments left over, in the order they were written" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var buf: [16]i64 = undefined;
+    const cases = [_]struct { src: []const u8, expected: []const i64 }{
+        .{ .src = "((lambda args args) 1 2)", .expected = &.{ 1, 2 } },
+        .{ .src = "((lambda args args))", .expected = &.{} },
+        .{ .src = "((lambda (a . r) r) 1 2 3)", .expected = &.{ 2, 3 } },
+        .{ .src = "((lambda (a . r) r) 1)", .expected = &.{} },
+        .{ .src = "((lambda (a b . r) r) 1 2 3 4 5 6 7 8 9 10)", .expected = &.{ 3, 4, 5, 6, 7, 8, 9, 10 } },
+        .{ .src = "((lambda (a b . r) b) 1 2 3)", .expected = &.{} },
+    };
+    for (cases[0..5]) |c| {
+        const n = fixnums(try f.eval(c.src), &buf);
+        try std.testing.expectEqualSlices(i64, c.expected, buf[0..n]);
+    }
+    // 必須の仮引数は、余りがあっても書いた位置の引数を受ける。
+    try f.expectInt(2, cases[5].src);
+    try f.expectInt(1, "((lambda (a . r) a) 1 2 3)");
+    // 本体の先頭の定義は、余りのスロットの後ろに入り、余りを上書きしない。
+    try f.expectInt(13, "((lambda (a . r) (define n 10) (+ n a (car r))) 1 2)");
+}
+
+test "the list of the arguments left over is new at each call" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.eval("(define (f . a) a)");
+    const first = try f.eval("(f 1 2)");
+    const second = try f.eval("(f 1 2)");
+    try std.testing.expect(first.asPair().? != second.asPair().?);
+    try std.testing.expect(first.pointsIntoHeap());
+    try std.testing.expect(!(try f.eval("(eq? (f 1) (f 1))")).isTrue());
+}
+
+test "a variadic procedure called in tail position does not grow the continuation" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    _ = try f.eval("(define (loop n . more) (if (= n 0) 'done (loop (- n 1) 1 2 3)))");
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(loop 10)");
+    const small = f.machine.peak_depth;
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(loop 5000)");
+    try std.testing.expectEqual(small, f.machine.peak_depth);
 }
 
 /// Primitives that record how the machine called them.
@@ -720,6 +804,9 @@ const stress_programs = [_]struct { src: []const u8, expected: i64 }{
     .{ .src = "(define (loop n) (if (= n 0) 7 (loop (- n 1)))) (loop 3000)", .expected = 7 },
     .{ .src = "(define xs '(1 2 3)) (define (second l) ((lambda (rest) rest) l)) (+ 1 2 3 4 5 6 7 8 9 10)", .expected = 55 },
     .{ .src = "(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 300)", .expected = 300 },
+    // 余りの引数のリストは、フレームに入るまでどのルートからも辿れない。
+    .{ .src = "(define (sum . xs) (if (null? xs) 0 (+ (car xs) (apply-sum (cdr xs))))) (define (apply-sum l) (if (null? l) 0 (+ (car l) (apply-sum (cdr l))))) (sum 1 2 3 4 5 6 7 8 9 10)", .expected = 55 },
+    .{ .src = "(define (keep . xs) (lambda () xs)) (define k (keep 4 5 6)) (car (cdr (cdr (k))))", .expected = 6 },
 };
 
 test "the programs give the same results with a collection at every step, whatever the marking list holds" {

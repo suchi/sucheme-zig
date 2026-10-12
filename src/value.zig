@@ -401,6 +401,7 @@ pub const Closure = struct {
 
 /// The variables of one call, in the slots the expander assigned: the
 /// parameters, then the names the body defines at its start.
+/// 余りの引数を受ける仮引数があれば、そのスロットは必須の仮引数の直後にある。
 /// `parent` は、クロージャが作られたフレームである。
 pub const Frame = struct {
     values: []Value,
@@ -471,12 +472,25 @@ pub const If = struct {
 
 /// What a `lambda` expression means, apart from the frame it is evaluated in.
 pub const Lambda = struct {
-    /// The number of parameters, which a call has to match.
+    /// The number of required parameters: those before the dot, or all of them
+    /// when there is no dot.
+    /// `rest` が偽なら、呼び出しの引数の個数はこれと等しくなければならない。
     arity: u32,
-    /// The number of slots of a call's frame: the parameters, then the names the
-    /// body defines at its start.
+    /// Whether the procedure takes more arguments than `arity` (R7RS 4.1.4).
+    /// 真なら、`arity` 個を超えた引数を呼び出しのたびに新しいリストにして、
+    /// 必須の仮引数の直後のスロットに入れる。`(lambda args ...)` は `arity` が 0 で
+    /// これが真である。
+    rest: bool = false,
+    /// The number of slots of a call's frame: the required parameters, the rest
+    /// parameter if there is one, then the names the body defines at its start.
     frame_size: u32,
     body: *const Node,
+
+    /// Whether a call with `count` arguments matches the parameters.
+    pub fn acceptsCount(self: *const Lambda, count: usize) bool {
+        if (self.rest) return count >= self.arity;
+        return count == self.arity;
+    }
 };
 
 /// A procedure call.
@@ -745,6 +759,32 @@ test "a primitive takes the numbers of arguments from its minimum to its maximum
     const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .call = &nop };
     try std.testing.expect(max.acceptsCount(255));
     try std.testing.expect(!max.acceptsCount(256));
+}
+
+test "a lambda takes exactly its arity, or with a rest parameter its arity or more" {
+    const body: Node = .{ .constant = .unspecified_value };
+    const two: Lambda = .{ .arity = 2, .frame_size = 2, .body = &body };
+    try std.testing.expect(!two.acceptsCount(1));
+    try std.testing.expect(two.acceptsCount(2));
+    try std.testing.expect(!two.acceptsCount(3));
+    const none: Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
+    try std.testing.expect(none.acceptsCount(0));
+    try std.testing.expect(!none.acceptsCount(1));
+    // `(lambda (a b . r) ...)`: 2 個ちょうどから受け付け、上限はない。
+    const two_or_more: Lambda = .{ .arity = 2, .rest = true, .frame_size = 3, .body = &body };
+    try std.testing.expect(!two_or_more.acceptsCount(0));
+    try std.testing.expect(!two_or_more.acceptsCount(1));
+    try std.testing.expect(two_or_more.acceptsCount(2));
+    try std.testing.expect(two_or_more.acceptsCount(3));
+    try std.testing.expect(two_or_more.acceptsCount(1000));
+    // `(lambda args ...)`: 0 個から受け付ける。
+    const any: Lambda = .{ .arity = 0, .rest = true, .frame_size = 1, .body = &body };
+    try std.testing.expect(any.acceptsCount(0));
+    try std.testing.expect(any.acceptsCount(1000));
+    // `u32` の個数は、usize の個数と比べても回り込まない。
+    const wide: Lambda = .{ .arity = std.math.maxInt(u32), .frame_size = std.math.maxInt(u32), .body = &body };
+    try std.testing.expect(wide.acceptsCount(std.math.maxInt(u32)));
+    try std.testing.expect(!wide.acceptsCount(@as(usize, std.math.maxInt(u32)) + 1));
 }
 
 /// One of each kind of value, and a second distinct object for each kind that

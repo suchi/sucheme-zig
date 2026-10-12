@@ -109,9 +109,6 @@ error: bad lambda: a parameter must be an identifier
 (lambda (x x) x)
 error: bad lambda: duplicate parameter: x
 
-(lambda x x)
-error: bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet
-
 (lambda 1 1)
 error: bad lambda: the parameters must be a list of identifiers
 

@@ -77,8 +77,14 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             }
             try out.writeByte(')');
         },
+        // 余りの引数を受ける手続きは、必須の個数のあとに `rest` と書く。固定個の手続きの
+        // 書き方は変えない。
         .lambda => |l| {
-            try out.print("(lambda {d} {d} ", .{ l.arity, l.frame_size });
+            if (l.rest) {
+                try out.print("(lambda {d} rest {d} ", .{ l.arity, l.frame_size });
+            } else {
+                try out.print("(lambda {d} {d} ", .{ l.arity, l.frame_size });
+            }
             try write(out, scratch, symbols, l.body);
             try out.writeByte(')');
         },
@@ -133,6 +139,8 @@ test "write names each kind of node and its parts" {
     const seq = try make(a, .{ .sequence = &.{ one, local } });
     const lambda = value_mod.Lambda{ .arity = 1, .frame_size = 2, .body = seq };
     const lam = try make(a, .{ .lambda = &lambda });
+    const variadic = value_mod.Lambda{ .arity = 1, .rest = true, .frame_size = 2, .body = local };
+    const lam_rest = try make(a, .{ .lambda = &variadic });
     const call = try make(a, .{ .call = .{ .operator = global, .operands = &.{ one, local } } });
 
     const cases = [_]struct { node: *const Node, text: []const u8 }{
@@ -147,6 +155,7 @@ test "write names each kind of node and its parts" {
         .{ .node = with_alt, .text = "(if (const 1) (local x 1 2) (global f))" },
         .{ .node = seq, .text = "(seq (const 1) (local x 1 2))" },
         .{ .node = lam, .text = "(lambda 1 2 (seq (const 1) (local x 1 2)))" },
+        .{ .node = lam_rest, .text = "(lambda 1 rest 2 (local x 1 2))" },
         .{ .node = call, .text = "(call (global f) (const 1) (local x 1 2))" },
     };
     for (cases) |c| {
