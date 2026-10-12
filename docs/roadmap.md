@@ -13,7 +13,7 @@
 | 項目 | 状態 |
 | --- | --- |
 | 現在の段階 | 段階1(通しで動く最小の縦切り)。スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
-| 最新リリース | なし |
+| 最新リリース | [v0.1.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0)([リリースノート](releases/v0.1.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
 
@@ -68,7 +68,7 @@
 - [x] REPL(素朴な行読み取り、完結判定による継続行) (スライス 1a は素朴な行読み取り、スライス 1l が継続行。継続行の判定の費用は、段階 7 の項目に受け入れた制約として記録した)
 - [x] リーダのファジングのワークフローの追加(定期実行と手動起動) (スライス 1j-1。リーダのファジングのテストが `src/reader.zig`、ワークフローが `.github/workflows/fuzz.yml`)
 - [x] `fuzz.yml` の GitHub 上での動作の確認のうち、手動起動(`workflow_dispatch`)で 1 回動かし、ジョブが時間の上限の内で終わり、失敗した入力が無いときに検査の手順が緑のまま通ること (スライス 1j-1 のマージ後)
-- [ ] `fuzz.yml` が失敗した入力を見つけたときに、入力が成果物に上がること(`.zig-cache/f/crash` の場所と `include-hidden-files` の要否を含む)。見つける入力が無いと確かめられないので、欠陥のある変更を使い捨てのブランチで試すか、実際に見つかるまで待つ (スライス 1j-1 のマージ後)
+- [x] `fuzz.yml` が失敗した入力を見つけたときに、入力が成果物に上がること(`.zig-cache/f/crash` の場所と `include-hidden-files` の要否を含む)。2026-10-12 に、使い捨てのブランチで欠陥(900 バイトを超える入力で失敗)を仕込んで確かめた。ファジングの手順は終了コード 0 で終わり、`fuzz-crash` の成果物が上がり、検査の手順が失敗してジョブが赤になった([ラン](https://github.com/suchi/sucheme-zig/actions/runs/38252355736)) (スライス 1j-1 のマージ後)
 - [x] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版 (スライス 1i)
 - [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)
 - [x] aarch64 を自動テストの対象に加えるかの判断と ADR の作成。判断は加えないで、[ADR-0033](adr/0033-aarch64-built-but-not-tested.md) に書いた([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
@@ -78,7 +78,7 @@
 - [x] リリース成果物の組み立て。`zig build dist` が ADR-0010 の一覧の全ターゲットを `ReleaseSafe` で作り、`tools/release/package.py` がアーカイブと `SHA256SUMS` を作って読み直す。`THIRD-PARTY-NOTICES.txt` と、リリースの形の [ADR-0034](adr/0034-release-shape.md) を含む。`full.yml` の `dist` ジョブがリハーサルとして走らせる。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3a)
 - [x] `full.yml` の `dist` ジョブが GitHub のランナー上で通ること(`python3` の有無、所要時間、キャッシュの挙動を含む)。PR を ready にしたときの実行と、`main` での手動起動で通った。測定値は [plans/0009-slice-1j-release-v0-1-0.md](plans/0009-slice-1j-release-v0-1-0.md) の「確かめた事実」の表にある (スライス 1j-3a)
 - [x] リリースのワークフロー(`release.yml`)を足す。タグの push から、版の確認とスモークテストのあとに、下書きのリリースを作る。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3c)
-- [ ] `release.yml` がタグの push で動き、下書きのリリースができること。`gh release create` の1行は、タグを打たないと試せない。最初のタグは v0.1.0 で、リハーサル用のタグは打たない (スライス 1j-4 のタグの push)
+- [x] `release.yml` がタグの push で動き、下書きのリリースができること。最初のタグ v0.1.0 で、全手順が成功し、下書きができた([ラン](https://github.com/suchi/sucheme-zig/actions/runs/38257497672)) (スライス 1j-4 のタグの push)
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 
