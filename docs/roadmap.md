@@ -65,7 +65,7 @@
 - [x] CEK機械の実行ループと、段階1の機構に必要な継続フレーム([design/runtime.md](design/runtime.md) の必要なフレームの種類の段階1の行) (スライス 1f)
 - [x] 最外の継続への脱出による未処理例外の報告(継続と条件オブジェクトの最小形) (スライス 1b・1f)
 - [x] プリミティブ約30個。算術は固定長整数に限る (スライス 1a・1d・1e・1k。一覧は [plans/0010-slices-1k-1l-primitives-and-repl-continuation.md](plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の 1k の一覧が正で、個数はここに書かない)
-- [ ] REPL(素朴な行読み取り、完結判定による継続行) (スライス 1a は素朴な行読み取りまで。継続行はスライス 1l で入れる)
+- [x] REPL(素朴な行読み取り、完結判定による継続行) (スライス 1a は素朴な行読み取り、スライス 1l が継続行。継続行の判定の費用は、段階 7 の項目に受け入れた制約として記録した)
 - [ ] リーダのファジングのワークフロー(定期実行と手動起動) (スライス 1j-1)
 - [x] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版 (スライス 1i)
 - [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)

@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0002](../adr/0002-value-representation.md), [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md), [ADR-0008](../adr/0008-string-representation.md), [ADR-0014](../adr/0014-repl-line-editor-boundary.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md), [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md)
 - 段階: 1(スライス 1k と 1l)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-11
-- 状態: 合意済み(2026-10-11)。「合意を求める点」の9つは、5を除いて勧める案のとおり。5は、行コメントを 1l から切り出して最初に入れる形に変わった
+- 状態: 合意済み(2026-10-11)。「合意を求める点」の9つは、5を除いて勧める案のとおり。5は、行コメントを 1l から切り出して最初に入れる形に変わった。実装の状況: 1l は L1 が #43、L2 と L3 が #55 でマージ済み。1k は K0 から K5 がマージ済みで、K6(統合)の PR で完了する。進捗の表は [0003](0003-phase1-minimal-slice.md) が正
 
 ## 解こうとしている問題
 
@@ -485,4 +485,4 @@ K0 は私が直列に作る。呼び出し規約、アリティ表、エラー�
 2. [roadmap.md](../roadmap.md) を編集している PR(#37)のマージ後に、roadmap の「プリミティブ」「REPL」「リーダの最小集合」の項目が指すスライスを 1k と 1l に直す。この計画書の PR は roadmap を触らない。
 3. 最新の `origin/main` から、まず `feature/phase1-slice-1l1-line-comments`(L1)を作って最初にマージする。続いて `feature/phase1-slice-1k-primitives` と `feature/phase1-slice-1l-repl-continuation` を作る。1k は K0 から始める。
 4. 実装の最初に、「確かめられなかったこと」の R7RS の各節を原文で確かめ、結果を PR に書く。
-5. 各 PR で、[0003](0003-phase1-minimal-slice.md) の進捗の表と「次にやること」を更新する。
+5. (済)進捗の表と「次にやること」は、1k では統合の K6 が更新した(「重なりの確認」)。1l の L2 と L3 の完了は K6 が合わせて反映した。
