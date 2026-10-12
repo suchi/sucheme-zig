@@ -68,6 +68,8 @@
 | 同梱の Zig 0.17.0 の `LICENSE` は MIT(Expat)で、musl の `COPYRIGHT` も MIT である | ローカルのツールチェーンのファイルを読んだ |
 | `git tag` と `gh release` は承認を求める側(`ask`)にある | `.claude/settings.json` を読んだ |
 | `dependabot.yml` の対象は `github-actions` だけで、`cooldown` は7日である | `.github/dependabot.yml` を読んだ |
+| GitHub の `ubuntu-latest` は、2026-10-12 時点でイメージ ubuntu-24.04(版 20261004.327.1)で、`python3` は 3.12.3 が入っている。`full.yml` の `dist` ジョブは、キャッシュが無い状態で通った。`zig build dist` は 3 分 8 秒、ジョブ全体は約 3 分 40 秒だった(`timeout-minutes: 20` に対して約 5.5 倍の余裕)。`package.py` のアーカイブの大きさは、手元の実行と数百バイト違う(例: x86_64 Linux が 1247481 と 1247588)。アーカイブがバイト単位で一致するのは同じ環境の中だけ、という [ADR-0034](../adr/0034-release-shape.md) の約束と合う | `full.yml` の `dist` ジョブのログ(PR #66 の ready 時の実行) |
+| `mlugg/setup-zig` は Node.js 20 を対象にしており、ランナーが Node.js 24 に切り替えて実行する、という警告がログに出る。今は動いている | 同じログの警告 |
 
 確かめられなかったこと(推測と区別して扱う):
 

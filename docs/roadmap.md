@@ -72,11 +72,11 @@
 - [x] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版 (スライス 1i)
 - [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)
 - [x] aarch64 を自動テストの対象に加えるかの判断と ADR の作成。判断は加えないで、[ADR-0033](adr/0033-aarch64-built-but-not-tested.md) に書いた([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
-- [ ] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
+- [x] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
 - [x] PR で Web UI を確認するための成果物の添付のワークフロー(`preview.yml`)。`sucheme.wasm` と `web/` を並べたディレクトリを、CI が `upload-artifact` で上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3b)
 - [ ] 上がった成果物を人が展開し、`node serve.mjs` で開いて `(fact 10)` が動くことの確認 (スライス 1j-3b のマージ後)
 - [x] リリース成果物の組み立て。`zig build dist` が ADR-0010 の一覧の全ターゲットを `ReleaseSafe` で作り、`tools/release/package.py` がアーカイブと `SHA256SUMS` を作って読み直す。`THIRD-PARTY-NOTICES.txt` と、リリースの形の [ADR-0034](adr/0034-release-shape.md) を含む。`full.yml` の `dist` ジョブがリハーサルとして走らせる。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3a)
-- [ ] `full.yml` の `dist` ジョブが GitHub のランナー上で通ること(`python3` の有無、所要時間、キャッシュの挙動を含む)。PR を ready にしたときの実行で確かめる (スライス 1j-3a)
+- [x] `full.yml` の `dist` ジョブが GitHub のランナー上で通ること(`python3` の有無、所要時間、キャッシュの挙動を含む)。PR を ready にしたときの実行と、`main` での手動起動で通った。測定値は [plans/0009-slice-1j-release-v0-1-0.md](plans/0009-slice-1j-release-v0-1-0.md) の「確かめた事実」の表にある (スライス 1j-3a)
 - [x] リリースのワークフロー(`release.yml`)を足す。タグの push から、版の確認とスモークテストのあとに、下書きのリリースを作る。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3c)
 - [ ] `release.yml` がタグの push で動き、下書きのリリースができること。`gh release create` の1行は、タグを打たないと試せない。最初のタグは v0.1.0 で、リハーサル用のタグは打たない (スライス 1j-4 のタグの push)
 
