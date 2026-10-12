@@ -524,14 +524,13 @@ test "a rest parameter gets the arguments left over, in the order they were writ
         .{ .src = "((lambda (a . r) r) 1 2 3)", .expected = &.{ 2, 3 } },
         .{ .src = "((lambda (a . r) r) 1)", .expected = &.{} },
         .{ .src = "((lambda (a b . r) r) 1 2 3 4 5 6 7 8 9 10)", .expected = &.{ 3, 4, 5, 6, 7, 8, 9, 10 } },
-        .{ .src = "((lambda (a b . r) b) 1 2 3)", .expected = &.{} },
     };
-    for (cases[0..5]) |c| {
+    for (cases) |c| {
         const n = fixnums(try f.eval(c.src), &buf);
         try std.testing.expectEqualSlices(i64, c.expected, buf[0..n]);
     }
     // 必須の仮引数は、余りがあっても書いた位置の引数を受ける。
-    try f.expectInt(2, cases[5].src);
+    try f.expectInt(2, "((lambda (a b . r) b) 1 2 3)");
     try f.expectInt(1, "((lambda (a . r) a) 1 2 3)");
     // 本体の先頭の定義は、余りのスロットの後ろに入り、余りを上書きしない。
     try f.expectInt(13, "((lambda (a . r) (define n 10) (+ n a (car r))) 1 2)");
@@ -553,7 +552,9 @@ test "a variadic procedure called in tail position does not grow the continuatio
     var f: Fixture = undefined;
     try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
-    _ = try f.eval("(define (loop n . more) (if (= n 0) 'done (loop (- n 1) 1 2 3)))");
+    // 余りは数でない値にする。必須の仮引数に余りが入る誤りがあると、ループが終わらず
+    // に回り続けるのでなく、`=` の型の誤りですぐに失敗する。
+    _ = try f.eval("(define (loop n . more) (if (= n 0) 'done (loop (- n 1) 'a 'b 'c)))");
     f.machine.peak_depth = 0;
     _ = try f.eval("(loop 10)");
     const small = f.machine.peak_depth;
