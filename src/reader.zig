@@ -1009,12 +1009,11 @@ fn stringsAreUtf8(v: Value) bool {
 /// ここで扱いを決めるまでコンパイルが通らない。
 ///
 /// 検出力のある性質は、パニックと確保の漏れが無いこと、データを返した `next` が入力を
-/// 進めること(進まなければ、読み取りの繰り返しが終わらない)、入力が妥当な UTF-8 なら
-/// 読めた文字列も妥当な UTF-8 であることである。終端を返したときに入力を読み切って
+/// 進めること(進まなければ、読み取りの繰り返しが終わらない)、入力に関わらず
+/// 読めた文字列が妥当な UTF-8 であることである。終端を返したときに入力を読み切って
 /// いることは、`next` の構造から自明で、検出力はほとんどない。エラーのときの `pos` は、
 /// 文字や文字列のリテラルが元の位置に戻すので、何も言わない。
 fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
-    const utf8 = std.unicode.utf8ValidateSlice(src);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var heap: Heap = .init(gpa, .{});
@@ -1044,10 +1043,10 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             return;
         };
         try std.testing.expect(r.pos > before);
-        // 入力が不正な UTF-8 のときは、パニックしないことだけを見る。不正なバイトを含む
-        // 文字列リテラルは `InvalidUtf8` になるので、文字列が返ることはまずないが、
-        // この性質は入力が妥当な場合に限って確かめる。
-        if (utf8) try std.testing.expect(stringsAreUtf8(datum));
+        // リーダは、入力に関わらず不正な文字列を作らない(不正なバイトを含む文字列リテラルは
+        // `InvalidUtf8` になる。src/string_syntax.zig)。`createString` の assert は
+        // ReleaseFast では消えるので、その最適化でもこの性質を見る。
+        try std.testing.expect(stringsAreUtf8(datum));
         var sunk: std.Io.Writer.Discarding = .init(&.{});
         printer.write(&sunk.writer, gpa, &symbols, datum) catch |err| switch (err) {
             error.OutOfMemory => return,
@@ -1073,7 +1072,7 @@ fn fuzzInput(smith: *std.testing.Smith, buf: *[fuzz_max_input]u8) FuzzInput {
 }
 
 /// Where `fuzzReader` writes down what it was given, for the test that checks
-/// the corpus. The fuzz test itself passes null.
+/// the corpus. The test passes null when it runs under `--fuzz`.
 const FuzzRecord = struct {
     /// テストランナーが、初期入力のあとに空の入力を 1 回走らせる。その分を含めて持つ。
     const capacity = fuzz_inputs.len + 2;
