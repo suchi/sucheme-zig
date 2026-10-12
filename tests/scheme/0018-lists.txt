@@ -193,7 +193,8 @@ list?
 
 # A list of a few hundred pairs, made while the collector runs. The runner also
 # runs every case with a collection at each step. The long-list scale test is
-# planned in docs/plans/0010 (K6) and is not here yet.
+# tests/scheme-slow/0013-list-scale.txt, and its small twin is
+# tests/scheme/0026-list-scale-small.txt.
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (length (build 500 '()))
 500
 
