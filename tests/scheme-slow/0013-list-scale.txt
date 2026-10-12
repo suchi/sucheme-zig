@@ -1,0 +1,36 @@
+# スライス 1k を規模で試す。リストの作成と走査、深い入れ子の `equal?`、長いリストの
+# `equal?` である。実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ
+# 走り、全コミットでは走らない(docs/plans/0007-test-tiers.md)。同じ論理を小さい
+# 規模で通す双子が tests/scheme/0026-list-scale-small.txt にある。
+# ここで見るのは、個数や深さに比例して壊れる種類の誤りである。GC が何度も走る間も
+# 作りかけのリストが保たれること、`length` と `list?` の走査が個数に比例して終わること、
+# `equal?` の作業スタックが Zig のスタックを使い切らないことである。
+# 1ケースは既定と1ステップごとに GC するモードの2回走り、後者のほうがずっと遅い。
+# 層2 の目標(10 分以内)に収めるため、100万要素のリストを作るのは1ケースだけにして、
+# ほかは10万にしている。ケースごとに作る数を最小にするため、1ケースの中で
+# 作ったデータを `define` で束縛して使い回す。
+
+# 100万要素のリストを末尾再帰で作る。作りかけのリストは、引数の鎖だけから
+# 到達できる。GC は作成の途中で何度も走る。作ったあとの長さ、`list?`、先頭を見る。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 1000000 '())) (list (length xs) (list? xs) (car xs))
+(1000000 #t 1)
+
+# 長いリスト同士の `equal?`。car の比較のあとに cdr を積むので、作業スタックは
+# 深くならない。最後の要素まで比べて真になる場合と、尾が違って偽になる場合。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define a (build 100000 '())) (list (equal? a (build 100000 '())) (equal? a (build 100000 '(0))))
+(#t #f)
+
+# 尾が () でない長い鎖。`list?` は偽、`length` は型のエラーになる。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define improper (build 100000 0)) (list (list? improper) (pair? improper)) (length improper)
+(#f #t)
+error: wrong type of argument to length
+
+# 深さ10万の入れ子の `equal?`。car の方向の入れ子は、比べるたびに作業スタックが
+# 1つ深くなる。Zig の再帰なら、ここでスタックを使い切る。底の文字列は内容で比べる。
+# 深く入れ子にしたデータは GC のたびに走査されるが、壊れない。底を取り出して確かめる。
+(define (nest n acc) (if (= n 0) acc (nest (- n 1) (list acc)))) (define (bottom x) (if (pair? x) (bottom (car x)) x)) (define a (nest 100000 "あい")) (list (equal? a (nest 100000 "あい")) (equal? a (nest 100000 "あう")) (bottom a))
+(#t #f "あい")
+
+# ベクタの入れ子。要素が2つ以上のベクタは作業スタックに積まれる。
+(define (vnest n acc) (if (= n 0) acc (vnest (- n 1) (vector acc 0)))) (define v (vnest 100000 '())) (equal? v (vnest 100000 '()))
+#t
