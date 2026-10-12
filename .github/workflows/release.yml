@@ -21,7 +21,8 @@
 #    SHA で使う。リリースの作成は、ホストランナーの `gh` と `GITHUB_TOKEN` で行う。
 # 3. タグの名前は、`run:` の行に式として埋め込まず、環境変数 `TAG` で渡す。タグの
 #    名前は任意の文字を含みうるので、埋め込むとシェルの構文として読まれる。
-#    トークンは、リリースを作る step だけに渡す。
+#    トークンは、リリースを作る step だけが環境変数 `GH_TOKEN` で受け取る。checkout は
+#    `persist-credentials: false` で、書き込み権限のトークンを git の設定に残さない。
 #
 # `run:` は1行で書く。`if:` は使わず、手順の並びで表す(tools/check-docs が見る)。
 #
@@ -48,6 +49,11 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Why: 既定(true)では、書き込み権限の GITHUB_TOKEN が git の設定に残り、後続の
+          # step(`zig build dist` が実行する build.zig を含む)から読める。このジョブは
+          # git の操作を checkout のあとにしないので、残す理由が無い。
+          persist-credentials: false
       # Why: リリースノートが無いと、組み立ての最後で失敗する。先に確かめて、数分の
       # ビルドを待たずに失敗させる。ファイルの名前は、タグの名前そのものである。
       - run: test -f "docs/releases/$TAG.md"
