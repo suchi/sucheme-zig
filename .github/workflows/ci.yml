@@ -9,7 +9,7 @@
 # silently stopped running.
 #
 # ファジング(`zig build test --fuzz=<N>`)は意図して入れていない。1回に数分の
-# ランナー時間がかかり、見つけた失敗が終了コードに出ないためである(AGENTS.md)。
+# 時間とランナーの分数がかかるためである(AGENTS.md)。
 # .github/workflows/fuzz.yml が、定期実行と手動起動で走らせる。
 #
 # The Zig version below is a copy; .zigversion is the source of truth and
