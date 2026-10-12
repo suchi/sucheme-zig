@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md), [ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0019](../adr/0019-denotations-and-identifier-resolution.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md), [ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md), [ADR-0030](../adr/0030-lexical-address-width-u32.md), [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md)。衛生性の方式の経緯として [ADR-0005](../adr/0005-hygienic-expander-by-renaming.md)(非推奨、ADR-0019 に置き換え)
 - 段階: 2(コア言語の完成)。段階の作業項目と完了条件は [roadmap.md](../roadmap.md) の段階2の節が正
 - 日付: 2026-10-13
-- 状態: 提案。「合意を求める点」に答えをもらってから実装を始める
+- 状態: 合意済み(2026-10-13)。「合意を求める点」の11点すべてを、勧める案どおりに承認した。問い3と問い4の新しい ADR は、それぞれを引き受けるスライスの PR で書く
 
 ## 解こうとしている問題
 
@@ -51,7 +51,7 @@
 | ファイルの実行(`sucheme prog.scm`) | `src/main.zig` の doc コメントの表で、ファイル名の引数は「未実装」で終了ステータス 69 | 段階3(合意を求める点の6) |
 | シンボル表を弱い表にする | [architecture.md](../design/architecture.md) の評価の進行点の一元化が「シンボル表を弱い表にするスライス」を前提にしている。`src/trace.zig` の `symbol` の分類は、そのスライスのために置いてある | 段階3。`string->symbol` が入るスライス(0010 が、シンボルの操作を弱い表の判断と同時に決めると書いた)(合意を求める点の5) |
 | コアIRを GC ヒープに移す | 同じ節と [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の追記が「コードをヒープに移すスライス」を前提にしている | 段階3(合意を求める点の5) |
-| リーダの位置情報の副表 | [frontend.md](../design/frontend.md) の位置情報。どの段階にも項目が無い | 段階5(リーダの完全化と同じ段階)。この計画では決めず、段階2の終わりに roadmap へ「スライス未割り当て」と書く |
+| リーダの位置情報の副表 | [frontend.md](../design/frontend.md) の位置情報。どの段階にも項目が無い | 段階5(リーダの完全化と同じ段階)。スライスは決めず、合意の反映で roadmap の段階5に「スライス未割り当て」の項目として書いた |
 
 あわせて、コードの変更が届く先で、見落とすと検証が赤になるものを挙げる。
 
@@ -524,7 +524,7 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 roadmap は、衛生性の検証項目の5と9を、段階3と段階5の完了条件に含めると決めている。この計画はそれに従う。roadmap の段階3と段階5の完了条件には、すでにそれぞれの項目が書かれている。
 
-runtime.md の事例には、同じ扱いが roadmap に書かれていない。例外の節の事例12は `exit`(段階5)を使い、マーク段階の節の事例の1つは `string->symbol`(段階3)を使い、複数値の節の事例のうち2つは `let` と `when`(段階3)を使う。roadmap の段階2の完了条件は「すべて通る」としているので、そのままでは段階2を完了できない。完了条件を変えるのはユーザーの判断なので、合意を求める点の9で諮る。
+runtime.md の事例には、同じ扱いが roadmap に書かれていない。例外の節の事例12は `exit`(段階5)を使い、マーク段階の節の事例の1つは `string->symbol`(段階3)を使い、複数値の節の事例のうち2つは `let` と `when`(段階3)を使う。roadmap の段階2の完了条件は「すべて通る」としているので、そのままでは段階2を完了できない。完了条件を変えるのはユーザーの判断なので、合意を求める点の9で諮った。合意の結果、roadmap の段階2の完了条件を段階2で書けるものに限り、書けないものを段階3と段階5の完了条件に移した。
 
 ## open-questions の「段階2までに決める」の行の割り当て
 
@@ -663,7 +663,8 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | `tests/scheme/0040-*.txt` から | 振る舞い | 新規 | 2a から 2q |
 | `tests/scheme-slow/0014-*.txt` から | 規模 | 新規 | 2c、2e、2k |
 | `docs/status/conformance.md` | 生成し直し | 変更 | 束縛を増やすスライス |
-| `docs/design/runtime.md` `docs/design/architecture.md` | ルート管理の規約、プリミティブの失敗の形、未処理例外の実装 | 変更 | 2b、2d、2e || `docs/design/zig-api-notes.md` | リンクを辿らずに開く手段 | 変更 | 2n |
+| `docs/design/runtime.md` `docs/design/architecture.md` | ルート管理の規約、プリミティブの失敗の形、未処理例外の実装 | 変更 | 2b、2d、2e |
+| `docs/design/zig-api-notes.md` | リンクを辿らずに開く手段 | 変更 | 2n |
 | `docs/adr/` | ADR-0029 への追記。段階2のルートと GC の境目を決める新しい ADR と ADR-0031 への案内の追記(合意を求める点の4)。`(sucheme core)` の段階2の扱いを決める新しい ADR と ADR-0006 への案内の追記(合意を求める点の3) | 新規、変更(承認点) | 2b、2c、2m |
 | `docs/roadmap.md` | チェックボックス、roadmap に無い項目の追加 | 変更 | 各スライス |
 | `docs/releases/v0.2.0.md` `build.zig.zon` | リリース | 新規、変更 | 2r |
@@ -738,8 +739,8 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 | スライス | 状態 | PR |
 | --- | --- | --- |
-| 計画 | 提案。合意を求める点への答えを待っている | この計画書の PR |
-| 2a | 実装済み。敵対的レビューの前 | |
+| 計画 | 合意済み(2026-10-13)。「合意を求める点」はすべて勧める案。合意の反映は、roadmap の現在地、段階2の完了条件、段階3・4・5の項目と完了条件に済んでいる | [#76](https://github.com/suchi/sucheme-zig/pull/76)、[#77](https://github.com/suchi/sucheme-zig/pull/77) |
+| 2a | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み | [#78](https://github.com/suchi/sucheme-zig/pull/78) |
 | 2b | 未着手 | |
 | 2c | 未着手 | |
 | 2d | 未着手 | |
@@ -760,10 +761,8 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 ## 次にやること
 
-1. ユーザーが、この計画書の「合意を求める点」に答える。
-2. 答えに合わせて、この計画書の PR の中でこの計画書を直し、状態を「合意済み」にする。[plans/README.md](README.md) の表の行は、この計画書の PR で足してある。この計画書の PR は roadmap を触らない(「roadmap に無い項目と、割り当ての無い項目」の節の規則)。
-3. この計画書の PR のマージ後に、roadmap を直す PR を1つ出す。中身は、「現在地」の「段階2の実装計画書は未作成」を、この計画書を指す文に直すことと、合意を求める点の1、5、6、9の答えに従って、roadmap に項目を足すか「スライス未割り当て」と書き、段階3と段階5の完了条件を直すことである。項目を引き受けるスライスの PR で足すと決めたもの(2a の可変個引数の `lambda` など)は、そのスライスに回す。
-4. 最新の `origin/main` から `feature/phase2-slice-2a-variadic-lambda` を作り、2a から始める。2a のマージ後に、実行時の系列(2b と 2c)とフロントエンドの系列(2i)を並行に始める。
+1. 2a のマージ後に、実行時の系列(2b と 2c)とフロントエンドの系列(2i)を並行に始める。2a の進行は、進捗の表の 2a の行に置く。
+2. 項目を引き受けるスライスの PR で roadmap に足すと決めたもの(2a の可変個引数の `lambda`、2p の `features` など)は、そのスライスの PR で足す。
 
 系列ごとの次の作業。各スライスの PR は、自分の系列の行だけを書き換える(「重なりの確認」)。
 
