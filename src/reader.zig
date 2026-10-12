@@ -771,8 +771,8 @@ fn fuzzSeed(comptime text: []const u8) []const u8 {
 }
 
 /// The inputs `zig build test` reads, as text.
-/// `zig build test` は、ここにある入力だけを 1 回ずつ通る。入力の終わりで止まる
-/// トークン(`.` `#`)と、不正な UTF-8 を含む。
+/// `zig build test` は、ここにある入力を順に 1 回ずつ通り、最後にテストランナーが付ける
+/// 空の入力を 1 回通る。入力の終わりで止まるトークン(`.` `#`)と、不正な UTF-8 を含む。
 const fuzz_inputs = [_][]const u8{
     "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))",
     "'(1 . (2 3)) #(1 #(2)) ''() #t #false",
@@ -851,7 +851,8 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
     while (true) {
         const before = r.pos;
         const datum = r.next(arena.allocator(), sink) catch |err| switch (err) {
-            // 確保の失敗はこちらが起こしたもので、読み取りはそこで終わる。
+            // どのエラーでも読み取りはそこで終わる。`OutOfMemory` はこちらが起こした
+            // 確保の失敗で、`HeapLimit` は上限に届いたときである(この入力の大きさでは届かない)。
             error.OutOfMemory,
             error.HeapLimit,
             error.Incomplete,
