@@ -279,6 +279,40 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "build web/sucheme.wasm under zig-out");
     wasm_step.dependOn(&install_wasm.step);
 
+    // リリースの成果物(docs/adr/0034-release-shape.md)。`-Dtarget` と `-Doptimize`
+    // は見ない。ターゲットの一覧はここだけが持ち、tools/release/package.py は
+    // `zig-out/dist/` の下のディレクトリ名からそれを導く。wasm は上の `wasm` と同じ
+    // インストールに依存する(Web UI の zip の材料になる)。
+    const dist_step = b.step("dist", "build the release executables for every target under zig-out/dist");
+    for (dist_targets) |dist_name| {
+        const dist_query = std.Target.Query.parse(.{ .arch_os_abi = dist_name }) catch
+            std.debug.panic("dist target {s} is not a target", .{dist_name});
+        const dist_target = b.resolveTargetQuery(dist_query);
+        const sucheme_dist = b.createModule(.{
+            .root_source_file = b.path("src/sucheme.zig"),
+            .target = dist_target,
+            .optimize = dist_optimize,
+        });
+        sucheme_dist.addOptions("build_options", options);
+        const dist_exe = b.addExecutable(.{
+            .name = @tagName(manifest.name),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = dist_target,
+                .optimize = dist_optimize,
+                .imports = &.{.{ .name = "sucheme", .module = sucheme_dist }},
+            }),
+        });
+        // Why: Windows のビルドは実行ファイルの隣に .pdb を作る。アーカイブには
+        // 入れない(docs/adr/0034-release-shape.md)ので、インストールしない。
+        const install_dist = b.addInstallArtifact(dist_exe, .{
+            .dest_dir = .{ .override = .{ .custom = b.fmt("dist/{s}", .{dist_name}) } },
+            .pdb_dir = .disabled,
+        });
+        dist_step.dependOn(&install_dist.step);
+    }
+    dist_step.dependOn(&install_wasm.step);
+
     // エクスポートの往復テスト。Node.js で走らせる(tools/test-wasm/)。
     // インストールしたファイルを読むので、インストールの step が先に来る。
     // 実行はキャッシュしない。出力の引数を持たないシステムコマンドは、ビルドグラフから
@@ -378,6 +412,25 @@ pub fn build(b: *std.Build) void {
     // テストの選択を入り込ませる手段になる。
     checkSystemStepRuns(test_wasm_step, test_wasm_script, &install_wasm.step, 3);
 }
+
+/// The targets `zig build dist` builds, spelled as `-Dtarget` spells them.
+///
+/// docs/adr/0010-ci-cd-and-release-strategy.md の一覧が正である。綴りはそのまま
+/// `zig-out/dist/` の下のディレクトリ名とアーカイブ名になる。
+const dist_targets = [_][]const u8{
+    "x86_64-linux-musl",
+    "aarch64-linux-musl",
+    "x86_64-macos",
+    "aarch64-macos",
+    "x86_64-windows",
+    "aarch64-windows",
+};
+
+/// The optimize mode of `zig build dist`, which `-Doptimize` does not change.
+///
+/// `test-scheme` と wasm が使う設定と同じなので、動かして確かめた設定を配る
+/// (docs/adr/0034-release-shape.md)。
+const dist_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
 
 /// The script `zig build test-wasm` hands to Node.js.
 const test_wasm_script = "tools/test-wasm/main.mjs";

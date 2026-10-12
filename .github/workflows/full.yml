@@ -7,6 +7,12 @@
 # for review, when main changes, and on request. The table in AGENTS.md lists
 # the commands.
 #
+# dist ジョブは、リリースの成果物の組み立てを試す。`zig build dist` が全ターゲットを
+# 作り、tools/release/package.py がアーカイブと SHA256SUMS を作って読み直す。
+# リリースのワークフロー(まだ無い)は、タグの push でこの2つを同じように走らせる
+# 予定である(docs/adr/0034-release-shape.md)。組み立ての誤りは、タグを打つ日でなく、
+# ここで見つかる。
+#
 # Linux only: the logic is the same on Windows, which ci.yml covers on every
 # commit.
 #
@@ -57,3 +63,36 @@ jobs:
       - run: zig build test -Dslow=true --summary all
       - run: zig build test-scheme -Dslow=true
       - run: zig build test-wasm -Dslow=true
+
+  dist:
+    name: dist (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Why: 止まらないジョブは、GitHub の既定の上限(6時間)まで走り続ける。全ターゲットの
+    # ビルドは、空のキャッシュから開発機で2分、他の作業と同時の4コアの環境で5分40秒
+    # だった。標準ランナーの速さは未確認なので、20分は余裕を見た推測である。
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      # Why: slow ジョブと同じ形(docs/adr/0032-ci-zig-cache-saved-only-by-successful-runs.md)
+      # で、キーだけを分ける。このキャッシュは、slow ジョブが作らない他のターゲットの
+      # ビルドを含む。1つのキーに1種類の中身を持たせる。
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .zig-cache
+          key: zig-cache-dist-v1-${{ runner.os }}-${{ hashFiles('.zigversion', 'build.zig', 'build.zig.zon') }}
+      # Why: package.py は Python 3 を要する。ubuntu-latest に入っていることは未確認なので、
+      # 見つかった版をログに残す。
+      - run: python3 --version
+      - run: python3 -m unittest discover -s tools/release
+      - run: zig build dist
+      - run: zig-out/dist/x86_64-linux-musl/sucheme --version
+      # Why: `grep -q` は一致すると読むのをやめるので、sucheme が最後の改行を書くときに
+      # 読み手が居らず、負荷のもとで書き込みの失敗(EPIPE)になりうる。出力を最後まで読む。
+      - run: printf '(define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))\n(fact 10)\n' | zig-out/dist/x86_64-linux-musl/sucheme | grep 3628800 > /dev/null
+      - run: python3 tools/release/package.py
+      - run: cd zig-out/release && sha256sum -c SHA256SUMS
