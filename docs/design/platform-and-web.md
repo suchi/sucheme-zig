@@ -363,9 +363,9 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 段階7までは配置しない。段階8で、private にアクセス制限できるクラウドに置く([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。配置先のサービスは段階8で選ぶ。
 
-段階1から段階7は、CI の成果物として `sucheme.wasm` と `web/` を zip で添付し、ローカルで開いて確認する。
+段階1から段階7は、PR のたびに `.github/workflows/preview.yml` が成果物 `sucheme-web` を上げる。中身は、`web/` のファイル(`serve.mjs` を含む)と `sucheme.wasm` を1つのディレクトリに並べたもので、`actions/upload-artifact` が zip にまとめる。保持期間は7日である。レビュアは zip を展開し、展開したディレクトリで `node serve.mjs` を実行して、表示された URL をブラウザで開く。Node.js だけが要り、Zig もリポジトリも要らない。
 
-ローカルで開く手段には制約がある。`file://` から始まる取得は Fetch の対象外であり、`.wasm` だけでなくモジュールスクリプトと Worker のスクリプト取得も失敗する。したがって `file://` で直接開く道は閉じており、候補はローカルの HTTP サーバを立てる形に絞られる。理由と、zip を開くレビュアとの関係は [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) にある。手段は段階1の計画で決める([open-questions.md](open-questions.md))。
+ローカルで開く手段には制約がある。`file://` から始まる取得は Fetch の対象外であり、`.wasm` だけでなくモジュールスクリプトと Worker のスクリプト取得も失敗する。したがって `file://` で直接開く道は閉じており、ローカルの HTTP サーバを立てる形に絞られる。理由と、zip を開くレビュアとの関係は [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) にある。手段は `web/serve.mjs` に決めた([plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md))。
 
 ## REPL の行編集
 
