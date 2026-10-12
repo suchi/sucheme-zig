@@ -153,6 +153,8 @@ async function selfTest() {
     check("wasm in the second root", findWasm([webDir, wasmDir]), path.join(wasmDir, "sucheme.wasm"));
     check("wasm in the first root", findWasm([flatDir, emptyDir]), path.join(flatDir, "sucheme.wasm"));
     check("wasm in no root", findWasm([webDir, emptyDir]), null);
+    // 両方にあるときは、サーバが返すのと同じ先頭のルートのものを選ぶ。
+    check("wasm in both roots", findWasm([flatDir, wasmDir]), path.join(flatDir, "sucheme.wasm"));
 
     const get = async (p) => {
       const r = await rawGet(port, p);
