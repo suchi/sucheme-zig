@@ -716,25 +716,53 @@ fn hasBacktickedSpan(cell: []const u8, command: []const u8) bool {
 /// 見逃されたりする検証は、走るのをやめているからである。
 const allowed_workflow_keys = [_][]const u8{
     // ワークフローのレベル。
-    "name",               "on",           "permissions",       "concurrency", "jobs",
-    "push",               "pull_request", "branches",          "contents",    "group",
-    "cancel-in-progress", "types",        "workflow_dispatch",
+    "name",
+    "on",
+    "permissions",
+    "concurrency",
+    "jobs",
+    "push",
+    "pull_request",
+    "branches",
+    "contents",
+    "group",
+    "cancel-in-progress",
+    "types",
+    "workflow_dispatch",
+    // 定期実行。fuzz.yml が使う。`cron` は `schedule` の下にだけ置ける。
+    "schedule",
+    "cron",
     // ジョブのレベル。
-    "runs-on",     "strategy",
-    "fail-fast",          "matrix",       "steps",             "os",
+    "runs-on",
+    "strategy",
+    "fail-fast",
+    "matrix",
+    "steps",
+    "os",
+    // ジョブの時間の上限。上限を超えたジョブは失敗になるので、検証を黙って
+    // 止めるのでなく、赤にする。
+    "timeout-minutes",
     // step のレベル。
-             "uses",
-    "with",               "version",      "run",
+    "uses",
+    "with",
+    "version",
+    "run",
     // actions/cache の入力と、setup-zig の自動キャッシュを切る入力。ADR-0032。
-                  "path",        "key",
+    "path",
+    "key",
     "use-cache",
+    // actions/upload-artifact の入力。ファイルが無いときは何も上げず、隠し
+    // ディレクトリ(`.zig-cache`)の下のファイルも上げる。
+    "retention-days",
+    "if-no-files-found",
+    "include-hidden-files",
 };
 
 /// Whether `key` is one of the allowed keys, or a job name.
 ///
 /// ジョブ名はこのリポジトリが決めるので、一覧にできない。`jobs:` の下のジョブの
 /// 字下げにあるキーは、その深さに紛らわしいものが他に無いワークフローでは受理
-/// する。現状は `test` だけである。
+/// する。名前は `allowed_job_names` が持つ。
 fn keyIsAllowed(key: []const u8) bool {
     for (allowed_workflow_keys) |allowed| {
         if (std.mem.eql(u8, key, allowed)) return true;
@@ -750,13 +778,15 @@ fn keyIsAllowed(key: []const u8) bool {
 ///
 /// ワークフローが走る時機を変えるキー。コミットごとのワークフローは持てない。
 fn isTriggerNarrowing(key: []const u8) bool {
-    return std.mem.eql(u8, key, "types") or std.mem.eql(u8, key, "workflow_dispatch");
+    return std.mem.eql(u8, key, "types") or
+        std.mem.eql(u8, key, "workflow_dispatch") or
+        std.mem.eql(u8, key, "schedule");
 }
 
 /// The job names this repository's workflows define.
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
-const allowed_job_names = [_][]const u8{ "test", "slow" };
+const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
@@ -781,7 +811,15 @@ fn yamlKey(line: []const u8) ?[]const u8 {
 /// 検証コマンドをすべてその綴りにすると、ソースがパースできないリポジトリでも
 /// 全行が実行されたと報告された。コマンドの動作を変える接尾辞は、ここに意図して
 /// 足さなければならない。
-const allowed_run_suffixes = [_][]const u8{"--summary all"};
+///
+/// `--test-timeout` は、1件のテストが値を超えたとき、そのテストを名指しして失敗に
+/// する。通常の実行の無限ループが、ジョブの時間切れまで黙って待たせるのを防ぐ。
+/// 値は ci.yml が使うものを綴りごと固定する。値を変えるときは、ここを意図して
+/// 変える。
+const allowed_run_suffixes = [_][]const u8{
+    "--summary all",
+    "--summary all --test-timeout 60s",
+};
 
 /// Whether a workflow's `run:` value runs `command`.
 ///
@@ -2441,6 +2479,31 @@ test "keyIsAllowed: the set is closed and holds no conditional" {
     try std.testing.expect(!keyIsAllowed("verify"));
 }
 
+test "isTriggerNarrowing: a schedule is a trigger, and the per-commit workflow may not have one" {
+    try std.testing.expect(isTriggerNarrowing("schedule"));
+    // `cron` は `schedule` の下にしか置けないので、それ自体は時機を変えるキーではない。
+    try std.testing.expect(!isTriggerNarrowing("cron"));
+    try std.testing.expect(keyIsAllowed("schedule"));
+    try std.testing.expect(keyIsAllowed("cron"));
+}
+
+test "keyIsAllowed: the keys of the fuzzing workflow are known" {
+    // ファジングのワークフロー(fuzz.yml)が使うジョブ名とキー。
+    try std.testing.expect(keyIsAllowed("fuzz"));
+    try std.testing.expect(keyIsAllowed("timeout-minutes"));
+    try std.testing.expect(keyIsAllowed("retention-days"));
+    try std.testing.expect(keyIsAllowed("if-no-files-found"));
+    try std.testing.expect(keyIsAllowed("include-hidden-files"));
+    // 次のスライスが必要とするまで足さない。足すときは、検証への意味を決める。
+    try std.testing.expect(!keyIsAllowed("tags"));
+    try std.testing.expect(!keyIsAllowed("preview"));
+    try std.testing.expect(!keyIsAllowed("release"));
+    try std.testing.expect(!keyIsAllowed("dist"));
+    // 条件の禁止は変わらない。
+    try std.testing.expect(!keyIsAllowed("if"));
+    try std.testing.expect(!keyIsAllowed("needs"));
+}
+
 test "keyIsAllowed: the inputs of the cache step are known" {
     try std.testing.expect(keyIsAllowed("path"));
     try std.testing.expect(keyIsAllowed("key"));
@@ -2819,6 +2882,18 @@ test "runsCommand: extra text is accepted only as a flag" {
     try std.testing.expect(!runsCommand("zig build test --summary all", "zig build"));
     try std.testing.expect(!runsCommand("zig build check-docs", "zig build check"));
     try std.testing.expect(runsCommand("zig fmt --check .", "zig fmt --check ."));
+}
+
+test "runsCommand: the per-test time limit is a suffix only with the value CI uses" {
+    try std.testing.expect(runsCommand("zig build test --summary all --test-timeout 60s", "zig build test"));
+    // 値を変えるなら、この検査の接尾辞の一覧を意図して変える。
+    try std.testing.expect(!runsCommand("zig build test --summary all --test-timeout 1h", "zig build test"));
+    try std.testing.expect(!runsCommand("zig build test --test-timeout 60s --summary all", "zig build test"));
+    try std.testing.expect(!runsCommand("zig build test --test-timeout 60s", "zig build test --summary all"));
+    // 時間切れの値だけを足しても、素の build の行の代わりにならない。
+    try std.testing.expect(!runsCommand("zig build test --summary all --test-timeout 60s", "zig build"));
+    // 従来の接尾辞は変わらず受理される。
+    try std.testing.expect(runsCommand("zig build test --summary all", "zig build test"));
 }
 
 test "backtickedSpan: the command, not the note beside it" {

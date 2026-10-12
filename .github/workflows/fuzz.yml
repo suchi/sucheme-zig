@@ -1,0 +1,60 @@
+# リーダのファジング(層3、docs/plans/0007-test-tiers.md)。
+#
+# 週に1回の定期実行と、手動起動(workflow_dispatch)で走る。全コミットの ci.yml
+# には入れない。1回に数分の時間とランナーの分数がかかるためである。
+# AGENTS.md の検証コマンド表に、コマンドがある。
+#
+# 形(docs/plans/0009-slice-1j-release-v0-1-0.md の「ファジング(1j-1)」)。
+#
+# 1. `--fuzz=<N>` は上限つきで止まる。上限なしの `--fuzz` は止まらない。
+# 2. 失敗する入力が見つかっても、zig build の終了コードは 0 である。入力は
+#    .zig-cache/f/crash に残る。その有無を調べる手順を別に置き、あればジョブを
+#    失敗させる。
+# 3. 成果物を上げる手順は、2の検査より前に置く。検査が失敗してジョブが赤になる
+#    時点では、入力はもう上がっている。ファイルが無ければ何も上げない。
+# 4. ジョブに時間の上限を付ける。ファザーが無限ループを検出するかは確かめて
+#    いないので、上限が最後に止める。
+#
+# `run:` は1行で書く。`if:` は使わず、手順の並びで表す(tools/check-docs が見る)。
+#
+# The Zig version below is a copy; .zigversion is the source of truth.
+
+name: Fuzz
+
+on:
+  schedule:
+    # 日曜 18:17 UTC(月曜 03:17 JST)。毎時0分を避ける。
+    - cron: '17 18 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz reader (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Why: ファザーが無限ループを検出するかは確かめていない。検出しなければ、
+    # この上限だけがジョブを止める。500K 回の実行は、この環境の測定で数分に収ま
+    # る。ランナーが数倍遅くても超えない値にしてある。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      # Why: ここには actions/cache の手順を置かない。ci.yml が保存する
+      # .zig-cache は単体テストのビルドの結果で、ReleaseSafe のファジング用の
+      # キャッシュではない。週に1回の実行では、ビルドの時間を節約する利点も小さい。
+      - run: zig build test --fuzz=500K -Doptimize=ReleaseSafe
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crash
+          path: .zig-cache/f/crash
+          # .zig-cache は隠しディレクトリで、既定では上げられない。
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+      - run: if test -e .zig-cache/f/crash; then echo "the fuzzer saved a failing input, see the fuzz-crash artifact"; exit 1; fi

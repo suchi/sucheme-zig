@@ -8,10 +8,9 @@
 # not exist fails, and tolerating that failure would hide a verification that
 # silently stopped running.
 #
-# Fuzzing (`zig build test --fuzz`) is deliberately absent. `--fuzz` does not
-# terminate on its own, so running it per commit would time out every time.
-# Stage 1 adds .github/workflows/fuzz.yml driven by schedule and
-# workflow_dispatch.
+# ファジング(`zig build test --fuzz=<N>`)は意図して入れていない。1回に数分の
+# 時間とランナーの分数がかかるためである(AGENTS.md)。
+# .github/workflows/fuzz.yml が、定期実行と手動起動で走らせる。
 #
 # The Zig version below is a copy; .zigversion is the source of truth and
 # `zig build check-docs` verifies that the two agree.
@@ -48,6 +47,10 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Why: 止まらないジョブは、GitHub の既定の上限(6時間)まで走り続ける。直近の
+    # 実行は、どちらのランナーも1分から4分で終わっていた(キャッシュが空の回を含む)。
+    # 20分は実績の約5倍で、止まらないジョブを失敗として終わらせる。
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -77,7 +80,11 @@ jobs:
           key: zig-cache-v1-${{ runner.os }}-${{ hashFiles('.zigversion', 'build.zig', 'build.zig.zon') }}
       - run: zig fmt --check .
       - run: zig build
-      - run: zig build test --summary all
+      # Why: --test-timeout は、止まらないテストを、テスト名つきの失敗として終わ
+      # らせる。付けないと、そのテストはジョブの上限まで待たせる。最も遅いテストは、
+      # 開発機の Debug ビルドで2秒から3秒だった。60秒は、遅いランナーに対する余裕
+      # である。値の綴りは tools/check-docs の allowed_run_suffixes が固定している。
+      - run: zig build test --summary all --test-timeout 60s
       - run: zig build test-scheme
       - run: zig build wasm
       - run: zig build test-wasm
