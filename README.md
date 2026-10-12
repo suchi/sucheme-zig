@@ -25,7 +25,7 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 | macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし | 0 |
 | WebAssembly | 段階1 | 段階1(Node.js 上でのエクスポート呼び出し) | 1 |
 
-クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。`zig build dist` は、リリース成果物のターゲットすべての実行ファイルを `zig-out/dist/<ターゲット>/` に作り、`python3 tools/release/package.py` がそこからアーカイブと `SHA256SUMS` を作ります([ADR-0034](docs/adr/0034-release-shape.md))。公開したリリースはまだありません。段階1から用意する残りは、リリースのワークフローと成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
+クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。`zig build dist` は、リリース成果物のターゲットすべての実行ファイルを `zig-out/dist/<ターゲット>/` に作り、`python3 tools/release/package.py` がそこからアーカイブと `SHA256SUMS` を作ります([ADR-0034](docs/adr/0034-release-shape.md))。段階1から用意する残りは、リリースのワークフローと成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
 
 自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしません([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md)、aarch64 は [ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。
 
