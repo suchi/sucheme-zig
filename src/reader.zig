@@ -939,7 +939,6 @@ fn fuzzReader(record: ?*FuzzRecord, smith: *std.testing.Smith) anyerror!void {
 }
 
 /// Runs the fuzz test on `fuzz_corpus`.
-/// ファジングのテストと、初期入力が届くことを確かめるテストの両方が、この関数を通る。
 /// 通常の `zig build test` では初期入力だけを通る。`--fuzz=<N>` のときは、そこから
 /// 探索を広げる。
 fn runFuzz(record: ?*FuzzRecord) anyerror!void {
@@ -947,15 +946,15 @@ fn runFuzz(record: ?*FuzzRecord) anyerror!void {
 }
 
 test "fuzz: the reader returns a datum, the end or a specified error for any input" {
-    try runFuzz(null);
-}
-
-test "fuzz: the corpus reaches the fuzz test as the inputs it was written as" {
-    // 初期入力が意図どおりに届かなければ、ファジングのテストは何も固定しないまま緑になる。
+    // 探索の実行では、ファザーが入力を決めるので、届いた入力は確かめられない。
+    // Why: 確かめるテストを別にすると、`std.testing.fuzz` を呼ぶテストが 2 つになり、
+    // 探索の実行で片方が飛ばされて、ファザーがそのテストを回し続けて進まなくなる
+    // (飛ばしたテストも、通常の実行では `std.testing.fuzz` を呼ぶので、ファジングの
+    // テストに数えられる)。そのため 1 つのテストにまとめた。
+    if (@import("builtin").fuzz) return runFuzz(null);
+    // 初期入力が意図どおりに届かなければ、このテストは何も固定しないまま緑になる。
     // 実際に `std.testing.fuzz` を `fuzz_corpus` で呼び、`fuzzReader` が受け取った入力を
     // 書き留めて、`fuzz_inputs` と比べる。
-    // 探索の実行では、ファザーが入力を決めるので、確かめられない。
-    if (@import("builtin").fuzz) return error.SkipZigTest;
     var record: FuzzRecord = .{};
     try runFuzz(&record);
     // `fuzz_inputs` の全件が順に届き、最後にテストランナーの空の入力が 1 回付く。
