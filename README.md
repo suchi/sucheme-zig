@@ -37,7 +37,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
 
-リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。段階1から、CI の成果物として zip で添付し、ローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。
+リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。PR ごとに CI が成果物(`sucheme-web`)を上げるので、展開してローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。
 
 ## 特徴として目指すもの
 
