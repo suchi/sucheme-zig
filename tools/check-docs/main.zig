@@ -363,7 +363,8 @@ const per_commit_workflow = ".github/workflows/ci.yml";
 /// The workflow that runs the slow tier (docs/plans/0007-test-tiers.md).
 const slow_workflow = ".github/workflows/full.yml";
 
-/// The commands of the table's slow-tier row, which `slow_workflow` has to run.
+/// The commands of the table's rows that run in the slow tier, which
+/// `slow_workflow` has to run.
 ///
 /// この行は全コミットと印が付いていないので、コミットごとのワークフローとの
 /// 照合はこれを読まない。ここで名指しするのはそのためである。名指ししないと、
@@ -371,10 +372,15 @@ const slow_workflow = ".github/workflows/full.yml";
 /// 緑のまま、規模を試すテストがどこでも走らなくなる。名前は `build.zig` が
 /// `slow` オプションとテスト step に付けたものなので、1つ落とすことは、
 /// それが走らせるものを落とすことになる。
+///
+/// `zig build dist` は規模を試すテストではないが、表の CI の列が「PR を ready に
+/// するとき、`main` への push、手動」を含むので、同じ形で名指しする。落とすと、
+/// リリースの成果物の組み立てが、タグを打つまでどこでも走らなくなる。
 const slow_commands = [_][]const u8{
     "zig build test -Dslow=true",
     "zig build test-scheme -Dslow=true",
     "zig build test-wasm -Dslow=true",
+    "zig build dist",
 };
 
 /// A row of the verification command table, as this check reads it.
@@ -2515,6 +2521,28 @@ test "keyIsAllowed: the job of the release assembly rehearsal is known" {
     // 名前の一部では通らない。
     try std.testing.expect(!keyIsAllowed("dist2"));
     try std.testing.expect(!keyIsAllowed("distribute"));
+}
+
+test "slow_commands: the dist command is one the slow tier's workflow has to run" {
+    var found = false;
+    for (slow_commands) |command| {
+        if (std.mem.eql(u8, command, "zig build dist")) found = true;
+    }
+    try std.testing.expect(found);
+    // 既存の3つは残る。
+    try std.testing.expectEqual(@as(usize, 4), slow_commands.len);
+}
+
+test "runsCommand: dist is told apart from the plain build and from other flags" {
+    try std.testing.expect(runsCommand("zig build dist", "zig build dist"));
+    // 素の build の行が、dist の行の代わりになってはならない。
+    try std.testing.expect(!runsCommand("zig build", "zig build dist"));
+    try std.testing.expect(!runsCommand("zig build wasm", "zig build dist"));
+    // 名前が長い step や、動作を変える接尾辞は、dist ではない。
+    try std.testing.expect(!runsCommand("zig build distribute", "zig build dist"));
+    try std.testing.expect(!runsCommand("zig build dist --help", "zig build dist"));
+    // dist の行が、素の build の行の代わりになってもならない。
+    try std.testing.expect(!runsCommand("zig build dist", "zig build"));
 }
 
 test "keyIsAllowed: the inputs of the cache step are known" {
