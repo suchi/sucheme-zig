@@ -37,7 +37,7 @@ const test_excluded = [_][]const u8{
 /// ワークフローがすでに実行していなければならないかを、その検査が決めるのに
 /// 使う。値を上げると検査は新しい行を要求するので、ワークフローを更新するまで
 /// 落ちる。
-const current_stage = 1;
+const current_stage = 2;
 
 /// A module whose tests `zig build test` runs.
 ///

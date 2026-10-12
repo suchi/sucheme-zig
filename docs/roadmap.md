@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階1(通しで動く最小の縦切り)。スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
+| 現在の段階 | 段階2(コア言語の完成)。段階1は v0.1.0 で完了した(スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md))。段階2の実装計画書は未作成で、書いて合意を得てから実装を始める。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | [v0.1.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0)([リリースノート](releases/v0.1.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
