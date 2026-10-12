@@ -211,7 +211,8 @@ pub const Machine = struct {
             // 先頭から順に前へ継ぎ足すと、書いた順のリストになる。リストは呼び出しの
             // たびに新しく作る(R7RS 4.1.4 の newly allocated list)。
             // Why: GC はステップの間でしか走らない(ADR-0031)。ここで作るリストは、
-            // フレームのスロットに入るまでどのルートからも辿れないが、それまでに回収されない。
+            // フレームのスロットに入るまでどのルートからも辿れないが、同じステップの
+            // うちに入るので、回収されない。
             var list: Value = .empty_list_value;
             for (0..count - lambda.arity) |_| {
                 list = ctx.heap.cons(required.value, list) catch |e| return ctx.heapFailure(e);
@@ -699,6 +700,27 @@ test "the failures of a primitive become the conditions with their messages" {
     try std.testing.expect(f.ctx.raised == null);
 }
 
+test "a call whose rest list passes the limit ends the line with heap limit exceeded, and the next line runs" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 128 * 1024, .min_threshold = 16 * 1024 });
+    defer f.deinit();
+    _ = try f.eval("(define (f . xs) xs)");
+    var call: std.ArrayList(u8) = .empty;
+    defer call.deinit(std.testing.allocator);
+    try call.appendSlice(std.testing.allocator, "(f");
+    for (0..1500) |_| try call.appendSlice(std.testing.allocator, " 1");
+    try call.append(std.testing.allocator, ')');
+    // 余りのリストを作る途中で上限に当たる。ホストの失敗(OutOfMemory)ではなく、
+    // Scheme のエラーとして報告される。
+    try f.expectFails("heap limit exceeded", call.items);
+    try f.expectInt(3, "(+ 1 2)");
+    // 対照: 同じ個数のオペランドをプリミティブに渡す呼び出しは、同じ上限に収まる。
+    // 失敗の地点がリストの構築から別の所へ移っても、このテストが緑のまま
+    // 固定する対象を失わないための確認である。
+    call.items[1] = '+';
+    try f.expectInt(1500, call.items);
+}
+
 test "a primitive that allocates past the limit ends the line with heap limit exceeded, and the next line runs" {
     var f: Fixture = undefined;
     try f.initWith(.{ .limit = 64 * 1024, .min_threshold = 16 * 1024 });
@@ -805,7 +827,7 @@ const stress_programs = [_]struct { src: []const u8, expected: i64 }{
     .{ .src = "(define (loop n) (if (= n 0) 7 (loop (- n 1)))) (loop 3000)", .expected = 7 },
     .{ .src = "(define xs '(1 2 3)) (define (second l) ((lambda (rest) rest) l)) (+ 1 2 3 4 5 6 7 8 9 10)", .expected = 55 },
     .{ .src = "(define (count n) (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 300)", .expected = 300 },
-    // 余りの引数のリストは、フレームに入るまでどのルートからも辿れない。
+    // 余りの引数のリストが、フレームとクロージャを通じて、毎ステップの GC を生き延びる。
     .{ .src = "(define (sum . xs) (if (null? xs) 0 (+ (car xs) (apply-sum (cdr xs))))) (define (apply-sum l) (if (null? l) 0 (+ (car l) (apply-sum (cdr l))))) (sum 1 2 3 4 5 6 7 8 9 10)", .expected = 55 },
     .{ .src = "(define (keep . xs) (lambda () xs)) (define k (keep 4 5 6)) (car (cdr (cdr (k))))", .expected = 6 },
 };

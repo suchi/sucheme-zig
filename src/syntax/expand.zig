@@ -318,7 +318,7 @@ const Expander = struct {
         const has_rest = rest.kind() != .empty_list;
         if (has_rest) {
             if (rest.kind() != .symbol)
-                return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
+                return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be an identifier or a list of identifiers", .{});
             try self.parameter(&names, rest, form_name);
         }
         const defines = try self.collectDefinitions(body, &names);
@@ -546,11 +546,11 @@ test "a rest parameter is checked like the other parameters" {
     try f.expectFails("(lambda (a . a) a)", "bad lambda: duplicate parameter: a");
     try f.expectFails("(lambda (a . if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
     try f.expectFails("(lambda if 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
-    try f.expectFails("(lambda (a . 1) a)", "bad lambda: the parameters must be a list of identifiers");
-    try f.expectFails("(lambda #t 1)", "bad lambda: the parameters must be a list of identifiers");
+    try f.expectFails("(lambda (a . 1) a)", "bad lambda: the parameters must be an identifier or a list of identifiers");
+    try f.expectFails("(lambda #t 1)", "bad lambda: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(lambda r (define r 1) r)", "bad define: r is already a parameter or defined earlier in this body");
     try f.expectFails("(define (f . if) 1)", "bad define: if is a syntactic keyword and cannot be a parameter");
-    try f.expectFails("(define (f . 1) 1)", "bad define: the parameters must be a list of identifiers");
+    try f.expectFails("(define (f . 1) 1)", "bad define: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(define (f . r))", "bad define: expected (define (name parameter ...) body ...)");
 }
 
@@ -617,7 +617,7 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     try f.expectFails("(lambda (x x) x)", "bad lambda: duplicate parameter: x");
     try f.expectFails("(lambda (if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
     try f.expectFails("(lambda (1) 1)", "bad lambda: a parameter must be an identifier");
-    try f.expectFails("(lambda 1 1)", "bad lambda: the parameters must be a list of identifiers");
+    try f.expectFails("(lambda 1 1)", "bad lambda: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(set! x)", "bad set!: expected (set! name expression)");
     try f.expectFails("(set! 1 2)", "bad set!: the name must be an identifier");
     try f.expectFails("(set! if 1)", "bad set!: if is a syntactic keyword and cannot be assigned");

@@ -205,7 +205,7 @@ pub const Condition = struct {
     irritants: Value, // リスト
 };
 
-/// 2a。rest が真なら、arity 個を超える引数をリストにして最後のスロットに入れる。
+/// 2a。rest が真なら、arity 個を超える引数をリストにして、スロット arity(最初の引数の次、本体が定義する名前の前)に入れる。
 pub const Lambda = struct { arity: u32, rest: bool, frame_size: u32, body: *const Node };
 
 /// 2c。機械操作プリミティブは、本体の代わりに機械の操作の名前を持つ。
@@ -358,7 +358,7 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 - 対象: `(lambda args body ...)`、`(lambda (a b . rest) body ...)`、`(define (f . args) ...)`、`(define (f a . rest) ...)`。R7RS 4.1.4。
 - ファイル: `src/value.zig`(`Lambda.rest`)、`src/syntax/expand.zig`(`lambdaNode` と `define` の略記)、`src/machine.zig`(`apply` の個数の検査と、余りの引数のリスト化)、`src/core.zig`(IR の書き出し)、`tests/scheme/0040-*.txt` から。
 - 最初の失敗するテスト: `((lambda args args) 1 2)` が `(1 2)`。
-- 完了の確認: 余りの引数が 0 個なら空リスト。個数が足りないときのメッセージは既存の形を保つ。余りのリストは呼び出しのたびに新しい(`set-car!` は段階3だが、`eq?` で確かめられる)。ストレスモードで通る。
+- 完了の確認: 余りの引数が 0 個なら空リスト。個数が足りないときのメッセージは、余りを受ける手続きでは `expected at least N` の形にする(固定個の手続きは既存の `expected N` のまま)。余りのリストは呼び出しのたびに新しい(`set-car!` は段階3だが、`eq?` で確かめられる)。ストレスモードで通る。
 
 ### 2b 条件オブジェクトのヒープ化と送出の予約領域
 
