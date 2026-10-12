@@ -880,11 +880,50 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
     }
 }
 
+/// What one fuzz run reads from the `Smith`.
+const FuzzInput = struct {
+    src: []const u8,
+    /// The allocation that fails in the second reading (see `fuzzReader`).
+    fail_index: u16,
+};
+
+/// Reads the input of one fuzz run from `smith`, into `buf`.
+/// `Smith` の読み方はここ 1 か所にある。`fuzzReader` と、初期入力が届くことを確かめる
+/// テストの両方が、この関数を通る。
+fn fuzzInput(smith: *std.testing.Smith, buf: *[fuzz_max_input]u8) FuzzInput {
+    const src = buf[0..smith.slice(buf)];
+    return .{ .src = src, .fail_index = smith.valueRangeAtMost(u16, 0, 512) };
+}
+
+/// Where `fuzzReader` writes down what it was given, for the test that checks
+/// the corpus. The fuzz test itself passes null.
+const FuzzRecord = struct {
+    /// テストランナーが、初期入力のあとに空の入力を 1 回走らせる。その分を含めて持つ。
+    const capacity = fuzz_inputs.len + 2;
+
+    srcs: [capacity][fuzz_max_input]u8 = undefined,
+    lens: [capacity]usize = @splat(0),
+    fail_indexes: [capacity]u16 = @splat(0),
+    /// How many runs there were, also those past `capacity`.
+    count: usize = 0,
+
+    fn add(self: *FuzzRecord, input: FuzzInput) void {
+        if (self.count < capacity) {
+            @memcpy(self.srcs[self.count][0..input.src.len], input.src);
+            self.lens[self.count] = input.src.len;
+            self.fail_indexes[self.count] = input.fail_index;
+        }
+        self.count += 1;
+    }
+};
+
 /// One fuzz run: the reader on one input, then on the same input with an
 /// allocation that fails.
-fn fuzzReader(_: void, smith: *std.testing.Smith) anyerror!void {
+fn fuzzReader(record: ?*FuzzRecord, smith: *std.testing.Smith) anyerror!void {
     var buf: [fuzz_max_input]u8 = undefined;
-    const src = buf[0..smith.slice(&buf)];
+    const input = fuzzInput(smith, &buf);
+    if (record) |r| r.add(input);
+    const src = input.src;
     // Why: 入力が妥当な UTF-8 であることは、リーダの呼び出し側が検査する前提である
     // (src/sucheme.zig の `run` と src/wasm.zig の `sucheme_eval_begin`)。ここでは
     // その検査を通さず、任意のバイト列を渡す。検査が外れても、リーダがパニックや
@@ -893,28 +932,39 @@ fn fuzzReader(_: void, smith: *std.testing.Smith) anyerror!void {
     try fuzzReadAll(std.testing.allocator, src);
     // 確保が n 回目に失敗する場合。リークは `std.testing.allocator` が見る。
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{
-        .fail_index = smith.valueRangeAtMost(u16, 0, 512),
+        .fail_index = input.fail_index,
     });
     try fuzzReadAll(failing.allocator(), src);
 }
 
-test "fuzz: the reader returns a datum, the end or a specified error for any input" {
-    // `zig build test` は `fuzz_corpus` だけを通る。`zig build test --fuzz=<N>` は、そこから探索を広げる。
-    try std.testing.fuzz({}, fuzzReader, .{ .corpus = fuzz_corpus });
+/// Runs the fuzz test on `fuzz_corpus`.
+/// ファジングのテストと、初期入力が届くことを確かめるテストの両方が、この関数を通る。
+/// 通常の `zig build test` では初期入力だけを通る。`--fuzz=<N>` のときは、そこから
+/// 探索を広げる。
+fn runFuzz(record: ?*FuzzRecord) anyerror!void {
+    try std.testing.fuzz(record, fuzzReader, .{ .corpus = fuzz_corpus });
 }
 
-test "fuzz: every corpus entry reaches the fuzz test as the input it was written as" {
+test "fuzz: the reader returns a datum, the end or a specified error for any input" {
+    try runFuzz(null);
+}
+
+test "fuzz: the corpus reaches the fuzz test as the inputs it was written as" {
     // 初期入力が意図どおりに届かなければ、ファジングのテストは何も固定しないまま緑になる。
-    // `fuzzReader` が `Smith` から読むのと同じ読み方で、1 件ずつ取り出して比べる。
-    try std.testing.expect(fuzz_corpus.len == fuzz_inputs.len);
-    for (fuzz_corpus, fuzz_inputs) |entry, text| {
-        var smith: std.testing.Smith = .{ .in = entry };
-        var buf: [fuzz_max_input]u8 = undefined;
-        const n = smith.slice(&buf);
-        try std.testing.expectEqualSlices(u8, text, buf[0..n]);
+    // 実際に `std.testing.fuzz` を `fuzz_corpus` で呼び、`fuzzReader` が受け取った入力を
+    // 書き留めて、`fuzz_inputs` と比べる。
+    // 探索の実行では、ファザーが入力を決めるので、確かめられない。
+    if (@import("builtin").fuzz) return error.SkipZigTest;
+    var record: FuzzRecord = .{};
+    try runFuzz(&record);
+    // `fuzz_inputs` の全件が順に届き、最後にテストランナーの空の入力が 1 回付く。
+    try std.testing.expectEqual(fuzz_inputs.len + 1, record.count);
+    for (fuzz_inputs, 0..) |text, i| {
+        try std.testing.expectEqualSlices(u8, text, record.srcs[i][0..record.lens[i]]);
         // 初期入力の実行では、確保の失敗の番号は 0 である。
-        try std.testing.expectEqual(0, smith.valueRangeAtMost(u16, 0, 512));
+        try std.testing.expectEqual(0, record.fail_indexes[i]);
     }
+    try std.testing.expectEqual(0, record.lens[fuzz_inputs.len]);
 }
 
 test "fuzz: the reader leaks nothing wherever an allocation fails" {
