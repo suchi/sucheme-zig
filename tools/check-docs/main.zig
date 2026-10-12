@@ -762,6 +762,15 @@ const allowed_workflow_keys = [_][]const u8{
     "retention-days",
     "if-no-files-found",
     "include-hidden-files",
+    // タグの push を契機にする。release.yml が使う。`tags` は `push` の下にだけ置ける。
+    "tags",
+    // 環境変数。release.yml が使う。タグの名前は任意の文字を含みうるので、`run:` の行に
+    // 式として埋め込むと、シェルの構文として読まれる。環境変数に入れて渡す。
+    // `env` の下の `run` というキーは、step 自身のキーの桁にないので、`run:` として
+    // 数えない(下の step の読み取りが見る)。
+    "env",
+    "TAG",
+    "GH_TOKEN",
 };
 
 /// Whether `key` is one of the allowed keys, or a job name.
@@ -786,13 +795,14 @@ fn keyIsAllowed(key: []const u8) bool {
 fn isTriggerNarrowing(key: []const u8) bool {
     return std.mem.eql(u8, key, "types") or
         std.mem.eql(u8, key, "workflow_dispatch") or
-        std.mem.eql(u8, key, "schedule");
+        std.mem.eql(u8, key, "schedule") or
+        std.mem.eql(u8, key, "tags");
 }
 
 /// The job names this repository's workflows define.
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
-const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist" };
+const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist", "release" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
@@ -2500,9 +2510,6 @@ test "keyIsAllowed: the keys of the fuzzing workflow are known" {
     try std.testing.expect(keyIsAllowed("retention-days"));
     try std.testing.expect(keyIsAllowed("if-no-files-found"));
     try std.testing.expect(keyIsAllowed("include-hidden-files"));
-    // 次のスライスが必要とするまで足さない。足すときは、検証への意味を決める。
-    try std.testing.expect(!keyIsAllowed("tags"));
-    try std.testing.expect(!keyIsAllowed("release"));
     // 条件の禁止は変わらない。
     try std.testing.expect(!keyIsAllowed("if"));
     try std.testing.expect(!keyIsAllowed("needs"));
@@ -2511,14 +2518,33 @@ test "keyIsAllowed: the keys of the fuzzing workflow are known" {
 test "keyIsAllowed: the job of the release assembly rehearsal is known" {
     // リリースの成果物の組み立てを、タグの前に full.yml が試す。そのジョブの名前。
     try std.testing.expect(keyIsAllowed("dist"));
-    // 他のジョブ名とキーは、必要とするスライスが足すまで足さない。
-    try std.testing.expect(!keyIsAllowed("release"));
-    try std.testing.expect(!keyIsAllowed("tags"));
+    // ジョブ名を足しても、依存と条件のキーは通らない。
     try std.testing.expect(!keyIsAllowed("needs"));
     try std.testing.expect(!keyIsAllowed("if"));
     // 名前の一部では通らない。
     try std.testing.expect(!keyIsAllowed("dist2"));
     try std.testing.expect(!keyIsAllowed("distribute"));
+}
+
+test "keyIsAllowed: the keys of the release workflow are known, and a tag trigger narrows when it runs" {
+    // リリースのワークフロー(release.yml)が使うジョブ名とキー。契機はタグの push
+    // で、タグは `push` の下にだけ置ける。
+    try std.testing.expect(keyIsAllowed("release"));
+    try std.testing.expect(keyIsAllowed("tags"));
+    // タグの名前とトークンは、`run:` の行に式を埋め込まず、環境変数で渡す。
+    // 埋め込むと、タグの名前がシェルの構文として読まれる。
+    try std.testing.expect(keyIsAllowed("env"));
+    try std.testing.expect(keyIsAllowed("TAG"));
+    try std.testing.expect(keyIsAllowed("GH_TOKEN"));
+    // タグは検証が走る時機を変えるので、コミットごとのワークフローには置けない。
+    try std.testing.expect(isTriggerNarrowing("tags"));
+    // 近い綴りと、条件や依存のキーは通らない。
+    try std.testing.expect(!keyIsAllowed("releases"));
+    try std.testing.expect(!keyIsAllowed("tag"));
+    try std.testing.expect(!keyIsAllowed("tags-ignore"));
+    try std.testing.expect(!keyIsAllowed("GITHUB_TOKEN"));
+    try std.testing.expect(!keyIsAllowed("needs"));
+    try std.testing.expect(!keyIsAllowed("if"));
 }
 
 test "slow_commands: the dist command is one the slow tier's workflow has to run" {

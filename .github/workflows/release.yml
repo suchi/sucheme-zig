@@ -1,0 +1,85 @@
+# リリースのワークフロー(docs/adr/0034-release-shape.md、
+# docs/plans/0009-slice-1j-release-v0-1-0.md の「リリース(1j-3, 1j-4)」)。
+#
+# タグ `v*` の push で、全ターゲットの実行ファイルを作り、アーカイブと
+# SHA256SUMS を組み立て、下書き(draft)のリリースを作る。公開はしない。
+# ユーザーが成果物を開いて確かめてから、公開する。
+#
+# 手順の前半(`zig build dist` から `sha256sum -c` まで)は、full.yml の dist ジョブが
+# リハーサルとして main への push のたびに走らせているものと同じである。この
+# ワークフローだけが持つのは、版の確認、リリースノートの確認、`gh release create` の
+# 3つである。`gh release create` はタグを打たないと試せない。
+#
+# タグは、そのコミットの CI(full.yml を含む)が緑なことを確かめてから、ユーザーが
+# 打つ。失敗したタグは動かさず、直して次のパッチ版を出す。リハーサル用のタグは
+# 打たない。
+#
+# 形。
+#
+# 1. 権限は `contents: write` だけにする。リリースの作成に要る。
+# 2. 外部のアクションは ci.yml と full.yml がすでに固定したものだけを、同じコミット
+#    SHA で使う。リリースの作成は、ホストランナーの `gh` と `GITHUB_TOKEN` で行う。
+# 3. タグの名前は、`run:` の行に式として埋め込まず、環境変数 `TAG` で渡す。タグの
+#    名前は任意の文字を含みうるので、埋め込むとシェルの構文として読まれる。
+#    トークンは、リリースを作る step だけに渡す。
+#
+# `run:` は1行で書く。`if:` は使わず、手順の並びで表す(tools/check-docs が見る)。
+#
+# The Zig version below is a copy; .zigversion is the source of truth.
+
+name: Release
+
+on:
+  push:
+    tags: [v*]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Why: 止まらないジョブは、GitHub の既定の上限(6時間)まで走り続ける。full.yml の
+    # dist ジョブと同じ作業に、リリースの作成が加わるだけである。dist ジョブの
+    # 20分(標準ランナーでの実測は、ビルドが約3分)を、同じ値で使う。
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Why: リリースノートが無いと、組み立ての最後で失敗する。先に確かめて、数分の
+      # ビルドを待たずに失敗させる。ファイルの名前は、タグの名前そのものである。
+      - run: test -f "docs/releases/$TAG.md"
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      # Why: full.yml の dist ジョブと同じ形で、キーも同じにする。このジョブは同じ中身を
+      # 作る(docs/adr/0032-ci-zig-cache-saved-only-by-successful-runs.md)。タグの push で
+      # 走るこのジョブが、main で保存されたキャッシュを復元できるかは未確認である。
+      # できなくても、空のキャッシュから作るだけで、結果は変わらない。
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .zig-cache
+          key: zig-cache-dist-v1-${{ runner.os }}-${{ hashFiles('.zigversion', 'build.zig', 'build.zig.zon') }}
+      - run: python3 --version
+      - run: python3 -m unittest discover -s tools/release
+      - run: zig build dist
+      # Why: 実行ファイルの版が、タグと一致することを確かめる。版は build.zig.zon が
+      # 持ち、実行ファイルはそれを表示する。タグを打つ前に版を上げ忘れると、ここで
+      # 失敗して、下書きのリリースは作られない。
+      - run: test "$(zig-out/dist/x86_64-linux-musl/sucheme --version)" = "sucheme ${TAG#v}"
+      # Why: `grep -q` は一致すると読むのをやめるので、書き込みの失敗(EPIPE)になりうる。
+      # 出力を最後まで読む(full.yml の dist ジョブと同じ)。
+      - run: printf '(define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))\n(fact 10)\n' | zig-out/dist/x86_64-linux-musl/sucheme | grep 3628800 > /dev/null
+      - run: python3 tools/release/package.py
+      - run: cd zig-out/release && sha256sum -c SHA256SUMS
+      # Why: 下書きで作る。公開はユーザーが成果物を開いて確かめてから行う。タグが
+      # リモートに無ければ失敗する(`--verify-tag`)ので、この step がタグを作ることは
+      # ない。`zig-out/release` の下のファイル(アーカイブ、Web UI の zip、SHA256SUMS)
+      # がすべて成果物になる。
+      - run: gh release create "$TAG" zig-out/release/* --draft --verify-tag --title "$TAG" --notes-file "docs/releases/$TAG.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
