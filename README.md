@@ -37,7 +37,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
 
-リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。段階1から、CI の成果物として zip で添付し、ローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。リリースには、Web UI を `sucheme-web-v<版>.zip` として付けます。展開したディレクトリで `node serve.mjs .` を実行して開きます。各アーカイブには、第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。
+リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。PR ごとに CI が成果物(`sucheme-web`)を上げるので、展開してローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。リリースの成果物には、Web UI を `sucheme-web-v<版>.zip` として別に含める予定です(`zig build dist` と `tools/release/package.py` が組み立てを試せる状態で、リリースのワークフローはまだありません)。各アーカイブには、第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。
 
 ## 特徴として目指すもの
 

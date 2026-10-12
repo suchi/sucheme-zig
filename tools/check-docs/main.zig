@@ -792,7 +792,7 @@ fn isTriggerNarrowing(key: []const u8) bool {
 /// The job names this repository's workflows define.
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
-const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "dist" };
+const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
@@ -2502,7 +2502,6 @@ test "keyIsAllowed: the keys of the fuzzing workflow are known" {
     try std.testing.expect(keyIsAllowed("include-hidden-files"));
     // 次のスライスが必要とするまで足さない。足すときは、検証への意味を決める。
     try std.testing.expect(!keyIsAllowed("tags"));
-    try std.testing.expect(!keyIsAllowed("preview"));
     try std.testing.expect(!keyIsAllowed("release"));
     // 条件の禁止は変わらない。
     try std.testing.expect(!keyIsAllowed("if"));
@@ -2513,7 +2512,6 @@ test "keyIsAllowed: the job of the release assembly rehearsal is known" {
     // リリースの成果物の組み立てを、タグの前に full.yml が試す。そのジョブの名前。
     try std.testing.expect(keyIsAllowed("dist"));
     // 他のジョブ名とキーは、必要とするスライスが足すまで足さない。
-    try std.testing.expect(!keyIsAllowed("preview"));
     try std.testing.expect(!keyIsAllowed("release"));
     try std.testing.expect(!keyIsAllowed("tags"));
     try std.testing.expect(!keyIsAllowed("needs"));
@@ -2543,6 +2541,24 @@ test "runsCommand: dist is told apart from the plain build and from other flags"
     try std.testing.expect(!runsCommand("zig build dist --help", "zig build dist"));
     // dist の行が、素の build の行の代わりになってもならない。
     try std.testing.expect(!runsCommand("zig build dist", "zig build"));
+}
+
+test "keyIsAllowed: the job of the preview workflow is known, and its trigger narrows nothing" {
+    // PR への成果物の添付(preview.yml)のジョブ名。キーは ci.yml と fuzz.yml が
+    // すでに使うものだけで足りるので、足したのはジョブ名だけである。
+    try std.testing.expect(keyIsAllowed("preview"));
+    // 契機は `pull_request` で、ci.yml と同じ。時機を絞るキーではないので、
+    // どのワークフローにも置けるし、コミットごとのワークフローが持っていても
+    // 禁じられない。
+    try std.testing.expect(keyIsAllowed("pull_request"));
+    try std.testing.expect(!isTriggerNarrowing("pull_request"));
+    // ジョブ名の追加は、条件や依存のキーを通さない。
+    try std.testing.expect(!keyIsAllowed("if"));
+    try std.testing.expect(!keyIsAllowed("needs"));
+    try std.testing.expect(!keyIsAllowed("continue-on-error"));
+    // 近い綴りは通らない。
+    try std.testing.expect(!keyIsAllowed("previews"));
+    try std.testing.expect(!keyIsAllowed("Preview"));
 }
 
 test "keyIsAllowed: the inputs of the cache step are known" {

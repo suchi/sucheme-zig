@@ -72,7 +72,8 @@
 - [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)
 - [x] aarch64 を自動テストの対象に加えるかの判断と ADR の作成。判断は加えないで、[ADR-0033](adr/0033-aarch64-built-but-not-tested.md) に書いた([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
 - [ ] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
-- [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3)
+- [x] PR で Web UI を確認するための成果物の添付のワークフロー(`preview.yml`)。`sucheme.wasm` と `web/` を並べたディレクトリを、CI が `upload-artifact` で上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3b)
+- [ ] 上がった成果物を人が展開し、`node serve.mjs` で開いて `(fact 10)` が動くことの確認 (スライス 1j-3b のマージ後)
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 

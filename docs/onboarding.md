@@ -93,7 +93,7 @@ flowchart TB
 2. `node web/serve.mjs` で起動する。既定のポートは 8000 で、`node web/serve.mjs 8080` のように変えられる。`127.0.0.1` だけで待ち受ける。
 3. 標準出力に出る `http://127.0.0.1:<ポート>/` をブラウザで開く。
 
-PR の成果物の zip は、スライス 1j で添付する予定である([plans/0009-slice-1j-release-v0-1-0.md](plans/0009-slice-1j-release-v0-1-0.md))。添付されたら、展開したディレクトリで `node serve.mjs` を実行すれば開ける(Zig もリポジトリも要らない)。
+PR には、`.github/workflows/preview.yml` が成果物 `sucheme-web` を上げる(保持期間は7日)。zip を展開したディレクトリで `node serve.mjs` を実行すれば開ける(Zig もリポジトリも要らない)。
 
 ### 派生構文を追加する
 
