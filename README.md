@@ -8,7 +8,7 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 ## 状態
 
-設計フェーズが完了し、実装は段階1(通しで動く最小の縦切り)に入っています。`zig build run` で REPL が動き、Scheme の式を評価できます。どこまで動くかは [docs/roadmap.md](docs/roadmap.md) の「現在地」が正です。
+設計フェーズが完了し、実装が進んでいます。`zig build run` で REPL が動き、Scheme の式を評価できます。どこまで動くかは [docs/roadmap.md](docs/roadmap.md) の「現在地」が正です。
 
 進捗の単一のソースは [docs/roadmap.md](docs/roadmap.md) です。現在の段階、最新リリース、段階ごとのチェックリストはそこにあります。R7RS の必須識別子のうちインタプリタが束縛しているものの表(段階1の最小版の準拠マトリクス)は [docs/status/](docs/status/) にあります。固定している Zig のバージョンは `.zigversion` が正です。
 
