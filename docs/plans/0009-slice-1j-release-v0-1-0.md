@@ -63,12 +63,12 @@
 | `--fuzz=<N>` で失敗する入力が見つかっても、`zig build` の終了コードは 0 である。失敗は標準エラーに `input saved to '<キャッシュ>/f/crash'` と出て、その入力がファイルに残る | エラーを返す形と panic の2形で実行した。両方で終了コードが 0 だった |
 | `-Doptimize=ReleaseFast` のファジングは配列の範囲外参照を見つけず、`ReleaseSafe` は見つける | 範囲外参照を仕込んだ合成のテストで、同じ回数を実行して比べた。実際のリーダではまだ確かめていない |
 | `std.testing.fuzz` は初期入力の列(`corpus`)を受け取る | `std/testing.zig` を読んだ |
-| `tools/check-docs` は、ワークフローのキーを閉じた集合で検査し、集合の外のキーを報告する。ジョブ名も閉じた集合で、`run:` は1行の値しか読まない。全コミットのワークフロー `ci.yml` では `runs-on` の値と `os` の行列も固定している。`schedule` `tags` `env` `needs` `if` `timeout-minutes` `path` は集合にない | `tools/check-docs/main.zig` を読んだ |
+| `tools/check-docs` は、ワークフローのキーを閉じた集合で検査し、集合の外のキーを報告する。ジョブ名も閉じた集合で、`run:` は1行の値しか読まない。全コミットのワークフロー `ci.yml` では `runs-on` の値と `os` の行列も固定している。この計画を書いた時点では、`schedule` `tags` `env` `needs` `if` `timeout-minutes` `path` は集合になかった。その後、`fuzz.yml` `preview.yml` `release.yml` のために `schedule` `timeout-minutes` `path` `tags` `env` を足した。`needs` と `if` は今も無い | `tools/check-docs/main.zig` を読んだ |
 | ソースの `@sizeOf` と `@intFromPtr` は `src/heap.zig` と `src/trace.zig` にあり、`@ptrCast` `@alignCast` とエンディアンの操作は `src/` に無い | `src/` を grep した(`@bitCast` は数えていない) |
 | 同梱の Zig 0.17.0 の `LICENSE` は MIT(Expat)で、musl の `COPYRIGHT` も MIT である | ローカルのツールチェーンのファイルを読んだ |
 | `git tag` と `gh release` は承認を求める側(`ask`)にある | `.claude/settings.json` を読んだ |
 | `dependabot.yml` の対象は `github-actions` だけで、`cooldown` は7日である | `.github/dependabot.yml` を読んだ |
-| GitHub の `ubuntu-latest` は、2026-10-12 時点でイメージ ubuntu-24.04(版 20261004.327.1)で、`python3` は 3.12.3 が入っている。`full.yml` の `dist` ジョブは、キャッシュが無い状態で通った。`zig build dist` は 3 分 8 秒、ジョブ全体は約 3 分 40 秒だった(`timeout-minutes: 20` に対して約 5.5 倍の余裕)。`package.py` のアーカイブの大きさは、手元の実行と数百バイト違う(例: x86_64 Linux が 1247481 と 1247588)。アーカイブがバイト単位で一致するのは同じ環境の中だけ、という [ADR-0034](../adr/0034-release-shape.md) の約束と合う | `full.yml` の `dist` ジョブのログ(PR #66 の ready 時の実行) |
+| GitHub の `ubuntu-latest` は、2026-10-12 時点でイメージ ubuntu-24.04(版 20261004.327.1)で、`python3` は 3.12.3 が入っている。`full.yml` の `dist` ジョブは、キャッシュが無い状態で通った。`zig build dist` は 3 分 8 秒、ジョブ全体は約 3 分 40 秒だった(`timeout-minutes: 20` に対して約 5.5 倍の余裕)。`package.py` のアーカイブの大きさは、手元の実行と百バイト前後違う(例: x86_64 Linux が 1247481 と 1247588)。アーカイブがバイト単位で一致するのは同じ環境の中だけ、という [ADR-0034](../adr/0034-release-shape.md) の約束と合う | `full.yml` の `dist` ジョブのログ(PR #66 の ready 時の実行) |
 | `mlugg/setup-zig` は Node.js 20 を対象にしており、ランナーが Node.js 24 に切り替えて実行する、という警告がログに出る。今は動いている | 同じログの警告 |
 
 確かめられなかったこと(推測と区別して扱う):
@@ -367,6 +367,6 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 
 ## 次にやること
 
-1. 1j-3c の PR(リリースのワークフロー `release.yml`)のレビューとマージ。1j-3a(`dist`、アーカイブの組み立て、リハーサル)はマージ済み。ブランチは各 PR ごとに最新の `origin/main` から作る。
+1. 1j-3a(`dist`、アーカイブの組み立て、リハーサル)と 1j-3c(リリースのワークフロー `release.yml`、[#68](https://github.com/suchi/sucheme-zig/pull/68))はマージ済み。#68 のレビューの指摘の修正は [#70](https://github.com/suchi/sucheme-zig/pull/70)。ブランチは各 PR ごとに最新の `origin/main` から作る。
 2. 段階1の全項目がそろったら、1j-4(リリース準備。リリースノート `docs/releases/v0.1.0.md` を含む。`release.yml` は、その名前のファイルが無いと失敗する)と 1j-5(リリース後)。
 3. 実装の途中で、確かめられなかったこと(表)を順に確かめ、結果をこの計画書の表と PR に書く。
