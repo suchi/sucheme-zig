@@ -13,7 +13,7 @@
 | 項目 | 状態 |
 | --- | --- |
 | 現在の段階 | 段階1(通しで動く最小の縦切り)。スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が正。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
-| 最新リリース | なし |
+| 最新リリース | [v0.1.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0)([リリースノート](releases/v0.1.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
 
@@ -78,7 +78,7 @@
 - [x] リリース成果物の組み立て。`zig build dist` が ADR-0010 の一覧の全ターゲットを `ReleaseSafe` で作り、`tools/release/package.py` がアーカイブと `SHA256SUMS` を作って読み直す。`THIRD-PARTY-NOTICES.txt` と、リリースの形の [ADR-0034](adr/0034-release-shape.md) を含む。`full.yml` の `dist` ジョブがリハーサルとして走らせる。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3a)
 - [x] `full.yml` の `dist` ジョブが GitHub のランナー上で通ること(`python3` の有無、所要時間、キャッシュの挙動を含む)。PR を ready にしたときの実行と、`main` での手動起動で通った。測定値は [plans/0009-slice-1j-release-v0-1-0.md](plans/0009-slice-1j-release-v0-1-0.md) の「確かめた事実」の表にある (スライス 1j-3a)
 - [x] リリースのワークフロー(`release.yml`)を足す。タグの push から、版の確認とスモークテストのあとに、下書きのリリースを作る。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3c)
-- [ ] `release.yml` がタグの push で動き、下書きのリリースができること。`gh release create` の1行は、タグを打たないと試せない。最初のタグは v0.1.0 で、リハーサル用のタグは打たない (スライス 1j-4 のタグの push)
+- [x] `release.yml` がタグの push で動き、下書きのリリースができること。最初のタグ v0.1.0 で、全手順が成功し、下書きができた([ラン](https://github.com/suchi/sucheme-zig/actions/runs/38257497672)) (スライス 1j-4 のタグの push)
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 

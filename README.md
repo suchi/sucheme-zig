@@ -25,7 +25,7 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 | macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし | 0 |
 | WebAssembly | 段階1 | 段階1(Node.js 上でのエクスポート呼び出し) | 1 |
 
-クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。`zig build dist` は、リリース成果物のターゲットすべての実行ファイルを `zig-out/dist/<ターゲット>/` に作り、`python3 tools/release/package.py` がそこからアーカイブと `SHA256SUMS` を作ります([ADR-0034](docs/adr/0034-release-shape.md))。タグの push で下書きのリリースを作るワークフロー(`release.yml`)があります。段階1から用意する残りは、リリースの公開と成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
+クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。`zig build dist` は、リリース成果物のターゲットすべての実行ファイルを `zig-out/dist/<ターゲット>/` に作り、`python3 tools/release/package.py` がそこからアーカイブと `SHA256SUMS` を作ります([ADR-0034](docs/adr/0034-release-shape.md))。タグの push で下書きのリリースを作るワークフロー(`release.yml`)があり、最初のリリース v0.1.0 はこれで作りました。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
 
 自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしません([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md)、aarch64 は [ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。
 
@@ -37,7 +37,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
 
-リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。PR ごとに CI が成果物(`sucheme-web`)を上げるので、展開してローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。リリースの成果物には、Web UI を `sucheme-web-v<版>.zip` として別に含める予定です(`zig build dist` と `tools/release/package.py` が組み立て、タグの push で動く `release.yml` が下書きのリリースを作りますが、まだタグを打っていないので、リリースはありません)。各アーカイブには、第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。
+リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。PR ごとに CI が成果物(`sucheme-web`)を上げるので、展開してローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。リリースの成果物には、Web UI を `sucheme-web-v<版>.zip` として別に含めます(`zig build dist` と `tools/release/package.py` が組み立て、タグの push で動く `release.yml` が下書きのリリースを作ります)。最新のリリースと成果物は [docs/roadmap.md](docs/roadmap.md) の「現在地」から辿れます。各アーカイブには、第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。
 
 ## 特徴として目指すもの
 
