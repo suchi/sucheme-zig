@@ -67,7 +67,7 @@ fi
 # --- Ask the user first ---------------------------------------------------
 
 if [ "$force_push" = true ]; then
-  emit ask "Force push detected. Confirm with the user first; prefer --force-with-lease on feature branches (AGENTS.md)."
+ emit ask "Force push detected. Confirm with the user first; prefer --force-with-lease on feature branches (AGENTS.md)."
 fi
 
 if has 'git[[:space:]]+reset[^|;&]*--hard'; then
