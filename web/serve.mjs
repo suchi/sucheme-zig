@@ -88,6 +88,19 @@ function createServer(roots) {
   });
 }
 
+/** Returns the path of `sucheme.wasm` in the first root that has it, or null. */
+function findWasm(roots) {
+  for (const root of roots) {
+    const file = path.join(root, "sucheme.wasm");
+    try {
+      if (fs.statSync(file).isFile()) return file;
+    } catch {
+      // 次のルートを探す。
+    }
+  }
+  return null;
+}
+
 function listen(server, port) {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -130,6 +143,17 @@ async function selfTest() {
     checks += 1;
   };
   try {
+    // 起動時の警告は、sucheme.wasm がどのルートにも無いときだけ出す。zip を展開して平らに
+    // 置いた形(wasm が `web/` 側のルートにある)でも、wasm 専用のルートにある形でも出さない。
+    const emptyDir = path.join(dir, "empty");
+    fs.mkdirSync(emptyDir);
+    const flatDir = path.join(dir, "flat");
+    fs.mkdirSync(flatDir);
+    fs.writeFileSync(path.join(flatDir, "sucheme.wasm"), Buffer.from([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]));
+    check("wasm in the second root", findWasm([webDir, wasmDir]), path.join(wasmDir, "sucheme.wasm"));
+    check("wasm in the first root", findWasm([flatDir, emptyDir]), path.join(flatDir, "sucheme.wasm"));
+    check("wasm in no root", findWasm([webDir, emptyDir]), null);
+
     const get = async (p) => {
       const r = await rawGet(port, p);
       return [r.status, r.type];
@@ -177,10 +201,13 @@ async function main(argv) {
     console.error(`serve: invalid port ${port}`);
     process.exit(2);
   }
-  if (!fs.existsSync(path.join(wasmDir, "sucheme.wasm"))) {
+  const roots = [here, wasmDir];
+  // PR の成果物を展開した形では、wasm は `serve.mjs` と同じディレクトリにある。どのルートにも
+  // 無いときだけ警告する。
+  if (findWasm(roots) === null) {
     console.error(`serve: warning: ${path.join(wasmDir, "sucheme.wasm")} does not exist; run \`zig build wasm\` first`);
   }
-  const server = createServer([here, wasmDir]);
+  const server = createServer(roots);
   const actual = await listen(server, port);
   console.log(`serving ${here} and ${wasmDir}`);
   console.log(`open http://${HOST}:${actual}/`);
