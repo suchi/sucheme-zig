@@ -66,3 +66,4 @@
 | [0030](0030-lexical-address-width-u32.md) | 字句アドレスは u32 とし、超える入れ子は実装制限として報告する | 採用 | 2026-10-09 |
 | [0031](0031-gc-at-machine-step-boundaries.md) | GC は機械のステップの境目で実行し、確保の内部では実行しない | 採用 | 2026-10-10 |
 | [0032](0032-ci-zig-cache-saved-only-by-successful-runs.md) | CI の Zig キャッシュは、成功した実行だけが、ビルド入力から決まるキーで保存する | 採用 | 2026-10-11 |
+| [0033](0033-aarch64-built-but-not-tested.md) | aarch64 は自動テストの対象に加えない | 採用 | 2026-10-12 |

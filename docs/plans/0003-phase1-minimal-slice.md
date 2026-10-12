@@ -88,7 +88,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 | 1g | 決めた: GC は機械のステップの境目で実行する([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。起動の閾値は、直前の GC のあとの計上量の倍率と最小値の大きいほうで、上限の手前で頭打ちにする。GC のあとの計上量が上限に近いときは `heap limit exceeded`。値は `src/heap.zig` の定数が正で、ベンチマークは未実施の暫定値。巻き戻しの単位は `Heap.createFrame` の1回の呼び出し(ペイロードを先に確保し、セルの確保が失敗したら返す)。作業リストの容量は `Options.work_capacity`(テストでは0)で、溢れたら全走査でマークし直す。フレーム数の上限は設けない(計上の上限が止める)。上限の既定は `Options.limit`。予約領域の具体的なバイト数は段階2に移した(1g は条件オブジェクトを上限の外のアリーナに作る) |
 | 1h | 決めた: Windows の引数と環境変数は Zig 0.17.0 が WTF-8 に変換し、不対サロゲートは `utf8ValidateSlice` が拒否する([zig-api-notes.md](../design/zig-api-notes.md))。引数が Scheme の文字列になる経路は段階5の `command-line` まで無いので、検査の位置はそこで決める。Windows 実機での実行は未確認。1h で入る入力は `Interpreter.evalPrint` の先頭で検査する |
 | 1i | 決めた([0008](0008-slice-1i-wasm-web-ui.md)): 出力バッファは初期化のときに 256 KiB を1回だけ確保し、伸ばさない(溢れたら `output buffer full` のエラー)。ローカルで開く手段は、依存パッケージの無い Node.js のスクリプト `web/serve.mjs`。PR の zip を開くレビュアは Node.js だけでよい(Zig もリポジトリも要らない) |
-| 1j | aarch64 を自動テストの対象に加えるか |
+| 1j | 決めた: 加えない([ADR-0033](../adr/0033-aarch64-built-but-not-tested.md)) |
 | 1k | 決めた([0010](0010-slices-1k-1l-primitives-and-repl-continuation.md)): 呼び出し規約は、個数の範囲を `Primitive` に持たせて機械が検査し、`call` に `Services` を渡す。エラーは Zig の `error` の集合を広げ、`apply` が条件に写す。K0 の実装で足したこと: 関数の型の別名 `Primitive.Fn`(`Call` は IR の節点の名前と衝突するため)、単体テストが機械を起こさずにプリミティブを呼ぶ `src/prim/test_support.zig` |
 
 検査ツールについての未決事項(`refAllDecls` の到達性、`test_excluded` の理由、CI が表の行を走らせる検査の範囲、フックの判定の機械検査)は、この段階では決めない。段階0の経緯から、検査ツールを育てることが製品を作ることに先立ってはならない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))。製品コードが育って同じ誤りが2回起きたときに決める。

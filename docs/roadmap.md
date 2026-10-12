@@ -69,7 +69,7 @@
 - [ ] リーダのファジングのワークフロー(定期実行と手動起動) (スライス 1j-1)
 - [x] WASM のエクスポート([design/platform-and-web.md](design/platform-and-web.md) のエクスポート)と Web UI の最小版 (スライス 1i)
 - [x] Web UI をローカルで開く手段(`file://` から始まる取得は Fetch の対象外のため、手段は段階1の計画で決める) (スライス 1i)
-- [ ] aarch64 を自動テストの対象に加えるかの判断と ADR の作成([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
+- [x] aarch64 を自動テストの対象に加えるかの判断と ADR の作成。判断は加えないで、[ADR-0033](adr/0033-aarch64-built-but-not-tested.md) に書いた([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
 - [ ] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
 - [ ] PR で Web UI を確認するための成果物の添付。`sucheme.wasm` と `web/` を zip にして CI が上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3)
 
