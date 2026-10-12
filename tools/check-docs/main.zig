@@ -786,7 +786,7 @@ fn isTriggerNarrowing(key: []const u8) bool {
 /// The job names this repository's workflows define.
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
-const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz" };
+const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "dist" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
@@ -2498,10 +2498,23 @@ test "keyIsAllowed: the keys of the fuzzing workflow are known" {
     try std.testing.expect(!keyIsAllowed("tags"));
     try std.testing.expect(!keyIsAllowed("preview"));
     try std.testing.expect(!keyIsAllowed("release"));
-    try std.testing.expect(!keyIsAllowed("dist"));
     // 条件の禁止は変わらない。
     try std.testing.expect(!keyIsAllowed("if"));
     try std.testing.expect(!keyIsAllowed("needs"));
+}
+
+test "keyIsAllowed: the job of the release assembly rehearsal is known" {
+    // リリースの成果物の組み立てを、タグの前に full.yml が試す。そのジョブの名前。
+    try std.testing.expect(keyIsAllowed("dist"));
+    // 他のジョブ名とキーは、必要とするスライスが足すまで足さない。
+    try std.testing.expect(!keyIsAllowed("preview"));
+    try std.testing.expect(!keyIsAllowed("release"));
+    try std.testing.expect(!keyIsAllowed("tags"));
+    try std.testing.expect(!keyIsAllowed("needs"));
+    try std.testing.expect(!keyIsAllowed("if"));
+    // 名前の一部では通らない。
+    try std.testing.expect(!keyIsAllowed("dist2"));
+    try std.testing.expect(!keyIsAllowed("distribute"));
 }
 
 test "keyIsAllowed: the inputs of the cache step are known" {
