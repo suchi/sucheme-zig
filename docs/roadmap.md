@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階2(コア言語の完成)。段階1は v0.1.0 で完了した(スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md))。段階2の実装計画は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) が正で、スライス 2a から 2r に分けて進める。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
+| 現在の段階 | 段階2(コア言語の完成)。段階1は v0.1.0 で完了した(スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md))。段階2の実装計画は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) が正で、スライスの分け方と進捗はその計画書の表が正である。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | [v0.1.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0)([リリースノート](releases/v0.1.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
@@ -88,7 +88,7 @@
 
 動的状態の機構と衛生的マクロとライブラリシステムを入れる。この3つは互いに依存するため同じ段階に置く。
 
-- [ ] 精密GCの完成とルート管理規約の確立
+- [ ] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3)
 - [ ] 完全な `call/cc` と `dynamic-wind`
 - [ ] `values` と `call-with-values`、複数値のオブジェクト
 - [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
@@ -120,6 +120,7 @@
 - [ ] ファイルの実行(`sucheme prog.scm`)。R7RS 5.1 のプログラムは `import` で始まるので、`(scheme base)` ができてから入れる([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の6)
 - [ ] シンボル表を弱い表にする。`string->symbol` が入るスライスで、シンボルの操作と同時に決める([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
+- [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
 
 完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。[design/runtime.md](design/runtime.md) の事例のうち、段階2で入力を書けなかったもの(容量0で `string->symbol` が成立し続ける事例と、`let` と `when` を使う複数値の事例の元の形)が通る。リリース v0.3.0 を出す。
 
@@ -132,6 +133,7 @@
 - [ ] 浮動小数点数、bignum、ratnum、compnum
 - [ ] `number->string` と `string->number` の全範囲
 - [ ] リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加
+- [ ] `include-ci` が非 ASCII の識別子を読み取りのエラーにしている制限を外す(Unicode の畳み込みの表が入ったとき。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)
 - [ ] Unicode テーブルの生成器と生成結果
 - [ ] `(scheme char)` `(scheme complex)` `(scheme inexact)`
 
@@ -146,6 +148,7 @@
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
+- [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。スライス未割り当て。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
 - [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
