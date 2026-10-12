@@ -1044,7 +1044,9 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             return;
         };
         try std.testing.expect(r.pos > before);
-        // 入力が不正な UTF-8 なら、文字列の中身は何でもよい。パニックしないことだけを見る。
+        // 入力が不正な UTF-8 のときは、パニックしないことだけを見る。不正なバイトを含む
+        // 文字列リテラルは `InvalidUtf8` になるので、文字列が返ることはまずないが、
+        // この性質は入力が妥当な場合に限って確かめる。
         if (utf8) try std.testing.expect(stringsAreUtf8(datum));
         var sunk: std.Io.Writer.Discarding = .init(&.{});
         printer.write(&sunk.writer, gpa, &symbols, datum) catch |err| switch (err) {
@@ -1099,11 +1101,12 @@ fn fuzzReader(record: ?*FuzzRecord, smith: *std.testing.Smith) anyerror!void {
     const input = fuzzInput(smith, &buf);
     if (record) |r| r.add(input);
     const src = input.src;
-    // Why: 入力が妥当な UTF-8 であることは、リーダの呼び出し側が検査する前提である
+    // Why: 入力全体の UTF-8 の検査は、リーダの呼び出し側が行う
     // (src/sucheme.zig の `run` と src/wasm.zig の `sucheme_eval_begin`)。ここでは
     // その検査を通さず、任意のバイト列を渡す。検査が外れても、リーダがパニックや
-    // 不正なメモリアクセスを起こさないことを見る(多層防御)。不正な UTF-8 を読んだ
-    // 結果が正しいかは、確かめない。
+    // 不正なメモリアクセスを起こさないことを見る(多層防御)。文字列リテラルの
+    // バイトは、リーダ自身も `InvalidUtf8` で拒否する(src/string_syntax.zig)。それ以外の
+    // 不正なバイトを読んだ結果が正しいかは、確かめない。
     try fuzzReadAll(std.testing.allocator, src);
     // 確保が n 回目に失敗する場合。リークは `std.testing.allocator` が見る。
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{
