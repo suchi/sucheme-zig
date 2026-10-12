@@ -1,0 +1,68 @@
+# PR への成果物の添付(docs/plans/0009-slice-1j-release-v0-1-0.md の「PR への
+# 成果物の添付(1j-3)」)。
+#
+# PR のたびに `sucheme.wasm` を作り、`web/` の中身(`serve.mjs` を含む)と並べた
+# ディレクトリを成果物として上げる。レビュアは成果物を展開し、展開した先で
+# `node serve.mjs` を実行すれば、Zig もリポジトリも無しに開ける
+# (docs/adr/0021-no-github-pages-defer-hosting.md)。
+#
+# 検証ではないので、AGENTS.md の検証コマンド表には入らない。ci.yml の検査の対象
+# (行列と `runs-on` の固定)にも触れない。この手順が失敗しても、ci.yml の結果は
+# 変わらない。
+#
+# 形。
+#
+# 1. zip は自前で作らない。`actions/upload-artifact` がディレクトリを zip にまとめる。
+# 2. 権限は `contents: read` だけにする。
+# 3. 外部のアクションは ci.yml と fuzz.yml がすでに固定したものだけを、同じコミット
+#    SHA で使う。
+#
+# `run:` は1行で書く。`if:` は使わず、手順の並びで表す(tools/check-docs が見る)。
+#
+# The Zig version below is a copy; .zigversion is the source of truth.
+
+name: Preview
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: preview (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Why: 止まらないジョブは、GitHub の既定の上限(6時間)まで走り続ける。ここでの
+    # 作業は wasm のビルドとファイルの複製だけで、この環境の測定ではローカルの
+    # キャッシュが空でも数十秒に収まる。10分は、ランナーが数倍遅くても超えない
+    # 値にしてある。
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      # Why: ここには actions/cache の手順を置かない。ci.yml と同じキーで保存すると、
+      # ci.yml が保存するはずの、テストのビルドを含むキャッシュを、wasm だけの
+      # キャッシュで先に埋めてしまう。キーを分けても、1分に収まるビルドの時間を
+      # 節約する利点は小さい。
+      - run: zig build wasm
+      # 展開した先で追加の手順が要らないように、1つのディレクトリに並べる。
+      # `serve.mjs` は `web/` の中にあるので、`web/` の中身の複製に含まれる。
+      - run: mkdir preview
+      - run: cp -r web/. preview
+      - run: cp zig-out/web/sucheme.wasm preview
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sucheme-web
+          path: preview
+          # ファイルが無いまま緑になる(何も上げない)のでなく、赤にする。
+          if-no-files-found: error
+          # Why: PR を更新するたびに新しい成果物ができるので、必要なのは最新の
+          # 1つだけである。レビューは数日で終わり、期限が切れても PR の再実行で
+          # 作り直せる。リポジトリの保存容量(private では計上される)を長く
+          # 占めないよう、既定の90日でなく7日にする。
+          retention-days: 7
