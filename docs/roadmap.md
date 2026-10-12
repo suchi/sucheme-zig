@@ -74,7 +74,7 @@
 - [x] aarch64 を自動テストの対象に加えるかの判断と ADR の作成。判断は加えないで、[ADR-0033](adr/0033-aarch64-built-but-not-tested.md) に書いた([ADR-0010](adr/0010-ci-cd-and-release-strategy.md) の追記が見直しの時点をこの段階と定めた。値表現とGCが入り、アライメント・ポインタ幅・エンディアンに依存する判断が初めてコードに現れる) (スライス 1j-2)
 - [x] 準拠マトリクスの最小版(`zig build report` が `docs/status/conformance.md` を生成し、`zig build check-report` が生成し直した結果との一致を検査する)。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。計画は [plans/0011-slice-1m-conformance-report-early.md](plans/0011-slice-1m-conformance-report-early.md) (スライス 1m)
 - [x] PR で Web UI を確認するための成果物の添付のワークフロー(`preview.yml`)。`sucheme.wasm` と `web/` を並べたディレクトリを、CI が `upload-artifact` で上げる([ADR-0021](adr/0021-no-github-pages-defer-hosting.md) が配置の代わりに定めた手段)。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3b)
-- [ ] 上がった成果物を人が展開し、`node serve.mjs` で開いて `(fact 10)` が動くことの確認 (スライス 1j-3b のマージ後)
+- [x] 上がった成果物を人が展開し、`node serve.mjs` で開いて `(fact 10)` が動くことの確認。2026-10-12 に、ユーザーが PR #70 の preview の成果物で確かめた (スライス 1j-3b のマージ後)
 - [x] リリース成果物の組み立て。`zig build dist` が ADR-0010 の一覧の全ターゲットを `ReleaseSafe` で作り、`tools/release/package.py` がアーカイブと `SHA256SUMS` を作って読み直す。`THIRD-PARTY-NOTICES.txt` と、リリースの形の [ADR-0034](adr/0034-release-shape.md) を含む。`full.yml` の `dist` ジョブがリハーサルとして走らせる。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3a)
 - [x] `full.yml` の `dist` ジョブが GitHub のランナー上で通ること(`python3` の有無、所要時間、キャッシュの挙動を含む)。PR を ready にしたときの実行と、`main` での手動起動で通った。測定値は [plans/0009-slice-1j-release-v0-1-0.md](plans/0009-slice-1j-release-v0-1-0.md) の「確かめた事実」の表にある (スライス 1j-3a)
 - [x] リリースのワークフロー(`release.yml`)を足す。タグの push から、版の確認とスモークテストのあとに、下書きのリリースを作る。`.github/workflows/` の変更なのでユーザーの承認を得てから行う (スライス 1j-3c)
@@ -82,7 +82,7 @@
 
 完了条件: 階乗の定義と呼び出しがネイティブとブラウザの両方で動く。ブラウザはローカルで開いたもので判定し、配置は行わない([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。100万回の末尾再帰が一定のメモリで完了する。エラーが未処理例外の経路で報告され、REPL が停止しない。リリース v0.1.0 を出す。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階1までに決める」の行。件数と内容をここに複製しない。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階を定めずに保留しているもの」の行。段階1までに決めるとしていた行は、段階1の終わりにそこへ移した。件数と内容をここに複製しない。
 
 ### 段階2: コア言語の完成
 
