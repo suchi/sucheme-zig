@@ -12,7 +12,7 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階2(コア言語の完成)。段階1は v0.1.0 で完了した(スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md))。段階2の実装計画書は未作成で、書いて合意を得てから実装を始める。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
+| 現在の段階 | 段階2(コア言語の完成)。段階1は v0.1.0 で完了した(スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md))。段階2の実装計画は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) が正で、スライスの分け方と進捗はその計画書の表が正である。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
 | 最新リリース | [v0.1.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0)([リリースノート](releases/v0.1.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
@@ -88,7 +88,7 @@
 
 動的状態の機構と衛生的マクロとライブラリシステムを入れる。この3つは互いに依存するため同じ段階に置く。
 
-- [ ] 精密GCの完成とルート管理規約の確立
+- [ ] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3)
 - [ ] 完全な `call/cc` と `dynamic-wind`
 - [ ] `values` と `call-with-values`、複数値のオブジェクト
 - [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
@@ -101,7 +101,7 @@
 - [ ] 機械操作プリミティブ9個(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter`)。`eval` と `exit` は環境の値とプロセス文脈が必要なので段階5
 - [ ] `define-record-type` の基盤(レコードとレコード型のプリミティブ)
 
-完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目のうち、段階2で入力を書けるものがすべて通る。[design/runtime.md](design/runtime.md) のテストに含める事例がすべて通る。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
+完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目のうち、段階2で入力を書けるものがすべて通る。[design/runtime.md](design/runtime.md) のテストに含める事例のうち、段階2で入力を書けるものがすべて通る(書けない事例は、段階3と段階5の完了条件に移した。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の9)。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
 
 衛生性の検証項目のうち2つは段階2では入力を書けない。`cond` のリテラル `else` の項目は `cond` が段階3の `lib/sucheme/derived.scm` で定義されるため、循環データの `quote` の項目はデータラベルの記法が段階5だからである。この2つは、それぞれ段階3と段階5の完了条件に含める。
 
@@ -117,8 +117,12 @@
 - [ ] Web UI にサンプルと共有リンク
 - [ ] 準拠マトリクスの入力に、`lib/` のエクスポート節を足す。`lib/` のエクスポート節が実在するこの段階で入れる。段階1の最小版は、`tests/r7rs-required` の識別子をインタプリタが束縛しているかだけを見ている
 - [ ] `equal?` の循環したデータでの停止と、共有構造(同じ部分を何度も指すデータ)で比較回数が深さに対して指数に増える問題への対応(訪問済みの集合)。循環は、データの変更(`set-car!` など)が入ると作れるので、その最初のスライスと同時に要る。共有構造での指数時間は、変更が無くても Scheme から作れる(再現入力は計画書 0010 の `equal?` の注に書いた)。段階1では、この既知の制約を受け入れた(ユーザーが 2026-10-12 に判断した)。`src/prim/equiv.zig` の `isEqual` の doc コメントが参照している (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
+- [ ] ファイルの実行(`sucheme prog.scm`)。R7RS 5.1 のプログラムは `import` で始まるので、`(scheme base)` ができてから入れる([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の6)
+- [ ] シンボル表を弱い表にする。`string->symbol` が入るスライスで、シンボルの操作と同時に決める([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
+- [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
+- [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
 
-完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。リリース v0.3.0 を出す。
+完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。[design/runtime.md](design/runtime.md) の事例のうち、段階2で入力を書けなかったもの(容量0で `string->symbol` が成立し続ける事例と、`let` と `when` を使う複数値の事例の元の形)が通る。リリース v0.3.0 を出す。
 
 この段階で未実装として表れてよいのは、後の段階の機能を必要とする識別子である。数値塔を必要とするもの(`/` `exact` `inexact` `sqrt` など)は段階4、ポートを引数に取るか返すもの(`read-char` `write-string` `open-input-string` など)は段階5である。どの族にも属さず後の段階にも割り当てられない識別子が残っていれば、それは [ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md) の族の一覧の漏れである。
 
@@ -129,6 +133,7 @@
 - [ ] 浮動小数点数、bignum、ratnum、compnum
 - [ ] `number->string` と `string->number` の全範囲
 - [ ] リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加
+- [ ] `include-ci` が非 ASCII の識別子を読み取りのエラーにしている制限を外す(Unicode の畳み込みの表が入ったとき。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)
 - [ ] Unicode テーブルの生成器と生成結果
 - [ ] `(scheme char)` `(scheme complex)` `(scheme inexact)`
 
@@ -143,11 +148,12 @@
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
+- [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。スライス未割り当て。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
 - [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 
-完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
+完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。[design/runtime.md](design/runtime.md) の例外の節の事例12(`exit` と `dynamic-wind`)が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
 
 残していること: [design/open-questions.md](design/open-questions.md) の「段階5までに決める」の行。件数と内容をここに複製しない。
 
