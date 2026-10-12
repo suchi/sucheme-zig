@@ -27,11 +27,11 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。段階1から用意するのはリリースのワークフローと成果物の配布です。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
 
-自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしませんが、理由はそれぞれ別です([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md)、aarch64 は [ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。
+自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしません([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md)、aarch64 は [ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。
 
 macOS は GitHub Actions の課金単位が他の10倍であるためです。署名と公証も行いません。
 
-aarch64 はランナー自体は使えます。段階1で見直し、対象に加えないと決めました([ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。ビルドが通ることを前提に作りますが、動作確認はしていません。リリース成果物に含まれる aarch64 の Linux と Windows の実行ファイルは、一度も実行されていないものとして扱ってください。動作確認は、必要になったときに加えます。
+aarch64 はランナー自体は使えます。段階1の見直しで、対象に加えないと決めました([ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。aarch64 では、ビルドが成功することを手元で確かめただけで、実行はしていません。CI でのビルドも、リリースの組み立て(スライス 1j-3)が入るまではありません。v0.1.0 以降のリリースで配る aarch64 の Linux と Windows の実行ファイルは、実行して確かめていないものです。実行して確かめる仕組みは、実行環境が要ると分かった時点で足します。
 
 WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
 
