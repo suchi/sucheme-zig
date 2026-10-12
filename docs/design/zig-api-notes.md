@@ -236,7 +236,7 @@ fn testOne(_: void, smith: *std.testing.Smith) !void {
 }
 ```
 
-`zig build test --fuzz -Doptimize=ReleaseFast` でファジングを走らせる。入力生成器は `std.testing.Smith` という名前である。リーダの頑健性検査に使う。
+`zig build test --fuzz=<N> -Doptimize=ReleaseSafe` でファジングを走らせる(見方の罠は [AGENTS.md](../../AGENTS.md) にある)。入力生成器は `std.testing.Smith` という名前である。リーダの頑健性検査に使う。
 
 ## ビルドスクリプト
 

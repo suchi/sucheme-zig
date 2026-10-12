@@ -23,7 +23,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | テスト(WASM の往復) | `zig build test-wasm`(Node.js 上で `sucheme.wasm` のエクスポートを呼ぶ) | 1 | 全コミット |
 | テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR を ready にするとき、`main` への push、手動 |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
-| テスト(ファジング) | `zig build test --fuzz -Doptimize=ReleaseFast` | 1 | 手動と定期実行のみ |
+| テスト(ファジング) | `zig build test --fuzz=<N> -Doptimize=ReleaseSafe`(`<N>` は実行回数の上限。値は `fuzz.yml` が持つ) | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
 | ビルド | `zig build` | 0 | 全コミット |
@@ -36,7 +36,13 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 コミット前に必ずテスト・リントを実行する。この表が正であり、他の文書はコマンド名を列挙せずここを参照する。新しいコマンドを足したらこの表に追加する。表にないコマンドは検証とレビューの対象外になる。
 
-ファジングを全コミットの CI に入れないのは、`--fuzz` が自律的に停止せず、時間切れまで走り続けるためである。全コミットの CI に入れると毎回タイムアウトする。手動実行と定期実行(スケジュール起動)に限る。
+ファジングを全コミットの CI に入れないのは、1回に数分の時間とランナーの分数がかかるためである。止まらないことは理由ではない。`--fuzz=<N>` は N 回の実行で止まる。止まらないのは、上限を付けない `--fuzz` である。手動実行と定期実行(スケジュール起動)に限る。
+
+ファジングには、結果の見方に罠がある。
+
+- 失敗する入力が見つかっても、`zig build` の終了コードは 0 のままである。失敗は標準エラーに `input saved to` と出て、入力は `.zig-cache/f/crash` に残る。終了コードで緑と読まず、このファイルの有無で見る。`fuzz.yml` は、成果物に上げてから、ファイルがあればジョブを失敗させる。
+- `-Doptimize=ReleaseFast` は安全検査を外すので、配列の範囲外参照などを見つけない。`ReleaseSafe` で走らせる。
+- `--test-timeout` は通常の実行の無限ループを、テスト名つきの失敗にする(`ci.yml` が付けている)。`--fuzz` の探索中には効かない。探索の暴走は、`fuzz.yml` のジョブの `timeout-minutes` が止める。
 
 `zig build run` の引数と終了コードの契約は `src/main.zig` の doc コメントが正である。引数なしの `zig build run` は標準入力を読む REPL になる。
 
