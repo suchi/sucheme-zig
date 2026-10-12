@@ -48,9 +48,9 @@ if has '[[:space:]:](main|master)([^[:alnum:]_-]|$)'; then touches_main=true; fi
 
 # --- Never allowed ------------------------------------------------------
 
-# if [ "$force_push" = true ] && [ "$touches_main" = true ]; then
-#   emit deny "Force-pushing to main/master is not allowed (AGENTS.md: development flow)."
-# fi
+if [ "$force_push" = true ] && [ "$touches_main" = true ]; then
+  emit deny "Force-pushing to main/master is not allowed (AGENTS.md: development flow)."
+fi
 
 if has 'git[[:space:]]+push[^|;&]*[[:space:]](HEAD:)?(main|master)([^[:alnum:]_/-]|$)'; then
   emit deny "Direct push to main/master is not allowed. Use a feature branch and a pull request (AGENTS.md)."
@@ -66,9 +66,9 @@ fi
 
 # --- Ask the user first ---------------------------------------------------
 
-# if [ "$force_push" = true ]; then
-#  emit ask "Force push detected. Confirm with the user first; prefer --force-with-lease on feature branches (AGENTS.md)."
-# fi
+if [ "$force_push" = true ]; then
+ emit ask "Force push detected. Confirm with the user first; prefer --force-with-lease on feature branches (AGENTS.md)."
+fi
 
 if has 'git[[:space:]]+reset[^|;&]*--hard'; then
   emit ask "git reset --hard discards local changes. Confirm with the user first (AGENTS.md)."
