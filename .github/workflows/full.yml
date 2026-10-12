@@ -9,9 +9,9 @@
 #
 # dist ジョブは、リリースの成果物の組み立てを試す。`zig build dist` が全ターゲットを
 # 作り、tools/release/package.py がアーカイブと SHA256SUMS を作って読み直す。
-# リリースのワークフロー(まだ無い)は、タグの push でこの2つを同じように走らせる
-# 予定である(docs/adr/0034-release-shape.md)。組み立ての誤りは、タグを打つ日でなく、
-# ここで見つかる。
+# リリースのワークフロー(release.yml)は、タグの push でこの2つを同じように走らせる
+# (docs/adr/0034-release-shape.md)。組み立ての誤りは、タグを打つ日でなく、ここで
+# 見つかる。
 #
 # Linux only: the logic is the same on Windows, which ci.yml covers on every
 # commit.
