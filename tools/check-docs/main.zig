@@ -481,10 +481,10 @@ fn checkCiRunsTheTable(
             // は手動のイベントを足す。低速階層のワークフロー(full.yml)は両方を
             // 使うが、全コミットで走るワークフローは使ってはならない。どちらも、
             // 表が全コミットで走ると言っているのに、コミットの検査が走る時機を
-            // 変えてしまう。
-            if (per_commit and isTriggerNarrowing(key)) {
+            // 変えてしまう。`env` は step のシェルの動作を変えられるので、同じく置かせない。
+            if (per_commit and isForbiddenInPerCommit(key)) {
                 rep.fail(
-                    "{s}:{d}: `{s}` is not allowed in the workflow that runs on every commit; it changes when the commit's checks run",
+                    "{s}:{d}: `{s}` is not allowed in the workflow that runs on every commit; it changes when or how the commit's checks run",
                     .{ path, lineno, key },
                 );
                 continue;
@@ -771,6 +771,9 @@ const allowed_workflow_keys = [_][]const u8{
     "env",
     "TAG",
     "GH_TOKEN",
+    // actions/checkout の入力。release.yml が、書き込み権限のトークンを後続の step に
+    // 残さないために使う(`false`)。
+    "persist-credentials",
 };
 
 /// Whether `key` is one of the allowed keys, or a job name.
@@ -797,6 +800,17 @@ fn isTriggerNarrowing(key: []const u8) bool {
         std.mem.eql(u8, key, "workflow_dispatch") or
         std.mem.eql(u8, key, "schedule") or
         std.mem.eql(u8, key, "tags");
+}
+
+/// Keys the per-commit workflow may not carry: the ones that change when it runs,
+/// and `env`.
+///
+/// コミットごとのワークフローが持てないキー。走る時機を変えるキーと `env` である。
+/// `env` はブロック形では許可キー(`TAG` と `GH_TOKEN`)しか書けないが、フロー形と
+/// 式の形は値を読まないので、`BASH_ENV` などでシェルの動作を変えて検査を黙って
+/// 止める綴りが通る。ほかのワークフロー(`release.yml`)は `env` を持てる。
+fn isForbiddenInPerCommit(key: []const u8) bool {
+    return isTriggerNarrowing(key) or std.mem.eql(u8, key, "env");
 }
 
 /// The job names this repository's workflows define.
@@ -2545,6 +2559,29 @@ test "keyIsAllowed: the keys of the release workflow are known, and a tag trigge
     try std.testing.expect(!keyIsAllowed("GITHUB_TOKEN"));
     try std.testing.expect(!keyIsAllowed("needs"));
     try std.testing.expect(!keyIsAllowed("if"));
+}
+
+test "isForbiddenInPerCommit: env changes how the shell runs, so the per-commit workflow may not have it" {
+    // `env` は step のシェルの動作を変えられる(`BASH_ENV`、`PATH`)。ブロック形では
+    // 許可キーの `TAG` と `GH_TOKEN` しか書けないが、`env: { … }` と式の形は値を
+    // 読まないので、全コミットの検査を黙って止める綴りが通ってしまう。
+    // コミットごとのワークフローには置かせない。
+    try std.testing.expect(isForbiddenInPerCommit("env"));
+    // 時機を変えるキーも、引き続き置かせない。
+    try std.testing.expect(isForbiddenInPerCommit("types"));
+    try std.testing.expect(isForbiddenInPerCommit("tags"));
+    // 他のワークフローは env を持てる。許可キーのままである。
+    try std.testing.expect(keyIsAllowed("env"));
+    // 通常のキーは置ける。
+    try std.testing.expect(!isForbiddenInPerCommit("run"));
+    try std.testing.expect(!isForbiddenInPerCommit("with"));
+    try std.testing.expect(!isForbiddenInPerCommit("TAG"));
+}
+
+test "keyIsAllowed: persist-credentials is known, so the release workflow can stop keeping the token" {
+    try std.testing.expect(keyIsAllowed("persist-credentials"));
+    try std.testing.expect(!keyIsAllowed("persist_credentials"));
+    try std.testing.expect(!keyIsAllowed("fetch-depth"));
 }
 
 test "slow_commands: the dist command is one the slow tier's workflow has to run" {
