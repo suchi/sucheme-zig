@@ -680,9 +680,9 @@ pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"defin
 
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).
-/// ADR-0019 の6種のうち、補助構文とパターン変数は、それを使うスライスが足す。
-/// パターン変数は、照合器とテンプレート展開器(src/syntax/rules.zig)の中だけで引くので、
-/// 構文環境の意味にはしていない。
+/// ADR-0019 の6種のうち、補助構文は、それを使うスライスが足す。パターン変数は変種に
+/// しない。照合器とテンプレート展開器(src/syntax/rules.zig)が規則ごとの表で引き、構文
+/// 環境に束縛しないからである(ADR-0019 の 2026-10-13 の追記)。
 pub const Denotation = union(enum) {
     special: Special,
     local: *LocalBinding,

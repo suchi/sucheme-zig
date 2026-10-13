@@ -279,7 +279,7 @@ pub const Denotation = union(enum) {
     auxiliary: Auxiliary, // ... => _ else unquote unquote-splicing
     local: *LocalBinding,
     global: *Cell, // 2j
-    pattern_variable: *PatternVariable, // 2k
+    // パターン変数は変種にしない。2k は構文環境に束縛せず、rules.zig の規則ごとの表で引く
 };
 pub fn resolve(ctx: *Context, env: *const SyntacticEnv, id: Value) Error!Denotation;
 pub fn sameDenotation(a: Denotation, b: Denotation) bool; // free-identifier=? に相当
