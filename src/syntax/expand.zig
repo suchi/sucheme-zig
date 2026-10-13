@@ -1076,3 +1076,129 @@ test "a program nested deeper than the Zig stack allows still expands" {
     const node = try expand(&f.ctx, f.arena.allocator(), form);
     try std.testing.expect(node.* == .call);
 }
+
+test "a macro's template binds its own tmp, apart from the tmp of the use" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a))))", "(const #<unspecified>)");
+    // テンプレートの tmp(内側の lambda の仮引数)と、利用側の tmp(外側の仮引数)は別の変数である。
+    try f.expectExpands(
+        "(lambda (tmp x) (swap! tmp x))",
+        "(lambda 2 2 (call (lambda 1 1 (seq (set-local tmp 1 0 (local x 1 1)) (set-local x 1 1 (local tmp 0 0)))) (local tmp 0 0)))",
+    );
+}
+
+test "the scan of a body expands a macro use once, and uses what it expanded to" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax def (syntax-rules () ((_ n v) (define n v))))", "(const #<unspecified>)");
+    const before = f.ctx.next_mark;
+    try f.expectExpands("(lambda () (def a 1) (def b a) b)", "(lambda 0 2 (seq (define-local a 0 0 (const 1)) (define-local b 0 1 (local a 0 0)) (local b 0 1)))");
+    try std.testing.expectEqual(before + 2, f.ctx.next_mark);
+    // 定義の並びを終える最初の式も、適用を1回だけ展開する。
+    try f.expectExpands("(define-syntax one (syntax-rules () ((_) 1)))", "(const #<unspecified>)");
+    const again = f.ctx.next_mark;
+    try f.expectExpands("(lambda () (one))", "(lambda 0 0 (const 1))");
+    try std.testing.expectEqual(again + 1, f.ctx.next_mark);
+}
+
+test "a define-syntax that a failed expansion made is undone" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("(begin (define-syntax m (syntax-rules () ((_) 1))) (if))", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try f.expectExpands("(m)", "(call (global m))");
+    // 成功した展開のものは残る。
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) 1)))", "(const #<unspecified>)");
+    try f.expectFails("(begin (define m 2) (if))", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try f.expectExpands("(m)", "(const 1)");
+}
+
+test "a name a macro defines at the top level is the name it was written as" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax def-counter (syntax-rules () ((_) (begin (define counter 0) (set! counter 1)))))", "(const #<unspecified>)");
+    // テンプレートの counter は別名だが、最上位の定義は元の名前を束縛し、同じ展開の中の参照も
+    // 同じセルに解決される。
+    const node = try expand(&f.ctx, f.arena.allocator(), try f.read("(def-counter)"));
+    const defined = node.sequence[0].global_define.cell;
+    try std.testing.expectEqual(defined, node.sequence[1].global_set.cell);
+    try std.testing.expectEqual(defined, (try expand(&f.ctx, f.arena.allocator(), try f.read("counter"))).global_ref);
+}
+
+/// The alias of `name` that a macro defined at the top level would make.
+fn testAlias(f: *Fixture, name: []const u8) !Value {
+    const inner: Value = .fromSymbol(try f.ctx.symbols.intern(f.arena.allocator(), name));
+    return .fromAlias(try f.ctx.heap.create(value_mod.Alias, .{ .inner = inner, .env = null, .mark = 0 }));
+}
+
+/// The node of `(quote datum)`, the form built by hand.
+fn quoted(f: *Fixture, datum: Value) !*const Node {
+    const quote: Value = .fromSymbol(try f.ctx.symbols.intern(f.arena.allocator(), "quote"));
+    const form = try f.ctx.heap.cons(quote, try f.ctx.heap.cons(datum, .empty_list_value));
+    return expand(&f.ctx, f.arena.allocator(), form);
+}
+
+test "quote gives an alias back as its symbol, and keeps the shared structure shared" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const h = &f.ctx.heap;
+    // (shared shared tmp) で、shared は同じペア (1 tmp) を2回指す。
+    const shared = try h.cons(.fromFixnum(1), try h.cons(try testAlias(&f, "tmp"), .empty_list_value));
+    const datum = try h.cons(shared, try h.cons(shared, try h.cons(try testAlias(&f, "tmp"), .empty_list_value)));
+    const c = (try quoted(&f, datum)).constant;
+    var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
+    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.symbols, c);
+    try std.testing.expectEqualStrings("((1 tmp) (1 tmp) tmp)", out.written());
+    const first = c.asPair().?.car.asPair().?;
+    const second = c.asPair().?.cdr.asPair().?.car.asPair().?;
+    try std.testing.expectEqual(first, second);
+    // 写しであり、元のデータは変わらない。
+    try std.testing.expect(first != shared.asPair().?);
+    try std.testing.expectEqual(value_mod.Kind.alias, shared.asPair().?.cdr.asPair().?.car.kind());
+    try std.testing.expectEqual(tmpSymbol(&f), first.cdr.asPair().?.car.asSymbol().?);
+}
+
+fn tmpSymbol(f: *Fixture) @import("../symbol.zig").SymbolId {
+    return f.ctx.symbols.index.get("tmp").?;
+}
+
+test "quote strips the aliases of a cycle, and the copy is the same cycle" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const h = &f.ctx.heap;
+    // #0=(tmp . #0#) と、それを要素に持つベクタ #(#0# #0#)。
+    const cycle = try h.cons(try testAlias(&f, "tmp"), .empty_list_value);
+    cycle.asPair().?.cdr = cycle;
+    const vector: Value = .fromVector(try h.createVector(&.{ cycle, cycle }));
+    const c = (try quoted(&f, vector)).constant;
+    const items = c.asVector().?.items;
+    try std.testing.expectEqual(items[0].asPair().?, items[1].asPair().?);
+    const p = items[0].asPair().?;
+    try std.testing.expectEqual(p, p.cdr.asPair().?);
+    try std.testing.expectEqual(tmpSymbol(&f), p.car.asSymbol().?);
+    try std.testing.expect(p != cycle.asPair().?);
+}
+
+test "quote of a cycle without an alias gives the cycle itself" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const cycle = try f.ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+    cycle.asPair().?.cdr = cycle;
+    try std.testing.expectEqual(cycle.asPair().?, (try quoted(&f, cycle)).constant.asPair().?);
+}
+
+test "a self-evaluating vector that holds an alias is stripped too" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const vector: Value = .fromVector(try f.ctx.heap.createVector(&.{ try testAlias(&f, "tmp"), .fromFixnum(2) }));
+    const node = try expand(&f.ctx, f.arena.allocator(), vector);
+    try std.testing.expectEqual(tmpSymbol(&f), node.constant.asVector().?.items[0].asSymbol().?);
+}

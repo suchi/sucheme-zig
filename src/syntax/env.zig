@@ -267,3 +267,118 @@ test "an environment that does not fit the heap is the error heap limit exceeded
     try std.testing.expectError(error.Raised, extend(&ctx, null));
     try std.testing.expectEqualStrings("heap limit exceeded", ctx.diagnostic());
 }
+
+test "an alias is the same identifier only as an alias with the same inner identifier, mark and environment" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const tmp = try f.id("tmp");
+    const other = try f.id("other");
+    const env = try extend(&f.ctx, null);
+    var a: Alias = .{ .inner = tmp, .env = env, .mark = 1 };
+    // 別のオブジェクトでも、3つが同じなら同じ識別子である。
+    var same: Alias = .{ .inner = tmp, .env = env, .mark = 1 };
+    var other_mark: Alias = .{ .inner = tmp, .env = env, .mark = 2 };
+    var other_env: Alias = .{ .inner = tmp, .env = null, .mark = 1 };
+    var other_inner: Alias = .{ .inner = other, .env = env, .mark = 1 };
+    const av: Value = .fromAlias(&a);
+    try std.testing.expect(boundIdentifierEq(av, av));
+    try std.testing.expect(boundIdentifierEq(av, .fromAlias(&same)));
+    try std.testing.expect(boundIdentifierEq(.fromAlias(&same), av));
+    try std.testing.expect(!boundIdentifierEq(av, .fromAlias(&other_mark)));
+    try std.testing.expect(!boundIdentifierEq(av, .fromAlias(&other_env)));
+    try std.testing.expect(!boundIdentifierEq(av, .fromAlias(&other_inner)));
+    // 素のシンボルとは、綴りが同じでも、どちら向きにも一致しない(衛生性の要)。
+    try std.testing.expect(!boundIdentifierEq(av, tmp));
+    try std.testing.expect(!boundIdentifierEq(tmp, av));
+    // 入れ子の別名は、外側から順に比べ、内側まで一致しなければならない。
+    var outer: Alias = .{ .inner = av, .env = null, .mark = 3 };
+    var outer_same: Alias = .{ .inner = .fromAlias(&same), .env = null, .mark = 3 };
+    var outer_of_other: Alias = .{ .inner = .fromAlias(&other_mark), .env = null, .mark = 3 };
+    try std.testing.expect(boundIdentifierEq(.fromAlias(&outer), .fromAlias(&outer_same)));
+    try std.testing.expect(!boundIdentifierEq(.fromAlias(&outer), .fromAlias(&outer_of_other)));
+    try std.testing.expect(!boundIdentifierEq(.fromAlias(&outer), av));
+    try std.testing.expect(!boundIdentifierEq(.fromAlias(&outer), tmp));
+}
+
+test "an identifier is a symbol or an alias, and its base symbol is the innermost one" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const tmp = try f.id("tmp");
+    var a: Alias = .{ .inner = tmp, .env = null, .mark = 0 };
+    var b: Alias = .{ .inner = .fromAlias(&a), .env = null, .mark = 1 };
+    try std.testing.expect(isIdentifier(tmp));
+    try std.testing.expect(isIdentifier(.fromAlias(&b)));
+    try std.testing.expect(!isIdentifier(.fromFixnum(1)));
+    try std.testing.expect(!isIdentifier(.empty_list_value));
+    try std.testing.expectEqual(tmp.asSymbol().?, baseSymbol(tmp));
+    try std.testing.expectEqual(tmp.asSymbol().?, baseSymbol(.fromAlias(&b)));
+}
+
+test "an alias that the environments do not bind is resolved as its inner identifier in its own environment" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const x = try f.id("x");
+    // マクロを定義した環境が x を束縛し、利用側の内側の環境も x を束縛する。
+    const definition = try extend(&f.ctx, null);
+    const defined_x = try bindLocal(&f.ctx, definition, x, 0);
+    const use = try extend(&f.ctx, definition);
+    const used_x = try bindLocal(&f.ctx, use, x, 0);
+    var alias: Alias = .{ .inner = x, .env = definition, .mark = 7 };
+    const av: Value = .fromAlias(&alias);
+    // 利用側の x は、別名の x を捕まえない。別名は定義側の x を指す。
+    try std.testing.expectEqual(used_x, (try resolve(&f.ctx, use, x)).local);
+    try std.testing.expectEqual(defined_x, (try resolve(&f.ctx, use, av)).local);
+    // 別名そのものを束縛した rib があれば、それが先である。
+    const inner = try extend(&f.ctx, use);
+    const bound_alias = try bindLocal(&f.ctx, inner, av, 0);
+    try std.testing.expectEqual(bound_alias, (try resolve(&f.ctx, inner, av)).local);
+    try std.testing.expectEqual(used_x, (try resolve(&f.ctx, inner, x)).local);
+    // 最上位で定義したマクロの別名は、最上位の束縛を名前で引く。特殊形式も同じである。
+    var top_if: Alias = .{ .inner = try f.id("if"), .env = null, .mark = 8 };
+    _ = try bindLocal(&f.ctx, inner, try f.id("if"), 1);
+    try std.testing.expectEqual(Special.@"if", (try resolve(&f.ctx, inner, .fromAlias(&top_if))).special);
+    // 2段の別名は、1段ずつ剥がす。
+    var twice: Alias = .{ .inner = av, .env = null, .mark = 9 };
+    try std.testing.expectEqual(defined_x, (try resolve(&f.ctx, use, .fromAlias(&twice))).local);
+}
+
+test "sameDenotation is the identity of the binding, and different kinds are never the same" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const env = try extend(&f.ctx, null);
+    const a = try bindLocal(&f.ctx, env, try f.id("a"), 0);
+    // 同じ位置の別の束縛は、別の意味である(ADR-0019)。
+    const twin = try f.ctx.create(LocalBinding, .{ .rib_depth = a.rib_depth, .index = a.index });
+    const cell_x = (try resolve(&f.ctx, null, try f.id("x"))).global;
+    const cell_y = (try resolve(&f.ctx, null, try f.id("y"))).global;
+    const m = try f.ctx.create(Macro, .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = null });
+    const n = try f.ctx.create(Macro, .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = null });
+    const all = [_]Denotation{
+        .{ .special = .@"if" }, .{ .special = .lambda },
+        .{ .local = a },        .{ .local = twin },
+        .{ .global = cell_x },  .{ .global = cell_y },
+        .{ .macro = m },        .{ .macro = n },
+    };
+    for (all, 0..) |p, i| {
+        for (all, 0..) |q, j| try std.testing.expectEqual(i == j, sameDenotation(p, q));
+    }
+    // 束縛の無い同じ名前は、同じ未束縛のセルに解決されるので、同じ意味である。
+    try std.testing.expect(sameDenotation(.{ .global = cell_x }, try resolve(&f.ctx, env, try f.id("x"))));
+}
+
+test "a macro bound in a rib takes no slot and hides what is outside" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.ctx.create(Macro, .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = null });
+    const env = try extend(&f.ctx, null);
+    const @"if" = try f.id("if");
+    try bindMacro(&f.ctx, env, @"if", m);
+    try std.testing.expectEqual(m, (try resolve(&f.ctx, env, @"if")).macro);
+    try std.testing.expectEqual(m, lookupRib(env, @"if").?.denotation.macro);
+    try std.testing.expectEqual(Special.@"if", (try resolve(&f.ctx, null, @"if")).special);
+}

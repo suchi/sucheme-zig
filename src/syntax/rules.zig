@@ -436,3 +436,164 @@ fn varIndex(vars: []const Var, id: Value) ?usize {
 test {
     std.testing.refAllDecls(@This());
 }
+
+const tier = @import("../tier.zig");
+
+const Fixture = struct {
+    arena: std.heap.ArenaAllocator,
+    ctx: Context,
+
+    fn init(self: *Fixture) !void {
+        self.arena = .init(std.testing.allocator);
+        errdefer self.arena.deinit();
+        self.ctx = try .init(self.arena.allocator(), std.heap.smp_allocator);
+    }
+
+    fn deinit(self: *Fixture) void {
+        self.ctx.deinit();
+        self.arena.deinit();
+    }
+
+    fn read(self: *Fixture, src: []const u8) !Value {
+        var r: @import("../reader.zig").Reader = .init(src);
+        const sink: @import("../reader.zig").Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        return (try r.next(self.arena.allocator(), sink)).?;
+    }
+
+    /// The macro of the `syntax-rules` form `src`, defined at the top level.
+    fn macro(self: *Fixture, src: []const u8) !*Macro {
+        return compile(&self.ctx, self.arena.allocator(), try self.read(src), null);
+    }
+
+    /// What `use` transcribes to, written out.
+    fn transcribed(self: *Fixture, m: *const Macro, use: []const u8) ![]const u8 {
+        const out = try transform(&self.ctx, self.arena.allocator(), m, try self.read(use), null);
+        var w: std.Io.Writer.Allocating = .init(self.arena.allocator());
+        try @import("../printer.zig").write(&w.writer, self.arena.allocator(), &self.ctx.symbols, out);
+        return w.written();
+    }
+
+    fn cons(self: *Fixture, car: Value, cdr: Value) !Value {
+        return self.ctx.heap.cons(car, cdr);
+    }
+
+    fn sym(self: *Fixture, name: []const u8) !Value {
+        return .fromSymbol(try self.ctx.symbols.intern(self.arena.allocator(), name));
+    }
+};
+
+test "a template's identifiers become aliases and the pattern variables become what they matched" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.macro("(syntax-rules () ((_ a b) (f a tmp b)))");
+    try std.testing.expectEqualStrings("(#<alias f> x #<alias tmp> (y z))", try f.transcribed(m, "(m x (y z))"));
+    // 規則のパターンの先頭は照合に関与しない。利用側の先頭は、どの名前でもよい。
+    try std.testing.expectEqualStrings("(#<alias f> 1 #<alias tmp> 2)", try f.transcribed(m, "(other 1 2)"));
+}
+
+test "the keyword at the start of a pattern is neither a pattern variable nor a literal" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // パターン変数なら、テンプレートの kw が利用側の先頭 m に置き換わる。
+    const m = try f.macro("(syntax-rules () ((kw a) (kw a)))");
+    try std.testing.expectEqualStrings("(#<alias kw> 1)", try f.transcribed(m, "(m 1)"));
+    // リテラルの一覧にあっても、先頭はリテラルとして照合しない。
+    const lit = try f.macro("(syntax-rules (kw) ((kw a) a))");
+    try std.testing.expectEqualStrings("1", try f.transcribed(lit, "(m 1)"));
+}
+
+test "one application gives all its aliases one mark, and the next application another" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.macro("(syntax-rules () ((_) (tmp tmp)))");
+    const first = try transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null);
+    const second = try transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null);
+    const a = first.asPair().?.car;
+    const b = first.asPair().?.cdr.asPair().?.car;
+    const c = second.asPair().?.car;
+    // 同じ適用の同じ識別子は、同じ識別子である。別の適用のものは、綴りが同じでも違う。
+    try std.testing.expect(syntax_env.boundIdentifierEq(a, b));
+    try std.testing.expect(!syntax_env.boundIdentifierEq(a, c));
+    try std.testing.expect(a.asAlias().?.mark != c.asAlias().?.mark);
+    try std.testing.expect(a.asAlias().?.env == null);
+}
+
+test "an application past the last mark is an implementation restriction" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.macro("(syntax-rules () ((_) tmp))");
+    f.ctx.next_mark = std.math.maxInt(u64) - 1;
+    const last = try transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null);
+    try std.testing.expectEqual(std.math.maxInt(u64) - 1, last.asAlias().?.mark);
+    try std.testing.expectError(error.Raised, transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null));
+    try std.testing.expectEqualStrings("implementation restriction: too many macro applications", f.ctx.diagnostic());
+}
+
+test "an ellipsis repeats over zero or more forms, and a variable of depth 0 is copied into each" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.macro("(syntax-rules () ((_ p (x y) ...) ((p x y) ... end)))");
+    try std.testing.expectEqualStrings("((a 1 2) (a 3 4) #<alias end>)", try f.transcribed(m, "(m a (1 2) (3 4))"));
+    try std.testing.expectEqualStrings("(#<alias end>)", try f.transcribed(m, "(m a)"));
+    // 繰り返しの中の形が合わなければ、照合しない。
+    try std.testing.expectError(error.Raised, f.transcribed(m, "(m a (1 2) 3)"));
+    try std.testing.expectEqualStrings("bad syntax: no rule of m matches the form", f.ctx.diagnostic());
+}
+
+test "a literal matches an identifier with the same binding, and _ matches anything without binding it" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.macro("(syntax-rules (=>) ((_ => _) arrow) ((_ x _) other))");
+    try std.testing.expectEqualStrings("#<alias arrow>", try f.transcribed(m, "(m => 1)"));
+    try std.testing.expectEqualStrings("#<alias other>", try f.transcribed(m, "(m 1 2)"));
+    // 識別子でない入力は、リテラルに照合しない。
+    try std.testing.expectEqualStrings("#<alias other>", try f.transcribed(m, "(m (=>) 2)"));
+}
+
+/// `inner` wrapped in `depth` lists: `((((inner))))`.
+fn nested(f: *Fixture, inner: Value, depth: usize) !Value {
+    var v = inner;
+    for (0..depth) |_| v = try f.cons(v, .empty_list_value);
+    return v;
+}
+
+/// Checks that the matcher and the transcriber walk a pattern, an input and a
+/// template `depth` lists deep, which a Zig recursion could not.
+fn expectDeep(depth: usize) !void {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const x = try f.sym("x");
+    // (syntax-rules () ((_ ((x))) ((x))))
+    const pattern = try f.cons(try f.sym("_"), try f.cons(try nested(&f, x, depth), .empty_list_value));
+    const template = try nested(&f, x, depth);
+    const rule = try f.cons(pattern, try f.cons(template, .empty_list_value));
+    const spec = try f.cons(try f.sym("syntax-rules"), try f.cons(.empty_list_value, try f.cons(rule, .empty_list_value)));
+    const m = try compile(&f.ctx, f.arena.allocator(), spec, null);
+    const use = try f.cons(try f.sym("m"), try f.cons(try nested(&f, .fromFixnum(5), depth), .empty_list_value));
+    var out = try transform(&f.ctx, f.arena.allocator(), m, use, null);
+    for (0..depth) |_| {
+        const p = out.asPair().?;
+        try std.testing.expectEqual(Value.empty_list_value.kind(), p.cdr.kind());
+        out = p.car;
+    }
+    try std.testing.expectEqual(5, out.asFixnum().?);
+    // 1段浅い入力は照合しない。
+    const shallow = try f.cons(try f.sym("m"), try f.cons(try nested(&f, .fromFixnum(5), depth - 1), .empty_list_value));
+    try std.testing.expectError(error.Raised, transform(&f.ctx, f.arena.allocator(), m, shallow, null));
+}
+
+test "a pattern and a template nested deep are matched and transcribed" {
+    try expectDeep(1000);
+}
+
+test "slow: a pattern and a template nested deeper than the Zig stack allows are matched and transcribed" {
+    try tier.slow();
+    try expectDeep(200_000);
+}

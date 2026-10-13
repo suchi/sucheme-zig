@@ -76,3 +76,7 @@
 # 仮引数が _ を束縛していれば、パターンの _ はパターン変数である。
 ((lambda (_) (define-syntax m (syntax-rules () ((m _) _))) (m 5)) 0)
 5
+
+# 仮引数が ... を束縛していれば、パターンの ... もパターン変数で、繰り返しを表さない。
+((lambda (...) (define-syntax m (syntax-rules () ((_ a ...) (list a ...)))) (m 1 2 3)) 0)
+error: bad syntax: no rule of m matches the form

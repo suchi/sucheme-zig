@@ -348,6 +348,86 @@ test "the shadow of a special form is undone when the expansion fails, and kept 
     try std.testing.expectEqual(kept, (try f.resolve(x)).global);
 }
 
+/// A macro for the tests: what it transcribes is never asked.
+fn testMacro(heap: *Heap) !*value_mod.Macro {
+    return heap.create(value_mod.Macro, .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = null });
+}
+
+test "a define-syntax binds a macro, which is bound and cannot be assigned, and a define shadows it" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const m = try testMacro(&f.heap);
+    try f.global.defineSyntax(f.arena.allocator(), x, m);
+    try std.testing.expect(f.global.isBound(x));
+    try std.testing.expectEqual(m, (try f.resolve(x)).macro);
+    try std.testing.expect(try f.assign(x) == null);
+    // 構文キーワードへの定義は新しい場所を束縛する(R7RS 5.3.1)。
+    const cell = try f.define(x);
+    try std.testing.expectEqual(value_mod.Kind.uninitialized, cell.value.kind());
+    try std.testing.expectEqual(cell, (try f.resolve(x)).global);
+}
+
+test "a define-syntax replaces a variable, and the variable's cell survives a collection" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    const own = try f.define(x);
+    own.value = try f.heap.cons(.fromFixnum(1), .empty_list_value);
+    try f.global.importPrimitive(a, y, &probe);
+    const imported = (try f.resolve(y)).global;
+    try f.global.defineSyntax(a, x, try testMacro(&f.heap));
+    try f.global.defineSyntax(a, y, try testMacro(&f.heap));
+    f.global.commitShadows();
+    // 2つのセル、ペア、2つのマクロ。
+    try std.testing.expectEqual(5, f.heap.count);
+    f.heap.collect(Roots{ .global = &f.global });
+    // 前に展開したコードがセルを指しうるので、表から外れたセルも残る。マクロは表にある。
+    try std.testing.expectEqual(5, f.heap.count);
+    try std.testing.expectEqual(1, own.value.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(&probe, imported.value.asPrimitive().?);
+}
+
+test "a define-syntax that a failed expansion made is undone, and one that succeeded is kept" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    const first = try testMacro(&f.heap);
+    try f.global.defineSyntax(a, x, first);
+    f.global.commitShadows();
+    // 同じ展開の中で、マクロをマクロで、次に変数で置き換えても、最初のマクロに戻る。
+    try f.global.defineSyntax(a, x, try testMacro(&f.heap));
+    _ = try f.define(x);
+    // 束縛の無かった名前とインポートしたプリミティブの名前は、束縛の無い状態に戻る。
+    try f.global.importPrimitive(a, y, &probe);
+    try f.global.defineSyntax(a, y, try testMacro(&f.heap));
+    const z: SymbolId = @fromBackingInt(@intCast(2));
+    try f.global.defineSyntax(a, z, try testMacro(&f.heap));
+    f.global.undoShadows();
+    try std.testing.expectEqual(first, (try f.resolve(x)).macro);
+    try std.testing.expectEqual(&probe, (try f.resolve(y)).global.value.asPrimitive().?);
+    try std.testing.expectEqual(value_mod.Kind.uninitialized, (try f.resolve(z)).global.value.kind());
+}
+
+test "the macros the table binds survive a collection, and those it no longer binds do not" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    try f.global.defineSyntax(a, x, try testMacro(&f.heap));
+    try f.global.defineSyntax(a, y, try testMacro(&f.heap));
+    // 展開の途中では、置き換えた束縛も戻すために残す。
+    _ = try f.define(y);
+    f.heap.collect(Roots{ .global = &f.global });
+    try std.testing.expectEqual(2, f.heap.countOf(value_mod.Macro));
+    f.global.commitShadows();
+    f.heap.collect(Roots{ .global = &f.global });
+    try std.testing.expectEqual(1, f.heap.countOf(value_mod.Macro));
+    try std.testing.expect((try f.resolve(x)).macro.rules.kind() == .empty_list);
+}
+
 test "a name only referenced is unbound, and is bound once its cell has a value" {
     var f: Fixture = undefined;
     f.init();

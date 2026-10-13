@@ -1,0 +1,5 @@
+# tests/scheme-slow/0016-macro-expansion-scale.txt の小さい双子。同じマクロを n = 4 と
+# n = 0 で展開する。(d (k ...) body) は body を (+ 1 ...) で 2^n - 1 段包む。
+
+(define-syntax d (syntax-rules () ((_ () body) body) ((_ (k ks ...) body) (d (ks ...) (d (ks ...) (+ 1 body)))))) (list (d () 0) (d (1 1 1 1) 0))
+(0 15)
