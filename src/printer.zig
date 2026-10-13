@@ -99,6 +99,14 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // これを持つ変数を読むとエラーになるので、プログラムがこれを目にすることは
             // ない。漏れたときに分かるよう、それでも書く。
             .uninitialized => try out.writeAll("#<uninitialized>"),
+            // 別名は展開器の中だけにあり、`quote` が元のシンボルに戻すので、機械にも
+            // プログラムにも届かない。展開器のテストが展開の結果を読めるよう、内側の
+            // 識別子を包む、読めない表記で書く。
+            .alias => {
+                try out.writeAll("#<alias ");
+                try stack.append(scratch, .{ .text = ">" });
+                try stack.append(scratch, .{ .value = x.asAlias().?.inner });
+            },
             // Why: R7RS 5.5 はレコードとその型の外部表現を決めていない。手続きと同じく、
             // `read` が受け付けない表記で、型の名前を添えて書く。フィールドの値は書かない。
             .record => try out.print("#<record {s}>", .{symbols.nameOf(x.asRecord().?.record_type.name)}),
@@ -244,6 +252,18 @@ test "write shows a condition with its message and its irritants" {
     // 条件の中の条件も、同じ形で書く。
     var outer: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = try f.list(&.{.fromCondition(&c)}, .empty_list_value) };
     try std.testing.expectEqualStrings("#<condition \"bad\" #<condition \"bad\" 1 \"two\" (a)>>", try f.written(&buf, .fromCondition(&outer)));
+}
+
+test "write shows an alias around the identifier inside it" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var inner: value_mod.Alias = .{ .inner = try f.sym("tmp"), .env = null, .mark = 0 };
+    var outer: value_mod.Alias = .{ .inner = .fromAlias(&inner), .env = null, .mark = 1 };
+    try std.testing.expectEqualStrings("#<alias tmp>", try f.written(&buf, .fromAlias(&inner)));
+    try std.testing.expectEqualStrings("#<alias #<alias tmp>>", try f.written(&buf, .fromAlias(&outer)));
+    const l = try f.list(&.{ .fromAlias(&inner), .fromFixnum(1) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(#<alias tmp> 1)", try f.written(&buf, l));
 }
 
 test "write and display show a record and its type by the name of the type, not the fields" {

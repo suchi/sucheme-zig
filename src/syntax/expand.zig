@@ -1,7 +1,9 @@
 //! The expander: data in, core IR out.
 //!
-//! マクロはまだない。仕事は、特殊形式(`quote`、`if`、`lambda`、`set!`、`define`、
-//! `begin`)と、呼び出しの変換である。
+//! 仕事は、特殊形式(`quote`、`if`、`lambda`、`set!`、`define`、`begin`、
+//! `define-syntax`)と、マクロの適用と、呼び出しの変換である。マクロの変換子は
+//! `syntax-rules` で、照合とテンプレートの展開は src/syntax/rules.zig にある。マクロの
+//! 適用の結果は、同じ位置の形式として展開し直す。
 //!
 //! 展開器はすべての識別子を構文環境(src/syntax/env.zig)で解決する(ADR-0019)。
 //! 特殊形式の名前は予約語ではなく、REPL の最上位の束縛なので、`lambda` の仮引数や
@@ -22,6 +24,8 @@ const Context = context.Context;
 const core = @import("../core.zig");
 const syntax_env = @import("env.zig");
 const SyntacticEnv = syntax_env.SyntacticEnv;
+const Denotation = syntax_env.Denotation;
+const rules = @import("rules.zig");
 
 pub const Error = context.Error;
 
@@ -45,6 +49,11 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
     // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
     // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
     errdefer ctx.globals.undoShadows();
+    // 失敗した形式の定数も、同じ理由で手放す。失敗した形式の節点は実行されず、どこからも
+    // 指されないので、この展開が登録した定数を生かしておく理由が無い。残すと、ヒープの
+    // 上限を、セッションの終わりまで理由なく使い続ける。
+    const roots = ctx.code_roots.items.len;
+    errdefer ctx.code_roots.shrinkRetainingCapacity(roots);
     try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
     while (e.stack.pop()) |task| try e.step(task);
     ctx.globals.commitShadows();
@@ -77,38 +86,135 @@ const Expander = struct {
             .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
-            .symbol => try self.reference(task),
+            .symbol, .alias => try self.reference(task),
             .pair => {
                 const items = try self.itemsOf(task.form);
-                if (try self.specialOf(task.env, items[0])) |special| return switch (special) {
-                    .define => self.define(task, items),
-                    .quote => self.quote(task, items),
-                    .@"if" => self.conditional(task, items),
-                    .lambda => self.lambdaForm(task, items),
-                    .begin => self.begin(task, items),
-                    .@"set!" => self.set(task, items),
+                if (try self.headOf(task.env, items[0])) |head| switch (head) {
+                    .special => |special| return switch (special) {
+                        .define => self.define(task, items),
+                        .quote => self.quote(task, items),
+                        .@"if" => self.conditional(task, items),
+                        .lambda => self.lambdaForm(task, items),
+                        .begin => self.begin(task, items),
+                        .@"set!" => self.set(task, items),
+                        .@"define-syntax" => self.defineSyntax(task, items),
+                        .@"syntax-rules" => self.ctx.raise("bad syntax-rules: it is only allowed as the transformer of a syntax definition", .{}),
+                    },
+                    // 適用の結果は、同じ位置の同じ節点を埋める形式として展開し直す。
+                    .macro => |m| {
+                        const output = try rules.transform(self.ctx, self.scratch, m, task.form, task.env);
+                        try self.stack.append(self.scratch, .{ .form = output, .env = task.env, .pos = task.pos, .dest = task.dest });
+                        return;
+                    },
+                    .local, .global => {},
                 };
                 try self.call(task, items);
             },
         }
     }
 
+    /// What `head` means in `env`, or null when it is not an identifier.
+    fn headOf(self: *Expander, env: ?*const SyntacticEnv, head: Value) Error!?Denotation {
+        if (!syntax_env.isIdentifier(head)) return null;
+        return try syntax_env.resolve(self.ctx, env, head);
+    }
+
     /// The special form that `head` names in `env`, or null when it is not an
     /// identifier that means one.
     fn specialOf(self: *Expander, env: ?*const SyntacticEnv, head: Value) Error!?syntax_env.Special {
-        if (head.kind() != .symbol) return null;
-        return switch (try syntax_env.resolve(self.ctx, env, head)) {
+        const d = try self.headOf(env, head) orelse return null;
+        return switch (d) {
             .special => |special| special,
-            .local, .global => null,
+            .local, .global, .macro => null,
         };
+    }
+
+    /// The name of the identifier `id`, for a message.
+    fn nameOf(self: *Expander, id: Value) []const u8 {
+        return self.ctx.symbols.nameOf(syntax_env.baseSymbol(id));
     }
 
     /// Makes the node of `task` the constant `v`.
     /// コードはまだ GC ヒープの中にない。そのため、ヒープを指す定数はコンテキストに
     /// 知らせ、コンテキストが生かしておく。定数を作る箇所は、この 2 つだけである。
+    /// マクロのテンプレートが導入した別名は、ここで元のシンボルに戻す(`stripAliases`)。
     fn constant(self: *Expander, task: Task, v: Value) Error!void {
-        try self.ctx.keepConstant(v);
-        task.dest.* = .{ .constant = v };
+        const datum = try self.stripAliases(v);
+        try self.ctx.keepConstant(datum);
+        task.dest.* = .{ .constant = datum };
+    }
+
+    /// `v` with each alias in it replaced by the symbol it was written as
+    /// (docs/design/frontend.md, stripping in `quote`).
+    ///
+    /// 別名を含まなければ `v` そのものを返し、写さない。含めば、オブジェクトの同一性を
+    /// キーにした対応表で全体を写す。ペアとベクタは、中身を埋める前に対応表に登録する
+    /// ので、同じオブジェクトに2回着いたら同じ写しを返し、共有と循環がそのまま写る。
+    /// 2つの走査は、どちらも訪問済みの表を持ち、再帰しない。展開の途中では GC が走らない
+    /// (ADR-0031)ので、表はルートにしない。
+    fn stripAliases(self: *Expander, v: Value) Error!Value {
+        if (!try self.containsAlias(v)) return v;
+        var copies: std.AutoHashMapUnmanaged(usize, Value) = .empty;
+        var fills: std.ArrayList(Fill) = .empty;
+        const root = try self.copyStripped(&copies, &fills, v);
+        while (fills.pop()) |f| f.slot.* = try self.copyStripped(&copies, &fills, f.from);
+        return root;
+    }
+
+    /// A place in a copy still to fill with the copy of `from`.
+    const Fill = struct { slot: *Value, from: Value };
+
+    /// Whether `v` holds an alias anywhere in the graph of pairs and vectors
+    /// it reaches.
+    fn containsAlias(self: *Expander, v: Value) Error!bool {
+        var visited: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        var stack: std.ArrayList(Value) = .empty;
+        try stack.append(self.scratch, v);
+        while (stack.pop()) |x| switch (x.kind()) {
+            .alias => return true,
+            .pair => {
+                const p = x.asPair().?;
+                if ((try visited.getOrPut(self.scratch, @intFromPtr(p))).found_existing) continue;
+                try stack.append(self.scratch, p.cdr);
+                try stack.append(self.scratch, p.car);
+            },
+            .vector => {
+                const vec = x.asVector().?;
+                if ((try visited.getOrPut(self.scratch, @intFromPtr(vec))).found_existing) continue;
+                try stack.appendSlice(self.scratch, vec.items);
+            },
+            else => {},
+        };
+        return false;
+    }
+
+    /// The copy of `v` without aliases: made now if `v` is a pair or a vector
+    /// not met before, with its contents left in `fills` to copy.
+    fn copyStripped(self: *Expander, copies: *std.AutoHashMapUnmanaged(usize, Value), fills: *std.ArrayList(Fill), v: Value) Error!Value {
+        switch (v.kind()) {
+            .alias => return .fromSymbol(syntax_env.baseSymbol(v)),
+            .pair => {
+                const p = v.asPair().?;
+                if (copies.get(@intFromPtr(p))) |copy| return copy;
+                const copy = self.ctx.heap.cons(.unspecified_value, .unspecified_value) catch |e| return self.ctx.heapFailure(e);
+                try copies.put(self.scratch, @intFromPtr(p), copy);
+                const c = copy.asPair().?;
+                try fills.append(self.scratch, .{ .slot = &c.cdr, .from = p.cdr });
+                try fills.append(self.scratch, .{ .slot = &c.car, .from = p.car });
+                return copy;
+            },
+            .vector => {
+                const vec = v.asVector().?;
+                if (copies.get(@intFromPtr(vec))) |copy| return copy;
+                // 写しの要素は、元の要素で始め、後で写しに置き換える。
+                const c = self.ctx.heap.createVector(vec.items) catch |e| return self.ctx.heapFailure(e);
+                const copy: Value = .fromVector(c);
+                try copies.put(self.scratch, @intFromPtr(vec), copy);
+                for (c.items, vec.items) |*slot, from| try fills.append(self.scratch, .{ .slot = slot, .from = from });
+                return copy;
+            },
+            else => return v,
+        }
     }
 
     /// Queues `form` to fill a new node, and returns the node.
@@ -142,9 +248,10 @@ const Expander = struct {
     }
 
     fn reference(self: *Expander, task: Task) Error!void {
-        const id = task.form.asSymbol().?;
+        const id = syntax_env.baseSymbol(task.form);
         task.dest.* = switch (try syntax_env.resolve(self.ctx, task.env, task.form)) {
-            .special => return self.ctx.raise(
+            // R7RS 4.3 は、マクロのキーワードを式として使うことを定めていない。
+            .special, .macro => return self.ctx.raise(
                 "{s} is a syntactic keyword and cannot be used as a variable",
                 .{self.ctx.symbols.nameOf(id)},
             ),
@@ -219,10 +326,11 @@ const Expander = struct {
     fn set(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3)
             return self.ctx.raise("bad set!: expected (set! name expression)", .{});
-        const id = items[1].asSymbol() orelse
+        if (!syntax_env.isIdentifier(items[1]))
             return self.ctx.raise("bad set!: the name must be an identifier", .{});
+        const id = syntax_env.baseSymbol(items[1]);
         switch (try syntax_env.resolve(self.ctx, task.env, items[1])) {
-            .special => return self.ctx.raise(
+            .special, .macro => return self.ctx.raise(
                 "bad set!: {s} is a syntactic keyword and cannot be assigned",
                 .{self.ctx.symbols.nameOf(id)},
             ),
@@ -233,6 +341,8 @@ const Expander = struct {
             },
             .global => {
                 // 解決が大域変数を返したので、名前は最上位で変数であり、対象のセルがある。
+                // 別名も、構文環境に束縛が無ければ、最上位の束縛を元のシンボルの名前で引く
+                // (`syntax_env.resolve`)ので、同じセルになる。
                 const cell = (self.ctx.globals.assignTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
                     return self.ctx.heapFailure(e)).?;
                 const value = try self.child(items[2], task.env, .expression);
@@ -258,8 +368,9 @@ const Expander = struct {
         if (!shorthand and items.len != 3)
             return self.ctx.raise("bad define: expected (define name expression)", .{});
         const target = if (shorthand) items[1].asPair().?.car else items[1];
-        const id = target.asSymbol() orelse
+        if (!syntax_env.isIdentifier(target))
             return self.ctx.raise("bad define: the name must be an identifier", .{});
+        const id = syntax_env.baseSymbol(target);
         switch (task.pos) {
             .top => {
                 // 対象のセルは、値の式を展開する前に選ぶ(R7RS 5.3.1: 新しい場所を束縛して
@@ -268,18 +379,22 @@ const Expander = struct {
                 // だけである。特殊形式の名前への定義も、新しい場所を束縛する(同節)。
                 // R7RS 5.4 は `(define define 3)` を誤りとするが、最上位の形式は前から順に
                 // 展開し、後ろの形式は前の定義の後の束縛で読むので、すでに判定した形式の意味が
-                // 後から変わることは無い。本体の定義(`collectDefinitions`)と違って、受け付ける。
+                // 後から変わることは無い。本体の定義(`scanBody`)と違って、受け付ける。
+                // 名前が別名(マクロのテンプレートが導入したもの)なら、元のシンボルの名前を
+                // 束縛する。最上位の束縛の表は名前で引くので、同じ展開の中の同じ別名の参照
+                // も、このセルに解決される。
                 const cell = self.ctx.globals.defineTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
                     return self.ctx.heapFailure(e);
                 const value = try self.definedValue(task, items, shorthand);
                 task.dest.* = .{ .global_define = .{ .cell = cell, .value = value } };
             },
-            // `collectDefinitions` が lambda を作るときに、この名前をその lambda の rib に
+            // `scanBody` が lambda を作るときに、この名前をその lambda の rib に
             // 束縛してある。同じ rib の仮引数を隠すので、rib の中で最も新しい束縛である。
             .body => {
                 const env = task.env.?;
-                // `collectDefinitions` が、本体の定義の先頭の名前が定義を意味し続けることを
-                // 確かめたので、ここに来る形式の名前は必ず rib にある。
+                // `scanBody` が、本体の定義の先頭の名前が定義を意味し続けることと、同じ名前を
+                // 2回定義しないことを確かめたので、ここに来る形式の名前は必ず rib にあり、
+                // 局所変数である。
                 const local = syntax_env.lookupRib(env, target).?.denotation.local;
                 const value = try self.definedValue(task, items, shorthand);
                 task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = local.index }, .name = id, .value = value } };
@@ -331,17 +446,17 @@ const Expander = struct {
         // 余りを受ける変数である。識別子でないものは、仮引数の並びとして読めない。
         const has_rest = rest.kind() != .empty_list;
         if (has_rest) {
-            if (rest.kind() != .symbol)
+            if (!syntax_env.isIdentifier(rest))
                 return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be an identifier or a list of identifiers", .{});
             try self.parameter(inner, &slots, rest, form_name);
         }
-        const defines = try self.collectDefinitions(body, inner, &slots);
+        const scanned = try self.scanBody(body, inner, &slots);
         // Why: R7RS 5.3.2 の本体は、定義のあとに式が続く形で、式は 1 つ以上要る。
         // 定義だけの本体には、返す値がない。
-        if (defines == body.len)
+        if (scanned.defines == scanned.forms.len)
             return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
         const body_node = try self.ctx.persist.create(Node);
-        try self.sequence(body_node, body, inner, .expression, defines);
+        try self.sequence(body_node, scanned.forms, inner, .expression, scanned.defines);
         const lambda = try self.ctx.persist.create(value_mod.Lambda);
         lambda.* = .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node };
         dest.* = .{ .lambda = lambda };
@@ -360,56 +475,194 @@ const Expander = struct {
     /// identifier that is not a parameter already.
     /// 必須の仮引数と余りを受ける変数の両方が、同じ検査を通る。特殊形式と同じ綴りでも
     /// よく、本体ではその特殊形式を隠す。
+    /// 仮引数は、マクロのテンプレートが導入した別名でもよい。重複は `bound-identifier=?`
+    /// で判定するので、同じ綴りでも、別の展開が導入した別名とシンボルは別の仮引数である。
     fn parameter(self: *Expander, rib: *SyntacticEnv, slots: *u32, form: Value, comptime form_name: []const u8) Error!void {
-        const id = form.asSymbol() orelse
+        if (!syntax_env.isIdentifier(form))
             return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
         if (syntax_env.lookupRib(rib, form) != null)
-            return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{self.ctx.symbols.nameOf(id)});
+            return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{self.nameOf(form)});
         try self.nextSlot(rib, slots, form);
     }
 
-    /// Binds the names that the definitions at the start of `body` define in
-    /// `rib`, and returns how many forms they are.
+    /// The forms of a body, the macro uses at its start expanded, and how many
+    /// of them, from the start, are definitions.
+    const Body = struct { forms: []const Value, defines: usize };
+
+    /// A head identifier the scan of a body decided a form by, and what it
+    /// meant then.
+    const Decided = struct { id: Value, denotation: Denotation };
+
+    /// Scans the definitions at the start of `body`: binds the names that they
+    /// define in `rib`, and returns the forms of the body with the macro uses
+    /// among them expanded.
     ///
-    /// 形式の先頭が定義を意味するかは、仮引数と、それより前の定義を束縛した `rib` で
-    /// 判定する。本体の定義の領域は本体の全体である(R7RS 5.3.2)。そのため、仮引数と
-    /// 同じ名前の定義は、仮引数を隠す新しい変数になる。同じ名前を2回定義することは
-    /// 誤りである(同節)。定義そのものの検査は、展開するときに行う。
-    fn collectDefinitions(self: *Expander, body: []const Value, rib: *SyntacticEnv, slots: *u32) Error!usize {
-        var count: usize = 0;
-        for (body) |form| {
-            const head = form.asPair() orelse break;
-            if (try self.specialOf(rib, head.car) != .define) break;
-            const rest = head.cdr.asPair() orelse
-                return self.ctx.raise("bad define: expected (define name expression)", .{});
-            // `(define (name parameter ...) body ...)` は、ヘッダの先頭にあるものを名前とする。
-            const target = if (rest.car.asPair()) |header| header.car else rest.car;
-            const id = target.asSymbol() orelse
-                return self.ctx.raise("bad define: the name must be an identifier", .{});
-            // rib の先頭の `count` 個が、この本体のそれまでの定義である。
-            var b = rib.bindings;
-            for (0..count) |_| {
-                const binding = b.?;
-                if (syntax_env.boundIdentifierEq(binding.id, target)) return self.ctx.raise(
-                    "bad define: {s} is already defined earlier in this body",
-                    .{self.ctx.symbols.nameOf(id)},
-                );
-                b = binding.next;
+    /// 本体の走査は展開と交互に進む(docs/design/frontend.md の展開器)。先頭の意味が
+    /// マクロなら適用して、結果をもう一度判定する。`define-syntax` は、その場で変換子を
+    /// 作って rib に束縛し、後の形式の判定から見える。`define` は名前にスロットを与える。
+    /// 定義でも、定義に展開されるマクロの適用でもない最初の形式で、定義の並びが終わる。
+    /// 適用の結果は返す形式の中に置くので、同じ形式を2回展開しない。
+    ///
+    /// 形式の先頭の意味は、仮引数と、それより前の定義を束縛した `rib` で判定する。本体の
+    /// 定義の領域は本体の全体である(R7RS 5.3.2)。そのため、仮引数と同じ名前の定義は、
+    /// 仮引数を隠す新しい変数になる。同じ名前を2回定義することは誤りである(同節)。
+    /// `define` の検査は、展開するときに行う。`define-syntax` の検査は、ここで行う。
+    ///
+    /// `define-syntax` の変換子が読むのに使った識別子(`rules.compile` の `consulted` と、
+    /// 変換子の先頭)は、後の定義が束縛するたびに、意味が変わらないことを確かめる
+    /// (`checkDepended`)。本体の終わりまで待てない。走査の途中でマクロを適用するので、
+    /// 待つと、定義の時点の検査が見ていない読み方で先に適用される。
+    fn scanBody(self: *Expander, body: []const Value, rib: *SyntacticEnv, slots: *u32) Error!Body {
+        var forms: std.ArrayList(Value) = .empty;
+        // この本体が定義した名前と、判定に使った先頭の識別子。
+        var defined: std.ArrayList(Value) = .empty;
+        var decided: std.ArrayList(Decided) = .empty;
+        // 変換子が読むのに使った識別子と、そのときの意味。
+        var depended: std.ArrayList(Decided) = .empty;
+        var consulted: std.ArrayList(Value) = .empty;
+        for (body, 0..) |original, i| {
+            var form = original;
+            const definition = while (true) {
+                const pair = form.asPair() orelse break false;
+                const head = try self.headOf(rib, pair.car) orelse break false;
+                switch (head) {
+                    .special => |special| switch (special) {
+                        .define => {
+                            const target = try self.definedName(pair);
+                            try self.defineOnce(&defined, target, "define");
+                            try self.nextSlot(rib, slots, target);
+                            try self.checkDepended(rib, depended.items, target, "define");
+                            try forms.append(self.scratch, form);
+                        },
+                        .@"define-syntax" => {
+                            consulted.clearRetainingCapacity();
+                            const syntax = try self.syntaxDefinition(rib, try self.itemsOf(form), &consulted);
+                            try self.defineOnce(&defined, syntax.name, "define-syntax");
+                            for (consulted.items) |id| try depended.append(self.scratch, .{
+                                .id = id,
+                                .denotation = try syntax_env.resolve(self.ctx, rib, id),
+                            });
+                            try syntax_env.bindMacro(self.ctx, rib, syntax.name, syntax.macro);
+                            try self.checkDepended(rib, depended.items, syntax.name, "define-syntax");
+                        },
+                        else => break false,
+                    },
+                    .macro => |m| {
+                        try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
+                        form = try rules.transform(self.ctx, self.scratch, m, form, rib);
+                        continue;
+                    },
+                    .local, .global => break false,
+                }
+                try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
+                break true;
+            };
+            if (!definition) {
+                const defines = forms.items.len;
+                try forms.append(self.scratch, form);
+                try forms.appendSlice(self.scratch, body[i + 1 ..]);
+                return self.checkDecided(.{ .forms = forms.items, .defines = defines }, rib, decided.items);
             }
-            try self.nextSlot(rib, slots, target);
-            count += 1;
         }
-        // Why: 定義が束縛する名前が、その定義や前の定義の先頭の `define` そのものだと、
-        // 定義だと判定した形式が、本体の全体を領域とする束縛のもとでは定義でなくなる。
-        // R7RS 5.4 はこれを誤りとしている。展開がこの判定に頼るので、ここで拒否する。
-        for (body[0..count]) |form| {
-            const head = form.asPair().?.car;
-            if (try self.specialOf(rib, head) != .define) return self.ctx.raise(
+        return self.checkDecided(.{ .forms = forms.items, .defines = forms.items.len }, rib, decided.items);
+    }
+
+    /// Checks that each head the scan of a body decided a form by still means
+    /// what it meant then, now that the rib binds all the definitions, and
+    /// returns `body`.
+    /// Why: 定義が束縛する名前が、その定義や前の定義の先頭の `define` そのものだと、
+    /// 定義だと判定した形式が、本体の全体を領域とする束縛のもとでは定義でなくなる。
+    /// マクロの適用の先頭も同じである。R7RS 5.4 はこれを誤りとしている。展開がこの判定に
+    /// 頼るので、ここで拒否する。
+    fn checkDecided(self: *Expander, body: Body, rib: *SyntacticEnv, decided: []const Decided) Error!Body {
+        for (decided) |d| {
+            if (!syntax_env.sameDenotation(try syntax_env.resolve(self.ctx, rib, d.id), d.denotation)) return self.ctx.raise(
                 "bad define: {s} is defined in a body whose definitions it begins",
-                .{self.ctx.symbols.nameOf(head.asSymbol().?)},
+                .{self.nameOf(d.id)},
             );
         }
-        return count;
+        return body;
+    }
+
+    /// Checks that `bound`, a name a definition of a body has just bound in
+    /// `rib`, does not change what an identifier a transformer of the body was
+    /// read by means.
+    /// Why: R7RS 5.4 は、定義の意味を決めるのに束縛を知る必要がある識別子を、その定義や
+    /// 同じ本体の前の定義が束縛することを誤りとしている。照合器はこれらの意味を適用の
+    /// たびに引き直すので、変わったまま適用すると、定義の時点の検査(深さの検査など)が
+    /// 見ていない読み方になり、処理系が落ちる。
+    /// 束縛を足して意味が変わりうるのは、元のシンボルが同じ識別子だけである。別名は、
+    /// 束縛が見つからなければ内側の識別子で引き直すからである。
+    fn checkDepended(self: *Expander, rib: *SyntacticEnv, depended: []const Decided, bound: Value, comptime form_name: []const u8) Error!void {
+        const symbol = syntax_env.baseSymbol(bound);
+        for (depended) |d| {
+            if (syntax_env.baseSymbol(d.id) != symbol) continue;
+            if (!syntax_env.sameDenotation(try syntax_env.resolve(self.ctx, rib, d.id), d.denotation)) return self.ctx.raise(
+                "bad " ++ form_name ++ ": {s} is defined after a syntax definition of this body that depends on its meaning",
+                .{self.nameOf(d.id)},
+            );
+        }
+    }
+
+    /// The name a `(define ...)` form at the start of a body defines.
+    /// `(define (name parameter ...) body ...)` は、ヘッダの先頭にあるものを名前とする。
+    fn definedName(self: *Expander, form: *const value_mod.Pair) Error!Value {
+        const rest = form.cdr.asPair() orelse
+            return self.ctx.raise("bad define: expected (define name expression)", .{});
+        const target = if (rest.car.asPair()) |header| header.car else rest.car;
+        if (!syntax_env.isIdentifier(target))
+            return self.ctx.raise("bad define: the name must be an identifier", .{});
+        return target;
+    }
+
+    /// Adds `id` to the names a body has defined, after checking that it is
+    /// not one of them already.
+    fn defineOnce(self: *Expander, defined: *std.ArrayList(Value), id: Value, comptime form_name: []const u8) Error!void {
+        for (defined.items) |earlier| {
+            if (syntax_env.boundIdentifierEq(earlier, id)) return self.ctx.raise(
+                "bad " ++ form_name ++ ": {s} is already defined earlier in this body",
+                .{self.nameOf(id)},
+            );
+        }
+        try defined.append(self.scratch, id);
+    }
+
+    /// A syntax definition: the keyword, and the macro it is bound to.
+    const SyntaxDefinition = struct { name: Value, macro: *value_mod.Macro };
+
+    /// Checks `(define-syntax keyword transformer)` (R7RS 5.4), and makes the
+    /// macro of the transformer in `env`.
+    /// 変換子は `syntax-rules` の形式で、その先頭は `env` で `syntax-rules` を意味しなければ
+    /// ならない。同じ綴りを仮引数が束縛していれば、`syntax-rules` ではない。
+    /// `consulted` が null でなければ、変換子の先頭と、`rules.compile` が意味を引いた
+    /// 識別子を足す。
+    fn syntaxDefinition(self: *Expander, env: ?*SyntacticEnv, items: []const Value, consulted: ?*std.ArrayList(Value)) Error!SyntaxDefinition {
+        if (items.len != 3)
+            return self.ctx.raise("bad define-syntax: expected (define-syntax keyword transformer)", .{});
+        if (!syntax_env.isIdentifier(items[1]))
+            return self.ctx.raise("bad define-syntax: the keyword must be an identifier", .{});
+        const spec = items[2].asPair() orelse
+            return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
+        if (try self.specialOf(env, spec.car) != .@"syntax-rules")
+            return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
+        if (consulted) |list| try list.append(self.scratch, spec.car);
+        const m = try rules.compile(self.ctx, self.scratch, items[2], env, consulted);
+        return .{ .name = items[1], .macro = m };
+    }
+
+    /// `(define-syntax keyword transformer)` at the top level (R7RS 5.4).
+    /// REPL の最上位の束縛の表で、名前をマクロに束縛する。それより前に展開したコードの
+    /// 参照は変わらない(同節)。名前が別名なら、`define` と同じく元のシンボルの名前を
+    /// 束縛する。本体の先頭のものは `scanBody` が扱い、ここには来ない。
+    fn defineSyntax(self: *Expander, task: Task, items: []const Value) Error!void {
+        switch (task.pos) {
+            .expression => return self.ctx.raise("bad define-syntax: a definition is only allowed at the top level or at the start of a body", .{}),
+            .body => unreachable,
+            .top => {},
+        }
+        const syntax = try self.syntaxDefinition(task.env, items, null);
+        try self.ctx.globals.defineSyntax(self.ctx.persist, syntax_env.baseSymbol(syntax.name), syntax.macro);
+        try self.constant(task, .unspecified_value);
     }
 
     /// A procedure call (R7RS 4.1.3): the operator, then the operands from left
@@ -853,6 +1106,22 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     try std.testing.expectEqual(4, f.ctx.heap.count);
 }
 
+test "a form whose expansion fails keeps none of the constants it made" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    _ = try expand(&f.ctx, a, try f.read("(define-syntax m (syntax-rules () ((_) (list '(tmp) (if)))))"));
+    const before = f.ctx.code_roots.items.len;
+    // 被演算子は左から展開するので、剥離した '(tmp) を定数にしてから (if) で失敗する。
+    // 失敗した形式は実行されないので、その定数を生かしておくと、ヒープの上限を理由なく
+    // 使い続ける。
+    for (0..3) |_| {
+        try std.testing.expectError(error.Raised, expand(&f.ctx, a, try f.read("(m)")));
+        try std.testing.expectEqual(before, f.ctx.code_roots.items.len);
+    }
+}
+
 test "a program nested deeper than the Zig stack allows still expands" {
     var f: Fixture = undefined;
     try f.init();
@@ -865,4 +1134,130 @@ test "a program nested deeper than the Zig stack allows still expands" {
     const form = try f.read(src.items);
     const node = try expand(&f.ctx, f.arena.allocator(), form);
     try std.testing.expect(node.* == .call);
+}
+
+test "a macro's template binds its own tmp, apart from the tmp of the use" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a))))", "(const #<unspecified>)");
+    // テンプレートの tmp(内側の lambda の仮引数)と、利用側の tmp(外側の仮引数)は別の変数である。
+    try f.expectExpands(
+        "(lambda (tmp x) (swap! tmp x))",
+        "(lambda 2 2 (call (lambda 1 1 (seq (set-local tmp 1 0 (local x 1 1)) (set-local x 1 1 (local tmp 0 0)))) (local tmp 0 0)))",
+    );
+}
+
+test "the scan of a body expands a macro use once, and uses what it expanded to" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax def (syntax-rules () ((_ n v) (define n v))))", "(const #<unspecified>)");
+    const before = f.ctx.next_mark;
+    try f.expectExpands("(lambda () (def a 1) (def b a) b)", "(lambda 0 2 (seq (define-local a 0 0 (const 1)) (define-local b 0 1 (local a 0 0)) (local b 0 1)))");
+    try std.testing.expectEqual(before + 2, f.ctx.next_mark);
+    // 定義の並びを終える最初の式も、適用を1回だけ展開する。
+    try f.expectExpands("(define-syntax one (syntax-rules () ((_) 1)))", "(const #<unspecified>)");
+    const again = f.ctx.next_mark;
+    try f.expectExpands("(lambda () (one))", "(lambda 0 0 (const 1))");
+    try std.testing.expectEqual(again + 1, f.ctx.next_mark);
+}
+
+test "a define-syntax that a failed expansion made is undone" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("(begin (define-syntax m (syntax-rules () ((_) 1))) (if))", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try f.expectExpands("(m)", "(call (global m))");
+    // 成功した展開のものは残る。
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) 1)))", "(const #<unspecified>)");
+    try f.expectFails("(begin (define m 2) (if))", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try f.expectExpands("(m)", "(const 1)");
+}
+
+test "a name a macro defines at the top level is the name it was written as" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax def-counter (syntax-rules () ((_) (begin (define counter 0) (set! counter 1)))))", "(const #<unspecified>)");
+    // テンプレートの counter は別名だが、最上位の定義は元の名前を束縛し、同じ展開の中の参照も
+    // 同じセルに解決される。
+    const node = try expand(&f.ctx, f.arena.allocator(), try f.read("(def-counter)"));
+    const defined = node.sequence[0].global_define.cell;
+    try std.testing.expectEqual(defined, node.sequence[1].global_set.cell);
+    try std.testing.expectEqual(defined, (try expand(&f.ctx, f.arena.allocator(), try f.read("counter"))).global_ref);
+}
+
+/// The alias of `name` that a macro defined at the top level would make.
+fn testAlias(f: *Fixture, name: []const u8) !Value {
+    const inner: Value = .fromSymbol(try f.ctx.symbols.intern(f.arena.allocator(), name));
+    return .fromAlias(try f.ctx.heap.create(value_mod.Alias, .{ .inner = inner, .env = null, .mark = 0 }));
+}
+
+/// The node of `(quote datum)`, the form built by hand.
+fn quoted(f: *Fixture, datum: Value) !*const Node {
+    const quote: Value = .fromSymbol(try f.ctx.symbols.intern(f.arena.allocator(), "quote"));
+    const form = try f.ctx.heap.cons(quote, try f.ctx.heap.cons(datum, .empty_list_value));
+    return expand(&f.ctx, f.arena.allocator(), form);
+}
+
+test "quote gives an alias back as its symbol, and keeps the shared structure shared" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const h = &f.ctx.heap;
+    // (shared shared tmp) で、shared は同じペア (1 tmp) を2回指す。
+    const shared = try h.cons(.fromFixnum(1), try h.cons(try testAlias(&f, "tmp"), .empty_list_value));
+    const datum = try h.cons(shared, try h.cons(shared, try h.cons(try testAlias(&f, "tmp"), .empty_list_value)));
+    const c = (try quoted(&f, datum)).constant;
+    var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
+    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.symbols, c);
+    try std.testing.expectEqualStrings("((1 tmp) (1 tmp) tmp)", out.written());
+    const first = c.asPair().?.car.asPair().?;
+    const second = c.asPair().?.cdr.asPair().?.car.asPair().?;
+    try std.testing.expectEqual(first, second);
+    // 写しであり、元のデータは変わらない。
+    try std.testing.expect(first != shared.asPair().?);
+    try std.testing.expectEqual(value_mod.Kind.alias, shared.asPair().?.cdr.asPair().?.car.kind());
+    try std.testing.expectEqual(tmpSymbol(&f), first.cdr.asPair().?.car.asSymbol().?);
+}
+
+fn tmpSymbol(f: *Fixture) @import("../symbol.zig").SymbolId {
+    return f.ctx.symbols.index.get("tmp").?;
+}
+
+test "quote strips the aliases of a cycle, and the copy is the same cycle" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const h = &f.ctx.heap;
+    // #0=(tmp . #0#) と、それを要素に持つベクタ #(#0# #0#)。
+    const cycle = try h.cons(try testAlias(&f, "tmp"), .empty_list_value);
+    cycle.asPair().?.cdr = cycle;
+    const vector: Value = .fromVector(try h.createVector(&.{ cycle, cycle }));
+    const c = (try quoted(&f, vector)).constant;
+    const items = c.asVector().?.items;
+    try std.testing.expectEqual(items[0].asPair().?, items[1].asPair().?);
+    const p = items[0].asPair().?;
+    try std.testing.expectEqual(p, p.cdr.asPair().?);
+    try std.testing.expectEqual(tmpSymbol(&f), p.car.asSymbol().?);
+    try std.testing.expect(p != cycle.asPair().?);
+}
+
+test "quote of a cycle without an alias gives the cycle itself" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const cycle = try f.ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+    cycle.asPair().?.cdr = cycle;
+    try std.testing.expectEqual(cycle.asPair().?, (try quoted(&f, cycle)).constant.asPair().?);
+}
+
+test "a self-evaluating vector that holds an alias is stripped too" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const vector: Value = .fromVector(try f.ctx.heap.createVector(&.{ try testAlias(&f, "tmp"), .fromFixnum(2) }));
+    const node = try expand(&f.ctx, f.arena.allocator(), vector);
+    try std.testing.expectEqual(tmpSymbol(&f), node.constant.asVector().?.items[0].asSymbol().?);
 }

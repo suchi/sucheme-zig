@@ -26,7 +26,7 @@ pub const primitives = [_]Primitive{
 fn isProcedure(_: *const Services, args: []const Value) Error!Value {
     return .fromBool(switch (args[0].kind()) {
         .primitive, .closure => true,
-        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .record, .record_type => false,
+        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .alias, .record, .record_type => false,
     });
 }
 

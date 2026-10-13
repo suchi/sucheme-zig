@@ -279,7 +279,7 @@ pub const Denotation = union(enum) {
     auxiliary: Auxiliary, // ... => _ else unquote unquote-splicing
     local: *LocalBinding,
     global: *Cell, // 2j
-    pattern_variable: *PatternVariable, // 2k
+    // パターン変数は変種にしない。2k は構文環境に束縛せず、rules.zig の規則ごとの表で引く
 };
 pub fn resolve(ctx: *Context, env: *const SyntacticEnv, id: Value) Error!Denotation;
 pub fn sameDenotation(a: Denotation, b: Denotation) bool; // free-identifier=? に相当
@@ -441,7 +441,8 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 - 対象: [frontend.md](../design/frontend.md) の `syntax-rules` の要件の残り(入れ子の省略記号、省略記号の後の固定パターン、非真正リスト、ベクタ、テンプレートの省略記号のエスケープ、利用者指定の省略記号、定数パターン、リテラル一覧の `_` と省略記号、深さの規則)。`let-syntax` と `letrec-syntax`(rib を持たない環境の深さ)。`syntax-error`(展開時に送出し、ハンドラでは捕まらない)。
 - ファイル: `src/syntax/rules.zig`、`src/syntax/expand.zig`、`src/syntax/env.zig`、`tests/scheme/0150-*.txt`。
-- 最初の失敗するテスト: `(define-syntax add-prefix (syntax-rules () ((_ p (x ...)) '((p x) ...))))` の後の `(add-prefix a (1 2 3))` が `((a 1) (a 2) (a 3))`。
+- 最初の失敗するテスト: `(define-syntax pairs (syntax-rules () ((_ (a b ...) ...) '((a b ...) ...))))` の後の `(pairs (1 2 3) (4))` が `((1 2 3) (4))`(入れ子の省略記号)。はじめに挙げていた `add-prefix`(深さ0の変数を深さ1の省略記号の内側に置く形)は 2k の実装で通るので、最初の失敗するテストにならない。
+- 作業項目に加える: マクロの展開のメモリの有界化(適用回数の上限か、展開の作業領域の計上)。止まらないマクロの適用で、計上されない作業領域と節点がヒープの上限を大きく超えて伸びる([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記)。リリース v0.2.0 の前に入れる。
 - 完了の確認: 要件の一覧の各行に、少なくとも1つのケースがある。衛生性の検証項目 4、6、7、10。R7RS 7.3 の `define-values` の定義が `define-syntax` として受け付けられ、そのテンプレートが深さのエラーなしに具体化される(深さ0のパターン変数を省略記号の内側に置く形)。展開の結果は `let` `cadr` `set-cdr!` を使うので、実行して確かめるのは段階3である。
 
 ### 2m ライブラリの登録表と `define-library` `import` `export`
@@ -744,14 +745,14 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2a | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み | [#78](https://github.com/suchi/sucheme-zig/pull/78) |
 | 2b | main に入った。ADR-0035 は採用 | [#79](https://github.com/suchi/sucheme-zig/pull/79) |
 | 2c | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。`apply` が1ステップの中で確保する件は、ADR-0031 の追記に記録して受け入れ、段階3で直す | |
-| 2d | 実装済み。敵対的レビューで受けた推奨と任意の指摘を反映した。再レビューの前 | [#84](https://github.com/suchi/sucheme-zig/pull/84) |
+| 2d | main に入った | [#84](https://github.com/suchi/sucheme-zig/pull/84) |
 | 2e | 未着手 | |
 | 2f | 未着手 | |
 | 2g | 未着手 | |
 | 2h | 実装済み。敵対的レビューの前。プリミティブの名前は `%make-record-type` `%make-record` `%record?` `%record-ref` `%record-set!`(`src/prim/record.zig`) | |
 | 2i | main に入った | [#80](https://github.com/suchi/sucheme-zig/pull/80) |
 | 2j | main に入った | [#82](https://github.com/suchi/sucheme-zig/pull/82) |
-| 2k | 未着手 | |
+| 2k | 実装済み。敵対的レビュー中(1巡目の指摘を修正した)。2l が入れる形は、定義の時点で「まだ扱えない」と報告する。本体の先頭の `begin` の展開は入れていない(roadmap の「スライス未割り当て」の項目のまま) | |
 | 2l | 未着手 | |
 | 2m | 未着手 | |
 | 2n | 未着手 | |
@@ -767,6 +768,6 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 系列ごとの次の作業。各スライスの PR は、自分の系列の行だけを書き換える(「重なりの確認」)。
 
-- 実行時の系列(2b から 2h): 2b、2c、2h は main に入った。2d は実装済みで、敵対的レビュー中。2e は 2d のマージ後に始める。
-- マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2i と 2j は main に入った。2k に進める。
+- 実行時の系列(2b から 2h): 2b、2c、2d、2h は main に入った。2e に進める。
+- マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2i と 2j は main に入った。2k は実装済みで、敵対的レビューの1巡目の指摘を直した。そのマージ後に 2l を始める。2l の最初の失敗するテストは、2l の節のとおり、入れ子の省略記号を使う `pairs` である。2l は、展開のメモリの有界化も入れる(2l の節の作業項目)。
 - ライブラリの系列(2m から 2q): 2j のマージ後に 2m から始める。
