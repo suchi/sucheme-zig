@@ -8,7 +8,7 @@
 //! スライス 1g は、ペア・クロージャ・フレーム・継続フレーム・引数リストを GC ヒープ
 //! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2b は
 //! 条件オブジェクトを GC ヒープに移す。スライス 2i は、展開器の構文環境(値ではない
-//! が GC ヒープにある)を加える。
+//! が GC ヒープにある)を加える。スライス 2h は、レコードとレコード型を加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -54,6 +54,13 @@ pub const Value = union(enum) {
     /// A vector.
     /// GC ヒープにある。
     vector: *Vector,
+    /// A record: an instance of a record type (R7RS 5.5).
+    /// GC ヒープにある。
+    record: *Record,
+    /// A record type: what `%make-record-type` makes, and what the record
+    /// primitives check a record against.
+    /// GC ヒープにある。
+    record_type: *RecordType,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -105,11 +112,19 @@ pub const Value = union(enum) {
         return .{ .vector = v };
     }
 
+    pub fn fromRecord(r: *Record) Value {
+        return .{ .record = r };
+    }
+
+    pub fn fromRecordType(t: *RecordType) Value {
+        return .{ .record_type = t };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition => true,
+            .pair, .closure, .string, .vector, .condition, .record, .record_type => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
@@ -129,6 +144,8 @@ pub const Value = union(enum) {
             .character => .character,
             .string => .string,
             .vector => .vector,
+            .record => .record,
+            .record_type => .record_type,
         };
     }
 
@@ -204,6 +221,22 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The record, or null when the value is not one.
+    pub fn asRecord(self: Value) ?*Record {
+        return switch (self) {
+            .record => |r| r,
+            else => null,
+        };
+    }
+
+    /// The record type, or null when the value is not one.
+    pub fn asRecordType(self: Value) ?*RecordType {
+        return switch (self) {
+            .record_type => |t| t,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -238,6 +271,8 @@ pub const Value = union(enum) {
             .primitive => |x| b.asPrimitive() == x,
             .closure => |x| b.asClosure() == x,
             .condition => |x| b.asCondition() == x,
+            .record => |x| b.asRecord() == x,
+            .record_type => |x| b.asRecordType() == x,
         };
     }
 
@@ -329,6 +364,25 @@ pub fn allAscii(bytes: []const u8) bool {
 /// 要素は、ヒープが所有し、計上するペイロードで、GC はそれをたどる。
 pub const Vector = struct {
     items: []Value,
+};
+
+/// A record type: its name, and how many fields its records have.
+/// フィールドは添字で読み書きする。フィールドの名前から添字を求めるのは、段階3の
+/// `define-record-type` の展開であり、型はフィールドの名前を持たない
+/// (docs/plans/0014-phase2-core-language.md の 2h の節)。型の同一性はオブジェクトの
+/// 同一性で、名前が同じでも別の型である。
+pub const RecordType = struct {
+    /// The name the type was made with, for the printer.
+    name: SymbolId,
+    field_count: u32,
+};
+
+/// A record: its type, and the values of its fields in order.
+/// フィールドの値は、ヒープが所有し、計上するペイロードで、GC はそれをたどる。
+/// 個数は型の `field_count` と等しい。
+pub const Record = struct {
+    record_type: *RecordType,
+    fields: []Value,
 };
 
 /// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
@@ -584,7 +638,7 @@ pub const Kont = struct {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, RecordType, Record };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -593,7 +647,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, record, record_type };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -737,6 +791,26 @@ test "a string and a vector are heap objects, each answering to its own accessor
     try std.testing.expect(vv.pointsIntoHeap());
     try std.testing.expect(vv.asString() == null);
     try std.testing.expect(vv.isTrue() and sv.isTrue());
+}
+
+test "a record and a record type are heap objects, each answering to its own accessor" {
+    var t: RecordType = .{ .name = @fromBackingInt(@intCast(2)), .field_count = 1 };
+    const tv: Value = .fromRecordType(&t);
+    try std.testing.expectEqual(Kind.record_type, tv.kind());
+    try std.testing.expectEqual(&t, tv.asRecordType().?);
+    try std.testing.expect(tv.pointsIntoHeap());
+    try std.testing.expect(tv.asRecord() == null);
+    var fields = [_]Value{.fromFixnum(4)};
+    var r: Record = .{ .record_type = &t, .fields = &fields };
+    const rv: Value = .fromRecord(&r);
+    try std.testing.expectEqual(Kind.record, rv.kind());
+    try std.testing.expectEqual(&r, rv.asRecord().?);
+    try std.testing.expect(rv.pointsIntoHeap());
+    try std.testing.expect(rv.asRecordType() == null);
+    try std.testing.expect(rv.asVector() == null);
+    try std.testing.expect(Value.fromFixnum(1).asRecord() == null);
+    try std.testing.expect(Value.fromFixnum(1).asRecordType() == null);
+    try std.testing.expect(rv.isTrue() and tv.isTrue());
 }
 
 test "allAscii looks at every byte" {
@@ -900,6 +974,13 @@ const Samples = struct {
     message: String = undefined,
     condition_a: Condition = undefined,
     condition_b: Condition = undefined,
+    // 名前とフィールドの数が同じ2つの型。
+    record_type_a: RecordType = .{ .name = @fromBackingInt(@intCast(0)), .field_count = 1 },
+    record_type_b: RecordType = .{ .name = @fromBackingInt(@intCast(0)), .field_count = 1 },
+    fields_a: [1]Value = .{.{ .fixnum = 1 }},
+    fields_b: [1]Value = .{.{ .fixnum = 1 }},
+    record_a: Record = undefined,
+    record_b: Record = undefined,
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -919,10 +1000,13 @@ const Samples = struct {
         // 中身が同じ2つの条件。
         self.condition_a = .{ .kind = .@"error", .message = .fromString(&self.message), .irritants = .empty_list_value };
         self.condition_b = .{ .kind = .@"error", .message = .fromString(&self.message), .irritants = .empty_list_value };
+        // 型もフィールドの値も同じ2つのレコード。
+        self.record_a = .{ .record_type = &self.record_type_a, .fields = &self.fields_a };
+        self.record_b = .{ .record_type = &self.record_type_a, .fields = &self.fields_b };
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [26]Value {
+    fn all(self: *Samples) [30]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -950,6 +1034,10 @@ const Samples = struct {
             .fromClosure(&self.closure_b),
             .fromCondition(&self.condition_a),
             .fromCondition(&self.condition_b),
+            .fromRecordType(&self.record_type_a),
+            .fromRecordType(&self.record_type_b),
+            .fromRecord(&self.record_a),
+            .fromRecord(&self.record_b),
         };
     }
 };

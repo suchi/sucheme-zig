@@ -21,6 +21,8 @@ const Kont = value_mod.Kont;
 const Args = value_mod.Args;
 const String = value_mod.String;
 const Vector = value_mod.Vector;
+const Record = value_mod.Record;
+const RecordType = value_mod.RecordType;
 const SymbolId = @import("symbol.zig").SymbolId;
 const trace = @import("trace.zig");
 
@@ -170,13 +172,14 @@ pub fn cellBytes(comptime T: type) usize {
 }
 
 /// The bytes the object owns beyond its cell: the slots of a frame, the bytes
-/// of a string, the elements of a vector.
+/// of a string, the elements of a vector, the fields of a record.
 /// ペイロードはセルとは別に確保され、セルと一緒に返される。
 fn payloadBytes(comptime T: type, object: *const T) usize {
     return switch (T) {
         Frame => object.values.len * @sizeOf(Value),
         String => object.bytes.len,
         Vector => object.items.len * @sizeOf(Value),
+        Record => object.fields.len * @sizeOf(Value),
         else => 0,
     };
 }
@@ -251,14 +254,14 @@ pub const Heap = struct {
     /// A new object holding `value`.
     ///
     /// ペイロードを持つオブジェクトは、専用の関数 `createFrame`、`createString`、
-    /// `createVector` で作る。
+    /// `createVector`、`createRecord` で作る。
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
         return self.createIn(.limit, T, value);
     }
 
     /// A new object holding `value`, held to `budget`.
     pub fn createIn(self: *Heap, budget: Budget, comptime T: type, value: T) Error!*T {
-        comptime std.debug.assert(T != Frame and T != String and T != Vector);
+        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Record);
         try self.reserve(budget, cellBytes(T));
         const cell = try self.backing.create(Cell(T));
         cell.value = value;
@@ -331,6 +334,20 @@ pub const Heap = struct {
         const cell = try self.backing.create(Cell(Vector));
         cell.value = .{ .items = copy };
         self.link(Vector, cell, total);
+        return &cell.value;
+    }
+
+    /// A new record of `record_type` whose fields are a copy of `fields`, which
+    /// must be as many as the type has.
+    /// コピーがペイロードで、ベクタの要素と同じ扱いである。
+    pub fn createRecord(self: *Heap, record_type: *RecordType, fields: []const Value) Error!*Record {
+        std.debug.assert(fields.len == record_type.field_count);
+        const total = try self.reserveWithPayload(.limit, Record, fields.len, @sizeOf(Value));
+        const copy = try self.backing.dupe(Value, fields);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(Record));
+        cell.value = .{ .record_type = record_type, .fields = copy };
+        self.link(Record, cell, total);
         return &cell.value;
     }
 
@@ -453,6 +470,7 @@ pub const Heap = struct {
                     Frame => self.backing.free(cell.value.values),
                     String => self.backing.free(cell.value.bytes),
                     Vector => self.backing.free(cell.value.items),
+                    Record => self.backing.free(cell.value.fields),
                     else => {},
                 }
                 self.backing.destroy(cell);
@@ -837,6 +855,83 @@ test "a collection frees a string and a vector the roots do not reach, payload i
     try std.testing.expectEqual(2, heap.count);
     try std.testing.expectEqual(cellBytes(Vector) + 2 * @sizeOf(Value) + cellBytes(String) + 4, heap.accounted);
     try std.testing.expectEqualStrings("kept", kept.items[0].asString().?.bytes);
+}
+
+test "a record accounts for its fields as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const t = try heap.create(RecordType, .{ .name = @fromBackingInt(@intCast(0)), .field_count = 2 });
+    const before = heap.accounted;
+    try std.testing.expectEqual(cellBytes(RecordType), before);
+    var source = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+    const r = try heap.createRecord(t, &source);
+    source[0] = .fromFixnum(9);
+    try std.testing.expectEqual(1, r.fields[0].asFixnum().?);
+    try std.testing.expectEqual(2, r.fields.len);
+    try std.testing.expectEqual(t, r.record_type);
+    try std.testing.expectEqual(before + cellBytes(Record) + 2 * @sizeOf(Value), heap.accounted);
+    const none = try heap.create(RecordType, .{ .name = @fromBackingInt(@intCast(0)), .field_count = 0 });
+    const empty = try heap.createRecord(none, &.{});
+    try std.testing.expectEqual(0, empty.fields.len);
+}
+
+test "a record is held to the limit by its fields" {
+    for ([_]usize{ 0, 1 }) |short| {
+        // 型と、フィールド2つのレコードがちょうど収まる上限。`short` が 1 なら 1 バイト足りない。
+        const fit = cellBytes(RecordType) + cellBytes(Record) + 2 * @sizeOf(Value);
+        var heap: Heap = .init(std.testing.allocator, .{ .limit = fit - short });
+        defer heap.deinit();
+        const t = try heap.create(RecordType, .{ .name = @fromBackingInt(@intCast(0)), .field_count = 2 });
+        const fields = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+        if (short == 0) {
+            _ = try heap.createRecord(t, &fields);
+            try std.testing.expectEqual(fit, heap.accounted);
+        } else {
+            try std.testing.expectError(error.HeapLimit, heap.createRecord(t, &fields));
+            try std.testing.expectEqual(cellBytes(RecordType), heap.accounted);
+            try std.testing.expectEqual(1, heap.count);
+        }
+    }
+}
+
+test "when the cell cannot be allocated the fields of a record are given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 2 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    // 1回目の確保は型のセル、2回目はフィールド、3回目はレコードのセルで、これが失敗する。
+    const t = try heap.create(RecordType, .{ .name = @fromBackingInt(@intCast(0)), .field_count = 1 });
+    const accounted = heap.accounted;
+    try std.testing.expectError(error.OutOfMemory, heap.createRecord(t, &.{.fromFixnum(1)}));
+    try std.testing.expectEqual(accounted, heap.accounted);
+    try std.testing.expectEqual(1, heap.count);
+    try std.testing.expectEqual(1, failing.deallocations);
+}
+
+test "a collection keeps a record, its type and its fields, and frees them all once nothing reaches them" {
+    for ([_]usize{ 0, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const t = try heap.create(RecordType, .{ .name = @fromBackingInt(@intCast(0)), .field_count = 2 });
+        const field = try heap.createString("kept");
+        const r = try heap.createRecord(t, &.{ .fromString(field), .fromFixnum(1) });
+        // 到達できない型とレコード。
+        const other = try heap.create(RecordType, .{ .name = @fromBackingInt(@intCast(1)), .field_count = 1 });
+        _ = try heap.createRecord(other, &.{.fromFixnum(2)});
+        heap.collect(TestRoots{ .values = &.{.fromRecord(r)} });
+        // ルートはレコードだけで、型とフィールドの文字列はそこからたどって残る。
+        try std.testing.expectEqual(1, heap.countOf(Record));
+        try std.testing.expectEqual(1, heap.countOf(RecordType));
+        try std.testing.expectEqual(1, heap.countOf(String));
+        try std.testing.expectEqual(cellBytes(RecordType) + cellBytes(Record) + 2 * @sizeOf(Value) + cellBytes(String) + 4, heap.accounted);
+        try std.testing.expectEqualStrings("kept", r.fields[0].asString().?.bytes);
+        // 型だけをルートにすると、レコードは回収され、型は残る。
+        heap.collect(TestRoots{ .values = &.{.fromRecordType(t)} });
+        try std.testing.expectEqual(0, heap.countOf(Record));
+        try std.testing.expectEqual(1, heap.countOf(RecordType));
+        heap.collect(TestRoots{});
+        try std.testing.expectEqual(0, heap.count);
+        try std.testing.expectEqual(0, heap.accounted);
+    }
 }
 
 test "deinit frees every object, frames and their slots included" {
