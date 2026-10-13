@@ -402,7 +402,8 @@ pub const Primitive = struct {
 };
 
 /// The operations of the machine that a primitive can name as its body.
-/// 機械操作プリミティブを入れるスライスが、それぞれ1つずつ足す。
+/// 残りの変種は、docs/plans/0014-phase2-core-language.md の「スライス」の表が
+/// 機械操作プリミティブを割り当てたスライスが、それぞれ足す。
 pub const MachineOp = enum {
     /// `(apply proc arg1 ... args)` (R7RS 6.10).
     apply,
