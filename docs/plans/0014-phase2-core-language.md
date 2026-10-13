@@ -746,7 +746,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2b | main に入った。ADR-0035 は採用 | [#79](https://github.com/suchi/sucheme-zig/pull/79) |
 | 2c | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。`apply` が1ステップの中で確保する件は、ADR-0031 の追記に記録して受け入れ、段階3で直す | |
 | 2d | main に入った | [#84](https://github.com/suchi/sucheme-zig/pull/84) |
-| 2e | 実装済み。敵対的レビューの前。予約領域は 4 KiB のまま(測定は runtime.md の送出のための予約領域)。再入の深さに比例する確保が予約で賄い切れない限界は、仮に受け入れた。WASM の状態コード -2 も実装した | |
+| 2e | 実装済み。敵対的レビューの前。予約領域は 4 KiB のまま(測定は runtime.md の送出のための予約領域)。再入の深さに比例する確保が予約で賄い切れない限界は、受け入れた制約として記録した(ユーザーが 2026-10-13 に判断した)。WASM の状態コード -2 も実装した | |
 | 2f | 未着手 | |
 | 2g | 未着手 | |
 | 2h | 実装済み。敵対的レビューの前。プリミティブの名前は `%make-record-type` `%make-record` `%record?` `%record-ref` `%record-set!`(`src/prim/record.zig`) | |
