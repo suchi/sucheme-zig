@@ -665,18 +665,20 @@ test "slow: a million tail calls through apply keep the continuation at the same
 
 test "apply reports a last argument that is not a list before it allocates anything" {
     var f: Fixture = undefined;
-    // 1000要素のリストは上限に収まり、それを並べた引数の鎖を足すと収まらない大きさ。
-    // ペアは1つ約48バイト、引数の鎖の1つは約40バイトを計上する。
-    try f.initWith(.{ .limit = 80 * 1024, .min_threshold = 16 * 1024 });
+    // 上限は、`n` 要素のリストの全部と、それを並べた引数の鎖の半分が入る大きさである。
+    // リストは収まり、引数の鎖を作り終える前に上限に当たる。
+    const n = 2000;
+    const limit = n * heap_mod.cellBytes(value_mod.Pair) + n * heap_mod.cellBytes(Args) / 2;
+    try f.initWith(.{ .limit = limit, .min_threshold = 16 * 1024 });
     defer f.deinit();
     _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
     // 対照: 正しいリストを並べると、引数の鎖を作る途中で上限に当たる。
-    _ = try f.eval("(define xs (build 1000 '()))");
+    _ = try f.eval(std.fmt.comptimePrint("(define xs (build {d} '()))", .{n}));
     try f.expectFails("heap limit exceeded", "(apply list xs)");
-    try f.expectInt(1000, "(length xs)");
+    try f.expectInt(n, "(length xs)");
     // 同じ長さの正しくないリストは、上限に当たる前に、型の誤りとして報告される。
     // 2つのリストは同時には収まらないので、先のリストを手放してから作る。
-    _ = try f.eval("(set! xs 0) (define xs (build 1000 0))");
+    _ = try f.eval(std.fmt.comptimePrint("(set! xs 0) (define xs (build {d} 0))", .{n}));
     try f.expectFails("wrong type of argument to apply", "(apply list xs)");
 }
 

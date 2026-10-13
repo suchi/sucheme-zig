@@ -139,7 +139,7 @@ fn kindOf(comptime T: type) u8 {
 }
 
 /// The bytes a cell of `T` accounts for, without its payload.
-fn cellBytes(comptime T: type) usize {
+pub fn cellBytes(comptime T: type) usize {
     return @sizeOf(Cell(T));
 }
 
