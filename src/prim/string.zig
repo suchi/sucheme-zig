@@ -16,9 +16,9 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "string?", .min_args = 1, .max_args = 1, .call = &isString },
-    .{ .name = "string-length", .min_args = 1, .max_args = 1, .call = &stringLength },
-    .{ .name = "string-ref", .min_args = 2, .max_args = 2, .call = &stringRef },
+    .{ .name = "string?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isString } },
+    .{ .name = "string-length", .min_args = 1, .max_args = 1, .body = .{ .pure = &stringLength } },
+    .{ .name = "string-ref", .min_args = 2, .max_args = 2, .body = .{ .pure = &stringRef } },
 };
 
 /// `(string? obj)`.

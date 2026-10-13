@@ -13,14 +13,14 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "cons", .min_args = 2, .max_args = 2, .call = &cons },
-    .{ .name = "car", .min_args = 1, .max_args = 1, .call = &car },
-    .{ .name = "cdr", .min_args = 1, .max_args = 1, .call = &cdr },
-    .{ .name = "pair?", .min_args = 1, .max_args = 1, .call = &isPair },
-    .{ .name = "null?", .min_args = 1, .max_args = 1, .call = &isNull },
-    .{ .name = "list", .min_args = 0, .max_args = null, .call = &list },
-    .{ .name = "length", .min_args = 1, .max_args = 1, .call = &length },
-    .{ .name = "list?", .min_args = 1, .max_args = 1, .call = &isList },
+    .{ .name = "cons", .min_args = 2, .max_args = 2, .body = .{ .pure = &cons } },
+    .{ .name = "car", .min_args = 1, .max_args = 1, .body = .{ .pure = &car } },
+    .{ .name = "cdr", .min_args = 1, .max_args = 1, .body = .{ .pure = &cdr } },
+    .{ .name = "pair?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isPair } },
+    .{ .name = "null?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isNull } },
+    .{ .name = "list", .min_args = 0, .max_args = null, .body = .{ .pure = &list } },
+    .{ .name = "length", .min_args = 1, .max_args = 1, .body = .{ .pure = &length } },
+    .{ .name = "list?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isList } },
 };
 
 /// The number of pairs in the chain `v`, or null when `v` is not a list: when the
@@ -33,7 +33,7 @@ pub const primitives = [_]Primitive{
 ///
 /// 速い印は2歩ずつ、遅い印は1歩ずつ進める(Floyd の方法)。輪があれば2つの印はいずれ
 /// 同じペアで出会う。作業領域を使わず、長さに比例する時間で終わる。
-fn properLength(v: Value) ?usize {
+pub fn properLength(v: Value) ?usize {
     var count: usize = 0;
     var slow = v;
     var fast = v;

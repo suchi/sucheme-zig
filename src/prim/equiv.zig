@@ -13,9 +13,9 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "eq?", .min_args = 2, .max_args = 2, .call = &eq },
-    .{ .name = "eqv?", .min_args = 2, .max_args = 2, .call = &eqv },
-    .{ .name = "equal?", .min_args = 2, .max_args = 2, .call = &equal },
+    .{ .name = "eq?", .min_args = 2, .max_args = 2, .body = .{ .pure = &eq } },
+    .{ .name = "eqv?", .min_args = 2, .max_args = 2, .body = .{ .pure = &eqv } },
+    .{ .name = "equal?", .min_args = 2, .max_args = 2, .body = .{ .pure = &equal } },
 };
 
 /// `(eq? obj1 obj2)` (R7RS 6.1).

@@ -1,0 +1,105 @@
+# スライス 2c: apply(R7RS 6.10)。最後の引数のリストの要素を、その前の引数に
+# 続けて並べ、それを実引数として手続きを呼ぶ。apply は機械操作プリミティブで、
+# 呼ばれた手続きは apply の呼び出しの継続のもとで走る(末尾呼び出し、R7RS 3.5)。
+
+(apply + 1 2 '(3 4))
+10
+
+# 引数の順序。+ は順序を変えても同じ値になるので、順序の誤りは list と - で見る。
+(apply list 1 2 '(3 4))
+(1 2 3 4)
+
+(apply - 10 '(1 2))
+7
+
+(apply list '(1 2 3))
+(1 2 3)
+
+# R7RS 6.10 の例。
+(apply + (list 3 4))
+7
+
+(define compose (lambda (f g) (lambda args (f (apply g args))))) ((compose - *) 3 4)
+-12
+
+# リストが空なら、その前の引数だけで呼ぶ。
+(apply list '())
+()
+
+(apply + '())
+0
+
+(apply list 1 2 '())
+(1 2)
+
+# 機械が Zig のスタックの配列に並べる数(src/machine.zig の `small_operands`)より
+# 多い、リストの前の引数。
+(apply list 1 2 3 4 5 6 7 8 9 10 '(11 12))
+(1 2 3 4 5 6 7 8 9 10 11 12)
+
+# 呼ばれる手続きは、クロージャでも、余りを受けるクロージャでもよい。
+(apply (lambda (a b) (- a b)) '(10 3))
+7
+
+(apply (lambda args args) 1 '(2 3))
+(1 2 3)
+
+(apply (lambda (a . r) r) 1 2 '(3 4))
+(2 3 4)
+
+# 余りの引数のリストは新しく作られ、渡したリストそのものではない(R7RS 4.1.4)。
+(define l (list 1 2)) (eq? l (apply (lambda x x) l))
+#f
+
+# apply で apply を呼ぶ。
+(apply apply list '((1 2)))
+(1 2)
+
+(apply apply (list + 1 '(2 3)))
+6
+
+# 末尾でない位置の apply は、値を呼び出し側に返す。
+(+ 1 (apply (lambda (x) (* x 10)) '(2)))
+21
+
+(procedure? apply)
+#t
+
+apply
+#<procedure apply>
+
+# apply 自身の引数の個数。手続きとリストは省けない。
+(apply)
+error: wrong number of arguments to apply
+
+(apply +)
+error: wrong number of arguments to apply
+
+# 最後の引数が正しいリストでなければ、apply の型の誤りになる。
+(apply + 1 2)
+error: wrong type of argument to apply
+
+(apply + '(1 . 2))
+error: wrong type of argument to apply
+
+(apply list 1 2 3 4 5 6 7 8 9 10 11)
+error: wrong type of argument to apply
+
+# 呼ばれる手続きの誤りは、その手続きの誤りとして報告される。
+(apply car '(1 2))
+error: wrong number of arguments to car
+
+(apply + 1 '(a))
+error: wrong type of argument to +
+
+(apply (lambda (x) x) '(1 2))
+error: wrong number of arguments: expected 1, got 2
+
+(apply (lambda (x y . r) x) '(1))
+error: wrong number of arguments: expected at least 2, got 1
+
+(apply 1 '())
+error: not a procedure
+
+(apply apply '(1 ()))
+error: not a procedure

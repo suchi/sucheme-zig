@@ -13,9 +13,9 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "char?", .min_args = 1, .max_args = 1, .call = &isChar },
-    .{ .name = "char->integer", .min_args = 1, .max_args = 1, .call = &charToInteger },
-    .{ .name = "integer->char", .min_args = 1, .max_args = 1, .call = &integerToChar },
+    .{ .name = "char?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isChar } },
+    .{ .name = "char->integer", .min_args = 1, .max_args = 1, .body = .{ .pure = &charToInteger } },
+    .{ .name = "integer->char", .min_args = 1, .max_args = 1, .body = .{ .pure = &integerToChar } },
 };
 
 /// `(char? obj)`.

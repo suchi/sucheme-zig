@@ -29,6 +29,7 @@ const SymbolId = @import("symbol.zig").SymbolId;
 const context = @import("context.zig");
 const Context = context.Context;
 const heap_mod = @import("heap.zig");
+const pair = @import("prim/pair.zig");
 
 pub const Error = context.Error;
 
@@ -165,29 +166,39 @@ pub const Machine = struct {
 
     /// Applies the operator at the end of `args` to the `count` operands before
     /// it.
-    /// プリミティブは値を返す。クロージャは、呼び出しのフレームと、そのフレームで
-    /// 走らせる本体を返す。
-    fn apply(self: *Machine, args: *const Args, count: usize) Error!Applied {
+    /// 純粋プリミティブは値を返す。クロージャは、呼び出しのフレームと、そのフレームで
+    /// 走らせる本体を返す。機械操作プリミティブ `apply` は、引数を並べ直した呼び出しに
+    /// 置き換わり、その呼び出しをここでもう一度適用する。
+    fn apply(self: *Machine, initial_args: *const Args, initial_count: usize) Error!Applied {
         const ctx = self.ctx;
-        var operator_node = args;
-        while (operator_node.next) |n| operator_node = n;
-        const operator = operator_node.value;
-        if (operator.asPrimitive()) |prim| {
+        var args = initial_args;
+        var count = initial_count;
+        // Why: `apply` の被呼び出し側を、Zig の再帰でなく周回で適用する。`apply` で `apply`
+        // を呼ぶ入れ子は、データから好きなだけ深く作れるので、再帰にすると Zig のスタックを
+        // 使い切りうる。ただし周回は1ステップの中で回るので、その間にできたごみは回収
+        // されない。この制約と直す時期は、ADR-0031 の 2026-10-13 の追記にある。
+        const operator = while (true) {
+            var operator_node = args;
+            while (operator_node.next) |n| operator_node = n;
+            const operator = operator_node.value;
+            const prim = operator.asPrimitive() orelse break operator;
             // 個数の検査はここにしかない。プリミティブの本体は、`args` が表の範囲に
             // 収まることを前提にしてよい。
             if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount);
-            var small: [8]Value = undefined;
-            const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
-            // Why: スクラッチ領域は1行ぶんのアリーナで、`free` が効くのは最後の確保だけである。
-            // オペランドを最初に取り、プリミティブは取ったものを確保と逆の順に返す約束なので、
-            // 呼び出しの直後にオペランドを返せば、アリーナがそれを再利用できる。返さずに
-            // 残すと、オペランドの多いプリミティブを呼ぶループは、1 周ごとに領域を広げてしまう。
-            defer if (count > small.len) self.scratch.free(operands);
-            fill(operands, args);
-            const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
-            const result = prim.call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e);
-            return .{ .value = result };
-        }
+            switch (prim.body) {
+                .pure => |call| return .{ .value = try self.callPure(prim, call, args, count) },
+                .machine => |op| switch (op) {
+                    // Why: 並べ直した呼び出しは、継続のフレームを積まずに適用する。被呼び出し側は
+                    // `apply` の呼び出しの継続のもとで走るので、`apply` の第1引数の呼び出しは
+                    // 末尾呼び出しになる(R7RS 3.5、ADR-0029 の追記)。
+                    .apply => {
+                        const spread = try self.spreadApply(prim, args, count);
+                        args = spread.args;
+                        count = spread.count;
+                    },
+                },
+            }
+        };
         const closure = operator.asClosure() orelse
             return ctx.raise("not a procedure", .{});
         const lambda = closure.lambda;
@@ -223,6 +234,55 @@ pub const Machine = struct {
         }
         fill(frame.values[0..lambda.arity], required);
         return .{ .body = .{ .env = frame, .body = lambda.body } };
+    }
+
+    /// The operands a call lines up in a buffer on the Zig stack.
+    /// これより多いときは、スクラッチ領域から取って、使い終えたら返す。
+    const small_operands = 8;
+
+    /// The value of the pure primitive `prim`, whose body is `call`, for the
+    /// `count` operands in `args`.
+    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize) Error!Value {
+        const ctx = self.ctx;
+        var small: [small_operands]Value = undefined;
+        const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
+        // Why: スクラッチ領域は1行ぶんのアリーナで、`free` が効くのは最後の確保だけである。
+        // オペランドを最初に取り、プリミティブは取ったものを確保と逆の順に返す約束なので、
+        // 呼び出しの直後にオペランドを返せば、アリーナがそれを再利用できる。返さずに
+        // 残すと、オペランドの多いプリミティブを呼ぶループは、1 周ごとに領域を広げてしまう。
+        defer if (count > small.len) self.scratch.free(operands);
+        fill(operands, args);
+        const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
+        return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e);
+    }
+
+    /// A call and the number of its operands, as `apply` takes them.
+    const Call = struct { args: *const Args, count: usize };
+
+    /// The call that `(apply proc arg1 ... list)` stands for: `proc` applied to
+    /// `arg1 ...` followed by the elements of `list` (R7RS 6.10).
+    /// `args` は `apply` の呼び出しの値の鎖で、`list` から逆順に並び、末尾に `apply`
+    /// 自身がある。鎖は捕捉された継続と共有されうる(`Args` の説明)ので書き換えず、
+    /// `proc` を末尾に置く新しい鎖を作る。`prim` は `apply` 自身で、失敗の報告に使う。
+    fn spreadApply(self: *Machine, prim: *const value_mod.Primitive, args: *const Args, count: usize) Error!Call {
+        const ctx = self.ctx;
+        const list = args.value;
+        // 確保より前に検査する。長い非真正リストを、上限超過として報告しないためである。
+        const length = pair.properLength(list) orelse return primitiveFailure(ctx, prim, error.WrongType);
+        // `proc` と、リストの前の引数を、書いた順に並べる。
+        const leading = count - 1;
+        var small: [small_operands]Value = undefined;
+        const before = if (leading <= small.len) small[0..leading] else try self.scratch.alloc(Value, leading);
+        // Why: `callPure` と同じ理由で、並べ直した呼び出しを適用する前に返す。
+        defer if (leading > small.len) self.scratch.free(before);
+        fill(before, args.next.?);
+        // Why: GC はステップの間でしか走らない(ADR-0031)。作りかけの鎖はどのルートからも
+        // 辿れないが、同じステップのうちに適用されるので、回収されない。
+        var chain: *const Args = try ctx.create(Args, .{ .value = before[0], .next = null });
+        for (before[1..]) |v| chain = try ctx.create(Args, .{ .value = v, .next = chain });
+        var it = list;
+        while (it.asPair()) |p| : (it = p.cdr) chain = try ctx.create(Args, .{ .value = p.car, .next = chain });
+        return .{ .args = chain, .count = leading - 1 + length };
     }
 
     /// The error a failure of `prim` is: a condition with the message the failure
@@ -565,6 +625,98 @@ test "a variadic procedure called in tail position does not grow the continuatio
     try std.testing.expectEqual(small, f.machine.peak_depth);
 }
 
+/// The deepest the continuation gets while a loop of `short` and then of
+/// `long` calls through `apply` runs, for each of the two.
+fn applyLoopDepths(f: *Fixture, short: usize, long: usize) ![2]usize {
+    // `apply` で `apply` を呼ぶ形も、同じループで通す。
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (apply loop (list (- n 1)))))");
+    _ = try f.eval("(define (loop2 n) (if (= n 0) 'done (apply apply loop2 (list (list (- n 1))))))");
+    var depths: [2]usize = undefined;
+    for ([_]usize{ short, long }, 0..) |n, i| {
+        var src: [64]u8 = undefined;
+        f.machine.peak_depth = 0;
+        const done = try f.eval(try std.fmt.bufPrint(&src, "(loop {d}) (loop2 {d})", .{ n, n }));
+        try std.testing.expectEqualStrings("done", f.ctx.symbols.nameOf(done.asSymbol().?));
+        depths[i] = f.machine.peak_depth;
+    }
+    return depths;
+}
+
+test "a procedure applied by apply runs in tail position, so a loop through apply does not grow the continuation" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    const depths = try applyLoopDepths(&f, 10, 5000);
+    try std.testing.expectEqual(depths[0], depths[1]);
+    // 対照: 同じ形で `apply` の値を使う、末尾でないループは、回数に比例して深くなる。
+    // 上の比較が、深さを測れていることを確かめる。
+    _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (apply count (list (- n 1))))))");
+    f.machine.peak_depth = 0;
+    try f.expectInt(5000, "(count 5000)");
+    try std.testing.expect(f.machine.peak_depth >= 5000);
+}
+
+test "slow: a million tail calls through apply keep the continuation at the same depth" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    const depths = try applyLoopDepths(&f, 10, 1_000_000);
+    try std.testing.expectEqual(depths[0], depths[1]);
+}
+
+test "apply reports a last argument that is not a list before it allocates anything" {
+    var f: Fixture = undefined;
+    // 上限は、`n` 要素のリストの全部と、それを並べた引数の鎖の半分が入る大きさである。
+    // リストは収まり、引数の鎖を作り終える前に上限に当たる。
+    const n = 2000;
+    const limit = n * heap_mod.cellBytes(value_mod.Pair) + n * heap_mod.cellBytes(Args) / 2;
+    try f.initWith(.{ .limit = limit, .min_threshold = 16 * 1024 });
+    defer f.deinit();
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    // 対照: 正しいリストを並べると、引数の鎖を作る途中で上限に当たる。
+    _ = try f.eval(std.fmt.comptimePrint("(define xs (build {d} '()))", .{n}));
+    try f.expectFails("heap limit exceeded", "(apply list xs)");
+    try f.expectInt(n, "(length xs)");
+    // 同じ長さの正しくないリストは、上限に当たる前に、型の誤りとして報告される。
+    // 2つのリストは同時には収まらないので、先のリストを手放してから作る。
+    _ = try f.eval(std.fmt.comptimePrint("(set! xs 0) (define xs (build {d} 0))", .{n}));
+    try f.expectFails("wrong type of argument to apply", "(apply list xs)");
+}
+
+test "the operands apply spreads do not pile up in the scratch space" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer scratch.deinit();
+    f.machine.scratch = scratch.allocator();
+    // リストの前の引数も、並べ直したあとの引数も、小さな配列に収まらない数である。
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (apply + 1 2 3 4 5 6 7 8 9 10 '(11 12)) (loop (- n 1)))))");
+    _ = try f.eval("(loop 20000)");
+    try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
+}
+
+test "an apply whose operands just fill the buffer on the stack does not grow the scratch space" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer scratch.deinit();
+    f.machine.scratch = scratch.allocator();
+    // 手続きとリストの前の引数を合わせた数も、並べ直したあとの引数の数も、
+    // ちょうど `small_operands` になる呼び出し。境界の側を取り違えると、スクラッチ領域
+    // から取ったものを返さず、ループのたびに領域が広がる。
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "(define (loop n) (if (= n 0) 'done (begin (apply +");
+    for (1..Machine.small_operands) |i| try src.print(std.testing.allocator, " {d}", .{i});
+    try src.print(std.testing.allocator, " '({d})) (loop (- n 1)))))", .{Machine.small_operands});
+    _ = try f.eval(src.items);
+    _ = try f.eval("(loop 20000)");
+    try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
+}
+
 /// Primitives that record how the machine called them.
 /// 引数の個数の検査が機械にあること、`Services` が機械のものであること、プリミティブの
 /// 失敗が条件に写ることを確かめる。
@@ -575,11 +727,11 @@ const Probe = struct {
     var failure: ?value_mod.PrimitiveError = null;
 
     /// Takes one or two arguments.
-    const primitive: value_mod.Primitive = .{ .name = "probe", .min_args = 1, .max_args = 2, .call = &call };
+    const primitive: value_mod.Primitive = .{ .name = "probe", .min_args = 1, .max_args = 2, .body = .{ .pure = &call } };
     /// Takes two arguments or more.
-    const variadic: value_mod.Primitive = .{ .name = "probe*", .min_args = 2, .max_args = null, .call = &call };
+    const variadic: value_mod.Primitive = .{ .name = "probe*", .min_args = 2, .max_args = null, .body = .{ .pure = &call } };
     /// Takes no argument.
-    const nullary: value_mod.Primitive = .{ .name = "probe0", .min_args = 0, .max_args = 0, .call = &call };
+    const nullary: value_mod.Primitive = .{ .name = "probe0", .min_args = 0, .max_args = 0, .body = .{ .pure = &call } };
 
     fn call(services: *const value_mod.Services, args: []const Value) value_mod.PrimitiveError!Value {
         calls += 1;
@@ -591,7 +743,7 @@ const Probe = struct {
 
     /// Allocates until the limit refuses.
     /// GC はプリミティブの途中では走らない。
-    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = 0, .call = &fill };
+    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = 0, .body = .{ .pure = &fill } };
 
     fn fill(services: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
         var list: Value = .empty_list_value;
@@ -905,6 +1057,10 @@ const stress_programs = [_]struct { src: []const u8, expected: i64 }{
     // 余りの引数のリストが、フレームとクロージャを通じて、毎ステップの GC を生き延びる。
     .{ .src = "(define (sum . xs) (if (null? xs) 0 (+ (car xs) (apply-sum (cdr xs))))) (define (apply-sum l) (if (null? l) 0 (+ (car l) (apply-sum (cdr l))))) (sum 1 2 3 4 5 6 7 8 9 10)", .expected = 55 },
     .{ .src = "(define (keep . xs) (lambda () xs)) (define k (keep 4 5 6)) (car (cdr (cdr (k))))", .expected = 6 },
+    // `apply` が並べ直した引数の鎖が、毎ステップの GC を生き延びる。
+    .{ .src = "(define (f a b . r) (+ a b (apply + r))) (apply f 1 2 3 '(4 5))", .expected = 15 },
+    .{ .src = "(apply + 1 2 3 4 5 6 7 8 9 10 (list 11))", .expected = 66 },
+    .{ .src = "(define (aloop n) (if (= n 0) 9 (apply aloop (list (- n 1))))) (aloop 300)", .expected = 9 },
 };
 
 test "the programs give the same results with a collection at every step, whatever the marking list holds" {
