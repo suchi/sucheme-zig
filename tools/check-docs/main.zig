@@ -630,6 +630,9 @@ fn checkCiRunsTheTable(
     // 値は、どこか1箇所に現れればよい。`runs-on` は slow と dist の
     // `ubuntu-latest` もあるので、全部が一致することは求められない。2つのジョブの
     // `runs-on` を入れ替える編集はこれで見えないが、2箇所の編集を要する。
+    // 綴りの一致なので、windows ジョブを matrix の形(`runs-on: ${{ matrix.os }}` と
+    // `os: [windows-latest]`)に書き換える正当な編集も赤になり、そのときのメッセージは
+    // Windows のテストが走らないと言うが、実際は走る。
     for ([_]struct { key: []const u8, value: []const u8 }{
         .{ .key = "pull_request", .value = "" },
         .{ .key = "types", .value = "[ready_for_review]" },
