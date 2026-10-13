@@ -1594,3 +1594,40 @@ test "error raises a condition with the message and the irritants it is given" {
     // メッセージは文字列でなければならない。
     try f.expectFails("wrong type of argument to error", "(error 'oops 1)");
 }
+
+test "at the limit of the heap, the call of the handler is made from the reserve" {
+    const limit = 2048;
+    const src = "(with-exception-handler (lambda (c) c) (lambda () (car 5)))";
+    var found = false;
+    var n: usize = 0;
+    while (!found) : (n += 1) {
+        var f: Fixture = undefined;
+        try f.initWith(.{ .limit = limit, .min_threshold = limit });
+        defer f.deinit();
+        fillKept(&f, n) catch break;
+        if (f.eval(src)) |_| return error.TestUnexpectedResult else |e| switch (e) {
+            error.Raised => {},
+            // ハンドラを置く前に上限に当たるほど埋まった。これより先の量は試せない。
+            error.ReserveExhausted => break,
+            else => return e,
+        }
+        // ハンドラは送出された条件を返し、`raise` の規定どおり二次例外になる。ハンドラを
+        // 置く確保が上限に当たった量では、ハンドラが置かれずに別のエラーになる。
+        if (!std.mem.eql(u8, "handler returned from non-continuable raise", f.ctx.diagnostic())) continue;
+        // ハンドラに渡ったのは、上限に達したことか型の誤りを表す条件である。
+        const original = f.ctx.raised.?.asCondition().?.irritants.asPair().?.car.asCondition().?;
+        try std.testing.expect(original.message.asString() != null);
+        // 上限を超えて確保した量で、ハンドラの呼び出しまで予約から取ったことを確かめる。
+        // 条件とメッセージだけなら超えない量を、ハンドラの切り替えの点が超える。
+        if (f.ctx.heap.peak <= limit + heap_mod.cellBytes(value_mod.Condition) + heap_mod.cellBytes(value_mod.String) + 64) continue;
+        found = true;
+        try std.testing.expect(f.ctx.heap.peak <= limit + f.ctx.heap.options.raise_reserve);
+        // 対照: 予約が無ければ、同じ量でハンドラを呼べない。
+        var g: Fixture = undefined;
+        try g.initWith(.{ .limit = limit, .min_threshold = limit, .raise_reserve = 0 });
+        defer g.deinit();
+        try fillKept(&g, n);
+        try std.testing.expectError(error.ReserveExhausted, g.eval(src));
+    }
+    try std.testing.expect(found);
+}
