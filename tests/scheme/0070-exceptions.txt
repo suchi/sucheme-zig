@@ -93,6 +93,13 @@ error: wrong type of argument to with-exception-handler #<procedure car> body
 (with-exception-handler (lambda () 1) (lambda () (raise 'x)))
 error: wrong number of arguments: expected 0, got 1
 
+# ハンドラを呼ぶこと自体の送出は、外側のハンドラに届く。外側のハンドラが戻ると二次例外になる。
+(with-exception-handler (lambda (c) 'outer) (lambda () (with-exception-handler car (lambda () (raise 5)))))
+error: handler returned from non-continuable raise #<condition "wrong type of argument to car" 5>
+
+(with-exception-handler (lambda (c) (+ c 1)) (lambda () (with-exception-handler raise (lambda () (raise 5)))))
+error: handler returned from non-continuable raise 5
+
 # error は条件を作って送出する。報告はメッセージと irritant である。
 (error "bad thing" 1 "two" 'three)
 error: bad thing 1 "two" three
