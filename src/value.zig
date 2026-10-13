@@ -8,7 +8,8 @@
 //! スライス 1g は、ペア・クロージャ・フレーム・継続フレーム・引数リストを GC ヒープ
 //! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2b は
 //! 条件オブジェクトを GC ヒープに移す。スライス 2i は、展開器の構文環境(値ではない
-//! が GC ヒープにある)を加える。
+//! が GC ヒープにある)を加え、スライス 2j は大域変数の束縛セル(同じく GC ヒープに
+//! ある)を加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -471,8 +472,8 @@ pub const Node = union(enum) {
     /// A literal, or the datum of a `quote`.
     constant: Value,
     local_ref: LocalRef,
-    /// A global variable, found by name until stage 2 gives it a cell.
-    global_ref: SymbolId,
+    /// A global variable: the cell the expander resolved its name to.
+    global_ref: *Cell,
     /// `set!` of a local variable.
     /// 変数は値を持っていなければならない。
     local_set: LocalAssign,
@@ -502,8 +503,10 @@ pub const LocalAssign = struct {
     value: *const Node,
 };
 
+/// `set!` or the definition of a global variable: the cell to give the value.
+/// 展開器が、REPL の束縛の表の規則でセルを選んである(src/env.zig)。
 pub const GlobalAssign = struct {
-    name: SymbolId,
+    cell: *Cell,
     value: *const Node,
 };
 
@@ -660,7 +663,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, DynPoint };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -682,9 +685,8 @@ pub const Special = enum { define, quote, @"if", lambda, begin, @"set!" };
 pub const Denotation = union(enum) {
     special: Special,
     local: *LocalBinding,
-    /// A global variable, found by name.
-    /// スライス 2j で、名前の代わりに大域の束縛セルを指す。
-    global: SymbolId,
+    /// A global variable: the cell that holds its value.
+    global: *Cell,
 };
 
 /// A syntactic environment: the bindings of one rib, and the environment
@@ -720,6 +722,20 @@ pub const SyntacticBinding = struct {
 pub const LocalBinding = struct {
     rib_depth: u32,
     index: u32,
+};
+
+/// The location of a global variable (docs/design/runtime.md, the cells of the
+/// global bindings).
+/// GC ヒープにある。コア IR の節点(アリーナにある)はセルを指すが、GC は節点を
+/// たどらない。それでも回収されないのは、作られたセルがすべて、REPL の束縛の表か、
+/// 遮蔽されたインポートの束縛を持ち続ける表から到達できるからである(src/env.zig)。
+pub const Cell = struct {
+    /// The name, for the message of an error.
+    name: SymbolId,
+    /// The value, or `uninitialized` while the variable is unbound.
+    /// 大域変数には「未初期化」の段階が無いので、局所変数の未初期化の目印を、未束縛の
+    /// 目印として使う。参照と `set!` は、どちらもこの値を1か所で調べる。
+    value: Value,
 };
 
 test {

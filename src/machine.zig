@@ -13,9 +13,9 @@
 //! 自分のフレームが外れてから走る。
 //!
 //! ヒープは2つのステップの間で GC し、ステップの中では GC しない(ADR-0031)。その時点で
-//! プログラムが持っているものは、コンテキストのルートの表(大域束縛、コードの定数、
-//! 送出された値)を除けばレジスタがすべてである。だから GC にほかのルートは要らない
-//! (ADR-0035)。
+//! プログラムが持っているものは、コンテキストのルートの表(大域変数のセル、コードの
+//! 定数、送出された値)を除けばレジスタがすべてである。だから GC にほかのルートは
+//! 要らない(ADR-0035)。
 
 const std = @import("std");
 const tier = @import("tier.zig");
@@ -184,7 +184,10 @@ pub const Machine = struct {
                         if (slot.kind() == .uninitialized) return self.uninitialized(r.name);
                         value = slot.*;
                     },
-                    .global_ref => |id| value = ctx.globals.lookup(id) orelse return self.unbound(id),
+                    .global_ref => |cell| {
+                        if (cell.value.kind() == .uninitialized) return self.unbound(cell.name);
+                        value = cell.value;
+                    },
                     .lambda => |lambda| {
                         value = .fromClosure(try ctx.create(Closure, .{ .lambda = lambda, .env = env }));
                     },
@@ -249,11 +252,13 @@ pub const Machine = struct {
                         value = .unspecified_value;
                     },
                     .global_set => |a| {
-                        if (!ctx.globals.assign(a.name, value)) return self.unbound(a.name);
+                        // `set!` は変数を作らない。未束縛の変数への代入はエラーである。
+                        if (a.cell.value.kind() == .uninitialized) return self.unbound(a.cell.name);
+                        a.cell.value = value;
                         value = .unspecified_value;
                     },
                     .global_define => |a| {
-                        try ctx.globals.define(ctx.persist, a.name, value);
+                        a.cell.value = value;
                         value = .unspecified_value;
                     },
                     .call => |c| {
@@ -747,6 +752,56 @@ test "a global is defined, read and assigned" {
     try f.expectInt(6, "x");
 }
 
+test "a define or a set! of a primitive that fails leaves the name with the primitive" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 遮蔽するセルは、展開の時点で、元の値で始まる(src/env.zig)。値の式が失敗しても、
+    // 名前はプリミティブを指したままである。
+    try f.expectFails("unbound variable: nope", "(define car (nope))");
+    try f.expectInt(1, "(car '(1 2))");
+    try f.expectFails("unbound variable: nope", "(set! cdr (nope))");
+    try f.expectInt(2, "(car (cdr '(1 2)))");
+    // 特殊形式の名前には元の値が無いので、値の式が実行時に失敗した定義の後は、
+    // 未束縛の変数である(展開は成功しているので、遮蔽は戻らない)。
+    try f.expectFails("unbound variable: nope", "(define if (nope))");
+    try f.expectFails("unbound variable: if", "if");
+}
+
+test "a define of a special form's name whose expansion fails leaves the special form" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("bad quote: expected (quote datum)", "(define if (quote))");
+    try f.expectInt(1, "(if #t 1 2)");
+    // 略記の定義の本体の展開が失敗しても同じである。
+    try f.expectFails("bad quote: expected (quote datum)", "(define (lambda x) (quote))");
+    try f.expectInt(7, "((lambda (y) y) 7)");
+    // 同じ形式の中の後ろの部分の展開が失敗したときも、その形式の遮蔽は戻る。
+    try f.expectFails("bad quote: expected (quote datum)", "(begin (define begin 1) (quote))");
+    try f.expectInt(3, "(begin 1 3)");
+    // 展開が成功した定義の遮蔽は残る。
+    try f.expectInt(5, "(define if 5) if");
+    try f.expectFails("not a procedure", "(if 1 2)");
+}
+
+test "a global's cell holds what the definition gives it, across forms" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // docs/design/frontend.md の REPL の表の例。3つ目の定義は、`pong` が指すセルに代入する。
+    _ = try f.eval("(define (ping n) (if (= n 0) 'done (pong (- n 1))))");
+    _ = try f.eval("(define (pong n) (ping n))");
+    _ = try f.eval("(define (ping n) 'fixed)");
+    const fixed = try f.eval("(pong 2)");
+    try std.testing.expectEqualStrings("fixed", f.ctx.symbols.nameOf(fixed.asSymbol().?));
+    // プリミティブの再定義は、先に定義した手続きに見えない。
+    _ = try f.eval("(define (first xs) (car xs))");
+    _ = try f.eval("(define (car xs) 99)");
+    try f.expectInt(1, "(first '(1 2))");
+    try f.expectInt(99, "(car '(1 2))");
+}
+
 test "a lambda is applied, and sees the frame it was made in" {
     var f: Fixture = undefined;
     try f.init();
@@ -1034,7 +1089,7 @@ const Probe = struct {
     fn bind(f: *Fixture) !void {
         for ([_]*const value_mod.Primitive{ &primitive, &variadic, &nullary, &greedy }) |p| {
             const id = try f.ctx.symbols.intern(f.ctx.persist, p.name);
-            try f.ctx.globals.define(f.ctx.persist, id, .fromPrimitive(p));
+            try f.ctx.globals.importPrimitive(f.ctx.persist, id, p);
         }
     }
 
