@@ -183,6 +183,21 @@ test("a raised value that is not a condition is reported as write shows it, and 
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// 診断の一行が境界のバッファ(320 バイト)に収まらなければ、メッセージを文字の境目で切って
+// `...` を付ける。メッセージごと失わない。
+test("a diagnostic too long for the line is cut short with ..., not lost", () => {
+  const h = instantiate().init();
+  const long = "x".repeat(330);
+  assert.deepEqual(h.run(`(error "${long}")`), [SCHEME_ERROR, `error: ${"x".repeat(309)}...\n`]);
+  // irritant を切ったあとでも、メッセージが長ければ一行に収まらない。
+  const [status, text] = h.run(`(error "${"m".repeat(200)}" "${"y".repeat(300)}")`);
+  assert.equal(status, SCHEME_ERROR);
+  assert.equal(text.length, 320);
+  assert.ok(text.startsWith(`error: ${"m".repeat(200)} "yyy`), text);
+  assert.ok(text.endsWith("...\n"), text);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 test("invalid UTF-8 returns -3 with the position, and leaves the state unchanged", () => {
   const h = instantiate().init();
   assert.equal(h.run("(define kept 42)")[0], OK);

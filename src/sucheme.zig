@@ -156,9 +156,10 @@ pub const Interpreter = struct {
 /// The most bytes a description writes of the values it shows: the irritants
 /// of a condition, or a value raised that is not a condition.
 /// Why: プリミティブの失敗の irritant は呼び出しの引数なので、長いリストやベクタがそのまま
-/// 診断に入りうる。WASM の境界は診断の一行を固定の大きさのバッファに書き、収まらなければ
-/// メッセージごと失う(`src/wasm.zig` の `sucheme_eval_begin`)。値の部分だけを切り、
-/// メッセージは切らない。
+/// 診断に入りうる。WASM の境界は診断の一行を固定の大きさのバッファに書く(`src/wasm.zig` の
+/// `sucheme_eval_begin`)。値の部分を切るのは、ふつうのメッセージの一行がそこに収まるためで
+/// ある。診断そのものはメッセージを切らない。メッセージが長すぎて一行が収まらないときは、
+/// 境界の側が一行を切る(`errorLine`)。
 pub const shown_value_bytes = 128;
 
 /// Writes `v`, a value raised, as `diagnostic` shows it.
@@ -196,6 +197,20 @@ fn wholeCharacters(bytes: []const u8) []const u8 {
     if (start == bytes.len) return bytes;
     const need = std.unicode.utf8ByteSequenceLength(bytes[start]) catch return bytes[0..start];
     return if (bytes.len - start < need) bytes[0..start] else bytes;
+}
+
+/// The line `error: <message>` and a newline, written in `buf`; when it does
+/// not fit, the message is cut short at a character and `...` is put after it.
+/// WASM の境界は、診断の一行を固定の大きさのバッファに書く(`src/wasm.zig` の
+/// `sucheme_eval_begin`)。収まらない一行も、メッセージを失わずに、読める先頭を残す。
+/// `message` は妥当な UTF-8 で、`buf` は `error: ...` と改行が入る大きさでなければならない。
+pub fn errorLine(buf: []u8, message: []const u8) []const u8 {
+    const prefix = "error: ";
+    const cut_suffix = "...\n";
+    std.debug.assert(buf.len >= prefix.len + cut_suffix.len);
+    if (std.fmt.bufPrint(buf, prefix ++ "{s}\n", .{message})) |line| return line else |_| {}
+    const kept = wholeCharacters(message[0 .. buf.len - prefix.len - cut_suffix.len]);
+    return std.fmt.bufPrint(buf, prefix ++ "{s}" ++ cut_suffix, .{kept}) catch unreachable;
 }
 
 /// Writes each of `irritants`, a list, after a space.
@@ -715,5 +730,35 @@ test "a description cut in the middle of a character is cut before the character
         try std.testing.expect(std.mem.endsWith(u8, d, "あ..."));
         // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
         try std.testing.expect(d.len + 2 >= "wrong type of argument to car".len + shown_value_bytes + "...".len);
+    }
+}
+
+test "an error line that fits is written whole, and one that does not is cut short with ..." {
+    var buf: [32]u8 = undefined;
+    const xs: [330]u8 = @splat('x');
+    // `error: ` と改行を足して 32 バイトに収まるのは、24 バイトのメッセージまでである。
+    try std.testing.expectEqualStrings("error: short\n", errorLine(&buf, "short"));
+    try std.testing.expectEqualStrings("error: xxxxxxxxxxxxxxxxxxxxxxxx\n", errorLine(&buf, xs[0..24]));
+    // 1バイト溢れると、切って `...` を付ける。一行はバッファにちょうど収まる。
+    try std.testing.expectEqualStrings("error: xxxxxxxxxxxxxxxxxxxxx...\n", errorLine(&buf, xs[0..25]));
+    try std.testing.expectEqualStrings("error: xxxxxxxxxxxxxxxxxxxxx...\n", errorLine(&buf, &xs));
+    try std.testing.expectEqualStrings("error: \n", errorLine(&buf, ""));
+}
+
+test "an error line cut in the middle of a character is cut before the character" {
+    var buf: [32]u8 = undefined;
+    // メッセージは 21 バイトまで残る。3バイトの文字が切れ目をまたぐ位置は、前に置く ASCII の
+    // 文字の数で決まる。0 から 2 個で、文字のどのバイトでも切れる場合を通す。
+    for (0..3) |pad| {
+        var message: std.ArrayList(u8) = .empty;
+        defer message.deinit(std.testing.allocator);
+        try message.appendNTimes(std.testing.allocator, 'a', pad);
+        for (0..20) |_| try message.appendSlice(std.testing.allocator, "あ");
+        const line = errorLine(&buf, message.items);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(line));
+        try std.testing.expect(std.mem.endsWith(u8, line, "あ...\n"));
+        try std.testing.expect(line.len <= buf.len);
+        // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
+        try std.testing.expect(line.len + 2 >= buf.len);
     }
 }
