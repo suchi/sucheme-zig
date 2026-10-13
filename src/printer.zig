@@ -99,6 +99,14 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // 条件オブジェクトを値として読むものはまだない。エラーは機械を出て、
             // 報告される。漏れたときに分かるよう、それでも書く。
             .condition => try out.writeAll("#<condition>"),
+            // 別名は展開器の中だけにあり、`quote` が元のシンボルに戻すので、機械にも
+            // プログラムにも届かない。展開器のテストが展開の結果を読めるよう、内側の
+            // 識別子を包む、読めない表記で書く。
+            .alias => {
+                try out.writeAll("#<alias ");
+                try stack.append(scratch, .{ .text = ">" });
+                try stack.append(scratch, .{ .value = x.asAlias().?.inner });
+            },
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -208,6 +216,18 @@ test "write shows a condition that leaked" {
     var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
     var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
     try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
+}
+
+test "write shows an alias around the identifier inside it" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var inner: value_mod.Alias = .{ .inner = try f.sym("tmp"), .env = null, .mark = 0 };
+    var outer: value_mod.Alias = .{ .inner = .fromAlias(&inner), .env = null, .mark = 1 };
+    try std.testing.expectEqualStrings("#<alias tmp>", try f.written(&buf, .fromAlias(&inner)));
+    try std.testing.expectEqualStrings("#<alias #<alias tmp>>", try f.written(&buf, .fromAlias(&outer)));
+    const l = try f.list(&.{ .fromAlias(&inner), .fromFixnum(1) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(#<alias tmp> 1)", try f.written(&buf, l));
 }
 
 test "write prints the unspecified value as #<unspecified>" {

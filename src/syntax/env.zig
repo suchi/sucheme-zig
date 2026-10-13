@@ -6,8 +6,12 @@
 //!
 //! 解決は、内側の環境から外へ、各 rib の束縛を新しいものから順に線形に探し、
 //! 見つからなければ REPL の最上位の束縛の表(src/env.zig)を名前で引く。最上位の
-//! 束縛は、特殊形式か、大域変数のセルである。特殊形式の名前は予約語ではないので、
+//! 束縛は、特殊形式、マクロ、大域変数のセルである。特殊形式の名前は予約語ではないので、
 //! 仮引数や本体の定義が同じ綴りを束縛すれば、その内側では特殊形式が隠れる。
+//!
+//! 識別子は、シンボルか、マクロのテンプレートが導入した別名(`Alias`)である。別名が
+//! 環境に束縛されていなければ、内側の識別子を、マクロを定義した環境で解決し直す
+//! (docs/design/frontend.md の解決規則)。
 
 const std = @import("std");
 const value_mod = @import("../value.zig");
@@ -20,6 +24,9 @@ pub const SyntacticBinding = value_mod.SyntacticBinding;
 pub const LocalBinding = value_mod.LocalBinding;
 pub const Denotation = value_mod.Denotation;
 pub const Special = value_mod.Special;
+pub const Alias = value_mod.Alias;
+pub const Macro = value_mod.Macro;
+const SymbolId = @import("../symbol.zig").SymbolId;
 
 pub const Error = context.Error;
 
@@ -45,6 +52,12 @@ pub fn bindLocal(ctx: *Context, env: *SyntacticEnv, id: Value, index: u32) Error
     return local;
 }
 
+/// Binds `id` in the rib of `env` to the macro `m`.
+/// 局所変数と違ってスロットを取らない。`define-syntax` が本体の先頭で使う。
+pub fn bindMacro(ctx: *Context, env: *SyntacticEnv, id: Value, m: *Macro) Error!void {
+    env.bindings = try ctx.create(SyntacticBinding, .{ .id = id, .denotation = .{ .macro = m }, .next = env.bindings });
+}
+
 /// The newest binding of `id` in the rib of `env` itself, not in the
 /// environments around it.
 pub fn lookupRib(env: *const SyntacticEnv, id: Value) ?*SyntacticBinding {
@@ -57,24 +70,87 @@ pub fn lookupRib(env: *const SyntacticEnv, id: Value) ?*SyntacticBinding {
 
 /// What `id` means in `env` (docs/design/frontend.md, the rules of
 /// resolution).
-/// 構文環境に束縛が無ければ、REPL の最上位の束縛になる。最上位の表に無い名前には、
-/// REPL 自身の未束縛のセルを作る(src/env.zig)。確保しうるのはその場合だけである。
+/// `id` は識別子でなければならない。構文環境に束縛が無く、`id` が別名なら、別名を
+/// 1段剥がした内側の識別子を、別名の環境(マクロを定義した環境)で解決し直す。別名
+/// 自身でなく内側を渡すので、剥がすたびに別名の層が1つ減り、必ず止まる。最後は、
+/// シンボルの名前で REPL の最上位の束縛を引く。最上位の表に無い名前には、REPL 自身の
+/// 未束縛のセルを作る(src/env.zig)。確保しうるのはその場合だけである。
 pub fn resolve(ctx: *Context, env: ?*const SyntacticEnv, id: Value) Error!Denotation {
     var e = env;
-    while (e) |scope| : (e = scope.parent) {
-        if (lookupRib(scope, id)) |binding| return binding.denotation;
+    var ident = id;
+    while (true) {
+        var scope = e;
+        while (scope) |s| : (scope = s.parent) {
+            if (lookupRib(s, ident)) |binding| return binding.denotation;
+        }
+        const alias = ident.asAlias() orelse break;
+        ident = alias.inner;
+        e = alias.env;
     }
-    return ctx.globals.resolve(ctx.persist, &ctx.heap, id.asSymbol().?) catch |err| ctx.heapFailure(err);
+    return ctx.globals.resolve(ctx.persist, &ctx.heap, ident.asSymbol().?) catch |err| ctx.heapFailure(err);
+}
+
+/// Whether `v` is an identifier: a symbol or an alias.
+pub fn isIdentifier(v: Value) bool {
+    return v.kind() == .symbol or v.kind() == .alias;
+}
+
+/// The symbol an identifier was written as: an alias's innermost identifier.
+/// メッセージと、局所変数の名前と、`quote` の剥離が使う。`id` は識別子でなければならない。
+pub fn baseSymbol(id: Value) SymbolId {
+    var v = id;
+    while (v.asAlias()) |a| v = a.inner;
+    return v.asSymbol().?;
 }
 
 /// Whether `a` and `b` are the same identifier in the sense of
 /// `bound-identifier=?`: a binding of one would bind the other.
-/// 段階2の識別子はシンボルだけなので、両方がシンボルで、同じシンボルのときに限る。
-/// 別名(2k)が入ったら、種類の違う対を一致させない規則(frontend.md)をここに足す。
+/// 一致するのは、両方がシンボルで同じシンボルのときと、両方が別名で、印と環境が
+/// 同じで、内側の識別子どうしが一致するときに限る。種類の違う対は一致しない。
+/// Why: 素のシンボルと別名を一致させると、マクロが導入した別名の束縛を、利用側の
+/// 同じ綴りのシンボルが引き当て、衛生性が壊れる(docs/design/frontend.md の解決規則)。
 pub fn boundIdentifierEq(a: Value, b: Value) bool {
-    const x = a.asSymbol() orelse return false;
-    const y = b.asSymbol() orelse return false;
-    return x == y;
+    var x = a;
+    var y = b;
+    while (true) {
+        if (x.asSymbol()) |sx| {
+            const sy = y.asSymbol() orelse return false;
+            return sx == sy;
+        }
+        const ax = x.asAlias() orelse return false;
+        const ay = y.asAlias() orelse return false;
+        if (ax == ay) return true;
+        if (ax.mark != ay.mark or ax.env != ay.env) return false;
+        x = ax.inner;
+        y = ay.inner;
+    }
+}
+
+/// Whether two denotations are the same binding, which is how
+/// `free-identifier=?` compares identifiers (docs/design/frontend.md, comparing
+/// identifiers).
+/// 局所変数、セル、マクロはオブジェクトの同一性で比べる(ADR-0019)。最上位で
+/// 束縛の無い名前は、名前ごとに1つの未束縛のセルに解決されるので、名前が同じなら
+/// 同じセルになり、R7RS 4.3.2 の「どちらも束縛が無く、同じ識別子」の場合を含む。
+pub fn sameDenotation(a: Denotation, b: Denotation) bool {
+    return switch (a) {
+        .special => |x| switch (b) {
+            .special => |y| x == y,
+            else => false,
+        },
+        .local => |x| switch (b) {
+            .local => |y| x == y,
+            else => false,
+        },
+        .global => |x| switch (b) {
+            .global => |y| x == y,
+            else => false,
+        },
+        .macro => |x| switch (b) {
+            .macro => |y| x == y,
+            else => false,
+        },
+    };
 }
 
 test {

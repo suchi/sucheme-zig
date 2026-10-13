@@ -326,7 +326,11 @@ test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Value).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Condition).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Condition).?);
-    // コードと、その周りの単純なデータは、決してたどられない。
+}
+
+test "the code and the plain data around it are never followed" {
+    // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。`Value` の
+    // 変種が増えて上のテストに収まらなくなったので、分けてある。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
@@ -345,6 +349,41 @@ test "the classes of the types of the syntactic environment" {
     // 局所変数は、数を2つ持つだけである。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.LocalBinding).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Cell).?);
+}
+
+test "the classes of the types of macros" {
+    // 上と同じ理由で分けてある。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Alias).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Macro).?);
+}
+
+test "an alias is followed through its inner identifier and its environment" {
+    var env: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
+    var inner: value_mod.Alias = .{ .inner = .fromSymbol(@fromBackingInt(@intCast(2))), .env = null, .mark = 0 };
+    const outer: value_mod.Alias = .{ .inner = .fromAlias(&inner), .env = &env, .mark = 1 };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Alias, &outer);
+    try r.expect(&.{ addr(&inner), addr(&env) });
+    // 最上位で定義したマクロの別名は、シンボルだけを持つ。
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Alias, &inner);
+    try q.expect(&.{});
+    try std.testing.expectEqual(1, q.symbol_count);
+}
+
+test "a macro is followed through its literals, its rules and its environment" {
+    var env: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
+    var literals: Pair = .{ .car = .fromSymbol(@fromBackingInt(@intCast(1))), .cdr = .empty_list_value };
+    var rules: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const m: value_mod.Macro = .{ .literals = .{ .pair = &literals }, .rules = .{ .pair = &rules }, .env = &env };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Macro, &m);
+    try r.expect(&.{ addr(&literals), addr(&rules), addr(&env) });
+    // 構文環境の束縛がマクロを指すときは、そのマクロをたどる。
+    const binding: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(3))), .denotation = .{ .macro = @constCast(&m) }, .next = null };
+    var b: Recorder = .{};
+    interpreter.children(&b, value_mod.SyntacticBinding, &binding);
+    try b.expect(&.{addr(&m)});
 }
 
 test "a type the walk cannot sort has no class" {

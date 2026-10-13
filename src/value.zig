@@ -9,7 +9,8 @@
 //! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2b は
 //! 条件オブジェクトを GC ヒープに移す。スライス 2i は、展開器の構文環境(値ではない
 //! が GC ヒープにある)を加え、スライス 2j は大域変数の束縛セル(同じく GC ヒープに
-//! ある)を加える。
+//! ある)を加える。スライス 2k は、マクロのテンプレートが導入した識別子である別名と、
+//! マクロを加える。別名は値の変種だが、展開器の中だけにあり、機械には届かない。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -55,6 +56,10 @@ pub const Value = union(enum) {
     /// A vector.
     /// GC ヒープにある。
     vector: *Vector,
+    /// An identifier that a macro's template put into its output (ADR-0019).
+    /// GC ヒープにある。展開の途中だけに現れる。`quote` の中のものは定数にする時点で
+    /// 元のシンボルに戻すので、機械には届かない。
+    alias: *Alias,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -106,11 +111,15 @@ pub const Value = union(enum) {
         return .{ .vector = v };
     }
 
+    pub fn fromAlias(a: *Alias) Value {
+        return .{ .alias = a };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition => true,
+            .pair, .closure, .string, .vector, .condition, .alias => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
@@ -130,6 +139,7 @@ pub const Value = union(enum) {
             .character => .character,
             .string => .string,
             .vector => .vector,
+            .alias => .alias,
         };
     }
 
@@ -205,6 +215,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The alias, or null when the value is not one.
+    pub fn asAlias(self: Value) ?*Alias {
+        return switch (self) {
+            .alias => |a| a,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -239,6 +257,7 @@ pub const Value = union(enum) {
             .primitive => |x| b.asPrimitive() == x,
             .closure => |x| b.asClosure() == x,
             .condition => |x| b.asCondition() == x,
+            .alias => |x| b.asAlias() == x,
         };
     }
 
@@ -587,7 +606,7 @@ pub const Kont = struct {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, Alias, Macro };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -596,21 +615,25 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
-pub const Special = enum { define, quote, @"if", lambda, begin, @"set!" };
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules" };
 
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).
-/// ADR-0019 の6種のうち、マクロ、補助構文、パターン変数は、それを使うスライスが足す。
+/// ADR-0019 の6種のうち、補助構文とパターン変数は、それを使うスライスが足す。
+/// パターン変数は、照合器とテンプレート展開器(src/syntax/rules.zig)の中だけで引くので、
+/// 構文環境の意味にはしていない。
 pub const Denotation = union(enum) {
     special: Special,
     local: *LocalBinding,
     /// A global variable: the cell that holds its value.
     global: *Cell,
+    /// A macro: its transformer and the environment it was defined in.
+    macro: *Macro,
 };
 
 /// A syntactic environment: the bindings of one rib, and the environment
@@ -632,8 +655,7 @@ pub const SyntacticEnv = struct {
 
 /// One binding of a syntactic environment: an identifier and what it means.
 pub const SyntacticBinding = struct {
-    /// The identifier: a symbol.
-    /// 段階2の別名(2k)も識別子なので、型は `Value` にしてある。
+    /// The identifier: a symbol or an alias.
     id: Value,
     denotation: Denotation,
     next: ?*SyntacticBinding,
@@ -660,6 +682,36 @@ pub const Cell = struct {
     /// 大域変数には「未初期化」の段階が無いので、局所変数の未初期化の目印を、未束縛の
     /// 目印として使う。参照と `set!` は、どちらもこの値を1か所で調べる。
     value: Value,
+};
+
+/// An identifier that a macro's template introduced (docs/design/frontend.md,
+/// the syntactic environment and identifiers).
+/// 別名が束縛されていない環境で解決すると、内側の識別子を `env` で解決する。同じ識別子
+/// かどうかは、内側、印、環境の3つで決める(src/syntax/env.zig の `boundIdentifierEq`)。
+pub const Alias = struct {
+    /// The identifier the template had: a symbol, or an alias of an outer
+    /// expansion.
+    inner: Value,
+    /// The environment the macro was defined in; null is the top level.
+    env: ?*SyntacticEnv,
+    /// Which application of a macro made the alias.
+    /// 適用ごとに新しい値を割り当て、同じ値を2回割り当てない(`Context.newMark`)。
+    mark: u64,
+};
+
+/// A macro: the rules of its `syntax-rules` and the environment it was
+/// defined in.
+/// 段階2の変換子は `syntax-rules` だけである。変換子を呼ぶ箇所は
+/// src/syntax/rules.zig の `transform` の1か所で、手続き的マクロに広げるときの境界になる。
+pub const Macro = struct {
+    /// The literals: a list of identifiers.
+    literals: Value,
+    /// The rules: a list of `(pattern template)`.
+    /// 形は定義の時点で `rules.compile` が検査してある。
+    rules: Value,
+    /// Where the identifiers of the patterns and templates are resolved; null is
+    /// the top level.
+    env: ?*SyntacticEnv,
 };
 
 test {

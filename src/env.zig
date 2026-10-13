@@ -1,7 +1,7 @@
 //! The REPL's global environment: what each name means at the top level, and
 //! the cells of the global variables (docs/design/frontend.md, the REPL).
 //!
-//! 最上位の束縛は、名前から意味(特殊形式か、大域変数のセル)への表である。束縛は、
+//! 最上位の束縛は、名前から意味(特殊形式、マクロ、大域変数のセル)への表である。束縛は、
 //! インポートしたものと、REPL 自身が作ったものに分かれる。プリミティブと特殊形式は
 //! インポートした束縛である(2m で `(sucheme core)` のエクスポートになる)。
 //!
@@ -49,27 +49,47 @@ pub const Global = struct {
     /// REPL がその束縛を遮蔽しても、遮蔽の前に展開したコードがセルを指し続ける。
     /// 2m では、インポート元のライブラリの表がこれを持つ。
     imported_cells: std.ArrayList(*Cell) = .empty,
-    /// The special forms that the expansion in progress has shadowed, in order.
-    /// 展開が失敗したら `undoShadows` が元に戻し、成功したら `commitShadows` が捨てる。
-    shadowed_specials: std.ArrayList(ShadowedSpecial) = .empty,
+    /// The syntactic bindings that the expansion in progress has replaced, with
+    /// what each name was bound to before, in order.
+    /// 特殊形式やマクロの名前への `define` と、`define-syntax` が記録する。展開が失敗
+    /// したら `undoShadows` が元に戻し、成功したら `commitShadows` が捨てる。
+    replaced: std.ArrayList(Replaced) = .empty,
 
-    const ShadowedSpecial = struct { id: SymbolId, special: value_mod.Special };
+    /// A name, and its binding before the expansion replaced it; null when the
+    /// table had none.
+    const Replaced = struct { id: SymbolId, previous: ?Binding };
 
-    /// Gives back the special forms that the expansion that failed shadowed.
+    /// Gives back the bindings that the expansion that failed replaced.
     ///
     /// Why: 展開が失敗した形式は実行されないので、その形式が作った遮蔽は、残すと特殊形式を
-    /// 理由なく失わせる(`(define if (quote))` の後で `if` が未束縛になる)。遮蔽したセルは
-    /// 表から外れ、次の GC で回収される。この中の確保はしない(表の項目は既にある)。
+    /// 理由なく失わせる(`(define if (quote))` の後で `if` が未束縛になる)。`define-syntax`
+    /// も同じで、残すと、失敗した行が定義したマクロが後の行の意味を変える。遮蔽したセルと
+    /// マクロは表から外れ、次の GC で回収される。新しい順に戻すので、同じ名前を2回
+    /// 置き換えた展開も、最初の束縛に戻る。この中の確保はしない(表の項目は既にある)。
     /// 値の式が実行時に失敗した場合は、展開が成功しているので、ここでは戻さない。
     pub fn undoShadows(self: *Global) void {
-        while (self.shadowed_specials.pop()) |s| {
-            if (self.bindings.getPtr(s.id)) |b| b.* = .{ .denotation = .{ .special = s.special }, .imported = true };
+        while (self.replaced.pop()) |r| {
+            if (r.previous) |b| {
+                if (self.bindings.getPtr(r.id)) |slot| slot.* = b;
+            } else {
+                _ = self.bindings.remove(r.id);
+            }
         }
     }
 
-    /// Keeps what the expansion that succeeded shadowed.
+    /// Keeps what the expansion that succeeded replaced.
     pub fn commitShadows(self: *Global) void {
-        self.shadowed_specials.clearRetainingCapacity();
+        self.replaced.clearRetainingCapacity();
+    }
+
+    /// Binds `id` to the macro `m` (R7RS 5.4), in place of whatever `id` was
+    /// bound to.
+    /// docs/design/frontend.md の REPL の表のとおり、インポートした束縛は遮蔽し、REPL
+    /// 自身の束縛は差し替える。どちらも、表の束縛を REPL 自身のマクロにすることである。
+    /// 前に展開したコードが指すセルは変わらない(同節: 既存の参照は変わらない)。
+    pub fn defineSyntax(self: *Global, alloc: std.mem.Allocator, id: SymbolId, m: *value_mod.Macro) error{OutOfMemory}!void {
+        try self.replaced.append(alloc, .{ .id = id, .previous = self.bindings.get(id) });
+        try self.bindings.put(alloc, id, .{ .denotation = .{ .macro = m }, .imported = false });
     }
 
     /// Imports the special form `special` under the name `id`.
@@ -88,7 +108,7 @@ pub const Global = struct {
     /// 何も作らない。未束縛のセルは、束縛が無いことと同じに扱う。
     pub fn isBound(self: *const Global, id: SymbolId) bool {
         if (self.bindings.get(id)) |b| return switch (b.denotation) {
-            .special => true,
+            .special, .macro => true,
             .global => |cell| cell.value.kind() != .uninitialized,
             .local => unreachable,
         };
@@ -105,15 +125,15 @@ pub const Global = struct {
     ///
     /// REPL 自身の変数なら、そのセルである(R7RS 5.3.1: 束縛済みで構文でない変数への
     /// 定義は代入と同じ)。インポートした変数なら、REPL の新しいセルで遮蔽する。
-    /// 特殊形式の名前なら、新しい未束縛のセルで遮蔽する(同節: 構文キーワードへの
+    /// 特殊形式やマクロの名前なら、新しい未束縛のセルで遮蔽する(同節: 構文キーワードへの
     /// 定義は新しい場所を束縛する)。この遮蔽は記録し、展開が失敗したら `undoShadows` が
     /// 戻す。
     pub fn defineTarget(self: *Global, alloc: std.mem.Allocator, heap: *Heap, id: SymbolId) Error!*Cell {
         const b = try self.binding(alloc, heap, id);
         return switch (b.denotation) {
             .global => |cell| if (b.imported) self.shadow(alloc, heap, id, cell.value) else cell,
-            .special => |special| {
-                try self.shadowed_specials.append(alloc, .{ .id = id, .special = special });
+            .special, .macro => {
+                try self.replaced.append(alloc, .{ .id = id, .previous = b });
                 return self.shadow(alloc, heap, id, .uninitialized_value);
             },
             .local => unreachable,
@@ -121,27 +141,34 @@ pub const Global = struct {
     }
 
     /// The cell that a `set!` of `id` at the top level assigns, or null when
-    /// `id` names a special form, which cannot be assigned.
+    /// `id` names a special form or a macro, which cannot be assigned.
     /// REPL 自身の変数なら、そのセルである。インポートした変数なら、REPL の新しい
     /// セルで遮蔽する(frontend.md の REPL の表)。
     pub fn assignTarget(self: *Global, alloc: std.mem.Allocator, heap: *Heap, id: SymbolId) Error!?*Cell {
         const b = try self.binding(alloc, heap, id);
         return switch (b.denotation) {
             .global => |cell| if (b.imported) try self.shadow(alloc, heap, id, cell.value) else cell,
-            .special => null,
+            .special, .macro => null,
             .local => unreachable,
         };
     }
 
-    /// Tells the collector of every cell: those the table binds, and those it
-    /// imported and has since shadowed.
+    /// Tells the collector of every cell and macro: those the table binds, the
+    /// cells it imported and has since shadowed, and what the expansion in
+    /// progress has replaced.
     pub fn mark(self: *const Global, marker: *Marker) void {
         var it = self.bindings.valueIterator();
-        while (it.next()) |b| switch (b.denotation) {
-            .global => |cell| marker.object(Cell, cell),
-            .special, .local => {},
-        };
+        while (it.next()) |b| markBinding(marker, b.*);
         for (self.imported_cells.items) |cell| marker.object(Cell, cell);
+        for (self.replaced.items) |r| if (r.previous) |b| markBinding(marker, b);
+    }
+
+    fn markBinding(marker: *Marker, b: Binding) void {
+        switch (b.denotation) {
+            .global => |cell| marker.object(Cell, cell),
+            .macro => |m| marker.object(value_mod.Macro, m),
+            .special, .local => {},
+        }
     }
 
     /// The binding of `id`, made when there is none yet: the primitive's cell

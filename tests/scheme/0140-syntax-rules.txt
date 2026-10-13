@@ -1,0 +1,7 @@
+# スライス 2k: `define-syntax` と `syntax-rules` の基本。テンプレートが導入した識別子は
+# 別名になり、利用側の同じ綴りの束縛に捕まらない(docs/design/frontend.md の衛生性の
+# 検証項目)。`let` は段階3なので、テンプレートの一時変数は `lambda` で束縛する。
+
+# 衛生性の検証項目1: swap! が利用側の tmp を壊さない。
+(define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))) ((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)
+(2 1)

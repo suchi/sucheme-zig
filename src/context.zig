@@ -54,6 +54,10 @@ pub const Context = struct {
     /// 何でも送出できるとする)。ヒープを指しうるので GC のルートであり(`mark`)、
     /// `clearDiagnostic` で空にするまで回収されない。
     raised: ?Value = null,
+    /// The mark the next application of a macro takes.
+    /// 対話の全体で1つの通し番号で、周回させない(`newMark`)。マクロの定義は行をまたいで
+    /// 残り、その規則が別名を含みうるので、行ごとに数え直すことはできない。
+    next_mark: u64 = 0,
 
     /// A context whose top level imports each primitive and each special form
     /// under its name.
@@ -90,6 +94,17 @@ pub const Context = struct {
         self.globals.mark(marker);
         for (self.code_roots.items) |v| marker.value(v);
         if (self.raised) |v| marker.value(v);
+    }
+
+    /// A mark that no application of a macro has had (docs/design/frontend.md).
+    /// Why: 印が周回すると、周回の後の展開が導入した識別子が、前の展開の束縛と同じ
+    /// 識別子になり、衛生性が黙って壊れる。最後の値に達したら、実装制限(R7RS 1.3.2)
+    /// として報告する。
+    pub fn newMark(self: *Context) Error!u64 {
+        if (self.next_mark == std.math.maxInt(u64))
+            return self.raise("implementation restriction: too many macro applications", .{});
+        defer self.next_mark += 1;
+        return self.next_mark;
     }
 
     /// Keeps `v`, a constant of some code, alive for as long as the context is.
