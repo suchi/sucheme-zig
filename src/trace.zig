@@ -295,16 +295,30 @@ test "a syntactic binding is followed through its identifier, its local variable
     try r.expect(&.{ addr(&local), addr(&older) });
     try std.testing.expectEqual(1, r.symbol_count);
     try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(2))), r.symbols[0]);
-    // 特殊形式と大域変数の意味は、ヒープのものを指さない。大域変数の名前はシンボルである。
+    // 特殊形式の意味は、ヒープのものを指さない。大域変数の意味は、そのセルを指す。
     var q: Recorder = .{};
     interpreter.children(&q, value_mod.SyntacticBinding, &older);
     try q.expect(&.{});
-    const global: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(1))), .denotation = .{ .global = @fromBackingInt(@intCast(5)) }, .next = null };
+    var cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(5)), .value = .fromFixnum(1) };
+    const global: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(1))), .denotation = .{ .global = &cell }, .next = null };
     var g: Recorder = .{};
     interpreter.children(&g, value_mod.SyntacticBinding, &global);
-    try g.expect(&.{});
-    try std.testing.expectEqual(2, g.symbol_count);
-    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(5))), g.symbols[1]);
+    try g.expect(&.{addr(&cell)});
+}
+
+test "a cell is followed through its value, and its name is a symbol" {
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(6)), .value = .{ .pair = &p } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Cell, &cell);
+    try r.expect(&.{addr(&p)});
+    try std.testing.expectEqual(1, r.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(6))), r.symbols[0]);
+    // 未束縛のセルは、ヒープのものを指さない。
+    const unbound: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(6)), .value = .uninitialized_value };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Cell, &unbound);
+    try q.expect(&.{});
 }
 
 test "the classes of the real types" {
@@ -334,6 +348,7 @@ test "the classes of the types of the syntactic environment" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
     // 局所変数は、数を2つ持つだけである。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.LocalBinding).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Cell).?);
 }
 
 test "a record is followed through its type and its fields" {
@@ -400,7 +415,13 @@ test "of the code types only the node holds values, which the context's constant
     // そのことがここで表に出る。
     inline for (value_mod.code_types) |T| {
         const class = comptime interpreter.classify(T);
-        if (T == value_mod.Node) {
+        if (T == value_mod.Node or T == value_mod.GlobalAssign) {
+            // Why: 節点と大域変数への代入は、大域変数のセルを指す(スライス 2j)。セルは
+            // GC ヒープにあるが、GC が節点をたどらなくても回収されない。作られたセルは
+            // すべて、REPL の束縛の表か、遮蔽されたインポートのセルの表から到達できる
+            // (src/env.zig の `Global.mark`)。この不変条件は、tests/scheme/ の
+            // ステップごとに GC する方式で、遮蔽されたプリミティブのセルを先に定義した
+            // 手続きから読むケースが確かめる。
             try std.testing.expectEqual(Class.follow, class.?);
         } else if (T == value_mod.Primitive) {
             // Zig の関数ポインタ。walk にはその分類がなく、たどることもない。

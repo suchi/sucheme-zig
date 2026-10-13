@@ -27,7 +27,6 @@ const reader = @import("reader.zig");
 pub const isIncomplete = reader.isIncomplete;
 
 const expand = @import("syntax/expand.zig");
-const syntax_env = @import("syntax/env.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
@@ -120,17 +119,12 @@ pub const Interpreter = struct {
     /// Whether `identifier` is bound: a global binding, or a special form.
     ///
     /// 準拠マトリクス(tools/coverage-report)が使う。名前を引くだけで、シンボルを
-    /// インターンしない。読まれただけの名前はシンボル表にあるが、束縛ではない。
-    /// 答えは、展開器が最上位でその名前を解決した意味から出す。特殊形式は REPL の
-    /// 最上位の構文の束縛で、それ以外の名前は大域環境に値があるときだけ束縛済みである。
+    /// インターンせず、セルも作らない。読まれただけの名前はシンボル表にあるが、束縛
+    /// ではない。答えは REPL の最上位の束縛の表から出す(src/env.zig)。特殊形式は
+    /// 最上位の構文の束縛で、変数はセルに値があるときだけ束縛済みである。
     pub fn isBound(self: *const Interpreter, identifier: []const u8) bool {
         const id = self.ctx.symbols.index.get(identifier) orelse return false;
-        return switch (syntax_env.resolve(&self.ctx, null, .fromSymbol(id))) {
-            .special => true,
-            .global => |global| self.ctx.globals.lookup(global) != null,
-            // 最上位には局所の束縛が無い。
-            .local => unreachable,
-        };
+        return self.ctx.globals.isBound(id);
     }
 
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {

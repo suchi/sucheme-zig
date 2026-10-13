@@ -8,7 +8,7 @@
 //! 本体の定義が同じ綴りを束縛すると、その内側では変数になる。局所変数は字句的番地
 //! (lexical address。何個外側のフレームの、どのスロットか)になり、深さは参照する
 //! 側の rib の深さから、束縛した rib の深さを引いて求める。それ以外の名前は大域変数で、
-//! 機械が実行するときに名前で探される。
+//! 展開器が REPL の束縛の表(src/env.zig)でセルに解決する。
 //!
 //! 作業は専用のスタックに積んで進め、再帰しない。したがって、リーダが読める深さまで
 //! ネストしたプログラムでも、Zig のスタックはあふれない(docs/design/frontend.md)。
@@ -42,8 +42,12 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
     var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
     const root = try ctx.persist.create(Node);
+    // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
+    // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
+    errdefer ctx.globals.undoShadows();
     try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
     while (e.stack.pop()) |task| try e.step(task);
+    ctx.globals.commitShadows();
     return root;
 }
 
@@ -76,7 +80,7 @@ const Expander = struct {
             .symbol => try self.reference(task),
             .pair => {
                 const items = try self.itemsOf(task.form);
-                if (self.specialOf(task.env, items[0])) |special| return switch (special) {
+                if (try self.specialOf(task.env, items[0])) |special| return switch (special) {
                     .define => self.define(task, items),
                     .quote => self.quote(task, items),
                     .@"if" => self.conditional(task, items),
@@ -91,9 +95,9 @@ const Expander = struct {
 
     /// The special form that `head` names in `env`, or null when it is not an
     /// identifier that means one.
-    fn specialOf(self: *const Expander, env: ?*const SyntacticEnv, head: Value) ?syntax_env.Special {
+    fn specialOf(self: *Expander, env: ?*const SyntacticEnv, head: Value) Error!?syntax_env.Special {
         if (head.kind() != .symbol) return null;
-        return switch (syntax_env.resolve(self.ctx, env, head)) {
+        return switch (try syntax_env.resolve(self.ctx, env, head)) {
             .special => |special| special,
             .local, .global => null,
         };
@@ -139,13 +143,13 @@ const Expander = struct {
 
     fn reference(self: *Expander, task: Task) Error!void {
         const id = task.form.asSymbol().?;
-        task.dest.* = switch (syntax_env.resolve(self.ctx, task.env, task.form)) {
+        task.dest.* = switch (try syntax_env.resolve(self.ctx, task.env, task.form)) {
             .special => return self.ctx.raise(
                 "{s} is a syntactic keyword and cannot be used as a variable",
                 .{self.ctx.symbols.nameOf(id)},
             ),
             .local => |local| .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } },
-            .global => .{ .global_ref = id },
+            .global => |cell| .{ .global_ref = cell },
         };
     }
 
@@ -210,13 +214,14 @@ const Expander = struct {
 
     /// `(set! name expression)` (R7RS 4.1.6).
     /// 対象は `name` の最も近い束縛で、局所でも大域でもよい。特殊形式は変数でない
-    /// ので、対象にならない。
+    /// ので、対象にならない。大域変数がインポートしたものなら、REPL の新しいセルで
+    /// 遮蔽して、そこへ代入する(docs/design/frontend.md の REPL の表)。
     fn set(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3)
             return self.ctx.raise("bad set!: expected (set! name expression)", .{});
         const id = items[1].asSymbol() orelse
             return self.ctx.raise("bad set!: the name must be an identifier", .{});
-        switch (syntax_env.resolve(self.ctx, task.env, items[1])) {
+        switch (try syntax_env.resolve(self.ctx, task.env, items[1])) {
             .special => return self.ctx.raise(
                 "bad set!: {s} is a syntactic keyword and cannot be assigned",
                 .{self.ctx.symbols.nameOf(id)},
@@ -227,16 +232,19 @@ const Expander = struct {
                 task.dest.* = .{ .local_set = .{ .address = where, .name = id, .value = value } };
             },
             .global => {
+                // 解決が大域変数を返したので、名前は最上位で変数であり、対象のセルがある。
+                const cell = (self.ctx.globals.assignTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
+                    return self.ctx.heapFailure(e)).?;
                 const value = try self.child(items[2], task.env, .expression);
-                task.dest.* = .{ .global_set = .{ .name = id, .value = value } };
+                task.dest.* = .{ .global_set = .{ .cell = cell, .value = value } };
             },
         }
     }
 
     /// `(define name expression)` and `(define (name parameter ...) body ...)`
     /// (R7RS 5.3.1).
-    /// トップレベルでは大域変数を束縛する。本体の先頭では、`lambdaNode` が作った
-    /// 局所変数に値を与える。
+    /// トップレベルでは、REPL の束縛の表の規則で選んだ大域変数のセルに値を与える
+    /// (src/env.zig)。本体の先頭では、`lambdaNode` が作った局所変数に値を与える。
     fn define(self: *Expander, task: Task, items: []const Value) Error!void {
         // Why: R7RS 5.3 が定義を許すのは、トップレベルと本体の先頭だけである。それ以外で
         // 許すと、あとで失敗するかもしれない式の中から名前を束縛することになる。
@@ -254,13 +262,17 @@ const Expander = struct {
             return self.ctx.raise("bad define: the name must be an identifier", .{});
         switch (task.pos) {
             .top => {
-                // Why: R7RS 5.3.1 は、構文の束縛を持つ名前への最上位の定義も、新しい場所を
-                // 束縛するとしている。そのためには REPL の束縛の表が要り、それはスライス 2j で
-                // 入る。それまでは、特殊形式の名前への最上位の定義を拒否する。
-                if (syntax_env.resolve(self.ctx, task.env, target) == .special)
-                    return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{self.ctx.symbols.nameOf(id)});
+                // 対象のセルは、値の式を展開する前に選ぶ(R7RS 5.3.1: 新しい場所を束縛して
+                // から代入する)。値の式そのものの展開は作業スタックで後に行われるので、
+                // この順序が結果に効くのは、略記の本体の定義の走査(`definedValue` の中)
+                // だけである。特殊形式の名前への定義も、新しい場所を束縛する(同節)。
+                // R7RS 5.4 は `(define define 3)` を誤りとするが、最上位の形式は前から順に
+                // 展開し、後ろの形式は前の定義の後の束縛で読むので、すでに判定した形式の意味が
+                // 後から変わることは無い。本体の定義(`collectDefinitions`)と違って、受け付ける。
+                const cell = self.ctx.globals.defineTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
+                    return self.ctx.heapFailure(e);
                 const value = try self.definedValue(task, items, shorthand);
-                task.dest.* = .{ .global_define = .{ .name = id, .value = value } };
+                task.dest.* = .{ .global_define = .{ .cell = cell, .value = value } };
             },
             // `collectDefinitions` が lambda を作るときに、この名前をその lambda の rib に
             // 束縛してある。同じ rib の仮引数を隠すので、rib の中で最も新しい束縛である。
@@ -367,7 +379,7 @@ const Expander = struct {
         var count: usize = 0;
         for (body) |form| {
             const head = form.asPair() orelse break;
-            if (self.specialOf(rib, head.car) != .define) break;
+            if (try self.specialOf(rib, head.car) != .define) break;
             const rest = head.cdr.asPair() orelse
                 return self.ctx.raise("bad define: expected (define name expression)", .{});
             // `(define (name parameter ...) body ...)` は、ヘッダの先頭にあるものを名前とする。
@@ -392,7 +404,7 @@ const Expander = struct {
         // R7RS 5.4 はこれを誤りとしている。展開がこの判定に頼るので、ここで拒否する。
         for (body[0..count]) |form| {
             const head = form.asPair().?.car;
-            if (self.specialOf(rib, head) != .define) return self.ctx.raise(
+            if (try self.specialOf(rib, head) != .define) return self.ctx.raise(
                 "bad define: {s} is defined in a body whose definitions it begins",
                 .{self.ctx.symbols.nameOf(head.asSymbol().?)},
             );
@@ -691,7 +703,6 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     try f.expectFails("(define)", "bad define: expected (define name expression)");
     try f.expectFails("(define x)", "bad define: expected (define name expression)");
     try f.expectFails("(define 1 2)", "bad define: the name must be an identifier");
-    try f.expectFails("(define if 1)", "bad define: if is a syntactic keyword and cannot be redefined");
     try f.expectFails("(define (f))", "bad define: expected (define (name parameter ...) body ...)");
     try f.expectFails("(+ 1 (define x 1))", "bad define: a definition is only allowed at the top level or at the start of a body");
     try f.expectFails("(if (define x 1) 2)", "bad define: a definition is only allowed at the top level or at the start of a body");
@@ -728,19 +739,64 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
 }
 
-test "a special form at the top level is not a variable, a value to assign or a name to define" {
+test "a special form at the top level is not a variable or a value to assign" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     try f.expectFails("quote", "quote is a syntactic keyword and cannot be used as a variable");
-    try f.expectFails("(define quote 1)", "bad define: quote is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(define (lambda x) x)", "bad define: lambda is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(begin (define begin 1))", "bad define: begin is a syntactic keyword and cannot be redefined");
     try f.expectFails("(define #t 1)", "bad define: the name must be an identifier");
     try f.expectFails("(f if)", "if is a syntactic keyword and cannot be used as a variable");
     // 局所の束縛が隠していないところでは、本体の中でも同じである。
     try f.expectFails("(lambda (x) (set! define x))", "bad set!: define is a syntactic keyword and cannot be assigned");
     try f.expectFails("(lambda (x) (lambda (y) lambda))", "lambda is a syntactic keyword and cannot be used as a variable");
+}
+
+test "a definition at the top level of a special form's name binds a new variable" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 定義の後、その名前は最上位で変数である(R7RS 5.3.1)。
+    try f.expectExpands("(define if 5)", "(define-global if (const 5))");
+    try f.expectExpands("(if 1 2)", "(call (global if) (const 1) (const 2))");
+    try f.expectExpands("(define (lambda x) x)", "(define-global lambda (lambda 1 1 (local x 0 0)))");
+    try f.expectExpands("(lambda 1)", "(call (global lambda) (const 1))");
+    // R7RS 5.4 が誤りの例に挙げる形も、最上位では受け付ける。前の形式の意味は変わらない。
+    try f.expectExpands(
+        "(begin (define begin list) (begin 1 2))",
+        "(seq (define-global begin (global list)) (call (global begin) (const 1) (const 2)))",
+    );
+    try f.expectExpands("(define define 3)", "(define-global define (const 3))");
+    try f.expectExpands("(define x 1)", "(call (global define) (global x) (const 1))");
+    // `set!` の対象にはならないままである。定義した後は変数なので、代入できる。
+    try f.expectFails("(set! quote 1)", "bad set!: quote is a syntactic keyword and cannot be assigned");
+    try f.expectExpands("(set! if 6)", "(set-global if (const 6))");
+}
+
+test "the cell a global names is chosen when the form is expanded" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // 先に参照された名前の定義と、REPL 自身の変数の再定義と `set!` は、同じセルを使う。
+    const use = try expand(&f.ctx, a, try f.read("(lambda () (g))"));
+    const cell = use.lambda.body.call.operator.global_ref;
+    try std.testing.expectEqual(cell, (try expand(&f.ctx, a, try f.read("(define g 1)"))).global_define.cell);
+    try std.testing.expectEqual(cell, (try expand(&f.ctx, a, try f.read("(define (g) 2)"))).global_define.cell);
+    try std.testing.expectEqual(cell, (try expand(&f.ctx, a, try f.read("(set! g 3)"))).global_set.cell);
+    // インポートした変数への定義と `set!` は、新しいセルで遮蔽する。前に展開した
+    // コードは元のセルを指したままである。
+    const car_use = try expand(&f.ctx, a, try f.read("(lambda () car)"));
+    const imported = car_use.lambda.body.global_ref;
+    const shadow = (try expand(&f.ctx, a, try f.read("(define car 5)"))).global_define.cell;
+    try std.testing.expect(shadow != imported);
+    try std.testing.expectEqual(shadow, (try expand(&f.ctx, a, try f.read("car"))).global_ref);
+    const cdr_use = try expand(&f.ctx, a, try f.read("(lambda () cdr)"));
+    const assigned = (try expand(&f.ctx, a, try f.read("(set! cdr 5)"))).global_set.cell;
+    try std.testing.expect(assigned != cdr_use.lambda.body.global_ref);
+    try std.testing.expectEqual(assigned, (try expand(&f.ctx, a, try f.read("cdr"))).global_ref);
+    // 値の式の中の同じ名前は、定義される変数を指す。
+    const recursive = try expand(&f.ctx, a, try f.read("(define (cons x) (cons x))"));
+    try std.testing.expectEqual(recursive.global_define.cell, recursive.global_define.value.lambda.body.call.operator.global_ref);
 }
 
 test "a form that is not a proper list is refused" {
@@ -775,13 +831,17 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     for ([_][]const u8{ "5", "#t", "(quote foo)", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
     try std.testing.expectEqual(0, f.ctx.code_roots.items.len);
     f.ctx.collectIdle();
-    try std.testing.expectEqual(0, f.ctx.heap.count);
+    // 残るのは、名前 `x` を解決したときに REPL の表に作った、未束縛のセル1つだけである。
+    // セルは定数ではなく、表がルートとして持つ。
+    try std.testing.expectEqual(1, f.ctx.heap.count);
     // クォートしたリストがその例である。対象はデータそのもので、周りの `quote` 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
     try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
-    try std.testing.expectEqual(4, f.ctx.heap.count);
+    // セルと、読んだ4つのペア。
+    try std.testing.expectEqual(5, f.ctx.heap.count);
     f.ctx.collectIdle();
-    try std.testing.expectEqual(2, f.ctx.heap.count);
+    // セルと、データの2つのペア。
+    try std.testing.expectEqual(3, f.ctx.heap.count);
     try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
     // 定数を作るもう一方の箇所: すでに値である形式。
     const closure = try f.ctx.heap.create(value_mod.Closure, .{ .lambda = undefined, .env = null });
@@ -789,7 +849,8 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     try std.testing.expectEqual(closure, itself.constant.asClosure().?);
     try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
     f.ctx.collectIdle();
-    try std.testing.expectEqual(3, f.ctx.heap.count);
+    // セル、データの2つのペア、クロージャ。
+    try std.testing.expectEqual(4, f.ctx.heap.count);
 }
 
 test "a program nested deeper than the Zig stack allows still expands" {

@@ -1,0 +1,76 @@
+# Slice 2j: a global variable is a cell, and the REPL's define and set! follow
+# the table of docs/design/frontend.md (the REPL). A define or a set! of the
+# REPL's own variable assigns its cell, so code defined before sees the new
+# value. A define or a set! of an imported variable (a primitive) shadows it
+# with a new cell, so code defined before keeps the primitive.
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。失敗した定義の後の振る舞いは、
+# src/machine.zig の単体テストが確かめる。
+
+# REPL 自身の変数の再定義は、先に定義した手続きに見える。
+(define (ping n) (if (= n 0) 'done (pong (- n 1)))) (define (pong n) (ping n)) (define (ping n) 'fixed) (pong 2)
+fixed
+
+(define counter 0) (define (bump!) (set! counter (+ counter 1))) (set! counter 1) (bump!) counter
+2
+
+# 前方参照は、後の定義を見る。定義されないままなら、呼んだときに未束縛である。
+(define (f) (g)) (define (g) 1) (f)
+1
+
+(define (f) x) (f)
+error: unbound variable: x
+
+(define (f) (set! z 1)) (f)
+error: unbound variable: z
+
+(define (f) (set! z 1)) (define z 0) (f) z
+1
+
+# プリミティブはインポートした束縛なので、define と set! は遮蔽する。先に定義した
+# 手続きは、元のプリミティブを見続ける。遮蔽されたセルを指すのは先に展開したコード
+# だけなので、ステップごとに GC する方式で、そのセルが回収されないことも確かめる。
+(define (f) (car '(1))) (define car 5) (f)
+1
+
+(define (f) (car '(1))) (set! car 5) (f)
+1
+
+(define car 5) car
+5
+
+(set! car cdr) (car '(1 2))
+(2)
+
+# 遮蔽した後の名前は REPL 自身の変数なので、再定義は先に定義した手続きに見える。
+(define car 5) (define (f) car) (define car 6) (f)
+6
+
+# 定義される手続きの中の同じ名前は、新しい変数を指す。元のプリミティブを指すと、
+# (car 2) は型のエラーになる。
+(define (car x) (if (= x 0) 'done (car (- x 1)))) (car 3)
+done
+
+# 特殊形式の名前への最上位の定義は、新しい変数を束縛する(R7RS 5.3.1)。
+(define if 5) if
+5
+
+(define if 5) (if 1 2)
+error: not a procedure
+
+(define (f) 1) (define if f) (if)
+1
+
+# R7RS 5.4 が誤りの例に挙げる形。最上位では受け付け、後ろの形式は新しい変数を見る。
+(define define 3) define
+3
+
+(begin (define begin list) (begin 1 2))
+(1 2)
+
+# 特殊形式は変数でないので、set! の対象にはならない。
+(set! if 5)
+error: bad set!: if is a syntactic keyword and cannot be assigned
+
+(set! nope 1)
+error: unbound variable: nope
