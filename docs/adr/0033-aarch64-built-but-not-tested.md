@@ -4,6 +4,8 @@
 - 日付: 2026-10-12
 
 > 2026-10-12 追記: 本文の決定の段落は、aarch64 のクロスコンパイルのビルドに、スライス 1j-3 の `dist` が入るまで機械による検査が無いと書いている。スライス 1j-3a で `zig build dist` が入った。`dist` は aarch64-linux-musl、aarch64-windows、aarch64-macos を含む、[ADR-0010](0010-ci-cd-and-release-strategy.md) の一覧の全ターゲットを `ReleaseSafe` でビルドし、`full.yml` が PR を ready にしたとき、`main` への push、手動起動で走らせる([ADR-0034](0034-release-shape.md))。全コミットの `ci.yml` では走らせないので、ビルドが通ることの検査は、全コミットでなく、この頻度で入った。aarch64 の実行ファイルは、引き続きどこでも実行しない。結果の欄の「`full.yml` を変えずに済む」は、`dist` のジョブを足したため、この追記以降は当てはまらない(aarch64 の実行を足さないという決定の範囲では、`full.yml` を変えていない)。また、本文の選択肢にある「煙試験」は、このリポジトリの用語ではスモークテストと書く。決定は変わらない。
+>
+> 2026-10-13 追記: `full.yml` は `main` への push で走らなくなった。起動は、PR を ready にしたときと手動だけである([ADR-0036](0036-windows-tests-in-the-slow-tier.md))。2026-10-12 の追記の「`full.yml` が PR を ready にしたとき、`main` への push、手動起動で走らせる」のうち `main` への push と、本文の選択肢の「`full.yml`(層2、準備完了と `main` への push)」の起動の記述は、この追記以降は当てはまらない。`dist` は、ready のとき、手動、タグの push(`release.yml`)で走る。決定は変わらない。
 
 ## 背景
 
