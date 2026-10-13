@@ -61,7 +61,7 @@ case("A-A3 three rows and three steps dropped", True, lambda h: (
 case("A-A6 the on: block deleted", True, lambda h: h.edit(
     CI, lambda s: s.replace("on:\n  push:\n    branches: [main]\n  pull_request:\n", "", 1)))
 case("A-A9 the matrix expands to no job", True, lambda h: h.edit(
-    CI, lambda s: s.replace("os: [ubuntu-latest, windows-latest]", "os: []", 1)))
+    CI, lambda s: s.replace("os: [ubuntu-latest]", "os: []", 1)))
 case("A-A4 pull_request removed", True, lambda h: h.edit(
     CI, lambda s: s.replace("  pull_request:\n", "", 1)))
 case("A-A5 branches points nowhere", True, lambda h: h.edit(

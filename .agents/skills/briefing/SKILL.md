@@ -61,7 +61,7 @@ description: 現在の状況を短いダッシュボードで報告する。Issu
 | [owner/repo#18](url) | マージ待ち | 成功 | あなた |
 | [owner/repo#19](url) | レビュー待ち | 実行中 | 私 |
 
-- [owner/repo#18](url): CI は ubuntu 成功、windows 成功(abc1234)。レビューの未対応は、必須 0、推奨 0、任意 1。
+- [owner/repo#18](url): CI は ubuntu 成功、Full(slow、dist、windows)成功(どちらも abc1234 で、PR の先頭と一致)。レビューの未対応は、必須 0、推奨 0、任意 1。
 - [owner/repo#19](url): CI の結果は未確認(head が進んだため)。
 
 ### Issue

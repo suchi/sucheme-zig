@@ -48,16 +48,17 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Why: 止まらないジョブは、GitHub の既定の上限(6時間)まで走り続ける。直近の
-    # 実行は、Linux も Windows も1分から4分で終わっていた(キャッシュが空の回を含む)。
+    # 実行は、1分から4分で終わっていた(キャッシュが空の回を含む)。
     # 20分は実績の約5倍で、止まらないジョブを失敗として終わらせる。
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         # Why: Windows のテストは full.yml に移した。private リポジトリでは実行分数が月の
-        # 枠に計上され、Windows は Linux の2倍で数えるので、全 push の検査から外した
-        # (docs/plans/0015-ci-minutes-reduction.md、docs/adr/0010 の追記)。Windows は
-        # PR を ready にするときと手動で full.yml が走らせる。
+        # 枠に計上され、見積りでは Windows のジョブが合計の半分を超えていたので、全 push
+        # の検査から外した。見積りは Windows を Linux の2倍で数えた(倍率は未確認。
+        # docs/plans/0015-ci-minutes-reduction.md、docs/adr/0036)。Windows は PR を
+        # ready にするときと手動で full.yml が走らせる。
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
