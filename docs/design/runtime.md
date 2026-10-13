@@ -219,7 +219,7 @@ REPL 自身の環境を漏らすと、REPL で `define` したセルが回収さ
 | ルート | 内訳 | 入るスライス |
 | --- | --- | --- |
 | 機械のレジスタ | 環境、継続、値(制御は節点を指し、節点はヒープの外にある)。動的点 | 段階1。動的点は 2d |
-| `Context` のルートの表(`Context.mark`) | 大域環境の値。REPL の構文環境。ライブラリの登録表と各ライブラリの環境。コードの定数(`Context.code_roots`)。読み込みの作業リスト。送出された値(`Context.raised`) | 大域環境とコードの定数は段階1。REPL の構文環境は 2i。登録表は 2m。作業リストは 2m と 2n。送出された値は 2b |
+| `Context` のルートの表(`Context.mark`) | 大域変数のセル(遮蔽したインポートのセルを含む。2j)。REPL の構文環境。ライブラリの登録表と各ライブラリの環境。コードの定数(`Context.code_roots`)。読み込みの作業リスト。送出された値(`Context.raised`) | 大域環境とコードの定数は段階1。REPL の構文環境は 2i。登録表は 2m。作業リストは 2m と 2n。送出された値は 2b |
 
 機械の実行をまたいでヒープの値を持つものは、すべて `Context` のルートの表に入れる。送出された値は、`Interpreter.evalPrint` が失敗の時点で文字列に整形するが、次の行の始めに空にするまでヒープを指し続けるので、この表に入る。展開器は機械の実行をまたいで状態を持たない。ライブラリの本体を走らせるときも、読む、展開する、機械で走らせる、の順に処理し、走らせる間に展開器の作業状態が残らないようにする。新しいヒープの型は、それを入れるスライスが、下の走査関数の生成の検査と、ストレスモードと、作業リストの容量0のテストを通す。
 
@@ -385,9 +385,9 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 
 プリミティブは2種に分かれる。純粋プリミティブは引数から値を計算して返すだけである。機械操作プリミティブは機械の状態を直接書き換える。後者は `apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval` `exit` である。
 
-純粋プリミティブの呼び出し規約は、段階1の時点で次のとおりである(コードが正で、`src/value.zig` の `Primitive` と `Services`、`src/machine.zig` の `apply` にある)。`Primitive` は引数の個数の範囲(`min_args` と `max_args`)を省略できない形で持ち、機械が呼び出しの前に1か所で検査する。範囲外の個数ではプリミティブの本体を呼ばない。`call` は `Services`(ヒープと、呼び出しの間だけ使える一時領域)と引数を受け取り、確保は `Services.heap` の API だけで行う。失敗は Zig の `error`(`PrimitiveError`)で返し、機械が条件に写す。これは「Zig の `error` を使うのは確保の失敗だけ」とする上の方針の、ハンドラが入る段階2までの暫定の形である。段階2で、戻り値を「値・条件オブジェクト・機械の外側の失敗」の3つを区別できる形に移す。置き換える場所は、各プリミティブの `return error.X` と `apply` の写像に限られる([0010](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の「エラー」)。
+プリミティブの呼び出し規約は次のとおりである(コードが正で、`src/value.zig` の `Primitive` と `MachineOp` と `Services`、`src/machine.zig` の `apply` にある)。`Primitive` は引数の個数の範囲(`min_args` と `max_args`)を省略できない形で持ち、機械が呼び出しの前に1か所で検査する。範囲外の個数ではプリミティブの本体を呼ばない。本体 `body` は、純粋プリミティブなら `.pure` の関数、機械操作プリミティブなら `.machine` の操作の名前(`MachineOp`)である。`.pure` の関数は `Services`(ヒープと、呼び出しの間だけ使える一時領域)と引数を受け取り、確保は `Services.heap` の API だけで行う。失敗は Zig の `error`(`PrimitiveError`)で返し、機械が条件に写す。これは「Zig の `error` を使うのは確保の失敗だけ」とする上の方針の、ハンドラが入る段階2までの暫定の形である。段階2で、戻り値を「値・条件オブジェクト・機械の外側の失敗」の3つを区別できる形に移す。置き換える場所は、各プリミティブの `return error.X` と `apply` の写像に限られる([0010](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の「エラー」)。
 
-このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。
+このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。残りは、[0014](../plans/0014-phase2-core-language.md) の「スライス」の表が割り当てるスライスが、`MachineOp` に変種を足して入れる。操作は `src/machine.zig` の `apply` が行う。
 
 `exit` が機械操作プリミティブなのは、R7RS 6.14 が「Runs all outstanding dynamic-wind after procedures, terminates the running program, and communicates an exit value to the operating system」と規定しているためである。同項の Note は「Because of the requirement to run handlers, this procedure is not just the operating system's exit procedure」と明示している。`after` は Scheme 手続きなので、純粋プリミティブの中からは呼べない。`exit` は未処理例外と同じ巻き戻しの経路を使って最外まで戻り、その途中で各 `after` を呼ぶ。`emergency-exit` は同節が「Terminates the program without running any outstanding dynamic-wind after procedures」とするので純粋プリミティブでよい。
 

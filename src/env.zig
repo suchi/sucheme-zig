@@ -202,7 +202,7 @@ test "a define of the REPL's own variable gives the same cell each time" {
 }
 
 /// A primitive for the tests: what it does is never asked.
-const probe: value_mod.Primitive = .{ .name = "probe", .min_args = 0, .max_args = 0, .call = undefined };
+const probe: value_mod.Primitive = .{ .name = "probe", .min_args = 0, .max_args = 0, .body = .{ .pure = undefined } };
 
 test "a primitive's cell is made when its name is first resolved, and then kept" {
     var f: Fixture = undefined;

@@ -388,17 +388,28 @@ pub const Services = struct {
 ///
 /// 引数の個数の範囲は、省略できない。省略時の既定を可変長にすると、書き忘れた関数が
 /// 範囲外の添字を読む。個数は機械が呼び出しの前に検査する(`Machine.apply`)ので、
-/// `call` が受け取る `args` は、必ずこの範囲に収まる。
+/// 本体が受け取る `args` は、必ずこの範囲に収まる。
 pub const Primitive = struct {
     /// The type of the function that is the primitive.
     pub const Fn = *const fn (services: *const Services, args: []const Value) PrimitiveError!Value;
+
+    /// What the primitive does when it is applied.
+    /// 純粋プリミティブと機械操作プリミティブは、呼び出しの規約が違う。前者は `Services`
+    /// と引数から値を返し、後者は機械のレジスタを書き換える(docs/design/runtime.md の
+    /// 機械操作プリミティブ)。後者の操作は `Machine.apply` にあり、ここには名前だけを置く。
+    pub const Body = union(enum) {
+        /// A function from the arguments to a value.
+        pure: Fn,
+        /// An operation the machine carries out on its registers.
+        machine: MachineOp,
+    };
 
     name: []const u8,
     /// The fewest arguments the primitive takes.
     min_args: u8,
     /// The most arguments the primitive takes, or null when there is no limit.
     max_args: ?u8,
-    call: Fn,
+    body: Body,
 
     /// Whether the primitive takes `count` arguments.
     pub fn acceptsCount(self: *const Primitive, count: usize) bool {
@@ -406,6 +417,14 @@ pub const Primitive = struct {
         const max = self.max_args orelse return true;
         return count <= max;
     }
+};
+
+/// The operations of the machine that a primitive can name as its body.
+/// 残りの変種は、docs/plans/0014-phase2-core-language.md の「スライス」の表が
+/// 機械操作プリミティブを割り当てたスライスが、それぞれ足す。
+pub const MachineOp = enum {
+    /// `(apply proc arg1 ... args)` (R7RS 6.10).
+    apply,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -786,11 +805,11 @@ test "each kind answers only to its own accessor" {
 }
 
 test "procedures answer only to their own accessor" {
-    const prim: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .call = struct {
+    const prim: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .body = .{ .pure = struct {
         fn f(_: *const Services, _: []const Value) PrimitiveError!Value {
             return .unspecified_value;
         }
-    }.f };
+    }.f } };
     const pv: Value = .fromPrimitive(&prim);
     try std.testing.expectEqual(Kind.primitive, pv.kind());
     try std.testing.expectEqualStrings("p", pv.asPrimitive().?.name);
@@ -826,24 +845,24 @@ test "a primitive takes the numbers of arguments from its minimum to its maximum
             return .unspecified_value;
         }
     }.f;
-    const one_or_two: Primitive = .{ .name = "a", .min_args = 1, .max_args = 2, .call = &nop };
+    const one_or_two: Primitive = .{ .name = "a", .min_args = 1, .max_args = 2, .body = .{ .pure = &nop } };
     try std.testing.expect(!one_or_two.acceptsCount(0));
     try std.testing.expect(one_or_two.acceptsCount(1));
     try std.testing.expect(one_or_two.acceptsCount(2));
     try std.testing.expect(!one_or_two.acceptsCount(3));
-    const none: Primitive = .{ .name = "b", .min_args = 0, .max_args = 0, .call = &nop };
+    const none: Primitive = .{ .name = "b", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } };
     try std.testing.expect(none.acceptsCount(0));
     try std.testing.expect(!none.acceptsCount(1));
     // 上限がなければ、`u8` を超える個数でも受け付ける。
-    const any: Primitive = .{ .name = "c", .min_args = 0, .max_args = null, .call = &nop };
+    const any: Primitive = .{ .name = "c", .min_args = 0, .max_args = null, .body = .{ .pure = &nop } };
     try std.testing.expect(any.acceptsCount(0));
     try std.testing.expect(any.acceptsCount(1000));
-    const two_or_more: Primitive = .{ .name = "d", .min_args = 2, .max_args = null, .call = &nop };
+    const two_or_more: Primitive = .{ .name = "d", .min_args = 2, .max_args = null, .body = .{ .pure = &nop } };
     try std.testing.expect(!two_or_more.acceptsCount(1));
     try std.testing.expect(two_or_more.acceptsCount(2));
     try std.testing.expect(two_or_more.acceptsCount(1000));
     // `u8` の上限は、usize の個数と比べても回り込まない。
-    const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .call = &nop };
+    const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .body = .{ .pure = &nop } };
     try std.testing.expect(max.acceptsCount(255));
     try std.testing.expect(!max.acceptsCount(256));
 }
@@ -888,8 +907,8 @@ const Samples = struct {
     items_b: [1]Value = .{.{ .fixnum = 1 }},
     vector_a: Vector = undefined,
     vector_b: Vector = undefined,
-    prim_a: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .call = &nop },
-    prim_b: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .call = &nop },
+    prim_a: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } },
+    prim_b: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } },
     body: Node = .{ .constant = .unspecified },
     lambda: Lambda = undefined,
     closure_a: Closure = undefined,

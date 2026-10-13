@@ -249,11 +249,11 @@ test "write prints a procedure in a form read rejects" {
     const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
     var closure: value_mod.Closure = .{ .lambda = &lambda, .env = null };
     try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
-    const prim: value_mod.Primitive = .{ .name = "plus", .min_args = 0, .max_args = null, .call = struct {
+    const prim: value_mod.Primitive = .{ .name = "plus", .min_args = 0, .max_args = null, .body = .{ .pure = struct {
         fn call(_: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
             return .unspecified_value;
         }
-    }.call };
+    }.call } };
     try std.testing.expectEqualStrings("#<procedure plus>", try f.written(&buf, .fromPrimitive(&prim)));
     // リストの中では、ほかと同じ 1 つの要素である。
     const l = try f.list(&.{ .fromPrimitive(&prim), .fromFixnum(1) }, Value.empty_list_value);

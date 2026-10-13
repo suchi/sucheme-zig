@@ -1,0 +1,15 @@
+# tests/scheme-slow/0014-apply-loop.txt の縮小版。同じ論理を、毎回の門で走る大きさで
+# 通す。apply を通した末尾呼び出しのループと、数千要素のリストを引数に並べる apply で、
+# GC が何度も走る(実行器は1ステップごとに GC するモードでも走らせる)。
+
+(define (loop n) (if (= n 0) 'done (apply loop (list (- n 1))))) (loop 5000)
+done
+
+(define (loop n) (if (= n 0) 'done (apply apply loop (list (list (- n 1)))))) (loop 5000)
+done
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 3000 '())) (list (apply + xs) (length (apply list xs)) (apply (lambda (a b . r) (list a b (length r))) xs))
+(4501500 3000 (1 2 2998))
+
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 1000 (list + '(1 2))))
+3
