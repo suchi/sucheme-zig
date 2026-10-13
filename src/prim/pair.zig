@@ -13,14 +13,14 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "cons", .min_args = 2, .max_args = 2, .call = &cons },
-    .{ .name = "car", .min_args = 1, .max_args = 1, .call = &car },
-    .{ .name = "cdr", .min_args = 1, .max_args = 1, .call = &cdr },
-    .{ .name = "pair?", .min_args = 1, .max_args = 1, .call = &isPair },
-    .{ .name = "null?", .min_args = 1, .max_args = 1, .call = &isNull },
-    .{ .name = "list", .min_args = 0, .max_args = null, .call = &list },
-    .{ .name = "length", .min_args = 1, .max_args = 1, .call = &length },
-    .{ .name = "list?", .min_args = 1, .max_args = 1, .call = &isList },
+    .{ .name = "cons", .min_args = 2, .max_args = 2, .body = .{ .pure = &cons } },
+    .{ .name = "car", .min_args = 1, .max_args = 1, .body = .{ .pure = &car } },
+    .{ .name = "cdr", .min_args = 1, .max_args = 1, .body = .{ .pure = &cdr } },
+    .{ .name = "pair?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isPair } },
+    .{ .name = "null?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isNull } },
+    .{ .name = "list", .min_args = 0, .max_args = null, .body = .{ .pure = &list } },
+    .{ .name = "length", .min_args = 1, .max_args = 1, .body = .{ .pure = &length } },
+    .{ .name = "list?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isList } },
 };
 
 /// The number of pairs in the chain `v`, or null when `v` is not a list: when the

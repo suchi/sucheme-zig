@@ -12,18 +12,18 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "+", .min_args = 0, .max_args = null, .call = &add },
-    .{ .name = "-", .min_args = 1, .max_args = null, .call = &subtract },
-    .{ .name = "*", .min_args = 0, .max_args = null, .call = &multiply },
-    .{ .name = "=", .min_args = 1, .max_args = null, .call = comparison(.eq) },
-    .{ .name = "<", .min_args = 1, .max_args = null, .call = comparison(.lt) },
-    .{ .name = ">", .min_args = 1, .max_args = null, .call = comparison(.gt) },
-    .{ .name = "<=", .min_args = 1, .max_args = null, .call = comparison(.lte) },
-    .{ .name = ">=", .min_args = 1, .max_args = null, .call = comparison(.gte) },
-    .{ .name = "quotient", .min_args = 2, .max_args = 2, .call = division(.quotient) },
-    .{ .name = "remainder", .min_args = 2, .max_args = 2, .call = division(.remainder) },
-    .{ .name = "modulo", .min_args = 2, .max_args = 2, .call = division(.modulo) },
-    .{ .name = "number?", .min_args = 1, .max_args = 1, .call = &isNumber },
+    .{ .name = "+", .min_args = 0, .max_args = null, .body = .{ .pure = &add } },
+    .{ .name = "-", .min_args = 1, .max_args = null, .body = .{ .pure = &subtract } },
+    .{ .name = "*", .min_args = 0, .max_args = null, .body = .{ .pure = &multiply } },
+    .{ .name = "=", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.eq) } },
+    .{ .name = "<", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.lt) } },
+    .{ .name = ">", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.gt) } },
+    .{ .name = "<=", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.lte) } },
+    .{ .name = ">=", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.gte) } },
+    .{ .name = "quotient", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.quotient) } },
+    .{ .name = "remainder", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.remainder) } },
+    .{ .name = "modulo", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.modulo) } },
+    .{ .name = "number?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isNumber } },
 };
 
 /// A result of the wide arithmetic, as a fixnum if it fits.

@@ -14,10 +14,10 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "vector?", .min_args = 1, .max_args = 1, .call = &isVector },
-    .{ .name = "vector", .min_args = 0, .max_args = null, .call = &vector },
-    .{ .name = "vector-length", .min_args = 1, .max_args = 1, .call = &vectorLength },
-    .{ .name = "vector-ref", .min_args = 2, .max_args = 2, .call = &vectorRef },
+    .{ .name = "vector?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isVector } },
+    .{ .name = "vector", .min_args = 0, .max_args = null, .body = .{ .pure = &vector } },
+    .{ .name = "vector-length", .min_args = 1, .max_args = 1, .body = .{ .pure = &vectorLength } },
+    .{ .name = "vector-ref", .min_args = 2, .max_args = 2, .body = .{ .pure = &vectorRef } },
 };
 
 /// `(vector? obj)`.

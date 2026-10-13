@@ -10,8 +10,8 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "not", .min_args = 1, .max_args = 1, .call = &not },
-    .{ .name = "boolean?", .min_args = 1, .max_args = 1, .call = &isBoolean },
+    .{ .name = "not", .min_args = 1, .max_args = 1, .body = .{ .pure = &not } },
+    .{ .name = "boolean?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isBoolean } },
 };
 
 /// `(not obj)`: true only of `#f` (R7RS 6.3).
@@ -47,7 +47,7 @@ fn others(f: *test_support.Fixture) ![8]Value {
         }
     }.call;
     const prim = struct {
-        const p: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .call = &nop };
+        const p: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } };
     };
     return .{
         .fromFixnum(0),

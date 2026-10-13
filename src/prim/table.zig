@@ -73,7 +73,7 @@ test "the table holds every primitive of every family" {
         for (family) |p| {
             var found = false;
             for (all) |q| {
-                if (std.mem.eql(u8, p.name, q.name) and p.call == q.call) found = true;
+                if (std.mem.eql(u8, p.name, q.name) and std.meta.eql(p.body, q.body)) found = true;
             }
             try std.testing.expect(found);
         }

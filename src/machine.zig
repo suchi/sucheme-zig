@@ -184,7 +184,9 @@ pub const Machine = struct {
             defer if (count > small.len) self.scratch.free(operands);
             fill(operands, args);
             const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
-            const result = prim.call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e);
+            const result = switch (prim.body) {
+                .pure => |call| call(&services, operands),
+            } catch |e| return primitiveFailure(ctx, prim, e);
             return .{ .value = result };
         }
         const closure = operator.asClosure() orelse
@@ -574,11 +576,11 @@ const Probe = struct {
     var failure: ?value_mod.PrimitiveError = null;
 
     /// Takes one or two arguments.
-    const primitive: value_mod.Primitive = .{ .name = "probe", .min_args = 1, .max_args = 2, .call = &call };
+    const primitive: value_mod.Primitive = .{ .name = "probe", .min_args = 1, .max_args = 2, .body = .{ .pure = &call } };
     /// Takes two arguments or more.
-    const variadic: value_mod.Primitive = .{ .name = "probe*", .min_args = 2, .max_args = null, .call = &call };
+    const variadic: value_mod.Primitive = .{ .name = "probe*", .min_args = 2, .max_args = null, .body = .{ .pure = &call } };
     /// Takes no argument.
-    const nullary: value_mod.Primitive = .{ .name = "probe0", .min_args = 0, .max_args = 0, .call = &call };
+    const nullary: value_mod.Primitive = .{ .name = "probe0", .min_args = 0, .max_args = 0, .body = .{ .pure = &call } };
 
     fn call(services: *const value_mod.Services, args: []const Value) value_mod.PrimitiveError!Value {
         calls += 1;
@@ -590,7 +592,7 @@ const Probe = struct {
 
     /// Allocates until the limit refuses.
     /// GC はプリミティブの途中では走らない。
-    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = 0, .call = &fill };
+    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = 0, .body = .{ .pure = &fill } };
 
     fn fill(services: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
         var list: Value = .empty_list_value;

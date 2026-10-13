@@ -13,7 +13,7 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "procedure?", .min_args = 1, .max_args = 1, .call = &isProcedure },
+    .{ .name = "procedure?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isProcedure } },
 };
 
 /// `(procedure? obj)`: true of the procedures made by `lambda` and of the ones
