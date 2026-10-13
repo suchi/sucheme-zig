@@ -170,9 +170,13 @@ const Expander = struct {
 
     /// `(begin expression ...)` (R7RS 4.2.3).
     /// トップレベルでは、中の形式もトップレベルにあるので、そこに定義を書ける(R7RS 5.3)。
+    /// トップレベルの `(begin)` は、定義が 0 個の `(begin <definition>*)` であり
+    /// (R7RS 7.1.6)、何もしない。式の位置の `begin` は、式を 1 つ以上要る。
     fn begin(self: *Expander, task: Task, items: []const Value) Error!void {
-        if (items.len < 2)
+        if (items.len < 2) {
+            if (task.pos == .top) return self.constant(task, .unspecified_value);
             return self.ctx.raise("bad begin: expected (begin expression ...)", .{});
+        }
         const pos: Position = if (task.pos == .top) .top else .expression;
         try self.sequence(task.dest, items[1..], task.env, pos, 0);
     }
@@ -486,6 +490,19 @@ test "a definition in a body named like a special form is a variable of the body
     try f.expectFails("(lambda () (define (f) 1) (define (define) 2) (f))", "bad define: define is defined in a body whose definitions it begins");
 }
 
+test "begin with nothing in it is allowed at the top level only" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 最上位の `(begin)` は、何もしない定義の並びである(R7RS 7.1.6)。
+    try f.expectExpands("(begin)", "(const #<unspecified>)");
+    try f.expectExpands("(begin (begin) 1)", "(seq (const #<unspecified>) (const 1))");
+    // 式の位置の `begin` は、式を 1 つ以上要る。
+    try f.expectFails("(f (begin))", "bad begin: expected (begin expression ...)");
+    try f.expectFails("(lambda () (begin))", "bad begin: expected (begin expression ...)");
+    try f.expectFails("(lambda () (begin) 1)", "bad begin: expected (begin expression ...)");
+}
+
 test "a literal is a constant, and a name is a global variable when nothing binds it" {
     var f: Fixture = undefined;
     try f.init();
@@ -667,7 +684,6 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     try f.expectFails("(set! x)", "bad set!: expected (set! name expression)");
     try f.expectFails("(set! 1 2)", "bad set!: the name must be an identifier");
     try f.expectFails("(set! if 1)", "bad set!: if is a syntactic keyword and cannot be assigned");
-    try f.expectFails("(begin)", "bad begin: expected (begin expression ...)");
     try f.expectFails("if", "if is a syntactic keyword and cannot be used as a variable");
     try f.expectFails("(define)", "bad define: expected (define name expression)");
     try f.expectFails("(define x)", "bad define: expected (define name expression)");

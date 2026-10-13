@@ -71,3 +71,10 @@ error: bad set!: if is a syntactic keyword and cannot be assigned
 
 (define if 5)
 error: bad define: if is a syntactic keyword and cannot be redefined
+
+# 最上位の空の begin は、何もしない(R7RS 7.1.6)。
+(begin)
+<no output>
+
+(begin (begin) 1)
+1

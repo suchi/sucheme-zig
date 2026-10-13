@@ -88,7 +88,12 @@ error: bad set!: the name must be an identifier
 (set! if 1)
 error: bad set!: if is a syntactic keyword and cannot be assigned
 
+# 最上位の空の begin は、定義が 0 個の (begin <definition>*) で、何もしない
+# (R7RS 7.1.6)。式の位置では、式が 1 つ以上要る。
 (begin)
+<no output>
+
+(+ 1 (begin))
 error: bad begin: expected (begin expression ...)
 
 (begin (foo) 1)
