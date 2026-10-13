@@ -91,7 +91,7 @@
 - [ ] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3)
 - [ ] 完全な `call/cc` と `dynamic-wind`
 - [ ] `values` と `call-with-values`、複数値のオブジェクト
-- [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
+- [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
 - [ ] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md))
 - [ ] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる
 - [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)

@@ -480,6 +480,15 @@ pub const Primitive = struct {
 pub const MachineOp = enum {
     /// `(apply proc arg1 ... args)` (R7RS 6.10).
     apply,
+    /// `(with-exception-handler handler thunk)` (R7RS 6.11).
+    with_exception_handler,
+    /// `(raise obj)` (R7RS 6.11).
+    raise,
+    /// `(raise-continuable obj)` (R7RS 6.11).
+    raise_continuable,
+    /// `(error message obj ...)` (R7RS 6.11): makes a condition and raises it
+    /// as `raise` does.
+    @"error",
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -629,6 +638,26 @@ pub const Kont = struct {
         /// operand.
         /// `args` には、それより前に届いた値が入る。
         call: CallStep,
+        /// The value is what the body of a dynamic extent returned; the dynamic
+        /// point goes back to this one, and the value passes on as it is.
+        /// `with-exception-handler` が、点を積む前の点を持たせて置く(docs/design/runtime.md の
+        /// 動的範囲の通常終了)。
+        dynamic_exit: ?*const DynPoint,
+        /// The value is what a handler called by `raise` or `raise-continuable`
+        /// returned.
+        handler_return: HandlerReturn,
+    };
+
+    pub const HandlerReturn = struct {
+        /// The dynamic point of the raise, before the shift was put on it.
+        /// `raise-continuable` なら、ここに戻してから値を渡す。
+        dyn: ?*const DynPoint,
+        /// What was raised.
+        /// `raise` のハンドラが戻ったときの二次例外の irritant にする。
+        raised: Value,
+        /// Whether the raise was `raise-continuable`.
+        /// 偽なら、ハンドラが戻ることは二次例外である(R7RS 6.11)。
+        continuable: bool,
     };
 
     pub const CallStep = struct {
@@ -639,10 +668,57 @@ pub const Kont = struct {
     };
 };
 
+/// One point of the dynamic state: the list of what the dynamic extents around
+/// the running code have put in place, innermost first (ADR-0016).
+/// 点は不変で、親へのリンクで連なる。機械のレジスタが最も内側の点を指し、`null` は
+/// 何も置かれていない状態である。現在の例外ハンドラは独立したレジスタでなく、この列から
+/// `currentHandler` で導く。点の種別のうち、`dynamic-wind` の点とパラメータの点は、
+/// それを使うスライス(2e、2g)が足す。
+pub const DynPoint = struct {
+    parent: ?*const DynPoint,
+    /// The number of points from this one out, itself included.
+    /// 継続の起動で共通祖先を求めるために持つ(2e)。`u32` で足りるのは、点が1つ数十
+    /// バイトで、ヒープの上限(`heap.max_host_limit` の 1 GiB)に 2^32 個は入らないから
+    /// である。
+    depth: u32,
+    /// The handler point that is the current exception handler at this point,
+    /// or null when there is none.
+    /// 点を作るときに決め、以後変えない。ハンドラの点では自分自身、ハンドラ切り替えの
+    /// 点では切り替え先、それ以外の点では親のものである(ADR-0016 の表)。
+    current_handler: ?*const DynPoint,
+    kind: Variant,
+
+    pub const Variant = union(enum) {
+        /// Installed by `with-exception-handler`: inside this point, the
+        /// procedure is the current exception handler.
+        handler: Value,
+        /// Put on by `raise` and `raise-continuable` while a handler runs: the
+        /// current handler becomes this handler point, the one that was current
+        /// when the handler being called was installed (R7RS 6.11).
+        handler_shift: ?*const DynPoint,
+    };
+};
+
+/// The current exception handler at `point`: a handler point, or null when no
+/// handler is installed.
+/// 列は起動直後に空(`null`)である。省略可能型を直接展開せず、必ずこれを通す。空のときに
+/// 展開すると、ハンドラの無い状態での送出が安全ビルドで panic する(docs/design/runtime.md
+/// の動的状態)。
+pub fn currentHandler(point: ?*const DynPoint) ?*const DynPoint {
+    const p = point orelse return null;
+    return p.current_handler;
+}
+
+/// The depth a point put on `parent` has.
+pub fn depthAbove(parent: ?*const DynPoint) u32 {
+    const p = parent orelse return 1;
+    return p.depth + 1;
+}
+
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, RecordType, Record };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, RecordType, Record };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -719,6 +795,21 @@ pub const Cell = struct {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "the current handler of no point is none, and of a point is the one the point holds" {
+    try std.testing.expectEqual(null, currentHandler(null));
+    var handler: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+    handler.current_handler = &handler;
+    try std.testing.expectEqual(&handler, currentHandler(&handler).?);
+    const shift: DynPoint = .{ .parent = &handler, .depth = 2, .current_handler = null, .kind = .{ .handler_shift = null } };
+    try std.testing.expectEqual(null, currentHandler(&shift));
+}
+
+test "a point is one deeper than its parent, and the first is at depth 1" {
+    try std.testing.expectEqual(1, depthAbove(null));
+    const p: DynPoint = .{ .parent = null, .depth = 3, .current_handler = null, .kind = .{ .handler_shift = null } };
+    try std.testing.expectEqual(4, depthAbove(&p));
 }
 
 test "a fixnum reads back as itself" {

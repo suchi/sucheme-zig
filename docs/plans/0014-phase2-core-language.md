@@ -744,13 +744,13 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2a | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み | [#78](https://github.com/suchi/sucheme-zig/pull/78) |
 | 2b | main に入った。ADR-0035 は採用 | [#79](https://github.com/suchi/sucheme-zig/pull/79) |
 | 2c | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。`apply` が1ステップの中で確保する件は、ADR-0031 の追記に記録して受け入れ、段階3で直す | |
-| 2d | 未着手 | |
+| 2d | 実装済み。敵対的レビューで受けた推奨と任意の指摘を反映した。再レビューの前 | [#84](https://github.com/suchi/sucheme-zig/pull/84) |
 | 2e | 未着手 | |
 | 2f | 未着手 | |
 | 2g | 未着手 | |
 | 2h | 実装済み。敵対的レビューの前。プリミティブの名前は `%make-record-type` `%make-record` `%record?` `%record-ref` `%record-set!`(`src/prim/record.zig`) | |
-| 2i | 実装済み。敵対的レビューの前 | |
-| 2j | 実装済み。敵対的レビューの前 | |
+| 2i | main に入った | [#80](https://github.com/suchi/sucheme-zig/pull/80) |
+| 2j | main に入った | [#82](https://github.com/suchi/sucheme-zig/pull/82) |
 | 2k | 未着手 | |
 | 2l | 未着手 | |
 | 2m | 未着手 | |
@@ -767,6 +767,6 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 系列ごとの次の作業。各スライスの PR は、自分の系列の行だけを書き換える(「重なりの確認」)。
 
-- 実行時の系列(2b から 2h): 2b と 2c は main に入った。2d は進めている。2h は実装済みで、敵対的レビューを PR で受けている。
+- 実行時の系列(2b から 2h): 2b、2c、2h は main に入った。2d は実装済みで、敵対的レビュー中。2e は 2d のマージ後に始める。
 - マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2i と 2j は main に入った。2k に進める。
 - ライブラリの系列(2m から 2q): 2j のマージ後に 2m から始める。

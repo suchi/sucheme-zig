@@ -96,69 +96,69 @@
 
 # サロゲートは文字ではない。
 (integer->char 55296)
-error: argument out of range in integer->char
+error: argument out of range in integer->char 55296
 
 (integer->char 56320)
-error: argument out of range in integer->char
+error: argument out of range in integer->char 56320
 
 (integer->char 57343)
-error: argument out of range in integer->char
+error: argument out of range in integer->char 57343
 
 # #x10FFFF より大きい整数と、負の整数。
 (integer->char 1114112)
-error: argument out of range in integer->char
+error: argument out of range in integer->char 1114112
 
 (integer->char -1)
-error: argument out of range in integer->char
+error: argument out of range in integer->char -1
 
 (integer->char 4294967296)
-error: argument out of range in integer->char
+error: argument out of range in integer->char 4294967296
 
 (integer->char 9223372036854775807)
-error: argument out of range in integer->char
+error: argument out of range in integer->char 9223372036854775807
 
 (integer->char -9223372036854775808)
-error: argument out of range in integer->char
+error: argument out of range in integer->char -9223372036854775808
 
 # 型の誤り。範囲より先に調べる。
 (char->integer 97)
-error: wrong type of argument to char->integer
+error: wrong type of argument to char->integer 97
 
 (char->integer "a")
-error: wrong type of argument to char->integer
+error: wrong type of argument to char->integer "a"
 
 (char->integer 'a)
-error: wrong type of argument to char->integer
+error: wrong type of argument to char->integer a
 
 (integer->char #\a)
-error: wrong type of argument to integer->char
+error: wrong type of argument to integer->char #\a
 
 (integer->char "97")
-error: wrong type of argument to integer->char
+error: wrong type of argument to integer->char "97"
 
 (integer->char '())
-error: wrong type of argument to integer->char
+error: wrong type of argument to integer->char ()
 
 # 引数の個数は機械が検査する。
 (char?)
 error: wrong number of arguments to char?
 
 (char? #\a #\b)
-error: wrong number of arguments to char?
+error: wrong number of arguments to char? #\a #\b
 
 (char->integer)
 error: wrong number of arguments to char->integer
 
 (char->integer #\a #\b)
-error: wrong number of arguments to char->integer
+error: wrong number of arguments to char->integer #\a #\b
 
 (integer->char)
 error: wrong number of arguments to integer->char
 
 (integer->char 97 98)
-error: wrong number of arguments to integer->char
+error: wrong number of arguments to integer->char 97 98
 
 # エラーは、その行がそれまでに出力したものの後に続く。
 (char->integer #\a) (integer->char 55296)
 97
-error: argument out of range in integer->char
+error: argument out of range in integer->char 55296
