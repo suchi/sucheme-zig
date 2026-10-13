@@ -674,7 +674,8 @@ pub const LocalBinding = struct {
 /// global bindings).
 /// GC ヒープにある。コア IR の節点(アリーナにある)はセルを指すが、GC は節点を
 /// たどらない。それでも回収されないのは、作られたセルがすべて、REPL の束縛の表か、
-/// 遮蔽されたインポートの束縛を持ち続ける表から到達できるからである(src/env.zig)。
+/// 遮蔽されたインポートの束縛を持ち続ける表か、`define-syntax` が表から外したセルを
+/// 持ち続ける表から到達できるからである(src/env.zig)。
 pub const Cell = struct {
     /// The name, for the message of an error.
     name: SymbolId,

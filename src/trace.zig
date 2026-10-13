@@ -420,9 +420,10 @@ test "of the code types only the node holds values, which the context's constant
         if (T == value_mod.Node or T == value_mod.GlobalAssign) {
             // Why: 節点と大域変数への代入は、大域変数のセルを指す(スライス 2j)。セルは
             // GC ヒープにあるが、GC が節点をたどらなくても回収されない。作られたセルは
-            // すべて、REPL の束縛の表か、遮蔽されたインポートのセルの表から到達できる
-            // (src/env.zig の `Global.mark`)。この不変条件は、tests/scheme/ の
-            // ステップごとに GC する方式で、遮蔽されたプリミティブのセルを先に定義した
+            // すべて、REPL の束縛の表か、遮蔽されたインポートのセルの表か、`define-syntax`
+            // が表から外したセルの表から到達できる(src/env.zig の `Global.mark`)。この
+            // 不変条件は、tests/scheme/ のステップごとに GC する方式で、遮蔽された
+            // プリミティブのセルや、マクロに置き換えられた変数のセルを、先に定義した
             // 手続きから読むケースが確かめる。
             try std.testing.expectEqual(Class.follow, class.?);
         } else if (T == value_mod.Primitive) {

@@ -49,6 +49,11 @@ pub const Global = struct {
     /// REPL がその束縛を遮蔽しても、遮蔽の前に展開したコードがセルを指し続ける。
     /// 2m では、インポート元のライブラリの表がこれを持つ。
     imported_cells: std.ArrayList(*Cell) = .empty,
+    /// The cells of the REPL's own variables that a `define-syntax` has
+    /// replaced with a macro.
+    /// 前に展開したコードが、まだセルを指しうる(R7RS 5.4: 既存の参照は変わらない)。
+    /// GC はコードをたどらないので、ここが持ち続ける。
+    displaced_cells: std.ArrayList(*Cell) = .empty,
     /// The syntactic bindings that the expansion in progress has replaced, with
     /// what each name was bound to before, in order.
     /// 特殊形式やマクロの名前への `define` と、`define-syntax` が記録する。展開が失敗
@@ -87,8 +92,15 @@ pub const Global = struct {
     /// docs/design/frontend.md の REPL の表のとおり、インポートした束縛は遮蔽し、REPL
     /// 自身の束縛は差し替える。どちらも、表の束縛を REPL 自身のマクロにすることである。
     /// 前に展開したコードが指すセルは変わらない(同節: 既存の参照は変わらない)。
+    /// REPL 自身の変数のセルは、表から外れても `displaced_cells` が持ち続ける。インポート
+    /// した変数のセルは、すでに `imported_cells` にある。
     pub fn defineSyntax(self: *Global, alloc: std.mem.Allocator, id: SymbolId, m: *value_mod.Macro) error{OutOfMemory}!void {
-        try self.replaced.append(alloc, .{ .id = id, .previous = self.bindings.get(id) });
+        const previous = self.bindings.get(id);
+        if (previous) |b| switch (b.denotation) {
+            .global => |cell| if (!b.imported) try self.displaced_cells.append(alloc, cell),
+            .special, .macro, .local => {},
+        };
+        try self.replaced.append(alloc, .{ .id = id, .previous = previous });
         try self.bindings.put(alloc, id, .{ .denotation = .{ .macro = m }, .imported = false });
     }
 
@@ -154,12 +166,13 @@ pub const Global = struct {
     }
 
     /// Tells the collector of every cell and macro: those the table binds, the
-    /// cells it imported and has since shadowed, and what the expansion in
-    /// progress has replaced.
+    /// cells it imported or made and has since shadowed or replaced, and what
+    /// the expansion in progress has replaced.
     pub fn mark(self: *const Global, marker: *Marker) void {
         var it = self.bindings.valueIterator();
         while (it.next()) |b| markBinding(marker, b.*);
         for (self.imported_cells.items) |cell| marker.object(Cell, cell);
+        for (self.displaced_cells.items) |cell| marker.object(Cell, cell);
         for (self.replaced.items) |r| if (r.previous) |b| markBinding(marker, b);
     }
 

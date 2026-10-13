@@ -1,0 +1,73 @@
+# スライス 2k: `define-syntax` の位置。最上位では REPL の最上位の束縛を、本体の先頭では
+# その本体の rib を、マクロに束縛する(R7RS 5.4)。本体の走査は展開と交互に進むので、
+# 定義に展開されるマクロの適用も、本体の定義になる(docs/design/frontend.md の展開器)。
+
+# 本体の先頭の define-syntax(R7RS 5.4 の例を lambda で書いたもの)。
+((lambda (x y) (define-syntax swap! (syntax-rules () ((swap! a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))) (swap! x y) (list x y)) 1 2)
+(2 1)
+
+# 本体のマクロは、本体の局所変数を指せる。内側で同じ名前を束縛しても、定義側の x を指す。
+((lambda (x) (define-syntax getx (syntax-rules () ((_) x))) ((lambda (x) (getx)) 2)) 1)
+1
+
+# 定義に展開されるマクロの適用は、本体の定義である。
+((lambda () (define-syntax def (syntax-rules () ((_ n v) (define n v)))) (def a 1) (def b 2) (+ a b)))
+3
+
+# テンプレートが導入した名前の定義は、利用側の同じ綴りの定義と別の変数である。
+((lambda () (define-syntax def-tmp (syntax-rules () ((_ v) (define tmp v)))) (define tmp 1) (def-tmp 2) tmp))
+1
+
+# 本体のマクロは、その本体の外から見えない。
+(define (f) (define-syntax m (syntax-rules () ((_) 1))) (m)) (list (f) m)
+error: unbound variable: m
+
+# 最上位では、後の define-syntax は、それより前に展開したコードの参照を変えない(R7RS 5.4)。
+(define (g) (h 1)) (define (h x) x) (define-syntax h (syntax-rules () ((_ x) 'macro))) (list (g) (h 2))
+(1 macro)
+
+# インポートした束縛(プリミティブ)を遮蔽する。先に定義した手続きはプリミティブを見続ける。
+(define (f l) (car l)) (define-syntax car (syntax-rules () ((_ x) 'mine))) (list (f '(1 2)) (car 5))
+(1 mine)
+
+# マクロの名前への define は、新しい変数を束縛する(R7RS 5.3.1)。
+(define-syntax m (syntax-rules () ((_) 1))) (define m 2) m
+2
+
+# 最上位の begin の中の define-syntax は、同じ begin の後ろの形式から見える。
+(begin (define-syntax m (syntax-rules () ((_) 7))) (m))
+7
+
+# マクロの名前は変数でなく、set! の対象でもない。
+(define-syntax m (syntax-rules () ((_) 1))) m
+error: m is a syntactic keyword and cannot be used as a variable
+
+(define-syntax m (syntax-rules () ((_) 1))) (set! m 2)
+error: bad set!: m is a syntactic keyword and cannot be assigned
+
+# R7RS 5.4 が誤りとする形: 定義の判定に使ったマクロの名前を、同じ本体の後の定義が束縛する。
+# 同節の例の let-syntax を、外側の本体の define-syntax で書いた。
+((lambda () (define-syntax foo (syntax-rules () ((_ (proc args ...) body ...) (define proc (lambda (args ...) body ...))))) ((lambda (x) (foo (plus x y) (+ x y)) (define foo x) (plus foo x)) 3)))
+error: bad define: foo is defined in a body whose definitions it begins
+
+# 本体で同じ名前を2回定義することは、define-syntax と define の組でも誤りである(R7RS 5.3.2)。
+((lambda () (define-syntax a (syntax-rules () ((_) 1))) (define a 2) a))
+error: bad define: a is already defined earlier in this body
+
+((lambda () (define a 2) (define-syntax a (syntax-rules () ((_) 1))) a))
+error: bad define-syntax: a is already defined earlier in this body
+
+# 定義だけの本体には、返す値が無い。
+((lambda () (define-syntax m (syntax-rules () ((_) 1)))))
+error: bad lambda: a body needs an expression after its definitions
+
+# 式の位置と、本体の式の後ろには、define-syntax を書けない。
+(list (define-syntax m (syntax-rules () ((_) 1))))
+error: bad define-syntax: a definition is only allowed at the top level or at the start of a body
+
+((lambda () 1 (define-syntax m (syntax-rules () ((_) 1))) 2))
+error: bad define-syntax: a definition is only allowed at the top level or at the start of a body
+
+# 変換子の先頭は、その場所で syntax-rules を意味しなければならない。
+((lambda (syntax-rules) (define-syntax m (syntax-rules () ((_) 1))) 1) 0)
+error: bad define-syntax: the transformer must be a syntax-rules form
