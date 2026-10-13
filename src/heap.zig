@@ -4,7 +4,8 @@
 //! すべてのオブジェクトは `Cell` である。ヘッダの後ろにオブジェクト本体が続く。
 //! ヘッダは1本のリストにつながれていて、スイープはこのリストをたどる。ヒープは、
 //! セルと、セルが所有するペイロードのバイト数を計上し、計上量が上限を超える確保を
-//! 拒否する。コードとシンボルを置くインタプリタのアリーナは、計上の外にある。
+//! 拒否する。ただし送出のための確保(`Budget.raise_reserve`)は、上限を予約の分だけ
+//! 超えてよい(ADR-0035)。コードとシンボルを置くインタプリタのアリーナは、計上の外にある。
 //!
 //! ヒープは確保の内部では GC を実行しない。GC は `shouldCollect` で要求され、
 //! `collect` で実行される。どちらも、機械が2つのステップの間、つまり作りかけの値が
@@ -29,12 +30,14 @@ const object_types = value_mod.heap_types;
 
 pub const Error = error{
     OutOfMemory,
-    /// The allocation would take the account past the limit.
+    /// The allocation would take the account past what its budget allows: the
+    /// limit, or for an allocation for raising, the limit and the reserve.
     HeapLimit,
 };
 
 pub const Options = struct {
-    /// The most bytes the heap accounts for.
+    /// The most bytes the heap accounts for, except for the allocations for
+    /// raising, which may pass it by `raise_reserve`.
     limit: usize = default_limit,
     /// The account at which the first collection is asked for, and the least
     /// that any later one is asked for at.
