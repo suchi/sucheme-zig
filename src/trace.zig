@@ -253,6 +253,56 @@ test "the arguments gathered so far are followed through their value and their l
     try r.expect(&.{ addr(&p), addr(&older) });
 }
 
+test "a condition is followed through its message and its irritants" {
+    var bytes = "m".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var irritant: Pair = .{ .car = .fromFixnum(1), .cdr = .empty_list_value };
+    const condition: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .{ .pair = &irritant } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Condition, &condition);
+    try r.expect(&.{ addr(&message), addr(&irritant) });
+    // irritant が空なら、メッセージだけが報告される。種別は報告されない。
+    const bare: value_mod.Condition = .{ .kind = .file, .message = .fromString(&message), .irritants = .empty_list_value };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Condition, &bare);
+    try q.expect(&.{addr(&message)});
+    try std.testing.expectEqual(0, q.symbol_count);
+}
+
+test "a syntactic environment is followed through its parent and its first binding" {
+    var outer: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
+    var local: value_mod.LocalBinding = .{ .rib_depth = 2, .index = 0 };
+    var binding: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(3))), .denotation = .{ .local = &local }, .next = null };
+    const env: value_mod.SyntacticEnv = .{ .parent = &outer, .rib_depth = 2, .bindings = &binding };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.SyntacticEnv, &env);
+    try r.expect(&.{ addr(&outer), addr(&binding) });
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.SyntacticEnv, &outer);
+    try q.expect(&.{});
+}
+
+test "a syntactic binding is followed through its identifier, its local variable and the next binding" {
+    var local: value_mod.LocalBinding = .{ .rib_depth = 1, .index = 4 };
+    var older: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(1))), .denotation = .{ .special = .@"if" }, .next = null };
+    const binding: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(2))), .denotation = .{ .local = &local }, .next = &older };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.SyntacticBinding, &binding);
+    try r.expect(&.{ addr(&local), addr(&older) });
+    try std.testing.expectEqual(1, r.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(2))), r.symbols[0]);
+    // 特殊形式と大域変数の意味は、ヒープのものを指さない。大域変数の名前はシンボルである。
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.SyntacticBinding, &older);
+    try q.expect(&.{});
+    const global: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(1))), .denotation = .{ .global = @fromBackingInt(@intCast(5)) }, .next = null };
+    var g: Recorder = .{};
+    interpreter.children(&g, value_mod.SyntacticBinding, &global);
+    try g.expect(&.{});
+    try std.testing.expectEqual(2, g.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(5))), g.symbols[1]);
+}
+
 test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Pair).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Closure).?);
@@ -260,15 +310,26 @@ test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Kont).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Args).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Value).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Condition).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Condition).?);
     // コードと、その周りの単純なデータは、決してたどられない。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*value_mod.Condition).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Call).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(usize).?);
     try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(SymbolId).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(?*const Kont).?);
+}
+
+test "the classes of the types of the syntactic environment" {
+    // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。上の
+    // テストに足すと上限を超えるので、分けてある。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticEnv).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticBinding).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
+    // 局所変数は、数を2つ持つだけである。
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.LocalBinding).?);
 }
 
 test "a type the walk cannot sort has no class" {

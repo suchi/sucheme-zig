@@ -12,8 +12,9 @@
 //! 自分のフレームが外れてから走る。
 //!
 //! ヒープは2つのステップの間で GC し、ステップの中では GC しない(ADR-0031)。その時点で
-//! プログラムが持っているものは、大域束縛とコードの定数を除けばレジスタがすべてである。
-//! だから GC にほかのルートは要らない。
+//! プログラムが持っているものは、コンテキストのルートの表(大域束縛、コードの定数、
+//! 送出された値)を除けばレジスタがすべてである。だから GC にほかのルートは要らない
+//! (ADR-0035)。
 
 const std = @import("std");
 const tier = @import("tier.zig");
@@ -425,7 +426,7 @@ const Fixture = struct {
     /// `src` raises an error whose condition has `message`.
     fn expectFails(self: *Fixture, message: []const u8, src: []const u8) !void {
         try std.testing.expectError(error.Raised, self.eval(src));
-        try std.testing.expectEqualStrings(message, self.ctx.raised.?.message);
+        try std.testing.expectEqualStrings(message, self.ctx.diagnostic());
     }
 };
 
@@ -883,22 +884,96 @@ test "a primitive that allocates past the limit ends the line with heap limit ex
     try f.expectInt(3, "(+ 1 2)");
 }
 
+/// Fills the heap of `f` with `n` pairs that the constants of the context keep.
+fn fillKept(f: *Fixture, n: usize) !void {
+    var list: Value = .empty_list_value;
+    for (0..n) |_| list = try f.ctx.heap.cons(.fromFixnum(0), list);
+    try f.ctx.keepConstant(list);
+}
+
+test "an error raised at the limit of the heap makes its condition from the reserve, and the condition outlives a collection" {
+    const limit = 1024;
+    for ([_]usize{ 4096, 0 }) |capacity| {
+        // 上限の手前まで埋める量を探す。`(car 5)` を評価できるだけの余裕はあるが、条件と
+        // そのメッセージを上限の内側には作れない量である。埋める量を固定しないのは、
+        // オブジェクトの大きさが変わっても、この縁にとどまるためである。
+        var found = false;
+        var n: usize = 0;
+        while (!found) : (n += 1) {
+            var f: Fixture = undefined;
+            try f.initWith(.{ .limit = limit, .min_threshold = limit, .work_capacity = capacity });
+            defer f.deinit();
+            fillKept(&f, n) catch break;
+            if (f.eval("(car 5)")) |_| return error.TestUnexpectedResult else |e| switch (e) {
+                error.Raised => {},
+                // リーダが式を読めないほど埋まった。これより先の量は試せない。
+                error.HeapLimit => break,
+                else => return e,
+            }
+            // GC が余裕の無さを見つけた量では、別のエラーになる。
+            if (!std.mem.eql(u8, "wrong type of argument to car", f.ctx.diagnostic())) continue;
+            if (f.ctx.heap.accounted <= limit) continue;
+            found = true;
+            // 条件はヒープにあり、上限を超えた分は予約から取った。
+            try std.testing.expectEqual(1, f.ctx.heap.countOf(value_mod.Condition));
+            try std.testing.expect(f.ctx.heap.accounted <= limit + f.ctx.heap.options.raise_reserve);
+            // 送出された値はルートなので、GC のあとも残り、読める。
+            f.ctx.collectIdle();
+            try std.testing.expectEqual(1, f.ctx.heap.countOf(value_mod.Condition));
+            try std.testing.expectEqual(1, f.ctx.heap.countOf(value_mod.String));
+            try std.testing.expectEqualStrings("wrong type of argument to car", f.ctx.diagnostic());
+            // 手放せば回収される。
+            f.ctx.clearDiagnostic();
+            f.ctx.collectIdle();
+            try std.testing.expectEqual(0, f.ctx.heap.countOf(value_mod.Condition));
+            try std.testing.expectEqual(0, f.ctx.heap.countOf(value_mod.String));
+            // 対照: 予約が無ければ、同じ量で条件を作れず、送出できないまま行が終わる。
+            var g: Fixture = undefined;
+            try g.initWith(.{ .limit = limit, .min_threshold = limit, .work_capacity = capacity, .raise_reserve = 0 });
+            defer g.deinit();
+            try fillKept(&g, n);
+            try std.testing.expectError(error.ReserveExhausted, g.eval("(car 5)"));
+            try std.testing.expect(g.ctx.raised == null);
+        }
+        try std.testing.expect(found);
+    }
+}
+
+test "a condition is made in the heap, not in the arena that lasts the session" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var r: reader_mod.Reader = .init("(car 5)");
+    const sink: reader_mod.Sink = .{ .alloc = f.ctx.persist, .heap = &f.ctx.heap, .symbols = &f.ctx.symbols };
+    const node = try expand.expand(&f.ctx, f.arena.allocator(), (try r.next(f.arena.allocator(), sink)).?);
+    // 展開を済ませてから数え始める。数えるのは、機械が走って送出する間の確保だけである。
+    var counting: std.testing.FailingAllocator = .init(f.arena.allocator(), .{});
+    const persist = f.ctx.persist;
+    f.ctx.persist = counting.allocator();
+    defer f.ctx.persist = persist;
+    for (0..3) |_| {
+        try std.testing.expectError(error.Raised, f.machine.run(node));
+        try std.testing.expectEqualStrings("wrong type of argument to car", f.ctx.diagnostic());
+    }
+    try std.testing.expectEqual(0, counting.allocations);
+}
+
 test "an error raised deep in the recursion leaves the machine, and the next run is not affected" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     _ = try f.eval("(define (boom n) (if (= n 0) (nope) (+ 1 (boom (- n 1)))))");
     try std.testing.expectError(error.Raised, f.eval("(boom 1000)"));
-    const condition = Value.fromCondition(f.ctx.raised.?);
+    const condition = f.ctx.raised.?;
     try std.testing.expectEqual(value_mod.Kind.condition, condition.kind());
-    try std.testing.expectEqualStrings("unbound variable: nope", condition.asCondition().?.message);
+    try std.testing.expectEqualStrings("unbound variable: nope", condition.asCondition().?.messageText());
     // 失敗した実行の継続は、実行とともに消える。実行は空の継続から始まる。
     f.machine.peak_depth = 0;
     try f.expectInt(3, "(+ 1 2)");
     try std.testing.expect(f.machine.peak_depth <= 4);
     // あとのエラーは、自前の条件オブジェクトを送出する。
     try f.expectFails("not a procedure", "(1)");
-    try std.testing.expect(f.ctx.raised.? != condition.asCondition().?);
+    try std.testing.expect(f.ctx.raised.?.asCondition().? != condition.asCondition().?);
 }
 
 test "a call in tail position does not grow the continuation" {
@@ -1078,7 +1153,9 @@ test "a recursion that never returns ends in an error at the limit of the heap, 
     defer f.deinit();
     _ = try f.eval("(define (forever n) (+ 1 (forever n)))");
     try f.expectFails("heap limit exceeded", "(forever 0)");
-    try std.testing.expect(f.ctx.heap.peak <= 256 * 1024);
+    // Why: 上限に当たった確保のあとで作る条件は、送出のための予約から取るので、上限を
+    // 予約の分だけ超えうる(ADR-0035)。予約を除いた部分は上限に収まる。
+    try std.testing.expect(f.ctx.heap.peak <= 256 * 1024 + f.ctx.heap.options.raise_reserve);
     try f.expectInt(3, "(+ 1 2)");
     // その前に作った大域変数はまだあり、エラーはまた起こりうる。
     _ = try f.eval("(define (id x) x)");

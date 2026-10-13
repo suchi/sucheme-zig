@@ -82,14 +82,16 @@ error: bad define: a definition is only allowed at the top level or at the start
 (define (f) (if #t (define x 1)) 2) (f)
 error: bad define: a definition is only allowed at the top level or at the start of a body
 
-(define (f x) (define x 1) x)
-error: bad define: x is already a parameter or defined earlier in this body
+# 本体の定義の領域は本体の全体なので、仮引数と同じ名前の定義は仮引数を隠す
+# (R7RS 5.3.2)。同じ名前を本体で2回定義することは誤りである(同節)。
+(define (f x) (define x 1) x) (f 5)
+1
 
 (define (f) (define x 1) (define x 2) x)
-error: bad define: x is already a parameter or defined earlier in this body
+error: bad define: x is already defined earlier in this body
 
-(define (f) (define if 1) 1)
-error: bad define: if is a syntactic keyword and cannot be redefined
+(define (f) (define if -) (if 1)) (f)
+-1
 
 (define (f) (define 1 2) 1)
 error: bad define: the name must be an identifier

@@ -76,23 +76,24 @@ error: wrong number of arguments: expected at least 1, got 0
 (lambda (a . a) a)
 error: bad lambda: duplicate parameter: a
 
-(lambda (a . if) 1)
-error: bad lambda: if is a syntactic keyword and cannot be a parameter
+# 特殊形式と同じ綴りでも、余りを受ける変数になる(スライス 2i)。
+((lambda (a . if) (car if)) 1 2)
+2
 
-(lambda if 1)
-error: bad lambda: if is a syntactic keyword and cannot be a parameter
+((lambda if (car if)) 3)
+3
 
 (lambda (a . 1) a)
 error: bad lambda: the parameters must be an identifier or a list of identifiers
 
-(lambda r (define r 1) r)
-error: bad define: r is already a parameter or defined earlier in this body
+((lambda r (define r 1) r) 7)
+1
 
 (define (f . 1) 1)
 error: bad define: the parameters must be an identifier or a list of identifiers
 
-(define (f . if) 1)
-error: bad define: if is a syntactic keyword and cannot be a parameter
+(define (f . if) if) (f 1 2)
+(1 2)
 
 (lambda (a . r))
 error: bad lambda: expected (lambda (name ...) body ...)
