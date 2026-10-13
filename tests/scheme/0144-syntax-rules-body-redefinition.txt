@@ -30,6 +30,10 @@ error: bad define: _ is defined after a syntax definition of this body that depe
 ((lambda () (define _ 0) (define-syntax m (syntax-rules () ((_ _ ...) (list _ ...)))) (m 1 2)))
 (1 2)
 
+# テンプレートが導入した `_` の定義は別名を束縛するので、利用側の `_` の意味を変えない。
+((lambda () (define-syntax def (syntax-rules () ((k v) (define _ v)))) (define-syntax m (syntax-rules () ((_ _ ...) (list 1)))) (def 0) (m 1 2)))
+(1)
+
 # 変換子が読むのに使っていない名前の定義は、誤りではない。
 ((lambda () (define-syntax m (syntax-rules () ((_ a ...) (list a ...)))) (define x 0) (m 1 2)))
 (1 2)
