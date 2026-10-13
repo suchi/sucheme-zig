@@ -494,9 +494,27 @@ test "a define or a set! of a primitive that fails leaves the name with the prim
     try f.expectInt(1, "(car '(1 2))");
     try f.expectFails("unbound variable: nope", "(set! cdr (nope))");
     try f.expectInt(2, "(car (cdr '(1 2)))");
-    // 特殊形式の名前には元の値が無いので、失敗した定義の後は未束縛の変数である。
+    // 特殊形式の名前には元の値が無いので、値の式が実行時に失敗した定義の後は、
+    // 未束縛の変数である(展開は成功しているので、遮蔽は戻らない)。
     try f.expectFails("unbound variable: nope", "(define if (nope))");
     try f.expectFails("unbound variable: if", "if");
+}
+
+test "a define of a special form's name whose expansion fails leaves the special form" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("bad quote: expected (quote datum)", "(define if (quote))");
+    try f.expectInt(1, "(if #t 1 2)");
+    // 略記の定義の本体の展開が失敗しても同じである。
+    try f.expectFails("bad quote: expected (quote datum)", "(define (lambda x) (quote))");
+    try f.expectInt(7, "((lambda (y) y) 7)");
+    // 同じ形式の中の後ろの部分の展開が失敗したときも、その形式の遮蔽は戻る。
+    try f.expectFails("bad quote: expected (quote datum)", "(begin (define begin 1) (quote))");
+    try f.expectInt(3, "(begin 1 3)");
+    // 展開が成功した定義の遮蔽は残る。
+    try f.expectInt(5, "(define if 5) if");
+    try f.expectFails("not a procedure", "(if 1 2)");
 }
 
 test "a global's cell holds what the definition gives it, across forms" {

@@ -42,8 +42,12 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
     var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
     const root = try ctx.persist.create(Node);
+    // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
+    // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
+    errdefer ctx.globals.undoShadows();
     try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
     while (e.stack.pop()) |task| try e.step(task);
+    ctx.globals.commitShadows();
     return root;
 }
 

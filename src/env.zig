@@ -49,6 +49,28 @@ pub const Global = struct {
     /// REPL がその束縛を遮蔽しても、遮蔽の前に展開したコードがセルを指し続ける。
     /// 2m では、インポート元のライブラリの表がこれを持つ。
     imported_cells: std.ArrayList(*Cell) = .empty,
+    /// The special forms that the expansion in progress has shadowed, in order.
+    /// 展開が失敗したら `undoShadows` が元に戻し、成功したら `commitShadows` が捨てる。
+    shadowed_specials: std.ArrayList(ShadowedSpecial) = .empty,
+
+    const ShadowedSpecial = struct { id: SymbolId, special: value_mod.Special };
+
+    /// Gives back the special forms that the expansion that failed shadowed.
+    ///
+    /// Why: 展開が失敗した形式は実行されないので、その形式が作った遮蔽は、残すと特殊形式を
+    /// 理由なく失わせる(`(define if (quote))` の後で `if` が未束縛になる)。遮蔽したセルは
+    /// 表から外れ、次の GC で回収される。この中の確保はしない(表の項目は既にある)。
+    /// 値の式が実行時に失敗した場合は、展開が成功しているので、ここでは戻さない。
+    pub fn undoShadows(self: *Global) void {
+        while (self.shadowed_specials.pop()) |s| {
+            if (self.bindings.getPtr(s.id)) |b| b.* = .{ .denotation = .{ .special = s.special }, .imported = true };
+        }
+    }
+
+    /// Keeps what the expansion that succeeded shadowed.
+    pub fn commitShadows(self: *Global) void {
+        self.shadowed_specials.clearRetainingCapacity();
+    }
 
     /// Imports the special form `special` under the name `id`.
     pub fn importSpecial(self: *Global, alloc: std.mem.Allocator, id: SymbolId, special: value_mod.Special) error{OutOfMemory}!void {
@@ -84,12 +106,16 @@ pub const Global = struct {
     /// REPL 自身の変数なら、そのセルである(R7RS 5.3.1: 束縛済みで構文でない変数への
     /// 定義は代入と同じ)。インポートした変数なら、REPL の新しいセルで遮蔽する。
     /// 特殊形式の名前なら、新しい未束縛のセルで遮蔽する(同節: 構文キーワードへの
-    /// 定義は新しい場所を束縛する)。
+    /// 定義は新しい場所を束縛する)。この遮蔽は記録し、展開が失敗したら `undoShadows` が
+    /// 戻す。
     pub fn defineTarget(self: *Global, alloc: std.mem.Allocator, heap: *Heap, id: SymbolId) Error!*Cell {
         const b = try self.binding(alloc, heap, id);
         return switch (b.denotation) {
             .global => |cell| if (b.imported) self.shadow(alloc, heap, id, cell.value) else cell,
-            .special => self.shadow(alloc, heap, id, .uninitialized_value),
+            .special => |special| {
+                try self.shadowed_specials.append(alloc, .{ .id = id, .special = special });
+                return self.shadow(alloc, heap, id, .uninitialized_value);
+            },
             .local => unreachable,
         };
     }
@@ -257,6 +283,29 @@ test "a special form's name is bound, cannot be assigned, and a define shadows i
     try std.testing.expectEqual(value_mod.Kind.uninitialized, cell.value.kind());
     try std.testing.expectEqual(cell, (try f.resolve(x)).global);
     try std.testing.expect(!f.global.isBound(x));
+}
+
+test "the shadow of a special form is undone when the expansion fails, and kept when it succeeds" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try f.global.importSpecial(f.arena.allocator(), x, .@"if");
+    try f.global.importSpecial(f.arena.allocator(), y, .lambda);
+    _ = try f.define(x);
+    _ = try f.define(y);
+    try std.testing.expect(!f.global.isBound(x));
+    f.global.undoShadows();
+    try std.testing.expectEqual(value_mod.Special.@"if", (try f.resolve(x)).special);
+    try std.testing.expectEqual(value_mod.Special.lambda, (try f.resolve(y)).special);
+    // 成功した展開の遮蔽は残る。確定のあとの失敗は、それを戻さない。
+    const kept = try f.define(x);
+    f.global.commitShadows();
+    f.global.undoShadows();
+    try std.testing.expectEqual(kept, (try f.resolve(x)).global);
+    // 同じ展開の中の2回目の定義は、REPL 自身の変数への定義なので、記録しない。
+    try std.testing.expectEqual(kept, try f.define(x));
+    f.global.undoShadows();
+    try std.testing.expectEqual(kept, (try f.resolve(x)).global);
 }
 
 test "a name only referenced is unbound, and is bound once its cell has a value" {
