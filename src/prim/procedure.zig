@@ -63,7 +63,7 @@ test "procedure? is false of everything that is not a procedure" {
     try std.testing.expect(!try callWith(.fromSymbol(@fromBackingInt(@intCast(0)))));
     try std.testing.expect(!try callWith(.fromCharacter('a')));
     try std.testing.expect(!try callWith(.unspecified_value));
-    var condition: value.Condition = .{ .message = "m" };
+    var condition: value.Condition = .{ .kind = .@"error", .message = .empty_list_value, .irritants = .empty_list_value };
     try std.testing.expect(!try callWith(.fromCondition(&condition)));
     var f: test_support.Fixture = undefined;
     f.init();
