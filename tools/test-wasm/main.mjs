@@ -166,6 +166,23 @@ test("a primitive's error reaches the output through the condition in the heap",
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// スライス 2d: 条件オブジェクトでない値も送出できる。ハンドラが無ければ、送出された値を
+// write の形で一行に書き、評価は続く(docs/design/runtime.md の例外の事例11)。ハンドラが
+// あれば、機械が検出する失敗もハンドラに届く。
+test("a raised value that is not a condition is reported as write shows it, and a handler catches what the machine finds", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(raise 42)"), [SCHEME_ERROR, "error: 42\n"]);
+  assert.deepEqual(h.run("(raise 'oops)"), [SCHEME_ERROR, "error: oops\n"]);
+  assert.deepEqual(h.run('(error "bad thing" 1 "two")'), [SCHEME_ERROR, 'error: bad thing 1 "two"\n']);
+  assert.deepEqual(h.run("(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))"), [OK, "42\n"]);
+  assert.deepEqual(
+    h.run("(define got #f) (with-exception-handler (lambda (c) (set! got c) 0) (lambda () (car 5)))"),
+    [SCHEME_ERROR, 'error: handler returned from non-continuable raise #<condition "wrong type of argument to car">\n'],
+  );
+  assert.deepEqual(h.run("(error-object-message got)"), [OK, '"wrong type of argument to car"\n']);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 test("invalid UTF-8 returns -3 with the position, and leaves the state unchanged", () => {
   const h = instantiate().init();
   assert.equal(h.run("(define kept 42)")[0], OK);
