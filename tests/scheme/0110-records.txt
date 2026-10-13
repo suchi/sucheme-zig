@@ -116,8 +116,8 @@ error: argument out of range in %make-record-type
 (%make-record-type 'a)
 error: wrong number of arguments to %make-record-type
 
-# 多くの GC を経ても、レコードとその型とフィールドは残る。到達しなくなったレコードは
-# 回収されるので、ループはヒープの上限に届かない。
+# 多くの GC を経ても、レコードとその型とフィールドは残る。到達しなくなったレコードが
+# 回収されることは、heap.zig の単体テストが固定する(このケースの規模は上限に届かない)。
 (define cell (%make-record-type 'cell 2)) (define (build n acc) (if (= n 0) acc (build (- n 1) (%make-record cell n acc)))) (define (sum r acc) (if (%record? r cell) (sum (%record-ref r cell 1) (+ acc (%record-ref r cell 0))) acc)) (sum (build 2000 '()) 0)
 2001000
 
