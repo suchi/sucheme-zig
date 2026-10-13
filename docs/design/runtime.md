@@ -154,7 +154,11 @@ GC の作業リストを計上の対象にできないのは、GC が走るの�
 
 Zig の `error` を使うのは確保の失敗だけとする。Scheme プログラムの誤り(型の誤り、範囲外)には使わない。これが横断的な不変条件の意味である。
 
-純粋なプリミティブも Scheme のエラーを送出できる経路が必要である。`(car 5)` の型エラーを Zig の `error` で返すと、不変条件により機械が評価を中断して例外ハンドラを起動せず、`(with-exception-handler (lambda (c) 'caught) (lambda () (car 5)))` が `'caught` にならない。プリミティブの戻り値は「値」「条件オブジェクト」「機械の外側の失敗」の3つを区別できる形にする。条件オブジェクトが返ったら機械は `raise` と同じ処理を行う。
+純粋なプリミティブも Scheme のエラーを送出できる経路が必要である。`(car 5)` の型エラーで機械が評価を中断すると、例外ハンドラが起動されず、`(with-exception-handler (lambda (c) 'caught) (lambda () (car 5)))` のハンドラに条件が届かない。
+
+段階2のスライス 2d の実装では、純粋プリミティブは失敗を Zig の `error`(`value.zig` の `PrimitiveError`)で返し、機械が `Machine.apply` の1か所で条件オブジェクトに写したうえで、機械の中で `raise` と同じ処理を行う([0014](../plans/0014-phase2-core-language.md) の合意を求める点の2)。プリミティブの戻り値を「値」「条件オブジェクト」「機械の外側の失敗」の3つにする形は採らなかった。写像が1か所に集まっているので、そこを送出に変えれば足り、プリミティブのファイルを書き換えずに済むからである。そのため上の「Zig の `error` は確保の失敗だけ」には、プリミティブの失敗という例外が残る。`PrimitiveError` の集合は、プリミティブが報告できる失敗の閉じた一覧である。機械が自分で検出する失敗(`not a procedure`、引数の個数、未束縛の変数、未初期化の変数、上限超過)も、`Context.raise` で条件を作ってステップを抜け、`Machine.run` がレジスタを書き戻してから現在のハンドラに渡す。どれも `raise` と同じく継続できない送出である。展開器とリーダの誤りは機械の外のエラーで、ハンドラでは捕まらない。
+
+上限超過は、機械のステップの先頭の GC が余裕の無さを見つけたときに送出する。そのあと GC が余裕を見つけるまでは、1回の実行の中で再び送出しない。送出したあとも、深い継続はハンドラの戻りのフレームから辿れるので、ハンドラの次のステップの GC がまた余裕の無さを見つけるからである。そのたびに送出すると、ハンドラは1歩も進めずに外側へ送出し直す。その間も、上限を超える確保は断られ、改めて上限超過として送出される。計上量はソフトな上限を超えているのでステップごとに GC が走るが、その費用は、上限に当たるまでの上限の 1/16 の確保に限られる。
 
 ### 送出のための予約領域
 
@@ -188,7 +192,9 @@ Zig の `error` を使うのは確保の失敗だけとする。Scheme プログ
 
 予約を別の計上にしないのは、条件オブジェクトを利用者が持ち続けられるからである。別の計上にすると、ハンドラが受け取った条件をリストに集めるプログラムで、生きている条件が予約を埋め、ヒープに余裕があるのに予約が尽きる。1つの計上なら、持ち続けた条件は通常の確保の余裕を減らすだけで、上限に当たれば上限超過として報告される。
 
-2b で予約から確保する地点は、条件オブジェクトとそのメッセージ(`Context.makeCondition`)だけである。表のほかの行は、ハンドラ切り替えの動的点と環境と継続フレームを 2d が、巻き戻しのフレームと経路の配列を 2e が、自分の地点に足す。大きさの 2b の初期値は `heap.default_raise_reserve` で、上限に達した状態で作れる条件のメッセージの長さは、そこから条件とメッセージの文字列のセルの大きさを引いた分までである。2d と 2e で測り直し、2e で決める。予約も尽きたときは、条件を作らずに Zig の `error.ReserveExhausted` を返し、`Context.raised` を空のままにする。Scheme のエラーとしては送出されないので、ハンドラを経ずにその行が終わり、診断は `heap limit exceeded` になる。設計では、これは上の「上限超過と確保の失敗」の回復不能の側である。ただし 2b の時点では、回復不能としては扱わず、上限超過と同じく次の行から続く(WASM では状態コード -1)。回復不能(WASM の -2、以後は `sucheme_reset` だけ)として扱う実装は 2e が引き受ける([0014](../plans/0014-phase2-core-language.md) の 2e の節)。
+2b で予約から確保する地点は、条件オブジェクトとそのメッセージ(`Context.makeCondition`)だけである。表のほかの行は、ハンドラ切り替えの動的点と環境と継続フレームを 2d が、巻き戻しのフレームと経路の配列を 2e が、自分の地点に足す。
+
+2d で足した地点は、`Machine.enterHandler` が積むハンドラ切り替えの点とハンドラの戻りのフレームとハンドラを呼ぶ引数の鎖、ハンドラがクロージャならそのフレームと余りの引数のリスト(`Machine.apply` に予約を渡す)、ハンドラが `raise` から戻ったときの二次例外の irritant のペアである。`error` が作る条件と irritant のリストは予約から取らない。irritant の数は呼び出しで決まり、予約で賄える量に収まらないからである。1回の送出とハンドラの呼び出しの確保は、数個のセルとメッセージの長さで決まる。初期値の 4 KiB は、上限に達した状態での送出とハンドラの呼び出しを数段重ねても足りるので、2d では変えない。上限に達した状態でハンドラを予約から呼べることは、`src/machine.zig` の単体テストが固定している。大きさの 2b の初期値は `heap.default_raise_reserve` で、上限に達した状態で作れる条件のメッセージの長さは、そこから条件とメッセージの文字列のセルの大きさを引いた分までである。2d と 2e で測り直し、2e で決める。予約も尽きたときは、条件を作らずに Zig の `error.ReserveExhausted` を返し、`Context.raised` を空のままにする。Scheme のエラーとしては送出されないので、ハンドラを経ずにその行が終わり、診断は `heap limit exceeded` になる。設計では、これは上の「上限超過と確保の失敗」の回復不能の側である。ただし 2b の時点では、回復不能としては扱わず、上限超過と同じく次の行から続く(WASM では状態コード -1)。回復不能(WASM の -2、以後は `sucheme_reset` だけ)として扱う実装は 2e が引き受ける([0014](../plans/0014-phase2-core-language.md) の 2e の節)。
 
 ### ルート集合
 
@@ -385,9 +391,9 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 
 プリミティブは2種に分かれる。純粋プリミティブは引数から値を計算して返すだけである。機械操作プリミティブは機械の状態を直接書き換える。後者は `apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval` `exit` である。
 
-プリミティブの呼び出し規約は次のとおりである(コードが正で、`src/value.zig` の `Primitive` と `MachineOp` と `Services`、`src/machine.zig` の `apply` にある)。`Primitive` は引数の個数の範囲(`min_args` と `max_args`)を省略できない形で持ち、機械が呼び出しの前に1か所で検査する。範囲外の個数ではプリミティブの本体を呼ばない。本体 `body` は、純粋プリミティブなら `.pure` の関数、機械操作プリミティブなら `.machine` の操作の名前(`MachineOp`)である。`.pure` の関数は `Services`(ヒープと、呼び出しの間だけ使える一時領域)と引数を受け取り、確保は `Services.heap` の API だけで行う。失敗は Zig の `error`(`PrimitiveError`)で返し、機械が条件に写す。これは「Zig の `error` を使うのは確保の失敗だけ」とする上の方針の、ハンドラが入る段階2までの暫定の形である。段階2で、戻り値を「値・条件オブジェクト・機械の外側の失敗」の3つを区別できる形に移す。置き換える場所は、各プリミティブの `return error.X` と `apply` の写像に限られる([0010](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の「エラー」)。
+プリミティブの呼び出し規約は次のとおりである(コードが正で、`src/value.zig` の `Primitive` と `MachineOp` と `Services`、`src/machine.zig` の `apply` にある)。`Primitive` は引数の個数の範囲(`min_args` と `max_args`)を省略できない形で持ち、機械が呼び出しの前に1か所で検査する。範囲外の個数ではプリミティブの本体を呼ばない。本体 `body` は、純粋プリミティブなら `.pure` の関数、機械操作プリミティブなら `.machine` の操作の名前(`MachineOp`)である。`.pure` の関数は `Services`(ヒープと、呼び出しの間だけ使える一時領域)と引数を受け取り、確保は `Services.heap` の API だけで行う。失敗は Zig の `error`(`PrimitiveError`)で返し、機械が条件に写して、機械の中で送出する。段階2もこの形のままにした(上の「上限超過と確保の失敗」の 2d の段落)。
 
-このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。残りは、[0014](../plans/0014-phase2-core-language.md) の「スライス」の表が割り当てるスライスが、`MachineOp` に変種を足して入れる。操作は `src/machine.zig` の `apply` が行う。
+このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。2d が `with-exception-handler` `raise` `raise-continuable` を足した。2d は `error` も機械操作プリミティブにした。上の一覧に無いが、条件を作ったあとに `raise` と同じく送出するので、レジスタを書き換える。残りは、[0014](../plans/0014-phase2-core-language.md) の「スライス」の表が割り当てるスライスが、`MachineOp` に変種を足して入れる。操作は `src/machine.zig` の `apply` が行う。
 
 `exit` が機械操作プリミティブなのは、R7RS 6.14 が「Runs all outstanding dynamic-wind after procedures, terminates the running program, and communicates an exit value to the operating system」と規定しているためである。同項の Note は「Because of the requirement to run handlers, this procedure is not just the operating system's exit procedure」と明示している。`after` は Scheme 手続きなので、純粋プリミティブの中からは呼べない。`exit` は未処理例外と同じ巻き戻しの経路を使って最外まで戻り、その途中で各 `after` を呼ぶ。`emergency-exit` は同節が「Terminates the program without running any outstanding dynamic-wind after procedures」とするので純粋プリミティブでよい。
 

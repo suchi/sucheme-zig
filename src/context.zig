@@ -167,9 +167,11 @@ pub const Context = struct {
     /// Raises an error: makes the condition with the message and keeps it in
     /// `raised`, and returns `error.Raised` for the caller to return, so a call
     /// site reads `return ctx.raise("...", .{})`.
-    /// 送出を処理するものはまだないので、送出は機械を抜けて、その行の読み取りまで戻る。
-    /// これは最も外側の継続への脱出である(docs/design/runtime.md の未処理の例外)。
-    /// 条件を作れなければ、`makeCondition` の失敗をそのまま返し、`raised` は変えない。
+    /// 機械のステップの中で返せば、`Machine.run` がレジスタを書き戻してから、送出された値を
+    /// 現在の例外ハンドラに渡す。ハンドラが無いときと、展開器とリーダが返したときは、
+    /// その行の読み取りまで戻る。これは最も外側の継続への脱出である(docs/design/runtime.md
+    /// の未処理の例外)。条件を作れなければ、`makeCondition` の失敗をそのまま返し、`raised`
+    /// は変えない。
     pub fn raise(self: *Context, comptime fmt: []const u8, args: anytype) Error {
         self.raised = try self.makeCondition(.@"error", fmt, args, .empty_list_value);
         return error.Raised;
