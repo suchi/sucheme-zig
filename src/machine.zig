@@ -234,11 +234,15 @@ pub const Machine = struct {
         return .{ .body = .{ .env = frame, .body = lambda.body } };
     }
 
+    /// The operands a call lines up in a buffer on the Zig stack.
+    /// これより多いときは、スクラッチ領域から取って、使い終えたら返す。
+    const small_operands = 8;
+
     /// The value of the pure primitive `prim`, whose body is `call`, for the
     /// `count` operands in `args`.
     fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize) Error!Value {
         const ctx = self.ctx;
-        var small: [8]Value = undefined;
+        var small: [small_operands]Value = undefined;
         const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
         // Why: スクラッチ領域は1行ぶんのアリーナで、`free` が効くのは最後の確保だけである。
         // オペランドを最初に取り、プリミティブは取ったものを確保と逆の順に返す約束なので、
@@ -265,7 +269,7 @@ pub const Machine = struct {
         const length = pair.properLength(list) orelse return primitiveFailure(ctx, prim, error.WrongType);
         // `proc` と、リストの前の引数を、書いた順に並べる。
         const leading = count - 1;
-        var small: [8]Value = undefined;
+        var small: [small_operands]Value = undefined;
         const before = if (leading <= small.len) small[0..leading] else try self.scratch.alloc(Value, leading);
         // Why: `callPure` と同じ理由で、並べ直した呼び出しを適用する前に返す。
         defer if (leading > small.len) self.scratch.free(before);
@@ -685,6 +689,26 @@ test "the operands apply spreads do not pile up in the scratch space" {
     f.machine.scratch = scratch.allocator();
     // リストの前の引数も、並べ直したあとの引数も、小さな配列に収まらない数である。
     _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (apply + 1 2 3 4 5 6 7 8 9 10 '(11 12)) (loop (- n 1)))))");
+    _ = try f.eval("(loop 20000)");
+    try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
+}
+
+test "an apply whose operands just fill the buffer on the stack takes no scratch space" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer scratch.deinit();
+    f.machine.scratch = scratch.allocator();
+    // 手続きとリストの前の引数を合わせた数も、並べ直したあとの引数の数も、
+    // ちょうど `small_operands` になる呼び出し。境界の側を取り違えると、スクラッチ領域
+    // から取ったものを返さず、ループのたびに領域が広がる。
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "(define (loop n) (if (= n 0) 'done (begin (apply +");
+    for (1..Machine.small_operands) |i| try src.print(std.testing.allocator, " {d}", .{i});
+    try src.print(std.testing.allocator, " '({d})) (loop (- n 1)))))", .{Machine.small_operands});
+    _ = try f.eval(src.items);
     _ = try f.eval("(loop 20000)");
     try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
 }
