@@ -1725,3 +1725,60 @@ test "a primitive that fails at the limit of the heap still reports its failure,
     try f.expectFails("wrong type of argument to probe", "(probe 7)");
     try std.testing.expectEqual(7, f.ctx.raised.?.asCondition().?.irritants.asPair().?.car.asFixnum().?);
 }
+
+test "a handler that keeps allocating on a heap without room is not interrupted by the same report" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    _ = try f.eval("(define got #f) (define (forever n) (+ 1 (forever n))) (define (spin n) (if (= n 0) 'done (spin (- n 1))))");
+    // ハンドラの中のループは、ごみを作り続けて何度も GC を起こす。GC はそのたびに余裕の
+    // 無さを見つけるが、上限超過は1度しか報告しないので、ハンドラは終わりまで走る。
+    const before = f.ctx.heap.collections;
+    try f.expectFails("handler returned from non-continuable raise", "(with-exception-handler (lambda (c) (set! got c) (spin 3000) 42) (lambda () (forever 0)))");
+    try std.testing.expectEqualStrings("heap limit exceeded", try conditionMessage(&f, "got"));
+    try std.testing.expect(f.ctx.heap.collections > before + 2);
+    try std.testing.expect(f.ctx.heap.exhausted);
+}
+
+test "a handler that is a primitive gives its value to the frame of the handler's return" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    _ = try f.eval("(define (forever n) (+ 1 (forever n)))");
+    // 上限超過は、ステップの先頭の GC で、制御に節点が残ったまま送出されうる。ハンドラが
+    // 値を返すプリミティブなら、その節点を捨てて、値をハンドラの戻りのフレームに渡す。
+    for ([_][]const u8{ "(forever 0)", "(+ 1 (forever 0))", "(forever (+ 1 2))" }) |body| {
+        var src: [128]u8 = undefined;
+        try f.expectFails("handler returned from non-continuable raise", try std.fmt.bufPrint(&src, "(with-exception-handler error-object? (lambda () {s}))", .{body}));
+        try std.testing.expect(f.ctx.raised.?.asCondition().?.irritants.asPair().?.car.asCondition() != null);
+    }
+    try f.expectInt(3, "(+ 1 2)");
+}
+
+test "every allocation to call a handler is made from the reserve" {
+    // ハンドラを置いてから、ヒープを上限ちょうどまで埋め、送出の準備だけをする。
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 64 * 1024, .min_threshold = 64 * 1024 });
+    defer f.deinit();
+    const procedure = try f.eval("(lambda (c) c)");
+    const point = try f.ctx.heap.create(DynPoint, .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = procedure } });
+    point.current_handler = point;
+    var list: Value = .empty_list_value;
+    while (f.ctx.heap.cons(procedure, list)) |p| list = p else |_| {}
+    // ペアより小さいセルで、残りを埋める。GC は走らせないので、どれも残る。
+    while (f.ctx.heap.create(Args, .{ .value = list, .next = null })) |_| {} else |_| {}
+    // 上限に達した。どの通常の確保も断られる。
+    try std.testing.expectError(error.HeapLimit, f.ctx.heap.create(Args, .{ .value = .empty_list_value, .next = null }));
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = point;
+    const call = (try f.machine.enterHandler(&kont, &dyn, .fromFixnum(5), false)).?;
+    try std.testing.expectEqual(5, call.value.asFixnum().?);
+    try std.testing.expect(dyn.?.kind == .handler_shift);
+    try std.testing.expect(kont.?.step == .handler_return);
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    // ハンドラのフレームも予約から作る。
+    switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
+        .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
+        .value => return error.TestUnexpectedResult,
+    }
+}
