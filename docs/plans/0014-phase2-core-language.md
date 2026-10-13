@@ -625,7 +625,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 - 手作業の確認(PR に結果を貼る): 各スライスの完了条件の式を `zig build run` と、`zig build wasm` と `node web/serve.mjs` で開いた Web UI で試す。2n と 2o と 2q は、実際のディレクトリを使ってネイティブの REPL で試す。
 - WASM の往復: 2b(`(car 5)` の失敗がヒープの条件オブジェクトを通って届く)、2d(`(raise 42)` の報告)、2e(`call/cc`)、2m(ライブラリを定義して `import`)、2n(ファイルを開く経路が「見つからない」になる)で、`tools/test-wasm` の入力に式を足す。
 
-検証コマンド表([AGENTS.md](../../AGENTS.md))の変更は無い見込みである。新しい `build.zig` の step は足さない。足す必要が出たら、`.github/workflows/ci.yml` の変更を伴うので、そのスライスでユーザーの承認を得る。`.github/workflows/` と `.claude/` は変更しない。
+検証コマンド表([AGENTS.md](../../AGENTS.md))の変更は無い見込みである。新しい `build.zig` の step は足さない。足す必要が出たら、`.github/workflows/ci.yml` の変更を伴うので、そのスライスでユーザーの承認を得る。`ci.yml` に足した `run:` の step は、`full.yml` の `windows` ジョブにも同じ綴りで足す(`check-docs` が完全一致で照合する。[ADR-0036](../adr/0036-windows-tests-in-the-slow-tier.md))。`.github/workflows/` と `.claude/` は変更しない。
 
 承認点(この計画の合意とは別に、実施の時点でユーザーの承認を得るもの):
 

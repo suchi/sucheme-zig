@@ -49,7 +49,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 
 `zig build dist` が作った実行ファイルから、アーカイブと `SHA256SUMS` を作るのは `tools/release/package.py` である([ADR-0034](docs/adr/0034-release-shape.md))。`full.yml` は、この2つを続けてリハーサルとして走らせ、リリースのワークフロー(`release.yml`)は、タグの push で同じ2つを走らせて下書きのリリースを作る。`check-docs` が検査するのは `full.yml` の `zig build dist` の行だけで、`package.py` の実行、その単体テスト、スモークテスト、`sha256sum -c` の行と、`release.yml` の `run:` の行は検査の外にある(記録は [docs/design/open-questions.md](docs/design/open-questions.md) の「CI が表の行を走らせることの検査の範囲」の行)。
 
-行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。段階1の残りの行をどのスライスで足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
+行は、その行が指す step が `build.zig` に実在するときに足す。`build.zig` の `current_stage` 以下の段階の全コミットの行は、`zig build check-docs` が CI に要求するので、step の無い行を先に置くと赤になる。全コミットの行を足して `ci.yml` に `run:` の step を足すときは、`full.yml` の `windows` ジョブにも同じ綴りの step を足す。`check-docs` は、`ci.yml` の各 `run:` 行が `full.yml` にもあることを完全一致で照合する(Windows のテストは層2 で走る。[ADR-0036](docs/adr/0036-windows-tests-in-the-slow-tier.md))。段階1の残りの行をどのスライスで足すかは [docs/plans/0003-phase1-minimal-slice.md](docs/plans/0003-phase1-minimal-slice.md) の検証コマンドの追加が正である。
 
 テストは実行の頻度で層に分ける([docs/plans/0007-test-tiers.md](docs/plans/0007-test-tiers.md))。
 
