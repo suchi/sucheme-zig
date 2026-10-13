@@ -49,6 +49,11 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
     // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
     // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
     errdefer ctx.globals.undoShadows();
+    // 失敗した形式の定数も、同じ理由で手放す。失敗した形式の節点は実行されず、どこからも
+    // 指されないので、この展開が登録した定数を生かしておく理由が無い。残すと、ヒープの
+    // 上限を、セッションの終わりまで理由なく使い続ける。
+    const roots = ctx.code_roots.items.len;
+    errdefer ctx.code_roots.shrinkRetainingCapacity(roots);
     try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
     while (e.stack.pop()) |task| try e.step(task);
     ctx.globals.commitShadows();
@@ -1099,6 +1104,22 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     f.ctx.collectIdle();
     // セル、データの2つのペア、クロージャ。
     try std.testing.expectEqual(4, f.ctx.heap.count);
+}
+
+test "a form whose expansion fails keeps none of the constants it made" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    _ = try expand(&f.ctx, a, try f.read("(define-syntax m (syntax-rules () ((_) (list '(tmp) (if)))))"));
+    const before = f.ctx.code_roots.items.len;
+    // 被演算子は左から展開するので、剥離した '(tmp) を定数にしてから (if) で失敗する。
+    // 失敗した形式は実行されないので、その定数を生かしておくと、ヒープの上限を理由なく
+    // 使い続ける。
+    for (0..3) |_| {
+        try std.testing.expectError(error.Raised, expand(&f.ctx, a, try f.read("(m)")));
+        try std.testing.expectEqual(before, f.ctx.code_roots.items.len);
+    }
 }
 
 test "a program nested deeper than the Zig stack allows still expands" {
