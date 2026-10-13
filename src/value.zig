@@ -405,8 +405,9 @@ pub const PrimitiveError = error{
     /// 多倍長整数(bignum)は段階4で入る。
     IntegerOverflow,
     /// A number of arguments the primitive does not take, such as `(-)`.
-    /// 機械が、`Primitive` の個数の範囲から返す。プリミティブの本体は、個数を検査
-    /// しない。
+    /// 機械が、`Primitive` の個数の範囲から返す。プリミティブの本体は、その範囲を検査
+    /// しない。例外は、受け取る個数がほかの引数で決まるプリミティブで、本体がそれを
+    /// 検査して返す(`%make-record` は、型のフィールドの数だけ値を受け取る)。
     WrongArgumentCount,
     /// The divisor is zero.
     DivisionByZero,
