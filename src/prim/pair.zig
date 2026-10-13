@@ -33,7 +33,7 @@ pub const primitives = [_]Primitive{
 ///
 /// 速い印は2歩ずつ、遅い印は1歩ずつ進める(Floyd の方法)。輪があれば2つの印はいずれ
 /// 同じペアで出会う。作業領域を使わず、長さに比例する時間で終わる。
-fn properLength(v: Value) ?usize {
+pub fn properLength(v: Value) ?usize {
     var count: usize = 0;
     var slow = v;
     var fast = v;

@@ -32,6 +32,9 @@ pub const Fixture = struct {
             std.debug.assert(p.acceptsCount(args.len));
             return switch (p.body) {
                 .pure => |f| f(&self.services, args),
+                // 機械操作プリミティブは機械のレジスタを書き換えるので、機械なしでは呼べない。
+                // 呼ぶのはテストの誤りである。
+                .machine => std.debug.panic("{s} is an operation of the machine", .{name}),
             };
         }
         std.debug.panic("no primitive called {s}", .{name});

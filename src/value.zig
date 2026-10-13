@@ -376,9 +376,14 @@ pub const Primitive = struct {
     pub const Fn = *const fn (services: *const Services, args: []const Value) PrimitiveError!Value;
 
     /// What the primitive does when it is applied.
+    /// 純粋プリミティブと機械操作プリミティブは、呼び出しの規約が違う。前者は `Services`
+    /// と引数から値を返し、後者は機械のレジスタを書き換える(docs/design/runtime.md の
+    /// 機械操作プリミティブ)。後者の操作は `Machine.apply` にあり、ここには名前だけを置く。
     pub const Body = union(enum) {
         /// A function from the arguments to a value.
         pure: Fn,
+        /// An operation the machine carries out on its registers.
+        machine: MachineOp,
     };
 
     name: []const u8,
@@ -394,6 +399,13 @@ pub const Primitive = struct {
         const max = self.max_args orelse return true;
         return count <= max;
     }
+};
+
+/// The operations of the machine that a primitive can name as its body.
+/// 機械操作プリミティブを入れるスライスが、それぞれ1つずつ足す。
+pub const MachineOp = enum {
+    /// `(apply proc arg1 ... args)` (R7RS 6.10).
+    apply,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was

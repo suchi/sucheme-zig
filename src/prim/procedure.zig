@@ -1,7 +1,8 @@
-//! Procedure primitives (R7RS 6.10): `procedure?`.
+//! Procedure primitives (R7RS 6.10): `procedure?` and `apply`.
 //!
-//! 手続きを呼ぶもの(`apply` `map` など)は、機械がレジスタを書き換える別の仕組みで、
-//! 段階2と3で入る。
+//! 手続きを呼ぶもの(`apply` など)は機械操作プリミティブで、機械がレジスタを書き換えて
+//! 行う。ここには名前と引数の個数の範囲だけを置き、操作は `Machine.apply` にある。
+//! ほかの機械操作プリミティブは段階2の後のスライスで、`map` などは段階3で入る。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -14,6 +15,8 @@ pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
     .{ .name = "procedure?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isProcedure } },
+    // `(apply proc arg1 ... args)`: 手続きと最後のリストは省けない。
+    .{ .name = "apply", .min_args = 2, .max_args = null, .body = .{ .machine = .apply } },
 };
 
 /// `(procedure? obj)`: true of the procedures made by `lambda` and of the ones
@@ -40,15 +43,20 @@ fn callWith(arg: Value) !bool {
     return v.isTrue();
 }
 
-test "procedure? takes one argument" {
-    try std.testing.expectEqual(1, primitives.len);
+test "procedure? takes one argument, and apply two or more" {
+    try std.testing.expectEqual(2, primitives.len);
     try std.testing.expectEqualStrings("procedure?", primitives[0].name);
     try std.testing.expectEqual(1, primitives[0].min_args);
     try std.testing.expectEqual(1, primitives[0].max_args.?);
+    try std.testing.expectEqualStrings("apply", primitives[1].name);
+    try std.testing.expectEqual(2, primitives[1].min_args);
+    try std.testing.expectEqual(null, primitives[1].max_args);
+    try std.testing.expectEqual(value.MachineOp.apply, primitives[1].body.machine);
 }
 
-test "procedure? is true of a primitive and of a closure" {
+test "procedure? is true of a primitive, of a machine operation and of a closure" {
     try std.testing.expect(try callWith(.fromPrimitive(&primitives[0])));
+    try std.testing.expect(try callWith(.fromPrimitive(&primitives[1])));
     const body: value.Node = .{ .constant = .unspecified_value };
     const lambda: value.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
     var closure: value.Closure = .{ .lambda = &lambda, .env = null };
