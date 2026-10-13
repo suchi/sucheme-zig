@@ -59,62 +59,62 @@ error: not a procedure
 
 # 別の型のレコードを読み書きすると型エラー。
 (define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-ref (%make-record a 1) b 0)
-error: wrong type of argument to %record-ref
+error: wrong type of argument to %record-ref #<record a> #<record-type b> 0
 
 (define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-set! (%make-record a 1) b 0 2)
-error: wrong type of argument to %record-set!
+error: wrong type of argument to %record-set! #<record a> #<record-type b> 0 2
 
 # 型の誤りは、添字の範囲の誤りより先に報告する。
 (define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-ref (%make-record a 1) b 5)
-error: wrong type of argument to %record-ref
+error: wrong type of argument to %record-ref #<record a> #<record-type b> 5
 
 # レコードでないものも型エラー。型でないものを型として渡しても型エラー。
 (define a (%make-record-type 'a 1)) (%record-ref (vector 1) a 0)
-error: wrong type of argument to %record-ref
+error: wrong type of argument to %record-ref #(1) #<record-type a> 0
 
 (define a (%make-record-type 'a 1)) (%record-ref a a 0)
-error: wrong type of argument to %record-ref
+error: wrong type of argument to %record-ref #<record-type a> #<record-type a> 0
 
 (define a (%make-record-type 'a 1)) (%record-ref (%make-record a 1) 'a 0)
-error: wrong type of argument to %record-ref
+error: wrong type of argument to %record-ref #<record a> a 0
 
 (define a (%make-record-type 'a 1)) (%record? 1 'a)
-error: wrong type of argument to %record?
+error: wrong type of argument to %record? 1 a
 
 (define a (%make-record-type 'a 1)) (%record-ref (%make-record a 1) a 'x)
-error: wrong type of argument to %record-ref
+error: wrong type of argument to %record-ref #<record a> #<record-type a> x
 
 # 添字の範囲外は範囲エラー。個数ちょうどと、負の数。
 (define a (%make-record-type 'a 2)) (%record-ref (%make-record a 1 2) a 2)
-error: argument out of range in %record-ref
+error: argument out of range in %record-ref #<record a> #<record-type a> 2
 
 (define a (%make-record-type 'a 2)) (%record-ref (%make-record a 1 2) a -1)
-error: argument out of range in %record-ref
+error: argument out of range in %record-ref #<record a> #<record-type a> -1
 
 (define a (%make-record-type 'a 2)) (%record-set! (%make-record a 1 2) a 2 0)
-error: argument out of range in %record-set!
+error: argument out of range in %record-set! #<record a> #<record-type a> 2 0
 
 (define a (%make-record-type 'a 0)) (%record-ref (%make-record a) a 0)
-error: argument out of range in %record-ref
+error: argument out of range in %record-ref #<record a> #<record-type a> 0
 
 # 生成子は、型のフィールドの数だけ値を受け取る。
 (define a (%make-record-type 'a 2)) (%make-record a 1)
-error: wrong number of arguments to %make-record
+error: wrong number of arguments to %make-record #<record-type a> 1
 
 (define a (%make-record-type 'a 2)) (%make-record a 1 2 3)
-error: wrong number of arguments to %make-record
+error: wrong number of arguments to %make-record #<record-type a> 1 2 3
 
 (%make-record 'a 1)
-error: wrong type of argument to %make-record
+error: wrong type of argument to %make-record a 1
 
 (%make-record-type "a" 1)
-error: wrong type of argument to %make-record-type
+error: wrong type of argument to %make-record-type "a" 1
 
 (%make-record-type 'a -1)
-error: argument out of range in %make-record-type
+error: argument out of range in %make-record-type a -1
 
 (%make-record-type 'a)
-error: wrong number of arguments to %make-record-type
+error: wrong number of arguments to %make-record-type a
 
 # 多くの GC を経ても、レコードとその型とフィールドは残る。到達しなくなったレコードが
 # 回収されることは、heap.zig の単体テストが固定する(このケースの規模は上限に届かない)。

@@ -128,12 +128,33 @@ pub const Context = struct {
     /// A new object holding `value`; an allocation the limit refuses is the
     /// error "heap limit exceeded".
     pub fn create(self: *Context, comptime T: type, value: T) Error!*T {
-        return self.heap.create(T, value) catch |e| return self.heapFailure(e);
+        return self.createIn(.limit, T, value);
+    }
+
+    /// A new object holding `value`, held to `budget`.
+    /// `.limit` の確保が断られたら "heap limit exceeded" を送出し、送出のための予約からの
+    /// 確保が断られたら `error.ReserveExhausted` を返す(`makeCondition` と同じ作法)。
+    pub fn createIn(self: *Context, budget: heap_mod.Budget, comptime T: type, value: T) Error!*T {
+        return self.heap.createIn(budget, T, value) catch |e| return self.budgetFailure(budget, e);
     }
 
     /// A new frame of `size` slots, all uninitialized, behind `parent`.
     pub fn createFrame(self: *Context, size: usize, parent: ?*value_mod.Frame) Error!*value_mod.Frame {
-        return self.heap.createFrame(size, parent) catch |e| return self.heapFailure(e);
+        return self.createFrameIn(.limit, size, parent);
+    }
+
+    /// A new frame of `size` slots, all uninitialized, behind `parent`, held
+    /// to `budget`.
+    pub fn createFrameIn(self: *Context, budget: heap_mod.Budget, size: usize, parent: ?*value_mod.Frame) Error!*value_mod.Frame {
+        return self.heap.createFrameIn(budget, size, parent) catch |e| return self.budgetFailure(budget, e);
+    }
+
+    /// The error an allocation held to `budget` fails with.
+    fn budgetFailure(self: *Context, budget: heap_mod.Budget, e: heap_mod.Error) Error {
+        return switch (budget) {
+            .limit => self.heapFailure(e),
+            .raise_reserve => reserveFailure(e),
+        };
     }
 
     pub fn heapFailure(self: *Context, e: heap_mod.Error) Error {
@@ -160,9 +181,11 @@ pub const Context = struct {
     /// Raises an error: makes the condition with the message and keeps it in
     /// `raised`, and returns `error.Raised` for the caller to return, so a call
     /// site reads `return ctx.raise("...", .{})`.
-    /// 送出を処理するものはまだないので、送出は機械を抜けて、その行の読み取りまで戻る。
-    /// これは最も外側の継続への脱出である(docs/design/runtime.md の未処理の例外)。
-    /// 条件を作れなければ、`makeCondition` の失敗をそのまま返し、`raised` は変えない。
+    /// 機械のステップの中で返せば、`Machine.run` がレジスタを書き戻してから、送出された値を
+    /// 現在の例外ハンドラに渡す。ハンドラが無いときと、展開器とリーダが返したときは、
+    /// その行の読み取りまで戻る。これは最も外側の継続への脱出である(docs/design/runtime.md
+    /// の未処理の例外)。条件を作れなければ、`makeCondition` の失敗をそのまま返し、`raised`
+    /// は変えない。
     pub fn raise(self: *Context, comptime fmt: []const u8, args: anytype) Error {
         self.raised = try self.makeCondition(.@"error", fmt, args, .empty_list_value);
         return error.Raised;

@@ -1,0 +1,138 @@
+# スライス 2d: 例外(R7RS 6.11)。with-exception-handler、raise、raise-continuable、
+# error と、条件オブジェクトの述語と取り出し。番号は docs/design/runtime.md の例外の節の
+# 「テストに含める事例」のものである。継続で脱出する事例(1、2、3、9、10)は call/cc が
+# 入るスライス 2e が、parameterize の事例4は 2g が足す。
+
+# raise-continuable のハンドラが戻ると、その値が raise-continuable の値になる。
+(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))
+42
+
+# 事例5: ハンドラが戻った後、現在のハンドラはそのハンドラに戻っている。
+(with-exception-handler (lambda (c) (* c 2)) (lambda () (+ (raise-continuable 1) (raise-continuable 10))))
+22
+
+# 本体の値は、そのまま with-exception-handler の値になる。本体が戻るとハンドラは外れる。
+(list (with-exception-handler (lambda (c) 0) (lambda () 'body)) (with-exception-handler (lambda (c) 0) (lambda () 7)))
+(body 7)
+
+(+ (with-exception-handler (lambda (c) 1) (lambda () 2)) (raise-continuable 5))
+error: 5
+
+# 事例6: ハンドラの中で送出すると外側のハンドラが呼ばれ、ループにならない。
+(with-exception-handler (lambda (c) (+ c 100)) (lambda () (with-exception-handler (lambda (c) (raise-continuable (+ c 10))) (lambda () (raise-continuable 1)))))
+111
+
+(with-exception-handler (lambda (c) (list 'outer c)) (lambda () (with-exception-handler (lambda (c) (raise-continuable (list 'inner c))) (lambda () (raise-continuable 'x)))))
+(outer (inner x))
+
+# 外側にハンドラが無ければ、ハンドラの中の送出は未処理になる。
+(with-exception-handler (lambda (c) (raise 'again)) (lambda () (raise 'first)))
+error: again
+
+# 事例7と事例11: 列が空の状態の送出は未処理として報告され、処理系は止まらない。
+# 条件オブジェクトでない値は write の形で報告する。
+(raise 'oops)
+error: oops
+
+(raise 42)
+error: 42
+
+(raise "text")
+error: "text"
+
+(raise (list 1 "two" #\3))
+error: (1 "two" #\3)
+
+(raise-continuable 'oops)
+error: oops
+
+# raise のハンドラが戻ると二次例外になる。irritant は送出された値である。
+(with-exception-handler (lambda (c) 42) (lambda () (raise 'oops)))
+error: handler returned from non-continuable raise oops
+
+# 二次例外はハンドラの動的環境で送出され、外側のハンドラに届く。
+(with-exception-handler (lambda (c) (raise-continuable (list 'outer (error-object-message c)))) (lambda () (with-exception-handler (lambda (c) 42) (lambda () (raise 'oops)))))
+error: (outer "handler returned from non-continuable raise")
+
+# 事例8: 純粋プリミティブの型の誤りがハンドラに条件オブジェクトとして届く。
+(with-exception-handler (lambda (c) (raise (list 'caught (error-object-message c)))) (lambda () (car 5)))
+error: (caught "wrong type of argument to car")
+
+# 機械が検出する失敗は raise と同じく継続できないので、ハンドラが戻ると二次例外になる。
+(with-exception-handler (lambda (c) 0) (lambda () (car 5)))
+error: handler returned from non-continuable raise #<condition "wrong type of argument to car" 5>
+
+# 機械が検出する失敗も、ハンドラに届く。ハンドラが外側へ送り直すと、その値が報告される。
+(with-exception-handler (lambda (c) (raise (error-object-message c))) (lambda () (+ 1 nope)))
+error: "unbound variable: nope"
+
+(with-exception-handler (lambda (c) (raise (error-object-message c))) (lambda () (5 1)))
+error: "not a procedure"
+
+(with-exception-handler (lambda (c) (raise (error-object-message c))) (lambda () ((lambda (x) x))))
+error: "wrong number of arguments: expected 1, got 0"
+
+(with-exception-handler (lambda (c) (raise (error-object-message c))) (lambda () ((lambda () (define a b) (define b 1) a))))
+error: "variable used before its definition: b"
+
+(with-exception-handler (lambda (c) (raise (error-object-message c))) (lambda () (vector-ref (vector 1) 1)))
+error: "argument out of range in vector-ref"
+
+# 展開器の誤りは機械の外のエラーで、ハンドラでは捕まらない(R7RS 4.3.3 の syntax-error と同じ扱い)。
+(with-exception-handler (lambda (c) 0) (lambda () (if)))
+error: bad if: expected (if test consequent) or (if test consequent alternative)
+
+# with-exception-handler は手続きを2つ取る。
+(with-exception-handler 5 (lambda () 1))
+error: wrong type of argument to with-exception-handler 5 #<procedure>
+
+(with-exception-handler car 'body)
+error: wrong type of argument to with-exception-handler #<procedure car> body
+
+# ハンドラを呼ぶこと自体の失敗は、そのハンドラに戻らない。
+(with-exception-handler (lambda () 1) (lambda () (raise 'x)))
+error: wrong number of arguments: expected 0, got 1
+
+# ハンドラを呼ぶこと自体の送出は、外側のハンドラに届く。外側のハンドラが戻ると二次例外になる。
+(with-exception-handler (lambda (c) 'outer) (lambda () (with-exception-handler car (lambda () (raise 5)))))
+error: handler returned from non-continuable raise #<condition "wrong type of argument to car" 5>
+
+(with-exception-handler (lambda (c) (+ c 1)) (lambda () (with-exception-handler raise (lambda () (raise 5)))))
+error: handler returned from non-continuable raise 5
+
+# error は条件を作って送出する。報告はメッセージと irritant である。
+(error "bad thing" 1 "two" 'three)
+error: bad thing 1 "two" three
+
+(error "nothing else")
+error: nothing else
+
+(error 'not-a-string)
+error: wrong type of argument to error not-a-string
+
+(error)
+error: wrong number of arguments to error
+
+# 条件オブジェクトの述語と取り出し。ハンドラが結果を条件オブジェクトでない値にして外側へ
+# 送り直し、その値が報告される。
+(with-exception-handler (lambda (c) (raise (list (error-object? c) (error-object-message c) (error-object-irritants c) (read-error? c) (file-error? c)))) (lambda () (error "bad thing" 1 'two)))
+error: (#t "bad thing" (1 two) #f #f)
+
+(with-exception-handler (lambda (c) (raise (list (error-object? c) (error-object-message c) (error-object-irritants c)))) (lambda () (car 5)))
+error: (#t "wrong type of argument to car" (5))
+
+(with-exception-handler (lambda (c) (raise (list (error-object? c) (read-error? c) (file-error? c)))) (lambda () (raise 'oops)))
+error: (#f #f #f)
+
+(list (error-object? 1) (error-object? "message") (read-error? '()) (file-error? #t))
+(#f #f #f #f)
+
+(error-object-message 'oops)
+error: wrong type of argument to error-object-message oops
+
+(error-object-irritants "bad")
+error: wrong type of argument to error-object-irritants "bad"
+
+# 条件オブジェクトは、メッセージと irritant を持つ読めない表記で書かれる。
+(with-exception-handler (lambda (c) (raise (list c))) (lambda () (error "bad" 1 "two")))
+error: (#<condition "bad" 1 "two">)

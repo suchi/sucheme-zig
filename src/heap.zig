@@ -71,7 +71,8 @@ pub const Budget = enum {
     /// The limit. Every allocation but those for raising is held to it.
     limit,
     /// The limit and the reserve past it, for what raising an error must make
-    /// even when the heap is at the limit: a condition and its message.
+    /// even when the heap is at the limit: a condition and its message, the
+    /// point that shifts the handler, and the call of the handler.
     /// 呼び出し側の確保地点で選ぶ。確保したものは、ほかと同じ計上に入り、同じ
     /// スイープで回収される。
     raise_reserve,
@@ -279,7 +280,13 @@ pub const Heap = struct {
     /// 返すので、失敗した呼び出しはヒープを元のままにする。巻き戻しの単位は、この
     /// 1回の呼び出しである。
     pub fn createFrame(self: *Heap, size: usize, parent: ?*Frame) Error!*Frame {
-        const bytes = try self.reserveWithPayload(.limit, Frame, size, @sizeOf(Value));
+        return self.createFrameIn(.limit, size, parent);
+    }
+
+    /// A new frame of `size` slots, all `uninitialized`, behind `parent`, held
+    /// to `budget`.
+    pub fn createFrameIn(self: *Heap, budget: Budget, size: usize, parent: ?*Frame) Error!*Frame {
+        const bytes = try self.reserveWithPayload(budget, Frame, size, @sizeOf(Value));
         const values = try self.backing.alloc(Value, size);
         errdefer self.backing.free(values);
         const cell = try self.backing.create(Cell(Frame));
@@ -516,6 +523,11 @@ pub const Marker = struct {
     /// Marks `k` and, through it, what it refers to.
     pub fn kont(self: *Marker, k: ?*const Kont) void {
         trace.interpreter.walk(self, ?*const Kont, k);
+    }
+
+    /// Marks the dynamic point `p` and, through it, what it refers to.
+    pub fn dynPoint(self: *Marker, p: ?*const value_mod.DynPoint) void {
+        trace.interpreter.walk(self, ?*const value_mod.DynPoint, p);
     }
 
     /// What `trace.walk` calls for a heap object.
@@ -769,6 +781,20 @@ test "an allocation for raising may pass the limit by the reserve, and no furthe
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.accounted);
     _ = try heap.createIn(.raise_reserve, Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value });
+}
+
+test "a frame for raising may pass the limit by the reserve, with its slots" {
+    const limit = cellBytes(Pair);
+    const frame = cellBytes(Frame) + 2 * @sizeOf(Value);
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = limit, .raise_reserve = frame });
+    defer heap.deinit();
+    _ = try heap.cons(.fromFixnum(1), .fromFixnum(2));
+    try std.testing.expectError(error.HeapLimit, heap.createFrame(2, null));
+    const f = try heap.createFrameIn(.raise_reserve, 2, null);
+    try std.testing.expectEqual(2, f.values.len);
+    try std.testing.expectEqual(limit + frame, heap.accounted);
+    // 予約はスロットの分も数えるので、もう1つは入らない。
+    try std.testing.expectError(error.HeapLimit, heap.createFrameIn(.raise_reserve, 0, null));
 }
 
 test "an allocation for raising may take the account exactly to the limit and the reserve, and not a byte more" {
