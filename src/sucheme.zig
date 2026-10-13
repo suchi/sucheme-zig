@@ -594,3 +594,24 @@ test "the value raised is described: a condition by its message and irritants, a
     interp.keepDiagnostic(arena.allocator(), error.Incomplete);
     try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
 }
+
+test "when the description cannot be allocated, the diagnostic says out of memory" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var interp: Interpreter = undefined;
+    try interp.init(failing.allocator());
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const ctx = &interp.ctx;
+    ctx.raised = try ctx.makeCondition(.@"error", "bad {s}", .{"thing"}, .empty_list_value);
+    // ここから先の確保はすべて失敗する。説明のバッファはまだ確保されていない。
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("out of memory", interp.diagnostic());
+    // 確保できるようになれば、送出された値の説明に戻る。
+    failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("bad thing", interp.diagnostic());
+}
