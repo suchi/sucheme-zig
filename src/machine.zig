@@ -323,7 +323,7 @@ pub const Machine = struct {
             const prim = operator.asPrimitive() orelse break operator;
             // 個数の検査はここにしかない。プリミティブの本体は、`args` が表の範囲に
             // 収まることを前提にしてよい。
-            if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount);
+            if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount, args, count);
             switch (prim.body) {
                 .pure => |call| return .{ .value = try self.callPure(prim, call, args, count) },
                 .machine => |op| switch (op) {
@@ -419,7 +419,7 @@ pub const Machine = struct {
         defer if (count > small.len) self.scratch.free(operands);
         fill(operands, args);
         const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
-        return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e);
+        return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e, args, count);
     }
 
     /// A call and the number of its operands, as `apply` takes them.
@@ -434,7 +434,7 @@ pub const Machine = struct {
         const ctx = self.ctx;
         const list = args.value;
         // 確保より前に検査する。長い非真正リストを、上限超過として報告しないためである。
-        const length = pair.properLength(list) orelse return primitiveFailure(ctx, prim, error.WrongType);
+        const length = pair.properLength(list) orelse return primitiveFailure(ctx, prim, error.WrongType, args, count);
         // `proc` と、リストの前の引数を、書いた順に並べる。
         const leading = count - 1;
         var small: [small_operands]Value = undefined;
@@ -462,7 +462,7 @@ pub const Machine = struct {
         const handler = args.next.?.value;
         // 手続きでないハンドラは、送出のときでなく、ここで型の誤りにする。送出のときに
         // 見つけると、どの送出が誤りを生んだかが分からない。
-        if (!isProcedure(handler) or !isProcedure(thunk)) return primitiveFailure(ctx, prim, error.WrongType);
+        if (!isProcedure(handler) or !isProcedure(thunk)) return primitiveFailure(ctx, prim, error.WrongType, args, 2);
         const point = try ctx.create(DynPoint, .{
             .parent = dyn.*,
             .depth = value_mod.depthAbove(dyn.*),
@@ -488,7 +488,7 @@ pub const Machine = struct {
         for (0..count - 1) |_| message_node = message_node.next.?;
         const message = message_node.value;
         // 確保より前に検査する。
-        if (message.asString() == null) return primitiveFailure(ctx, prim, error.WrongType);
+        if (message.asString() == null) return primitiveFailure(ctx, prim, error.WrongType, args, count);
         // 最後のオペランドから順に前へ継ぎ足すと、書いた順のリストになる。
         var irritants: Value = .empty_list_value;
         var it = args;
@@ -500,18 +500,51 @@ pub const Machine = struct {
         return .fromCondition(condition);
     }
 
-    /// The error a failure of `prim` is: a condition with the message the failure
-    /// has, or the failure of the host as it is.
-    fn primitiveFailure(ctx: *Context, prim: *const value_mod.Primitive, e: value_mod.PrimitiveError) Error {
-        return switch (e) {
-            error.WrongType => ctx.raise("wrong type of argument to {s}", .{prim.name}),
-            error.IntegerOverflow => ctx.raise("integer overflow in {s}", .{prim.name}),
-            error.WrongArgumentCount => ctx.raise("wrong number of arguments to {s}", .{prim.name}),
-            error.DivisionByZero => ctx.raise("division by zero in {s}", .{prim.name}),
-            error.OutOfRange => ctx.raise("argument out of range in {s}", .{prim.name}),
+    /// The error a failure of `prim` called with the `count` operands in
+    /// `args` is: a condition with the message the failure has and the
+    /// operands as its irritants, or the failure of the host as it is.
+    /// `args` は最後のオペランドから並ぶ(末尾に演算子があってもよい)。
+    fn primitiveFailure(ctx: *Context, prim: *const value_mod.Primitive, e: value_mod.PrimitiveError, args: *const Args, count: usize) Error {
+        const irritants = switch (e) {
             // ヒープの失敗は、ほかの経路と同じ文言になるよう `Context` を通す。
-            error.HeapLimit, error.OutOfMemory => |heap_error| ctx.heapFailure(heap_error),
+            error.HeapLimit, error.OutOfMemory => |heap_error| return ctx.heapFailure(heap_error),
+            else => try operandList(ctx, args, count),
         };
+        return switch (e) {
+            error.WrongType => raiseWith(ctx, irritants, "wrong type of argument to {s}", .{prim.name}),
+            error.IntegerOverflow => raiseWith(ctx, irritants, "integer overflow in {s}", .{prim.name}),
+            error.WrongArgumentCount => raiseWith(ctx, irritants, "wrong number of arguments to {s}", .{prim.name}),
+            error.DivisionByZero => raiseWith(ctx, irritants, "division by zero in {s}", .{prim.name}),
+            error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
+            error.HeapLimit, error.OutOfMemory => unreachable,
+        };
+    }
+
+    /// The `count` operands in `args` as a new list, in the order they were
+    /// written; the empty list when the heap has no room for it.
+    /// Why: リストは上限に従って確保し、予約から取らない。長さが呼び出しの引数の数で決まり、
+    /// 予約で賄える量に収まらないからである(ADR-0035 の見直し条件)。上限に当たったときは
+    /// irritant を諦め、条件とメッセージだけを予約から作る。失敗の報告を、上限超過に
+    /// すり替えないためである。
+    fn operandList(ctx: *Context, args: *const Args, count: usize) error{OutOfMemory}!Value {
+        var list: Value = .empty_list_value;
+        var it = args;
+        for (0..count) |_| {
+            const cell = ctx.heap.create(value_mod.Pair, .{ .car = it.value, .cdr = list }) catch |e| switch (e) {
+                error.HeapLimit => return .empty_list_value,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            list = .{ .pair = cell };
+            it = it.next orelse break;
+        }
+        return list;
+    }
+
+    /// Raises a condition with the message `fmt` formatted with `args` and
+    /// the list `irritants`.
+    fn raiseWith(ctx: *Context, irritants: Value, comptime fmt: []const u8, args: anytype) Error {
+        ctx.raised = try ctx.makeCondition(.@"error", fmt, args, irritants);
+        return error.Raised;
     }
 
     /// Copies the operands in `args`, which holds them last first and the
@@ -977,18 +1010,24 @@ const Probe = struct {
 
     /// Allocates until the limit refuses.
     /// GC はプリミティブの途中では走らない。
-    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = 0, .body = .{ .pure = &fill } };
+    const greedy: value_mod.Primitive = .{ .name = "greedy", .min_args = 0, .max_args = null, .body = .{ .pure = &fill } };
 
     fn fill(services: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
         var list: Value = .empty_list_value;
-        while (true) list = try services.heap.cons(.fromFixnum(1), list);
+        while (true) list = services.heap.cons(.fromFixnum(1), list) catch |e| return fill_failure orelse e;
     }
+
+    /// What `greedy` fails with once the limit refuses, instead of the
+    /// refusal itself.
+    /// ヒープが満杯の状態で、ヒープの失敗でない失敗を報告させるためにある。
+    var fill_failure: ?value_mod.PrimitiveError = null;
 
     fn reset() void {
         calls = 0;
         heap = null;
         scratch = null;
         failure = null;
+        fill_failure = null;
     }
 
     fn bind(f: *Fixture) !void {
@@ -1630,4 +1669,58 @@ test "at the limit of the heap, the call of the handler is made from the reserve
         try std.testing.expectError(error.ReserveExhausted, g.eval(src));
     }
     try std.testing.expect(found);
+}
+
+/// Writes the irritants of the condition raised, separated by spaces.
+fn irritantsText(f: *Fixture, buf: []u8) ![]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    var it = f.ctx.raised.?.asCondition().?.irritants;
+    while (it.asPair()) |p| : (it = p.cdr) {
+        if (w.end != 0) try w.writeByte(' ');
+        try @import("printer.zig").write(&w, std.testing.allocator, &f.ctx.symbols, p.car);
+    }
+    return w.buffered();
+}
+
+test "the condition of a primitive's failure has the arguments of the call as its irritants" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    const cases = [_]struct { src: []const u8, message: []const u8, irritants: []const u8 }{
+        .{ .src = "(car 5)", .message = "wrong type of argument to car", .irritants = "5" },
+        .{ .src = "(+ 1 #t \"x\")", .message = "wrong type of argument to +", .irritants = "1 #t \"x\"" },
+        .{ .src = "(car 1 2)", .message = "wrong number of arguments to car", .irritants = "1 2" },
+        .{ .src = "(car)", .message = "wrong number of arguments to car", .irritants = "" },
+        .{ .src = "(vector-ref (vector 'a) 1)", .message = "argument out of range in vector-ref", .irritants = "#(a) 1" },
+        // `apply` が並べ直した引数が、失敗したプリミティブの引数である。
+        .{ .src = "(apply + 1 '(2 a))", .message = "wrong type of argument to +", .irritants = "1 2 a" },
+        // `apply` 自身の失敗の irritant は、`apply` に渡された引数である。
+        .{ .src = "(apply + 1 2)", .message = "wrong type of argument to apply", .irritants = "#<procedure +> 1 2" },
+        .{ .src = "(with-exception-handler 5 car)", .message = "wrong type of argument to with-exception-handler", .irritants = "5 #<procedure car>" },
+        .{ .src = "(error 'oops 1)", .message = "wrong type of argument to error", .irritants = "oops 1" },
+    };
+    for (cases) |c| {
+        try f.expectFails(c.message, c.src);
+        try std.testing.expectEqualStrings(c.irritants, try irritantsText(&f, &buf));
+    }
+}
+
+test "a primitive that fails at the limit of the heap still reports its failure, without irritants" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 64 * 1024, .min_threshold = 16 * 1024 });
+    defer f.deinit();
+    Probe.reset();
+    defer Probe.reset();
+    try Probe.bind(&f);
+    Probe.fill_failure = error.WrongType;
+    // ヒープは満杯で、引数のリストは作れない。失敗は上限超過にすり替わらず、irritant を
+    // 諦めて報告される。
+    try f.expectFails("wrong type of argument to greedy", "(greedy 7)");
+    try std.testing.expectEqual(value_mod.Kind.empty_list, f.ctx.raised.?.asCondition().?.irritants.kind());
+    try f.expectInt(3, "(+ 1 2)");
+    // 対照: 余裕があれば、引数がリストになる。
+    Probe.failure = error.WrongType;
+    try f.expectFails("wrong type of argument to probe", "(probe 7)");
+    try std.testing.expectEqual(7, f.ctx.raised.?.asCondition().?.irritants.asPair().?.car.asFixnum().?);
 }

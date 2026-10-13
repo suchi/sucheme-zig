@@ -95,7 +95,7 @@ error: unbound variable: foo
 error: unbound variable: y
 
 ((lambda (x) (+ x 'a)) 1)
-error: wrong type of argument to +
+error: wrong type of argument to + 1 a
 
 (lambda)
 error: bad lambda: expected (lambda (name ...) body ...)

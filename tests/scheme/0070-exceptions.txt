@@ -60,7 +60,7 @@ error: (caught "wrong type of argument to car")
 
 # 機械が検出する失敗は raise と同じく継続できないので、ハンドラが戻ると二次例外になる。
 (with-exception-handler (lambda (c) 0) (lambda () (car 5)))
-error: handler returned from non-continuable raise #<condition "wrong type of argument to car">
+error: handler returned from non-continuable raise #<condition "wrong type of argument to car" 5>
 
 # 機械が検出する失敗も、ハンドラに届く。ハンドラが外側へ送り直すと、その値が報告される。
 (with-exception-handler (lambda (c) (raise (error-object-message c))) (lambda () (+ 1 nope)))
@@ -84,10 +84,10 @@ error: bad if: expected (if test consequent) or (if test consequent alternative)
 
 # with-exception-handler は手続きを2つ取る。
 (with-exception-handler 5 (lambda () 1))
-error: wrong type of argument to with-exception-handler
+error: wrong type of argument to with-exception-handler 5 #<procedure>
 
 (with-exception-handler car 'body)
-error: wrong type of argument to with-exception-handler
+error: wrong type of argument to with-exception-handler #<procedure car> body
 
 # ハンドラを呼ぶこと自体の失敗は、そのハンドラに戻らない。
 (with-exception-handler (lambda () 1) (lambda () (raise 'x)))
@@ -101,7 +101,7 @@ error: bad thing 1 "two" three
 error: nothing else
 
 (error 'not-a-string)
-error: wrong type of argument to error
+error: wrong type of argument to error not-a-string
 
 (error)
 error: wrong number of arguments to error
@@ -112,7 +112,7 @@ error: wrong number of arguments to error
 error: (#t "bad thing" (1 two) #f #f)
 
 (with-exception-handler (lambda (c) (raise (list (error-object? c) (error-object-message c) (error-object-irritants c)))) (lambda () (car 5)))
-error: (#t "wrong type of argument to car" ())
+error: (#t "wrong type of argument to car" (5))
 
 (with-exception-handler (lambda (c) (raise (list (error-object? c) (read-error? c) (file-error? c)))) (lambda () (raise 'oops)))
 error: (#f #f #f)
@@ -121,10 +121,10 @@ error: (#f #f #f)
 (#f #f #f #f)
 
 (error-object-message 'oops)
-error: wrong type of argument to error-object-message
+error: wrong type of argument to error-object-message oops
 
 (error-object-irritants "bad")
-error: wrong type of argument to error-object-irritants
+error: wrong type of argument to error-object-irritants "bad"
 
 # 条件オブジェクトは、メッセージと irritant を持つ読めない表記で書かれる。
 (with-exception-handler (lambda (c) (raise (list c))) (lambda () (error "bad" 1 "two")))

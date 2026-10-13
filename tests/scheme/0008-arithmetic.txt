@@ -111,34 +111,34 @@ yes
 #f
 
 (- 9223372036854775807 -1)
-error: integer overflow in -
+error: integer overflow in - 9223372036854775807 -1
 
 (- -9223372036854775808)
-error: integer overflow in -
+error: integer overflow in - -9223372036854775808
 
 (* 4611686018427387904 2)
-error: integer overflow in *
+error: integer overflow in * 4611686018427387904 2
 
 (* 9223372036854775807 9223372036854775807 9223372036854775807)
-error: integer overflow in *
+error: integer overflow in * 9223372036854775807 9223372036854775807 9223372036854775807
 
 (* 4294967296 4294967296 4294967296 4294967296)
-error: integer overflow in *
+error: integer overflow in * 4294967296 4294967296 4294967296 4294967296
 
 (= 1 'a)
-error: wrong type of argument to =
+error: wrong type of argument to = 1 a
 
 (< 1 2 'a)
-error: wrong type of argument to <
+error: wrong type of argument to < 1 2 a
 
 (< 2 1 'a)
-error: wrong type of argument to <
+error: wrong type of argument to < 2 1 a
 
 (- 'a)
-error: wrong type of argument to -
+error: wrong type of argument to - a
 
 (* 2 #t)
-error: wrong type of argument to *
+error: wrong type of argument to * 2 #t
 
 (-)
 error: wrong number of arguments to -

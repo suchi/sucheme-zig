@@ -89,10 +89,10 @@ error: bad quote: expected (quote datum)
 error: unreadable token
 
 (+ 1 'a)
-error: wrong type of argument to +
+error: wrong type of argument to + 1 a
 
 (+ #t 1)
-error: wrong type of argument to +
+error: wrong type of argument to + #t 1
 
 (a)
 error: unbound variable: a

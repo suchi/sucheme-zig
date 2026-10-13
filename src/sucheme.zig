@@ -461,6 +461,8 @@ test "every primitive reports a wrong argument count, and the next line is read"
             var expected: std.ArrayList(u8) = .empty;
             defer expected.deinit(std.testing.allocator);
             try expected.print(std.testing.allocator, "wrong number of arguments to {s}", .{p.name});
+            // irritant は、呼び出しに渡した引数である。
+            for (0..std.mem.count(u8, line.items, " 1")) |_| try expected.appendSlice(std.testing.allocator, " 1");
             try expectLineFails(&interp, line.items, expected.items);
             // エラーのあとも、定義と評価が続く。
             try expectLinePrints(&interp, "(+ 1 2)", "3\n");
@@ -478,17 +480,17 @@ test "an error of each kind leaves the interpreter and its definitions usable" {
         defer interp.deinit();
         try expectLinePrints(&interp, "(define xs (list 1 2 3)) (define (len l) (if (null? l) 0 (+ 1 (len (cdr l)))))", "");
         const failures = [_]struct { line: []const u8, message: []const u8 }{
-            .{ .line = "(car 1)", .message = "wrong type of argument to car" },
-            .{ .line = "(vector-ref (vector 1) 1)", .message = "argument out of range in vector-ref" },
-            .{ .line = "(string-ref \"あ\" 1)", .message = "argument out of range in string-ref" },
-            .{ .line = "(integer->char 55296)", .message = "argument out of range in integer->char" },
-            .{ .line = "(quotient 1 0)", .message = "division by zero in quotient" },
-            .{ .line = "(modulo 1 0)", .message = "division by zero in modulo" },
-            .{ .line = "(quotient -9223372036854775808 -1)", .message = "integer overflow in quotient" },
-            .{ .line = "(* 9223372036854775807 2)", .message = "integer overflow in *" },
-            .{ .line = "(length (cons 1 2))", .message = "wrong type of argument to length" },
-            .{ .line = "(len 5)", .message = "wrong type of argument to cdr" },
-            .{ .line = "(vector-ref (vector 1) 4294967296)", .message = "argument out of range in vector-ref" },
+            .{ .line = "(car 1)", .message = "wrong type of argument to car 1" },
+            .{ .line = "(vector-ref (vector 1) 1)", .message = "argument out of range in vector-ref #(1) 1" },
+            .{ .line = "(string-ref \"あ\" 1)", .message = "argument out of range in string-ref \"あ\" 1" },
+            .{ .line = "(integer->char 55296)", .message = "argument out of range in integer->char 55296" },
+            .{ .line = "(quotient 1 0)", .message = "division by zero in quotient 1 0" },
+            .{ .line = "(modulo 1 0)", .message = "division by zero in modulo 1 0" },
+            .{ .line = "(quotient -9223372036854775808 -1)", .message = "integer overflow in quotient -9223372036854775808 -1" },
+            .{ .line = "(* 9223372036854775807 2)", .message = "integer overflow in * 9223372036854775807 2" },
+            .{ .line = "(length (cons 1 2))", .message = "wrong type of argument to length (1 . 2)" },
+            .{ .line = "(len 5)", .message = "wrong type of argument to cdr 5" },
+            .{ .line = "(vector-ref (vector 1) 4294967296)", .message = "argument out of range in vector-ref #(1) 4294967296" },
         };
         for (failures) |f| {
             try expectLineFails(&interp, f.line, f.message);
@@ -544,7 +546,7 @@ test "the description outlives the arena of the call and the collections after i
     }
     interp.ctx.clearDiagnostic();
     interp.ctx.collectIdle();
-    try std.testing.expectEqualStrings("wrong type of argument to car", interp.diagnostic());
+    try std.testing.expectEqualStrings("wrong type of argument to car 5", interp.diagnostic());
 }
 
 test "a condition kept as the value raised survives the collections until the next line clears it" {
@@ -556,7 +558,7 @@ test "a condition kept as the value raised survives the collections until the ne
             defer interp.deinit();
             try expectLinePrints(&interp, "(define keep (list 1 2))", "");
             // ストレスモードが毎回 GC する範囲(短い実行)に収まるよう、行は短くしてある。
-            try expectLineFails(&interp, "(define (f n) (if (= n 0) (car 5) (f (- n 1)))) (f 30)", "wrong type of argument to car");
+            try expectLineFails(&interp, "(define (f n) (if (= n 0) (car 5) (f (- n 1)))) (f 30)", "wrong type of argument to car 5");
             // 回収されずに残る経路: 失敗した行のあとの GC は、送出された値を残す。
             try std.testing.expectEqual(1, interp.ctx.heap.countOf(Condition));
             interp.ctx.collectIdle();

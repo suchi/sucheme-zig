@@ -21,7 +21,7 @@ error: not a procedure
 error: empty combination
 
 (+ 9223372036854775807 1)
-error: integer overflow in +
+error: integer overflow in + 9223372036854775807 1
 
 
 (+ 1 2
