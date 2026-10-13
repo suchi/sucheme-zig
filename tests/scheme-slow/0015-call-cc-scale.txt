@@ -1,0 +1,17 @@
+# スライス 2e を規模で試す。多数の wind 点を通る脱出と再入、長く回るジェネレータである。
+# 実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ走り、全コミットでは
+# 走らない(docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0082-call-cc-scale-small.txt にある。
+# ここで見るのは、wind 点の数と起動の回数に比例して壊れる種類の誤りである。巻き戻しが
+# Zig の再帰でなく継続のフレームで進むこと、進入の経路と巻き戻しのフレームが GC の間も
+# 保たれること、捨てた継続が回収されて、長いループでもヒープの上限に届かないことである。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# 5万段の dynamic-wind の内側から脱出し、捕捉しておいた継続で再入して、もう一度脱出する。
+# after と before は、段ごとに1回ずつ、脱出と再入のたびに呼ばれる。
+(define k #f) (define ins 0) (define outs 0) (define round 0) (define (nest n thunk) (if (= n 0) (thunk) (dynamic-wind (lambda () (set! ins (+ ins 1))) (lambda () (nest (- n 1) thunk)) (lambda () (set! outs (+ outs 1)))))) (define r (call/cc (lambda (out) (nest 50000 (lambda () (call/cc (lambda (c) (set! k c))) (out 'escaped)))))) (set! round (+ round 1)) (if (= round 1) (k #f)) (list r round ins outs)
+(escaped 1 100000 100000)
+
+# 生成側の dynamic-wind に、呼ぶたびに入り、値を返すたびに出るジェネレータを、100万回回す。
+(define ins 0) (define outs 0) (define (make-counter) (define return #f) (define resume #f) (define (loop i) (call/cc (lambda (r) (set! resume r) (return i))) (loop (+ i 1))) (lambda () (call/cc (lambda (r) (set! return r) (if resume (resume #f) (dynamic-wind (lambda () (set! ins (+ ins 1))) (lambda () (loop 0)) (lambda () (set! outs (+ outs 1))))))))) (define g (make-counter)) (define (drain n last) (if (= n 0) last (drain (- n 1) (g)))) (list (drain 1000000 #f) ins outs)
+(999999 1000000 1000000)
