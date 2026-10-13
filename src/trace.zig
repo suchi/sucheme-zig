@@ -49,6 +49,10 @@ pub fn Tracer(comptime spec: Spec) type {
         /// how to sort it.
         /// `walk` は null をコンパイルエラーにする。
         pub fn classify(comptime T: type) ?Class {
+            // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。
+            // `Value` の変種が増えるたびに、分類を並べたテストが上限を超えるので、ここで
+            // 上げる。`walk` の分類は、それぞれ別のコンパイル時の評価で行われる。
+            @setEvalBranchQuota(100_000);
             return classifyAt(T, "", false);
         }
 
@@ -341,8 +345,8 @@ test "the code and the plain data around it are never followed" {
 }
 
 test "the classes of the types of the syntactic environment" {
-    // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。上の
-    // テストに足すと上限を超えるので、分けてある。
+    // 分けたのは、上のテストがコンパイル時の分岐の上限を超えたためである。上限は
+    // いま `classify` が上げている。
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticEnv).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticBinding).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
@@ -384,6 +388,39 @@ test "a macro is followed through its literals, its rules and its environment" {
     var b: Recorder = .{};
     interpreter.children(&b, value_mod.SyntacticBinding, &binding);
     try b.expect(&.{addr(&m)});
+}
+
+test "a record is followed through its type and its fields" {
+    var t: value_mod.RecordType = .{ .name = @fromBackingInt(@intCast(6)), .field_count = 3 };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var other: value_mod.RecordType = .{ .name = @fromBackingInt(@intCast(7)), .field_count = 0 };
+    var fields = [_]Value{ .{ .pair = &p }, .fromFixnum(2), .fromRecordType(&other) };
+    const record: value_mod.Record = .{ .record_type = &t, .fields = &fields };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Record, &record);
+    // 型を先に、その後にフィールドを順に。ヒープのものでないフィールドは報告されない。
+    try r.expect(&.{ addr(&t), addr(&p), addr(&other) });
+    const bare: value_mod.Record = .{ .record_type = &other, .fields = &.{} };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Record, &bare);
+    try q.expect(&.{addr(&other)});
+}
+
+test "a record type is followed through nothing, and tells its name as a symbol" {
+    const t: value_mod.RecordType = .{ .name = @fromBackingInt(@intCast(6)), .field_count = 3 };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.RecordType, &t);
+    try r.expect(&.{});
+    try std.testing.expectEqual(1, r.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(6))), r.symbols[0]);
+}
+
+test "the classes of the types of records" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Record).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Record).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.RecordType).?);
+    // 型は、名前のシンボルと数を持つだけである。
+    try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(value_mod.RecordType).?);
 }
 
 test "a type the walk cannot sort has no class" {

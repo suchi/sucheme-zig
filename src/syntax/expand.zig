@@ -78,7 +78,7 @@ const Expander = struct {
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
             // 自己評価式(R7RS 4.1.2)。
-            .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure => try self.constant(task, task.form),
+            .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),
