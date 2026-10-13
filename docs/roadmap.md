@@ -89,7 +89,7 @@
 動的状態の機構と衛生的マクロとライブラリシステムを入れる。この3つは互いに依存するため同じ段階に置く。
 
 - [ ] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3)
-- [ ] 完全な `call/cc` と `dynamic-wind`
+- [x] 完全な `call/cc` と `dynamic-wind` (スライス 2e)
 - [ ] `values` と `call-with-values`、複数値のオブジェクト
 - [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
 - [ ] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md))
