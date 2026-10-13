@@ -327,8 +327,8 @@ test "the classes of the real types" {
 }
 
 test "the classes of the types of the syntactic environment" {
-    // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。上の
-    // テストに足すと上限を超えるので、分けてある。
+    // 分けたのは、上のテストがコンパイル時の分岐の上限を超えたためである。上限は
+    // いま `classify` が上げている。
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticEnv).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticBinding).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
