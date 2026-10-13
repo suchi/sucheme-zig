@@ -31,4 +31,5 @@
   - ready のあとの push(指摘の修正、`main` の取り込み)では、層2 が起動しない。起動は `ready_for_review` と手動だけだからである。マージされるコミットが層2 を通ったコミットと違えば、Windows でだけ壊れる変更が Windows のテストを通らずに `main` に入る。AGENTS.md は、マージの承認を求める前に、PR の先頭のコミットで手動で層2 を走らせ、層2 の結果のコミットが先頭のコミットと一致することを報告に書くと定める。これは機械でなく運用で守る。
   - `main` への push で層2 が走らない。PR が最新の `main` を取り込まないまま ready になり、マージ後の組み合わせで壊れても、層2 はそれを見ない。`ci.yml`(Linux)は走る。リリースのタグの push では `release.yml` が `dist` を組み立て直す。
   - Windows の Zig キャッシュは `full.yml` だけが作る。PR の ready ごとに、キャッシュが空の回がありうる。
+  - `tools/check-docs` が `full.yml` について見る範囲は限られる。`pull_request` に `branches:` を足す(ready にしても Full が起動しない)、`windows` ジョブに空の `matrix`(`os: []`)を差し込む(ジョブが展開されない)、`runs-on: windows-latest` を step の `with:` の下へ移してジョブを `ubuntu-latest` で走らせる、の3つは、`check-docs` が緑のままになる。検査を足さず、記録して閉じた(ユーザーが 2026-10-13 に決めた)。記録と、閉じる案は [docs/design/open-questions.md](../design/open-questions.md) の「CI が表の行を走らせることの検査の範囲」の行にある。
 - 将来の見直し条件: 使用量レポートで、枠に収まることを確かめる。Windows でしか起きない不具合が ready の後に繰り返し見つかるなら、Windows の step を絞って `ci.yml` に戻す案を検討する。
