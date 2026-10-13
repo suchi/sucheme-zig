@@ -430,6 +430,9 @@ pub const MachineOp = enum {
     raise,
     /// `(raise-continuable obj)` (R7RS 6.11).
     raise_continuable,
+    /// `(error message obj ...)` (R7RS 6.11): makes a condition and raises it
+    /// as `raise` does.
+    @"error",
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was

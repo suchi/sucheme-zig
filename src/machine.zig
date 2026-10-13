@@ -346,6 +346,10 @@ pub const Machine = struct {
                         ctx.raised = args.value;
                         return error.Raised;
                     },
+                    .@"error" => {
+                        ctx.raised = try self.makeError(prim, args, count);
+                        return error.Raised;
+                    },
                     .raise_continuable => {
                         args = try self.enterHandler(kont, dyn, args.value, true) orelse {
                             ctx.raised = args.value;
@@ -471,6 +475,29 @@ pub const Machine = struct {
         kont.* = try self.push(kont.*, null, .{ .dynamic_exit = dyn.* });
         dyn.* = point;
         return call;
+    }
+
+    /// The condition `(error message obj ...)` makes: the message, and the
+    /// objects after it as a new list (R7RS 6.11).
+    /// `args` は最後のオペランドから並び、末尾に `prim` がある。メッセージの文字列は
+    /// 写さずに共有する。確保は利用者の確保と同じく上限に従う。予約から取らないのは、
+    /// irritant の数が呼び出しで決まり、予約で賄える量に収まらないからである。
+    fn makeError(self: *Machine, prim: *const value_mod.Primitive, args: *const Args, count: usize) Error!Value {
+        const ctx = self.ctx;
+        var message_node = args;
+        for (0..count - 1) |_| message_node = message_node.next.?;
+        const message = message_node.value;
+        // 確保より前に検査する。
+        if (message.asString() == null) return primitiveFailure(ctx, prim, error.WrongType);
+        // 最後のオペランドから順に前へ継ぎ足すと、書いた順のリストになる。
+        var irritants: Value = .empty_list_value;
+        var it = args;
+        while (it != message_node) : (it = it.next.?) {
+            const cell = try ctx.create(value_mod.Pair, .{ .car = it.value, .cdr = irritants });
+            irritants = .{ .pair = cell };
+        }
+        const condition = try ctx.create(value_mod.Condition, .{ .kind = .@"error", .message = message, .irritants = irritants });
+        return .fromCondition(condition);
     }
 
     /// The error a failure of `prim` is: a condition with the message the failure
@@ -1542,4 +1569,28 @@ test "with-exception-handler takes procedures, and a handler that cannot take th
     try f.expectFails("wrong number of arguments: expected 0, got 1", "(with-exception-handler (lambda () 1) (lambda () (raise 'x)))");
     try f.expectFails("wrong number of arguments: expected 0, got 1", "(with-exception-handler (lambda () 1) (lambda () (car 5)))");
     try f.expectInt(3, "(+ 1 2)");
+}
+
+test "error raises a condition with the message and the irritants it is given" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    try f.expectFails("bad thing", "(error \"bad thing\" 1 'two)");
+    const c = f.ctx.raised.?.asCondition().?;
+    try std.testing.expectEqual(value_mod.ConditionKind.@"error", c.kind);
+    // irritant は書いた順のリストである。
+    const first = c.irritants.asPair().?;
+    try std.testing.expectEqual(1, first.car.asFixnum().?);
+    const second = first.cdr.asPair().?;
+    try std.testing.expectEqualStrings("two", f.ctx.symbols.nameOf(second.car.asSymbol().?));
+    try std.testing.expectEqual(value_mod.Kind.empty_list, second.cdr.kind());
+    // irritant が無ければ空リストである。ハンドラにも同じ条件が届き、`raise` と同じく、
+    // ハンドラが戻ると二次例外になる。
+    _ = try f.eval("(define got #f)");
+    try f.expectFails("handler returned from non-continuable raise", "(with-exception-handler (lambda (c) (set! got c) 0) (lambda () (error \"plain\")))");
+    const plain = (try f.eval("got")).asCondition().?;
+    try std.testing.expectEqualStrings("plain", plain.messageText());
+    try std.testing.expectEqual(value_mod.Kind.empty_list, plain.irritants.kind());
+    // メッセージは文字列でなければならない。
+    try f.expectFails("wrong type of argument to error", "(error 'oops 1)");
 }
