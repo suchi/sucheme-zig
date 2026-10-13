@@ -178,7 +178,8 @@ fn describe(e: Error) []const u8 {
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
-        error.HeapLimit => context.heap_limit_message,
+        // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。
+        error.HeapLimit, error.ReserveExhausted => context.heap_limit_message,
         else => @errorName(e),
     };
 }
@@ -582,6 +583,8 @@ test "the value raised is described: a condition by its message and irritants, a
     try std.testing.expectEqualStrings("(42 \"a\\\"b\")", interp.diagnostic());
     // 何も送出されていなければ、失敗そのものを説明する。
     ctx.raised = null;
-    interp.keepDiagnostic(arena.allocator(), error.HeapLimit);
+    interp.keepDiagnostic(arena.allocator(), error.ReserveExhausted);
     try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    interp.keepDiagnostic(arena.allocator(), error.Incomplete);
+    try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
 }

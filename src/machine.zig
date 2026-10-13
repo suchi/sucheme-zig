@@ -780,7 +780,7 @@ test "an error raised at the limit of the heap makes its condition from the rese
             try g.initWith(.{ .limit = limit, .min_threshold = limit, .work_capacity = capacity, .raise_reserve = 0 });
             defer g.deinit();
             try fillKept(&g, n);
-            try std.testing.expectError(error.HeapLimit, g.eval("(car 5)"));
+            try std.testing.expectError(error.ReserveExhausted, g.eval("(car 5)"));
             try std.testing.expect(g.ctx.raised == null);
         }
         try std.testing.expect(found);

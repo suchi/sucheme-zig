@@ -14,10 +14,12 @@ const Value = value_mod.Value;
 /// What a step can fail with.
 /// `Raised` は Zig レベルの失敗ではない。Scheme のエラーが送出されたことを表し、
 /// 送出された値は `Context.raised` にある。ほかの2つは送出できない失敗である。
-/// `OutOfMemory` はホストのメモリが尽きたこと、`HeapLimit` は上限に達した状態で
+/// `OutOfMemory` はホストのメモリが尽きたこと、`ReserveExhausted` は上限に達した状態で
 /// 送出のための予約領域も尽き、条件オブジェクトを作れなかったことを表す。どちらも
 /// `raised` を空のまま返し、その行を終える(docs/design/runtime.md の上限超過と確保の失敗)。
-pub const Error = error{ OutOfMemory, Raised, HeapLimit };
+/// ヒープの `HeapLimit` はこの集合に入れない。ヒープの確保を素の `try` で返すと
+/// コンパイルエラーになり、`heapFailure` を通して送出することを型が強いる。
+pub const Error = error{ OutOfMemory, Raised, ReserveExhausted };
 
 /// What the error is called when the heap cannot hold more.
 /// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。
@@ -145,17 +147,25 @@ pub const Context = struct {
     /// A new condition of `kind`, with the message `fmt` formatted with `args`
     /// and the list `irritants`.
     /// 条件とメッセージは、送出のための予約領域を使ってよい確保地点である。上限に
-    /// 達していても、予約が残っていれば作れる。予約も尽きたときは `error.HeapLimit` を
-    /// 返す。メッセージの確保とこの条件の確保の間に GC は走らない(ADR-0031)ので、
+    /// 達していても、予約が残っていれば作れる。予約も尽きたときは `error.ReserveExhausted`
+    /// を返す。メッセージの確保とこの条件の確保の間に GC は走らない(ADR-0031)ので、
     /// `irritants` とメッセージはどこにも登録しなくてよい。
     pub fn makeCondition(self: *Context, kind: value_mod.ConditionKind, comptime fmt: []const u8, args: anytype, irritants: Value) Error!Value {
-        const message = try self.heap.printString(.raise_reserve, fmt, args);
-        const condition = try self.heap.createIn(.raise_reserve, value_mod.Condition, .{
+        const message = self.heap.printString(.raise_reserve, fmt, args) catch |e| return reserveFailure(e);
+        const condition = self.heap.createIn(.raise_reserve, value_mod.Condition, .{
             .kind = kind,
             .message = .fromString(message),
             .irritants = irritants,
-        });
+        }) catch |e| return reserveFailure(e);
         return .fromCondition(condition);
+    }
+
+    /// The error an allocation from the reserve for raising fails with.
+    fn reserveFailure(e: heap_mod.Error) Error {
+        return switch (e) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.HeapLimit => error.ReserveExhausted,
+        };
     }
 };
 
@@ -247,16 +257,16 @@ test "makeCondition keeps the kind, the message and the irritants it is given" {
     try std.testing.expect(ctx.raised == null);
 }
 
-test "when the reserve is used up too, raise returns HeapLimit and leaves raised empty" {
+test "when the reserve is used up too, raise returns ReserveExhausted and leaves raised empty" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var ctx = try Context.initWithOptions(arena.allocator(), std.testing.allocator, .{ .limit = 1, .raise_reserve = 0 });
     defer ctx.deinit();
-    try std.testing.expectEqual(error.HeapLimit, ctx.raise("first", .{}));
+    try std.testing.expectEqual(error.ReserveExhausted, ctx.raise("first", .{}));
     try std.testing.expect(ctx.raised == null);
     try std.testing.expectEqualStrings("", ctx.diagnostic());
     // 上限の超過から送出に移るときも同じである。
-    try std.testing.expectEqual(error.HeapLimit, ctx.create(value_mod.Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value }));
+    try std.testing.expectEqual(error.ReserveExhausted, ctx.create(value_mod.Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value }));
     try std.testing.expect(ctx.raised == null);
     try std.testing.expectEqual(0, ctx.heap.count);
 }
