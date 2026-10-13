@@ -362,7 +362,7 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 ### 2b 条件オブジェクトのヒープ化と送出の予約領域
 
-- 対象: 条件オブジェクトを GC ヒープに移す(`heap_types` へ)。種別、メッセージ(文字列)、irritant のリストを持たせる。`Context.raised` を `?Value` にする。送出のための予約領域([runtime.md](../design/runtime.md))の仕組みと初期の大きさを入れ、条件オブジェクトとそのメッセージの確保地点から使う。runtime.md の必要量の表のうち、ほかの地点(ハンドラ切り替えの動的点、ハンドラの引数の環境、継続フレーム、巻き戻しのフレームと経路の配列)は 2d と 2e で入る。2d と 2e が、自分の地点を予約領域から確保するようにし、その時点で大きさを測って調整する。バイト数が決まるのは 2e である。ルート管理の規約を [runtime.md](../design/runtime.md) の「ルート集合」と「一時ルートの規約」に段階2の形で書く。
+- 対象: 条件オブジェクトを GC ヒープに移す(`heap_types` へ)。種別、メッセージ(文字列)、irritant のリストを持たせる。`Context.raised` を `?Value` にする。送出のための予約領域([runtime.md](../design/runtime.md))の仕組みと初期の大きさを入れ、条件オブジェクトとそのメッセージの確保地点から使う。runtime.md の必要量の表のうち、ほかの地点(ハンドラ切り替えの動的点、ハンドラの引数の環境、継続フレーム、巻き戻しのフレームと状態と経路の節)は 2d と 2e で入る。2d と 2e が、自分の地点を予約領域から確保するようにし、その時点で大きさを測って調整する。バイト数が決まるのは 2e である。ルート管理の規約を [runtime.md](../design/runtime.md) の「ルート集合」と「一時ルートの規約」に段階2の形で書く。
 - ファイル: `src/value.zig`、`src/heap.zig`(予約領域)、`src/context.zig`、`src/machine.zig`(写像の呼び出し先)、`src/sucheme.zig`(診断の整形)、`docs/design/runtime.md`、`docs/design/architecture.md`(例外の一覧から条件オブジェクトを外す)、`tools/test-wasm` の入力。[ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) の見直し条件(条件オブジェクトをヒープに置く)に答える記録。追記で足りるか新しい ADR が要るかは、合意を求める点の4で決める。
 - WASM の往復: 2b の時点で `raise` はまだ無い。`(car 5)` の失敗が、ヒープの条件オブジェクトを通って、今までと同じ `error: wrong type of argument to car` として届くことを `tools/test-wasm` の入力で確かめる。
 - ルート管理の規約として書く内容: 段階2のルートは、機械のレジスタ(環境、継続、値、動的点)、大域環境(REPL とライブラリの登録表)、コードの定数、読み込みの作業リスト、送出された値(`Context.raised`)である。送出された値は `evalPrint` が失敗の時点で文字列に整形するが、次の行の GC の前に `raised` を空にしない限りヒープを指し続けるので、`Context.mark` に入れる。機械の実行をまたいで値を持つものは、`Context` のルートの表に入れる。展開器は、機械の実行をまたいで状態を持たない(合意を求める点の4)。新しいヒープの型は、走査関数の生成器の検査([runtime.md](../design/runtime.md) の「走査関数の生成」)を通す。
@@ -385,10 +385,10 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 
 ### 2e 完全な `call/cc` と `dynamic-wind`
 
-- 対象: 継続オブジェクト(`kont` と `dyn` の保存)、`call-with-current-continuation` と `call/cc`、wind の点、`dynamic-wind`、継続の起動の巻き戻し(退出と進入、経路の配列)、未処理例外を最外の継続への脱出として巻き戻しの経路に通す。
+- 対象: 継続オブジェクト(`kont` と `dyn` の保存)、`call-with-current-continuation` と `call/cc`、wind の点、`dynamic-wind`、継続の起動の巻き戻し(退出と進入、進入の経路の節の連結)、未処理例外を最外の継続への脱出として巻き戻しの経路に通す。
 - ファイル: `src/value.zig`、`src/machine.zig`、`src/prim/procedure.zig`(登録)、`src/printer.zig`、`docs/design/runtime.md`(未処理例外の節の、スライス 1f の暫定の段落を実装に合わせる)、`tests/scheme/0080-*.txt`、`tests/scheme-slow/0015-*.txt`。
 - 最初の失敗するテスト: `(call/cc (lambda (k) (+ 1 (k 42))))` が `42`。
-- 完了の確認: 例外の事例 1、2、3、9、10。継続の多重起動(同じ継続を2回起動し、引数の評価の途中の状態が独立していること)。`dynamic-wind` の本体へ継続で再入したとき `before` が再び呼ばれ、脱出のたびに `after` が呼ばれる。REPL の前の行で捕捉した継続を後の行で起動したときの動作を、テストで固定する(その行の残りの計算だけが走り、後続の行は再実行されない)。機械が検出する失敗(2d で機械の中の `raise` にしたもの)と巻き戻しの結合: `dynamic-wind` の本体で上限超過が起き、ハンドラが無いとき、`after` が呼ばれてからプロンプトに戻る。`dynamic-wind` の本体の上限超過を、外側のハンドラから `call/cc` の継続で脱出して捕まえたとき、`after` が1回呼ばれる。巻き戻しのフレームと経路の配列を予約領域から確保し、予約領域のバイト数をここで測って決める。
+- 完了の確認: 例外の事例 1、2、3、9、10。継続の多重起動(同じ継続を2回起動し、引数の評価の途中の状態が独立していること)。`dynamic-wind` の本体へ継続で再入したとき `before` が再び呼ばれ、脱出のたびに `after` が呼ばれる。REPL の前の行で捕捉した継続を後の行で起動したときの動作を、テストで固定する(その行の残りの計算だけが走り、後続の行は再実行されない)。機械が検出する失敗(2d で機械の中の `raise` にしたもの)と巻き戻しの結合: `dynamic-wind` の本体で上限超過が起き、ハンドラが無いとき、`after` が呼ばれてからプロンプトに戻る。`dynamic-wind` の本体の上限超過を、外側のハンドラから `call/cc` の継続で脱出して捕まえたとき、`after` が1回呼ばれる。巻き戻しのフレームと状態と経路の節を予約領域から確保し、予約領域のバイト数をここで測って決める。
 - 予約領域の枯渇: 予約も尽きたとき(`error.ReserveExhausted`)を、[platform-and-web.md](../design/platform-and-web.md) の状態コード -2(回復不能。以後は `sucheme_reset` だけ)として扱う実装を、2e が引き受ける。2b の時点では -1 の `heap limit exceeded` と同じ扱いで、次の行から続く。
 
 ### 2f 複数値

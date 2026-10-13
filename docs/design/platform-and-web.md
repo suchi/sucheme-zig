@@ -150,7 +150,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 | 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_reset` |
 | 2 | 入力待ち。`sucheme_provide_input` または `sucheme_provide_eof` を待っている | `sucheme_provide_input` `sucheme_provide_eof` `sucheme_reset` |
 | -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` |
-| -2 | 回復不能。送出のための予約領域を使い切り、送出する条件を作れなかった。出力バッファに `error: heap limit exceeded` の一行がある。段階2のスライス 2e から、このコードを返す(`src/wasm.zig`)。`sucheme_reset` の前に `sucheme_eval_begin` を呼ぶと、何も変えずに -4 を返す | `sucheme_reset` |
+| -2 | 回復不能。送出のための予約領域を使い切り、送出する条件を作れなかった。出力バッファに `error: heap limit exceeded` の一行がある。段階2のスライス 2e から、このコードを返す(`src/wasm.zig`)。`sucheme_reset` の前に `sucheme_eval_begin` を呼ぶと、状態を変えず、説明の一行を出力に足して -4 を返す | `sucheme_reset` |
 | -3 | 渡されたバイト列が妥当な UTF-8 でない。状態は変わっていない | 呼び出し前の状態で呼べたものすべて |
 | -4 | 呼び出し順序の誤り。ホスト側の実装の誤り。状態は変わっていない | 呼び出し前の状態で呼べたものすべて |
 | -5 | 初期化されていない | `sucheme_init` |
