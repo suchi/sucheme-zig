@@ -37,7 +37,7 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             try out.writeByte(')');
         },
         .local_ref => |r| try out.print("(local {s} {d} {d})", .{ symbols.nameOf(r.name), r.address.depth, r.address.index }),
-        .global_ref => |id| try out.print("(global {s})", .{symbols.nameOf(id)}),
+        .global_ref => |cell| try out.print("(global {s})", .{symbols.nameOf(cell.name)}),
         .local_set => |a| {
             try out.print("(set-local {s} {d} {d} ", .{ symbols.nameOf(a.name), a.address.depth, a.address.index });
             try write(out, scratch, symbols, a.value);
@@ -49,12 +49,12 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             try out.writeByte(')');
         },
         .global_set => |a| {
-            try out.print("(set-global {s} ", .{symbols.nameOf(a.name)});
+            try out.print("(set-global {s} ", .{symbols.nameOf(a.cell.name)});
             try write(out, scratch, symbols, a.value);
             try out.writeByte(')');
         },
         .global_define => |a| {
-            try out.print("(define-global {s} ", .{symbols.nameOf(a.name)});
+            try out.print("(define-global {s} ", .{symbols.nameOf(a.cell.name)});
             try write(out, scratch, symbols, a.value);
             try out.writeByte(')');
         },
@@ -129,11 +129,13 @@ test "write names each kind of node and its parts" {
 
     const one = try make(a, .{ .constant = .fromFixnum(1) });
     const local = try make(a, .{ .local_ref = .{ .address = .{ .depth = 1, .index = 2 }, .name = x } });
-    const global = try make(a, .{ .global_ref = f });
+    // 大域変数の節点はセルを指し、書き出すのはセルの名前である。
+    var cell: value_mod.Cell = .{ .name = f, .value = .uninitialized_value };
+    const global = try make(a, .{ .global_ref = &cell });
     const set_local = try make(a, .{ .local_set = .{ .address = .{ .depth = 0, .index = 0 }, .name = x, .value = one } });
     const define_local = try make(a, .{ .local_define = .{ .address = .{ .depth = 0, .index = 1 }, .name = x, .value = one } });
-    const set_global = try make(a, .{ .global_set = .{ .name = f, .value = one } });
-    const define_global = try make(a, .{ .global_define = .{ .name = f, .value = one } });
+    const set_global = try make(a, .{ .global_set = .{ .cell = &cell, .value = one } });
+    const define_global = try make(a, .{ .global_define = .{ .cell = &cell, .value = one } });
     const no_alt = try make(a, .{ .@"if" = .{ .condition = one, .consequent = local, .alternative = null } });
     const with_alt = try make(a, .{ .@"if" = .{ .condition = one, .consequent = local, .alternative = global } });
     const seq = try make(a, .{ .sequence = &.{ one, local } });
