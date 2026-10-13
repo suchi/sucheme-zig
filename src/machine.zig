@@ -697,7 +697,7 @@ test "the operands apply spreads do not pile up in the scratch space" {
     try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
 }
 
-test "an apply whose operands just fill the buffer on the stack takes no scratch space" {
+test "an apply whose operands just fill the buffer on the stack does not grow the scratch space" {
     var f: Fixture = undefined;
     try f.initIn(std.heap.smp_allocator, .{});
     defer f.deinit();
