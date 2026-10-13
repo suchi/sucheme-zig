@@ -64,6 +64,10 @@ error: wrong type of argument to %record-ref
 (define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-set! (%make-record a 1) b 0 2)
 error: wrong type of argument to %record-set!
 
+# 型の誤りは、添字の範囲の誤りより先に報告する。
+(define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-ref (%make-record a 1) b 5)
+error: wrong type of argument to %record-ref
+
 # レコードでないものも型エラー。型でないものを型として渡しても型エラー。
 (define a (%make-record-type 'a 1)) (%record-ref (vector 1) a 0)
 error: wrong type of argument to %record-ref

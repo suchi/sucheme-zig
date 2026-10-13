@@ -248,6 +248,12 @@ test "reading and writing refuse what is not a record, and a type that is not on
     // 型の誤りは、添字が範囲外でも型の誤りとして報告する。
     try std.testing.expectError(error.WrongType, f.call(&primitives, "%record-ref", &.{ v, t, .fromFixnum(100) }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "%record-ref", &.{ r, v, .fromFixnum(-1) }));
+    // 別の型のレコードも、添字が範囲外なら範囲の誤りでなく型の誤りである。
+    const other = try f.call(&primitives, "%make-record-type", &.{ sym(0), .fromFixnum(1) });
+    for ([_]i64{ 1, 100, -1 }) |k| {
+        try std.testing.expectError(error.WrongType, f.call(&primitives, "%record-ref", &.{ r, other, .fromFixnum(k) }));
+        try std.testing.expectError(error.WrongType, f.call(&primitives, "%record-set!", &.{ r, other, .fromFixnum(k), .fromFixnum(0) }));
+    }
 }
 
 test "reading and writing refuse a position outside the record" {
