@@ -433,6 +433,9 @@ test "a define or a set! of a primitive that fails leaves the name with the prim
     try f.expectInt(1, "(car '(1 2))");
     try f.expectFails("unbound variable: nope", "(set! cdr (nope))");
     try f.expectInt(2, "(car (cdr '(1 2)))");
+    // 特殊形式の名前には元の値が無いので、失敗した定義の後は未束縛の変数である。
+    try f.expectFails("unbound variable: nope", "(define if (nope))");
+    try f.expectFails("unbound variable: if", "if");
 }
 
 test "a global's cell holds what the definition gives it, across forms" {

@@ -258,13 +258,12 @@ const Expander = struct {
             return self.ctx.raise("bad define: the name must be an identifier", .{});
         switch (task.pos) {
             .top => {
-                // Why: R7RS 5.3.1 は、構文の束縛を持つ名前への最上位の定義も、新しい場所を
-                // 束縛するとしている。まだ受け付けない。
-                if (try syntax_env.resolve(self.ctx, task.env, target) == .special)
-                    return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{self.ctx.symbols.nameOf(id)});
                 // 対象のセルは、値の式を展開する前に選ぶ。値の式の中の同じ名前(再帰する
                 // 手続きの名前)は、定義される変数を指す(R7RS 5.3.1: 新しい場所を束縛して
-                // から代入する)。
+                // から代入する)。特殊形式の名前への定義も、新しい場所を束縛する(同節)。
+                // R7RS 5.4 は `(define define 3)` を誤りとするが、最上位の形式は前から順に
+                // 展開し、後ろの形式は前の定義の後の束縛で読むので、すでに判定した形式の意味が
+                // 後から変わることは無い。本体の定義(`collectDefinitions`)と違って、受け付ける。
                 const cell = self.ctx.globals.defineTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
                     return self.ctx.heapFailure(e);
                 const value = try self.definedValue(task, items, shorthand);
@@ -699,7 +698,6 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     try f.expectFails("(define)", "bad define: expected (define name expression)");
     try f.expectFails("(define x)", "bad define: expected (define name expression)");
     try f.expectFails("(define 1 2)", "bad define: the name must be an identifier");
-    try f.expectFails("(define if 1)", "bad define: if is a syntactic keyword and cannot be redefined");
     try f.expectFails("(define (f))", "bad define: expected (define (name parameter ...) body ...)");
     try f.expectFails("(+ 1 (define x 1))", "bad define: a definition is only allowed at the top level or at the start of a body");
     try f.expectFails("(if (define x 1) 2)", "bad define: a definition is only allowed at the top level or at the start of a body");
@@ -736,19 +734,37 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
 }
 
-test "a special form at the top level is not a variable, a value to assign or a name to define" {
+test "a special form at the top level is not a variable or a value to assign" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     try f.expectFails("quote", "quote is a syntactic keyword and cannot be used as a variable");
-    try f.expectFails("(define quote 1)", "bad define: quote is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(define (lambda x) x)", "bad define: lambda is a syntactic keyword and cannot be redefined");
-    try f.expectFails("(begin (define begin 1))", "bad define: begin is a syntactic keyword and cannot be redefined");
     try f.expectFails("(define #t 1)", "bad define: the name must be an identifier");
     try f.expectFails("(f if)", "if is a syntactic keyword and cannot be used as a variable");
     // 局所の束縛が隠していないところでは、本体の中でも同じである。
     try f.expectFails("(lambda (x) (set! define x))", "bad set!: define is a syntactic keyword and cannot be assigned");
     try f.expectFails("(lambda (x) (lambda (y) lambda))", "lambda is a syntactic keyword and cannot be used as a variable");
+}
+
+test "a definition at the top level of a special form's name binds a new variable" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 定義の後、その名前は最上位で変数である(R7RS 5.3.1)。
+    try f.expectExpands("(define if 5)", "(define-global if (const 5))");
+    try f.expectExpands("(if 1 2)", "(call (global if) (const 1) (const 2))");
+    try f.expectExpands("(define (lambda x) x)", "(define-global lambda (lambda 1 1 (local x 0 0)))");
+    try f.expectExpands("(lambda 1)", "(call (global lambda) (const 1))");
+    // R7RS 5.4 が誤りの例に挙げる形も、最上位では受け付ける。前の形式の意味は変わらない。
+    try f.expectExpands(
+        "(begin (define begin list) (begin 1 2))",
+        "(seq (define-global begin (global list)) (call (global begin) (const 1) (const 2)))",
+    );
+    try f.expectExpands("(define define 3)", "(define-global define (const 3))");
+    try f.expectExpands("(define x 1)", "(call (global define) (global x) (const 1))");
+    // `set!` の対象にはならないままである。定義した後は変数なので、代入できる。
+    try f.expectFails("(set! quote 1)", "bad set!: quote is a syntactic keyword and cannot be assigned");
+    try f.expectExpands("(set! if 6)", "(set-global if (const 6))");
 }
 
 test "the cell a global names is chosen when the form is expanded" {

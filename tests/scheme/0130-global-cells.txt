@@ -51,6 +51,23 @@ error: unbound variable: z
 (define (car x) (if (= x 0) 'done (car (- x 1)))) (car 3)
 done
 
+# 特殊形式の名前への最上位の定義は、新しい変数を束縛する(R7RS 5.3.1)。
+(define if 5) if
+5
+
+(define if 5) (if 1 2)
+error: not a procedure
+
+(define (f) 1) (define if f) (if)
+1
+
+# R7RS 5.4 が誤りの例に挙げる形。最上位では受け付け、後ろの形式は新しい変数を見る。
+(define define 3) define
+3
+
+(begin (define begin list) (begin 1 2))
+(1 2)
+
 # 特殊形式は変数でないので、set! の対象にはならない。
 (set! if 5)
 error: bad set!: if is a syntactic keyword and cannot be assigned

@@ -65,12 +65,9 @@ error: bad lambda: duplicate parameter: if
 error: bad define: if is already defined earlier in this body
 
 # 最上位の特殊形式は、変数としても代入の対象としても使えない。最上位の (define if 5)
-# は、REPL の束縛の表が入るスライス 2j まで拒否する。
+# は新しい変数を束縛する(スライス 2j。tests/scheme/0130-global-cells.txt)。
 (set! if 5)
 error: bad set!: if is a syntactic keyword and cannot be assigned
-
-(define if 5)
-error: bad define: if is a syntactic keyword and cannot be redefined
 
 # 最上位の空の begin は、何もしない(R7RS 7.1.6)。
 (begin)
