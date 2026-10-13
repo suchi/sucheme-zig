@@ -14,8 +14,10 @@
 #
 # windows ジョブは、ci.yml が全 push で走らせていた Windows のテストを、ここへ
 # 移したものである。Windows でしか起きない不具合は、PR を ready にしたときか、
-# 手動で走らせたときに見つかる。tools/check-docs が、このジョブの `runs-on` と、
-# ci.yml の test ジョブと同じ step を持つことを確かめる。
+# 手動で走らせたときに見つかる。tools/check-docs は、このファイルに
+# `runs-on: windows-latest` があることと、ci.yml の各 `run:` 行がこのファイルにも
+# あることを確かめる。それぞれがどのジョブにあるかまでは見ない(2つのジョブの
+# `runs-on` を入れ替える編集は通る)。
 #
 # dist ジョブは、リリースの成果物の組み立てを試す。`zig build dist` が全ターゲットを
 # 作り、tools/release/package.py がアーカイブと SHA256SUMS を作って読み直す。

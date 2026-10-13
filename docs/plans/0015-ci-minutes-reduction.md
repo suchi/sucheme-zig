@@ -51,7 +51,7 @@ CI の Windows ジョブだけで約 2,900 で、合計の半分を超える。C
 B1. Windows の test ジョブを、全 push の CI から外し、`full.yml`(PR を ready にしたとき、手動。B2 を採らなければ `main` への push も)に移す。
 
 - 長所: CI 1 ランが 13 から 3 になる。Windows でしか起きない不具合は、ready にする時に検出される。ready のあとに push したコミット(指摘の修正、main の取り込み)では `full.yml` が起動しないので、マージの承認を求める前に、PR の先頭のコミットで手動で走らせる(AGENTS.md の規則)。この手順を飛ばすと、Windows でだけ壊れるコミットが、Windows のテストを通らずに main に入る。
-- 短所: ADR-0010 が決めた「CI は全コミットで Linux と Windows」を変える。draft の間の push では Windows の不具合が見えず、ready にしてから見つかる。`tools/check-docs` の `ci.yml` の matrix の照合([tools/check-docs/main.zig](../../tools/check-docs/main.zig) の `os`)と、検証コマンド表の「CIで実行」の列、ADR-0010 の追記を直す必要がある。`full.yml` の `windows` ジョブが Windows で走り、`ci.yml` と同じ step を持つことも、`tools/check-docs` で固定する。
+- 短所: ADR-0010 が決めた「CI は全コミットで Linux と Windows」を変える。draft の間の push では Windows の不具合が見えず、ready にしてから見つかる。`tools/check-docs` の `ci.yml` の matrix の照合([tools/check-docs/main.zig](../../tools/check-docs/main.zig) の `os`)と、検証コマンド表の「CIで実行」の列、ADR-0010 の追記を直す必要がある。`tools/check-docs` には、`full.yml` が `runs-on: windows-latest` を持つことと、`ci.yml` の各 `run:` 行を `full.yml` も持つことの照合を足す。どちらも、どのジョブにあるかまでは見ない(2つのジョブの `runs-on` を入れ替える2箇所の編集は通る)。
 - 見積り: CI から約 2,900 を外し、Full に Windows(10)を足す。Full に足す回数が 110 なら約 1,100 で、差し引き約 1,800(合計の約 34%)の減。ready のときだけ足すなら(約 50 回、約 500)、差し引き約 2,400(約 46%)の減。約 50 回は、2026-10-01 以降の Full のランのうち `pull_request`(ready)の起動の数(51)である。
 
 B2. `full.yml` の `main` への push の起動を外し、`ready_for_review` と手動だけにする。
