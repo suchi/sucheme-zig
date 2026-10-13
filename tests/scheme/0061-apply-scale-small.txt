@@ -10,3 +10,6 @@ done
 
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 3000 '())) (list (apply + xs) (length (apply list xs)) (apply (lambda (a b . r) (list a b (length r))) xs))
 (4501500 3000 (1 2 2998))
+
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 1000 (list + '(1 2))))
+3

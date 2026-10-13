@@ -23,3 +23,10 @@ done
 # クロージャにも渡す。
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 100000 '())) (list (apply + xs) (length (apply list xs)) (apply (lambda (a b . r) (list a b (length r))) xs))
 (5000050000 100000 (1 2 99998))
+
+# apply で apply を呼ぶ、10万段の入れ子。(nest n l) は l を (apply l) で n 回包んだ
+# リストを作り、(apply apply (nest n l)) は n 回 apply を通って (apply + '(1 2)) になる。
+# 入れ子の深さはデータから決まる。機械はそれを Zig の再帰でなく `Machine.apply` の中の
+# 周回で解くので、Zig のスタックを使い切らない。
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 100000 (list + '(1 2))))
+3
