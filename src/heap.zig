@@ -745,6 +745,24 @@ test "an allocation for raising may pass the limit by the reserve, and no furthe
     _ = try heap.createIn(.raise_reserve, Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value });
 }
 
+test "an allocation for raising may take the account exactly to the limit and the reserve, and not a byte more" {
+    const limit = cellBytes(Pair) * 2;
+    for ([_]usize{ 0, 1 }) |over| {
+        // 予約の最後の確保が、ちょうど上限と予約の和に届く大きさ。`over` が 1 なら 1 バイト足りない。
+        var heap: Heap = .init(std.testing.allocator, .{ .limit = limit, .raise_reserve = cellBytes(String) + 5 - over });
+        defer heap.deinit();
+        _ = try heap.cons(.fromFixnum(1), .fromFixnum(2));
+        _ = try heap.cons(.fromFixnum(3), .fromFixnum(4));
+        if (over == 0) {
+            _ = try heap.printString(.raise_reserve, "{s}", .{"fives"});
+            try std.testing.expectEqual(limit + heap.options.raise_reserve, heap.accounted);
+        } else {
+            try std.testing.expectError(error.HeapLimit, heap.printString(.raise_reserve, "{s}", .{"fives"}));
+            try std.testing.expectEqual(limit, heap.accounted);
+        }
+    }
+}
+
 test "the reserve for raising is outside the limit, so an ordinary allocation never uses it" {
     const limit = cellBytes(String) + 4;
     var heap: Heap = .init(std.testing.allocator, .{ .limit = limit, .raise_reserve = 1024 });
