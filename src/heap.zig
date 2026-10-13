@@ -81,6 +81,10 @@ pub const Budget = enum {
 /// wasm32 の線形メモリは全体で 4 GiB であり、計上は実メモリの約半分なので、
 /// ホストが 4 GiB に近い値を渡すと、上限に届く前に実メモリが尽きて trap する。
 /// それを順序立ったエラー(`heap limit exceeded`)にするため、ホストの指定をここで丸める。
+/// 段階2のスライス 2k からは、この前提が展開の途中では成り立たない。マクロの展開の
+/// 作業領域は計上されないので、止まらないマクロの適用は、上限に届く前に線形メモリを
+/// 使い切って止まりうる。2l で、適用回数の上限か作業領域の計上を入れて戻す
+/// (docs/adr/0031-gc-at-machine-step-boundaries.md の 2026-10-13 のスライス 2k の追記)。
 pub const max_host_limit: usize = 1024 * 1024 * 1024;
 
 /// Clamps a limit a host asked for to `max_host_limit`.
