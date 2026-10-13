@@ -100,6 +100,7 @@
 - [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路)
 - [ ] 機械操作プリミティブ9個(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter`)。`eval` と `exit` は環境の値とプロセス文脈が必要なので段階5
 - [ ] `define-record-type` の基盤(レコードとレコード型のプリミティブ)
+- [x] 可変個引数の `lambda`(`(lambda args ...)` と `(lambda (a . rest) ...)`、`define` の略記を含む)。スライス 2a
 
 完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目のうち、段階2で入力を書けるものがすべて通る。[design/runtime.md](design/runtime.md) のテストに含める事例のうち、段階2で入力を書けるものがすべて通る(書けない事例は、段階3と段階5の完了条件に移した。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の9)。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
 

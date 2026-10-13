@@ -298,9 +298,9 @@ const Expander = struct {
     /// `form_name` は、メッセージのための、その手続きが書かれた形式の名前である。
     /// `(define (f x) ...)` は、自前の仮引数リストを持つ `define` である。
     ///
-    /// 可変個の引数にはまだ対応していない。`(lambda args ...)` は機械が受け付ける
-    /// ようになるまで拒否する。`(lambda (a . rest) ...)` は、さらに、リーダが
-    /// ドット付きリストを読めるようになるのも待っている。
+    /// 仮引数は R7RS 4.1.4 の3つの形を取る。`(a b)` は固定個、`args` は任意個、
+    /// `(a b . r)` は2個以上である。余りを受ける変数は、必須の仮引数の直後の
+    /// スロットに置く。
     fn lambdaNode(
         self: *Expander,
         dest: *Node,
@@ -311,24 +311,16 @@ const Expander = struct {
     ) Error!void {
         var names: std.ArrayList(SymbolId) = .empty;
         var rest = params_form;
-        if (rest.kind() == .symbol) return self.ctx.raise(
-            "bad " ++ form_name ++ ": parameters must be a list of identifiers; a variable number of arguments is not supported yet",
-            .{},
-        );
-        while (rest.asPair()) |p| : (rest = p.cdr) {
-            const id = p.car.asSymbol() orelse
-                return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
-            const name = self.ctx.symbols.nameOf(id);
-            if (Keyword.of(name) != null)
-                return self.ctx.raise("bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
-            for (names.items) |seen| {
-                if (seen == id) return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
-            }
-            try names.append(self.scratch, id);
-        }
-        if (rest.kind() != .empty_list)
-            return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be a list of identifiers", .{});
+        while (rest.asPair()) |p| : (rest = p.cdr) try self.parameter(&names, p.car, form_name);
         const arity = names.items.len;
+        // リストの終わりが空リストでなければ、ドットの後ろ(または仮引数の全体)が
+        // 余りを受ける変数である。識別子でないものは、仮引数の並びとして読めない。
+        const has_rest = rest.kind() != .empty_list;
+        if (has_rest) {
+            if (rest.kind() != .symbol)
+                return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be an identifier or a list of identifiers", .{});
+            try self.parameter(&names, rest, form_name);
+        }
         const defines = try self.collectDefinitions(body, &names);
         // Why: R7RS 5.3.2 の本体は、定義のあとに式が続く形で、式は 1 つ以上要る。
         // 定義だけの本体には、返す値がない。
@@ -341,8 +333,23 @@ const Expander = struct {
         const body_node = try self.ctx.persist.create(Node);
         try self.sequence(body_node, body, inner, .expression, defines);
         const lambda = try self.ctx.persist.create(value_mod.Lambda);
-        lambda.* = .{ .arity = @intCast(arity), .frame_size = @intCast(names.items.len), .body = body_node };
+        lambda.* = .{ .arity = @intCast(arity), .rest = has_rest, .frame_size = @intCast(names.items.len), .body = body_node };
         dest.* = .{ .lambda = lambda };
+    }
+
+    /// Adds the parameter `form` to `names`, after checking that it is an
+    /// identifier that is neither a keyword nor one of `names` already.
+    /// 必須の仮引数と余りを受ける変数の両方が、同じ検査を通る。
+    fn parameter(self: *Expander, names: *std.ArrayList(SymbolId), form: Value, comptime form_name: []const u8) Error!void {
+        const id = form.asSymbol() orelse
+            return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
+        const name = self.ctx.symbols.nameOf(id);
+        if (Keyword.of(name) != null)
+            return self.ctx.raise("bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
+        for (names.items) |seen| {
+            if (seen == id) return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
+        }
+        try names.append(self.scratch, id);
     }
 
     /// Adds the names that the definitions at the start of `body` define to
@@ -510,6 +517,53 @@ test "a lambda binds its parameters at depth 0, and the frame outside at depth 1
     try f.expectExpands("(lambda (+) +)", "(lambda 1 1 (local + 0 0))");
 }
 
+test "a rest parameter takes the slot after the required ones, and the definitions follow it" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(lambda args args)", "(lambda 0 rest 1 (local args 0 0))");
+    try f.expectExpands("(lambda (a b . r) r)", "(lambda 2 rest 3 (local r 0 2))");
+    try f.expectExpands("(lambda (a . r) a)", "(lambda 1 rest 2 (local a 0 0))");
+    try f.expectExpands(
+        "(lambda (a . r) (define n 1) n)",
+        "(lambda 1 rest 3 (seq (define-local n 0 2 (const 1)) (local n 0 2)))",
+    );
+    // `define` の略記も同じ仮引数を取る(R7RS 5.3.1)。本体の先頭の略記も同じである。
+    try f.expectExpands("(define (f . xs) xs)", "(define-global f (lambda 0 rest 1 (local xs 0 0)))");
+    try f.expectExpands("(define (f a . xs) xs)", "(define-global f (lambda 1 rest 2 (local xs 0 1)))");
+    try f.expectExpands(
+        "(lambda () (define (g . r) r) g)",
+        "(lambda 0 1 (seq (define-local g 0 0 (lambda 0 rest 1 (local r 0 0))) (local g 0 0)))",
+    );
+    // 固定個の手続きは、`rest` の印を持たない。
+    try f.expectExpands("(lambda (a b) a)", "(lambda 2 2 (local a 0 0))");
+}
+
+test "a rest parameter is checked like the other parameters" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("(lambda (a . a) a)", "bad lambda: duplicate parameter: a");
+    try f.expectFails("(lambda (a . if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
+    try f.expectFails("(lambda if 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
+    try f.expectFails("(lambda (a . 1) a)", "bad lambda: the parameters must be an identifier or a list of identifiers");
+    try f.expectFails("(lambda #t 1)", "bad lambda: the parameters must be an identifier or a list of identifiers");
+    try f.expectFails("(lambda r (define r 1) r)", "bad define: r is already a parameter or defined earlier in this body");
+    try f.expectFails("(define (f . if) 1)", "bad define: if is a syntactic keyword and cannot be a parameter");
+    try f.expectFails("(define (f . 1) 1)", "bad define: the parameters must be an identifier or a list of identifiers");
+    try f.expectFails("(define (f . r))", "bad define: expected (define (name parameter ...) body ...)");
+}
+
+test "a rest parameter counts toward the variables of a procedure" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .address = 1 };
+    try std.testing.expectEqualStrings("(lambda 0 rest 1 (local r 0 0))", try f.expandText("(lambda r r)", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda (a . r) a)", limits));
+    try std.testing.expectEqualStrings("implementation restriction: a procedure has too many variables", f.ctx.diagnostic());
+}
+
 test "set! assigns the nearest binding, local or global" {
     var f: Fixture = undefined;
     try f.init();
@@ -563,7 +617,7 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     try f.expectFails("(lambda (x x) x)", "bad lambda: duplicate parameter: x");
     try f.expectFails("(lambda (if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
     try f.expectFails("(lambda (1) 1)", "bad lambda: a parameter must be an identifier");
-    try f.expectFails("(lambda x 1)", "bad lambda: parameters must be a list of identifiers; a variable number of arguments is not supported yet");
+    try f.expectFails("(lambda 1 1)", "bad lambda: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(set! x)", "bad set!: expected (set! name expression)");
     try f.expectFails("(set! 1 2)", "bad set!: the name must be an identifier");
     try f.expectFails("(set! if 1)", "bad set!: if is a syntactic keyword and cannot be assigned");

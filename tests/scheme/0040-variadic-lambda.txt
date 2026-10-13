@@ -1,0 +1,98 @@
+# スライス 2a: 可変個の引数を取る lambda(R7RS 4.1.4)。仮引数が変数1つなら、
+# 実引数をすべて新しいリストにして束縛する。ドットの前に変数が n 個あれば、
+# n 個以上の引数を取り、余りを新しいリストにしてドットの後の変数に束縛する。
+# define の略記も同じ仮引数を取る(R7RS 5.3.1)。
+
+((lambda args args) 1 2)
+(1 2)
+
+((lambda (a . r) r) 1 2 3)
+(2 3)
+
+# 余りの引数が無いときは空リストになる。
+((lambda args args))
+()
+
+((lambda (a . r) r) 1)
+()
+
+((lambda (a . r) a) 1 2 3)
+1
+
+# R7RS 4.1.4 の例。
+((lambda x x) 3 4 5 6)
+(3 4 5 6)
+
+((lambda (x y . z) z) 3 4 5 6)
+(5 6)
+
+(lambda x x)
+#<procedure>
+
+# 余りの引数は、書いた順のリストに並ぶ。
+(define (f . xs) xs) (f (+ 1 1) 'a "s")
+(2 a "s")
+
+((lambda args args) 1 2 3 4 5 6 7 8 9 10)
+(1 2 3 4 5 6 7 8 9 10)
+
+(define (f . args) args) (f 1 2 3)
+(1 2 3)
+
+(define (f a . rest) (list a rest)) (f 1 2 3)
+(1 (2 3))
+
+# 本体の先頭の定義は、余りを受ける変数の後ろのスロットに入る。
+((lambda (a . r) (define n 10) (+ n a (car r))) 1 2)
+13
+
+((lambda () (define (g . r) r) (g 1 2)))
+(1 2)
+
+(define (mk . xs) (lambda () xs)) ((mk 1 2))
+(1 2)
+
+(define (count-args . xs) (define (len l) (if (null? l) 0 (+ 1 (len (cdr l))))) (len xs)) (count-args 1 2 3)
+3
+
+# 余りのリストは呼び出しのたびに新しく作られる。
+(define (f . a) a) (eq? (f 1) (f 1))
+#f
+
+(define (f . a) a) (eq? (f) (f))
+#t
+
+# 足りないときは、固定個の手続きと同じ形のメッセージに「at least」が付く。
+((lambda (a b . r) r) 1)
+error: wrong number of arguments: expected at least 2, got 1
+
+((lambda (a . r) r))
+error: wrong number of arguments: expected at least 1, got 0
+
+(define (f a . r) a) (f)
+error: wrong number of arguments: expected at least 1, got 0
+
+# 余りを受ける変数も、ほかの仮引数と同じ検査を受ける。
+(lambda (a . a) a)
+error: bad lambda: duplicate parameter: a
+
+(lambda (a . if) 1)
+error: bad lambda: if is a syntactic keyword and cannot be a parameter
+
+(lambda if 1)
+error: bad lambda: if is a syntactic keyword and cannot be a parameter
+
+(lambda (a . 1) a)
+error: bad lambda: the parameters must be an identifier or a list of identifiers
+
+(lambda r (define r 1) r)
+error: bad define: r is already a parameter or defined earlier in this body
+
+(define (f . 1) 1)
+error: bad define: the parameters must be an identifier or a list of identifiers
+
+(define (f . if) 1)
+error: bad define: if is a syntactic keyword and cannot be a parameter
+
+(lambda (a . r))
+error: bad lambda: expected (lambda (name ...) body ...)
