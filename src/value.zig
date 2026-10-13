@@ -705,6 +705,8 @@ pub const Alias = struct {
 /// 段階2の変換子は `syntax-rules` だけである。変換子を呼ぶ箇所は
 /// src/syntax/rules.zig の `transform` の1か所で、手続き的マクロに広げるときの境界になる。
 pub const Macro = struct {
+    /// The kind of transformer.
+    kind: TransformerKind = .syntax_rules,
     /// The literals: a list of identifiers.
     literals: Value,
     /// The rules: a list of `(pattern template)`.
@@ -713,6 +715,11 @@ pub const Macro = struct {
     /// Where the identifiers of the patterns and templates are resolved; null is
     /// the top level.
     env: ?*SyntacticEnv,
+
+    /// The kinds of transformer a macro can have.
+    /// 段階2は `syntax-rules` だけである。Scheme の手続きを変換子にする種類は、要求が
+    /// 出るまで足さない(docs/plans/0014-phase2-core-language.md の 2k の節)。
+    pub const TransformerKind = enum { syntax_rules };
 };
 
 test {

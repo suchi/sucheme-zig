@@ -66,6 +66,9 @@ pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*Sy
 /// 展開器が変換子を呼ぶのは、ここ1か所である。手続き的マクロに広げるときは、ここで
 /// 変換子の種類に応じて分ける(docs/design/frontend.md の変換子の実行)。
 pub fn transform(ctx: *Context, scratch: std.mem.Allocator, macro: *const Macro, form: Value, use_env: ?*const SyntacticEnv) Error!Value {
+    switch (macro.kind) {
+        .syntax_rules => {},
+    }
     const s: Spec = .{ .ctx = ctx, .scratch = scratch, .literals = macro.literals, .env = macro.env };
     var r = macro.rules;
     while (r.asPair()) |p| : (r = p.cdr) {
