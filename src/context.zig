@@ -36,6 +36,11 @@ pub const Context = struct {
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     globals: env.Global = .{},
+    /// The special forms the top level of the REPL binds, by name.
+    /// 特殊形式の名前は予約語ではなく、REPL の最上位の構文の束縛である
+    /// (src/syntax/env.zig の解決)。値は GC ヒープを指さないので、GC のルートではない。
+    /// スライス 2j で、REPL の束縛の表(大域変数のセルと同じ表)に移る。
+    specials: std.AutoHashMapUnmanaged(symbol.SymbolId, value_mod.Special) = .empty,
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
@@ -45,7 +50,8 @@ pub const Context = struct {
     /// by one.
     raised: ?*value_mod.Condition = null,
 
-    /// A context whose global environment binds each primitive to its name.
+    /// A context whose global environment binds each primitive to its name, and
+    /// whose top level binds each special form to its name.
     /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
     /// オブジェクトを確保するアロケータである。`deinit` が解放するのはヒープで、
     /// アリーナではない。
@@ -59,6 +65,10 @@ pub const Context = struct {
         for (&table.all) |*p| {
             const id = try ctx.symbols.intern(persist, p.name);
             try ctx.globals.define(persist, id, .fromPrimitive(p));
+        }
+        for (std.enums.values(value_mod.Special)) |special| {
+            const id = try ctx.symbols.intern(persist, @tagName(special));
+            try ctx.specials.put(persist, id, special);
         }
         return ctx;
     }

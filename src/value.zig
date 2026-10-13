@@ -6,7 +6,8 @@
 //! 1e は未定義の変数の目印を加える。スライス 1f は条件オブジェクトと、コア IR と
 //! 継続のレイアウトを加える。この2つは値ではないが、同じようにたどられる。
 //! スライス 1g は、ペア・クロージャ・フレーム・継続フレーム・引数リストを GC ヒープ
-//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。
+//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2i は、
+//! 展開器の構文環境(値ではないが GC ヒープにある)を加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -548,7 +549,7 @@ pub const Kont = struct {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, SyntacticEnv, SyntacticBinding, LocalBinding };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, the
@@ -558,6 +559,57 @@ pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Cal
 
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector };
+
+/// The special forms: the syntax the expander turns into core IR itself
+/// (ADR-0019).
+/// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!" };
+
+/// What an identifier means where it is used (ADR-0019,
+/// docs/design/frontend.md).
+/// ADR-0019 の6種のうち、マクロ、補助構文、パターン変数は、それを使うスライスが足す。
+pub const Denotation = union(enum) {
+    special: Special,
+    local: *LocalBinding,
+    /// A global variable, found by name.
+    /// スライス 2j で、名前の代わりに大域の束縛セルを指す。
+    global: SymbolId,
+};
+
+/// A syntactic environment: the bindings of one rib, and the environment
+/// around it.
+/// GC ヒープにある。展開の途中では GC が走らない(ADR-0031)ので、展開器が作った
+/// 環境はルートにしない。コア IR の節点は環境を指さないので、展開が終われば到達
+/// できなくなり、回収される。
+pub const SyntacticEnv = struct {
+    parent: ?*SyntacticEnv,
+    /// How many ribs there are from the top level to this environment, this
+    /// one included.
+    /// 最上位は 0 で、`lambda` の rib は外側より 1 大きい。局所変数の字句アドレスの
+    /// 深さは、参照する側の環境のこの値から、束縛した rib のこの値を引いたものである。
+    rib_depth: u32,
+    /// The bindings, the newest first.
+    /// 探索は先頭から線形に進む。同じ識別子を束縛し直すと、後のものが前のものを隠す。
+    bindings: ?*SyntacticBinding,
+};
+
+/// One binding of a syntactic environment: an identifier and what it means.
+pub const SyntacticBinding = struct {
+    /// The identifier: a symbol.
+    /// 段階2の別名(2k)も識別子なので、型は `Value` にしてある。
+    id: Value,
+    denotation: Denotation,
+    next: ?*SyntacticBinding,
+};
+
+/// A local variable as the expander sees it: the rib that binds it, and its
+/// slot in the frame of a call.
+/// 束縛ごとに1つ作り、意味が同じかはこのオブジェクトが同じかで判定する
+/// (ADR-0019)。深さは最上位から数えた絶対値であり、利用側からの相対値ではない。
+pub const LocalBinding = struct {
+    rib_depth: u32,
+    index: u32,
+};
 
 test {
     std.testing.refAllDecls(@This());
