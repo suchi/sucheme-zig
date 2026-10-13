@@ -157,7 +157,9 @@ pub const Interpreter = struct {
 /// Writes `v`, a value raised, as `diagnostic` shows it.
 fn describeRaised(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, v: value.Value) printer.Error!void {
     const c = v.asCondition() orelse return printer.write(out, scratch, symbols, v);
-    try out.writeAll(c.messageText());
+    // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
+    // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
+    if (c.message.asString()) |text| try out.writeAll(text.bytes) else try printer.write(out, scratch, symbols, c.message);
     var it = c.irritants;
     while (it.asPair()) |p| : (it = p.cdr) {
         try out.writeByte(' ');
@@ -574,6 +576,10 @@ test "the value raised is described: a condition by its message and irritants, a
     ctx.raised = try ctx.makeCondition(.@"error", "bad {s}", .{"thing"}, irritants);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
     try std.testing.expectEqualStrings("bad thing 42 \"a\\\"b\"", interp.diagnostic());
+    // メッセージが文字列でない条件も、停止せずに書く。
+    ctx.raised = .fromCondition(try ctx.heap.create(@import("value.zig").Condition, .{ .kind = .@"error", .message = .fromFixnum(7), .irritants = .empty_list_value }));
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("7", interp.diagnostic());
     // 条件でない値は、write の形で書く。
     ctx.raised = .fromFixnum(42);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
