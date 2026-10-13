@@ -585,6 +585,19 @@ test "a literal matches an identifier with the same binding, and _ matches anyth
     try std.testing.expectEqualStrings("#<alias other>", try f.transcribed(m, "(m (=>) 2)"));
 }
 
+test "_ and the ellipsis in the list of literals are literals" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // リテラルの一覧にあることが、`_` と省略記号であることより先である(R7RS 4.3.2)。
+    const under = try f.macro("(syntax-rules (_) ((k _) lit) ((k x) other))");
+    try std.testing.expectEqualStrings("#<alias lit>", try f.transcribed(under, "(m _)"));
+    try std.testing.expectEqualStrings("#<alias other>", try f.transcribed(under, "(m 1)"));
+    const dots = try f.macro("(syntax-rules (...) ((k a ...) a))");
+    try std.testing.expectEqualStrings("1", try f.transcribed(dots, "(m 1 ...)"));
+    try std.testing.expectError(error.Raised, f.transcribed(dots, "(m 1 2)"));
+}
+
 /// `inner` wrapped in `depth` lists: `((((inner))))`.
 fn nested(f: *Fixture, inner: Value, depth: usize) !Value {
     var v = inner;
