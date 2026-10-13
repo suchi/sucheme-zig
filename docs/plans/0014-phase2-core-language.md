@@ -749,7 +749,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2f | 未着手 | |
 | 2g | 未着手 | |
 | 2h | 実装済み。敵対的レビューの前。プリミティブの名前は `%make-record-type` `%make-record` `%record?` `%record-ref` `%record-set!`(`src/prim/record.zig`) | |
-| 2i | 実装済み。敵対的レビューの前 | |
+| 2i | main に入った | [#80](https://github.com/suchi/sucheme-zig/pull/80) |
 | 2j | main に入った | [#82](https://github.com/suchi/sucheme-zig/pull/82) |
 | 2k | 未着手 | |
 | 2l | 未着手 | |
