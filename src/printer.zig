@@ -99,6 +99,10 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // 条件オブジェクトを値として読むものはまだない。エラーは機械を出て、
             // 報告される。漏れたときに分かるよう、それでも書く。
             .condition => try out.writeAll("#<condition>"),
+            // Why: R7RS 5.5 はレコードとその型の外部表現を決めていない。手続きと同じく、
+            // `read` が受け付けない表記で、型の名前を添えて書く。フィールドの値は書かない。
+            .record => try out.print("#<record {s}>", .{symbols.nameOf(x.asRecord().?.record_type.name)}),
+            .record_type => try out.print("#<record-type {s}>", .{symbols.nameOf(x.asRecordType().?.name)}),
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -208,6 +212,22 @@ test "write shows a condition that leaked" {
     var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
     var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
     try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
+}
+
+test "write and display show a record and its type by the name of the type, not the fields" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const name = (try f.sym("<point>")).asSymbol().?;
+    var t: value_mod.RecordType = .{ .name = name, .field_count = 1 };
+    var fields = [_]Value{try f.string("x")};
+    var r: value_mod.Record = .{ .record_type = &t, .fields = &fields };
+    try std.testing.expectEqualStrings("#<record-type <point>>", try f.written(&buf, .fromRecordType(&t)));
+    try std.testing.expectEqualStrings("#<record <point>>", try f.written(&buf, .fromRecord(&r)));
+    try std.testing.expectEqualStrings("#<record <point>>", try f.displayed(&buf, .fromRecord(&r)));
+    // データの中でも同じである。
+    const both = try f.list(&.{ .fromRecord(&r), .fromRecordType(&t) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<record <point>> #<record-type <point>>)", try f.written(&buf, both));
 }
 
 test "write prints the unspecified value as #<unspecified>" {
