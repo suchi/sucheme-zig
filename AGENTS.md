@@ -57,7 +57,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - コミット前と push のたび: 表の「全コミット」の行。1 分以内を目標にする(目標であって測定値ではなく、ビルドキャッシュが空の初回は超える。[docs/plans/0007-test-tiers.md](docs/plans/0007-test-tiers.md) の層の表を参照)。`zig build test` と `zig build test-scheme` は、規模を試すテストを飛ばす。飛ばした数が出るのは `zig build test --summary all` の概要だけで(`ci.yml` は付けている)、素の `zig build test` は成功すると何も出さず、`zig build test-scheme` は走らせた件数だけを出す。
 - PR を ready にする前と `main` へのマージ前: 規模を試すテスト(`-Dslow=true`)、変更したファイルのミューテーションテスト、敵対的レビュー。
   - ミューテーションテストは網羅を目指さない。変更した判定の分岐ごとに、代表的な書き換えを数件試す。
-  - PR はドラフトで開き、ready にしたときに層2 が走る。`full.yml` の起動は `ready_for_review` と手動(`workflow_dispatch`)だけで、`main` への push では走らない(実行分数の節約。[docs/plans/0015-ci-minutes-reduction.md](docs/plans/0015-ci-minutes-reduction.md))。最初から ready で開いた PR では、層2 が走らないので、手動で走らせる。
+  - PR はドラフトで開き、ready にしたときに層2 が走る。`full.yml` の起動は `ready_for_review` と手動(`workflow_dispatch`)だけで、`main` への push では走らない(実行分数の節約。[docs/plans/0015-ci-minutes-reduction.md](docs/plans/0015-ci-minutes-reduction.md))。最初から ready で開いた PR では、層2 が走らないので、手動で走らせる。ready にしたあとに push したとき(指摘の修正、main の取り込み)も、層2 は起動しない。マージの承認を求める前に、PR の先頭のコミットに対して手動で層2 を走らせる。
   - Windows のテストは、全 push の CI(`ci.yml`)でなく、層2(`full.yml` の `windows` ジョブ)で走る。draft の間の push では、Windows の不具合は見えない。
 - 定期: ファジングなど。待たない。
 
@@ -89,7 +89,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - 複数の PR が開いているとき、マージの順序や「順序の制約なし」を報告する前に、PR 同士が同じファイルを触っていないかを、変更ファイルの一覧で確かめる。PR がマージされたら、残りの自分の PR の競合を、`git merge-tree` で確かめる(CI の分数を使わない)。競合があるときは、ユーザーに言われる前に解く。ただし、取り込みの push は、その PR を ready にする直前まで延ばしてよい(次の「Actions の分数」の規則による)。
 - 指示や設定のファイル(本ファイル、`.claude/`、`.github/workflows/`、`.github/dependabot.yml`、ADR)は、Read してから Edit ツールで書き換える。Python や `sed` などのスクリプトで書き換えない。差分がユーザーに見える形で変更するためである。複数か所の置換や競合の解消でも、数か所なら Edit ツールで行う。
 - 段階が終わるたびに、[docs/plans/0012-schedule-estimates-and-actuals.md](docs/plans/0012-schedule-estimates-and-actuals.md) の見積りと実績を比べ、差と理由を記録して、残りの段階の見積りを補正する。見積りは概算でよく、約束ではない。
-- Actions の分数: このリポジトリは private で、ワークフローの実行時間は月の枠に計上される。PR ブランチへの push のたびに、層1(Linux と Windows の test、preview)が走る。push は、PR を作るときの 1 回と、レビューの指摘への対応をまとめた 1 回を基本にし、実装の途中の節目ごとには push しない。ローカルで層1 を通してから push する規則は変えない。サブエージェントに実装やレビューの修正を任せるときは、依頼文に同じ規則を書く。見積りと案は [docs/plans/0015-ci-minutes-reduction.md](docs/plans/0015-ci-minutes-reduction.md) にある。ワークフローの変更を伴う案は、ユーザーの承認を得てから行う。
+- Actions の分数: このリポジトリは private で、ワークフローの実行時間は月の枠に計上される。PR ブランチへの push のたびに、層1(Linux の test と preview)が走る。push は、PR を作るときの 1 回と、レビューの指摘への対応をまとめた 1 回を基本にし、実装の途中の節目ごとには push しない。ローカルで層1 を通してから push する規則は変えない。サブエージェントに実装やレビューの修正を任せるときは、依頼文に同じ規則を書く。見積りと案は [docs/plans/0015-ci-minutes-reduction.md](docs/plans/0015-ci-minutes-reduction.md) にある。ワークフローの変更を伴う案は、ユーザーの承認を得てから行う。
 - 作業ツリーを元に戻す操作(`git checkout -- <ファイル>`、`git restore`、`git stash`、`git reset`)の前に、未コミットの変更が無いことを確かめる。ミューテーションなどの一時的な書き換えを試すときは、先に変更をすべてコミットするか、使い捨ての作業ツリー(`git worktree add`)の中で行う。未コミットの変更を持つ作業ツリーで、元に戻す操作を打たない。
 - 画面の操作手順や設定の場所は、確認していないものを事実として書かない。記憶から書くときは「未確認」と添える。一次情報(公式文書)か、実際の画面で確かめたものだけを、断定して書く。
 - 作業の区切りごとに、タスクリストに当たる計画書の進捗の表と「次にやること」を更新する。会話がいつ途切れても、リポジトリの文書だけから現状に戻れる状態を保つ。スライスの PR では、その PR の中で更新する。あわせて、そのスライスが完了させる [docs/roadmap.md](docs/roadmap.md) の段階の作業項目にチェックを入れる。どのスライスにも割り当てられていない項目が見つかったら、roadmap の項目に「スライス未割り当て」と書き、割り当てる計画を立てる。運用だけで計画から外れない。計画と進め方が食い違ったら、運用を変えず、計画を更新して足並みをそろえる。
@@ -150,7 +150,7 @@ Qiita、Zenn、note、AI生成記事、SEO目的の記事は、特定の記事�
 - GitHub Flow。`main`への直接コミット・プッシュは禁止。
 - ブランチ名は英語kebab-caseで`feature/xxx`・`fix/xxx`・`docs/xxx`・`chore/xxx`。`xxx`は、どの段階のどの作業かが分かる名前にする(`feature/phase1-slice-1f-cek-machine`など。段階は`phaseN`、スライスは`slice-1f`の形)。セッションが自動で付ける名前のまま作業しない。
 - TDD(t_wada流): Red(失敗するテスト)→ Green(最小の実装)→ Refactor(テストを通したまま整理)。
-- 1コミット=1論理変更。節目ごとにプッシュする。
+- 1コミット=1論理変更。コミットは節目ごとに作り、push はまとめる(進め方の「Actions の分数」の規則)。
 - 先回りで機能・抽象化を追加しない(YAGNI)。
 
 ## コミットメッセージ
@@ -181,6 +181,7 @@ ready にしたら、層2 の結果を待たずに、その時点でユーザー
 
 - どの PR か: リンクと、何の変更かの1〜2行
 - CI: ジョブごとの結果と、どのコミットに対する結果か
+- 層2: `full.yml` のランのコミットが、PR の先頭のコミットと一致すること。一致しないとき(ready のあとに push したとき)は、先頭のコミットで手動で走らせ、その結果が出てから求める
 - レビュー: 自前の敵対的レビューの結果(必須・推奨・任意の件数と、それぞれの対応)
 - マージの前に見てほしい点: 判断を求めたいこと、挙動が変わる点、受け入れた制約
 - マージのあとに私がやること: ブランチの作り直し、次の作業、残っているブランチの片付けの相談

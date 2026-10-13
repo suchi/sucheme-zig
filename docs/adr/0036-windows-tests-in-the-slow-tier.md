@@ -21,12 +21,14 @@
 - Windows のジョブの step を、プラットフォームに依存するものに絞る: `ci.yml` の step を OS ごとに分ける必要があり、`if:` を使わない規則と衝突する。ジョブを分ける形になり、変更が大きい。削減も小さい。
 - 支出の上限やプランの変更だけで解く: ユーザーの設定であり、コードの変更で下げられる分を下げないまま残す。
 - リポジトリを public にする: [ADR-0020](0020-repository-visibility-private.md) と [ADR-0022](0022-unlicensed-proprietary.md) の判断に関わるので、この決定の範囲に入れない。
+- `full.yml` の `pull_request` の `types` に `synchronize` を足し、ready のあとの push でも層2 を走らせる: `synchronize` はドラフトの間の push でも発火するので、層2 が全 push で走り、Windows を全 push から外した分が戻る。ready のあとの push は、手動の起動で覆う(下の結果)。
 
 ## 結果
 
 - メリット: 全 push の CI が、Linux のジョブと preview だけになる。見積りでは、同じ作業量に対して実行分数がおよそ半分になる(計画 0015)。
 - デメリット・受け入れたトレードオフ:
   - draft の間の push では、Windows でしか起きない不具合が見えない。PR を ready にしたときに初めて見つかる。
+  - ready のあとの push(指摘の修正、`main` の取り込み)では、層2 が起動しない。起動は `ready_for_review` と手動だけだからである。マージされるコミットが層2 を通ったコミットと違えば、Windows でだけ壊れる変更が Windows のテストを通らずに `main` に入る。AGENTS.md は、マージの承認を求める前に、PR の先頭のコミットで手動で層2 を走らせ、層2 の結果のコミットが先頭のコミットと一致することを報告に書くと定める。これは機械でなく運用で守る。
   - `main` への push で層2 が走らない。PR が最新の `main` を取り込まないまま ready になり、マージ後の組み合わせで壊れても、層2 はそれを見ない。`ci.yml`(Linux)は走る。リリースのタグの push では `release.yml` が `dist` を組み立て直す。
   - Windows の Zig キャッシュは `full.yml` だけが作る。PR の ready ごとに、キャッシュが空の回がありうる。
 - 将来の見直し条件: 使用量レポートで、枠に収まることを確かめる。Windows でしか起きない不具合が ready の後に繰り返し見つかるなら、Windows の step を絞って `ci.yml` に戻す案を検討する。

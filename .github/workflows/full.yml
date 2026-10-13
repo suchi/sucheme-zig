@@ -6,12 +6,16 @@
 # the time of a run. They run here instead: when a pull request is marked ready
 # for review, and on request. The table in AGENTS.md lists the commands.
 #
-# `main` への push では走らせない。PR を ready にしたときに同じ検査を通っており、
-# `main` への push では ci.yml が走る。private リポジトリでは実行分数が月の枠に
-# 計上されるので、同じコミットの検査を重ねない(docs/plans/0015-ci-minutes-reduction.md)。
+# `main` への push では走らせない。マージされるコミットは、PR の先頭のコミットとして
+# ここを通っている。ready にしたあとに push したコミットでは、このワークフローは
+# 起動しないので、マージの承認を求める前に、先頭のコミットで手動で走らせる
+# (AGENTS.md)。`main` への push では ci.yml が走る。private リポジトリでは実行分数が
+# 月の枠に計上されるので、同じコミットの検査を重ねない(docs/plans/0015-ci-minutes-reduction.md)。
 #
 # windows ジョブは、ci.yml が全 push で走らせていた Windows のテストを、ここへ
-# 移したものである。Windows でしか起きない不具合は、PR を ready にしたときに見つかる。
+# 移したものである。Windows でしか起きない不具合は、PR を ready にしたときか、
+# 手動で走らせたときに見つかる。tools/check-docs が、このジョブの `runs-on` と、
+# ci.yml の test ジョブと同じ step を持つことを確かめる。
 #
 # dist ジョブは、リリースの成果物の組み立てを試す。`zig build dist` が全ターゲットを
 # 作り、tools/release/package.py がアーカイブと SHA256SUMS を作って読み直す。
