@@ -1,0 +1,23 @@
+# スライス 2b: 条件オブジェクトは GC ヒープにあり、上限に達していても送出のための
+# 予約領域から作られる。エラーのメッセージは、条件がアリーナにあったときと変わらない。
+# 送出された値が GC を越えて残ることと、次の行で回収されることは、1ケース1行の
+# この形式では書けないので、src/sucheme.zig と src/machine.zig の単体テストが固定する。
+# 上限に当たったときの条件も、単体テストが小さい上限で固定する。この実行器の上限
+# (tools/test-scheme/main.zig の `modes`)まで埋めるケースは、層1 の時間の目標に収まらない。
+
+# 多くの GC を経たあとで送出しても、メッセージはそのまま届く。
+(define (spin n) (if (= n 0) (car 5) (spin (- n 1)))) (spin 30000)
+error: wrong type of argument to car
+
+# 深い再帰の底で送出すると、積んだ継続はゴミになり、条件だけが届く。
+(define (deep n) (if (= n 0) (vector-ref (vector 1) 1) (+ 1 (deep (- n 1))))) (deep 3000)
+error: argument out of range in vector-ref
+
+# 前の結果は書かれたまま、エラーでその行が終わる。
+(define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (+ 1 #t) 3
+ok
+error: wrong type of argument to +
+
+# 名前を含むメッセージは、名前の全体を含む。
+a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter
+error: unbound variable: a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter

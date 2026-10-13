@@ -204,7 +204,9 @@ test "write shows a condition that leaked" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    var c: value_mod.Condition = .{ .message = "boom" };
+    var bytes = "boom".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
     try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
 }
 

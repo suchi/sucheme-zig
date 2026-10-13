@@ -154,6 +154,18 @@ test("a Scheme error returns -1 with one error line, and evaluation continues", 
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// スライス 2b: 条件オブジェクトは GC ヒープにある。プリミティブの失敗が、ヒープの条件を
+// 通って、今までと同じ一行として届く。条件が回収されたあとも評価が続く。
+test("a primitive's error reaches the output through the condition in the heap", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(car 5)"), [SCHEME_ERROR, "error: wrong type of argument to car\n"]);
+  // 多くの GC を経たあとで送出しても、同じである。
+  const [status, text] = h.run("(define (spin n) (if (= n 0) (car 5) (spin (- n 1)))) (spin 30000)");
+  assert.equal(status, SCHEME_ERROR);
+  assert.equal(text, "error: wrong type of argument to car\n");
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 test("invalid UTF-8 returns -3 with the position, and leaves the state unchanged", () => {
   const h = instantiate().init();
   assert.equal(h.run("(define kept 42)")[0], OK);
