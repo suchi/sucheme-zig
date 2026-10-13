@@ -115,8 +115,9 @@ error: bad lambda: the parameters must be an identifier or a list of identifiers
 (lambda #t 1)
 error: bad lambda: the parameters must be an identifier or a list of identifiers
 
-(lambda (if) 1)
-error: bad lambda: if is a syntactic keyword and cannot be a parameter
+# 特殊形式と同じ綴りの仮引数は変数で、本体ではその特殊形式を隠す(スライス 2i)。
+((lambda (if) (if 1)) -)
+-1
 
 lambda
 error: lambda is a syntactic keyword and cannot be used as a variable

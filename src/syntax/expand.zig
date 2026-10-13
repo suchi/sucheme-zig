@@ -1,12 +1,13 @@
 //! The expander: data in, core IR out.
 //!
-//! スライス 1f にあるのは 6 つの特殊形式だけで、マクロはない。したがって仕事は、
-//! `quote`、`if`、`lambda`、`set!`、`define`、`begin` と、呼び出しの変換である。
-//! 段階2で足すもの(構文束縛、`syntax-rules`)は、`Keyword` を構文環境に置き換える。
-//! その置き場所は docs/design/frontend.md に書いてある。
+//! マクロはまだない。仕事は、特殊形式(`quote`、`if`、`lambda`、`set!`、`define`、
+//! `begin`)と、呼び出しの変換である。
 //!
-//! 展開器はすべての変数を解決する。`lambda` が束縛する名前は字句的番地(lexical
-//! address。何個外側のフレームの、どのスロットか)になる。それ以外の名前は大域変数で、
+//! 展開器はすべての識別子を構文環境(src/syntax/env.zig)で解決する(ADR-0019)。
+//! 特殊形式の名前は予約語ではなく、REPL の最上位の束縛なので、`lambda` の仮引数や
+//! 本体の定義が同じ綴りを束縛すると、その内側では変数になる。局所変数は字句的番地
+//! (lexical address。何個外側のフレームの、どのスロットか)になり、深さは参照する
+//! 側の rib の深さから、束縛した rib の深さを引いて求める。それ以外の名前は大域変数で、
 //! 機械が実行するときに名前で探される。
 //!
 //! 作業は専用のスタックに積んで進め、再帰しない。したがって、リーダが読める深さまで
@@ -16,11 +17,11 @@ const std = @import("std");
 const value_mod = @import("../value.zig");
 const Value = value_mod.Value;
 const Node = value_mod.Node;
-const SymbolId = @import("../symbol.zig").SymbolId;
-const symbol = @import("../symbol.zig");
 const context = @import("../context.zig");
 const Context = context.Context;
 const core = @import("../core.zig");
+const syntax_env = @import("env.zig");
+const SyntacticEnv = syntax_env.SyntacticEnv;
 
 pub const Error = context.Error;
 
@@ -32,7 +33,8 @@ pub const Limits = struct {
 
 /// Expands `form`, which is at the top level of a program.
 /// 節点と、節点が指すものは `ctx.persist` に確保する。展開の実行中だけ要るものは
-/// `scratch` から取る。エラーのときは `ctx` がメッセージを持つ。
+/// `scratch` から取る。構文環境は GC ヒープに確保し、節点からは指さない。
+/// エラーのときは `ctx` がメッセージを持つ。
 pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*const Node {
     return expandWith(ctx, scratch, form, .{});
 }
@@ -40,52 +42,21 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
     var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
     const root = try ctx.persist.create(Node);
-    try e.stack.append(scratch, .{ .form = form, .scope = null, .pos = .top, .dest = root });
+    try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
     while (e.stack.pop()) |task| try e.step(task);
     return root;
-}
-
-/// The special forms.
-/// キーワードは、隠す(シャドウ)・再定義・代入ができず、変数や仮引数としても使えない。
-/// 段階2でこの列挙型は構文束縛に置き換わる。
-const Keyword = enum {
-    define,
-    quote,
-    @"if",
-    lambda,
-    begin,
-    @"set!",
-
-    fn of(name: []const u8) ?Keyword {
-        return std.meta.stringToEnum(Keyword, name);
-    }
-};
-
-/// Whether `name` is the name of a special form.
-///
-/// 準拠マトリクスが、特殊形式を束縛済みと数えるために使う。エラー文言から
-/// 分類せず、展開器が使う判定と同じ関数で答える。
-pub fn isKeyword(name: []const u8) bool {
-    return Keyword.of(name) != null;
 }
 
 /// Where a form stands, which decides whether a definition is allowed there
 /// (R7RS 5.3): at the top level, or at the start of a body.
 const Position = enum { top, body, expression };
 
-/// The variables of one `lambda` as the expander sees them: the parameters, then
-/// the names its body defines at the start, in the order of the slots of a call's
-/// frame.
-const Scope = struct {
-    names: []const SymbolId,
-    parent: ?*const Scope,
-};
-
-/// A form still to expand, and the node to fill in with the result.
+/// A form still to expand, the environment to expand it in (null at the top
+/// level), and the node to fill in with the result.
 /// 節点は、子が決まる前に確保する。これによって、仕事を再帰でなくスタックに積める。
 const Task = struct {
     form: Value,
-    scope: ?*const Scope,
+    env: ?*SyntacticEnv,
     pos: Position,
     dest: *Node,
 };
@@ -105,19 +76,27 @@ const Expander = struct {
             .symbol => try self.reference(task),
             .pair => {
                 const items = try self.itemsOf(task.form);
-                if (items[0].asSymbol()) |head| {
-                    if (Keyword.of(self.ctx.symbols.nameOf(head))) |keyword| return switch (keyword) {
-                        .define => self.define(task, items),
-                        .quote => self.quote(task, items),
-                        .@"if" => self.conditional(task, items),
-                        .lambda => self.lambdaForm(task, items),
-                        .begin => self.begin(task, items),
-                        .@"set!" => self.set(task, items),
-                    };
-                }
+                if (self.specialOf(task.env, items[0])) |special| return switch (special) {
+                    .define => self.define(task, items),
+                    .quote => self.quote(task, items),
+                    .@"if" => self.conditional(task, items),
+                    .lambda => self.lambdaForm(task, items),
+                    .begin => self.begin(task, items),
+                    .@"set!" => self.set(task, items),
+                };
                 try self.call(task, items);
             },
         }
+    }
+
+    /// The special form that `head` names in `env`, or null when it is not an
+    /// identifier that means one.
+    fn specialOf(self: *const Expander, env: ?*const SyntacticEnv, head: Value) ?syntax_env.Special {
+        if (head.kind() != .symbol) return null;
+        return switch (syntax_env.resolve(self.ctx, env, head)) {
+            .special => |special| special,
+            .local, .global => null,
+        };
     }
 
     /// Makes the node of `task` the constant `v`.
@@ -129,9 +108,9 @@ const Expander = struct {
     }
 
     /// Queues `form` to fill a new node, and returns the node.
-    fn child(self: *Expander, form: Value, scope: ?*const Scope, pos: Position) Error!*Node {
+    fn child(self: *Expander, form: Value, env: ?*SyntacticEnv, pos: Position) Error!*Node {
         const node = try self.ctx.persist.create(Node);
-        try self.stack.append(self.scratch, .{ .form = form, .scope = scope, .pos = pos, .dest = node });
+        try self.stack.append(self.scratch, .{ .form = form, .env = env, .pos = pos, .dest = node });
         return node;
     }
 
@@ -147,33 +126,27 @@ const Expander = struct {
         return items.items;
     }
 
-    /// The address of the variable `id` if a `lambda` around `scope` binds it.
-    fn resolve(self: *Expander, scope: ?*const Scope, id: SymbolId) Error!?value_mod.Address {
-        var depth: u32 = 0;
-        var s = scope;
-        while (s) |sc| : (s = sc.parent) {
-            for (sc.names, 0..) |n, i| {
-                if (n != id) continue;
-                if (depth > self.limits.address) return self.ctx.raise(
-                    "implementation restriction: procedures are nested too deeply",
-                    .{},
-                );
-                return .{ .depth = depth, .index = @intCast(i) };
-            }
-            depth += 1;
-        }
-        return null;
+    /// The address of `local` from a use in `env`.
+    /// 深さは、参照する側の rib の深さと、束縛した rib の深さの差である。
+    fn address(self: *Expander, env: ?*const SyntacticEnv, local: *const syntax_env.LocalBinding) Error!value_mod.Address {
+        const depth = syntax_env.ribDepth(env) - local.rib_depth;
+        if (depth > self.limits.address) return self.ctx.raise(
+            "implementation restriction: procedures are nested too deeply",
+            .{},
+        );
+        return .{ .depth = depth, .index = local.index };
     }
 
     fn reference(self: *Expander, task: Task) Error!void {
         const id = task.form.asSymbol().?;
-        const name = self.ctx.symbols.nameOf(id);
-        if (Keyword.of(name) != null)
-            return self.ctx.raise("{s} is a syntactic keyword and cannot be used as a variable", .{name});
-        task.dest.* = if (try self.resolve(task.scope, id)) |address|
-            .{ .local_ref = .{ .address = address, .name = id } }
-        else
-            .{ .global_ref = id };
+        task.dest.* = switch (syntax_env.resolve(self.ctx, task.env, task.form)) {
+            .special => return self.ctx.raise(
+                "{s} is a syntactic keyword and cannot be used as a variable",
+                .{self.ctx.symbols.nameOf(id)},
+            ),
+            .local => |local| .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } },
+            .global => .{ .global_ref = id },
+        };
     }
 
     /// `(quote datum)` (R7RS 4.1.2).
@@ -189,9 +162,9 @@ const Expander = struct {
         if (items.len != 3 and items.len != 4)
             return self.ctx.raise("bad if: expected (if test consequent) or (if test consequent alternative)", .{});
         // 後ろのものから先に積むので、判定が最初に展開される。
-        const alternative = if (items.len == 4) try self.child(items[3], task.scope, .expression) else null;
-        const consequent = try self.child(items[2], task.scope, .expression);
-        const condition = try self.child(items[1], task.scope, .expression);
+        const alternative = if (items.len == 4) try self.child(items[3], task.env, .expression) else null;
+        const consequent = try self.child(items[2], task.env, .expression);
+        const condition = try self.child(items[1], task.env, .expression);
         task.dest.* = .{ .@"if" = .{ .condition = condition, .consequent = consequent, .alternative = alternative } };
     }
 
@@ -201,16 +174,16 @@ const Expander = struct {
         if (items.len < 2)
             return self.ctx.raise("bad begin: expected (begin expression ...)", .{});
         const pos: Position = if (task.pos == .top) .top else .expression;
-        try self.sequence(task.dest, items[1..], task.scope, pos, 0);
+        try self.sequence(task.dest, items[1..], task.env, pos, 0);
     }
 
     /// Fills `dest` with `forms` run in order: `defines` of them at the start
     /// are definitions of a body, the rest are in `pos`.
     /// 形式が 1 つなら、その形式そのものになる(本体が定義だけということはないので、
     /// その 1 つが定義になることはない)。
-    fn sequence(self: *Expander, dest: *Node, forms: []const Value, scope: ?*const Scope, pos: Position, defines: usize) Error!void {
+    fn sequence(self: *Expander, dest: *Node, forms: []const Value, env: ?*SyntacticEnv, pos: Position, defines: usize) Error!void {
         if (forms.len == 1) {
-            try self.stack.append(self.scratch, .{ .form = forms[0], .scope = scope, .pos = pos, .dest = dest });
+            try self.stack.append(self.scratch, .{ .form = forms[0], .env = env, .pos = pos, .dest = dest });
             return;
         }
         const nodes = try self.ctx.persist.alloc(*const Node, forms.len);
@@ -221,7 +194,7 @@ const Expander = struct {
             i -= 1;
             try self.stack.append(self.scratch, .{
                 .form = forms[i],
-                .scope = scope,
+                .env = env,
                 .pos = if (i < defines) .body else pos,
                 .dest = @constCast(nodes[i]),
             });
@@ -230,20 +203,28 @@ const Expander = struct {
     }
 
     /// `(set! name expression)` (R7RS 4.1.6).
-    /// 対象は `name` の最も近い束縛で、局所でも大域でもよい。
+    /// 対象は `name` の最も近い束縛で、局所でも大域でもよい。特殊形式は変数でない
+    /// ので、対象にならない。
     fn set(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len != 3)
             return self.ctx.raise("bad set!: expected (set! name expression)", .{});
         const id = items[1].asSymbol() orelse
             return self.ctx.raise("bad set!: the name must be an identifier", .{});
-        const name = self.ctx.symbols.nameOf(id);
-        if (Keyword.of(name) != null)
-            return self.ctx.raise("bad set!: {s} is a syntactic keyword and cannot be assigned", .{name});
-        const value = try self.child(items[2], task.scope, .expression);
-        task.dest.* = if (try self.resolve(task.scope, id)) |address|
-            .{ .local_set = .{ .address = address, .name = id, .value = value } }
-        else
-            .{ .global_set = .{ .name = id, .value = value } };
+        switch (syntax_env.resolve(self.ctx, task.env, items[1])) {
+            .special => return self.ctx.raise(
+                "bad set!: {s} is a syntactic keyword and cannot be assigned",
+                .{self.ctx.symbols.nameOf(id)},
+            ),
+            .local => |local| {
+                const where = try self.address(task.env, local);
+                const value = try self.child(items[2], task.env, .expression);
+                task.dest.* = .{ .local_set = .{ .address = where, .name = id, .value = value } };
+            },
+            .global => {
+                const value = try self.child(items[2], task.env, .expression);
+                task.dest.* = .{ .global_set = .{ .name = id, .value = value } };
+            },
+        }
     }
 
     /// `(define name expression)` and `(define (name parameter ...) body ...)`
@@ -265,120 +246,150 @@ const Expander = struct {
         const target = if (shorthand) items[1].asPair().?.car else items[1];
         const id = target.asSymbol() orelse
             return self.ctx.raise("bad define: the name must be an identifier", .{});
-        const name = self.ctx.symbols.nameOf(id);
-        if (Keyword.of(name) != null)
-            return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
-        const value = try self.ctx.persist.create(Node);
-        if (shorthand) {
-            try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.scope, "define");
-        } else {
-            try self.stack.append(self.scratch, .{ .form = items[2], .scope = task.scope, .pos = .expression, .dest = value });
-        }
         switch (task.pos) {
-            .top => task.dest.* = .{ .global_define = .{ .name = id, .value = value } },
-            // `collectDefinitions` が lambda を作るときに変数を作ってあり、
-            // スコープはその lambda 自身のものである。
+            .top => {
+                // Why: R7RS 5.3.1 は、構文の束縛を持つ名前への最上位の定義も、新しい場所を
+                // 束縛するとしている。そのためには REPL の束縛の表が要り、それはスライス 2j で
+                // 入る。それまでは、特殊形式の名前への最上位の定義を拒否する。
+                if (syntax_env.resolve(self.ctx, task.env, target) == .special)
+                    return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{self.ctx.symbols.nameOf(id)});
+                const value = try self.definedValue(task, items, shorthand);
+                task.dest.* = .{ .global_define = .{ .name = id, .value = value } };
+            },
+            // `collectDefinitions` が lambda を作るときに、この名前をその lambda の rib に
+            // 束縛してある。同じ rib の仮引数を隠すので、rib の中で最も新しい束縛である。
             .body => {
-                const index = std.mem.indexOfScalar(SymbolId, task.scope.?.names, id).?;
-                task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = @intCast(index) }, .name = id, .value = value } };
+                const env = task.env.?;
+                // `collectDefinitions` が、本体の定義の先頭の名前が定義を意味し続けることを
+                // 確かめたので、ここに来る形式の名前は必ず rib にある。
+                const local = syntax_env.lookupRib(env, target).?.denotation.local;
+                const value = try self.definedValue(task, items, shorthand);
+                task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = local.index }, .name = id, .value = value } };
             },
             .expression => unreachable,
         }
+    }
+
+    /// The node of the value a `define` gives its name.
+    fn definedValue(self: *Expander, task: Task, items: []const Value, shorthand: bool) Error!*Node {
+        const value = try self.ctx.persist.create(Node);
+        if (shorthand) {
+            try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.env, "define");
+        } else {
+            try self.stack.append(self.scratch, .{ .form = items[2], .env = task.env, .pos = .expression, .dest = value });
+        }
+        return value;
     }
 
     /// `(lambda (name ...) body ...)` (R7RS 4.1.4).
     fn lambdaForm(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len < 3)
             return self.ctx.raise("bad lambda: expected (lambda (name ...) body ...)", .{});
-        try self.lambdaNode(task.dest, items[1], items[2..], task.scope, "lambda");
+        try self.lambdaNode(task.dest, items[1], items[2..], task.env, "lambda");
     }
 
     /// Fills `dest` with the procedure whose parameters are `params_form` and
-    /// whose body is `body`, made in `scope`.
+    /// whose body is `body`, made in `env`.
     /// `form_name` は、メッセージのための、その手続きが書かれた形式の名前である。
     /// `(define (f x) ...)` は、自前の仮引数リストを持つ `define` である。
     ///
     /// 仮引数は R7RS 4.1.4 の3つの形を取る。`(a b)` は固定個、`args` は任意個、
     /// `(a b . r)` は2個以上である。余りを受ける変数は、必須の仮引数の直後の
-    /// スロットに置く。
+    /// スロットに置く。仮引数と本体の定義は、新しい rib に束縛する。
     fn lambdaNode(
         self: *Expander,
         dest: *Node,
         params_form: Value,
         body: []const Value,
-        scope: ?*const Scope,
+        env: ?*SyntacticEnv,
         comptime form_name: []const u8,
     ) Error!void {
-        var names: std.ArrayList(SymbolId) = .empty;
+        const inner = try syntax_env.extend(self.ctx, env);
+        var slots: u32 = 0;
         var rest = params_form;
-        while (rest.asPair()) |p| : (rest = p.cdr) try self.parameter(&names, p.car, form_name);
-        const arity = names.items.len;
+        while (rest.asPair()) |p| : (rest = p.cdr) try self.parameter(inner, &slots, p.car, form_name);
+        const arity = slots;
         // リストの終わりが空リストでなければ、ドットの後ろ(または仮引数の全体)が
         // 余りを受ける変数である。識別子でないものは、仮引数の並びとして読めない。
         const has_rest = rest.kind() != .empty_list;
         if (has_rest) {
             if (rest.kind() != .symbol)
                 return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be an identifier or a list of identifiers", .{});
-            try self.parameter(&names, rest, form_name);
+            try self.parameter(inner, &slots, rest, form_name);
         }
-        const defines = try self.collectDefinitions(body, &names);
+        const defines = try self.collectDefinitions(body, inner, &slots);
         // Why: R7RS 5.3.2 の本体は、定義のあとに式が続く形で、式は 1 つ以上要る。
         // 定義だけの本体には、返す値がない。
         if (defines == body.len)
             return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
-        if (names.items.len > self.limits.address)
-            return self.ctx.raise("implementation restriction: a procedure has too many variables", .{});
-        const inner = try self.scratch.create(Scope);
-        inner.* = .{ .names = names.items, .parent = scope };
         const body_node = try self.ctx.persist.create(Node);
         try self.sequence(body_node, body, inner, .expression, defines);
         const lambda = try self.ctx.persist.create(value_mod.Lambda);
-        lambda.* = .{ .arity = @intCast(arity), .rest = has_rest, .frame_size = @intCast(names.items.len), .body = body_node };
+        lambda.* = .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node };
         dest.* = .{ .lambda = lambda };
     }
 
-    /// Adds the parameter `form` to `names`, after checking that it is an
-    /// identifier that is neither a keyword nor one of `names` already.
-    /// 必須の仮引数と余りを受ける変数の両方が、同じ検査を通る。
-    fn parameter(self: *Expander, names: *std.ArrayList(SymbolId), form: Value, comptime form_name: []const u8) Error!void {
-        const id = form.asSymbol() orelse
-            return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
-        const name = self.ctx.symbols.nameOf(id);
-        if (Keyword.of(name) != null)
-            return self.ctx.raise("bad " ++ form_name ++ ": {s} is a syntactic keyword and cannot be a parameter", .{name});
-        for (names.items) |seen| {
-            if (seen == id) return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{name});
-        }
-        try names.append(self.scratch, id);
+    /// Binds the next slot of a call's frame in `rib`, after checking that the
+    /// procedure has room for one more variable.
+    fn nextSlot(self: *Expander, rib: *SyntacticEnv, slots: *u32, id: Value) Error!void {
+        if (slots.* >= self.limits.address)
+            return self.ctx.raise("implementation restriction: a procedure has too many variables", .{});
+        _ = try syntax_env.bindLocal(self.ctx, rib, id, slots.*);
+        slots.* += 1;
     }
 
-    /// Adds the names that the definitions at the start of `body` define to
-    /// `names`, and returns how many forms they are.
-    /// すでにある名前(仮引数か、先の定義)と重なるとエラーになる。定義そのものの検査は、
-    /// 展開するときに行う。
-    fn collectDefinitions(self: *Expander, body: []const Value, names: *std.ArrayList(SymbolId)) Error!usize {
+    /// Binds the parameter `form` in `rib`, after checking that it is an
+    /// identifier that is not a parameter already.
+    /// 必須の仮引数と余りを受ける変数の両方が、同じ検査を通る。特殊形式と同じ綴りでも
+    /// よく、本体ではその特殊形式を隠す。
+    fn parameter(self: *Expander, rib: *SyntacticEnv, slots: *u32, form: Value, comptime form_name: []const u8) Error!void {
+        const id = form.asSymbol() orelse
+            return self.ctx.raise("bad " ++ form_name ++ ": a parameter must be an identifier", .{});
+        if (syntax_env.lookupRib(rib, form) != null)
+            return self.ctx.raise("bad " ++ form_name ++ ": duplicate parameter: {s}", .{self.ctx.symbols.nameOf(id)});
+        try self.nextSlot(rib, slots, form);
+    }
+
+    /// Binds the names that the definitions at the start of `body` define in
+    /// `rib`, and returns how many forms they are.
+    ///
+    /// 形式の先頭が定義を意味するかは、仮引数と、それより前の定義を束縛した `rib` で
+    /// 判定する。本体の定義の領域は本体の全体である(R7RS 5.3.2)。そのため、仮引数と
+    /// 同じ名前の定義は、仮引数を隠す新しい変数になる。同じ名前を2回定義することは
+    /// 誤りである(同節)。定義そのものの検査は、展開するときに行う。
+    fn collectDefinitions(self: *Expander, body: []const Value, rib: *SyntacticEnv, slots: *u32) Error!usize {
         var count: usize = 0;
         for (body) |form| {
             const head = form.asPair() orelse break;
-            const keyword_id = head.car.asSymbol() orelse break;
-            if (Keyword.of(self.ctx.symbols.nameOf(keyword_id)) != .define) break;
+            if (self.specialOf(rib, head.car) != .define) break;
             const rest = head.cdr.asPair() orelse
                 return self.ctx.raise("bad define: expected (define name expression)", .{});
             // `(define (name parameter ...) body ...)` は、ヘッダの先頭にあるものを名前とする。
             const target = if (rest.car.asPair()) |header| header.car else rest.car;
             const id = target.asSymbol() orelse
                 return self.ctx.raise("bad define: the name must be an identifier", .{});
-            const name = self.ctx.symbols.nameOf(id);
-            if (Keyword.of(name) != null)
-                return self.ctx.raise("bad define: {s} is a syntactic keyword and cannot be redefined", .{name});
-            for (names.items) |seen| {
-                if (seen == id) return self.ctx.raise(
-                    "bad define: {s} is already a parameter or defined earlier in this body",
-                    .{name},
+            // rib の先頭の `count` 個が、この本体のそれまでの定義である。
+            var b = rib.bindings;
+            for (0..count) |_| {
+                const binding = b.?;
+                if (syntax_env.boundIdentifierEq(binding.id, target)) return self.ctx.raise(
+                    "bad define: {s} is already defined earlier in this body",
+                    .{self.ctx.symbols.nameOf(id)},
                 );
+                b = binding.next;
             }
-            try names.append(self.scratch, id);
+            try self.nextSlot(rib, slots, target);
             count += 1;
+        }
+        // Why: 定義が束縛する名前が、その定義や前の定義の先頭の `define` そのものだと、
+        // 定義だと判定した形式が、本体の全体を領域とする束縛のもとでは定義でなくなる。
+        // R7RS 5.3.2 はこれを誤りとしている。展開がこの判定に頼るので、ここで拒否する。
+        for (body[0..count]) |form| {
+            const head = form.asPair().?.car;
+            if (self.specialOf(rib, head) != .define) return self.ctx.raise(
+                "bad define: {s} is defined in a body whose definitions it begins",
+                .{self.ctx.symbols.nameOf(head.asSymbol().?)},
+            );
         }
         return count;
     }
@@ -392,9 +403,9 @@ const Expander = struct {
         var i = items.len;
         while (i > 1) {
             i -= 1;
-            try self.stack.append(self.scratch, .{ .form = items[i], .scope = task.scope, .pos = .expression, .dest = @constCast(operands[i - 1]) });
+            try self.stack.append(self.scratch, .{ .form = items[i], .env = task.env, .pos = .expression, .dest = @constCast(operands[i - 1]) });
         }
-        const operator = try self.child(items[0], task.scope, .expression);
+        const operator = try self.child(items[0], task.env, .expression);
         task.dest.* = .{ .call = .{ .operator = operator, .operands = operands } };
     }
 };
@@ -446,13 +457,33 @@ const Fixture = struct {
     }
 };
 
-test "isKeyword names the six special forms and nothing near them" {
-    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!" }) |name| {
-        try std.testing.expect(isKeyword(name));
-    }
-    for ([_][]const u8{ "set", "Define", "define ", "cond", "+", "" }) |name| {
-        try std.testing.expect(!isKeyword(name));
-    }
+test "a parameter named like a special form is a variable in the body, and hides the special form there" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(lambda (if) (if 1 2))", "(lambda 1 1 (call (local if 0 0) (const 1) (const 2)))");
+    try f.expectExpands("(lambda (quote) 'x)", "(lambda 1 1 (call (local quote 0 0) (global x)))");
+    try f.expectExpands("(lambda (set!) (set! set! 1))", "(lambda 1 1 (call (local set! 0 0) (local set! 0 0) (const 1)))");
+    try f.expectExpands("(lambda define define)", "(lambda 0 rest 1 (local define 0 0))");
+    try f.expectExpands("(lambda (a . lambda) (lambda a))", "(lambda 1 rest 2 (call (local lambda 0 1) (local a 0 0)))");
+    // 内側の lambda からも、外側の仮引数として見える。
+    try f.expectExpands("(lambda (begin) (lambda () (begin)))", "(lambda 1 1 (lambda 0 0 (call (local begin 1 0))))");
+    // 仮引数の外では、同じ名前は特殊形式のままである。
+    try f.expectExpands("((lambda (if) if) (if 1 2 3))", "(call (lambda 1 1 (local if 0 0)) (if (const 1) (const 2) (const 3)))");
+    // 仮引数が `define` を隠すと、本体の `(define ...)` は定義でなく呼び出しになる。
+    try f.expectExpands("(lambda (define) (define x 1))", "(lambda 1 1 (call (local define 0 0) (global x) (const 1)))");
+}
+
+test "a definition in a body named like a special form is a variable of the body" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(lambda () (define if list) (if 1 2))", "(lambda 0 1 (seq (define-local if 0 0 (global list)) (call (local if 0 0) (const 1) (const 2))))");
+    try f.expectExpands("(lambda () (define (begin) 1) (begin))", "(lambda 0 1 (seq (define-local begin 0 0 (lambda 0 0 (const 1))) (call (local begin 0 0))))");
+    // 定義する名前が、その定義や前の定義を始めている `define` なら、定義の判定が
+    // 変わるので拒否する(R7RS 5.3.2)。
+    try f.expectFails("(lambda () (define define 3) 1)", "bad define: define is defined in a body whose definitions it begins");
+    try f.expectFails("(lambda () (define (f) 1) (define (define) 2) (f))", "bad define: define is defined in a body whose definitions it begins");
 }
 
 test "a literal is a constant, and a name is a global variable when nothing binds it" {
@@ -544,12 +575,9 @@ test "a rest parameter is checked like the other parameters" {
     try f.init();
     defer f.deinit();
     try f.expectFails("(lambda (a . a) a)", "bad lambda: duplicate parameter: a");
-    try f.expectFails("(lambda (a . if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
-    try f.expectFails("(lambda if 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
     try f.expectFails("(lambda (a . 1) a)", "bad lambda: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(lambda #t 1)", "bad lambda: the parameters must be an identifier or a list of identifiers");
-    try f.expectFails("(lambda r (define r 1) r)", "bad define: r is already a parameter or defined earlier in this body");
-    try f.expectFails("(define (f . if) 1)", "bad define: if is a syntactic keyword and cannot be a parameter");
+    try f.expectFails("(lambda (a b . a) a)", "bad lambda: duplicate parameter: a");
     try f.expectFails("(define (f . 1) 1)", "bad define: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(define (f . r))", "bad define: expected (define (name parameter ...) body ...)");
 }
@@ -604,6 +632,25 @@ test "definitions at the start of a body make slots after the parameters" {
     );
 }
 
+test "a definition in a body hides a parameter of the same name in the whole body" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 本体の定義の領域は本体の全体である(R7RS 5.3.2)。仮引数 x のスロット 0 は、本体の
+    // どこからも見えない。先の定義の式の中の x も、後で定義される x を指す。
+    try f.expectExpands("(lambda (x) (define x 1) x)", "(lambda 1 2 (seq (define-local x 0 1 (const 1)) (local x 0 1)))");
+    try f.expectExpands(
+        "(lambda (x) (define y x) (define x 1) y)",
+        "(lambda 1 3 (seq (define-local y 0 1 (local x 0 2)) (define-local x 0 2 (const 1)) (local y 0 1)))",
+    );
+    try f.expectExpands("(lambda r (define r 1) r)", "(lambda 0 rest 2 (seq (define-local r 0 1 (const 1)) (local r 0 1)))");
+    // 内側の lambda から見ても同じである。
+    try f.expectExpands(
+        "(lambda (x) (define x 1) (lambda () x))",
+        "(lambda 1 2 (seq (define-local x 0 1 (const 1)) (lambda 0 0 (local x 1 1))))",
+    );
+}
+
 test "the shapes the expander refuses, with the messages the evaluator gave" {
     var f: Fixture = undefined;
     try f.init();
@@ -615,7 +662,6 @@ test "the shapes the expander refuses, with the messages the evaluator gave" {
     try f.expectFails("(lambda)", "bad lambda: expected (lambda (name ...) body ...)");
     try f.expectFails("(lambda (x))", "bad lambda: expected (lambda (name ...) body ...)");
     try f.expectFails("(lambda (x x) x)", "bad lambda: duplicate parameter: x");
-    try f.expectFails("(lambda (if) 1)", "bad lambda: if is a syntactic keyword and cannot be a parameter");
     try f.expectFails("(lambda (1) 1)", "bad lambda: a parameter must be an identifier");
     try f.expectFails("(lambda 1 1)", "bad lambda: the parameters must be an identifier or a list of identifiers");
     try f.expectFails("(set! x)", "bad set!: expected (set! name expression)");
@@ -638,9 +684,9 @@ test "the shapes a body refuses" {
     defer f.deinit();
     try f.expectFails("(lambda () (define x 1))", "bad lambda: a body needs an expression after its definitions");
     try f.expectFails("(define (f) (define x 1))", "bad define: a body needs an expression after its definitions");
-    try f.expectFails("(lambda (x) (define x 1) x)", "bad define: x is already a parameter or defined earlier in this body");
-    try f.expectFails("(lambda () (define x 1) (define x 2) x)", "bad define: x is already a parameter or defined earlier in this body");
-    try f.expectFails("(lambda () (define if 1) 1)", "bad define: if is a syntactic keyword and cannot be redefined");
+    // 同じ名前を本体で2回定義することは誤りである(R7RS 5.3.2)。間に別の定義があっても同じである。
+    try f.expectFails("(lambda () (define x 1) (define x 2) x)", "bad define: x is already defined earlier in this body");
+    try f.expectFails("(lambda (x) (define x 1) (define y 2) (define x 3) x)", "bad define: x is already defined earlier in this body");
     try f.expectFails("(lambda () (begin (define x 1)) x)", "bad define: a definition is only allowed at the top level or at the start of a body");
 }
 
@@ -663,14 +709,19 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
 }
 
-test "a keyword is not a variable, a parameter or a name to define" {
+test "a special form at the top level is not a variable, a value to assign or a name to define" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     try f.expectFails("quote", "quote is a syntactic keyword and cannot be used as a variable");
     try f.expectFails("(define quote 1)", "bad define: quote is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(define (lambda x) x)", "bad define: lambda is a syntactic keyword and cannot be redefined");
+    try f.expectFails("(begin (define begin 1))", "bad define: begin is a syntactic keyword and cannot be redefined");
     try f.expectFails("(define #t 1)", "bad define: the name must be an identifier");
     try f.expectFails("(f if)", "if is a syntactic keyword and cannot be used as a variable");
+    // 局所の束縛が隠していないところでは、本体の中でも同じである。
+    try f.expectFails("(lambda (x) (set! define x))", "bad set!: define is a syntactic keyword and cannot be assigned");
+    try f.expectFails("(lambda (x) (lambda (y) lambda))", "lambda is a syntactic keyword and cannot be used as a variable");
 }
 
 test "a form that is not a proper list is refused" {

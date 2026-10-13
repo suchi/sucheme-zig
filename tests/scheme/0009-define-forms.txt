@@ -76,8 +76,8 @@ error: bad define: a parameter must be an identifier
 (define (f x x) x)
 error: bad define: duplicate parameter: x
 
-(define (f if) 1)
-error: bad define: if is a syntactic keyword and cannot be a parameter
+(define (f if) (if 1 2)) (f +)
+3
 
 (define (if x) 1)
 error: bad define: if is a syntactic keyword and cannot be redefined

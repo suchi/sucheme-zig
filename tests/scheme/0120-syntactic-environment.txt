@@ -1,0 +1,73 @@
+# スライス 2i: 特殊形式の名前は構文環境の束縛であり、予約語ではない。仮引数と
+# 本体の定義は、同じ綴りの特殊形式を隠す(R7RS 4.1.4、5.3.2)。
+
+((lambda (if) (if 1 2)) list)
+(1 2)
+
+((lambda (quote) '5) list)
+(5)
+
+((lambda (lambda) (lambda 1 2)) +)
+3
+
+((lambda (define) (define 1 2)) +)
+3
+
+((lambda (begin) (begin)) (lambda () 4))
+4
+
+((lambda (set! x) (set! x 1)) - 3)
+2
+
+# 内側の lambda からも、外側の仮引数として見える。
+((lambda (begin) ((lambda () (begin 1 2)))) +)
+3
+
+# 隠されたままの特殊形式を、同じ本体の中で使える。
+((lambda (if) (set! if 5) if) 1)
+5
+
+# 仮引数の外では、同じ名前は特殊形式のままである。
+((lambda (if) if) (if #f 1 2))
+2
+
+((lambda (if) 1) 2) (if #f 1 2)
+1
+2
+
+# 本体の定義も、同じ綴りの特殊形式を本体の全体で隠す。
+((lambda () (define (lambda x) (* x 2)) (lambda 21)))
+42
+
+((lambda () (define (g) (if 3)) (define (if x) (+ x 1)) (g)))
+4
+
+# 定義を始める define そのものを定義することは誤りである(R7RS 5.3.2)。
+((lambda () (define define 3) define))
+error: bad define: define is defined in a body whose definitions it begins
+
+# 仮引数と同じ名前の定義は、仮引数を本体の全体で隠す。前の定義の式から見えるのも、
+# 後で定義される変数である(letrec* と同じ)。
+((lambda (x) (define x 1) x) 5)
+1
+
+((lambda (x) (define y x) (define x 1) y) 5)
+error: variable used before its definition: x
+
+((lambda (x) (define (get) x) (define x 1) (get)) 5)
+1
+
+# 仮引数の重複と、本体での同じ名前の2回の定義は、今までどおり誤りである。
+(lambda (if if) 1)
+error: bad lambda: duplicate parameter: if
+
+((lambda () (define if 1) (define if 2) if))
+error: bad define: if is already defined earlier in this body
+
+# 最上位の特殊形式は、変数としても代入の対象としても使えない。最上位の (define if 5)
+# は、REPL の束縛の表が入るスライス 2j まで拒否する。
+(set! if 5)
+error: bad set!: if is a syntactic keyword and cannot be assigned
+
+(define if 5)
+error: bad define: if is a syntactic keyword and cannot be redefined

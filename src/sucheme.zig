@@ -27,6 +27,7 @@ const reader = @import("reader.zig");
 pub const isIncomplete = reader.isIncomplete;
 
 const expand = @import("syntax/expand.zig");
+const syntax_env = @import("syntax/env.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
@@ -90,12 +91,16 @@ pub const Interpreter = struct {
     ///
     /// 準拠マトリクス(tools/coverage-report)が使う。名前を引くだけで、シンボルを
     /// インターンしない。読まれただけの名前はシンボル表にあるが、束縛ではない。
-    /// 特殊形式は大域環境に束縛を持たず、展開器のキーワードである。キーワードは
-    /// 隠すことも再定義することもできないので、どのインタプリタでも束縛済みである。
+    /// 答えは、展開器が最上位でその名前を解決した意味から出す。特殊形式は REPL の
+    /// 最上位の構文の束縛で、それ以外の名前は大域環境に値があるときだけ束縛済みである。
     pub fn isBound(self: *const Interpreter, identifier: []const u8) bool {
-        if (expand.isKeyword(identifier)) return true;
         const id = self.ctx.symbols.index.get(identifier) orelse return false;
-        return self.ctx.globals.lookup(id) != null;
+        return switch (syntax_env.resolve(&self.ctx, null, .fromSymbol(id))) {
+            .special => true,
+            .global => |global| self.ctx.globals.lookup(global) != null,
+            // 最上位には局所の束縛が無い。
+            .local => unreachable,
+        };
     }
 
     fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
@@ -164,7 +169,7 @@ test "isBound answers for the primitives, the special forms and nothing else" {
     var interp: Interpreter = undefined;
     try interp.init(std.testing.allocator);
     defer interp.deinit();
-    // プリミティブは大域環境の束縛、特殊形式は展開器のキーワードである。
+    // プリミティブは大域環境の束縛、特殊形式は REPL の最上位の構文の束縛である。
     try std.testing.expect(interp.isBound("+"));
     try std.testing.expect(interp.isBound(">="));
     for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!" }) |keyword| {
@@ -191,6 +196,9 @@ test "isBound follows definitions, and a name that was only read is not bound" {
     // リーダはシンボルをインターンするが、インターンは束縛ではない。
     try interp.evalPrint(arena.allocator(), "'seen", &w);
     try std.testing.expect(!interp.isBound("seen"));
+    // 仮引数は局所の束縛で、最上位の束縛ではない。
+    try interp.evalPrint(arena.allocator(), "((lambda (zork) zork) 1)", &w);
+    try std.testing.expect(!interp.isBound("zork"));
     try interp.evalPrint(arena.allocator(), "(define x 1)", &w);
     try std.testing.expect(interp.isBound("x"));
     // 失敗した行が定義しなかった名前は束縛されない。
