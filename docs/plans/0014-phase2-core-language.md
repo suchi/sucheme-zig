@@ -744,7 +744,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2a | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み | [#78](https://github.com/suchi/sucheme-zig/pull/78) |
 | 2b | main に入った。ADR-0035 は採用 | [#79](https://github.com/suchi/sucheme-zig/pull/79) |
 | 2c | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。`apply` が1ステップの中で確保する件は、ADR-0031 の追記に記録して受け入れ、段階3で直す | |
-| 2d | 実装済み。敵対的レビューの前 | |
+| 2d | 実装済み。敵対的レビューで受けた推奨と任意の指摘を反映した。再レビューの前 | [#84](https://github.com/suchi/sucheme-zig/pull/84) |
 | 2e | 未着手 | |
 | 2f | 未着手 | |
 | 2g | 未着手 | |
