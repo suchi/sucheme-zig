@@ -174,7 +174,8 @@ pub const Machine = struct {
         var count = initial_count;
         // Why: `apply` の被呼び出し側を、Zig の再帰でなく周回で適用する。`apply` で `apply`
         // を呼ぶ入れ子は、データから好きなだけ深く作れるので、再帰にすると Zig のスタックを
-        // 使い切りうる。
+        // 使い切りうる。ただし周回は1ステップの中で回るので、その間にできたごみは回収
+        // されない。この制約と直す時期は、ADR-0031 の 2026-10-13 の追記にある。
         const operator = while (true) {
             var operator_node = args;
             while (operator_node.next) |n| operator_node = n;

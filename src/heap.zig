@@ -167,6 +167,8 @@ const reserve_divisor = 16;
 
 /// The account a collection is asked for at the latest.
 /// 上限までの余裕は、機械の1ステップが2つのセーフポイントの間に確保してよい量である。
+/// 例外が1つある。`apply` は、最後の引数のリストの長さに比例する量を1ステップの中で
+/// 確保し、この余裕を超えうる(ADR-0031 の 2026-10-13 の追記)。
 fn softLimit(limit: usize) usize {
     return limit - limit / reserve_divisor;
 }
