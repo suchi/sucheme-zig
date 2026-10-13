@@ -1812,20 +1812,36 @@ test "a handler that is a primitive gives its value to the frame of the handler'
     try f.expectInt(3, "(+ 1 2)");
 }
 
+/// The options of the tests that fill the heap to its limit and run no
+/// collection.
+const no_collection: heap_mod.Options = .{ .limit = 64 * 1024, .min_threshold = 64 * 1024 };
+
+/// A point of the dynamic state that installs `handler`, with no point
+/// outside it.
+fn handlerPoint(f: *Fixture, handler: Value) !*DynPoint {
+    const point = try f.ctx.heap.create(DynPoint, .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = handler } });
+    point.current_handler = point;
+    return point;
+}
+
+/// Fills the heap up to its limit, so that every ordinary allocation is
+/// refused.
+/// GC は走らせないので、それまでに作ったものも、埋めたものも残る。
+fn fillToLimit(f: *Fixture) !void {
+    var list: Value = .empty_list_value;
+    while (f.ctx.heap.cons(.empty_list_value, list)) |p| list = p else |_| {}
+    // ペアより小さいセルで、残りを埋める。
+    while (f.ctx.heap.create(Args, .{ .value = list, .next = null })) |_| {} else |_| {}
+    try std.testing.expectError(error.HeapLimit, f.ctx.heap.create(Args, .{ .value = .empty_list_value, .next = null }));
+}
+
 test "every allocation to call a handler is made from the reserve" {
     // ハンドラを置いてから、ヒープを上限ちょうどまで埋め、送出の準備だけをする。
     var f: Fixture = undefined;
-    try f.initWith(.{ .limit = 64 * 1024, .min_threshold = 64 * 1024 });
+    try f.initWith(no_collection);
     defer f.deinit();
-    const procedure = try f.eval("(lambda (c) c)");
-    const point = try f.ctx.heap.create(DynPoint, .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = procedure } });
-    point.current_handler = point;
-    var list: Value = .empty_list_value;
-    while (f.ctx.heap.cons(procedure, list)) |p| list = p else |_| {}
-    // ペアより小さいセルで、残りを埋める。GC は走らせないので、どれも残る。
-    while (f.ctx.heap.create(Args, .{ .value = list, .next = null })) |_| {} else |_| {}
-    // 上限に達した。どの通常の確保も断られる。
-    try std.testing.expectError(error.HeapLimit, f.ctx.heap.create(Args, .{ .value = .empty_list_value, .next = null }));
+    const point = try handlerPoint(&f, try f.eval("(lambda (c) c)"));
+    try fillToLimit(&f);
     var kont: ?*const Kont = null;
     var dyn: ?*const DynPoint = point;
     const call = (try f.machine.enterHandler(&kont, &dyn, .fromFixnum(5), false)).?;
@@ -1838,4 +1854,63 @@ test "every allocation to call a handler is made from the reserve" {
         .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
         .value => return error.TestUnexpectedResult,
     }
+}
+
+test "a handler that takes its arguments as a list gets the list from the reserve" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    const point = try handlerPoint(&f, try f.eval("(lambda args args)"));
+    try fillToLimit(&f);
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = point;
+    const call = (try f.machine.enterHandler(&kont, &dyn, .fromFixnum(5), false)).?;
+    // 余りの引数のリストも、フレームと同じく予約から作る。
+    switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
+        .body => |entry| {
+            const rest = entry.env.values[0].asPair().?;
+            try std.testing.expectEqual(5, rest.car.asFixnum().?);
+            try std.testing.expectEqual(value_mod.Kind.empty_list, rest.cdr.kind());
+        },
+        .value => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+}
+
+test "raise-continuable calls the handler from the reserve, though it is applied as an ordinary call" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    // プリミティブを先に読む。ハンドラのクロージャは、作ってから GC を走らせない。
+    const operator = try f.eval("raise-continuable");
+    const point = try handlerPoint(&f, try f.eval("(lambda (c) c)"));
+    const procedure = try f.ctx.heap.create(Args, .{ .value = operator, .next = null });
+    const call = try f.ctx.heap.create(Args, .{ .value = .fromFixnum(5), .next = procedure });
+    try fillToLimit(&f);
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = point;
+    // ふつうの呼び出しと同じく上限の budget で適用し、ハンドラの呼び出しに切り替わったところで
+    // 予約に移る。
+    switch (try f.machine.apply(&kont, &dyn, call, 1, .limit)) {
+        .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
+        .value => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(kont.?.step.handler_return.continuable);
+    try std.testing.expect(dyn.?.kind == .handler_shift);
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+}
+
+test "the secondary exception of a handler that returned is made from the reserve" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    try fillToLimit(&f);
+    // 条件とメッセージに加えて、irritant のペアも予約から作る。
+    try std.testing.expectEqual(error.Raised, f.machine.handlerReturned(.fromFixnum(5)));
+    const c = f.ctx.raised.?.asCondition().?;
+    try std.testing.expectEqualStrings("handler returned from non-continuable raise", c.messageText());
+    const irritants = c.irritants.asPair().?;
+    try std.testing.expectEqual(5, irritants.car.asFixnum().?);
+    try std.testing.expectEqual(value_mod.Kind.empty_list, irritants.cdr.kind());
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
 }
