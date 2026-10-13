@@ -1,6 +1,6 @@
 //! What the expander and the machine share between the lines of a session: the
-//! GC heap and the arena beside it, the symbols, the global bindings, the
-//! constants of the code, and the condition of the most recent error.
+//! GC heap and the arena beside it, the symbols, the bindings of the top level,
+//! the constants of the code, and the condition of the most recent error.
 
 const std = @import("std");
 const symbol = @import("symbol.zig");
@@ -29,18 +29,18 @@ pub const Context = struct {
     /// the pairs, the closures, the frames of calls, the continuations, the
     /// argument lists, the strings and the vectors.
     heap: Heap,
-    /// Where what the heap does not hold is allocated: the symbols, the global
-    /// bindings, the core IR the expander builds, and the conditions.
+    /// Where what the heap does not hold is allocated: the symbols, the table of
+    /// the bindings of the top level, the core IR the expander builds, and the
+    /// conditions.
+    /// 大域変数のセルそのものは GC ヒープにある。
     /// この中のものは、インタプリタが解放されるまで解放されない。またヒープの上限の外に
     /// あるので、ヒープが満杯でもエラーを報告できる。
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
+    /// The bindings of the REPL's top level: the special forms and the
+    /// primitives it imports, and the variables it defines (src/env.zig).
+    /// 特殊形式の名前は予約語ではなく、REPL の最上位の構文の束縛である。
     globals: env.Global = .{},
-    /// The special forms the top level of the REPL binds, by name.
-    /// 特殊形式の名前は予約語ではなく、REPL の最上位の構文の束縛である
-    /// (src/syntax/env.zig の解決)。値は GC ヒープを指さないので、GC のルートではない。
-    /// スライス 2j で、REPL の束縛の表(大域変数のセルと同じ表)に移る。
-    specials: std.AutoHashMapUnmanaged(symbol.SymbolId, value_mod.Special) = .empty,
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
@@ -50,8 +50,8 @@ pub const Context = struct {
     /// by one.
     raised: ?*value_mod.Condition = null,
 
-    /// A context whose global environment binds each primitive to its name, and
-    /// whose top level binds each special form to its name.
+    /// A context whose top level imports each primitive and each special form
+    /// under its name.
     /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
     /// オブジェクトを確保するアロケータである。`deinit` が解放するのはヒープで、
     /// アリーナではない。
@@ -64,11 +64,11 @@ pub const Context = struct {
         errdefer ctx.heap.deinit();
         for (&table.all) |*p| {
             const id = try ctx.symbols.intern(persist, p.name);
-            try ctx.globals.define(persist, id, .fromPrimitive(p));
+            try ctx.globals.importPrimitive(persist, id, p);
         }
         for (std.enums.values(value_mod.Special)) |special| {
             const id = try ctx.symbols.intern(persist, @tagName(special));
-            try ctx.specials.put(persist, id, special);
+            try ctx.globals.importSpecial(persist, id, special);
         }
         return ctx;
     }
@@ -77,8 +77,8 @@ pub const Context = struct {
         self.heap.deinit();
     }
 
-    /// Tells the collector of the roots the context holds: the values of the
-    /// global bindings and the constants of the code.
+    /// Tells the collector of the roots the context holds: the cells of the
+    /// global variables and the constants of the code.
     /// 機械は自分のルートを加える。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
@@ -193,7 +193,11 @@ test "a context binds each primitive to its name" {
     var ctx = try Context.init(arena.allocator(), std.testing.allocator);
     defer ctx.deinit();
     const id = try ctx.symbols.intern(arena.allocator(), "+");
-    try std.testing.expectEqualStrings("+", ctx.globals.lookup(id).?.asPrimitive().?.name);
+    try std.testing.expect(ctx.globals.isBound(id));
+    // 初期化はヒープに何も作らない。プリミティブのセルは、名前を解決したときに作る。
+    try std.testing.expectEqual(0, ctx.heap.count);
+    const cell = (try ctx.globals.resolve(ctx.persist, &ctx.heap, id)).global;
+    try std.testing.expectEqualStrings("+", cell.value.asPrimitive().?.name);
 }
 
 test "an allocation the limit refuses is the error heap limit exceeded, for an object and for a frame" {

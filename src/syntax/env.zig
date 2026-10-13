@@ -5,9 +5,9 @@
 //! このファイルは、環境を作り、束縛を足し、識別子を解決する。
 //!
 //! 解決は、内側の環境から外へ、各 rib の束縛を新しいものから順に線形に探し、
-//! 見つからなければ REPL の最上位の束縛を引く。最上位の束縛は、特殊形式の名前の表
-//! (`Context.specials`)と、名前で探す大域変数である。特殊形式の名前は予約語ではない
-//! ので、仮引数や本体の定義が同じ綴りを束縛すれば、その内側では特殊形式が隠れる。
+//! 見つからなければ REPL の最上位の束縛の表(src/env.zig)を名前で引く。最上位の
+//! 束縛は、特殊形式か、大域変数のセルである。特殊形式の名前は予約語ではないので、
+//! 仮引数や本体の定義が同じ綴りを束縛すれば、その内側では特殊形式が隠れる。
 
 const std = @import("std");
 const value_mod = @import("../value.zig");
@@ -57,16 +57,14 @@ pub fn lookupRib(env: *const SyntacticEnv, id: Value) ?*SyntacticBinding {
 
 /// What `id` means in `env` (docs/design/frontend.md, the rules of
 /// resolution).
-/// 構文環境に束縛が無ければ、REPL の最上位の束縛になる。特殊形式の名前の表に無い
-/// 名前は大域変数で、機械が実行するときに名前で探す。
-pub fn resolve(ctx: *const Context, env: ?*const SyntacticEnv, id: Value) Denotation {
+/// 構文環境に束縛が無ければ、REPL の最上位の束縛になる。最上位の表に無い名前には、
+/// REPL 自身の未束縛のセルを作る(src/env.zig)。確保しうるのはその場合だけである。
+pub fn resolve(ctx: *Context, env: ?*const SyntacticEnv, id: Value) Error!Denotation {
     var e = env;
     while (e) |scope| : (e = scope.parent) {
         if (lookupRib(scope, id)) |binding| return binding.denotation;
     }
-    const name = id.asSymbol().?;
-    if (ctx.specials.get(name)) |special| return .{ .special = special };
-    return .{ .global = name };
+    return ctx.globals.resolve(ctx.persist, &ctx.heap, id.asSymbol().?) catch |err| ctx.heapFailure(err);
 }
 
 /// Whether `a` and `b` are the same identifier in the sense of
@@ -120,14 +118,16 @@ test "at the top level a special form's name means the special form, and any oth
     try f.init();
     defer f.deinit();
     inline for (@typeInfo(Special).@"enum".field_names) |name| {
-        const d = resolve(&f.ctx, null, try f.id(name));
+        const d = try resolve(&f.ctx, null, try f.id(name));
         try std.testing.expectEqual(@field(Special, name), d.special);
     }
     const x = try f.id("x");
-    try std.testing.expectEqual(x.asSymbol().?, resolve(&f.ctx, null, x).global);
+    const cell = (try resolve(&f.ctx, null, x)).global;
+    try std.testing.expectEqual(x.asSymbol().?, cell.name);
+    try std.testing.expectEqual(cell, (try resolve(&f.ctx, null, x)).global);
     // プリミティブの名前も大域変数である。
     const plus = try f.id("+");
-    try std.testing.expectEqual(plus.asSymbol().?, resolve(&f.ctx, null, plus).global);
+    try std.testing.expectEqualStrings("+", (try resolve(&f.ctx, null, plus)).global.value.asPrimitive().?.name);
 }
 
 test "a rib's binding hides the special form, the global and an outer rib's binding of the same name" {
@@ -143,10 +143,10 @@ test "a rib's binding hides the special form, the global and an outer rib's bind
     const inner = try extend(&f.ctx, outer);
     try std.testing.expectEqual(2, inner.rib_depth);
     const inner_x = try bindLocal(&f.ctx, inner, x, 0);
-    try std.testing.expectEqual(outer_if, resolve(&f.ctx, inner, @"if").local);
-    try std.testing.expectEqual(inner_x, resolve(&f.ctx, inner, x).local);
-    try std.testing.expectEqual(outer_x, resolve(&f.ctx, outer, x).local);
-    try std.testing.expectEqual(Special.@"if", resolve(&f.ctx, null, @"if").special);
+    try std.testing.expectEqual(outer_if, (try resolve(&f.ctx, inner, @"if")).local);
+    try std.testing.expectEqual(inner_x, (try resolve(&f.ctx, inner, x)).local);
+    try std.testing.expectEqual(outer_x, (try resolve(&f.ctx, outer, x)).local);
+    try std.testing.expectEqual(Special.@"if", (try resolve(&f.ctx, null, @"if")).special);
     // 局所束縛は、それを導入した rib の絶対深さと、スロットを持つ。
     try std.testing.expectEqual(1, outer_x.rib_depth);
     try std.testing.expectEqual(1, outer_x.index);
@@ -162,7 +162,7 @@ test "a later binding in the same rib hides an earlier one, and each binding is 
     const first = try bindLocal(&f.ctx, env, x, 0);
     const second = try bindLocal(&f.ctx, env, x, 1);
     try std.testing.expect(first != second);
-    try std.testing.expectEqual(second, resolve(&f.ctx, env, x).local);
+    try std.testing.expectEqual(second, (try resolve(&f.ctx, env, x)).local);
     try std.testing.expectEqual(second, lookupRib(env, x).?.denotation.local);
     try std.testing.expect(lookupRib(env, try f.id("y")) == null);
     // 外側の rib は lookupRib の対象ではない。
