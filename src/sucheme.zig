@@ -174,12 +174,28 @@ fn describeRaised(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *con
     } else printer.write(&shown, scratch, symbols, v);
     written catch |e| switch (e) {
         error.WriteFailed => {
-            try out.writeAll(shown.buffered());
+            try out.writeAll(wholeCharacters(shown.buffered()));
             return out.writeAll("...");
         },
         else => return e,
     };
     try out.writeAll(shown.buffered());
+}
+
+/// `bytes`, valid UTF-8 cut short at some byte, without the character the cut
+/// fell in.
+/// 診断は妥当な UTF-8 でなければならない(ADR-0008)。最後の先頭バイトから始まる列が、
+/// その先頭バイトが示す長さに足りなければ、その列を落とす。
+fn wholeCharacters(bytes: []const u8) []const u8 {
+    var start = bytes.len;
+    // 後続バイト(0b10xxxxxx)をさかのぼり、最後の文字の先頭を探す。文字は4バイトまでである。
+    while (start > 0 and bytes.len - start < 4) {
+        start -= 1;
+        if (bytes[start] & 0xC0 != 0x80) break;
+    }
+    if (start == bytes.len) return bytes;
+    const need = std.unicode.utf8ByteSequenceLength(bytes[start]) catch return bytes[0..start];
+    return if (bytes.len - start < need) bytes[0..start] else bytes;
 }
 
 /// Writes each of `irritants`, a list, after a space.
@@ -674,4 +690,30 @@ test "the values a description shows are cut after a bound, and the message is k
     // 長いメッセージは切らない。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", &w));
     try std.testing.expectEqualStrings("unbound variable: a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", interp.diagnostic());
+}
+
+test "a description cut in the middle of a character is cut before the character" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 値の部分は ` "` で始まるので、3バイトの文字が上限をまたぐ位置は、前に置く ASCII の
+    // 文字の数で決まる。0 から 2 個で、文字のどのバイトでも切れる場合を通す。
+    for (0..3) |pad| {
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(std.testing.allocator);
+        try line.appendSlice(std.testing.allocator, "(car \"");
+        try line.appendNTimes(std.testing.allocator, 'a', pad);
+        for (0..60) |_| try line.appendSlice(std.testing.allocator, "あ");
+        try line.appendSlice(std.testing.allocator, "\")");
+        try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line.items, &w));
+        const d = interp.diagnostic();
+        try std.testing.expect(std.unicode.utf8ValidateSlice(d));
+        try std.testing.expect(std.mem.endsWith(u8, d, "あ..."));
+        // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
+        try std.testing.expect(d.len + 2 >= "wrong type of argument to car".len + shown_value_bytes + "...".len);
+    }
 }
