@@ -23,7 +23,7 @@
 ((lambda (begin) ((lambda () (begin 1 2)))) +)
 3
 
-# 隠されたままの特殊形式を、同じ本体の中で使える。
+# 仮引数が隠した名前は、同じ本体の中で、変数として代入も参照もできる。
 ((lambda (if) (set! if 5) if) 1)
 5
 
@@ -42,7 +42,7 @@
 ((lambda () (define (g) (if 3)) (define (if x) (+ x 1)) (g)))
 4
 
-# 定義を始める define そのものを定義することは誤りである(R7RS 5.3.2)。
+# 定義を始める define そのものを定義することは誤りである(R7RS 5.4)。
 ((lambda () (define define 3) define))
 error: bad define: define is defined in a body whose definitions it begins
 

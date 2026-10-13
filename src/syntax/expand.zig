@@ -172,6 +172,8 @@ const Expander = struct {
     /// トップレベルでは、中の形式もトップレベルにあるので、そこに定義を書ける(R7RS 5.3)。
     /// トップレベルの `(begin)` は、定義が 0 個の `(begin <definition>*)` であり
     /// (R7RS 7.1.6)、何もしない。式の位置の `begin` は、式を 1 つ以上要る。
+    /// 本体の先頭に置かれた、定義だけの `begin`(空を含む)は、R7RS 7.1.3 と 7.1.6 では
+    /// 合法だが、まだ受け付けない。roadmap の「スライス未割り当て」の項目にある。
     fn begin(self: *Expander, task: Task, items: []const Value) Error!void {
         if (items.len < 2) {
             if (task.pos == .top) return self.constant(task, .unspecified_value);
@@ -387,7 +389,7 @@ const Expander = struct {
         }
         // Why: 定義が束縛する名前が、その定義や前の定義の先頭の `define` そのものだと、
         // 定義だと判定した形式が、本体の全体を領域とする束縛のもとでは定義でなくなる。
-        // R7RS 5.3.2 はこれを誤りとしている。展開がこの判定に頼るので、ここで拒否する。
+        // R7RS 5.4 はこれを誤りとしている。展開がこの判定に頼るので、ここで拒否する。
         for (body[0..count]) |form| {
             const head = form.asPair().?.car;
             if (self.specialOf(rib, head) != .define) return self.ctx.raise(
@@ -485,7 +487,7 @@ test "a definition in a body named like a special form is a variable of the body
     try f.expectExpands("(lambda () (define if list) (if 1 2))", "(lambda 0 1 (seq (define-local if 0 0 (global list)) (call (local if 0 0) (const 1) (const 2))))");
     try f.expectExpands("(lambda () (define (begin) 1) (begin))", "(lambda 0 1 (seq (define-local begin 0 0 (lambda 0 0 (const 1))) (call (local begin 0 0))))");
     // 定義する名前が、その定義や前の定義を始めている `define` なら、定義の判定が
-    // 変わるので拒否する(R7RS 5.3.2)。
+    // 変わるので拒否する(R7RS 5.4)。
     try f.expectFails("(lambda () (define define 3) 1)", "bad define: define is defined in a body whose definitions it begins");
     try f.expectFails("(lambda () (define (f) 1) (define (define) 2) (f))", "bad define: define is defined in a body whose definitions it begins");
 }
@@ -500,7 +502,8 @@ test "begin with nothing in it is allowed at the top level only" {
     // 式の位置の `begin` は、式を 1 つ以上要る。
     try f.expectFails("(f (begin))", "bad begin: expected (begin expression ...)");
     try f.expectFails("(lambda () (begin))", "bad begin: expected (begin expression ...)");
-    try f.expectFails("(lambda () (begin) 1)", "bad begin: expected (begin expression ...)");
+    // 本体の先頭の `(begin)` は、R7RS では合法な空の定義の並びである。本体の中の
+    // `begin` の展開(スプライス)が無いため、今は拒否される。その挙動は固定しない。
 }
 
 test "a literal is a constant, and a name is a global variable when nothing binds it" {
