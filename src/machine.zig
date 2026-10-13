@@ -25,6 +25,7 @@ const Frame = value_mod.Frame;
 const Closure = value_mod.Closure;
 const Kont = value_mod.Kont;
 const Args = value_mod.Args;
+const DynPoint = value_mod.DynPoint;
 const SymbolId = @import("symbol.zig").SymbolId;
 const context = @import("context.zig");
 const Context = context.Context;
@@ -47,16 +48,132 @@ pub const Machine = struct {
         return .{ .ctx = ctx, .scratch = scratch };
     }
 
+    /// What the machine holds between two steps: the registers, and whether
+    /// it has reported a heap left without room.
+    const Registers = struct {
+        /// The node to run next, or null when the value goes to the
+        /// continuation.
+        control: ?*const Node,
+        env: ?*Frame = null,
+        kont: ?*const Kont = null,
+        value: Value = .unspecified_value,
+        /// The innermost point of the dynamic state (ADR-0016).
+        dyn: ?*const DynPoint = null,
+        /// Whether a collection has found the heap without room, the machine
+        /// raised "heap limit exceeded" for it, and no collection since has
+        /// found room.
+        /// Why: 上限超過をハンドラで捕まえられるようにするためである。余裕の無さを見つけた
+        /// GC のあとも、深い継続はハンドラの戻りのフレームから辿れるので、ハンドラの次の
+        /// ステップの GC がまた余裕の無さを見つける。そのたびに送出すると、ハンドラは1歩も
+        /// 進めずに外側へ送出し直す。報告は余裕ができるまで1度にし、その間も確保は上限
+        /// (`Budget.limit`)で断られる。その間は計上量がソフトな上限を超えているので、
+        /// ステップごとに GC が走る。その費用は、上限の 1/16 の確保で上限に当たるまでに
+        /// 限られる。
+        limit_reported: bool = false,
+    };
+
     /// Runs `node` to its value.
-    /// エラーのときは `ctx` がメッセージを持つ。
+    /// 送出された値は、現在の例外ハンドラに渡す。ハンドラが無ければ、送出された値を
+    /// `ctx.raised` に置いて `error.Raised` を返す。
     pub fn run(self: *Machine, root: *const Node) Error!Value {
-        const ctx = self.ctx;
-        var control: ?*const Node = root;
-        var env: ?*Frame = null;
-        var kont: ?*const Kont = null;
-        var value: Value = .unspecified_value;
+        var regs: Registers = .{ .control = root };
         while (true) {
-            if (ctx.heap.shouldCollect()) try self.collect(env, kont, value);
+            if (self.steps(&regs)) |v| return v else |e| if (e != error.Raised) return e;
+            // Why: 送出の地点は、ステップの中のどこでも `ctx.raise` を返せばよい。値をハンドラ
+            // に渡すのは、レジスタを書き戻したここ1か所である。機械が検出する失敗(型の誤り、
+            // 未束縛の変数、上限超過など)も、こうして機械の中の `raise` になる(計画 0014 の
+            // 合意を求める点の2)。
+            try self.handOver(&regs);
+        }
+    }
+
+    /// Hands what was raised, which is in `ctx.raised`, to the current
+    /// handler, as `raise` does.
+    /// ハンドラを呼ぶこと自体が送出すれば(ハンドラが手続きでない、引数の個数が合わない
+    /// など)、その値を同じように渡す。そのときの列はハンドラ切り替えの点を積んだあとなので、
+    /// 外側のハンドラに届き、周回は止まる。ハンドラが無ければ、値を `ctx.raised` に戻して
+    /// `error.Raised` を返す。
+    fn handOver(self: *Machine, regs: *Registers) Error!void {
+        const ctx = self.ctx;
+        while (true) {
+            const raised = ctx.raised.?;
+            ctx.raised = null;
+            if (self.callHandler(regs, raised)) |handled| {
+                if (handled) return;
+                ctx.raised = raised;
+                return error.Raised;
+            } else |e| if (e != error.Raised) return e;
+        }
+    }
+
+    /// Calls the current handler with `raised`, for a `raise`; false when
+    /// there is no handler.
+    fn callHandler(self: *Machine, regs: *Registers, raised: Value) Error!bool {
+        const call = try self.enterHandler(&regs.kont, &regs.dyn, raised, false) orelse return false;
+        // 送出した時点の制御と値は捨てる。GC が余裕の無さを見つけた時点では、制御に節点が
+        // 残っている。
+        regs.control = null;
+        regs.env = null;
+        regs.value = .unspecified_value;
+        switch (try self.apply(&regs.kont, &regs.dyn, call, 1, .raise_reserve)) {
+            .value => |v| regs.value = v,
+            .body => |entry| {
+                regs.env = entry.env;
+                regs.control = entry.body;
+            },
+        }
+        return true;
+    }
+
+    /// Puts on what calling the current handler with `raised` needs, and
+    /// returns the call: `raised`, then the handler. Null when there is no
+    /// handler; nothing is put on then.
+    /// 継続にハンドラの戻りのフレームを積み、列にハンドラ切り替えの点を積む。切り替え先は、
+    /// 呼ぶハンドラを置いた時点で現在だったハンドラで、ハンドラの中の送出はそこに届く
+    /// (ADR-0016)。確保はすべて送出のための予約から行い、2つのレジスタを書き換える前に
+    /// 済ませる。
+    fn enterHandler(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, raised: Value, continuable: bool) Error!?*const Args {
+        const ctx = self.ctx;
+        const handler = value_mod.currentHandler(dyn.*) orelse return null;
+        const outer = value_mod.currentHandler(handler.parent);
+        const shift = try ctx.createIn(.raise_reserve, DynPoint, .{
+            .parent = dyn.*,
+            .depth = value_mod.depthAbove(dyn.*),
+            .current_handler = outer,
+            .kind = .{ .handler_shift = outer },
+        });
+        const procedure = try ctx.createIn(.raise_reserve, Args, .{ .value = handler.kind.handler, .next = null });
+        const call = try ctx.createIn(.raise_reserve, Args, .{ .value = raised, .next = procedure });
+        kont.* = try self.pushIn(.raise_reserve, kont.*, null, .{ .handler_return = .{
+            .dyn = dyn.*,
+            .raised = raised,
+            .continuable = continuable,
+        } });
+        dyn.* = shift;
+        return call;
+    }
+
+    /// Runs steps from the registers in `regs` until the program ends or an
+    /// error is raised, and leaves the registers in `regs` either way.
+    /// Why: レジスタを局所変数に置くのは、ステップの本体が `ctx.raise` を `return` する形の
+    /// まま、送出の時点のレジスタを `run` に渡すためである。`defer` はエラーで抜けるときも
+    /// 走る。
+    fn steps(self: *Machine, regs: *Registers) Error!Value {
+        const ctx = self.ctx;
+        var control = regs.control;
+        var env = regs.env;
+        var kont = regs.kont;
+        var value = regs.value;
+        var dyn = regs.dyn;
+        defer {
+            regs.control = control;
+            regs.env = env;
+            regs.kont = kont;
+            regs.value = value;
+            regs.dyn = dyn;
+        }
+        while (true) {
+            if (ctx.heap.shouldCollect()) try self.collect(.{ .ctx = ctx, .env = env, .kont = kont, .value = value, .dyn = dyn }, &regs.limit_reported);
             if (control) |node| {
                 control = null;
                 switch (node.*) {
@@ -144,7 +261,7 @@ pub const Machine = struct {
                         if (received <= c.call.operands.len) {
                             kont = try self.push(kont, env, .{ .call = .{ .call = c.call, .args = args, .received = received } });
                             control = c.call.operands[received - 1];
-                        } else switch (try self.apply(args, received - 1)) {
+                        } else switch (try self.apply(&kont, &dyn, args, received - 1, .limit)) {
                             .value => |v| value = v,
                             // 末尾呼び出し: 本体は呼び出しの継続のもとで走る。その継続は
                             // `kont` に残っているものである。
@@ -154,9 +271,28 @@ pub const Machine = struct {
                             },
                         }
                     },
+                    // 値は、そのまま次のフレームに渡る。
+                    .dynamic_exit => |saved| dyn = saved,
+                    .handler_return => |h| {
+                        if (!h.continuable) return self.handlerReturned(h.raised);
+                        // `raise-continuable` のハンドラが戻った。積んだ切り替えの点を外し、
+                        // そのハンドラを再び現在のハンドラにする(R7RS 6.11)。
+                        dyn = h.dyn;
+                    },
                 }
             }
         }
+    }
+
+    /// Raises the secondary exception of a handler that returned from a
+    /// `raise` (R7RS 6.11), with what was raised as its irritant.
+    /// 列はハンドラを呼んだときのままなので、二次例外はハンドラと同じ動的環境で送出され、
+    /// 外側のハンドラに届く。条件と irritant は、送出のための予約から作る。
+    fn handlerReturned(self: *Machine, raised: Value) Error {
+        const ctx = self.ctx;
+        const irritant = try ctx.createIn(.raise_reserve, value_mod.Pair, .{ .car = raised, .cdr = .empty_list_value });
+        ctx.raised = try ctx.makeCondition(.@"error", "handler returned from non-continuable raise", .{}, .{ .pair = irritant });
+        return error.Raised;
     }
 
     const Applied = union(enum) {
@@ -165,14 +301,17 @@ pub const Machine = struct {
     };
 
     /// Applies the operator at the end of `args` to the `count` operands before
-    /// it.
+    /// it, in the continuation `kont` and at the dynamic point `dyn`.
     /// 純粋プリミティブは値を返す。クロージャは、呼び出しのフレームと、そのフレームで
-    /// 走らせる本体を返す。機械操作プリミティブ `apply` は、引数を並べ直した呼び出しに
-    /// 置き換わり、その呼び出しをここでもう一度適用する。
-    fn apply(self: *Machine, initial_args: *const Args, initial_count: usize) Error!Applied {
+    /// 走らせる本体を返す。機械操作プリミティブは、継続と動的点を書き換えてよく、別の
+    /// 呼び出しに置き換わる。置き換わった呼び出しは、ここでもう一度適用する。クロージャの
+    /// フレームと余りの引数のリストは `budget` から確保する。ハンドラの呼び出しは送出の
+    /// ための予約から確保する(docs/design/runtime.md の送出のための予約領域)。
+    fn apply(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, initial_args: *const Args, initial_count: usize, initial_budget: heap_mod.Budget) Error!Applied {
         const ctx = self.ctx;
         var args = initial_args;
         var count = initial_count;
+        var budget = initial_budget;
         // Why: `apply` の被呼び出し側を、Zig の再帰でなく周回で適用する。`apply` で `apply`
         // を呼ぶ入れ子は、データから好きなだけ深く作れるので、再帰にすると Zig のスタックを
         // 使い切りうる。ただし周回は1ステップの中で回るので、その間にできたごみは回収
@@ -195,6 +334,25 @@ pub const Machine = struct {
                         const spread = try self.spreadApply(prim, args, count);
                         args = spread.args;
                         count = spread.count;
+                        budget = .limit;
+                    },
+                    .with_exception_handler => {
+                        args = try self.installHandler(prim, kont, dyn, args);
+                        count = 0;
+                        budget = .limit;
+                    },
+                    // 送出された値は `run` がハンドラに渡す。機械が検出する失敗と同じ経路である。
+                    .raise => {
+                        ctx.raised = args.value;
+                        return error.Raised;
+                    },
+                    .raise_continuable => {
+                        args = try self.enterHandler(kont, dyn, args.value, true) orelse {
+                            ctx.raised = args.value;
+                            return error.Raised;
+                        };
+                        count = 1;
+                        budget = .raise_reserve;
                     },
                 },
             }
@@ -216,7 +374,7 @@ pub const Machine = struct {
         // そのため、クロージャと同じ場所に確保する。本体が定義する名前は未初期化で
         // 始まる(R7RS 5.3.2: 本体は `letrec*` である)。ヒープがフレームを作ると、
         // そうなる。
-        const frame = try ctx.createFrame(lambda.frame_size, closure.env);
+        const frame = try ctx.createFrameIn(budget, lambda.frame_size, closure.env);
         var required = args;
         if (lambda.rest) {
             // `args` は最後のオペランドから並ぶので、余りの引数はその先頭にある。
@@ -227,7 +385,11 @@ pub const Machine = struct {
             // うちに入るので、回収されない。
             var list: Value = .empty_list_value;
             for (0..count - lambda.arity) |_| {
-                list = ctx.heap.cons(required.value, list) catch |e| return ctx.heapFailure(e);
+                // Why: 新しいペアを一時変数に受けてから `list` に入れる。`list = .{ .pair = ... }`
+                // と書くと、結果の置き場所が `list` そのものになり、`.cdr = list` を読む前に
+                // `list` が書き換わりうる。
+                const cell = try ctx.createIn(budget, value_mod.Pair, .{ .car = required.value, .cdr = list });
+                list = .{ .pair = cell };
                 required = required.next.?;
             }
             frame.values[lambda.arity] = list;
@@ -285,6 +447,32 @@ pub const Machine = struct {
         return .{ .args = chain, .count = leading - 1 + length };
     }
 
+    /// What `(with-exception-handler handler thunk)` does (R7RS 6.11): puts a
+    /// handler point on the dynamic state, and a frame that takes it off when
+    /// `thunk` returns, and returns the call of `thunk`.
+    /// `args` は `thunk`、`handler`、`prim` の順に並ぶ。`thunk` は末尾位置で呼ばない。
+    /// 戻ったら点を外すフレームが残るからである。確保を済ませてから2つのレジスタを書き換える。
+    fn installHandler(self: *Machine, prim: *const value_mod.Primitive, kont: *?*const Kont, dyn: *?*const DynPoint, args: *const Args) Error!*const Args {
+        const ctx = self.ctx;
+        const thunk = args.value;
+        const handler = args.next.?.value;
+        // 手続きでないハンドラは、送出のときでなく、ここで型の誤りにする。送出のときに
+        // 見つけると、どの送出が誤りを生んだかが分からない。
+        if (!isProcedure(handler) or !isProcedure(thunk)) return primitiveFailure(ctx, prim, error.WrongType);
+        const point = try ctx.create(DynPoint, .{
+            .parent = dyn.*,
+            .depth = value_mod.depthAbove(dyn.*),
+            .current_handler = null,
+            .kind = .{ .handler = handler },
+        });
+        // ハンドラの点では、現在のハンドラはその点自身である(ADR-0016)。
+        point.current_handler = point;
+        const call = try ctx.create(Args, .{ .value = thunk, .next = null });
+        kont.* = try self.push(kont.*, null, .{ .dynamic_exit = dyn.* });
+        dyn.* = point;
+        return call;
+    }
+
     /// The error a failure of `prim` is: a condition with the message the failure
     /// has, or the failure of the host as it is.
     fn primitiveFailure(ctx: *Context, prim: *const value_mod.Primitive, e: value_mod.PrimitiveError) Error {
@@ -312,19 +500,31 @@ pub const Machine = struct {
 
     /// A new frame on top of `next`.
     fn push(self: *Machine, next: ?*const Kont, env: ?*Frame, step: Kont.Step) Error!*const Kont {
+        return self.pushIn(.limit, next, env, step);
+    }
+
+    /// A new frame on top of `next`, held to `budget`.
+    fn pushIn(self: *Machine, budget: heap_mod.Budget, next: ?*const Kont, env: ?*Frame, step: Kont.Step) Error!*const Kont {
         const depth = (if (next) |n| n.depth else 0) + 1;
-        const k = try self.ctx.create(Kont, .{ .next = next, .env = env, .depth = depth, .step = step });
+        const k = try self.ctx.createIn(budget, Kont, .{ .next = next, .env = env, .depth = depth, .step = step });
         if (depth > self.peak_depth) self.peak_depth = depth;
         return k;
     }
 
     /// Collects, with the registers as the roots.
-    /// 生きているものを除いてもなお余裕がないときは、ここで "heap limit exceeded" として
-    /// 行を終える。どこかの確保で終えると、ヒープは同じ余裕を何度も求められることになる。
-    fn collect(self: *Machine, env: ?*Frame, kont: ?*const Kont, value: Value) Error!void {
+    /// 生きているものを除いてもなお余裕がないときは、ここで "heap limit exceeded" を送出する。
+    /// どこかの確保で送出すると、ヒープは同じ余裕を何度も求められることになる。送出は、
+    /// 余裕ができるまで1度だけにする(`Registers.limit_reported`)。
+    fn collect(self: *Machine, roots: Roots, reported: *bool) Error!void {
         const ctx = self.ctx;
-        ctx.heap.collect(Roots{ .ctx = ctx, .env = env, .kont = kont, .value = value });
-        if (ctx.heap.exhausted) return ctx.raise(context.heap_limit_message, .{});
+        ctx.heap.collect(roots);
+        if (!ctx.heap.exhausted) {
+            reported.* = false;
+            return;
+        }
+        if (reported.*) return;
+        reported.* = true;
+        return ctx.raise(context.heap_limit_message, .{});
     }
 
     /// What the program holds at a safe point.
@@ -333,11 +533,13 @@ pub const Machine = struct {
         env: ?*Frame,
         kont: ?*const Kont,
         value: Value,
+        dyn: ?*const DynPoint,
 
         pub fn mark(self: Roots, marker: *heap_mod.Marker) void {
             marker.value(self.value);
             marker.frame(self.env);
             marker.kont(self.kont);
+            marker.dynPoint(self.dyn);
             self.ctx.mark(marker);
         }
     };
@@ -350,6 +552,11 @@ pub const Machine = struct {
         return self.ctx.raise("unbound variable: {s}", .{self.ctx.symbols.nameOf(name)});
     }
 };
+
+/// Whether `v` can be applied.
+fn isProcedure(v: Value) bool {
+    return v.asClosure() != null or v.asPrimitive() != null;
+}
 
 /// The slot of a local variable: `depth` frames out from `env`, then `index`.
 fn slotAt(env: ?*Frame, address: value_mod.Address) *Value {
@@ -410,7 +617,7 @@ const Fixture = struct {
             // 形式の値だけである。その値は、呼び出し側がまだ受け取る。
             // (`Interpreter.run` は、この時点までにその値を表示し終えている。)
             if (self.ctx.heap.shouldCollect()) {
-                self.ctx.heap.collect(Machine.Roots{ .ctx = &self.ctx, .env = null, .kont = null, .value = last });
+                self.ctx.heap.collect(Machine.Roots{ .ctx = &self.ctx, .env = null, .kont = null, .value = last, .dyn = null });
             }
             const form = try r.next(self.arena.allocator(), sink) orelse break;
             const node = try expand.expand(&self.ctx, self.arena.allocator(), form);
@@ -1061,6 +1268,11 @@ const stress_programs = [_]struct { src: []const u8, expected: i64 }{
     .{ .src = "(define (f a b . r) (+ a b (apply + r))) (apply f 1 2 3 '(4 5))", .expected = 15 },
     .{ .src = "(apply + 1 2 3 4 5 6 7 8 9 10 (list 11))", .expected = 66 },
     .{ .src = "(define (aloop n) (if (= n 0) 9 (apply aloop (list (- n 1))))) (aloop 300)", .expected = 9 },
+    // ハンドラの点は、動的点のレジスタからしか辿れない。毎ステップの GC を、本体の深い
+    // 再帰の間も生き延びる。
+    .{ .src = "(define (down n) (if (= n 0) (raise-continuable 0) (+ 1 (down (- n 1))))) (with-exception-handler (lambda (c) 100) (lambda () (down 300)))", .expected = 400 },
+    .{ .src = "(with-exception-handler (lambda (c) (* c 2)) (lambda () (+ (raise-continuable 1) (raise-continuable 10))))", .expected = 22 },
+    .{ .src = "(with-exception-handler (lambda (c) (+ c 100)) (lambda () (with-exception-handler (lambda (c) (raise-continuable (+ c 10))) (lambda () (raise-continuable 1)))))", .expected = 111 },
 };
 
 test "the programs give the same results with a collection at every step, whatever the marking list holds" {
@@ -1186,4 +1398,148 @@ test "a single allocation the limit refuses is the same error" {
     defer f.deinit();
     _ = try f.eval("(define (wide a b c d e f g h) h)");
     try f.expectFails("heap limit exceeded", "(define (forever n) (+ 1 (forever n))) (forever 0)");
+}
+
+// 以下は例外のテストである。番号は docs/design/runtime.md の例外の節の「テストに含める
+// 事例」のものである。ハンドラが周回しうるテストは小さな上限で走らせる。切り替え先を
+// 取り違える誤りが、止まらないのでなく、上限か予約の枯渇で失敗するようにするためである。
+
+/// The options of the tests whose handlers could go round for ever if the
+/// machine had them wrong.
+const small_heap: heap_mod.Options = .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 };
+
+/// The message of the condition that `src` evaluates to.
+fn conditionMessage(f: *Fixture, src: []const u8) ![]const u8 {
+    const v = try f.eval(src);
+    const c = v.asCondition() orelse return error.TestUnexpectedResult;
+    return c.messageText();
+}
+
+test "a handler that returns gives the value of raise-continuable" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectInt(42, "(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))");
+    // 事例5: ハンドラが戻ると、そのハンドラが再び現在のハンドラである。2回目の送出も同じ
+    // ハンドラに届く。
+    try f.expectInt(22, "(with-exception-handler (lambda (c) (* c 2)) (lambda () (+ (raise-continuable 1) (raise-continuable 10))))");
+    // 本体が戻ると、ハンドラは外れる。そのあとの送出には、ハンドラが無い。
+    try std.testing.expectError(error.Raised, f.eval("(+ (with-exception-handler (lambda (c) 1) (lambda () 2)) (raise-continuable 5))"));
+    try std.testing.expectEqual(5, f.ctx.raised.?.asFixnum().?);
+    // 本体の値は、そのまま `with-exception-handler` の値になる。
+    try f.expectInt(7, "(with-exception-handler (lambda (c) 0) (lambda () 7))");
+}
+
+test "a handler that raises reaches the handler outside it, and does not go round" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    // 事例6: 内側のハンドラの中の送出は、外側のハンドラに届く。外側のハンドラの値が、
+    // 内側のハンドラの送出の値になり、それが元の送出の値になる。
+    try f.expectInt(111,
+        \\(with-exception-handler (lambda (c) (+ c 100))
+        \\  (lambda () (with-exception-handler (lambda (c) (raise-continuable (+ c 10)))
+        \\    (lambda () (raise-continuable 1)))))
+    );
+    // ハンドラが機械操作プリミティブでも同じである。
+    try f.expectInt(16,
+        \\(with-exception-handler (lambda (c) (+ c 1))
+        \\  (lambda () (with-exception-handler raise-continuable
+        \\    (lambda () (+ 10 (raise-continuable 5))))))
+    );
+    // 外側にハンドラが無ければ、内側のハンドラの中の送出は未処理になる。
+    try std.testing.expectError(error.Raised, f.eval("(with-exception-handler raise (lambda () (raise-continuable 5)))"));
+    try std.testing.expectEqual(5, f.ctx.raised.?.asFixnum().?);
+    try f.expectInt(3, "(+ 1 2)");
+}
+
+test "a raise with no handler leaves the machine with what was raised, and the next line runs" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 事例7と事例11: 列が空の状態の送出は、条件オブジェクトでない値でも未処理として返る。
+    try std.testing.expectError(error.Raised, f.eval("(raise 'oops)"));
+    try std.testing.expectEqualStrings("oops", f.ctx.symbols.nameOf(f.ctx.raised.?.asSymbol().?));
+    try std.testing.expectError(error.Raised, f.eval("(raise 42)"));
+    try std.testing.expectEqual(42, f.ctx.raised.?.asFixnum().?);
+    try std.testing.expectError(error.Raised, f.eval("(raise-continuable 43)"));
+    try std.testing.expectEqual(43, f.ctx.raised.?.asFixnum().?);
+    try f.expectInt(3, "(+ 1 2)");
+}
+
+test "a handler that returns from a raise raises a secondary exception, in the dynamic environment of the handler" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    try f.expectFails("handler returned from non-continuable raise", "(with-exception-handler (lambda (c) 42) (lambda () (raise 'oops)))");
+    // 二次例外の irritant は、送出された値である。
+    const irritants = f.ctx.raised.?.asCondition().?.irritants.asPair().?;
+    try std.testing.expectEqualStrings("oops", f.ctx.symbols.nameOf(irritants.car.asSymbol().?));
+    try std.testing.expectEqual(value_mod.Kind.empty_list, irritants.cdr.kind());
+    // 二次例外は外側のハンドラに届き、戻ったハンドラ自身には届かない。
+    _ = try f.eval("(define got #f)");
+    try f.expectFails("handler returned from non-continuable raise",
+        \\(with-exception-handler (lambda (c) (set! got c) 7)
+        \\  (lambda () (with-exception-handler (lambda (c) 42) (lambda () (raise 'oops)))))
+    );
+    try std.testing.expectEqualStrings("handler returned from non-continuable raise", try conditionMessage(&f, "got"));
+    // 内側のハンドラが `raise` で外側に送り、外側のハンドラが戻ると、二次例外になる。
+    try f.expectFails("handler returned from non-continuable raise",
+        \\(with-exception-handler (lambda (c) 'outer)
+        \\  (lambda () (with-exception-handler (lambda (c) (raise 'again)) (lambda () (raise 'first)))))
+    );
+    const again = f.ctx.raised.?.asCondition().?.irritants.asPair().?.car;
+    try std.testing.expectEqualStrings("again", f.ctx.symbols.nameOf(again.asSymbol().?));
+}
+
+test "the errors the machine finds reach the handler as conditions" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    _ = try f.eval("(define got #f)");
+    const cases = [_]struct { body: []const u8, message: []const u8 }{
+        // 事例8: 純粋プリミティブの型の誤り。
+        .{ .body = "(car 5)", .message = "wrong type of argument to car" },
+        .{ .body = "(+ 1 nope)", .message = "unbound variable: nope" },
+        .{ .body = "(5 1)", .message = "not a procedure" },
+        .{ .body = "((lambda (x) x))", .message = "wrong number of arguments: expected 1, got 0" },
+        .{ .body = "(car)", .message = "wrong number of arguments to car" },
+        .{ .body = "((lambda () (define a b) (define b 1) a))", .message = "variable used before its definition: b" },
+        .{ .body = "(apply + 1 2)", .message = "wrong type of argument to apply" },
+    };
+    for (cases) |c| {
+        var src: [256]u8 = undefined;
+        const line = try std.fmt.bufPrint(&src, "(with-exception-handler (lambda (c) (set! got c) 0) (lambda () {s}))", .{c.body});
+        // `raise` と同じく、ハンドラが戻ると二次例外になる。
+        try f.expectFails("handler returned from non-continuable raise", line);
+        try std.testing.expectEqualStrings(c.message, try conditionMessage(&f, "got"));
+        _ = try f.eval("(set! got #f)");
+    }
+}
+
+test "heap limit exceeded reaches the handler as a condition, and the handler can run and return" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    _ = try f.eval("(define got #f) (define (forever n) (+ 1 (forever n)))");
+    // ハンドラは、上限に達したヒープのまま走り、値を返す。`raise` の規定どおり、戻ることは
+    // 二次例外である。
+    try f.expectFails("handler returned from non-continuable raise", "(with-exception-handler (lambda (c) (set! got c) 42) (lambda () (forever 0)))");
+    try std.testing.expectEqualStrings("heap limit exceeded", try conditionMessage(&f, "got"));
+    // 次の行の実行も、上限超過をまた報告できる。
+    try f.expectFails("heap limit exceeded", "(forever 0)");
+    try f.expectInt(3, "(+ 1 2)");
+}
+
+test "with-exception-handler takes procedures, and a handler that cannot take the value does not go round" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    try f.expectFails("wrong type of argument to with-exception-handler", "(with-exception-handler 5 (lambda () 1))");
+    try f.expectFails("wrong type of argument to with-exception-handler", "(with-exception-handler car 5)");
+    // ハンドラを呼ぶこと自体の失敗は、ハンドラの動的環境で送出されるので、そのハンドラ
+    // には戻らない。
+    try f.expectFails("wrong number of arguments: expected 0, got 1", "(with-exception-handler (lambda () 1) (lambda () (raise 'x)))");
+    try f.expectFails("wrong number of arguments: expected 0, got 1", "(with-exception-handler (lambda () 1) (lambda () (car 5)))");
+    try f.expectInt(3, "(+ 1 2)");
 }

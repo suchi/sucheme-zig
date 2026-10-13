@@ -49,6 +49,10 @@ pub fn Tracer(comptime spec: Spec) type {
         /// how to sort it.
         /// `walk` は null をコンパイルエラーにする。
         pub fn classify(comptime T: type) ?Class {
+            // Why: 1つの関数の中のコンパイル時の評価は、分岐の上限を共有する。分類はヒープの
+            // 型の数に比例して分岐するので、型を足すたびに、問い合わせを並べたテストが上限を
+            // 超える。
+            @setEvalBranchQuota(100_000);
             return classifyAt(T, "", false);
         }
 
@@ -301,6 +305,45 @@ test "a syntactic binding is followed through its identifier, its local variable
     try g.expect(&.{});
     try std.testing.expectEqual(2, g.symbol_count);
     try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(5))), g.symbols[1]);
+}
+
+test "a dynamic point is followed through its parent, its current handler and what its kind holds" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.DynPoint).?);
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    var outer: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .{ .closure = &c } } };
+    outer.current_handler = &outer;
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.DynPoint, &outer);
+    // 親は無く、現在のハンドラは自分自身で、ハンドラの手続き。
+    try r.expect(&.{ addr(&outer), addr(&c) });
+    var inner: value_mod.DynPoint = .{ .parent = &outer, .depth = 2, .current_handler = null, .kind = .{ .handler = .fromFixnum(1) } };
+    inner.current_handler = &inner;
+    const shift: value_mod.DynPoint = .{ .parent = &inner, .depth = 3, .current_handler = &outer, .kind = .{ .handler_shift = &outer } };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.DynPoint, &shift);
+    try q.expect(&.{ addr(&inner), addr(&outer), addr(&outer) });
+    // 切り替え先が無い切り替えの点は、親だけを持つ。
+    const bare: value_mod.DynPoint = .{ .parent = &inner, .depth = 3, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.DynPoint, &bare);
+    try s.expect(&.{addr(&inner)});
+}
+
+test "the frames of the exceptions are followed through the dynamic points and the value they keep" {
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var rest: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .dynamic_exit = null } };
+    const exit: Kont = .{ .next = &rest, .env = null, .depth = 2, .step = .{ .dynamic_exit = &point } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &exit);
+    try r.expect(&.{ addr(&rest), addr(&point) });
+    const returning: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .handler_return = .{ .dyn = &point, .raised = .{ .pair = &p }, .continuable = true } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &returning);
+    try q.expect(&.{ addr(&point), addr(&p) });
+    var s: Recorder = .{};
+    interpreter.children(&s, Kont, &rest);
+    try s.expect(&.{});
 }
 
 test "the classes of the real types" {

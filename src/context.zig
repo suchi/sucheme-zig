@@ -114,12 +114,33 @@ pub const Context = struct {
     /// A new object holding `value`; an allocation the limit refuses is the
     /// error "heap limit exceeded".
     pub fn create(self: *Context, comptime T: type, value: T) Error!*T {
-        return self.heap.create(T, value) catch |e| return self.heapFailure(e);
+        return self.createIn(.limit, T, value);
+    }
+
+    /// A new object holding `value`, held to `budget`.
+    /// `.limit` の確保が断られたら "heap limit exceeded" を送出し、送出のための予約からの
+    /// 確保が断られたら `error.ReserveExhausted` を返す(`makeCondition` と同じ作法)。
+    pub fn createIn(self: *Context, budget: heap_mod.Budget, comptime T: type, value: T) Error!*T {
+        return self.heap.createIn(budget, T, value) catch |e| return self.budgetFailure(budget, e);
     }
 
     /// A new frame of `size` slots, all uninitialized, behind `parent`.
     pub fn createFrame(self: *Context, size: usize, parent: ?*value_mod.Frame) Error!*value_mod.Frame {
-        return self.heap.createFrame(size, parent) catch |e| return self.heapFailure(e);
+        return self.createFrameIn(.limit, size, parent);
+    }
+
+    /// A new frame of `size` slots, all uninitialized, behind `parent`, held
+    /// to `budget`.
+    pub fn createFrameIn(self: *Context, budget: heap_mod.Budget, size: usize, parent: ?*value_mod.Frame) Error!*value_mod.Frame {
+        return self.heap.createFrameIn(budget, size, parent) catch |e| return self.budgetFailure(budget, e);
+    }
+
+    /// The error an allocation held to `budget` fails with.
+    fn budgetFailure(self: *Context, budget: heap_mod.Budget, e: heap_mod.Error) Error {
+        return switch (budget) {
+            .limit => self.heapFailure(e),
+            .raise_reserve => reserveFailure(e),
+        };
     }
 
     pub fn heapFailure(self: *Context, e: heap_mod.Error) Error {
