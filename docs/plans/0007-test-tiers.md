@@ -32,7 +32,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | 層0 編集ループ | 1 回の編集のたび | 書き換えたファイルの `zig test src/<ファイル>.zig` と `zig fmt` | 十数秒以内 | なし |
 | 層1 毎回の門 | コミット前、PR への push のたび | `zig build test`(速いテストだけ)、`zig build test-scheme`(速いケースだけ)、`zig build`、`zig fmt --check .`、`check-docs`、`check-extract` | 1 分以内 | 全コミット(今の `ci.yml`) |
-| 層2 品質確認 | PR を ready にする前、`main` へのマージ前 | 遅いテスト全部(規模を試すもの)、スキームの全ケースの両モード、変更したファイルのミューテーションテスト、敵対的レビュー | 10 分以内 | PR が ready になったとき、`main` への push、手動 |
+| 層2 品質確認 | PR を ready にする前、`main` へのマージ前 | 遅いテスト全部(規模を試すもの)、スキームの全ケースの両モード、変更したファイルのミューテーションテスト、敵対的レビュー | 10 分以内 | PR が ready になったとき、手動([ADR-0036](../adr/0036-windows-tests-in-the-slow-tier.md) で `main` への push を外した) |
 | 層3 耐久・探索 | 定期(夜間・週次)、手動 | ファジング、10 倍の規模のソーク、メモリが増え続けないことの確認、性能の測定 | 制限なし | スケジュール |
 
 層の目標の数字は、守る目標であって測定値ではない。超えたら、そのテストを層の上へ移すか、速くする。
@@ -70,7 +70,7 @@ flowchart LR
 
 CI の置き場所は、2 つの案を比べる。
 
-1. 層2 を別のワークフロー(`full.yml`)にする。起動は `pull_request` の `ready_for_review`、`main` への push、`workflow_dispatch`。層3 のファジングは、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の計画どおり、別のワークフローをスケジュールで動かす。
+1. 層2 を別のワークフロー(`full.yml`)にする。起動は `pull_request` の `ready_for_review`、`workflow_dispatch`(当初は `main` への push も含めたが、[ADR-0036](../adr/0036-windows-tests-in-the-slow-tier.md) で外した)。層3 のファジングは、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の計画どおり、別のワークフローをスケジュールで動かす。
    - 長所: 層1 の CI が速いまま保たれる。
    - 短所: ready にする前の push では、層2 の誤りが見えない。
 2. 層2 も全コミットで走らせる。
@@ -96,7 +96,7 @@ CI の置き場所は、2 つの案を比べる。
 
 | 用途 | コマンド | 使えるようになる段階 | CIで実行 |
 | --- | --- | --- | --- |
-| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR が ready のとき、`main` への push、手動 |
+| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR が ready のとき、手動 |
 
 ## 作業の順序
 

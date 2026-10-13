@@ -4,6 +4,8 @@
 - 日付: 2026-10-12
 
 > 2026-10-12 追記: 背景の「`release.yml` はまだ無い」は、スライス 1j-3c で当てはまらなくなった。`release.yml` は、タグ `v*` の push で、`dist` と `package.py` のあとに、実行ファイルの `--version` がタグと一致すること、`docs/releases/<タグ>.md` があることを確かめ、`gh release create --draft --verify-tag` で下書きを作る。リリースノートは、ファイルが無いと組み立ての前に失敗する。`--prerelease` は付けない。タグの名前は、`run:` の行に式として埋め込まず、環境変数で渡す。決定は変わらない。
+>
+> 2026-10-13 追記: 決定の「リハーサルとして `main` への push と準備完了のたびに走らせる」のうち、`main` への push では走らなくなった。`full.yml` の起動は、PR を ready にしたときと手動だけである([ADR-0036](0036-windows-tests-in-the-slow-tier.md))。リハーサルの目的(タグを打つ前に、組み立てが通っていることを確かめる)は、ready のときの `dist` ジョブと、タグの push で走る `release.yml` が果たす。決定そのものは変わらない。
 
 ## 背景
 

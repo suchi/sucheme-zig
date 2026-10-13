@@ -31,7 +31,7 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Sch
 
 macOS は GitHub Actions の課金単位が他の10倍であるためです。署名と公証も行いません。
 
-aarch64 はランナー自体は使えます。段階1の見直しで、対象に加えないと決めました([ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。aarch64 では、ビルドが成功することを手元で確かめただけで、実行はしていません。CI でのビルドは、`zig build dist` を `full.yml` が PR を ready にしたときと `main` への push で走らせます(全コミットでは走りません)。v0.1.0 以降のリリースで配る aarch64 の Linux と Windows の実行ファイルは、実行して確かめていないものです。実行して確かめる仕組みは、実行環境が要ると分かった時点で足します。
+aarch64 はランナー自体は使えます。段階1の見直しで、対象に加えないと決めました([ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。aarch64 では、ビルドが成功することを手元で確かめただけで、実行はしていません。CI でのビルドは、`zig build dist` を `full.yml` が PR を ready にしたときと手動の起動で、`release.yml` がタグの push で走らせます(全コミットでも `main` への push でも走りません)。v0.1.0 以降のリリースで配る aarch64 の Linux と Windows の実行ファイルは、実行して確かめていないものです。実行して確かめる仕組みは、実行環境が要ると分かった時点で足します。
 
 WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
 

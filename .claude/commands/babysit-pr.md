@@ -11,7 +11,7 @@ PR #$ARGUMENTS の未解決レビュースレッドと最新レビューを確�
 2. `gh api graphql`で未解決スレッド(`isResolved: false`)を一覧取得
 3. 各指摘について:
    a. コードを修正し、AGENTS.mdの検証コマンドを実行する
-   b. コミット(形式はAGENTS.mdに従う)してプッシュする
+   b. コミット(形式はAGENTS.mdに従う)する。プッシュは、指摘ごとにせず、この回の対応がそろってから1回にまとめる(push のたびに CI の分数を使う。AGENTS.md の「Actions の分数」)。ready の後にプッシュしたら、層2 は自動では走らないので、マージの承認を求める前に、先頭のコミットに対して手動で走らせる(`workflow_dispatch`)
    c. スレッドに対応内容を日本語で返信する
       (`gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/comments --method POST -f body="修正しました: ..." -F in_reply_to=COMMENT_ID`)
    d. `resolveReviewThread` GraphQL mutationでスレッドを解決する

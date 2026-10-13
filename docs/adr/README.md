@@ -69,3 +69,4 @@
 | [0033](0033-aarch64-built-but-not-tested.md) | aarch64 は自動テストの対象に加えない | 採用 | 2026-10-12 |
 | [0034](0034-release-shape.md) | リリースは ReleaseSafe の成果物を下書きで作り、チェックサムだけを付けて配る | 採用 | 2026-10-12 |
 | [0035](0035-stage-2-gc-roots-and-raise-reserve.md) | 段階2の GC のルートと境目を決め、条件オブジェクトを予約領域つきでヒープに置く | 採用 | 2026-10-13 |
+| [0036](0036-windows-tests-in-the-slow-tier.md) | Windows のテストは層2 で走らせ、層2 は main への push で走らせない | 採用 | 2026-10-13 |

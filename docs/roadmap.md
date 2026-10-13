@@ -202,7 +202,7 @@
 - PR は自前の敵対的レビューを実行し、必須の新規指摘ゼロになるまで修正する([ADR-0023](adr/0023-mandatory-zero-convergence.md))。推奨と任意は `docs/review/` に記録して該当する段階の作業項目に回す。手順の正は `AGENTS.md` の「PR・レビュー・マージ」の節である。「この詳細が未規定である」という指摘のうち実装時に決めると判断したものは [design/open-questions.md](design/open-questions.md) に記録して閉じる([ADR-0018](adr/0018-incremental-vertical-slices.md))。
 - 技術選択と設計判断、およびレビュー提案をあえて採用しない場合は ADR に記録する。
 - 段階の完了時に、確定したことを設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す。
-- 1コミット=1論理変更を守り、節目ごとにプッシュする。
+- 1コミット=1論理変更を守る。コミットは節目ごとに作り、push はまとめる(`AGENTS.md` の進め方の「Actions の分数」の規則)。
 
 ## 未確定の事項
 
