@@ -328,8 +328,9 @@ pub const Machine = struct {
             while (operator_node.next) |n| operator_node = n;
             const operator = operator_node.value;
             const prim = operator.asPrimitive() orelse break operator;
-            // 個数の検査はここにしかない。プリミティブの本体は、`args` が表の範囲に
-            // 収まることを前提にしてよい。
+            // 表の範囲の検査はここにしかない。プリミティブの本体は、`args` が表の範囲に
+            // 収まることを前提にしてよい。個数がほかの引数で決まるもの(`%make-record`)は、
+            // 本体が検査する(`PrimitiveError.WrongArgumentCount` を参照)。
             if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount, args, count);
             switch (prim.body) {
                 .pure => |call| return .{ .value = try self.callPure(prim, call, args, count) },

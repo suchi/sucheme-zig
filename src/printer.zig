@@ -99,6 +99,10 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // これを持つ変数を読むとエラーになるので、プログラムがこれを目にすることは
             // ない。漏れたときに分かるよう、それでも書く。
             .uninitialized => try out.writeAll("#<uninitialized>"),
+            // Why: R7RS 5.5 はレコードとその型の外部表現を決めていない。手続きと同じく、
+            // `read` が受け付けない表記で、型の名前を添えて書く。フィールドの値は書かない。
+            .record => try out.print("#<record {s}>", .{symbols.nameOf(x.asRecord().?.record_type.name)}),
+            .record_type => try out.print("#<record-type {s}>", .{symbols.nameOf(x.asRecordType().?.name)}),
             // Why: 条件オブジェクトはハンドラに渡る値で、書かれうる。R7RS は外部表現を決めて
             // いないので、手続きと同じく `read` が受け付けない表記で、メッセージと irritant を
             // 書く。
@@ -240,6 +244,22 @@ test "write shows a condition with its message and its irritants" {
     // 条件の中の条件も、同じ形で書く。
     var outer: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = try f.list(&.{.fromCondition(&c)}, .empty_list_value) };
     try std.testing.expectEqualStrings("#<condition \"bad\" #<condition \"bad\" 1 \"two\" (a)>>", try f.written(&buf, .fromCondition(&outer)));
+}
+
+test "write and display show a record and its type by the name of the type, not the fields" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const name = (try f.sym("<point>")).asSymbol().?;
+    var t: value_mod.RecordType = .{ .name = name, .field_count = 1 };
+    var fields = [_]Value{try f.string("x")};
+    var r: value_mod.Record = .{ .record_type = &t, .fields = &fields };
+    try std.testing.expectEqualStrings("#<record-type <point>>", try f.written(&buf, .fromRecordType(&t)));
+    try std.testing.expectEqualStrings("#<record <point>>", try f.written(&buf, .fromRecord(&r)));
+    try std.testing.expectEqualStrings("#<record <point>>", try f.displayed(&buf, .fromRecord(&r)));
+    // データの中でも同じである。
+    const both = try f.list(&.{ .fromRecord(&r), .fromRecordType(&t) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<record <point>> #<record-type <point>>)", try f.written(&buf, both));
 }
 
 test "write prints the unspecified value as #<unspecified>" {

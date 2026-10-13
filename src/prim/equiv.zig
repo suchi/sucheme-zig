@@ -136,7 +136,7 @@ fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bo
             },
             // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
             // `equal?` が中身を比べるべき種別(バイトベクタなど)を見落とさないようにする。
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character => {
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .record, .record_type => {
                 if (!left.isEqv(right)) return false;
             },
         }
