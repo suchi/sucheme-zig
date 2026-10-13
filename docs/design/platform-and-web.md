@@ -150,7 +150,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 | 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_reset` |
 | 2 | 入力待ち。`sucheme_provide_input` または `sucheme_provide_eof` を待っている | `sucheme_provide_input` `sucheme_provide_eof` `sucheme_reset` |
 | -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` |
-| -2 | 回復不能。送出のための予約領域を使い切った | `sucheme_reset` |
+| -2 | 回復不能。送出のための予約領域を使い切った。段階2のスライス 2b の時点では未実装で、予約の枯渇は -1(`heap limit exceeded`)と同じ扱いになる。2e でこのコードになる | `sucheme_reset` |
 | -3 | 渡されたバイト列が妥当な UTF-8 でない。状態は変わっていない | 呼び出し前の状態で呼べたものすべて |
 | -4 | 呼び出し順序の誤り。ホスト側の実装の誤り。状態は変わっていない | 呼び出し前の状態で呼べたものすべて |
 | -5 | 初期化されていない | `sucheme_init` |

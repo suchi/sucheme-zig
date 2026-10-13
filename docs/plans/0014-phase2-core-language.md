@@ -389,6 +389,7 @@ pub fn initWith(src: []const u8, options: Options) Reader;
 - ファイル: `src/value.zig`、`src/machine.zig`、`src/prim/procedure.zig`(登録)、`src/printer.zig`、`docs/design/runtime.md`(未処理例外の節の、スライス 1f の暫定の段落を実装に合わせる)、`tests/scheme/0080-*.txt`、`tests/scheme-slow/0015-*.txt`。
 - 最初の失敗するテスト: `(call/cc (lambda (k) (+ 1 (k 42))))` が `42`。
 - 完了の確認: 例外の事例 1、2、3、9、10。継続の多重起動(同じ継続を2回起動し、引数の評価の途中の状態が独立していること)。`dynamic-wind` の本体へ継続で再入したとき `before` が再び呼ばれ、脱出のたびに `after` が呼ばれる。REPL の前の行で捕捉した継続を後の行で起動したときの動作を、テストで固定する(その行の残りの計算だけが走り、後続の行は再実行されない)。機械が検出する失敗(2d で機械の中の `raise` にしたもの)と巻き戻しの結合: `dynamic-wind` の本体で上限超過が起き、ハンドラが無いとき、`after` が呼ばれてからプロンプトに戻る。`dynamic-wind` の本体の上限超過を、外側のハンドラから `call/cc` の継続で脱出して捕まえたとき、`after` が1回呼ばれる。巻き戻しのフレームと経路の配列を予約領域から確保し、予約領域のバイト数をここで測って決める。
+- 予約領域の枯渇: 予約も尽きたとき(`error.ReserveExhausted`)を、[platform-and-web.md](../design/platform-and-web.md) の状態コード -2(回復不能。以後は `sucheme_reset` だけ)として扱う実装を、2e が引き受ける。2b の時点では -1 の `heap limit exceeded` と同じ扱いで、次の行から続く。
 
 ### 2f 複数値
 
