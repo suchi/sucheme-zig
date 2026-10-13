@@ -496,7 +496,9 @@ pub const Marker = struct {
 
     /// What `trace.walk` calls for a heap object.
     pub fn object(self: *Marker, comptime T: type, pointer: *const T) void {
-        const cell: *Cell(T) = @constCast(@fieldParentPtr("value", pointer));
+        // オブジェクトの型の整列がヘッダより小さいとき(`LocalBinding` など)、セルの
+        // 整列は型からは導けない。指す先は必ずセルの中なので、整列を表明してよい。
+        const cell: *Cell(T) = @alignCast(@constCast(@fieldParentPtr("value", pointer)));
         const header = &cell.header;
         if (header.marked) return;
         header.marked = true;
