@@ -68,3 +68,4 @@
 | [0032](0032-ci-zig-cache-saved-only-by-successful-runs.md) | CI の Zig キャッシュは、成功した実行だけが、ビルド入力から決まるキーで保存する | 採用 | 2026-10-11 |
 | [0033](0033-aarch64-built-but-not-tested.md) | aarch64 は自動テストの対象に加えない | 採用 | 2026-10-12 |
 | [0034](0034-release-shape.md) | リリースは ReleaseSafe の成果物を下書きで作り、チェックサムだけを付けて配る | 採用 | 2026-10-12 |
+| [0035](0035-stage-2-gc-roots-and-raise-reserve.md) | 段階2の GC のルートと境目を決め、条件オブジェクトを予約領域つきでヒープに置く | 提案 | 2026-10-13 |
