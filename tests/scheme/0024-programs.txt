@@ -11,7 +11,7 @@
 # 出力に残り、エラーはそのあとに報告される。
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20) (fact 21)
 2432902008176640000
-error: integer overflow in *
+error: integer overflow in * 21 2432902008176640000
 
 # 末尾再帰は反復と同じで、深さに比例した記憶を使わない。
 (define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc n)))) (loop 100000 0)
@@ -33,7 +33,7 @@ error: integer overflow in *
 4611686018427387904
 
 (define (power b e) (if (= e 0) 1 (if (= (remainder e 2) 0) (power (* b b) (quotient e 2)) (* b (power b (- e 1)))))) (power 2 63)
-error: integer overflow in *
+error: integer overflow in * 2 4611686018427387904
 
 (define (digit-sum n) (if (= n 0) 0 (+ (remainder n 10) (digit-sum (quotient n 10))))) (digit-sum 123456789)
 45
@@ -72,7 +72,7 @@ error: integer overflow in *
 c
 
 (define (list-ref2 xs k) (if (= k 0) (car xs) (list-ref2 (cdr xs) (- k 1)))) (list-ref2 (list 'a 'b 'c) 3)
-error: wrong type of argument to car
+error: wrong type of argument to car ()
 
 (define (last xs) (if (null? (cdr xs)) (car xs) (last (cdr xs)))) (last (list 1 2 3))
 3

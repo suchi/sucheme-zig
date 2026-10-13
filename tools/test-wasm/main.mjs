@@ -158,11 +158,43 @@ test("a Scheme error returns -1 with one error line, and evaluation continues", 
 // 通って、今までと同じ一行として届く。条件が回収されたあとも評価が続く。
 test("a primitive's error reaches the output through the condition in the heap", () => {
   const h = instantiate().init();
-  assert.deepEqual(h.run("(car 5)"), [SCHEME_ERROR, "error: wrong type of argument to car\n"]);
+  assert.deepEqual(h.run("(car 5)"), [SCHEME_ERROR, "error: wrong type of argument to car 5\n"]);
   // 多くの GC を経たあとで送出しても、同じである。
   const [status, text] = h.run("(define (spin n) (if (= n 0) (car 5) (spin (- n 1)))) (spin 30000)");
   assert.equal(status, SCHEME_ERROR);
-  assert.equal(text, "error: wrong type of argument to car\n");
+  assert.equal(text, "error: wrong type of argument to car 5\n");
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
+// スライス 2d: 条件オブジェクトでない値も送出できる。ハンドラが無ければ、送出された値を
+// write の形で一行に書き、評価は続く(docs/design/runtime.md の例外の事例11)。ハンドラが
+// あれば、機械が検出する失敗もハンドラに届く。
+test("a raised value that is not a condition is reported as write shows it, and a handler catches what the machine finds", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(raise 42)"), [SCHEME_ERROR, "error: 42\n"]);
+  assert.deepEqual(h.run("(raise 'oops)"), [SCHEME_ERROR, "error: oops\n"]);
+  assert.deepEqual(h.run('(error "bad thing" 1 "two")'), [SCHEME_ERROR, 'error: bad thing 1 "two"\n']);
+  assert.deepEqual(h.run("(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))"), [OK, "42\n"]);
+  assert.deepEqual(
+    h.run("(define got #f) (with-exception-handler (lambda (c) (set! got c) 0) (lambda () (car 5)))"),
+    [SCHEME_ERROR, 'error: handler returned from non-continuable raise #<condition "wrong type of argument to car" 5>\n'],
+  );
+  assert.deepEqual(h.run("(error-object-message got)"), [OK, '"wrong type of argument to car"\n']);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
+// 診断の一行が境界のバッファ(320 バイト)に収まらなければ、メッセージを文字の境目で切って
+// `...` を付ける。メッセージごと失わない。
+test("a diagnostic too long for the line is cut short with ..., not lost", () => {
+  const h = instantiate().init();
+  const long = "x".repeat(330);
+  assert.deepEqual(h.run(`(error "${long}")`), [SCHEME_ERROR, `error: ${"x".repeat(309)}...\n`]);
+  // irritant を切ったあとでも、メッセージが長ければ一行に収まらない。
+  const [status, text] = h.run(`(error "${"m".repeat(200)}" "${"y".repeat(300)}")`);
+  assert.equal(status, SCHEME_ERROR);
+  assert.equal(text.length, 320);
+  assert.ok(text.startsWith(`error: ${"m".repeat(200)} "yyy`), text);
+  assert.ok(text.endsWith("...\n"), text);
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
@@ -310,23 +342,24 @@ test("pairs, lists, strings and vectors work in wasm32", () => {
 // ケースは tests/scheme/0025-primitive-errors.txt にある。
 test("an index past 2^32 is out of range in wasm32, not truncated to a valid index", () => {
   const h = instantiate().init();
-  const rangeError = (src, name) =>
-    assert.deepEqual(h.run(src), [SCHEME_ERROR, `error: argument out of range in ${name}\n`], src);
+  // 報告の後ろには、irritant として呼び出しの引数が続く。
+  const rangeError = (src, name, args) =>
+    assert.deepEqual(h.run(src), [SCHEME_ERROR, `error: argument out of range in ${name} ${args}\n`], src);
   // 対照として、切り捨てた先の添字は有効で、値が取れる。
   assert.deepEqual(h.run('(string-ref "abc" 0) (string-ref "abc" 2)'), [OK, "#\\a\n#\\c\n"]);
   assert.deepEqual(h.run("(vector-ref (vector 5 6) 0) (vector-ref (vector 5 6) 1)"), [OK, "5\n6\n"]);
-  rangeError('(string-ref "abc" 4294967296)', "string-ref"); // 切り捨てると 0
-  rangeError('(string-ref "abc" 4294967298)', "string-ref"); // 切り捨てると 2
-  rangeError('(string-ref "あいう" 4294967297)', "string-ref"); // 切り捨てると 1
-  rangeError("(vector-ref (vector 1) 4294967296)", "vector-ref"); // 切り捨てると 0
-  rangeError("(vector-ref (vector 5 6) 4294967297)", "vector-ref"); // 切り捨てると 1
-  rangeError("(vector-ref (vector 5 6) 8589934592)", "vector-ref"); // 2^33。切り捨てると 0
-  rangeError("(vector-ref (vector 5 6) 9223372036854775807)", "vector-ref");
-  rangeError("(vector-ref (vector 5 6) -9223372036854775808)", "vector-ref");
-  rangeError('(string-ref "abc" -1)', "string-ref");
+  rangeError('(string-ref "abc" 4294967296)', "string-ref", '"abc" 4294967296'); // 切り捨てると 0
+  rangeError('(string-ref "abc" 4294967298)', "string-ref", '"abc" 4294967298'); // 切り捨てると 2
+  rangeError('(string-ref "あいう" 4294967297)', "string-ref", '"あいう" 4294967297'); // 切り捨てると 1
+  rangeError("(vector-ref (vector 1) 4294967296)", "vector-ref", "#(1) 4294967296"); // 切り捨てると 0
+  rangeError("(vector-ref (vector 5 6) 4294967297)", "vector-ref", "#(5 6) 4294967297"); // 切り捨てると 1
+  rangeError("(vector-ref (vector 5 6) 8589934592)", "vector-ref", "#(5 6) 8589934592"); // 2^33。切り捨てると 0
+  rangeError("(vector-ref (vector 5 6) 9223372036854775807)", "vector-ref", "#(5 6) 9223372036854775807");
+  rangeError("(vector-ref (vector 5 6) -9223372036854775808)", "vector-ref", "#(5 6) -9223372036854775808");
+  rangeError('(string-ref "abc" -1)', "string-ref", '"abc" -1');
   // 文字の値も 32 ビットを超える整数は範囲外である。切り捨てると 'A' になる。
-  rangeError("(integer->char 4294967361)", "integer->char");
-  rangeError("(integer->char 4294967296)", "integer->char");
+  rangeError("(integer->char 4294967361)", "integer->char", "4294967361");
+  rangeError("(integer->char 4294967296)", "integer->char", "4294967296");
   // エラーのあとも、同じインスタンスが使える。
   assert.deepEqual(h.run("(vector-ref (vector 5 6) 1)"), [OK, "6\n"]);
 });
@@ -347,16 +380,16 @@ test("integer division and 128-bit arithmetic agree with the native results in w
     "0\n0\n-4611686018427387904\n",
   ]);
   // 最小の整数を -1 で割る quotient は、結果が 64 ビットに収まらない。
-  assert.deepEqual(h.run("(quotient -9223372036854775808 -1)"), [SCHEME_ERROR, "error: integer overflow in quotient\n"]);
-  assert.deepEqual(h.run("(quotient 1 0)"), [SCHEME_ERROR, "error: division by zero in quotient\n"]);
-  assert.deepEqual(h.run("(modulo -9223372036854775808 0)"), [SCHEME_ERROR, "error: division by zero in modulo\n"]);
+  assert.deepEqual(h.run("(quotient -9223372036854775808 -1)"), [SCHEME_ERROR, "error: integer overflow in quotient -9223372036854775808 -1\n"]);
+  assert.deepEqual(h.run("(quotient 1 0)"), [SCHEME_ERROR, "error: division by zero in quotient 1 0\n"]);
+  assert.deepEqual(h.run("(modulo -9223372036854775808 0)"), [SCHEME_ERROR, "error: division by zero in modulo -9223372036854775808 0\n"]);
   // 128 ビットの積と和。途中の値が 64 ビットを超えても、結果が収まれば値を返す。
   assert.deepEqual(h.run("(* 4294967296 2147483647) (+ 9223372036854775807 1 -1) (- -9223372036854775808 1 -1)"), [
     OK,
     "9223372032559808512\n9223372036854775807\n-9223372036854775808\n",
   ]);
-  assert.deepEqual(h.run("(* 3037000500 3037000500)"), [SCHEME_ERROR, "error: integer overflow in *\n"]);
-  assert.deepEqual(h.run("(+ 9223372036854775807 1)"), [SCHEME_ERROR, "error: integer overflow in +\n"]);
+  assert.deepEqual(h.run("(* 3037000500 3037000500)"), [SCHEME_ERROR, "error: integer overflow in * 3037000500 3037000500\n"]);
+  assert.deepEqual(h.run("(+ 9223372036854775807 1)"), [SCHEME_ERROR, "error: integer overflow in + 9223372036854775807 1\n"]);
 });
 
 test("a tail-recursive loop of 100000 iterations completes", () => {

@@ -153,13 +153,69 @@ pub const Interpreter = struct {
     }
 };
 
+/// The most bytes a description writes of the values it shows: the irritants
+/// of a condition, or a value raised that is not a condition.
+/// Why: プリミティブの失敗の irritant は呼び出しの引数なので、長いリストやベクタがそのまま
+/// 診断に入りうる。WASM の境界は診断の一行を固定の大きさのバッファに書く(`src/wasm.zig` の
+/// `sucheme_eval_begin`)。値の部分を切るのは、ふつうのメッセージの一行がそこに収まるためで
+/// ある。診断そのものはメッセージを切らない。メッセージが長すぎて一行が収まらないときは、
+/// 境界の側が一行を切る(`errorLine`)。
+pub const shown_value_bytes = 128;
+
 /// Writes `v`, a value raised, as `diagnostic` shows it.
+/// 値の部分は `shown_value_bytes` までで切り、切ったら `...` を付ける。
 fn describeRaised(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, v: value.Value) printer.Error!void {
-    const c = v.asCondition() orelse return printer.write(out, scratch, symbols, v);
-    // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
-    // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
-    if (c.message.asString()) |text| try out.writeAll(text.bytes) else try printer.write(out, scratch, symbols, c.message);
-    var it = c.irritants;
+    var buf: [shown_value_bytes]u8 = undefined;
+    var shown: std.Io.Writer = .fixed(&buf);
+    const written = if (v.asCondition()) |c| blk: {
+        // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
+        // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
+        if (c.message.asString()) |text| try out.writeAll(text.bytes) else break :blk printer.write(&shown, scratch, symbols, c.message);
+        break :blk writeIrritants(&shown, scratch, symbols, c.irritants);
+    } else printer.write(&shown, scratch, symbols, v);
+    written catch |e| switch (e) {
+        error.WriteFailed => {
+            try out.writeAll(wholeCharacters(shown.buffered()));
+            return out.writeAll("...");
+        },
+        else => return e,
+    };
+    try out.writeAll(shown.buffered());
+}
+
+/// `bytes`, valid UTF-8 cut short at some byte, without the character the cut
+/// fell in.
+/// 診断は妥当な UTF-8 でなければならない(ADR-0008)。最後の先頭バイトから始まる列が、
+/// その先頭バイトが示す長さに足りなければ、その列を落とす。
+fn wholeCharacters(bytes: []const u8) []const u8 {
+    var start = bytes.len;
+    // 後続バイト(0b10xxxxxx)をさかのぼり、最後の文字の先頭を探す。文字は4バイトまでである。
+    while (start > 0 and bytes.len - start < 4) {
+        start -= 1;
+        if (bytes[start] & 0xC0 != 0x80) break;
+    }
+    if (start == bytes.len) return bytes;
+    const need = std.unicode.utf8ByteSequenceLength(bytes[start]) catch return bytes[0..start];
+    return if (bytes.len - start < need) bytes[0..start] else bytes;
+}
+
+/// The line `error: <message>` and a newline, written in `buf`; when it does
+/// not fit, the message is cut short at a character and `...` is put after it.
+/// WASM の境界は、診断の一行を固定の大きさのバッファに書く(`src/wasm.zig` の
+/// `sucheme_eval_begin`)。収まらない一行も、メッセージを失わずに、読める先頭を残す。
+/// `message` は妥当な UTF-8 で、`buf` は `error: ...` と改行が入る大きさでなければならない。
+pub fn errorLine(buf: []u8, message: []const u8) []const u8 {
+    const prefix = "error: ";
+    const cut_suffix = "...\n";
+    std.debug.assert(buf.len >= prefix.len + cut_suffix.len);
+    if (std.fmt.bufPrint(buf, prefix ++ "{s}\n", .{message})) |line| return line else |_| {}
+    const kept = wholeCharacters(message[0 .. buf.len - prefix.len - cut_suffix.len]);
+    return std.fmt.bufPrint(buf, prefix ++ "{s}" ++ cut_suffix, .{kept}) catch unreachable;
+}
+
+/// Writes each of `irritants`, a list, after a space.
+fn writeIrritants(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, irritants: value.Value) printer.Error!void {
+    var it = irritants;
     while (it.asPair()) |p| : (it = p.cdr) {
         try out.writeByte(' ');
         try printer.write(out, scratch, symbols, p.car);
@@ -455,6 +511,8 @@ test "every primitive reports a wrong argument count, and the next line is read"
             var expected: std.ArrayList(u8) = .empty;
             defer expected.deinit(std.testing.allocator);
             try expected.print(std.testing.allocator, "wrong number of arguments to {s}", .{p.name});
+            // irritant は、呼び出しに渡した引数である。
+            for (0..std.mem.count(u8, line.items, " 1")) |_| try expected.appendSlice(std.testing.allocator, " 1");
             try expectLineFails(&interp, line.items, expected.items);
             // エラーのあとも、定義と評価が続く。
             try expectLinePrints(&interp, "(+ 1 2)", "3\n");
@@ -472,17 +530,17 @@ test "an error of each kind leaves the interpreter and its definitions usable" {
         defer interp.deinit();
         try expectLinePrints(&interp, "(define xs (list 1 2 3)) (define (len l) (if (null? l) 0 (+ 1 (len (cdr l)))))", "");
         const failures = [_]struct { line: []const u8, message: []const u8 }{
-            .{ .line = "(car 1)", .message = "wrong type of argument to car" },
-            .{ .line = "(vector-ref (vector 1) 1)", .message = "argument out of range in vector-ref" },
-            .{ .line = "(string-ref \"あ\" 1)", .message = "argument out of range in string-ref" },
-            .{ .line = "(integer->char 55296)", .message = "argument out of range in integer->char" },
-            .{ .line = "(quotient 1 0)", .message = "division by zero in quotient" },
-            .{ .line = "(modulo 1 0)", .message = "division by zero in modulo" },
-            .{ .line = "(quotient -9223372036854775808 -1)", .message = "integer overflow in quotient" },
-            .{ .line = "(* 9223372036854775807 2)", .message = "integer overflow in *" },
-            .{ .line = "(length (cons 1 2))", .message = "wrong type of argument to length" },
-            .{ .line = "(len 5)", .message = "wrong type of argument to cdr" },
-            .{ .line = "(vector-ref (vector 1) 4294967296)", .message = "argument out of range in vector-ref" },
+            .{ .line = "(car 1)", .message = "wrong type of argument to car 1" },
+            .{ .line = "(vector-ref (vector 1) 1)", .message = "argument out of range in vector-ref #(1) 1" },
+            .{ .line = "(string-ref \"あ\" 1)", .message = "argument out of range in string-ref \"あ\" 1" },
+            .{ .line = "(integer->char 55296)", .message = "argument out of range in integer->char 55296" },
+            .{ .line = "(quotient 1 0)", .message = "division by zero in quotient 1 0" },
+            .{ .line = "(modulo 1 0)", .message = "division by zero in modulo 1 0" },
+            .{ .line = "(quotient -9223372036854775808 -1)", .message = "integer overflow in quotient -9223372036854775808 -1" },
+            .{ .line = "(* 9223372036854775807 2)", .message = "integer overflow in * 9223372036854775807 2" },
+            .{ .line = "(length (cons 1 2))", .message = "wrong type of argument to length (1 . 2)" },
+            .{ .line = "(len 5)", .message = "wrong type of argument to cdr 5" },
+            .{ .line = "(vector-ref (vector 1) 4294967296)", .message = "argument out of range in vector-ref #(1) 4294967296" },
         };
         for (failures) |f| {
             try expectLineFails(&interp, f.line, f.message);
@@ -538,7 +596,7 @@ test "the description outlives the arena of the call and the collections after i
     }
     interp.ctx.clearDiagnostic();
     interp.ctx.collectIdle();
-    try std.testing.expectEqualStrings("wrong type of argument to car", interp.diagnostic());
+    try std.testing.expectEqualStrings("wrong type of argument to car 5", interp.diagnostic());
 }
 
 test "a condition kept as the value raised survives the collections until the next line clears it" {
@@ -550,7 +608,7 @@ test "a condition kept as the value raised survives the collections until the ne
             defer interp.deinit();
             try expectLinePrints(&interp, "(define keep (list 1 2))", "");
             // ストレスモードが毎回 GC する範囲(短い実行)に収まるよう、行は短くしてある。
-            try expectLineFails(&interp, "(define (f n) (if (= n 0) (car 5) (f (- n 1)))) (f 30)", "wrong type of argument to car");
+            try expectLineFails(&interp, "(define (f n) (if (= n 0) (car 5) (f (- n 1)))) (f 30)", "wrong type of argument to car 5");
             // 回収されずに残る経路: 失敗した行のあとの GC は、送出された値を残す。
             try std.testing.expectEqual(1, interp.ctx.heap.countOf(Condition));
             interp.ctx.collectIdle();
@@ -616,4 +674,91 @@ test "when the description cannot be allocated, the diagnostic says out of memor
     failing.resize_fail_index = std.math.maxInt(usize);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
     try std.testing.expectEqualStrings("bad thing", interp.diagnostic());
+}
+
+test "the values a description shows are cut after a bound, and the message is kept whole" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))", &w);
+    // 長い引数の irritant は、上限で切って `...` を付ける。メッセージは切らない。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(length (build 1000 0))", &w));
+    const d = interp.diagnostic();
+    try std.testing.expect(std.mem.startsWith(u8, d, "wrong type of argument to length (1 2 3 4 5 "));
+    try std.testing.expect(std.mem.endsWith(u8, d, "..."));
+    try std.testing.expectEqual("wrong type of argument to length".len + shown_value_bytes + "...".len, d.len);
+    // 条件でない値も同じである。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(raise (build 1000 '()))", &w));
+    try std.testing.expectEqual(shown_value_bytes + "...".len, interp.diagnostic().len);
+    // 上限にちょうど収まる値は切らない。
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(std.testing.allocator);
+    try line.appendSlice(std.testing.allocator, "(raise '");
+    try line.appendNTimes(std.testing.allocator, 'x', shown_value_bytes);
+    try line.append(std.testing.allocator, ')');
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line.items, &w));
+    try std.testing.expectEqual(shown_value_bytes, interp.diagnostic().len);
+    // 長いメッセージは切らない。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", &w));
+    try std.testing.expectEqualStrings("unbound variable: a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", interp.diagnostic());
+}
+
+test "a description cut in the middle of a character is cut before the character" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 値の部分は ` "` で始まるので、3バイトの文字が上限をまたぐ位置は、前に置く ASCII の
+    // 文字の数で決まる。0 から 2 個で、文字のどのバイトでも切れる場合を通す。
+    for (0..3) |pad| {
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(std.testing.allocator);
+        try line.appendSlice(std.testing.allocator, "(car \"");
+        try line.appendNTimes(std.testing.allocator, 'a', pad);
+        for (0..60) |_| try line.appendSlice(std.testing.allocator, "あ");
+        try line.appendSlice(std.testing.allocator, "\")");
+        try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line.items, &w));
+        const d = interp.diagnostic();
+        try std.testing.expect(std.unicode.utf8ValidateSlice(d));
+        try std.testing.expect(std.mem.endsWith(u8, d, "あ..."));
+        // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
+        try std.testing.expect(d.len + 2 >= "wrong type of argument to car".len + shown_value_bytes + "...".len);
+    }
+}
+
+test "an error line that fits is written whole, and one that does not is cut short with ..." {
+    var buf: [32]u8 = undefined;
+    const xs: [330]u8 = @splat('x');
+    // `error: ` と改行を足して 32 バイトに収まるのは、24 バイトのメッセージまでである。
+    try std.testing.expectEqualStrings("error: short\n", errorLine(&buf, "short"));
+    try std.testing.expectEqualStrings("error: xxxxxxxxxxxxxxxxxxxxxxxx\n", errorLine(&buf, xs[0..24]));
+    // 1バイト溢れると、切って `...` を付ける。一行はバッファにちょうど収まる。
+    try std.testing.expectEqualStrings("error: xxxxxxxxxxxxxxxxxxxxx...\n", errorLine(&buf, xs[0..25]));
+    try std.testing.expectEqualStrings("error: xxxxxxxxxxxxxxxxxxxxx...\n", errorLine(&buf, &xs));
+    try std.testing.expectEqualStrings("error: \n", errorLine(&buf, ""));
+}
+
+test "an error line cut in the middle of a character is cut before the character" {
+    var buf: [32]u8 = undefined;
+    // メッセージは 21 バイトまで残る。3バイトの文字が切れ目をまたぐ位置は、前に置く ASCII の
+    // 文字の数で決まる。0 から 2 個で、文字のどのバイトでも切れる場合を通す。
+    for (0..3) |pad| {
+        var message: std.ArrayList(u8) = .empty;
+        defer message.deinit(std.testing.allocator);
+        try message.appendNTimes(std.testing.allocator, 'a', pad);
+        for (0..20) |_| try message.appendSlice(std.testing.allocator, "あ");
+        const line = errorLine(&buf, message.items);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(line));
+        try std.testing.expect(std.mem.endsWith(u8, line, "あ...\n"));
+        try std.testing.expect(line.len <= buf.len);
+        // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
+        try std.testing.expect(line.len + 2 >= buf.len);
+    }
 }

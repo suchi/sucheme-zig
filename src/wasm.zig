@@ -208,8 +208,7 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
             error.WriteFailed => "output buffer full",
             else => interp.diagnostic(),
         };
-        const text = std.fmt.bufPrint(&buf, "error: {s}\n", .{message}) catch "error: message too long\n";
-        appendTail(&out, output, text);
+        appendTail(&out, output, sucheme.errorLine(&buf, message));
         return Status.scheme_error;
     };
     return Status.ok;
