@@ -21,14 +21,14 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | テスト(単体) | `zig build test` | 0 | 全コミット |
 | テスト(Schemeの振る舞い) | `zig build test-scheme` | 1 | 全コミット |
 | テスト(WASM の往復) | `zig build test-wasm`(Node.js 上で `sucheme.wasm` のエクスポートを呼ぶ) | 1 | 全コミット |
-| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR を ready にするとき、`main` への push、手動 |
+| テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR を ready にするとき、手動 |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
 | テスト(ファジング) | `zig build test --fuzz=<N> -Doptimize=ReleaseSafe`(`<N>` は実行回数の上限。値は `fuzz.yml` が持つ) | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
 | ビルド | `zig build` | 0 | 全コミット |
 | ビルド(WASM) | `zig build wasm` | 1 | 全コミット |
-| ビルド(リリースの成果物) | `zig build dist`(全ターゲットを `ReleaseSafe` で `zig-out/dist/` に作る) | 1 | PR を ready にするとき、`main` への push、手動、タグの push |
+| ビルド(リリースの成果物) | `zig build dist`(全ターゲットを `ReleaseSafe` で `zig-out/dist/` に作る) | 1 | PR を ready にするとき、手動、タグの push |
 | 実行 | `zig build run -- <引数>` | 0 | - |
 | ドキュメントの検査 | `zig build check-docs` | 0 | 全コミット |
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
@@ -57,7 +57,8 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - コミット前と push のたび: 表の「全コミット」の行。1 分以内を目標にする(目標であって測定値ではなく、ビルドキャッシュが空の初回は超える。[docs/plans/0007-test-tiers.md](docs/plans/0007-test-tiers.md) の層の表を参照)。`zig build test` と `zig build test-scheme` は、規模を試すテストを飛ばす。飛ばした数が出るのは `zig build test --summary all` の概要だけで(`ci.yml` は付けている)、素の `zig build test` は成功すると何も出さず、`zig build test-scheme` は走らせた件数だけを出す。
 - PR を ready にする前と `main` へのマージ前: 規模を試すテスト(`-Dslow=true`)、変更したファイルのミューテーションテスト、敵対的レビュー。
   - ミューテーションテストは網羅を目指さない。変更した判定の分岐ごとに、代表的な書き換えを数件試す。
-  - PR はドラフトで開き、ready にしたときに層2 が走る。`full.yml` の起動は `ready_for_review` なので、最初から ready で開いた PR では、層2 は `main` への push まで走らない。その場合は手動(`workflow_dispatch`)で走らせる。
+  - PR はドラフトで開き、ready にしたときに層2 が走る。`full.yml` の起動は `ready_for_review` と手動(`workflow_dispatch`)だけで、`main` への push では走らない(実行分数の節約。[docs/plans/0015-ci-minutes-reduction.md](docs/plans/0015-ci-minutes-reduction.md))。最初から ready で開いた PR では、層2 が走らないので、手動で走らせる。
+  - Windows のテストは、全 push の CI(`ci.yml`)でなく、層2(`full.yml` の `windows` ジョブ)で走る。draft の間の push では、Windows の不具合は見えない。
 - 定期: ファジングなど。待たない。
 
 規模を試すテスト(深さ・個数・上限に比例して壊れる種類の誤りを見るもの)は、小さい規模で同じ論理を通す縮小版を層1 に残したうえで、`tier.slow()`(単体テスト)か `tests/scheme-slow/`(Scheme のテスト)に置く。検証が目標より遅いときは、待つ前に、並行にする前に、1 件あたりの時間を測る。

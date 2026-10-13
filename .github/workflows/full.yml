@@ -4,8 +4,14 @@
 # (a recursion a hundred thousand levels deep, a loop of a million steps). They
 # find the faults that grow with the size of the input, and they take most of
 # the time of a run. They run here instead: when a pull request is marked ready
-# for review, when main changes, and on request. The table in AGENTS.md lists
-# the commands.
+# for review, and on request. The table in AGENTS.md lists the commands.
+#
+# `main` への push では走らせない。PR を ready にしたときに同じ検査を通っており、
+# `main` への push では ci.yml が走る。private リポジトリでは実行分数が月の枠に
+# 計上されるので、同じコミットの検査を重ねない(docs/plans/0015-ci-minutes-reduction.md)。
+#
+# windows ジョブは、ci.yml が全 push で走らせていた Windows のテストを、ここへ
+# 移したものである。Windows でしか起きない不具合は、PR を ready にしたときに見つかる。
 #
 # dist ジョブは、リリースの成果物の組み立てを試す。`zig build dist` が全ターゲットを
 # 作り、tools/release/package.py がアーカイブと SHA256SUMS を作って読み直す。
@@ -13,8 +19,7 @@
 # (docs/adr/0034-release-shape.md)。組み立ての誤りは、タグを打つ日でなく、ここで
 # 見つかる。
 #
-# Linux only: the logic is the same on Windows, which ci.yml covers on every
-# commit.
+# slow ジョブと dist ジョブは Linux だけで走らせる。論理は Windows でも同じだからである。
 #
 # The Zig version below is a copy; .zigversion is the source of truth.
 
@@ -23,8 +28,6 @@ name: Full
 on:
   pull_request:
     types: [ready_for_review]
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -96,3 +99,34 @@ jobs:
       - run: printf '(define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))\n(fact 10)\n' | zig-out/dist/x86_64-linux-musl/sucheme | grep 3628800 > /dev/null
       - run: python3 tools/release/package.py
       - run: cd zig-out/release && sha256sum -c SHA256SUMS
+
+  windows:
+    name: tests (windows-latest)
+    runs-on: windows-latest
+    # Why: ci.yml の test ジョブと同じ時間の上限である(Windows は1分から5分で終わっていた)。
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      # Why: slow ジョブと同じ形(docs/adr/0032-ci-zig-cache-saved-only-by-successful-runs.md)。
+      # キーは runner.os を含むので、Linux のキャッシュとは分かれる。ci.yml が Windows を
+      # 走らせなくなったので、このキャッシュを作るのはこのジョブだけである。
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .zig-cache
+          key: zig-cache-v1-${{ runner.os }}-${{ hashFiles('.zigversion', 'build.zig', 'build.zig.zon') }}
+      # Why: 以下の step は ci.yml の test ジョブと同じ並びである。Windows の検査は、
+      # ci.yml が全 push で走らせていたものを、そのまま移した。
+      - run: zig fmt --check .
+      - run: zig build
+      - run: zig build test --summary all --test-timeout 60s
+      - run: zig build test-scheme
+      - run: zig build wasm
+      - run: zig build test-wasm
+      - run: zig build check-docs
+      - run: zig build check-extract
+      - run: zig build check-report

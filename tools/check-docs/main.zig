@@ -374,7 +374,7 @@ const slow_workflow = ".github/workflows/full.yml";
 /// それが走らせるものを落とすことになる。
 ///
 /// `zig build dist` は規模を試すテストではないが、表の CI の列が「PR を ready に
-/// するとき、`main` への push、手動」を含むので、同じ形で名指しする。落とすと、
+/// するとき、手動、タグの push」を含むので、同じ形で名指しする。落とすと、
 /// リリースの成果物の組み立てが、タグを打つまでどこでも走らなくなる。
 const slow_commands = [_][]const u8{
     "zig build test -Dslow=true",
@@ -555,7 +555,7 @@ fn checkCiRunsTheTable(
         .{ .key = "runs-on", .value = "${{ matrix.os }}" },
         .{ .key = "strategy", .value = "" },
         .{ .key = "matrix", .value = "" },
-        .{ .key = "os", .value = "[ubuntu-latest, windows-latest]" },
+        .{ .key = "os", .value = "[ubuntu-latest]" },
     }) |want| {
         var found = false;
         for (seen.items) |got| {
@@ -816,7 +816,7 @@ fn isForbiddenInPerCommit(key: []const u8) bool {
 /// The job names this repository's workflows define.
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
-const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist", "release" };
+const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist", "release", "windows" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
