@@ -47,8 +47,10 @@ def swap_last_two_steps(s):
 # 穴: windows ジョブを丸ごと消す。
 case("M1 windows job removed", True, lambda h: h.edit(FULL, drop_windows_job))
 # 穴: windows ジョブを Linux で走らせる。チェック名は変わらない。
+# 字下げまで含めて一致させる。字下げを含めないと、先頭のコメントの中の
+# `runs-on: windows-latest` が書き換わり、ジョブの行は変わらない。
 case("M2 windows job runs on ubuntu", True, lambda h: h.edit(
-    FULL, lambda s: s.replace("runs-on: windows-latest", "runs-on: ubuntu-latest", 1)))
+    FULL, lambda s: s.replace("    runs-on: windows-latest\n", "    runs-on: ubuntu-latest\n", 1)))
 # 穴: windows ジョブから単体テストの step を消す。
 case("M3 windows job drops the unit tests", True, lambda h: h.edit(
     FULL, lambda s: s.replace(TEST_STEP, "", 1)))
