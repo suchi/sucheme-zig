@@ -31,6 +31,9 @@ const Item = union(enum) {
     /// The rest of a vector from element `next` on: a space and that element,
     /// or the closing parenthesis once there are none left.
     elements: Elements,
+    /// The rest of the irritants of a condition: a space and the next one, or
+    /// the closing `>` at the end of the list.
+    irritants: Value,
 
     const Elements = struct { items: []const Value, next: usize };
 };
@@ -96,9 +99,22 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // これを持つ変数を読むとエラーになるので、プログラムがこれを目にすることは
             // ない。漏れたときに分かるよう、それでも書く。
             .uninitialized => try out.writeAll("#<uninitialized>"),
-            // 条件オブジェクトを値として読むものはまだない。エラーは機械を出て、
-            // 報告される。漏れたときに分かるよう、それでも書く。
-            .condition => try out.writeAll("#<condition>"),
+            // Why: 条件オブジェクトはハンドラに渡る値で、書かれうる。R7RS は外部表現を決めて
+            // いないので、手続きと同じく `read` が受け付けない表記で、メッセージと irritant を
+            // 書く。
+            .condition => {
+                const c = x.asCondition().?;
+                try out.writeAll("#<condition ");
+                try stack.append(scratch, .{ .irritants = c.irritants });
+                try stack.append(scratch, .{ .value = c.message });
+            },
+        },
+        .irritants => |rest| if (rest.asPair()) |p| {
+            try out.writeByte(' ');
+            try stack.append(scratch, .{ .irritants = p.cdr });
+            try stack.append(scratch, .{ .value = p.car });
+        } else {
+            try out.writeByte('>');
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -200,14 +216,30 @@ test "write shows an uninitialized marker that leaked" {
     try std.testing.expectEqualStrings("#<uninitialized>", try f.written(&buf, .uninitialized_value));
 }
 
-test "write shows a condition that leaked" {
+test "write shows a condition by its message" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
     var bytes = "boom".*;
     var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
     var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
-    try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
+    try std.testing.expectEqualStrings("#<condition \"boom\">", try f.written(&buf, .fromCondition(&c)));
+    try std.testing.expectEqualStrings("#<condition boom>", try f.displayed(&buf, .fromCondition(&c)));
+}
+
+test "write shows a condition with its message and its irritants" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var bytes = "bad".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    const irritants = try f.list(&.{ .fromFixnum(1), try f.string("two"), try f.list(&.{try f.sym("a")}, .empty_list_value) }, .empty_list_value);
+    var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = irritants };
+    try std.testing.expectEqualStrings("#<condition \"bad\" 1 \"two\" (a)>", try f.written(&buf, .fromCondition(&c)));
+    try std.testing.expectEqualStrings("#<condition bad 1 two (a)>", try f.displayed(&buf, .fromCondition(&c)));
+    // 条件の中の条件も、同じ形で書く。
+    var outer: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = try f.list(&.{.fromCondition(&c)}, .empty_list_value) };
+    try std.testing.expectEqualStrings("#<condition \"bad\" #<condition \"bad\" 1 \"two\" (a)>>", try f.written(&buf, .fromCondition(&outer)));
 }
 
 test "write prints the unspecified value as #<unspecified>" {
