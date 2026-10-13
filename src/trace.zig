@@ -253,6 +253,22 @@ test "the arguments gathered so far are followed through their value and their l
     try r.expect(&.{ addr(&p), addr(&older) });
 }
 
+test "a condition is followed through its message and its irritants" {
+    var bytes = "m".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var irritant: Pair = .{ .car = .fromFixnum(1), .cdr = .empty_list_value };
+    const condition: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .{ .pair = &irritant } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Condition, &condition);
+    try r.expect(&.{ addr(&message), addr(&irritant) });
+    // irritant が空なら、メッセージだけが報告される。種別は報告されない。
+    const bare: value_mod.Condition = .{ .kind = .file, .message = .fromString(&message), .irritants = .empty_list_value };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Condition, &bare);
+    try q.expect(&.{addr(&message)});
+    try std.testing.expectEqual(0, q.symbol_count);
+}
+
 test "a syntactic environment is followed through its parent and its first binding" {
     var outer: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
     var local: value_mod.LocalBinding = .{ .rib_depth = 2, .index = 0 };
@@ -308,10 +324,11 @@ test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Kont).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Args).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Value).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Condition).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Condition).?);
     // コードと、その周りの単純なデータは、決してたどられない。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*value_mod.Condition).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Call).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(usize).?);

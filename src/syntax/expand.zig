@@ -466,7 +466,7 @@ const Fixture = struct {
     /// `src` raises an error whose condition has `message`.
     fn expectFails(self: *Fixture, src: []const u8, message: []const u8) !void {
         try std.testing.expectError(error.Raised, self.expandText(src, .{}));
-        try std.testing.expectEqualStrings(message, self.ctx.raised.?.message);
+        try std.testing.expectEqualStrings(message, self.ctx.diagnostic());
     }
 };
 

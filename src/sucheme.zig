@@ -30,11 +30,12 @@ const expand = @import("syntax/expand.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
+const value = @import("value.zig");
 
 /// Every way `evalPrint` can fail.
 ///
-/// `Raised` は Scheme のエラーで、その条件オブジェクトはコンテキストにあり、
-/// `diagnostic` がそれを説明する。リーダのエラーも同じ形で説明する。
+/// `Raised` は Scheme のエラーで、送出された値はコンテキストにあり、`diagnostic` が
+/// それを説明する。リーダのエラーとホストの失敗も `diagnostic` が説明する。
 pub const Error = reader.Error || expand.Error || machine.Error || printer.Error;
 
 /// One interpreter: what outlives a single line of input.
@@ -47,6 +48,14 @@ pub const Error = reader.Error || expand.Error || machine.Error || printer.Error
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
     ctx: context.Context,
+    /// Where the description of the error the last `evalPrint` returned is
+    /// written.
+    /// 呼び出しのアリーナとヒープの外(`gpa`)にあるので、アリーナの解放にも GC にも
+    /// 左右されない。書くたびに中身を入れ替え、`deinit` で返す。
+    diagnostic_buffer: std.ArrayList(u8),
+    /// What `diagnostic` returns: the contents of `diagnostic_buffer`, or a fixed
+    /// text when the buffer could not hold the description.
+    diagnostic_text: []const u8,
 
     pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
         return self.initWithOptions(gpa, .{});
@@ -56,9 +65,12 @@ pub const Interpreter = struct {
         self.arena = .init(gpa);
         errdefer self.arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
+        self.diagnostic_buffer = .empty;
+        self.diagnostic_text = "";
     }
 
     pub fn deinit(self: *Interpreter) void {
+        self.diagnostic_buffer.deinit(self.arena.child_allocator);
         self.ctx.deinit();
         self.arena.deinit();
     }
@@ -72,9 +84,11 @@ pub const Interpreter = struct {
     /// 参照している間は生きる。シンボルとコードはインタプリタ専用のアリーナに確保し、
     /// `deinit` まで生きる。
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
+        // 前の行が送出した値は、ここで手放す。この行の GC が回収する。
         self.ctx.clearDiagnostic();
+        self.diagnostic_text = "";
         self.run(arena, source, out) catch |e| {
-            if (self.ctx.diagnostic().len == 0) self.ctx.raise("{s}", .{describe(e)}) catch {};
+            self.keepDiagnostic(arena, e);
             return e;
         };
     }
@@ -83,7 +97,23 @@ pub const Interpreter = struct {
     ///
     /// 次の呼び出しまで有効である。
     pub fn diagnostic(self: *const Interpreter) []const u8 {
-        return self.ctx.diagnostic();
+        return self.diagnostic_text;
+    }
+
+    /// Writes the description of `e` for `diagnostic`: the value raised if
+    /// there is one, or what the failure is.
+    /// 送出された値は、条件オブジェクトならメッセージと irritant を、それ以外は
+    /// `write` の形で書く(docs/design/runtime.md の未処理例外)。リーダの失敗と
+    /// ホストの失敗は、ヒープに条件を作らずに説明する。`scratch` はプリンタの作業領域である。
+    fn keepDiagnostic(self: *Interpreter, scratch: std.mem.Allocator, e: Error) void {
+        self.diagnostic_buffer.clearRetainingCapacity();
+        var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
+        const written = if (self.ctx.raised) |v|
+            describeRaised(&w.writer, scratch, &self.ctx.symbols, v)
+        else
+            w.writer.writeAll(describe(e));
+        self.diagnostic_buffer = w.toArrayList();
+        self.diagnostic_text = if (written) |_| self.diagnostic_buffer.items else |_| "out of memory";
     }
 
     /// Whether `identifier` is bound: a global binding, or a special form.
@@ -123,6 +153,19 @@ pub const Interpreter = struct {
     }
 };
 
+/// Writes `v`, a value raised, as `diagnostic` shows it.
+fn describeRaised(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, v: value.Value) printer.Error!void {
+    const c = v.asCondition() orelse return printer.write(out, scratch, symbols, v);
+    // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
+    // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
+    if (c.message.asString()) |text| try out.writeAll(text.bytes) else try printer.write(out, scratch, symbols, c.message);
+    var it = c.irritants;
+    while (it.asPair()) |p| : (it = p.cdr) {
+        try out.writeByte(' ');
+        try printer.write(out, scratch, symbols, p.car);
+    }
+}
+
 /// The message for an error that nothing described more closely.
 fn describe(e: Error) []const u8 {
     return switch (e) {
@@ -136,7 +179,8 @@ fn describe(e: Error) []const u8 {
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.OutOfMemory => "out of memory",
-        error.HeapLimit => context.heap_limit_message,
+        // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。
+        error.HeapLimit, error.ReserveExhausted => context.heap_limit_message,
         else => @errorName(e),
     };
 }
@@ -464,4 +508,112 @@ test "a primitive that runs the heap out of room ends only its line" {
         try expectLineFails(&interp, line, "heap limit exceeded");
         try expectLinePrints(&interp, "(+ keep 1)", "43\n");
     }
+}
+
+test "a reader error is described without making a condition in the heap" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.Incomplete, interp.evalPrint(arena.allocator(), "(+ 1", &w));
+    try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
+    // 送出された値は無く、ヒープに条件は作られていない。
+    try std.testing.expect(interp.ctx.raised == null);
+    try std.testing.expectEqual(0, interp.ctx.heap.countOf(@import("value.zig").Condition));
+}
+
+test "the description outlives the arena of the call and the collections after it" {
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(car 5)", &w));
+    }
+    interp.ctx.clearDiagnostic();
+    interp.ctx.collectIdle();
+    try std.testing.expectEqualStrings("wrong type of argument to car", interp.diagnostic());
+}
+
+test "a condition kept as the value raised survives the collections until the next line clears it" {
+    const Condition = @import("value.zig").Condition;
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            try expectLinePrints(&interp, "(define keep (list 1 2))", "");
+            // ストレスモードが毎回 GC する範囲(短い実行)に収まるよう、行は短くしてある。
+            try expectLineFails(&interp, "(define (f n) (if (= n 0) (car 5) (f (- n 1)))) (f 30)", "wrong type of argument to car");
+            // 回収されずに残る経路: 失敗した行のあとの GC は、送出された値を残す。
+            try std.testing.expectEqual(1, interp.ctx.heap.countOf(Condition));
+            interp.ctx.collectIdle();
+            try std.testing.expectEqual(1, interp.ctx.heap.countOf(Condition));
+            try std.testing.expectEqualStrings("wrong type of argument to car", interp.ctx.diagnostic());
+            // 回収される経路: 次の行は送出された値を空にしてから読む。ストレスモードでは、
+            // その行の最初の GC が条件を回収する。
+            try expectLinePrints(&interp, "keep", "(1 2)\n");
+            if (!stress) interp.ctx.collectIdle();
+            try std.testing.expectEqual(0, interp.ctx.heap.countOf(Condition));
+            try std.testing.expect(interp.ctx.raised == null);
+        }
+    }
+}
+
+test "the value raised is described: a condition by its message and irritants, anything else as write shows it" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const ctx = &interp.ctx;
+    const text = try ctx.heap.createString("a\"b");
+    const irritants = try ctx.heap.cons(.fromFixnum(42), try ctx.heap.cons(.fromString(text), .empty_list_value));
+    ctx.raised = try ctx.makeCondition(.@"error", "bad {s}", .{"thing"}, irritants);
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("bad thing 42 \"a\\\"b\"", interp.diagnostic());
+    // メッセージが文字列でない条件も、停止せずに書く。
+    ctx.raised = .fromCondition(try ctx.heap.create(@import("value.zig").Condition, .{ .kind = .@"error", .message = .fromFixnum(7), .irritants = .empty_list_value }));
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("7", interp.diagnostic());
+    // 条件でない値は、write の形で書く。
+    ctx.raised = .fromFixnum(42);
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("42", interp.diagnostic());
+    ctx.raised = irritants;
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("(42 \"a\\\"b\")", interp.diagnostic());
+    // 何も送出されていなければ、失敗そのものを説明する。
+    ctx.raised = null;
+    interp.keepDiagnostic(arena.allocator(), error.ReserveExhausted);
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    interp.keepDiagnostic(arena.allocator(), error.Incomplete);
+    try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
+}
+
+test "when the description cannot be allocated, the diagnostic says out of memory" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var interp: Interpreter = undefined;
+    try interp.init(failing.allocator());
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const ctx = &interp.ctx;
+    ctx.raised = try ctx.makeCondition(.@"error", "bad {s}", .{"thing"}, .empty_list_value);
+    // ここから先の確保はすべて失敗する。説明のバッファはまだ確保されていない。
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("out of memory", interp.diagnostic());
+    // 確保できるようになれば、送出された値の説明に戻る。
+    failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("bad thing", interp.diagnostic());
 }

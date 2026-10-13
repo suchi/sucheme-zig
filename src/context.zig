@@ -1,6 +1,6 @@
 //! What the expander and the machine share between the lines of a session: the
 //! GC heap and the arena beside it, the symbols, the bindings of the top level,
-//! the constants of the code, and the condition of the most recent error.
+//! the constants of the code, and the value the most recent error raised.
 
 const std = @import("std");
 const symbol = @import("symbol.zig");
@@ -13,28 +13,30 @@ const Value = value_mod.Value;
 
 /// What a step can fail with.
 /// `Raised` は Zig レベルの失敗ではない。Scheme のエラーが送出されたことを表し、
-/// それを説明する条件オブジェクトは `Context.raised` にある。メモリのような
-/// ホストの失敗は、もう一方である。
-pub const Error = error{ OutOfMemory, Raised };
+/// 送出された値は `Context.raised` にある。ほかの2つは送出できない失敗である。
+/// `OutOfMemory` はホストのメモリが尽きたこと、`ReserveExhausted` は上限に達した状態で
+/// 送出のための予約領域も尽き、条件オブジェクトを作れなかったことを表す。どちらも
+/// `raised` を空のまま返し、その行を終える(docs/design/runtime.md の上限超過と確保の失敗)。
+/// ヒープの `HeapLimit` はこの集合に入れない。ヒープの確保を素の `try` で返すと
+/// コンパイルエラーになり、`heapFailure` を通して送出することを型が強いる。
+pub const Error = error{ OutOfMemory, Raised, ReserveExhausted };
 
 /// What the error is called when the heap cannot hold more.
 /// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。
 pub const heap_limit_message = "heap limit exceeded";
 
 /// What the interpreter carries between lines: the heap and the arena, the
-/// symbols and global bindings, the constants of the code, and the condition of
-/// the most recent error.
+/// symbols and global bindings, the constants of the code, and the value the
+/// most recent error raised.
 pub const Context = struct {
     /// Where what the reader and the machine make is allocated, and collected:
     /// the pairs, the closures, the frames of calls, the continuations, the
-    /// argument lists, the strings and the vectors.
+    /// argument lists, the strings, the vectors and the conditions.
     heap: Heap,
     /// Where what the heap does not hold is allocated: the symbols, the table of
-    /// the bindings of the top level, the core IR the expander builds, and the
-    /// conditions.
+    /// the bindings of the top level and the core IR the expander builds.
     /// 大域変数のセルそのものは GC ヒープにある。
-    /// この中のものは、インタプリタが解放されるまで解放されない。またヒープの上限の外に
-    /// あるので、ヒープが満杯でもエラーを報告できる。
+    /// この中のものは、インタプリタが解放されるまで解放されない。
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
     /// The bindings of the REPL's top level: the special forms and the
@@ -46,9 +48,12 @@ pub const Context = struct {
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
     /// 要らなくなる。
     code_roots: std.ArrayList(Value) = .empty,
-    /// The condition raised by the most recent error, if the line was cut short
-    /// by one.
-    raised: ?*value_mod.Condition = null,
+    /// The value the most recent error raised, if the line was cut short by
+    /// one.
+    /// 段階2のスライス 2b からは、条件オブジェクトに限らない `Value` である(R7RS 6.11 は
+    /// 何でも送出できるとする)。ヒープを指しうるので GC のルートであり(`mark`)、
+    /// `clearDiagnostic` で空にするまで回収されない。
+    raised: ?Value = null,
 
     /// A context whose top level imports each primitive and each special form
     /// under its name.
@@ -78,11 +83,13 @@ pub const Context = struct {
     }
 
     /// Tells the collector of the roots the context holds: the cells of the
-    /// global variables and the constants of the code.
-    /// 機械は自分のルートを加える。
+    /// global variables, the constants of the code and the value raised.
+    /// 機械は自分のルートを加える。機械の実行をまたいでヒープの値を持つものは、
+    /// すべてここに挙げる(ADR-0035)。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
         for (self.code_roots.items) |v| marker.value(v);
+        if (self.raised) |v| marker.value(v);
     }
 
     /// Keeps `v`, a constant of some code, alive for as long as the context is.
@@ -122,10 +129,13 @@ pub const Context = struct {
     }
 
     /// The message of the condition raised by the most recent error, or empty
-    /// when none was.
-    /// 次の `raise` または `clearDiagnostic` まで有効である。
+    /// when none was or what was raised is not a condition.
+    /// 次の `raise` または `clearDiagnostic` まで有効である。送出された値の全体を
+    /// 説明するのは `Interpreter.diagnostic` である。
     pub fn diagnostic(self: *const Context) []const u8 {
-        return if (self.raised) |c| c.message else "";
+        const v = self.raised orelse return "";
+        const c = v.asCondition() orelse return "";
+        return c.messageText();
     }
 
     pub fn clearDiagnostic(self: *Context) void {
@@ -137,12 +147,34 @@ pub const Context = struct {
     /// site reads `return ctx.raise("...", .{})`.
     /// 送出を処理するものはまだないので、送出は機械を抜けて、その行の読み取りまで戻る。
     /// これは最も外側の継続への脱出である(docs/design/runtime.md の未処理の例外)。
+    /// 条件を作れなければ、`makeCondition` の失敗をそのまま返し、`raised` は変えない。
     pub fn raise(self: *Context, comptime fmt: []const u8, args: anytype) Error {
-        const message = std.fmt.allocPrint(self.persist, fmt, args) catch return error.OutOfMemory;
-        const condition = self.persist.create(value_mod.Condition) catch return error.OutOfMemory;
-        condition.* = .{ .message = message };
-        self.raised = condition;
+        self.raised = try self.makeCondition(.@"error", fmt, args, .empty_list_value);
         return error.Raised;
+    }
+
+    /// A new condition of `kind`, with the message `fmt` formatted with `args`
+    /// and the list `irritants`.
+    /// 条件とメッセージは、送出のための予約領域を使ってよい確保地点である。上限に
+    /// 達していても、予約が残っていれば作れる。予約も尽きたときは `error.ReserveExhausted`
+    /// を返す。メッセージの確保とこの条件の確保の間に GC は走らない(ADR-0031)ので、
+    /// `irritants` とメッセージはどこにも登録しなくてよい。
+    pub fn makeCondition(self: *Context, kind: value_mod.ConditionKind, comptime fmt: []const u8, args: anytype, irritants: Value) Error!Value {
+        const message = self.heap.printString(.raise_reserve, fmt, args) catch |e| return reserveFailure(e);
+        const condition = self.heap.createIn(.raise_reserve, value_mod.Condition, .{
+            .kind = kind,
+            .message = .fromString(message),
+            .irritants = irritants,
+        }) catch |e| return reserveFailure(e);
+        return .fromCondition(condition);
+    }
+
+    /// The error an allocation from the reserve for raising fails with.
+    fn reserveFailure(e: heap_mod.Error) Error {
+        return switch (e) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.HeapLimit => error.ReserveExhausted,
+        };
     }
 };
 
@@ -158,7 +190,10 @@ test "raise keeps a condition with the message, and returns Raised" {
     try std.testing.expect(ctx.raised == null);
     try std.testing.expectEqualStrings("", ctx.diagnostic());
     try std.testing.expectEqual(error.Raised, ctx.raise("bad {s} {d}", .{ "thing", 3 }));
-    try std.testing.expectEqualStrings("bad thing 3", ctx.raised.?.message);
+    const condition = ctx.raised.?.asCondition().?;
+    try std.testing.expectEqualStrings("bad thing 3", condition.messageText());
+    try std.testing.expectEqual(value_mod.ConditionKind.@"error", condition.kind);
+    try std.testing.expectEqual(value_mod.Kind.empty_list, condition.irritants.kind());
     try std.testing.expectEqualStrings("bad thing 3", ctx.diagnostic());
     ctx.clearDiagnostic();
     try std.testing.expect(ctx.raised == null);
@@ -211,7 +246,65 @@ test "an allocation the limit refuses is the error heap limit exceeded, for an o
     ctx.clearDiagnostic();
     try std.testing.expectEqual(error.Raised, ctx.createFrame(2, null));
     try std.testing.expectEqualStrings("heap limit exceeded", ctx.diagnostic());
-    // 何も確保されておらず、ホストの失敗はこのエラーではない。
-    try std.testing.expectEqual(0, ctx.heap.count);
+    // 断られたものは確保されていない。ヒープにあるのは、予約から作った2つの条件と
+    // そのメッセージだけである。ホストの失敗は、このエラーではない。
+    try std.testing.expectEqual(0, ctx.heap.countOf(value_mod.Pair));
+    try std.testing.expectEqual(0, ctx.heap.countOf(value_mod.Frame));
+    try std.testing.expectEqual(2, ctx.heap.countOf(value_mod.Condition));
+    try std.testing.expectEqual(4, ctx.heap.count);
     try std.testing.expectEqual(error.OutOfMemory, ctx.heapFailure(error.OutOfMemory));
+}
+
+test "makeCondition keeps the kind, the message and the irritants it is given" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    const irritants = try ctx.heap.cons(.fromFixnum(5), .empty_list_value);
+    const v = try ctx.makeCondition(.file, "cannot open {s}", .{"x.scm"}, irritants);
+    const c = v.asCondition().?;
+    try std.testing.expectEqual(value_mod.ConditionKind.file, c.kind);
+    try std.testing.expectEqualStrings("cannot open x.scm", c.messageText());
+    try std.testing.expectEqual(irritants.asPair().?, c.irritants.asPair().?);
+    // 作るだけで、送出はしない。
+    try std.testing.expect(ctx.raised == null);
+}
+
+test "when the reserve is used up too, raise returns ReserveExhausted and leaves raised empty" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.initWithOptions(arena.allocator(), std.testing.allocator, .{ .limit = 1, .raise_reserve = 0 });
+    defer ctx.deinit();
+    try std.testing.expectEqual(error.ReserveExhausted, ctx.raise("first", .{}));
+    try std.testing.expect(ctx.raised == null);
+    try std.testing.expectEqualStrings("", ctx.diagnostic());
+    // 上限の超過から送出に移るときも同じである。
+    try std.testing.expectEqual(error.ReserveExhausted, ctx.create(value_mod.Pair, .{ .car = .empty_list_value, .cdr = .empty_list_value }));
+    try std.testing.expect(ctx.raised == null);
+    try std.testing.expectEqual(0, ctx.heap.count);
+}
+
+test "the value raised is a root until it is cleared" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_]usize{ 4096, 0 }) |capacity| {
+        var ctx = try Context.initWithOptions(arena.allocator(), std.testing.allocator, .{ .work_capacity = capacity });
+        defer ctx.deinit();
+        _ = ctx.raise("kept {d}", .{1}) catch {};
+        _ = try ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+        ctx.collectIdle();
+        // 条件とメッセージが残り、ゴミのペアは回収された。
+        try std.testing.expectEqual(1, ctx.heap.countOf(value_mod.Condition));
+        try std.testing.expectEqual(1, ctx.heap.countOf(value_mod.String));
+        try std.testing.expectEqual(2, ctx.heap.count);
+        try std.testing.expectEqualStrings("kept 1", ctx.diagnostic());
+        // 条件でない値も、送出された値ならルートである。
+        ctx.raised = try ctx.heap.cons(.fromFixnum(2), .empty_list_value);
+        ctx.collectIdle();
+        try std.testing.expectEqual(1, ctx.heap.countOf(value_mod.Pair));
+        try std.testing.expectEqual(0, ctx.heap.countOf(value_mod.Condition));
+        ctx.clearDiagnostic();
+        ctx.collectIdle();
+        try std.testing.expectEqual(0, ctx.heap.count);
+    }
 }

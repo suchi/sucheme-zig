@@ -6,9 +6,10 @@
 //! 1e は未定義の変数の目印を加える。スライス 1f は条件オブジェクトと、コア IR と
 //! 継続のレイアウトを加える。この2つは値ではないが、同じようにたどられる。
 //! スライス 1g は、ペア・クロージャ・フレーム・継続フレーム・引数リストを GC ヒープ
-//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2i は、
-//! 展開器の構文環境(値ではないが GC ヒープにある)を加え、スライス 2j は大域変数の
-//! 束縛セル(同じく GC ヒープにある)を加える。
+//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2b は
+//! 条件オブジェクトを GC ヒープに移す。スライス 2i は、展開器の構文環境(値ではない
+//! が GC ヒープにある)を加え、スライス 2j は大域変数の束縛セル(同じく GC ヒープに
+//! ある)を加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -44,6 +45,7 @@ pub const Value = union(enum) {
     /// プログラムに届くことはない。
     uninitialized,
     /// What a Scheme error is: an object that says what went wrong (R7RS 6.11).
+    /// GC ヒープにある。
     condition: *Condition,
     /// A character: a Unicode scalar value (R7RS 6.6), so never a surrogate.
     character: u21,
@@ -108,8 +110,8 @@ pub const Value = union(enum) {
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector => true,
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .condition, .character => false,
+            .pair, .closure, .string, .vector, .condition => true,
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
 
@@ -250,12 +252,26 @@ pub const Value = union(enum) {
     }
 };
 
-/// The object an error is.
-/// スライス 1f はメッセージだけを持つ。段階2で、エラーの種類と、`error` が取る
-/// irritant を加える(R7RS 6.11)。
+/// The object an error is: what kind of error, the message, and the objects
+/// the message is about (R7RS 6.11).
+/// GC ヒープにある(スライス 2b)。上限に達していても作れるよう、作る地点は送出の
+/// ための予約領域から確保する(`Context.makeCondition`)。
 pub const Condition = struct {
-    message: []const u8,
+    kind: ConditionKind,
+    /// A string.
+    message: Value,
+    /// A list, empty when the message is about nothing in particular.
+    irritants: Value,
+
+    /// The text of the message.
+    pub fn messageText(self: *const Condition) []const u8 {
+        return self.message.asString().?.bytes;
+    }
 };
+
+/// Which of the predicates of R7RS 6.11 a condition answers to.
+/// `error-object?` はすべてに真で、`read-error?` と `file-error?` はそれぞれ1つに真である。
+pub const ConditionKind = enum { @"error", read, file };
 
 pub const Pair = struct {
     car: Value,
@@ -552,13 +568,13 @@ pub const Kont = struct {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, SyntacticEnv, SyntacticBinding, LocalBinding, Cell };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
-/// IR, which until a later slice stays where the expander allocated it, the
-/// procedures implemented in Zig, and the conditions.
+/// IR, which until a later slice stays where the expander allocated it, and the
+/// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Condition };
+pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
 
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector };
@@ -666,11 +682,14 @@ test "the uninitialized marker is its own kind, and is true like any value but #
     try std.testing.expect(Value.unspecified_value.kind() != v.kind());
 }
 
-test "a condition is its own kind, and carries its message" {
-    var c: Condition = .{ .message = "went wrong" };
+test "a condition is its own kind, a heap object, and carries its message" {
+    var bytes = "went wrong".*;
+    var message: String = .{ .bytes = &bytes, .is_ascii = true };
+    var c: Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
     const v: Value = .fromCondition(&c);
     try std.testing.expectEqual(Kind.condition, v.kind());
-    try std.testing.expectEqualStrings("went wrong", v.asCondition().?.message);
+    try std.testing.expectEqualStrings("went wrong", v.asCondition().?.messageText());
+    try std.testing.expect(v.pointsIntoHeap());
     try std.testing.expect(v.asFixnum() == null);
     try std.testing.expect(v.asClosure() == null);
     try std.testing.expect(Value.fromFixnum(1).asCondition() == null);
@@ -875,8 +894,9 @@ const Samples = struct {
     lambda: Lambda = undefined,
     closure_a: Closure = undefined,
     closure_b: Closure = undefined,
-    condition_a: Condition = .{ .message = "m" },
-    condition_b: Condition = .{ .message = "m" },
+    message: String = undefined,
+    condition_a: Condition = undefined,
+    condition_b: Condition = undefined,
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -892,6 +912,10 @@ const Samples = struct {
         self.lambda = .{ .arity = 0, .frame_size = 0, .body = &self.body };
         self.closure_a = .{ .lambda = &self.lambda, .env = null };
         self.closure_b = .{ .lambda = &self.lambda, .env = null };
+        self.message = .{ .bytes = &self.bytes_a, .is_ascii = true };
+        // 中身が同じ2つの条件。
+        self.condition_a = .{ .kind = .@"error", .message = .fromString(&self.message), .irritants = .empty_list_value };
+        self.condition_b = .{ .kind = .@"error", .message = .fromString(&self.message), .irritants = .empty_list_value };
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
