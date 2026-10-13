@@ -159,13 +159,38 @@ pub const Interpreter = struct {
     }
 };
 
+/// The most bytes a description writes of the values it shows: the irritants
+/// of a condition, or a value raised that is not a condition.
+/// Why: プリミティブの失敗の irritant は呼び出しの引数なので、長いリストやベクタがそのまま
+/// 診断に入りうる。WASM の境界は診断の一行を固定の大きさのバッファに書き、収まらなければ
+/// メッセージごと失う(`src/wasm.zig` の `sucheme_eval_begin`)。値の部分だけを切り、
+/// メッセージは切らない。
+pub const shown_value_bytes = 128;
+
 /// Writes `v`, a value raised, as `diagnostic` shows it.
+/// 値の部分は `shown_value_bytes` までで切り、切ったら `...` を付ける。
 fn describeRaised(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, v: value.Value) printer.Error!void {
-    const c = v.asCondition() orelse return printer.write(out, scratch, symbols, v);
-    // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
-    // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
-    if (c.message.asString()) |text| try out.writeAll(text.bytes) else try printer.write(out, scratch, symbols, c.message);
-    var it = c.irritants;
+    var buf: [shown_value_bytes]u8 = undefined;
+    var shown: std.Io.Writer = .fixed(&buf);
+    const written = if (v.asCondition()) |c| blk: {
+        // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
+        // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
+        if (c.message.asString()) |text| try out.writeAll(text.bytes) else break :blk printer.write(&shown, scratch, symbols, c.message);
+        break :blk writeIrritants(&shown, scratch, symbols, c.irritants);
+    } else printer.write(&shown, scratch, symbols, v);
+    written catch |e| switch (e) {
+        error.WriteFailed => {
+            try out.writeAll(shown.buffered());
+            return out.writeAll("...");
+        },
+        else => return e,
+    };
+    try out.writeAll(shown.buffered());
+}
+
+/// Writes each of `irritants`, a list, after a space.
+fn writeIrritants(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, irritants: value.Value) printer.Error!void {
+    var it = irritants;
     while (it.asPair()) |p| : (it = p.cdr) {
         try out.writeByte(' ');
         try printer.write(out, scratch, symbols, p.car);
@@ -624,4 +649,35 @@ test "when the description cannot be allocated, the diagnostic says out of memor
     failing.resize_fail_index = std.math.maxInt(usize);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
     try std.testing.expectEqualStrings("bad thing", interp.diagnostic());
+}
+
+test "the values a description shows are cut after a bound, and the message is kept whole" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))", &w);
+    // 長い引数の irritant は、上限で切って `...` を付ける。メッセージは切らない。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(length (build 1000 0))", &w));
+    const d = interp.diagnostic();
+    try std.testing.expect(std.mem.startsWith(u8, d, "wrong type of argument to length (1 2 3 4 5 "));
+    try std.testing.expect(std.mem.endsWith(u8, d, "..."));
+    try std.testing.expectEqual("wrong type of argument to length".len + shown_value_bytes + "...".len, d.len);
+    // 条件でない値も同じである。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(raise (build 1000 '()))", &w));
+    try std.testing.expectEqual(shown_value_bytes + "...".len, interp.diagnostic().len);
+    // 上限にちょうど収まる値は切らない。
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(std.testing.allocator);
+    try line.appendSlice(std.testing.allocator, "(raise '");
+    try line.appendNTimes(std.testing.allocator, 'x', shown_value_bytes);
+    try line.append(std.testing.allocator, ')');
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line.items, &w));
+    try std.testing.expectEqual(shown_value_bytes, interp.diagnostic().len);
+    // 長いメッセージは切らない。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", &w));
+    try std.testing.expectEqualStrings("unbound variable: a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", interp.diagnostic());
 }
