@@ -502,11 +502,19 @@ const Expander = struct {
     /// 定義の領域は本体の全体である(R7RS 5.3.2)。そのため、仮引数と同じ名前の定義は、
     /// 仮引数を隠す新しい変数になる。同じ名前を2回定義することは誤りである(同節)。
     /// `define` の検査は、展開するときに行う。`define-syntax` の検査は、ここで行う。
+    ///
+    /// `define-syntax` の変換子が読むのに使った識別子(`rules.compile` の `consulted` と、
+    /// 変換子の先頭)は、後の定義が束縛するたびに、意味が変わらないことを確かめる
+    /// (`checkDepended`)。本体の終わりまで待てない。走査の途中でマクロを適用するので、
+    /// 待つと、定義の時点の検査が見ていない読み方で先に適用される。
     fn scanBody(self: *Expander, body: []const Value, rib: *SyntacticEnv, slots: *u32) Error!Body {
         var forms: std.ArrayList(Value) = .empty;
         // この本体が定義した名前と、判定に使った先頭の識別子。
         var defined: std.ArrayList(Value) = .empty;
         var decided: std.ArrayList(Decided) = .empty;
+        // 変換子が読むのに使った識別子と、そのときの意味。
+        var depended: std.ArrayList(Decided) = .empty;
+        var consulted: std.ArrayList(Value) = .empty;
         for (body, 0..) |original, i| {
             var form = original;
             const definition = while (true) {
@@ -518,12 +526,19 @@ const Expander = struct {
                             const target = try self.definedName(pair);
                             try self.defineOnce(&defined, target, "define");
                             try self.nextSlot(rib, slots, target);
+                            try self.checkDepended(rib, depended.items, target, "define");
                             try forms.append(self.scratch, form);
                         },
                         .@"define-syntax" => {
-                            const syntax = try self.syntaxDefinition(rib, try self.itemsOf(form));
+                            consulted.clearRetainingCapacity();
+                            const syntax = try self.syntaxDefinition(rib, try self.itemsOf(form), &consulted);
                             try self.defineOnce(&defined, syntax.name, "define-syntax");
+                            for (consulted.items) |id| try depended.append(self.scratch, .{
+                                .id = id,
+                                .denotation = try syntax_env.resolve(self.ctx, rib, id),
+                            });
                             try syntax_env.bindMacro(self.ctx, rib, syntax.name, syntax.macro);
+                            try self.checkDepended(rib, depended.items, syntax.name, "define-syntax");
                         },
                         else => break false,
                     },
@@ -564,6 +579,26 @@ const Expander = struct {
         return body;
     }
 
+    /// Checks that `bound`, a name a definition of a body has just bound in
+    /// `rib`, does not change what an identifier a transformer of the body was
+    /// read by means.
+    /// Why: R7RS 5.4 は、定義の意味を決めるのに束縛を知る必要がある識別子を、その定義や
+    /// 同じ本体の前の定義が束縛することを誤りとしている。照合器はこれらの意味を適用の
+    /// たびに引き直すので、変わったまま適用すると、定義の時点の検査(深さの検査など)が
+    /// 見ていない読み方になり、処理系が落ちる。
+    /// 束縛を足して意味が変わりうるのは、元のシンボルが同じ識別子だけである。別名は、
+    /// 束縛が見つからなければ内側の識別子で引き直すからである。
+    fn checkDepended(self: *Expander, rib: *SyntacticEnv, depended: []const Decided, bound: Value, comptime form_name: []const u8) Error!void {
+        const symbol = syntax_env.baseSymbol(bound);
+        for (depended) |d| {
+            if (syntax_env.baseSymbol(d.id) != symbol) continue;
+            if (!syntax_env.sameDenotation(try syntax_env.resolve(self.ctx, rib, d.id), d.denotation)) return self.ctx.raise(
+                "bad " ++ form_name ++ ": {s} is defined after a syntax definition of this body that depends on its meaning",
+                .{self.nameOf(d.id)},
+            );
+        }
+    }
+
     /// The name a `(define ...)` form at the start of a body defines.
     /// `(define (name parameter ...) body ...)` は、ヘッダの先頭にあるものを名前とする。
     fn definedName(self: *Expander, form: *const value_mod.Pair) Error!Value {
@@ -594,7 +629,9 @@ const Expander = struct {
     /// macro of the transformer in `env`.
     /// 変換子は `syntax-rules` の形式で、その先頭は `env` で `syntax-rules` を意味しなければ
     /// ならない。同じ綴りを仮引数が束縛していれば、`syntax-rules` ではない。
-    fn syntaxDefinition(self: *Expander, env: ?*SyntacticEnv, items: []const Value) Error!SyntaxDefinition {
+    /// `consulted` が null でなければ、変換子の先頭と、`rules.compile` が意味を引いた
+    /// 識別子を足す。
+    fn syntaxDefinition(self: *Expander, env: ?*SyntacticEnv, items: []const Value, consulted: ?*std.ArrayList(Value)) Error!SyntaxDefinition {
         if (items.len != 3)
             return self.ctx.raise("bad define-syntax: expected (define-syntax keyword transformer)", .{});
         if (!syntax_env.isIdentifier(items[1]))
@@ -603,7 +640,8 @@ const Expander = struct {
             return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
         if (try self.specialOf(env, spec.car) != .@"syntax-rules")
             return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
-        const m = try rules.compile(self.ctx, self.scratch, items[2], env);
+        if (consulted) |list| try list.append(self.scratch, spec.car);
+        const m = try rules.compile(self.ctx, self.scratch, items[2], env, consulted);
         return .{ .name = items[1], .macro = m };
     }
 
@@ -617,7 +655,7 @@ const Expander = struct {
             .body => unreachable,
             .top => {},
         }
-        const syntax = try self.syntaxDefinition(task.env, items);
+        const syntax = try self.syntaxDefinition(task.env, items, null);
         try self.ctx.globals.defineSyntax(self.ctx.persist, syntax_env.baseSymbol(syntax.name), syntax.macro);
         try self.constant(task, .unspecified_value);
     }

@@ -37,7 +37,13 @@ pub const Error = context.Error;
 /// the caller has resolved, and makes the macro it describes, defined in `env`.
 /// 誤りは定義の時点で報告する。マクロが使われるまで待つと、使われないマクロの誤りが
 /// 見つからない。
-pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*SyntacticEnv) Error!*Macro {
+///
+/// `consulted` が null でなければ、読み方を決めるのに `env` での意味を引いた識別子
+/// (パターンの `_` と、パターンとテンプレートの省略記号)を、重複なしに足す。照合器は
+/// 適用のたびにこれらの意味を `env` で引き直すので、`env` が後から束縛を足す rib なら、
+/// 呼び出し側は、これらの意味が変わらないことを確かめなければならない。変わると、
+/// ここでの検査が見ていない読み方で適用される(src/syntax/expand.zig の `scanBody`)。
+pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*SyntacticEnv, consulted: ?*std.ArrayList(Value)) Error!*Macro {
     const shape = "bad syntax-rules: expected (syntax-rules (literal ...) rule ...)";
     const after_keyword = spec.asPair().?.cdr;
     const literals_pair = after_keyword.asPair() orelse return ctx.raise(shape, .{});
@@ -50,7 +56,7 @@ pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*Sy
     }
     if (rest.kind() != .empty_list) return ctx.raise(shape, .{});
     const rules = literals_pair.cdr;
-    const s: Spec = .{ .ctx = ctx, .scratch = scratch, .literals = literals, .env = env };
+    const s: Spec = .{ .ctx = ctx, .scratch = scratch, .literals = literals, .env = env, .consulted = consulted };
     var r = rules;
     while (r.asPair()) |p| : (r = p.cdr) {
         const rule = try s.ruleOf(p.car);
@@ -110,6 +116,9 @@ const Spec = struct {
     scratch: std.mem.Allocator,
     literals: Value,
     env: ?*SyntacticEnv,
+    /// Where to note the identifiers whose meaning in `env` was looked up, or
+    /// null (`compile`).
+    consulted: ?*std.ArrayList(Value) = null,
 
     /// The parts of `rule`, after checking its shape.
     /// R7RS 4.3.2 は、規則のパターンを、識別子で始まるリストとしている。
@@ -139,13 +148,30 @@ const Spec = struct {
         return .variable;
     }
 
+    /// Whether the identifier `id` of a pattern or a template is the ellipsis.
+    /// テンプレートで要るのは省略記号かどうかだけなので、`role` と違って `_` の意味を
+    /// 引かない。テンプレートの `_` は、どちらにしても別名になる。
+    fn isEllipsis(self: Spec, id: Value) Error!bool {
+        var rest = self.literals;
+        while (rest.asPair()) |p| : (rest = p.cdr) {
+            if (syntax_env.boundIdentifierEq(p.car, id)) return false;
+        }
+        return self.means(id, "...");
+    }
+
     /// Whether `id` means, where the transformer is defined, what `name` means
     /// at the top level.
     /// 綴りを先に比べる。比べずに解決すると、最上位で定義したマクロのパターン変数の
-    /// それぞれに、REPL の未束縛のセルを作ることになる。
+    /// それぞれに、REPL の未束縛のセルを作ることになる。綴りが同じなら、意味を引いた
+    /// 識別子として `consulted` に足す。
     fn means(self: Spec, id: Value, comptime name: []const u8) Error!bool {
         const symbol = self.ctx.symbols.index.get(name) orelse return false;
         if (syntax_env.baseSymbol(id) != symbol) return false;
+        if (self.consulted) |list| {
+            for (list.items) |seen| {
+                if (syntax_env.boundIdentifierEq(seen, id)) break;
+            } else try list.append(self.scratch, id);
+        }
         return syntax_env.sameDenotation(
             try syntax_env.resolve(self.ctx, self.env, id),
             try syntax_env.resolve(self.ctx, null, .fromSymbol(symbol)),
@@ -155,7 +181,7 @@ const Spec = struct {
     /// Whether the element after `p` in a list is the ellipsis.
     fn ellipsisFollows(self: Spec, p: *const value_mod.Pair) Error!bool {
         const next = p.cdr.asPair() orelse return false;
-        return syntax_env.isIdentifier(next.car) and try self.role(next.car) == .ellipsis;
+        return syntax_env.isIdentifier(next.car) and try self.isEllipsis(next.car);
     }
 
     /// The pattern variables of `pattern`, after checking that it uses only the
@@ -223,12 +249,12 @@ const Spec = struct {
                     "bad syntax-rules: {s} needs as many ellipses in the template as in its pattern",
                     .{self.ctx.symbols.nameOf(syntax_env.baseSymbol(item.form))},
                 );
-            } else if (try self.role(item.form) == .ellipsis) {
+            } else if (try self.isEllipsis(item.form)) {
                 return self.ctx.raise("bad syntax-rules: an ellipsis must follow a template", .{});
             },
             .pair => {
                 const first = item.form.asPair().?;
-                if (syntax_env.isIdentifier(first.car) and try self.role(first.car) == .ellipsis)
+                if (syntax_env.isIdentifier(first.car) and try self.isEllipsis(first.car))
                     return self.ctx.raise("bad syntax-rules: ellipsis escapes are not supported yet", .{});
                 var rest = item.form;
                 while (rest.asPair()) |p| {
@@ -465,7 +491,7 @@ const Fixture = struct {
 
     /// The macro of the `syntax-rules` form `src`, defined at the top level.
     fn macro(self: *Fixture, src: []const u8) !*Macro {
-        return compile(&self.ctx, self.arena.allocator(), try self.read(src), null);
+        return compile(&self.ctx, self.arena.allocator(), try self.read(src), null, null);
     }
 
     /// What `use` transcribes to, written out.
@@ -578,7 +604,7 @@ fn expectDeep(depth: usize) !void {
     const template = try nested(&f, x, depth);
     const rule = try f.cons(pattern, try f.cons(template, .empty_list_value));
     const spec = try f.cons(try f.sym("syntax-rules"), try f.cons(.empty_list_value, try f.cons(rule, .empty_list_value)));
-    const m = try compile(&f.ctx, f.arena.allocator(), spec, null);
+    const m = try compile(&f.ctx, f.arena.allocator(), spec, null, null);
     const use = try f.cons(try f.sym("m"), try f.cons(try nested(&f, .fromFixnum(5), depth), .empty_list_value));
     var out = try transform(&f.ctx, f.arena.allocator(), m, use, null);
     for (0..depth) |_| {
