@@ -1,5 +1,5 @@
-//! Procedure primitives (R7RS 6.10): `procedure?`, `apply`, `call/cc` and
-//! `dynamic-wind`.
+//! Procedure primitives (R7RS 6.10): `procedure?`, `apply`, `call/cc`,
+//! `dynamic-wind`, `values` and `call-with-values`.
 //!
 //! `apply`、`call/cc`(`call-with-current-continuation`)、`dynamic-wind` は機械操作
 //! プリミティブである。ここには名前と引数の個数の範囲だけを置き、操作は `Machine.apply`
@@ -24,6 +24,8 @@ pub const primitives = [_]Primitive{
     .{ .name = "call-with-current-continuation", .min_args = 1, .max_args = 1, .body = .{ .machine = .call_cc } },
     .{ .name = "call/cc", .min_args = 1, .max_args = 1, .body = .{ .machine = .call_cc } },
     .{ .name = "dynamic-wind", .min_args = 3, .max_args = 3, .body = .{ .machine = .dynamic_wind } },
+    .{ .name = "values", .min_args = 0, .max_args = null, .body = .{ .machine = .values } },
+    .{ .name = "call-with-values", .min_args = 2, .max_args = 2, .body = .{ .machine = .call_with_values } },
 };
 
 /// `(procedure? obj)`: true of the procedures made by `lambda`, of the ones
@@ -31,7 +33,7 @@ pub const primitives = [_]Primitive{
 fn isProcedure(_: *const Services, args: []const Value) Error!Value {
     return .fromBool(switch (args[0].kind()) {
         .primitive, .closure, .continuation => true,
-        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .alias, .record, .record_type => false,
+        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .alias, .record, .record_type, .multiple_values => false,
     });
 }
 
@@ -51,7 +53,7 @@ fn callWith(arg: Value) !bool {
 }
 
 test "procedure? takes one argument, apply two or more, call/cc one and dynamic-wind three" {
-    try std.testing.expectEqual(5, primitives.len);
+    try std.testing.expectEqual(7, primitives.len);
     try std.testing.expectEqualStrings("procedure?", primitives[0].name);
     try std.testing.expectEqual(1, primitives[0].min_args);
     try std.testing.expectEqual(1, primitives[0].max_args.?);
@@ -70,6 +72,15 @@ test "procedure? takes one argument, apply two or more, call/cc one and dynamic-
     try std.testing.expectEqual(3, primitives[4].min_args);
     try std.testing.expectEqual(3, primitives[4].max_args.?);
     try std.testing.expectEqual(value.MachineOp.dynamic_wind, primitives[4].body.machine);
+    // `values` は何個でも受け取り、`call-with-values` は生産者と受け手の2つを受け取る。
+    try std.testing.expectEqualStrings("values", primitives[5].name);
+    try std.testing.expectEqual(0, primitives[5].min_args);
+    try std.testing.expectEqual(null, primitives[5].max_args);
+    try std.testing.expectEqual(value.MachineOp.values, primitives[5].body.machine);
+    try std.testing.expectEqualStrings("call-with-values", primitives[6].name);
+    try std.testing.expectEqual(2, primitives[6].min_args);
+    try std.testing.expectEqual(2, primitives[6].max_args.?);
+    try std.testing.expectEqual(value.MachineOp.call_with_values, primitives[6].body.machine);
 }
 
 test "procedure? is true of a primitive, of a machine operation and of a closure" {
@@ -93,6 +104,9 @@ test "procedure? is false of everything that is not a procedure" {
     try std.testing.expect(!try callWith(.unspecified_value));
     var condition: value.Condition = .{ .kind = .@"error", .message = .empty_list_value, .irritants = .empty_list_value };
     try std.testing.expect(!try callWith(.fromCondition(&condition)));
+    var items = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+    var multiple: value.MultipleValues = .{ .items = &items };
+    try std.testing.expect(!try callWith(.fromMultipleValues(&multiple)));
     var f: test_support.Fixture = undefined;
     f.init();
     defer f.deinit();
