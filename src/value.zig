@@ -752,7 +752,7 @@ pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, cl
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
-pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules" };
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error" };
 
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).

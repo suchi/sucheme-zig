@@ -112,6 +112,9 @@ const Expander = struct {
                         .@"set!" => self.set(task, items),
                         .@"define-syntax" => self.defineSyntax(task, items),
                         .@"syntax-rules" => self.ctx.raise("bad syntax-rules: it is only allowed as the transformer of a syntax definition", .{}),
+                        .@"let-syntax" => self.letSyntax(task, items, false),
+                        .@"letrec-syntax" => self.letSyntax(task, items, true),
+                        .@"syntax-error" => self.syntaxError(items),
                     },
                     .macro => unreachable,
                     .local, .global => {},
@@ -640,8 +643,6 @@ const Expander = struct {
 
     /// Checks `(define-syntax keyword transformer)` (R7RS 5.4), and makes the
     /// macro of the transformer in `env`.
-    /// 変換子は `syntax-rules` の形式で、その先頭は `env` で `syntax-rules` を意味しなければ
-    /// ならない。同じ綴りを仮引数が束縛していれば、`syntax-rules` ではない。
     /// `consulted` が null でなければ、変換子の先頭と、`rules.compile` が意味を引いた
     /// 識別子を足す。
     fn syntaxDefinition(self: *Expander, env: ?*SyntacticEnv, items: []const Value, consulted: ?*std.ArrayList(Value)) Error!SyntaxDefinition {
@@ -649,13 +650,104 @@ const Expander = struct {
             return self.ctx.raise("bad define-syntax: expected (define-syntax keyword transformer)", .{});
         if (!syntax_env.isIdentifier(items[1]))
             return self.ctx.raise("bad define-syntax: the keyword must be an identifier", .{});
-        const spec = items[2].asPair() orelse
-            return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
+        return .{ .name = items[1], .macro = try self.transformer(env, items[2], consulted, "define-syntax") };
+    }
+
+    /// The macro of the transformer `form`, made in `env`.
+    /// 変換子は `syntax-rules` の形式で、その先頭は `env` で `syntax-rules` を意味しなければ
+    /// ならない。同じ綴りを仮引数が束縛していれば、`syntax-rules` ではない。
+    fn transformer(self: *Expander, env: ?*SyntacticEnv, form: Value, consulted: ?*std.ArrayList(Value), comptime form_name: []const u8) Error!*value_mod.Macro {
+        const spec = form.asPair() orelse
+            return self.ctx.raise("bad " ++ form_name ++ ": the transformer must be a syntax-rules form", .{});
         if (try self.specialOf(env, spec.car) != .@"syntax-rules")
-            return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
+            return self.ctx.raise("bad " ++ form_name ++ ": the transformer must be a syntax-rules form", .{});
         if (consulted) |list| try list.append(self.scratch, spec.car);
-        const m = try rules.compile(self.ctx, self.scratch, items[2], env, consulted);
-        return .{ .name = items[1], .macro = m };
+        return rules.compile(self.ctx, self.scratch, form, env, consulted);
+    }
+
+    /// `(let-syntax ((keyword transformer) ...) body ...)` and `letrec-syntax`
+    /// (R7RS 4.3.1).
+    /// 本体は、キーワードを束縛した新しい環境で展開する。環境は rib を持たないので、
+    /// 本体の中の局所変数の番地は、外側と同じ深さから数える(`extendWithoutRib`)。
+    /// `let-syntax` の変換子は外側の環境で読み、`letrec-syntax` の変換子は、束縛を
+    /// 足した環境で読む。後者は、同じ束縛の中のキーワード(自分自身を含む)を見える。
+    ///
+    /// 本体は式の並びで、定義は置けない(式の位置の `begin` と同じ)。R7RS は本体と書くが、
+    /// rib を持たない環境には、定義が置くスロットが無い。仮に決めた制限である。
+    /// Why: 変換子が `_` や省略記号の意味を `letrec-syntax` の環境で引くので、環境の束縛を
+    /// 先に置いてから変換子を作る。後から束縛が増えると、定義の時点の検査が見ていない読み方で
+    /// 適用される。束縛はいったん空のマクロに置き、変換子ができたら中身を入れ替える。
+    fn letSyntax(self: *Expander, task: Task, items: []const Value, comptime recursive: bool) Error!void {
+        const form_name = if (recursive) "letrec-syntax" else "let-syntax";
+        if (items.len < 3)
+            return self.ctx.raise("bad " ++ form_name ++ ": expected (" ++ form_name ++ " ((keyword transformer) ...) body ...)", .{});
+        const bindings = try self.itemsOfBindings(items[1], form_name);
+        const inner = try syntax_env.extendWithoutRib(self.ctx, task.env);
+        const placeholders = try self.scratch.alloc(*value_mod.Macro, bindings.len);
+        // 変換子を読む環境。`letrec-syntax` では、束縛を足した環境である。
+        const read_in = if (recursive) inner else task.env;
+        for (bindings, placeholders, 0..) |binding, *placeholder, i| {
+            const pair = try self.itemsOfBinding(binding, form_name);
+            for (bindings[0..i]) |earlier| {
+                if (syntax_env.boundIdentifierEq(earlier.asPair().?.car, pair[0])) return self.ctx.raise(
+                    "bad " ++ form_name ++ ": {s} is bound twice",
+                    .{self.nameOf(pair[0])},
+                );
+            }
+            if (recursive) {
+                placeholder.* = try self.ctx.create(value_mod.Macro, .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = inner });
+                try syntax_env.bindMacro(self.ctx, inner, pair[0], placeholder.*);
+            }
+        }
+        for (bindings, placeholders) |binding, placeholder| {
+            const pair = try self.itemsOfBinding(binding, form_name);
+            const macro = try self.transformer(read_in, pair[1], null, form_name);
+            if (recursive) {
+                placeholder.* = macro.*;
+            } else {
+                try syntax_env.bindMacro(self.ctx, inner, pair[0], macro);
+            }
+        }
+        try self.sequence(task.dest, items[2..], inner, .expression, 0);
+    }
+
+    /// The bindings of a `let-syntax`, a list of forms.
+    fn itemsOfBindings(self: *Expander, form: Value, comptime form_name: []const u8) Error![]const Value {
+        var items: std.ArrayList(Value) = .empty;
+        var rest = form;
+        while (rest.asPair()) |p| : (rest = p.cdr) try items.append(self.scratch, p.car);
+        if (rest.kind() != .empty_list)
+            return self.ctx.raise("bad " ++ form_name ++ ": the bindings must be a list", .{});
+        return items.items;
+    }
+
+    /// The keyword and the transformer of one binding of a `let-syntax`.
+    fn itemsOfBinding(self: *Expander, binding: Value, comptime form_name: []const u8) Error![2]Value {
+        const bad = "bad " ++ form_name ++ ": a binding must be (keyword transformer)";
+        const first = binding.asPair() orelse return self.ctx.raise(bad, .{});
+        const second = first.cdr.asPair() orelse return self.ctx.raise(bad, .{});
+        if (second.cdr.kind() != .empty_list) return self.ctx.raise(bad, .{});
+        if (!syntax_env.isIdentifier(first.car))
+            return self.ctx.raise("bad " ++ form_name ++ ": the keyword must be an identifier", .{});
+        return .{ first.car, second.car };
+    }
+
+    /// `(syntax-error message datum ...)` (R7RS 4.3.3): an error found while
+    /// expanding, which a handler cannot catch because nothing has run yet.
+    /// 引数は評価せず、データとして報告する。マクロのテンプレートが導入した識別子は、
+    /// 元のシンボルで書く。
+    fn syntaxError(self: *Expander, items: []const Value) Error!void {
+        const message = if (items.len >= 2) items[1].asString() else null;
+        if (message == null)
+            return self.ctx.raise("bad syntax-error: expected (syntax-error \"message\" datum ...)", .{});
+        var irritants: Value = .empty_list_value;
+        var i = items.len;
+        while (i > 2) {
+            i -= 1;
+            irritants = self.ctx.heap.cons(try self.stripAliases(items[i]), irritants) catch |e| return self.ctx.heapFailure(e);
+        }
+        self.ctx.raised = try self.ctx.makeCondition(.@"error", "{s}", .{message.?.bytes}, irritants);
+        return error.Raised;
     }
 
     /// `(define-syntax keyword transformer)` at the top level (R7RS 5.4).
@@ -1154,6 +1246,35 @@ test "a macro's template binds its own tmp, apart from the tmp of the use" {
         "(lambda (tmp x) (swap! tmp x))",
         "(lambda 2 2 (call (lambda 1 1 (seq (set-local tmp 1 0 (local x 1 1)) (set-local x 1 1 (local tmp 0 0)))) (local tmp 0 0)))",
     );
+}
+
+test "the body of a let-syntax counts frames from the lambda around it, not from the syntactic scope" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // let-syntax の環境は rib を持たないので、本体の中の外側の変数は、深さ0である。
+    try f.expectExpands("(lambda (x) (let-syntax ((m (syntax-rules () ((_) x)))) (m)))", "(lambda 1 1 (local x 0 0))");
+    try f.expectExpands("(lambda (x) (let-syntax ((m (syntax-rules () ((_) x)))) (lambda (y) (m))))", "(lambda 1 1 (lambda 1 1 (local x 1 0)))");
+    try f.expectExpands("(lambda (x) (letrec-syntax ((m (syntax-rules () ((_) x)))) (m)))", "(lambda 1 1 (local x 0 0))");
+    // 入れ子の let-syntax と letrec-syntax も、深さを足さない。
+    try f.expectExpands(
+        "(lambda (x) (let-syntax ((a (syntax-rules () ((_) x)))) (letrec-syntax ((b (syntax-rules () ((_) (a))))) (b))))",
+        "(lambda 1 1 (local x 0 0))",
+    );
+    // 本体は式の並びで、最後の式が値になる。
+    try f.expectExpands("(let-syntax () 1 2)", "(seq (const 1) (const 2))");
+}
+
+test "a let-syntax keyword hides the one around it only inside the body" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) 1)))", "(const #<unspecified>)");
+    try f.expectExpands("(let-syntax ((m (syntax-rules () ((_) 2)))) (m))", "(const 2)");
+    try f.expectExpands("(m)", "(const 1)");
+    // let-syntax の変換子は外側の環境で読み、letrec-syntax の変換子は自分たちの環境で読む。
+    try f.expectExpands("(let-syntax ((m (syntax-rules () ((_) (m))))) (m))", "(const 1)");
+    try f.expectExpands("(letrec-syntax ((m (syntax-rules () ((_ 0) 3) ((_ n) (m 0))))) (m 5))", "(const 3)");
 }
 
 test "the scan of a body expands a macro use once, and uses what it expanded to" {

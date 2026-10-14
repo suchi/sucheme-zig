@@ -266,7 +266,7 @@ test "isBound answers for the primitives, the special forms and nothing else" {
     // プリミティブは大域環境の束縛、特殊形式は REPL の最上位の構文の束縛である。
     try std.testing.expect(interp.isBound("+"));
     try std.testing.expect(interp.isBound(">="));
-    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!", "define-syntax", "syntax-rules" }) |keyword| {
+    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!", "define-syntax", "syntax-rules", "let-syntax", "letrec-syntax", "syntax-error" }) |keyword| {
         try std.testing.expect(interp.isBound(keyword));
     }
     // Why: 未束縛の例は、どの段階でも束縛されない名前にする。R7RS の名前は、いつか束縛される
