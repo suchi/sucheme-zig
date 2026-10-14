@@ -795,6 +795,33 @@ test "_ and the ellipsis in the list of literals are literals" {
     try std.testing.expectError(error.Raised, f.transcribed(dots, "(m 1 2)"));
 }
 
+test "R7RS 7.3's define-values is accepted, and its template with var0 inside an ellipsis is built" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const m = try f.macro(
+        \\(syntax-rules ()
+        \\  ((define-values (var0 var1 ... varn) expr)
+        \\   (begin
+        \\     (define var0 (call-with-values (lambda () expr) list))
+        \\     (define var1 (let ((v (cadr var0))) (set-cdr! var0 (cddr var0)) v)) ...
+        \\     (define varn (let ((v (cadr var0))) (set! var0 (car var0)) v)))))
+    );
+    // var0 は深さ0なので、var1 の繰り返しの内側で複製される。
+    try std.testing.expectEqualStrings(
+        "(#<alias begin> (#<alias define> a (#<alias call-with-values> (#<alias lambda> () 1) #<alias list>)) " ++
+            "(#<alias define> b (#<alias let> ((#<alias v> (#<alias cadr> a))) (#<alias set-cdr!> a (#<alias cddr> a)) #<alias v>)) " ++
+            "(#<alias define> c (#<alias let> ((#<alias v> (#<alias cadr> a))) (#<alias set-cdr!> a (#<alias cddr> a)) #<alias v>)) " ++
+            "(#<alias define> d (#<alias let> ((#<alias v> (#<alias cadr> a))) (#<alias set!> a (#<alias car> a)) #<alias v>)))",
+        try f.transcribed(m, "(define-values (a b c d) 1)"),
+    );
+    try std.testing.expectEqualStrings(
+        "(#<alias begin> (#<alias define> a (#<alias call-with-values> (#<alias lambda> () 1) #<alias list>)) " ++
+            "(#<alias define> d (#<alias let> ((#<alias v> (#<alias cadr> a))) (#<alias set!> a (#<alias car> a)) #<alias v>)))",
+        try f.transcribed(m, "(define-values (a d) 1)"),
+    );
+}
+
 /// `inner` wrapped in `depth` lists: `((((inner))))`.
 fn nested(f: *Fixture, inner: Value, depth: usize) !Value {
     var v = inner;
