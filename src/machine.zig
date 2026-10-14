@@ -2467,6 +2467,25 @@ test "a continuation takes any number of values, through a rewind too" {
     try f.expectInt(10, "(k 3 4)");
 }
 
+test "a continuation invoked with no values from the reserve makes its multiple values there" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    // 継続を先に作り、呼び出しの引数の鎖もヒープを埋める前に作る。
+    const k = try f.eval("(call/cc (lambda (k) k))");
+    const call = try f.ctx.heap.create(Args, .{ .value = k, .next = null });
+    try fillToLimit(&f);
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = null;
+    // 巻き戻しの途中で呼ばれる `after` が継続のときと同じく、予約の budget で適用する。上限の
+    // budget なら、0個の値の複数値のオブジェクトが作れず、HeapLimit になる。
+    switch (try f.machine.apply(&kont, &dyn, call, 0, .raise_reserve)) {
+        .value => |v| try std.testing.expect(v.kind() == .multiple_values),
+        .body => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+}
+
 test "the consumer of call-with-values runs in tail position, and the producer does not" {
     var f: Fixture = undefined;
     try f.initIn(std.heap.smp_allocator, .{});
