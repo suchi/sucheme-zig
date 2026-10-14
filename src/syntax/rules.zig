@@ -27,6 +27,7 @@ const Value = value_mod.Value;
 const Macro = value_mod.Macro;
 const context = @import("../context.zig");
 const Context = context.Context;
+const heap_mod = @import("../heap.zig");
 const syntax_env = @import("env.zig");
 const SyntacticEnv = syntax_env.SyntacticEnv;
 const properLength = @import("../prim/pair.zig").properLength;
@@ -469,12 +470,12 @@ const Spec = struct {
     /// 変数が繰り返しを駆動するのは、まだ使っていない深さが、`form` の中でその出現を囲む
     /// 省略記号の数と、`form` の後ろにまだ残っている省略記号の数 `extra` の合計より大きいとき
     /// である。それ以外の出現は、内側の省略記号が使うか、複製される(R7RS 4.3.2)。
-    fn drivers(self: Spec, form: Value, extra: u32, escaped: bool, vars: []const Var, matches: []const Match, pass: ?*const Pass) Error![]const usize {
+    fn drivers(self: Spec, form: Value, extra: u32, vars: []const Var, matches: []const Match, pass: ?*const Pass) Error![]const usize {
         const Item = struct { form: Value, inner: u32, escaped: bool };
         var found: std.ArrayList(usize) = .empty;
         var stack: std.ArrayList(Item) = .empty;
         defer stack.deinit(self.scratch);
-        try stack.append(self.scratch, .{ .form = form, .inner = 0, .escaped = escaped });
+        try stack.append(self.scratch, .{ .form = form, .inner = 0, .escaped = false });
         while (stack.pop()) |item| switch (item.form.kind()) {
             .symbol, .alias => if (varIndex(vars, item.form)) |v| {
                 if (lookup(vars, matches, pass, v).remaining > item.inner + extra and
@@ -529,7 +530,8 @@ const Spec = struct {
             /// A template to transcribe, and the passes of the ellipses around it.
             template: struct { form: Value, pass: ?*const Pass, escaped: bool },
             /// A template that `left` ellipses follow.
-            repeat: struct { form: Value, left: u32, pass: ?*const Pass, escaped: bool },
+            /// 省略記号は、エスケープの外にしか置けないので、繰り返しの形は、エスケープの中ではない。
+            repeat: struct { form: Value, left: u32, pass: ?*const Pass },
             /// The list of the outputs from `start` on; the last one is its
             /// tail when `dotted`.
             list: struct { start: usize, dotted: bool },
@@ -562,7 +564,7 @@ const Spec = struct {
                 try results.append(self.scratch, vector);
             },
             .repeat => |r| {
-                const driving = try self.drivers(r.form, r.left - 1, r.escaped, vars, matches, r.pass);
+                const driving = try self.drivers(r.form, r.left - 1, vars, matches, r.pass);
                 if (driving.len == 0) return self.ctx.raise(
                     "bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed",
                     .{},
@@ -586,9 +588,9 @@ const Spec = struct {
                     const pass = try self.scratch.create(Pass);
                     pass.* = .{ .parent = r.pass, .vars = driving, .matched = matched };
                     try work.append(self.scratch, if (r.left == 1)
-                        .{ .template = .{ .form = r.form, .pass = pass, .escaped = r.escaped } }
+                        .{ .template = .{ .form = r.form, .pass = pass, .escaped = false } }
                     else
-                        .{ .repeat = .{ .form = r.form, .left = r.left - 1, .pass = pass, .escaped = r.escaped } });
+                        .{ .repeat = .{ .form = r.form, .left = r.left - 1, .pass = pass } });
                 }
             },
             .template => |t| switch (t.form.kind()) {
@@ -622,7 +624,7 @@ const Spec = struct {
                         try work.append(self.scratch, if (e.ellipses == 0)
                             .{ .template = .{ .form = e.form, .pass = t.pass, .escaped = t.escaped } }
                         else
-                            .{ .repeat = .{ .form = e.form, .left = e.ellipses, .pass = t.pass, .escaped = t.escaped } });
+                            .{ .repeat = .{ .form = e.form, .left = e.ellipses, .pass = t.pass } });
                     }
                 },
                 .vector => {
@@ -635,7 +637,7 @@ const Spec = struct {
                         try work.append(self.scratch, if (e.ellipses == 0)
                             .{ .template = .{ .form = e.form, .pass = t.pass, .escaped = t.escaped } }
                         else
-                            .{ .repeat = .{ .form = e.form, .left = e.ellipses, .pass = t.pass, .escaped = t.escaped } });
+                            .{ .repeat = .{ .form = e.form, .left = e.ellipses, .pass = t.pass } });
                     }
                 },
                 else => try results.append(self.scratch, t.form),
@@ -834,6 +836,50 @@ test "R7RS 7.3's define-values is accepted, and its template with var0 inside an
             "(#<alias define> d (#<alias let> ((#<alias v> (#<alias cadr> a))) (#<alias set!> a (#<alias car> a)) #<alias v>)))",
         try f.transcribed(m, "(define-values (a d) 1)"),
     );
+}
+
+/// The list `(m 0 0 ... 0)` with `n` zeros, a use of a macro with a pattern `(_ x ...)`.
+fn longUse(f: *Fixture, n: usize) !Value {
+    var args: Value = .empty_list_value;
+    for (0..n) |_| args = try f.cons(.fromFixnum(0), args);
+    return f.cons(try f.sym("m"), args);
+}
+
+test "an application empties its work area, and keeps only a little of it for the next one" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var charged: heap_mod.Charged = .{ .heap = &f.ctx.heap, .backing = std.testing.allocator };
+    var work: std.heap.ArenaAllocator = .init(charged.allocator());
+    defer work.deinit();
+    const m = try f.macro("(syntax-rules () ((_ x ...) 1))");
+    const use = try longUse(&f, 20_000);
+    // 1回の適用の作業領域は、保持する量よりずっと大きい。
+    for (0..3) |_| {
+        _ = try transform(&f.ctx, &work, m, use, null);
+        try std.testing.expect(work.queryCapacity() <= work_retained_bytes);
+        // 保持した領域は、節点の見出し分を足して、数えたままである。解放した分は戻っている。
+        try std.testing.expect(f.ctx.heap.external >= work.queryCapacity());
+        try std.testing.expect(f.ctx.heap.external <= work_retained_bytes + 64);
+    }
+}
+
+test "the first application of a macro starts holding the work of the expansion to the limit" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var charged: heap_mod.Charged = .{ .heap = &f.ctx.heap, .backing = std.testing.allocator };
+    var work: std.heap.ArenaAllocator = .init(charged.allocator());
+    defer work.deinit();
+    const m = try f.macro("(syntax-rules () ((_ x ...) 1))");
+    const use = try longUse(&f, 2_000);
+    try std.testing.expect(!f.ctx.heap.external_enforced);
+    // 上限は、ヒープの現状に 1000 バイトだけ足した値で、2000 個の引数を照合する作業領域には足りない。結果は 1 だけで、
+    // ヒープは増えないので、作業領域の計上だけが、上限を超えさせる。
+    f.ctx.heap.options.limit = f.ctx.heap.accounted + 1000;
+    try std.testing.expectError(error.OutOfMemory, transform(&f.ctx, &work, m, use, null));
+    try std.testing.expect(f.ctx.heap.external_enforced);
+    try std.testing.expect(f.ctx.heap.external_refused);
 }
 
 /// `inner` wrapped in `depth` lists: `((((inner))))`.
