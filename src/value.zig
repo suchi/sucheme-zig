@@ -72,6 +72,11 @@ pub const Value = union(enum) {
     /// takes the computation back to where it was captured.
     /// GC ヒープにある。
     continuation: *Continuation,
+    /// What `values` returns when it is not given exactly one value: the values
+    /// of a computation that has more or fewer than one (R7RS 6.10).
+    /// GC ヒープにある。1個を要求しない継続(受け手など)だけが受け取り、それ以外の継続に
+    /// 届くと誤りになるので、変数やデータに入ることはない(docs/design/runtime.md の複数値)。
+    multiple_values: *MultipleValues,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -139,11 +144,15 @@ pub const Value = union(enum) {
         return .{ .continuation = c };
     }
 
+    pub fn fromMultipleValues(m: *MultipleValues) Value {
+        return .{ .multiple_values = m };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation => true,
+            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
@@ -167,6 +176,7 @@ pub const Value = union(enum) {
             .record => .record,
             .record_type => .record_type,
             .continuation => .continuation,
+            .multiple_values => .multiple_values,
         };
     }
 
@@ -274,6 +284,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The multiple values, or null when the value is not them.
+    pub fn asMultipleValues(self: Value) ?*MultipleValues {
+        return switch (self) {
+            .multiple_values => |m| m,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -312,6 +330,7 @@ pub const Value = union(enum) {
             .record => |x| b.asRecord() == x,
             .record_type => |x| b.asRecordType() == x,
             .continuation => |x| b.asContinuation() == x,
+            .multiple_values => |x| b.asMultipleValues() == x,
         };
     }
 
@@ -424,6 +443,14 @@ pub const Record = struct {
     fields: []Value,
 };
 
+/// The values of a computation that returns other than one value: what the
+/// registers hold from `values` until a continuation takes them apart.
+/// 個数は 0 か 2 以上である(1個の値は、それ自身で運ぶ)。要素は、ヒープが所有し、
+/// 計上するペイロードで、GC はそれをたどる。
+pub const MultipleValues = struct {
+    items: []Value,
+};
+
 /// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
 /// #x10FFFF (R7RS 6.6), the code points a character can be.
 /// 数から文字を作るものはすべて、まずこれを問い合わせる。そのため、サロゲートや範囲外
@@ -532,6 +559,10 @@ pub const MachineOp = enum {
     call_cc,
     /// `(dynamic-wind before thunk after)` (R7RS 6.10).
     dynamic_wind,
+    /// `(values obj ...)` (R7RS 6.10).
+    values,
+    /// `(call-with-values producer consumer)` (R7RS 6.10).
+    call_with_values,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -704,6 +735,29 @@ pub const Kont = struct {
         /// continuation is invoked returned; it is dropped, and the rewind goes
         /// on by one point (docs/design/runtime.md, the progress of a rewind).
         rewind: RewindStep,
+        /// The value is what the producer of a `call-with-values` returned: one
+        /// value, or the values of a multiple-values object. They are the
+        /// arguments of this procedure, the consumer, which is called in the
+        /// continuation of the `call-with-values`.
+        values_receiver: Value,
+
+        /// Whether a value that arrives at a frame of this kind must be one
+        /// value: a `multiple_values` object is an error there (docs/design/runtime.md,
+        /// the table of multiple values).
+        /// Why: 網羅的な `switch` にしてあるのは、新しいフレームの種類を足す人が、複数値の
+        /// 表の5群のどれに属するかを決めずにコンパイルを通せないようにするためである。
+        /// 捨てる群(`sequence` `wind_before`)、そのまま渡す群(`dynamic_exit` `handler_return`
+        /// `wind_body`)、受け取る群(`values_receiver`)、無視する群(`wind_after` `rewind`)は
+        /// 個数を検査しない。それ以外は1個を要求する。
+        pub fn requiresOneValue(step: Step) bool {
+            return switch (step) {
+                .branch, .local_set, .local_define, .global_set, .global_define, .call => true,
+                .sequence, .wind_before => false,
+                .dynamic_exit, .handler_return, .wind_body => false,
+                .values_receiver => false,
+                .wind_after, .rewind => false,
+            };
+        }
     };
 
     pub const WindBefore = struct {
@@ -878,7 +932,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -887,7 +941,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -1187,6 +1241,47 @@ test "a continuation is a heap object of its own kind" {
     try std.testing.expect(v.isTrue());
 }
 
+test "multiple values are a heap object of their own kind" {
+    var items = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+    var m: MultipleValues = .{ .items = &items };
+    const v: Value = .fromMultipleValues(&m);
+    try std.testing.expectEqual(Kind.multiple_values, v.kind());
+    try std.testing.expectEqual(&m, v.asMultipleValues().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asVector() == null);
+    try std.testing.expect(Value.fromFixnum(1).asMultipleValues() == null);
+}
+
+test "only the frames that take one value ask for exactly one" {
+    const node: Node = .{ .constant = .unspecified_value };
+    const if_node: If = .{ .condition = &node, .consequent = &node, .alternative = null };
+    const assign: LocalAssign = .{ .address = .{ .depth = 0, .index = 0 }, .name = @fromBackingInt(@intCast(0)), .value = &node };
+    const global: GlobalAssign = .{ .cell = undefined, .value = &node };
+    const call: Call = .{ .operator = &node, .operands = &.{} };
+    const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
+    const asks_one = [_]Kont.Step{
+        .{ .branch = &if_node },
+        .{ .local_set = &assign },
+        .{ .local_define = &assign },
+        .{ .global_set = &global },
+        .{ .global_define = &global },
+        .{ .call = .{ .call = &call, .args = null, .received = 0 } },
+    };
+    for (asks_one) |step| try std.testing.expect(step.requiresOneValue());
+    const takes_any = [_]Kont.Step{
+        .{ .sequence = &.{&node} },
+        .{ .dynamic_exit = null },
+        .{ .handler_return = .{ .dyn = null, .raised = .unspecified_value, .continuable = true } },
+        .{ .wind_before = .{ .point = &point, .thunk = .unspecified_value } },
+        .{ .wind_body = &point },
+        .{ .wind_after = .unspecified_value },
+        .{ .rewind = .{ .state = &rewind, .entered = null, .at = null } },
+        .{ .values_receiver = .unspecified_value },
+    };
+    for (takes_any) |step| try std.testing.expect(!step.requiresOneValue());
+}
+
 test "allAscii looks at every byte" {
     try std.testing.expect(allAscii(""));
     try std.testing.expect(allAscii("abc\x00\x7f"));
@@ -1358,6 +1453,11 @@ const Samples = struct {
     // 同じ継続と列を捕捉した2つの継続。
     continuation_a: Continuation = .{ .kont = null, .dyn = null },
     continuation_b: Continuation = .{ .kont = null, .dyn = null },
+    // 中身が同じ2つの複数値。
+    values_items_a: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
+    values_items_b: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
+    multiple_values_a: MultipleValues = undefined,
+    multiple_values_b: MultipleValues = undefined,
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -1380,10 +1480,12 @@ const Samples = struct {
         // 型もフィールドの値も同じ2つのレコード。
         self.record_a = .{ .record_type = &self.record_type_a, .fields = &self.fields_a };
         self.record_b = .{ .record_type = &self.record_type_a, .fields = &self.fields_b };
+        self.multiple_values_a = .{ .items = &self.values_items_a };
+        self.multiple_values_b = .{ .items = &self.values_items_b };
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [32]Value {
+    fn all(self: *Samples) [34]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -1417,6 +1519,8 @@ const Samples = struct {
             .fromRecord(&self.record_b),
             .fromContinuation(&self.continuation_a),
             .fromContinuation(&self.continuation_b),
+            .fromMultipleValues(&self.multiple_values_a),
+            .fromMultipleValues(&self.multiple_values_b),
         };
     }
 };

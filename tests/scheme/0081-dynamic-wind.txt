@@ -72,12 +72,13 @@ normal
 (define log '()) (define (note x) (set! log (cons x log))) (define k #f) (define (run) (with-exception-handler (lambda (c) (note (list 'outer c)) 0) (lambda () (dynamic-wind (lambda () (raise-continuable 'before)) (lambda () (with-exception-handler (lambda (c) (note (list 'inner c)) 0) (lambda () (call/cc (lambda (c) (set! k c) 'first))))) (lambda () #f))))) (define (again v) (if (eq? v 'first) (k 'second) (list v log))) (again (run))
 (second ((outer before) (outer before)))
 
-# 引数の検査。継続は手続きなので型の検査を通るが、値を1つ取るので、引数なしで呼ぶと誤りになる。
+# 引数の検査。継続は手続きなので型の検査を通る。引数なしで呼ぶ `after` が継続なら、0個の値で
+# その継続へ脱出する。
 (dynamic-wind 1 (lambda () 2) (lambda () 3))
 error: wrong type of argument to dynamic-wind 1 #<procedure> #<procedure>
 
 (dynamic-wind (lambda () 1) (lambda () 2))
 error: wrong number of arguments to dynamic-wind #<procedure> #<procedure>
 
-(call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 2) k)))
-error: wrong number of arguments: expected 1, got 0
+(call-with-values (lambda () (call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 2) k)))) list)
+()

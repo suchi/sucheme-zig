@@ -109,7 +109,13 @@ pub fn Tracer(comptime spec: Spec) type {
         /// heap object and `visitor.symbol(id)` for a symbol id, and does not
         /// follow the objects itself.
         pub fn walk(visitor: anytype, comptime T: type, value: T) void {
-            const class = comptime classifyAt(T, @typeName(T), true).?;
+            // Why: `classify` と同じく、分類の分岐の数はヒープの型の数に比例する。型を足すたびに
+            // 既定の上限(1000)を超えるので、`Value` のように多くのポインタを持つ型を走査する
+            // 呼び出しの側でも上限を上げる。
+            const class = comptime blk: {
+                @setEvalBranchQuota(100_000);
+                break :blk classifyAt(T, @typeName(T), true).?;
+            };
             if (class == .ignore) return;
             switch (@typeInfo(T)) {
                 .@"enum" => visitor.symbol(value),

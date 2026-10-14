@@ -23,6 +23,7 @@ const String = value_mod.String;
 const Vector = value_mod.Vector;
 const Record = value_mod.Record;
 const RecordType = value_mod.RecordType;
+const MultipleValues = value_mod.MultipleValues;
 const SymbolId = @import("symbol.zig").SymbolId;
 const trace = @import("trace.zig");
 
@@ -316,7 +317,8 @@ pub fn cellBytes(comptime T: type) usize {
 }
 
 /// The bytes the object owns beyond its cell: the slots of a frame, the bytes
-/// of a string, the elements of a vector, the fields of a record.
+/// of a string, the elements of a vector, the fields of a record, the values of
+/// a multiple-values object.
 /// ペイロードはセルとは別に確保され、セルと一緒に返される。
 fn payloadBytes(comptime T: type, object: *const T) usize {
     return switch (T) {
@@ -324,6 +326,7 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         String => object.bytes.len,
         Vector => object.items.len * @sizeOf(Value),
         Record => object.fields.len * @sizeOf(Value),
+        MultipleValues => object.items.len * @sizeOf(Value),
         else => 0,
     };
 }
@@ -414,14 +417,14 @@ pub const Heap = struct {
     /// A new object holding `value`.
     ///
     /// ペイロードを持つオブジェクトは、専用の関数 `createFrame`、`createString`、
-    /// `createVector`、`createRecord` で作る。
+    /// `createVector`、`createRecord`、`createMultipleValuesIn` で作る。
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
         return self.createIn(.limit, T, value);
     }
 
     /// A new object holding `value`, held to `budget`.
     pub fn createIn(self: *Heap, budget: Budget, comptime T: type, value: T) Error!*T {
-        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Record);
+        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Record and T != MultipleValues);
         try self.reserve(budget, cellBytes(T));
         const cell = try self.backing.create(Cell(T));
         cell.value = value;
@@ -514,6 +517,20 @@ pub const Heap = struct {
         const cell = try self.backing.create(Cell(Record));
         cell.value = .{ .record_type = record_type, .fields = copy };
         self.link(Record, cell, total);
+        return &cell.value;
+    }
+
+    /// A new multiple-values object of a copy of `items`, held to `budget`.
+    /// コピーがペイロードで、ベクタの要素と同じ扱いである。個数は 0 か 2 以上でなければ
+    /// ならない。1個の値は、複数値のオブジェクトにせず、その値自身で運ぶ。
+    pub fn createMultipleValuesIn(self: *Heap, budget: Budget, items: []const Value) Error!*MultipleValues {
+        std.debug.assert(items.len != 1);
+        const total = try self.reserveWithPayload(budget, MultipleValues, items.len, @sizeOf(Value));
+        const copy = try self.backing.dupe(Value, items);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(MultipleValues));
+        cell.value = .{ .items = copy };
+        self.link(MultipleValues, cell, total);
         return &cell.value;
     }
 
@@ -653,6 +670,7 @@ pub const Heap = struct {
                     String => self.backing.free(cell.value.bytes),
                     Vector => self.backing.free(cell.value.items),
                     Record => self.backing.free(cell.value.fields),
+                    MultipleValues => self.backing.free(cell.value.items),
                     else => {},
                 }
                 self.backing.destroy(cell);
@@ -1337,4 +1355,66 @@ test "in stress mode every safe point of a short run collects, and the gap grows
     const after_ramp = heap.collections - stress_ramp;
     try std.testing.expect(after_ramp < calls * 3 / 4);
     try std.testing.expect(after_ramp > calls / 4);
+}
+
+test "multiple values account for their items as well as their cell, and keep a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+    const m = try heap.createMultipleValuesIn(.limit, &source);
+    source[0] = .fromFixnum(9);
+    try std.testing.expectEqual(1, m.items[0].asFixnum().?);
+    try std.testing.expectEqual(2, m.items.len);
+    try std.testing.expectEqual(cellBytes(MultipleValues) + 2 * @sizeOf(Value), heap.accounted);
+    // 0個の値も、ヒープのオブジェクトである(共有の定数ではない)。
+    const none = try heap.createMultipleValuesIn(.limit, &.{});
+    try std.testing.expectEqual(0, none.items.len);
+    try std.testing.expect(m != none);
+    try std.testing.expectEqual(2, heap.countOf(MultipleValues));
+}
+
+test "multiple values are held to the limit by their items, and to the reserve by the budget" {
+    for ([_]usize{ 0, 1 }) |short| {
+        const fit = cellBytes(MultipleValues) + 2 * @sizeOf(Value);
+        var heap: Heap = .init(std.testing.allocator, .{ .limit = fit - short, .raise_reserve = 2 * @sizeOf(Value) });
+        defer heap.deinit();
+        const items = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+        if (short == 0) {
+            _ = try heap.createMultipleValuesIn(.limit, &items);
+        } else {
+            try std.testing.expectError(error.HeapLimit, heap.createMultipleValuesIn(.limit, &items));
+            try std.testing.expectEqual(0, heap.accounted);
+            // 送出のための予約からなら、同じ大きさが収まる。
+            _ = try heap.createMultipleValuesIn(.raise_reserve, &items);
+            try std.testing.expectEqual(fit, heap.accounted);
+        }
+    }
+}
+
+test "when the cell cannot be allocated the items of multiple values are given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    try std.testing.expectError(error.OutOfMemory, heap.createMultipleValuesIn(.limit, &.{ .fromFixnum(1), .fromFixnum(2) }));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(1, failing.deallocations);
+    try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+}
+
+test "a collection keeps multiple values and what they hold, and frees them once nothing reaches them" {
+    for ([_]usize{ 0, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const text = try heap.createString("kept");
+        const m = try heap.createMultipleValuesIn(.limit, &.{ .fromString(text), .fromFixnum(1) });
+        _ = try heap.createMultipleValuesIn(.limit, &.{ .fromFixnum(2), .fromFixnum(3) });
+        heap.collect(TestRoots{ .values = &.{.fromMultipleValues(m)} });
+        try std.testing.expectEqual(1, heap.countOf(MultipleValues));
+        try std.testing.expectEqual(1, heap.countOf(String));
+        try std.testing.expectEqual(cellBytes(MultipleValues) + 2 * @sizeOf(Value) + cellBytes(String) + 4, heap.accounted);
+        try std.testing.expectEqualStrings("kept", m.items[0].asString().?.bytes);
+        heap.collect(TestRoots{ .values = &.{} });
+        try std.testing.expectEqual(0, heap.countOf(MultipleValues));
+        try std.testing.expectEqual(0, heap.accounted);
+    }
 }

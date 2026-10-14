@@ -145,12 +145,23 @@ pub const Interpreter = struct {
             const node = try expand.expand(&self.ctx, arena, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
-            // 定義は何も出力しない。最上位の未規定値も表示しない。データの中の
-            // 未規定値は、プリンタが `#<unspecified>` と書く。
-            if (v.kind() == .unspecified) continue;
-            try printer.write(out, arena, &self.ctx.symbols, v);
-            try out.writeByte('\n');
+            // 最上位の REPL は、複数値を受け取る(docs/design/runtime.md の複数値の表)。
+            // 値を1行に1つずつ書き、0個なら何も書かない。
+            if (v.asMultipleValues()) |multiple| {
+                for (multiple.items) |item| try self.printResult(out, arena, item);
+            } else try self.printResult(out, arena, v);
         }
+    }
+
+    /// Writes `v`, a result of a form, and a newline, unless it is the
+    /// unspecified value.
+    /// 定義は何も出力しない。最上位の未規定値も表示しない。データの中の未規定値は、
+    /// プリンタが `#<unspecified>` と書く。複数値の1つが未規定値のときも、1つの結果と
+    /// して同じく表示しない。
+    fn printResult(self: *const Interpreter, out: *std.Io.Writer, arena: std.mem.Allocator, v: value.Value) Error!void {
+        if (v.kind() == .unspecified) return;
+        try printer.write(out, arena, &self.ctx.symbols, v);
+        try out.writeByte('\n');
     }
 };
 
@@ -305,6 +316,31 @@ test "evalPrint writes each result on its own line" {
     try std.testing.expectEqualStrings("3\n", try evalPrinted("(+ 1 2)"));
     try std.testing.expectEqualStrings("1\n-2\n", try evalPrinted("1 -2"));
     try std.testing.expectEqualStrings("", try evalPrinted("  "));
+}
+
+test "evalPrint writes the values of a form one to a line, and nothing for no values" {
+    try std.testing.expectEqualStrings("1\n2\n", try evalPrinted("(values 1 2)"));
+    try std.testing.expectEqualStrings("", try evalPrinted("(values)"));
+    try std.testing.expectEqualStrings("5\n", try evalPrinted("(values 5)"));
+    // 複数値の1つが未規定値なら、最上位の未規定値と同じく書かない。
+    try std.testing.expectEqualStrings("1\n", try evalPrinted("(values (if #f #f) 1)"));
+    // 続く形式は、複数値のあとも続く。
+    try std.testing.expectEqualStrings("1\n2\n3\n", try evalPrinted("(values 1 2) 3"));
+}
+
+test "multiple values that reach a continuation taking one value are reported, and the next line runs" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 1個を要求する継続に届いた複数値は、誤りとして報告され、次の行は影響を受けない。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(+ 1 (values 1 2))", &w));
+    try std.testing.expectEqualStrings("wrong number of values: expected 1, got 2", interp.diagnostic());
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
 }
 
 test "evalPrint stops at the first error and describes it" {
