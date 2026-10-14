@@ -27,6 +27,7 @@ const reader = @import("reader.zig");
 pub const isIncomplete = reader.isIncomplete;
 
 const expand = @import("syntax/expand.zig");
+const library = @import("syntax/library.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
@@ -142,6 +143,14 @@ pub const Interpreter = struct {
             // 次の行を読む前にここで回収される。
             if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
             const form = try r.next(arena, sink) orelse break;
+            // `import` と `define-library` は最上位の形式で、何も表示しない。
+            if (library.topLevelForm(&self.ctx, form)) |kind| {
+                switch (kind) {
+                    .import => try library.importIntoRepl(&self.ctx, arena, form),
+                    .define_library => return self.ctx.raise("define-library is not supported yet", .{}),
+                }
+                continue;
+            }
             const node = try expand.expand(&self.ctx, arena, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
@@ -310,6 +319,18 @@ test "isBound follows definitions, and a name that was only read is not bound" {
     // 失敗した行が定義しなかった名前は束縛されない。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(define y nope)", &w));
     try std.testing.expect(!interp.isBound("y"));
+}
+
+test "a failed import binds nothing, and a successful one is kept for the next line" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define-syntax kar (syntax-rules () ((_) 'macro)))", "");
+    try expectLineFails(&interp, "(import (rename (only (sucheme core) car) (car kar)) (only (sucheme core) nope))", "bad import: nope is not exported by the import set");
+    // 先の集合は束縛されず、REPL のマクロはそのままである。
+    try expectLinePrints(&interp, "(kar)", "macro\n");
+    try expectLinePrints(&interp, "(import (rename (only (sucheme core) car) (car kar)))", "");
+    try expectLinePrints(&interp, "(kar '(1 2))", "1\n");
 }
 
 test "evalPrint writes each result on its own line" {

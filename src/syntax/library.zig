@@ -16,6 +16,8 @@ const Context = context.Context;
 const env_mod = @import("../env.zig");
 const heap_mod = @import("../heap.zig");
 const syntax_env = @import("env.zig");
+const expand = @import("expand.zig");
+const printer = @import("../printer.zig");
 
 pub const Error = context.Error;
 
@@ -83,6 +85,213 @@ pub const Registry = struct {
     }
 };
 
+/// What the import sets bring: names, each with what it means, in the order the
+/// library exports them.
+pub const Names = std.StringArrayHashMapUnmanaged(value_mod.Denotation);
+
+/// The modifiers of an import set (R7RS 5.2).
+const Modifier = enum { only, except, prefix, rename };
+
+/// Which top-level form of the REPL a datum is.
+pub const TopLevelForm = enum { define_library, import };
+
+/// Which form a datum read at the top level is, if it is one of those that
+/// this file handles: `(define-library ...)` and `(import ...)`.
+/// Why: R7RS の `(scheme base)` はこれらをエクスポートしない。束縛された名前ではなく、
+/// 最上位の形式として、先頭の綴りで見分ける。
+pub fn topLevelForm(ctx: *const Context, form: Value) ?TopLevelForm {
+    const head = (form.asPair() orelse return null).car.asSymbol() orelse return null;
+    const name = ctx.symbols.nameOf(head);
+    if (std.mem.eql(u8, name, "import")) return .import;
+    if (std.mem.eql(u8, name, "define-library")) return .define_library;
+    return null;
+}
+
+/// The elements of the list `form`, or an error naming `what` when it is not a
+/// proper list.
+fn itemsOf(ctx: *Context, scratch: std.mem.Allocator, form: Value, comptime what: []const u8) Error![]const Value {
+    var items: std.ArrayList(Value) = .empty;
+    var rest = form;
+    while (rest.asPair()) |p| : (rest = p.cdr) try items.append(scratch, p.car);
+    if (rest.kind() != .empty_list) return ctx.raise("bad " ++ what ++ ": expected a proper list", .{});
+    return items.items;
+}
+
+/// The text of the library name `name`, as `write` shows it.
+fn nameText(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(scratch);
+    printer.write(&out.writer, scratch, &ctx.symbols, name) catch return error.OutOfMemory;
+    return out.written();
+}
+
+/// Checks that `name` is a library name: a list of at least one identifier or
+/// non-negative integer (R7RS 5.6.1).
+fn checkName(ctx: *Context, name: Value) Error!void {
+    const bad = "bad library name: a name is a non-empty list of identifiers and non-negative integers";
+    if (name.asPair() == null) return ctx.raise(bad, .{});
+    var rest = name;
+    while (rest.asPair()) |p| : (rest = p.cdr) {
+        if (p.car.asSymbol() != null) continue;
+        if (p.car.asFixnum()) |n| if (n >= 0) continue;
+        return ctx.raise(bad, .{});
+    }
+    if (rest.kind() != .empty_list) return ctx.raise(bad, .{});
+}
+
+/// Whether `name` is `(sucheme core)`.
+fn isCoreName(ctx: *const Context, name: Value) bool {
+    var rest = name;
+    for ([_][]const u8{ "sucheme", "core" }) |expected| {
+        const p = rest.asPair() orelse return false;
+        const sym = p.car.asSymbol() orelse return false;
+        if (!std.mem.eql(u8, ctx.symbols.nameOf(sym), expected)) return false;
+        rest = p.cdr;
+    }
+    return rest.kind() == .empty_list;
+}
+
+/// Evaluates the import set `spec` (R7RS 5.2): what it brings, by name.
+/// 入れ子の修飾子の深さに比例して進むので、再帰せず、外側から内側へ修飾子を積み、
+/// 内側から順に適用する。エクスポートの名前の文字列は、ヒープの文字列とシンボル表の
+/// 名前を指す。GC が走るまで有効である。
+pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Error!Names {
+    const Pending = struct { kind: Modifier, arguments: Value };
+    var pending: std.ArrayList(Pending) = .empty;
+    var current = spec;
+    while (current.asPair()) |p| {
+        const head = p.car.asSymbol() orelse break;
+        const kind = std.meta.stringToEnum(Modifier, ctx.symbols.nameOf(head)) orelse break;
+        const inner = p.cdr.asPair() orelse
+            return ctx.raise("bad import: {s} needs an import set", .{@tagName(kind)});
+        try pending.append(scratch, .{ .kind = kind, .arguments = inner.cdr });
+        current = inner.car;
+    }
+    var names = try exportsOf(ctx, scratch, current);
+    while (pending.pop()) |m| names = try modify(ctx, scratch, m.kind, m.arguments, names);
+    return names;
+}
+
+/// What the library named `name` exports.
+fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names {
+    try checkName(ctx, name);
+    var names: Names = .empty;
+    if (isCoreName(ctx, name)) {
+        var it = ctx.core.entries.keyIterator();
+        while (it.next()) |id| {
+            const d = (ctx.core.get(&ctx.heap, id.*) catch |e| return ctx.heapFailure(e)).?;
+            try names.put(scratch, ctx.symbols.nameOf(id.*), d);
+        }
+        return names;
+    }
+    const lib = ctx.libraries.find(name) orelse
+        return ctx.raise("unknown library: {s}", .{try nameText(ctx, scratch, name)});
+    if (lib.state == .loading)
+        return ctx.raise("bad import: circular import of the library {s}", .{try nameText(ctx, scratch, name)});
+    var export_it = lib.exports;
+    while (export_it) |e| : (export_it = e.next) try names.put(scratch, e.name.bytes, e.denotation);
+    return names;
+}
+
+/// The name an identifier of an import set is written as.
+fn identifierName(ctx: *Context, id: Value, comptime what: []const u8) Error![]const u8 {
+    const symbol = id.asSymbol() orelse
+        return ctx.raise("bad import: " ++ what ++ " expects identifiers", .{});
+    return ctx.symbols.nameOf(symbol);
+}
+
+/// Applies one modifier of an import set to what it modifies.
+fn modify(ctx: *Context, scratch: std.mem.Allocator, kind: Modifier, arguments: Value, names: Names) Error!Names {
+    const items = try itemsOf(ctx, scratch, arguments, "import");
+    var result: Names = .empty;
+    switch (kind) {
+        .only => for (items) |item| {
+            const name = try identifierName(ctx, item, "only");
+            const d = names.get(name) orelse
+                return ctx.raise("bad import: {s} is not exported by the import set", .{name});
+            try result.put(scratch, name, d);
+        },
+        .except => {
+            result = try names.clone(scratch);
+            for (items) |item| {
+                const name = try identifierName(ctx, item, "except");
+                if (!result.orderedRemove(name))
+                    return ctx.raise("bad import: {s} is not exported by the import set", .{name});
+            }
+        },
+        .prefix => {
+            if (items.len != 1) return ctx.raise("bad import: prefix expects one identifier", .{});
+            const prefix = try identifierName(ctx, items[0], "prefix");
+            var it = names.iterator();
+            while (it.next()) |entry| {
+                const name = try std.mem.concat(scratch, u8, &.{ prefix, entry.key_ptr.* });
+                try result.put(scratch, name, entry.value_ptr.*);
+            }
+        },
+        .rename => {
+            // 改名は同時に行う。`(rename s (a b) (b a))` は a と b を入れ替える。
+            var renames: std.StringHashMapUnmanaged([]const u8) = .empty;
+            for (items) |item| {
+                const pair = try itemsOf(ctx, scratch, item, "import");
+                if (pair.len != 2) return ctx.raise("bad import: rename expects (from to) pairs", .{});
+                const from = try identifierName(ctx, pair[0], "rename");
+                const to = try identifierName(ctx, pair[1], "rename");
+                if (!names.contains(from))
+                    return ctx.raise("bad import: {s} is not exported by the import set", .{from});
+                try renames.put(scratch, from, to);
+            }
+            var it = names.iterator();
+            while (it.next()) |entry| {
+                const name = renames.get(entry.key_ptr.*) orelse entry.key_ptr.*;
+                const added = try result.getOrPut(scratch, name);
+                if (added.found_existing)
+                    return ctx.raise("bad import: {s} is the name of more than one identifier", .{name});
+                added.value_ptr.* = entry.value_ptr.*;
+            }
+        },
+    }
+    return result;
+}
+
+/// Binds `names` in `table`, as imported bindings.
+/// REPL では、インポートは同じ名前の今の束縛を置き換える(R7RS 5.2)。ライブラリの本体では、
+/// 同じ識別子を別の束縛で2回インポートすることと、本体が先に定義した名前をインポートすること
+/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_cells` に残り、
+/// 本体の終わりに未束縛として報告される(`finish`)。
+pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: expand.Mode) Error!void {
+    var it = names.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const id = try ctx.symbols.intern(ctx.persist, name);
+        if (mode == .library) if (table.lookup(id)) |existing| {
+            if (existing.imported) {
+                if (syntax_env.sameDenotation(existing.denotation, entry.value_ptr.*)) continue;
+                return ctx.raise("bad import: {s} is imported twice with different bindings", .{name});
+            }
+            switch (existing.denotation) {
+                .global => |cell| if (cell.value.kind() == .uninitialized) {} else return ctx.raise(
+                    "bad import: {s} is defined in this library, and cannot be imported",
+                    .{name},
+                ),
+                else => return ctx.raise("bad import: {s} is defined in this library, and cannot be imported", .{name}),
+            }
+        };
+        try table.importBinding(ctx.persist, id, entry.value_ptr.*);
+    }
+}
+
+/// `(import <import set> ...)` at the REPL (R7RS 5.2): imports what the sets bring
+/// into the REPL's top level.
+/// 先にすべての集合を評価し、それから束縛する。集合の誤りで、一部だけがインポート
+/// されることはない。
+pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!void {
+    const items = try itemsOf(ctx, scratch, form, "import");
+    if (items.len < 2) return ctx.raise("bad import: expected (import <import set> ...)", .{});
+    const sets = try scratch.alloc(Names, items.len - 1);
+    for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
+    for (sets) |set| try bindImports(ctx, &ctx.globals, set, .repl);
+    ctx.globals.commitShadows();
+}
+
 /// Whether two library names are the same: lists of the same length whose
 /// elements are the same symbols and the same integers.
 pub fn sameName(a: Value, b: Value) bool {
@@ -109,7 +318,6 @@ test {
 }
 
 const reader = @import("../reader.zig");
-const expand = @import("expand.zig");
 const core = @import("../core.zig");
 
 /// What the tests share: a context, a library and the means to read and expand
@@ -354,4 +562,57 @@ test "set! through a macro of another library assigns that library's variable an
     // ライブラリがインポートした束縛への代入は、マクロを通しても誤りである。
     try std.testing.expectError(error.Raised, expand.expand(&f.ctx, f.arena.allocator(), try f.read("(clobber!)")));
     try std.testing.expectEqualStrings("bad set!: car is an imported binding and cannot be assigned", f.ctx.diagnostic());
+}
+
+fn expectNames(f: *Fixture, spec: []const u8, expected: []const []const u8) !void {
+    const names = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read(spec));
+    try std.testing.expectEqual(expected.len, names.count());
+    for (expected) |name| try std.testing.expect(names.contains(name));
+}
+
+test "the forms of an import set bring the names they say" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try expectNames(&f, "(only (sucheme core) car cdr)", &.{ "car", "cdr" });
+    try expectNames(&f, "(only (sucheme core))", &.{});
+    try expectNames(&f, "(prefix (only (sucheme core) car) a-)", &.{"a-car"});
+    try expectNames(&f, "(rename (only (sucheme core) car cdr) (car kar))", &.{ "kar", "cdr" });
+    try expectNames(&f, "(rename (only (sucheme core) car cdr) (car cdr) (cdr car))", &.{ "car", "cdr" });
+    // 入れ子は内側から適用する。
+    try expectNames(&f, "(only (rename (only (sucheme core) car cdr) (car kar)) kar)", &.{"kar"});
+    // `except` は、除いた名前以外のすべてを残す。
+    const all = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read("(sucheme core)"));
+    const less = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read("(except (sucheme core) car cdr)"));
+    try std.testing.expectEqual(all.count() - 2, less.count());
+    try std.testing.expect(all.contains("car") and !less.contains("car"));
+    // 特殊形式と補助構文も、名前を持つ。
+    for ([_][]const u8{ "if", "define-syntax", "else", "...", "_" }) |name| try std.testing.expect(all.contains(name));
+    // `define-library` と `import` は束縛された名前ではない。
+    try std.testing.expect(!all.contains("define-library") and !all.contains("import"));
+}
+
+test "an import set nested far deeper than the Zig stack allows is evaluated" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const depth = 100_000;
+    var src: std.ArrayList(u8) = .empty;
+    for (0..depth) |_| try src.appendSlice(f.arena.allocator(), "(only ");
+    try src.appendSlice(f.arena.allocator(), "(sucheme core)");
+    for (0..depth) |_| try src.appendSlice(f.arena.allocator(), " car)");
+    try expectNames(&f, src.items, &.{"car"});
+}
+
+test "which top-level form a datum is is told by the spelling of its head" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try std.testing.expectEqual(TopLevelForm.import, topLevelForm(&f.ctx, try f.read("(import (a))")).?);
+    try std.testing.expectEqual(TopLevelForm.define_library, topLevelForm(&f.ctx, try f.read("(define-library (a))")).?);
+    try std.testing.expectEqual(null, topLevelForm(&f.ctx, try f.read("(imports (a))")));
+    try std.testing.expectEqual(null, topLevelForm(&f.ctx, try f.read("(define (a))")));
+    try std.testing.expectEqual(null, topLevelForm(&f.ctx, try f.read("import")));
+    try std.testing.expectEqual(null, topLevelForm(&f.ctx, try f.read("((import))")));
+    try std.testing.expectEqual(null, topLevelForm(&f.ctx, .fromFixnum(1)));
 }
