@@ -31,6 +31,7 @@ const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
 const value = @import("value.zig");
+const tier = @import("tier.zig");
 
 /// Every way `evalPrint` can fail.
 ///
@@ -761,4 +762,56 @@ test "an error line cut in the middle of a character is cut before the character
         // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
         try std.testing.expect(line.len + 2 >= buf.len);
     }
+}
+
+/// The bytes `a` has given out and not been given back.
+fn held(a: *const std.testing.FailingAllocator) usize {
+    return a.allocated_bytes - a.freed_bytes;
+}
+
+/// Evaluates the application of a macro that never stops, in an interpreter
+/// whose heap is held to `limit`, and checks that the line ends at the limit and
+/// that the memory behind the interpreter and the scratch arena stays near the
+/// limit.
+/// 計上しないときは、同じ上限で数倍から10倍のメモリを使う。計上すると、上限の1割ほどの
+/// 余りで済む(アリーナの区切りと、節点のアロケータの切り上げ)。
+fn expectBoundedExpansion(definition: []const u8, use: []const u8, limit: usize) !void {
+    var gpa: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var scratch_gpa: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var arena: std.heap.ArenaAllocator = .init(scratch_gpa.allocator());
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(gpa.allocator(), .{ .limit = limit, .min_threshold = @min(limit / 4, 1024 * 1024) });
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), definition, &w);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), use, &w));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    const total = held(&gpa) + held(&scratch_gpa);
+    if (total > limit + limit / 4) {
+        std.debug.print("held {d} bytes against a limit of {d}\n", .{ total, limit });
+        return error.TestUnexpectedResult;
+    }
+    // 展開の作業領域の計上は、行が終わったら戻る。次の行は、普通に評価される。
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+}
+
+test "a macro that never stops ends at the limit of the heap, with the memory of the expansion counted" {
+    try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_) (f))))", "(f)", 1024 * 1024);
+}
+
+test "a macro that grows what it expands to ends at the limit of the heap" {
+    try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_ x ...) (f x ... x ...))))", "(f 1)", 1024 * 1024);
+}
+
+test "a macro that nests what it expands to ends at the limit of the heap" {
+    try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_ x) (f (g x)))))", "(f 1)", 1024 * 1024);
+}
+
+test "slow: a macro that never stops ends at the limit of the default heap" {
+    try tier.slow();
+    try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_) (f))))", "(f)", heap.default_limit);
 }

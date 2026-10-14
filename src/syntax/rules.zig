@@ -11,11 +11,11 @@
 //! 最上位でのその名前の意味と同じなら、それである。仮引数などが同じ綴りを束縛して
 //! いれば、パターン変数になる。
 //!
-//! スライス 2k が扱うのは、パターン変数、`_`、リテラル、リストの末尾に置く深さ1の
-//! 省略記号である。残りの形(入れ子の省略記号、省略記号の後の固定パターン、非真正
-//! リスト、ベクタ、定数パターン、テンプレートの省略記号のエスケープ、利用者指定の
-//! 省略記号)は 2l が入れる。それまでは、定義の時点で「まだ扱えない」と報告し、黙って
-//! 別の意味に読まない。
+//! パターンは、パターン変数、`_`、リテラル(意味の一致)、定数(`equal?` の一致)、リスト、
+//! 非真正リスト、ベクタ、省略記号(入れ子と、後ろに続く固定のパターンを含む)を持つ。
+//! テンプレートは、これらに加えて、省略記号の脱出 `(... template)` と、1つの要素に続く
+//! 複数の省略記号(`x ... ...` は平らにする)を持つ。省略記号は、利用者が指定した識別子
+//! にもできる(R7RS 4.3.2)。
 //!
 //! 照合と展開は入力とテンプレートの深さに比例して進むので、Zig の再帰で書かず、
 //! 作業スタックを使う(docs/design/runtime.md)。展開の途中では GC が走らない
@@ -74,14 +74,23 @@ pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*Sy
     return ctx.create(Macro, .{ .literals = literals, .rules = rules, .env = env, .ellipsis = ellipsis });
 }
 
+/// How much of its work area an application of a macro keeps for the next one.
+const work_retained_bytes = 64 * 1024;
+
 /// Transcribes `form`, a use of `macro` in `use_env`, by the first rule whose
 /// pattern it matches.
 /// 展開器が変換子を呼ぶのは、ここ1か所である。手続き的マクロに広げるときは、ここで
 /// 変換子の種類に応じて分ける(docs/design/frontend.md の変換子の実行)。
-pub fn transform(ctx: *Context, scratch: std.mem.Allocator, macro: *const Macro, form: Value, use_env: ?*const SyntacticEnv) Error!Value {
+pub fn transform(ctx: *Context, work: *std.heap.ArenaAllocator, macro: *const Macro, form: Value, use_env: ?*const SyntacticEnv) Error!Value {
     switch (macro.kind) {
         .syntax_rules => {},
     }
+    // 最初のマクロの適用から、展開の作業領域の計上を、上限の検査に入れる(`Heap.external`)。
+    ctx.heap.external_enforced = true;
+    // 適用ごとの作業領域は、適用が終われば要らない。結果はヒープにあり、領域を指さない。
+    // 空にしないと、止まらないマクロの適用のたびに、計上される領域が増え続ける。
+    defer _ = work.reset(.{ .retain_with_limit = work_retained_bytes });
+    const scratch = work.allocator();
     const s: Spec = .{ .ctx = ctx, .scratch = scratch, .literals = macro.literals, .env = macro.env, .ellipsis = macro.ellipsis };
     var r = macro.rules;
     while (r.asPair()) |p| : (r = p.cdr) {
@@ -667,16 +676,21 @@ const tier = @import("../tier.zig");
 
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
+    /// The work area of one application of a macro.
+    work: std.heap.ArenaAllocator,
     ctx: Context,
 
     fn init(self: *Fixture) !void {
         self.arena = .init(std.testing.allocator);
         errdefer self.arena.deinit();
+        self.work = .init(std.testing.allocator);
+        errdefer self.work.deinit();
         self.ctx = try .init(self.arena.allocator(), std.heap.smp_allocator);
     }
 
     fn deinit(self: *Fixture) void {
         self.ctx.deinit();
+        self.work.deinit();
         self.arena.deinit();
     }
 
@@ -693,7 +707,7 @@ const Fixture = struct {
 
     /// What `use` transcribes to, written out.
     fn transcribed(self: *Fixture, m: *const Macro, use: []const u8) ![]const u8 {
-        const out = try transform(&self.ctx, self.arena.allocator(), m, try self.read(use), null);
+        const out = try transform(&self.ctx, &self.work, m, try self.read(use), null);
         var w: std.Io.Writer.Allocating = .init(self.arena.allocator());
         try @import("../printer.zig").write(&w.writer, self.arena.allocator(), &self.ctx.symbols, out);
         return w.written();
@@ -735,8 +749,8 @@ test "one application gives all its aliases one mark, and the next application a
     try f.init();
     defer f.deinit();
     const m = try f.macro("(syntax-rules () ((_) (tmp tmp)))");
-    const first = try transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null);
-    const second = try transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null);
+    const first = try transform(&f.ctx, &f.work, m, try f.read("(m)"), null);
+    const second = try transform(&f.ctx, &f.work, m, try f.read("(m)"), null);
     const a = first.asPair().?.car;
     const b = first.asPair().?.cdr.asPair().?.car;
     const c = second.asPair().?.car;
@@ -753,9 +767,9 @@ test "an application past the last mark is an implementation restriction" {
     defer f.deinit();
     const m = try f.macro("(syntax-rules () ((_) tmp))");
     f.ctx.next_mark = std.math.maxInt(u64) - 1;
-    const last = try transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null);
+    const last = try transform(&f.ctx, &f.work, m, try f.read("(m)"), null);
     try std.testing.expectEqual(std.math.maxInt(u64) - 1, last.asAlias().?.mark);
-    try std.testing.expectError(error.Raised, transform(&f.ctx, f.arena.allocator(), m, try f.read("(m)"), null));
+    try std.testing.expectError(error.Raised, transform(&f.ctx, &f.work, m, try f.read("(m)"), null));
     try std.testing.expectEqualStrings("implementation restriction: too many macro applications", f.ctx.diagnostic());
 }
 
@@ -843,7 +857,7 @@ fn expectDeep(depth: usize) !void {
     const spec = try f.cons(try f.sym("syntax-rules"), try f.cons(.empty_list_value, try f.cons(rule, .empty_list_value)));
     const m = try compile(&f.ctx, f.arena.allocator(), spec, null, null);
     const use = try f.cons(try f.sym("m"), try f.cons(try nested(&f, .fromFixnum(5), depth), .empty_list_value));
-    var out = try transform(&f.ctx, f.arena.allocator(), m, use, null);
+    var out = try transform(&f.ctx, &f.work, m, use, null);
     for (0..depth) |_| {
         const p = out.asPair().?;
         try std.testing.expectEqual(Value.empty_list_value.kind(), p.cdr.kind());
@@ -852,7 +866,7 @@ fn expectDeep(depth: usize) !void {
     try std.testing.expectEqual(5, out.asFixnum().?);
     // 1段浅い入力は照合しない。
     const shallow = try f.cons(try f.sym("m"), try f.cons(try nested(&f, .fromFixnum(5), depth - 1), .empty_list_value));
-    try std.testing.expectError(error.Raised, transform(&f.ctx, f.arena.allocator(), m, shallow, null));
+    try std.testing.expectError(error.Raised, transform(&f.ctx, &f.work, m, shallow, null));
 }
 
 test "a pattern and a template nested deep are matched and transcribed" {

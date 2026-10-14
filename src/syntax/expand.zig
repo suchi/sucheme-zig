@@ -26,6 +26,7 @@ const syntax_env = @import("env.zig");
 const SyntacticEnv = syntax_env.SyntacticEnv;
 const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
+const heap_mod = @import("../heap.zig");
 
 pub const Error = context.Error;
 
@@ -44,8 +45,27 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 }
 
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
-    var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
-    const root = try ctx.persist.create(Node);
+    // 展開は機械のステップの外で走り、その間は GC が走らない(ADR-0031)。展開が使う作業領域
+    // と節点はヒープの外にあるので、止まらないマクロの適用が、上限を大きく超えてメモリを使う。
+    // それを避けるため、作業領域と節点を、ヒープの上限に対して計上する(`heap.Charged`)。
+    // 上限に収まらなければ、他の確保と同じ `heap limit exceeded` で終わる。上限の検査は、最初の
+    // マクロの適用から効く(`Heap.external_enforced`)。
+    ctx.heap.external_refused = false;
+    defer {
+        ctx.heap.external = 0;
+        ctx.heap.external_enforced = false;
+    }
+    var scratch_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = scratch };
+    var node_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.persist };
+    var work_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.heap.backing };
+    var e: Expander = .{
+        .ctx = ctx,
+        .scratch = scratch_charge.allocator(),
+        .nodes = node_charge.allocator(),
+        .work = .init(work_charge.allocator()),
+        .limits = limits,
+    };
+    defer e.work.deinit();
     // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
     // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
     errdefer ctx.globals.undoShadows();
@@ -54,8 +74,11 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
     // 上限を、セッションの終わりまで理由なく使い続ける。
     const roots = ctx.code_roots.items.len;
     errdefer ctx.code_roots.shrinkRetainingCapacity(roots);
-    try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
-    while (e.stack.pop()) |task| try e.step(task);
+    const root = e.run(form) catch |err| {
+        // 計上の上限で断られた確保は、呼び出し側には確保の失敗に見える。
+        if (err == error.OutOfMemory and ctx.heap.external_refused) return ctx.raise(context.heap_limit_message, .{});
+        return err;
+    };
     ctx.globals.commitShadows();
     return root;
 }
@@ -76,9 +99,22 @@ const Task = struct {
 
 const Expander = struct {
     ctx: *Context,
+    /// Where the work of the expansion goes, counted against the limit of the heap.
     scratch: std.mem.Allocator,
+    /// Where the nodes go, which stay after the expansion, counted while it runs.
+    nodes: std.mem.Allocator,
+    /// The work area of one application of a macro, emptied after each one.
+    work: std.heap.ArenaAllocator,
     limits: Limits,
     stack: std.ArrayList(Task) = .empty,
+
+    /// Expands `form`, which is at the top level, and returns its node.
+    fn run(self: *Expander, form: Value) Error!*const Node {
+        const root = try self.nodes.create(Node);
+        try self.stack.append(self.scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
+        while (self.stack.pop()) |task| try self.step(task);
+        return root;
+    }
 
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
@@ -95,7 +131,7 @@ const Expander = struct {
                 if (head) |denotation| switch (denotation) {
                     // 適用の結果は、同じ位置の同じ節点を埋める形式として展開し直す。
                     .macro => |m| {
-                        const output = try rules.transform(self.ctx, self.scratch, m, task.form, task.env);
+                        const output = try rules.transform(self.ctx, &self.work, m, task.form, task.env);
                         try self.stack.append(self.scratch, .{ .form = output, .env = task.env, .pos = task.pos, .dest = task.dest });
                         return;
                     },
@@ -230,7 +266,7 @@ const Expander = struct {
 
     /// Queues `form` to fill a new node, and returns the node.
     fn child(self: *Expander, form: Value, env: ?*SyntacticEnv, pos: Position) Error!*Node {
-        const node = try self.ctx.persist.create(Node);
+        const node = try self.nodes.create(Node);
         try self.stack.append(self.scratch, .{ .form = form, .env = env, .pos = pos, .dest = node });
         return node;
     }
@@ -314,9 +350,9 @@ const Expander = struct {
             try self.stack.append(self.scratch, .{ .form = forms[0], .env = env, .pos = pos, .dest = dest });
             return;
         }
-        const nodes = try self.ctx.persist.alloc(*const Node, forms.len);
+        const nodes = try self.nodes.alloc(*const Node, forms.len);
         // 節点は順に作り、後ろのものから先にスタックに積む。
-        for (nodes) |*n| n.* = try self.ctx.persist.create(Node);
+        for (nodes) |*n| n.* = try self.nodes.create(Node);
         var i = forms.len;
         while (i > 0) {
             i -= 1;
@@ -416,7 +452,7 @@ const Expander = struct {
 
     /// The node of the value a `define` gives its name.
     fn definedValue(self: *Expander, task: Task, items: []const Value, shorthand: bool) Error!*Node {
-        const value = try self.ctx.persist.create(Node);
+        const value = try self.nodes.create(Node);
         if (shorthand) {
             try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.env, "define");
         } else {
@@ -466,9 +502,9 @@ const Expander = struct {
         // 定義だけの本体には、返す値がない。
         if (scanned.defines == scanned.forms.len)
             return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
-        const body_node = try self.ctx.persist.create(Node);
+        const body_node = try self.nodes.create(Node);
         try self.sequence(body_node, scanned.forms, inner, .expression, scanned.defines);
-        const lambda = try self.ctx.persist.create(value_mod.Lambda);
+        const lambda = try self.nodes.create(value_mod.Lambda);
         lambda.* = .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node };
         dest.* = .{ .lambda = lambda };
     }
@@ -560,7 +596,7 @@ const Expander = struct {
                     },
                     .macro => |m| {
                         try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
-                        form = try rules.transform(self.ctx, self.scratch, m, form, rib);
+                        form = try rules.transform(self.ctx, &self.work, m, form, rib);
                         continue;
                     },
                     .local, .global => break false,
@@ -769,8 +805,8 @@ const Expander = struct {
     /// to right.
     /// Why: R7RS は評価順を規定していない。読み手が期待するのは左から右である。
     fn call(self: *Expander, task: Task, items: []const Value) Error!void {
-        const operands = try self.ctx.persist.alloc(*const Node, items.len - 1);
-        for (operands) |*n| n.* = try self.ctx.persist.create(Node);
+        const operands = try self.nodes.alloc(*const Node, items.len - 1);
+        for (operands) |*n| n.* = try self.nodes.create(Node);
         var i = items.len;
         while (i > 1) {
             i -= 1;

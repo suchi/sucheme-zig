@@ -78,14 +78,71 @@ pub const Budget = enum {
     raise_reserve,
 };
 
+/// An allocator whose requests the heap counts against its limit.
+///
+/// 展開器の作業領域と節点を、この割り当て器を通して確保する。確保した大きさを `Heap.charge`
+/// で計上し、返した大きさを `Heap.credit` で戻す。上限に収まらない要求は、`null` を返して
+/// 断る。呼び出し側には `error.OutOfMemory` に見えるので、断られたことは
+/// `Heap.external_refused` で見分ける。アリーナは個別の解放を受けつけないので、アリーナの
+/// 下に置いた確保は、アリーナを捨てるまで計上され続ける。それが実際のメモリの使い方である。
+pub const Charged = struct {
+    heap: *Heap,
+    backing: std.mem.Allocator,
+
+    pub fn allocator(self: *Charged) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *Charged = @ptrCast(@alignCast(ptr));
+        self.heap.charge(len) catch return null;
+        return self.backing.rawAlloc(len, alignment, ret_addr) orelse {
+            self.heap.credit(len);
+            return null;
+        };
+    }
+
+    fn resize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *Charged = @ptrCast(@alignCast(ptr));
+        if (new_len > memory.len) self.heap.charge(new_len - memory.len) catch return false;
+        if (!self.backing.rawResize(memory, alignment, new_len, ret_addr)) {
+            if (new_len > memory.len) self.heap.credit(new_len - memory.len);
+            return false;
+        }
+        if (new_len < memory.len) self.heap.credit(memory.len - new_len);
+        return true;
+    }
+
+    fn remap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *Charged = @ptrCast(@alignCast(ptr));
+        if (new_len > memory.len) self.heap.charge(new_len - memory.len) catch return null;
+        const moved = self.backing.rawRemap(memory, alignment, new_len, ret_addr) orelse {
+            if (new_len > memory.len) self.heap.credit(new_len - memory.len);
+            return null;
+        };
+        if (new_len < memory.len) self.heap.credit(memory.len - new_len);
+        return moved;
+    }
+
+    fn free(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *Charged = @ptrCast(@alignCast(ptr));
+        self.backing.rawFree(memory, alignment, ret_addr);
+        self.heap.credit(memory.len);
+    }
+};
+
 /// The most a host may ask the heap to account for: 1 GiB.
 /// wasm32 の線形メモリは全体で 4 GiB であり、計上は実メモリの約半分なので、
 /// ホストが 4 GiB に近い値を渡すと、上限に届く前に実メモリが尽きて trap する。
 /// それを順序立ったエラー(`heap limit exceeded`)にするため、ホストの指定をここで丸める。
-/// 段階2のスライス 2k からは、この前提が展開の途中では成り立たない。マクロの展開の
-/// 作業領域は計上されないので、止まらないマクロの適用は、上限に届く前に線形メモリを
-/// 使い切って止まりうる。2l で、適用回数の上限か作業領域の計上を入れて戻す
-/// (docs/adr/0031-gc-at-machine-step-boundaries.md の 2026-10-13 のスライス 2k の追記)。
+/// 展開の作業領域と節点も、`Charged` を通して上限に計上するので、この前提は展開の途中でも
+/// 成り立つ(docs/adr/0031-gc-at-machine-step-boundaries.md の 2026-10-13 のスライス 2k
+/// の追記。スライス 2l で入れた)。
 pub const max_host_limit: usize = 1024 * 1024 * 1024;
 
 /// Clamps a limit a host asked for to `max_host_limit`.
@@ -99,6 +156,88 @@ pub fn clampHostLimit(requested: usize) usize {
 pub fn hostOptions(requested: u32) Options {
     if (requested == 0) return .{};
     return .{ .limit = clampHostLimit(requested) };
+}
+
+test "work charged against the limit leaves less room for the heap, and gives it back" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Pair) * 4 });
+    defer heap.deinit();
+    heap.external_enforced = true;
+    var charged: Charged = .{ .heap = &heap, .backing = std.testing.allocator };
+    const a = charged.allocator();
+    const held = try a.alloc(u8, cellBytes(Pair) * 2);
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.external);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    try std.testing.expectError(error.HeapLimit, heap.cons(.empty_list_value, .empty_list_value));
+    a.free(held);
+    try std.testing.expectEqual(0, heap.external);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+}
+
+test "work is counted before a macro is applied, but is not held to the limit" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Pair) * 2 });
+    defer heap.deinit();
+    var charged: Charged = .{ .heap = &heap, .backing = std.testing.allocator };
+    const a = charged.allocator();
+    const big = try a.alloc(u8, cellBytes(Pair) * 8);
+    defer a.free(big);
+    try std.testing.expectEqual(cellBytes(Pair) * 8, heap.external);
+    try std.testing.expect(!heap.external_refused);
+    // 数えるだけで、ヒープの確保は、いままでの上限で決まる。
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    try std.testing.expectError(error.HeapLimit, heap.cons(.empty_list_value, .empty_list_value));
+    // 検査を始めると、すでに数えた分が、上限に入る。
+    heap.external_enforced = true;
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 1));
+    try std.testing.expect(heap.external_refused);
+}
+
+test "a request past the limit is refused and noted, and the account stays as it was" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    heap.external_enforced = true;
+    var charged: Charged = .{ .heap = &heap, .backing = std.testing.allocator };
+    const a = charged.allocator();
+    const small = try a.alloc(u8, 1000);
+    defer a.free(small);
+    try std.testing.expect(!heap.external_refused);
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 25));
+    try std.testing.expect(heap.external_refused);
+    try std.testing.expectEqual(1000, heap.external);
+    // ちょうど収まる要求は通る。
+    const rest = try a.alloc(u8, 24);
+    a.free(rest);
+    try std.testing.expectEqual(1000, heap.external);
+}
+
+test "growing and shrinking a charged block charge only the difference" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    heap.external_enforced = true;
+    var charged: Charged = .{ .heap = &heap, .backing = std.testing.allocator };
+    const a = charged.allocator();
+    var block = try a.alloc(u8, 100);
+    block = try a.realloc(block, 400);
+    try std.testing.expectEqual(400, heap.external);
+    block = try a.realloc(block, 50);
+    try std.testing.expectEqual(50, heap.external);
+    try std.testing.expectError(error.OutOfMemory, a.realloc(block, 2000));
+    try std.testing.expectEqual(50, heap.external);
+    try std.testing.expect(heap.external_refused);
+    a.free(block);
+    try std.testing.expectEqual(0, heap.external);
+}
+
+test "a request the backing refuses is not left charged" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    heap.external_enforced = true;
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    var charged: Charged = .{ .heap = &heap, .backing = failing.allocator() };
+    try std.testing.expectError(error.OutOfMemory, charged.allocator().alloc(u8, 100));
+    try std.testing.expectEqual(0, heap.external);
+    try std.testing.expect(!heap.external_refused);
 }
 
 test "max_host_limit is 1 GiB" {
@@ -233,6 +372,22 @@ pub const Heap = struct {
     total_steps: usize = 0,
     /// The marking's list of objects still to scan, kept between collections.
     work: []*Header = &no_work,
+    /// The bytes of work outside the heap that count against the limit, while
+    /// an expansion runs (`Charged`).
+    /// 展開は機械のステップの外で走り、その間は GC が走らない(ADR-0031)。展開が使う作業領域
+    /// は、ヒープの外にあるので、計上に入らないと、止まらないマクロの適用が、上限を大きく
+    /// 超えてメモリを使う。展開が終われば 0 に戻す。
+    external: usize = 0,
+    /// Whether `external` counts against the limit. An expansion turns it on
+    /// when it first applies a macro.
+    /// Why: 展開の作業領域は、ふつうはソースの大きさに比例し、ソースはすでにヒープに計上されて
+    /// いる。上限を超えて増えうるのは、マクロの適用が作る出力だけである。そこで数えるのは
+    /// 常に数え、上限の検査にそれを入れるのは、最初のマクロの適用からにする。マクロを使わない
+    /// 式の展開の振る舞いは、変わらない。
+    external_enforced: bool = false,
+    /// Whether a charge was refused for want of room under the limit, since
+    /// whoever started the expansion last cleared it.
+    external_refused: bool = false,
 
     pub fn init(backing: std.mem.Allocator, options: Options) Heap {
         return .{
@@ -438,9 +593,25 @@ pub const Heap = struct {
         }
     }
 
+    /// Counts `bytes` of work outside the heap against the limit, or fails with
+    /// `HeapLimit` and notes that it did.
+    pub fn charge(self: *Heap, bytes: usize) error{HeapLimit}!void {
+        if (self.external_enforced) self.reserve(.limit, bytes) catch |e| {
+            self.external_refused = true;
+            return e;
+        };
+        self.external +|= bytes;
+    }
+
+    /// Gives back `bytes` that `charge` counted.
+    pub fn credit(self: *Heap, bytes: usize) void {
+        self.external -|= bytes;
+    }
+
     /// Fails with `HeapLimit` when `bytes` more would pass what `budget` allows.
     fn reserve(self: *const Heap, budget: Budget, bytes: usize) error{HeapLimit}!void {
-        const total = std.math.add(usize, self.accounted, bytes) catch return error.HeapLimit;
+        const held = std.math.add(usize, self.accounted, if (self.external_enforced) self.external else 0) catch return error.HeapLimit;
+        const total = std.math.add(usize, held, bytes) catch return error.HeapLimit;
         const ceiling = switch (budget) {
             .limit => self.options.limit,
             .raise_reserve => self.options.limit +| self.options.raise_reserve,
