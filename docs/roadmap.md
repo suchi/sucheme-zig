@@ -94,8 +94,8 @@
 - [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
 - [ ] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md))
 - [ ] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる
-- [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)
-- [ ] マクロの展開のメモリを有界にする(適用回数の上限か、展開の作業領域の計上)。今は、止まらないマクロの適用で、計上されない作業領域と節点が、ヒープの上限を大きく超えて伸びる([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記)。リリース v0.2.0 の前に要る (スライス未割り当て。2l に割り当てる計画を [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の 2l の節に書いた)
+- [x] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`) (スライス 2i から 2l)
+- [x] マクロの展開のメモリを有界にする(展開の作業領域と節点を、ヒープの上限に計上する)。止まらないマクロの適用が、ヒープの上限を大きく超えて伸びていた。保証するのは1行の中の展開で、残りは下の「マクロの展開の有界化の残り」の項目にある([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記と、2026-10-14 のスライス 2l の追記) (スライス 2l)
 - [ ] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
 - [ ] ポートごとのケースフォールディング状態と `include-ci`。リーダの `#!fold-case` 指令は段階5だが、ポートの状態と `include-ci` はここで実装する。機構がないまま `include-ci` を提供すると `include` に退化し、畳み込みを期待したファイルが未束縛識別子のエラーになる
 - [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路)
@@ -118,6 +118,8 @@
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
 - [ ] 本体の先頭に置かれた `begin`(定義だけを含むもの、空の `(begin)` を含む)を、定義の並びとして展開する(R7RS 7.1.3、7.1.6、5.3.2)。例: `(lambda () (begin) 1)` と `(lambda () (begin (define x 1)) x)` は、今は `bad begin` になる。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
+- [ ] マクロの展開の有界化の残り。(1) 入れ子の `lambda` を重ねる止まらないマクロは、構文環境の探索が深さに比例して重くなり、時間で終わらない(例: `(define-syntax f (syntax-rules () ((_) (lambda () (f)))))` の `(f)`)。環境の探索を深さに依存しない形にするか、展開の深さの上限を置く。(2) 失敗した展開の節点は行をまたいで残り、失敗を繰り返すと上限の外のメモリが増える。節点を GC ヒープへ移すときに外れる。経緯は [ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 のスライス 2l の追記にある。スライス未割り当て
+- [ ] `let-syntax` と `letrec-syntax` の本体に `define` と `define-syntax` を置けるようにする(R7RS 4.3.1 の本体は定義を許す)。今は `bad define-syntax: a definition is only allowed at the top level or at the start of a body` になる。スライス未割り当て
 - [ ] REPL で解決した名前ごとに残る未束縛のセルの回収(または数の上限)。最上位で解決した未知の名前は、実行されなくても REPL 自身の未束縛のセルになり、GC ヒープの上限に計上され続ける([design/open-questions.md](design/open-questions.md))。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
 - [ ] 準拠マトリクスの入力に、`lib/` のエクスポート節を足す。`lib/` のエクスポート節が実在するこの段階で入れる。段階1の最小版は、`tests/r7rs-required` の識別子をインタプリタが束縛しているかだけを見ている
 - [ ] `equal?` の循環したデータでの停止と、共有構造(同じ部分を何度も指すデータ)で比較回数が深さに対して指数に増える問題への対応(訪問済みの集合)。循環は、データの変更(`set-car!` など)が入ると作れるので、その最初のスライスと同時に要る。共有構造での指数時間は、変更が無くても Scheme から作れる(再現入力は計画書 0010 の `equal?` の注に書いた)。段階1では、この既知の制約を受け入れた(ユーザーが 2026-10-12 に判断した)。`src/prim/equiv.zig` の `isEqual` の doc コメントが参照している (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)

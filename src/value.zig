@@ -946,7 +946,7 @@ pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, cl
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
-pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules" };
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error" };
 
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).
@@ -1041,6 +1041,10 @@ pub const Macro = struct {
     /// Where the identifiers of the patterns and templates are resolved; null is
     /// the top level.
     env: ?*SyntacticEnv,
+    /// The identifier that `(syntax-rules ellipsis (literal ...) rule ...)` names
+    /// as the ellipsis, or null for `...`.
+    /// 指定したとき、`...` はふつうの識別子である。
+    ellipsis: ?Value = null,
 
     /// The kinds of transformer a macro can have.
     /// 段階2は `syntax-rules` だけである。Scheme の手続きを変換子にする種類は、要求が
