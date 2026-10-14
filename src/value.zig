@@ -1300,6 +1300,54 @@ test "a continuation is a heap object of its own kind" {
     try std.testing.expect(v.isTrue());
 }
 
+test "a parameter is a heap object of its own kind" {
+    var param: Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    const v: Value = .fromParameter(&param);
+    try std.testing.expectEqual(Kind.parameter, v.kind());
+    try std.testing.expectEqual(&param, v.asParameter().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(v.asContinuation() == null);
+    try std.testing.expect(Value.fromFixnum(1).asParameter() == null);
+    try std.testing.expect(v.isTrue());
+}
+
+/// A chain of points for the tests of the value of a parameter: `a` puts 10 on
+/// `first`, `b` is a handler point on it, `c` puts 20 on `first` on `b`, and `d`
+/// puts 30 on `second` on `c`.
+const ParameterPoints = struct {
+    first: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    second: Parameter = .{ .value = .{ .fixnum = 2 }, .converter = null },
+    third: Parameter = .{ .value = .{ .fixnum = 3 }, .converter = null },
+    a: DynPoint = undefined,
+    b: DynPoint = undefined,
+    c: DynPoint = undefined,
+    d: DynPoint = undefined,
+
+    fn link(self: *ParameterPoints) void {
+        self.a = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.first, .value = .fromFixnum(10) } } };
+        self.b = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = .{ .handler_shift = null } };
+        self.c = .{ .parent = &self.b, .depth = 3, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.first, .value = .fromFixnum(20) } } };
+        self.d = .{ .parent = &self.c, .depth = 4, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.second, .value = .fromFixnum(30) } } };
+    }
+};
+
+test "the value of a parameter is the innermost point that holds it, or the value it was made with" {
+    var t: ParameterPoints = .{};
+    t.link();
+    // 点が無ければ、作られたときの値である。
+    try std.testing.expectEqual(1, parameterValue(null, &t.first).asFixnum().?);
+    try std.testing.expectEqual(3, parameterValue(&t.d, &t.third).asFixnum().?);
+    // 最も内側のそのパラメータの点が勝つ。外側の点は隠れる。
+    try std.testing.expectEqual(10, parameterValue(&t.a, &t.first).asFixnum().?);
+    try std.testing.expectEqual(20, parameterValue(&t.c, &t.first).asFixnum().?);
+    try std.testing.expectEqual(20, parameterValue(&t.d, &t.first).asFixnum().?);
+    // 別のパラメータの点は読み飛ばし、ハンドラの点も読み飛ばす。
+    try std.testing.expectEqual(10, parameterValue(&t.b, &t.first).asFixnum().?);
+    try std.testing.expectEqual(2, parameterValue(&t.c, &t.second).asFixnum().?);
+    try std.testing.expectEqual(30, parameterValue(&t.d, &t.second).asFixnum().?);
+}
+
 test "allAscii looks at every byte" {
     try std.testing.expect(allAscii(""));
     try std.testing.expect(allAscii("abc\x00\x7f"));
@@ -1471,6 +1519,9 @@ const Samples = struct {
     // 同じ継続と列を捕捉した2つの継続。
     continuation_a: Continuation = .{ .kont = null, .dyn = null },
     continuation_b: Continuation = .{ .kont = null, .dyn = null },
+    // 値も変換手続きも同じ2つのパラメータ。
+    parameter_a: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    parameter_b: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -1496,7 +1547,7 @@ const Samples = struct {
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [32]Value {
+    fn all(self: *Samples) [34]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -1530,6 +1581,8 @@ const Samples = struct {
             .fromRecord(&self.record_b),
             .fromContinuation(&self.continuation_a),
             .fromContinuation(&self.continuation_b),
+            .fromParameter(&self.parameter_a),
+            .fromParameter(&self.parameter_b),
         };
     }
 };

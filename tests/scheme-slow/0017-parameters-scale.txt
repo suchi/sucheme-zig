@@ -1,0 +1,23 @@
+# スライス 2g を規模で試す。深く入れ子にした parameterize、その内側からの脱出と再入、読み出しと
+# 束縛の繰り返しである。実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ
+# 走り、全コミットでは走らない(docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す
+# 双子が tests/scheme/0102-parameters-scale-small.txt にある。
+# ここで見るのは、入れ子の深さと回数に比例して壊れる種類の誤りである。束縛の点と継続のフレームが
+# GC の間も保たれること、捨てた点とフレームが回収されて、長いループでもヒープの上限に届かない
+# ことである。1ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# 5万段の入れ子の底で、最も内側の束縛が見え、外に出れば最初の値に戻る。
+(define p (make-parameter 0)) (define (nest n thunk) (if (= n 0) (thunk) (parameterize ((p n)) (+ 0 (nest (- n 1) thunk))))) (list (nest 50000 (lambda () (+ (p) 1000))) (p))
+(1001 0)
+
+# 5万段の入れ子の底で捕捉した継続で、脱出して再入する。変換手続きは束縛ごとに1回しか呼ばれない。
+(define count 0) (define p (make-parameter 0 (lambda (x) (set! count (+ count 1)) x))) (define k #f) (define round 0) (define seen '()) (define (nest n thunk) (if (= n 0) (thunk) (parameterize ((p n)) (+ 0 (nest (- n 1) thunk))))) (define r (call/cc (lambda (out) (nest 50000 (lambda () (call/cc (lambda (c) (set! k c))) (set! seen (cons (p) seen)) (out 'escaped)))))) (set! round (+ round 1)) (if (= round 1) (k #f)) (list r round (p) count seen)
+(escaped 1 0 50001 (1 1))
+
+# 束縛の内側での読み出しを、100万回繰り返す。
+(define p (make-parameter 1)) (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc (p))))) (parameterize ((p 2)) (sum 1000000 0))
+2000000
+
+# 束縛を、100万回繰り返す。
+(define p (make-parameter 0)) (define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc (parameterize ((p n)) (p)))))) (loop 1000000 0)
+500000500000
