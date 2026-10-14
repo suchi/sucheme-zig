@@ -11,7 +11,7 @@
 //! が GC ヒープにある)を加え、スライス 2j は大域変数の束縛セル(同じく GC ヒープに
 //! ある)を加える。スライス 2h は、レコードとレコード型を加える。スライス 2k は、
 //! マクロのテンプレートが導入した識別子である別名と、マクロを加える。別名は値の変種
-//! だが、展開器の中だけにあり、機械には届かない。
+//! だが、展開器の中だけにあり、機械には届かない。スライス 2g は、パラメータを加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -72,6 +72,10 @@ pub const Value = union(enum) {
     /// takes the computation back to where it was captured.
     /// GC ヒープにある。
     continuation: *Continuation,
+    /// A parameter object that `make-parameter` made (R7RS 4.2.6): a procedure
+    /// of no arguments that returns the value `parameterize` gave it.
+    /// GC ヒープにある。
+    parameter: *Parameter,
     /// What `values` returns when it is not given exactly one value: the values
     /// of a computation that has more or fewer than one (R7RS 6.10).
     /// GC ヒープにある。1個を要求しない継続(受け手など)だけが受け取り、それ以外の継続に
@@ -144,6 +148,10 @@ pub const Value = union(enum) {
         return .{ .continuation = c };
     }
 
+    pub fn fromParameter(p: *Parameter) Value {
+        return .{ .parameter = p };
+    }
+
     pub fn fromMultipleValues(m: *MultipleValues) Value {
         return .{ .multiple_values = m };
     }
@@ -152,7 +160,7 @@ pub const Value = union(enum) {
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values => true,
+            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
@@ -176,6 +184,7 @@ pub const Value = union(enum) {
             .record => .record,
             .record_type => .record_type,
             .continuation => .continuation,
+            .parameter => .parameter,
             .multiple_values => .multiple_values,
         };
     }
@@ -284,6 +293,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The parameter object, or null when the value is not one.
+    pub fn asParameter(self: Value) ?*Parameter {
+        return switch (self) {
+            .parameter => |p| p,
+            else => null,
+        };
+    }
+
     /// The multiple values, or null when the value is not them.
     pub fn asMultipleValues(self: Value) ?*MultipleValues {
         return switch (self) {
@@ -330,6 +347,7 @@ pub const Value = union(enum) {
             .record => |x| b.asRecord() == x,
             .record_type => |x| b.asRecordType() == x,
             .continuation => |x| b.asContinuation() == x,
+            .parameter => |x| b.asParameter() == x,
             .multiple_values => |x| b.asMultipleValues() == x,
         };
     }
@@ -559,6 +577,9 @@ pub const MachineOp = enum {
     call_cc,
     /// `(dynamic-wind before thunk after)` (R7RS 6.10).
     dynamic_wind,
+    /// `(make-parameter init)` and `(make-parameter init converter)` (R7RS
+    /// 4.2.6).
+    make_parameter,
     /// `(values obj ...)` (R7RS 6.10).
     values,
     /// `(call-with-values producer consumer)` (R7RS 6.10).
@@ -611,12 +632,33 @@ pub const Node = union(enum) {
     local_define: LocalAssign,
     global_set: GlobalAssign,
     global_define: GlobalAssign,
+    /// `(parameterize ((param value) ...) body ...)` (R7RS 4.2.6).
+    parameterize: *const Parameterize,
     @"if": If,
     /// `begin` and the body of a `lambda`: one or more nodes, the last one's
     /// value is the value of the sequence.
     sequence: []const *const Node,
     lambda: *const Lambda,
     call: Call,
+};
+
+/// What a `parameterize` means: the bindings, and the body to run in the
+/// extent of the new values.
+/// 本体は、引数の無い `lambda` の本体と同じ形で展開してある。本体は定義を先頭に置ける
+/// (R7RS 4.2.6 の本体は `<body>` である)ので、その定義の置き場が要る。機械は、クロージャを
+/// 作らずに、`parameterize` を評価したフレームの子として、そのためのフレームを作って
+/// 本体を走らせる。
+pub const Parameterize = struct {
+    /// In the order they were written; may be empty.
+    bindings: []const ParameterBinding,
+    /// Only `frame_size` and `body` are used: it takes no parameters.
+    body: *const Lambda,
+};
+
+/// One `(param value)` of a `parameterize`.
+pub const ParameterBinding = struct {
+    param: *const Node,
+    value: *const Node,
 };
 
 /// A local variable read.
@@ -714,8 +756,8 @@ pub const Kont = struct {
         call: CallStep,
         /// The value is what the body of a dynamic extent returned; the dynamic
         /// point goes back to this one, and the value passes on as it is.
-        /// `with-exception-handler` が、点を積む前の点を持たせて置く(docs/design/runtime.md の
-        /// 動的範囲の通常終了)。
+        /// `with-exception-handler` と `parameterize` が、点を積む前の点を持たせて置く
+        /// (docs/design/runtime.md の動的範囲の通常終了)。
         dynamic_exit: ?*const DynPoint,
         /// The value is what a handler called by `raise` or `raise-continuable`
         /// returned.
@@ -741,6 +783,21 @@ pub const Kont = struct {
         /// continuation of the `call-with-values`.
         values_receiver: Value,
 
+        /// `make-parameter` called its converter, and the value is what it
+        /// returned, which becomes the initial value of the new parameter.
+        /// 持つのは変換手続きである(docs/design/runtime.md の「必要なフレームの種類」)。
+        make_parameter: Value,
+        /// The value is the parameter of a binding of a `parameterize`; the value
+        /// expression of the binding runs next.
+        parameterize_param: ParameterizeStep,
+        /// The value is the new value of a binding; its converter is called if
+        /// the parameter has one, and the binding is made at once if not.
+        parameterize_value: ParameterizeBound,
+        /// The value is what the converter of a binding returned; the binding is
+        /// made with it, without a second conversion.
+        /// 変換手続きの戻りと値の式の戻りは、同じ形で1個の値を受け取る。区別しないと、変換を
+        /// 2回するか、しないかになる(docs/design/runtime.md の `parameterize` の3つの局面)。
+        parameterize_convert: ParameterizeBound,
         /// Whether a value that arrives at a frame of this kind must be one
         /// value: a `multiple_values` object is an error there (docs/design/runtime.md,
         /// the table of multiple values).
@@ -748,16 +805,40 @@ pub const Kont = struct {
         /// 表の5群のどれに属するかを決めずにコンパイルを通せないようにするためである。
         /// 捨てる群(`sequence` `wind_before`)、そのまま渡す群(`dynamic_exit` `handler_return`
         /// `wind_body`)、受け取る群(`values_receiver`)、無視する群(`wind_after` `rewind`)は
-        /// 個数を検査しない。それ以外は1個を要求する。
+        /// 個数を検査しない。それ以外は1個を要求する。`make-parameter` と `parameterize` の
+        /// 4つのフレームは、パラメータ、初期値、新しい値、変換手続きの戻りという、1個の値を
+        /// 受け取る位置なので、この群に入る。
         pub fn requiresOneValue(step: Step) bool {
             return switch (step) {
                 .branch, .local_set, .local_define, .global_set, .global_define, .call => true,
+                .make_parameter, .parameterize_param, .parameterize_value, .parameterize_convert => true,
                 .sequence, .wind_before => false,
                 .dynamic_exit, .handler_return, .wind_body => false,
                 .values_receiver => false,
                 .wind_after, .rewind => false,
             };
         }
+    };
+
+    /// Where a `parameterize` is, between the evaluation of its expressions.
+    /// 3つのフレームの状態は、不変のまま、起動のたびに共有される。束縛の点は、すべて変換した
+    /// あとで列に積む。それまでに作った点は `pending` の鎖に持ち、列のレジスタは書き換えない。
+    /// 変換手続きと式は、`parameterize` の外の動的環境で走る。
+    pub const ParameterizeStep = struct {
+        node: *const Parameterize,
+        /// The binding the value belongs to.
+        index: u32,
+        /// The points of the bindings made so far, the latest first; the first one
+        /// is on the dynamic point the `parameterize` started at.
+        pending: ?*const DynPoint,
+    };
+
+    /// `ParameterizeStep`, and the parameter of the binding it is about.
+    pub const ParameterizeBound = struct {
+        node: *const Parameterize,
+        index: u32,
+        pending: ?*const DynPoint,
+        param: *Parameter,
     };
 
     pub const WindBefore = struct {
@@ -806,8 +887,7 @@ pub const Kont = struct {
 /// the running code have put in place, innermost first (ADR-0016).
 /// 点は不変で、親へのリンクで連なる。機械のレジスタが最も内側の点を指し、`null` は
 /// 何も置かれていない状態である。現在の例外ハンドラは独立したレジスタでなく、この列から
-/// `currentHandler` で導く。点の種別のうち、パラメータの点は、それを使うスライス 2g が
-/// 足す。
+/// `currentHandler` で導く。パラメータの値も、この列から `parameterValue` で引く。
 pub const DynPoint = struct {
     parent: ?*const DynPoint,
     /// The number of points from this one out, itself included.
@@ -835,11 +915,23 @@ pub const DynPoint = struct {
         /// 継続の起動で、この点を出るときに `after` を、入るときに `before` を呼ぶ。どちらも
         /// この点の親の列で呼ぶ(docs/design/runtime.md の巻き戻しの進行)。
         wind: Wind,
+        /// Put on by `parameterize`: inside this point, the parameter has this
+        /// value (R7RS 4.2.6).
+        /// 継続の起動では、退出でも進入でも何も呼ばない。点を外すのは列のレジスタを戻すことで、
+        /// 目標の列が点を含むなら、着いたときに列ごと戻る。
+        parameter: ParameterValue,
     };
 
     pub const Wind = struct {
         before: Value,
         after: Value,
+    };
+
+    /// The value a `parameterize` gave a parameter, which is what the
+    /// conversion procedure returned.
+    pub const ParameterValue = struct {
+        param: *Parameter,
+        value: Value,
     };
 };
 
@@ -877,6 +969,18 @@ pub fn windBetween(from: ?*const DynPoint, ancestor: ?*const DynPoint) bool {
     }
     return false;
 }
+
+/// A parameter object: the value it was made with, and the procedure that
+/// converts the values `parameterize` gives it.
+/// 値は作られたときのもので、変えない。`parameterize` の間の値は、動的状態の列の点にある
+/// (`parameterValue`)。変換手続きが無いパラメータは、`null` を持つ。
+pub const Parameter = struct {
+    /// What the parameter has outside every `parameterize`: the initial value,
+    /// converted if there is a converter.
+    value: Value,
+    /// The conversion procedure, or null when `make-parameter` was not given one.
+    converter: ?Value,
+};
 
 /// What `call/cc` captures: the continuation and the dynamic state of the
 /// call (docs/design/runtime.md, the full continuation).
@@ -923,6 +1027,18 @@ pub fn currentHandler(point: ?*const DynPoint) ?*const DynPoint {
     return p.current_handler;
 }
 
+/// The value of `param` at `point`: what the innermost `parameterize` around it
+/// gave, or the value the parameter was made with when there is none.
+/// 列を内側から外側へたどって、最初に見つかったそのパラメータの点の値を返す。
+pub fn parameterValue(point: ?*const DynPoint, param: *const Parameter) Value {
+    var it = point;
+    while (it) |p| : (it = p.parent) switch (p.kind) {
+        .parameter => |b| if (b.param == param) return b.value,
+        .handler, .handler_shift, .wind => {},
+    };
+    return param.value;
+}
+
 /// The depth a point put on `parent` has.
 pub fn depthAbove(parent: ?*const DynPoint) u32 {
     const p = parent orelse return 1;
@@ -932,21 +1048,21 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
+pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
-pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error" };
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error", parameterize };
 
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).
@@ -1241,6 +1357,54 @@ test "a continuation is a heap object of its own kind" {
     try std.testing.expect(v.isTrue());
 }
 
+test "a parameter is a heap object of its own kind" {
+    var param: Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    const v: Value = .fromParameter(&param);
+    try std.testing.expectEqual(Kind.parameter, v.kind());
+    try std.testing.expectEqual(&param, v.asParameter().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(v.asContinuation() == null);
+    try std.testing.expect(Value.fromFixnum(1).asParameter() == null);
+    try std.testing.expect(v.isTrue());
+}
+
+/// A chain of points for the tests of the value of a parameter: `a` puts 10 on
+/// `first`, `b` is a handler point on it, `c` puts 20 on `first` on `b`, and `d`
+/// puts 30 on `second` on `c`.
+const ParameterPoints = struct {
+    first: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    second: Parameter = .{ .value = .{ .fixnum = 2 }, .converter = null },
+    third: Parameter = .{ .value = .{ .fixnum = 3 }, .converter = null },
+    a: DynPoint = undefined,
+    b: DynPoint = undefined,
+    c: DynPoint = undefined,
+    d: DynPoint = undefined,
+
+    fn link(self: *ParameterPoints) void {
+        self.a = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.first, .value = .fromFixnum(10) } } };
+        self.b = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = .{ .handler_shift = null } };
+        self.c = .{ .parent = &self.b, .depth = 3, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.first, .value = .fromFixnum(20) } } };
+        self.d = .{ .parent = &self.c, .depth = 4, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.second, .value = .fromFixnum(30) } } };
+    }
+};
+
+test "the value of a parameter is the innermost point that holds it, or the value it was made with" {
+    var t: ParameterPoints = .{};
+    t.link();
+    // 点が無ければ、作られたときの値である。
+    try std.testing.expectEqual(1, parameterValue(null, &t.first).asFixnum().?);
+    try std.testing.expectEqual(3, parameterValue(&t.d, &t.third).asFixnum().?);
+    // 最も内側のそのパラメータの点が勝つ。外側の点は隠れる。
+    try std.testing.expectEqual(10, parameterValue(&t.a, &t.first).asFixnum().?);
+    try std.testing.expectEqual(20, parameterValue(&t.c, &t.first).asFixnum().?);
+    try std.testing.expectEqual(20, parameterValue(&t.d, &t.first).asFixnum().?);
+    // 別のパラメータの点は読み飛ばし、ハンドラの点も読み飛ばす。
+    try std.testing.expectEqual(10, parameterValue(&t.b, &t.first).asFixnum().?);
+    try std.testing.expectEqual(2, parameterValue(&t.c, &t.second).asFixnum().?);
+    try std.testing.expectEqual(30, parameterValue(&t.d, &t.second).asFixnum().?);
+}
+
 test "multiple values are a heap object of their own kind" {
     var items = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
     var m: MultipleValues = .{ .items = &items };
@@ -1260,6 +1424,7 @@ test "only the frames that take one value ask for exactly one" {
     const call: Call = .{ .operator = &node, .operands = &.{} };
     const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
     const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
+    var parameter: Parameter = .{ .value = .unspecified_value, .converter = null };
     const asks_one = [_]Kont.Step{
         .{ .branch = &if_node },
         .{ .local_set = &assign },
@@ -1267,6 +1432,10 @@ test "only the frames that take one value ask for exactly one" {
         .{ .global_set = &global },
         .{ .global_define = &global },
         .{ .call = .{ .call = &call, .args = null, .received = 0 } },
+        .{ .make_parameter = .unspecified_value },
+        .{ .parameterize_param = .{ .node = undefined, .index = 0, .pending = null } },
+        .{ .parameterize_value = .{ .node = undefined, .index = 0, .pending = null, .param = &parameter } },
+        .{ .parameterize_convert = .{ .node = undefined, .index = 0, .pending = null, .param = &parameter } },
     };
     for (asks_one) |step| try std.testing.expect(step.requiresOneValue());
     const takes_any = [_]Kont.Step{
@@ -1453,6 +1622,9 @@ const Samples = struct {
     // 同じ継続と列を捕捉した2つの継続。
     continuation_a: Continuation = .{ .kont = null, .dyn = null },
     continuation_b: Continuation = .{ .kont = null, .dyn = null },
+    // 値も変換手続きも同じ2つのパラメータ。
+    parameter_a: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    parameter_b: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
     // 中身が同じ2つの複数値。
     values_items_a: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
     values_items_b: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
@@ -1485,7 +1657,7 @@ const Samples = struct {
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [34]Value {
+    fn all(self: *Samples) [36]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -1519,6 +1691,8 @@ const Samples = struct {
             .fromRecord(&self.record_b),
             .fromContinuation(&self.continuation_a),
             .fromContinuation(&self.continuation_b),
+            .fromParameter(&self.parameter_a),
+            .fromParameter(&self.parameter_b),
             .fromMultipleValues(&self.multiple_values_a),
             .fromMultipleValues(&self.multiple_values_b),
         };

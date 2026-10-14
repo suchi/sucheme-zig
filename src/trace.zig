@@ -111,7 +111,8 @@ pub fn Tracer(comptime spec: Spec) type {
         pub fn walk(visitor: anytype, comptime T: type, value: T) void {
             // Why: `classify` と同じく、分類の分岐の数はヒープの型の数に比例する。型を足すたびに
             // 既定の上限(1000)を超えるので、`Value` のように多くのポインタを持つ型を走査する
-            // 呼び出しの側でも上限を上げる。
+            // 呼び出しの側でも上限を上げる。継続フレームの種類を足したときも、1つの型の分類が
+            // 既定の上限を超える。
             const class = comptime blk: {
                 @setEvalBranchQuota(100_000);
                 break :blk classifyAt(T, @typeName(T), true).?;
@@ -562,6 +563,80 @@ test "the classes of the types of continuations" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Continuation).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Rewind).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.WindPath).?);
+}
+
+test "a parameter is followed through its value and its converter, when it has one" {
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    const converting: value_mod.Parameter = .{ .value = .{ .pair = &p }, .converter = .{ .closure = &c } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Parameter, &converting);
+    try r.expect(&.{ addr(&p), addr(&c) });
+    // 変換手続きが無ければ、値だけである。ヒープのものでない値なら、何も報告しない。
+    const plain: value_mod.Parameter = .{ .value = .{ .pair = &p }, .converter = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Parameter, &plain);
+    try q.expect(&.{addr(&p)});
+    const flat: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.Parameter, &flat);
+    try s.expect(&.{});
+}
+
+test "a parameter point is followed through its parent, its current handler, its parameter and its value" {
+    var outer: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+    outer.current_handler = &outer;
+    var param: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const point: value_mod.DynPoint = .{ .parent = &outer, .depth = 2, .current_handler = &outer, .kind = .{ .parameter = .{ .param = &param, .value = .{ .pair = &p } } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.DynPoint, &point);
+    try r.expect(&.{ addr(&outer), addr(&outer), addr(&param), addr(&p) });
+    // 値がヒープのものでなければ、パラメータまでである。
+    const flat: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .parameter = .{ .param = &param, .value = .fromFixnum(2) } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.DynPoint, &flat);
+    try q.expect(&.{addr(&param)});
+}
+
+test "the frames of make-parameter and parameterize are followed through what they keep" {
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    const made: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .make_parameter = .{ .closure = &c } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &made);
+    try r.expect(&.{addr(&c)});
+    const body: value_mod.Node = .{ .constant = .unspecified_value };
+    const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
+    const node: value_mod.Parameterize = .{ .bindings = &.{}, .body = &lambda };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var param: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    // 節点はコードで、たどらない。持つのは、作りかけの点の鎖だけである。
+    const step: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_param = .{ .node = &node, .index = 0, .pending = &point } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &step);
+    try q.expect(&.{addr(&point)});
+    const first: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_param = .{ .node = &node, .index = 0, .pending = null } } };
+    var f: Recorder = .{};
+    interpreter.children(&f, Kont, &first);
+    try f.expect(&.{});
+    // 値と変換の局面は、さらに束縛のパラメータを持つ。
+    const bound: value_mod.Kont.ParameterizeBound = .{ .node = &node, .index = 1, .pending = &point, .param = &param };
+    const valued: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_value = bound } };
+    var s: Recorder = .{};
+    interpreter.children(&s, Kont, &valued);
+    try s.expect(&.{ addr(&point), addr(&param) });
+    const converted: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_convert = bound } };
+    var t: Recorder = .{};
+    interpreter.children(&t, Kont, &converted);
+    try t.expect(&.{ addr(&point), addr(&param) });
+}
+
+test "the classes of the types of parameters" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Parameter).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Parameter).?);
+    // 節点と、その束縛は、コードである。
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Parameterize).?);
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.ParameterBinding).?);
 }
 
 test "a type the walk cannot sort has no class" {

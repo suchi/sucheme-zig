@@ -119,7 +119,7 @@ const Expander = struct {
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
             // 自己評価式(R7RS 4.1.2)。
-            .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values => try self.constant(task, task.form),
+            .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),
@@ -151,6 +151,7 @@ const Expander = struct {
                         .@"let-syntax" => self.letSyntax(task, items, false),
                         .@"letrec-syntax" => self.letSyntax(task, items, true),
                         .@"syntax-error" => self.syntaxError(items),
+                        .parameterize => self.parameterizeForm(task, items),
                     },
                     .macro => unreachable,
                     .local, .global => {},
@@ -364,6 +365,37 @@ const Expander = struct {
             });
         }
         dest.* = .{ .sequence = nodes };
+    }
+
+    /// `(parameterize ((param value) ...) body ...)` (R7RS 4.2.6).
+    /// 束縛は空でもよい。本体は `<body>` なので、引数の無い `lambda` の本体と同じ形に展開し、
+    /// 先頭に定義を置けるようにする。機械が、その本体のためのフレームを作って走らせる。
+    fn parameterizeForm(self: *Expander, task: Task, items: []const Value) Error!void {
+        if (items.len < 3)
+            return self.ctx.raise("bad parameterize: expected (parameterize ((parameter value) ...) body ...)", .{});
+        // 束縛の式は、パラメータと値を交互に並べる。
+        var forms: std.ArrayList(Value) = .empty;
+        var rest = items[1];
+        while (rest.asPair()) |p| : (rest = p.cdr) {
+            const bad = "bad parameterize: a binding must be (parameter value)";
+            const first = p.car.asPair() orelse return self.ctx.raise(bad, .{});
+            const second = first.cdr.asPair() orelse return self.ctx.raise(bad, .{});
+            if (second.cdr.kind() != .empty_list) return self.ctx.raise(bad, .{});
+            try forms.append(self.scratch, first.car);
+            try forms.append(self.scratch, second.car);
+        }
+        if (rest.kind() != .empty_list)
+            return self.ctx.raise("bad parameterize: the bindings must be a list", .{});
+        const bindings = try self.nodes.alloc(value_mod.ParameterBinding, forms.items.len / 2);
+        for (bindings, 0..) |*b, i| b.* = .{
+            .param = try self.child(forms.items[2 * i], task.env, .expression),
+            .value = try self.child(forms.items[2 * i + 1], task.env, .expression),
+        };
+        const body = try self.nodes.create(Node);
+        try self.lambdaNode(body, .empty_list_value, items[2..], task.env, "parameterize");
+        const parameterize = try self.nodes.create(value_mod.Parameterize);
+        parameterize.* = .{ .bindings = bindings, .body = body.lambda };
+        task.dest.* = .{ .parameterize = parameterize };
     }
 
     /// `(set! name expression)` (R7RS 4.1.6).

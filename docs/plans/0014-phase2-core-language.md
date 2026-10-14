@@ -747,8 +747,8 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2c | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。`apply` が1ステップの中で確保する件は、ADR-0031 の追記に記録して受け入れ、段階3で直す | |
 | 2d | main に入った | [#84](https://github.com/suchi/sucheme-zig/pull/84) |
 | 2e | main に入った。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。予約領域は 4 KiB のまま(測定は runtime.md の送出のための予約領域)。再入の深さに比例する確保が予約で賄い切れない限界は、受け入れた制約として記録した(ユーザーが 2026-10-13 に判断した)。WASM の状態コード -2 も実装した | |
-| 2f | 実装済み。敵対的レビューの前。`values` と `call-with-values` は機械操作プリミティブ。複数値のオブジェクトは `MultipleValues`(0個か2個以上の値を持つヒープの型)。1個を要求する群の検査は `Kont.Step.requiresOneValue` の1か所にある | |
-| 2g | 未着手 | |
+| 2f | main に入った。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。`values` と `call-with-values` は機械操作プリミティブ。複数値のオブジェクトは `MultipleValues`(0個か2個以上の値を持つヒープの型)。1個を要求する群の検査は `Kont.Step.requiresOneValue` の1か所にある。複数値の個数に比例する確保を1ステップの中でする件は、ADR-0031 の追記に記録して受け入れ、段階3で直す(ユーザーが 2026-10-14 に判断した) | [#89](https://github.com/suchi/sucheme-zig/pull/89) |
+| 2g | 実装済み。敵対的レビューを 1 巡行い、必須は 0 件。指摘の反映は済み。2f の `requiresOneValue` では、4つのフレームを1個を要求する群に入れた。計画書のスケッチとの差は、`Parameter.converter` が `?Value`、`parameterize` の節点が `Parameterize`(束縛の並びと、引数の無い `lambda` の本体の形の本体。先頭に定義を置ける)、`Special` が `src/value.zig` にあること、継続フレームが `make_parameter` と `parameterize_param` `parameterize_value` `parameterize_convert` の4種であること。束縛の点は、すべての変換手続きが戻ってから列に積む | |
 | 2h | 実装済み。敵対的レビューの前。プリミティブの名前は `%make-record-type` `%make-record` `%record?` `%record-ref` `%record-set!`(`src/prim/record.zig`) | |
 | 2i | main に入った | [#80](https://github.com/suchi/sucheme-zig/pull/80) |
 | 2j | main に入った | [#82](https://github.com/suchi/sucheme-zig/pull/82) |
@@ -768,6 +768,6 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 系列ごとの次の作業。各スライスの PR は、自分の系列の行だけを書き換える(「重なりの確認」)。
 
-- 実行時の系列(2b から 2h): 2b、2c、2d、2e、2h は main に入った。2f は実装済みで、敵対的レビューの前である。2g は 2e と 2i が main に入ったので並行して始めており、2f と `machine.zig` と `value.zig` が重なる。先にマージされるほうの後で、もう一方が main を取り込む。
+- 実行時の系列(2b から 2h): 2b、2c、2d、2e、2f、2h は main に入った。2g は実装済みで、2f が main に入ったので main を取り込んだ。敵対的レビューは1巡行い、指摘の反映は済み。
 - マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2i と 2j と 2k は main に入った。2l は実装済みで、敵対的レビューの1巡目の指摘を直した。展開のメモリの有界化は、1行の中の展開まで入れた。残りは roadmap の項目にある。これで、マクロの系列は 2r を待つだけになる。
 - ライブラリの系列(2m から 2q): 2j のマージ後に 2m から始める。
