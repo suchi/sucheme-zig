@@ -61,3 +61,7 @@ error: bad syntax-rules: an ellipsis escape must be (... template)
 # 指定した省略記号は、パターンの先頭にも、深さの規則にも、既定の省略記号と同じに働く。
 (define-syntax pairs (syntax-rules ::: () ((_ (a b :::) :::) '((a b :::) :::)))) (pairs (1 2 3) (4))
 ((1 2 3) (4))
+
+# エスケープの中のエスケープは、省略記号そのものを2重に包んでも1つの省略記号として出る。
+(define-syntax esc-nested (syntax-rules () ((_) '(... (... ...))))) (esc-nested)
+(... ...)
