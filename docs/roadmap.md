@@ -94,8 +94,8 @@
 - [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
 - [ ] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md))
 - [ ] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる
-- [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)
-- [ ] マクロの展開のメモリを有界にする(適用回数の上限か、展開の作業領域の計上)。今は、止まらないマクロの適用で、計上されない作業領域と節点が、ヒープの上限を大きく超えて伸びる([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記)。リリース v0.2.0 の前に要る (スライス未割り当て。2l に割り当てる計画を [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の 2l の節に書いた)
+- [x] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`) (スライス 2i から 2l)
+- [x] マクロの展開のメモリを有界にする(展開の作業領域と節点を、ヒープの上限に計上する)。止まらないマクロの適用が、ヒープの上限を大きく超えて伸びていた([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記と、2026-10-14 のスライス 2l の追記) (スライス 2l)
 - [ ] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
 - [ ] ポートごとのケースフォールディング状態と `include-ci`。リーダの `#!fold-case` 指令は段階5だが、ポートの状態と `include-ci` はここで実装する。機構がないまま `include-ci` を提供すると `include` に退化し、畳み込みを期待したファイルが未束縛識別子のエラーになる
 - [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路)
