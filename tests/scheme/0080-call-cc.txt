@@ -44,12 +44,13 @@ third
 (define (make-gen lst) (define return #f) (define resume-point #f) (define (walk l) (if (pair? l) (begin (call/cc (lambda (resume) (set! resume-point resume) (return (car l)))) (walk (cdr l))) (return 'done))) (lambda () (call/cc (lambda (r) (set! return r) (if resume-point (resume-point #f) (walk lst)))))) (define g (make-gen '(a b c))) (list (g) (g) (g) (g) (g))
 (a b c done done)
 
-# 継続は値を1つ取る。複数値はスライス 2f で入る。
+# 継続は任意個の値を取る(スライス 2f)。複数値の振る舞いは 0090 にある。
 (call/cc (lambda (k) (k 1 2)))
-error: wrong number of arguments: expected 1, got 2
+1
+2
 
 (call/cc (lambda (k) (k)))
-error: wrong number of arguments: expected 1, got 0
+<no output>
 
 (call/cc 5)
 error: wrong type of argument to call/cc 5

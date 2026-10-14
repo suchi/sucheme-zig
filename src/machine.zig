@@ -254,6 +254,11 @@ pub const Machine = struct {
                 const k = kont orelse return value;
                 kont = k.next;
                 env = k.env;
+                // 複数値の表の「1個を要求する」群のフレームに複数値が届いたら誤りにする。
+                // ほかの群は個数を検査しない(`Kont.Step.requiresOneValue`)。
+                if (value.asMultipleValues()) |m| {
+                    if (k.step.requiresOneValue()) return self.wrongValueCount(m);
+                }
                 switch (k.step) {
                     .branch => |i| {
                         if (value.isTrue()) {
@@ -358,9 +363,24 @@ pub const Machine = struct {
                         env = next.env;
                         control = next.control;
                     },
+                    // 生産者が戻った。値を受け手の引数にして、`call-with-values` の継続のもとで
+                    // 受け手を呼ぶ。このフレームはすでに外れているので、受け手は末尾呼び出し
+                    // である(R7RS 3.5)。
+                    .values_receiver => |consumer| {
+                        const call = try self.receiverCall(consumer, value);
+                        take(try self.apply(&kont, &dyn, call.args, call.count, .limit), &env, &control, &value);
+                    },
                 }
             }
         }
+    }
+
+    /// Raises the error of a multiple-values object reaching a continuation that
+    /// takes one value.
+    /// 複数値のオブジェクトを irritant にしない。条件を通して、利用者のプログラムが
+    /// それを値として手にしないようにするためである。
+    fn wrongValueCount(self: *Machine, got: *const value_mod.MultipleValues) Error {
+        return self.ctx.raise("wrong number of values: expected 1, got {d}", .{got.items.len});
     }
 
     /// Raises the secondary exception of a handler that returned from a
@@ -602,13 +622,18 @@ pub const Machine = struct {
                         count = 1;
                         budget = .limit;
                     },
+                    .values => return .{ .value = try self.valuesOf(args, count, budget) },
+                    .call_with_values => {
+                        args = try self.enterReceiver(prim, kont, args);
+                        count = 0;
+                        budget = .limit;
+                    },
                 },
             }
         };
         if (operator.asContinuation()) |k| {
-            // 複数値は段階2のスライス 2f で入る。それまで、継続は値を1つだけ受け取る。
-            if (count != 1) return ctx.raise("wrong number of arguments: expected 1, got {d}", .{count});
-            return .{ .value = try self.invoke(kont, dyn, k, args.value) };
+            // 継続は任意個の値を受け取る。1個以外なら、複数値のオブジェクトにして渡す。
+            return .{ .value = try self.invoke(kont, dyn, k, try self.valuesOf(args, count, budget)) };
         }
         if (operator.asParameter()) |param| {
             if (count != 0) return ctx.raise("wrong number of arguments: expected 0, got {d}", .{count});
@@ -779,6 +804,52 @@ pub const Machine = struct {
         const call = try ctx.create(Args, .{ .value = args.next.?.value, .next = procedure });
         kont.* = try self.push(kont.*, null, .{ .make_parameter = converter });
         return call;
+    }
+
+    /// What `(values obj ...)` returns for the `count` operands in `args`: the
+    /// operand itself when there is one, and otherwise a multiple-values object
+    /// of them (R7RS 6.10).
+    /// `args` は最後のオペランドから並ぶ(末尾に演算子があってもよい)。1個の値を複数値の
+    /// オブジェクトにしないのは、`(+ 1 (values 2))` のように、値を1個要求する継続が
+    /// 受け取れるようにするためである。オブジェクトは、呼び出しの `budget` から確保する。
+    fn valuesOf(self: *Machine, args: *const Args, count: usize, budget: heap_mod.Budget) Error!Value {
+        if (count == 1) return args.value;
+        var small: [small_operands]Value = undefined;
+        const items = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
+        // Why: `callPure` と同じ理由で、使い終えたら返す。
+        defer if (count > small.len) self.scratch.free(items);
+        fill(items, args);
+        return .fromMultipleValues(try self.ctx.createValuesIn(budget, items));
+    }
+
+    /// What `(call-with-values producer consumer)` does first (R7RS 6.10): puts
+    /// the frame that takes what `producer` returns to `consumer`, and returns
+    /// the call of `producer`.
+    /// `args` は `consumer`、`producer`、`prim` の順に並ぶ。`producer` は末尾位置で呼ばない。
+    /// 戻った値を受け取るフレームが残るからである。`consumer` は、そのフレームが外れたあとに
+    /// 呼ぶので、末尾位置で呼ぶ。確保を済ませてから継続を書き換える。
+    fn enterReceiver(self: *Machine, prim: *const value_mod.Primitive, kont: *?*const Kont, args: *const Args) Error!*const Args {
+        const ctx = self.ctx;
+        const consumer = args.value;
+        const producer = args.next.?.value;
+        if (!isProcedure(producer) or !isProcedure(consumer)) return primitiveFailure(ctx, prim, error.WrongType, args, 2);
+        const call = try ctx.create(Args, .{ .value = producer, .next = null });
+        kont.* = try self.push(kont.*, null, .{ .values_receiver = consumer });
+        return call;
+    }
+
+    /// The call of `consumer` with `received`, what a producer returned: its
+    /// values when it returned a multiple-values object, and otherwise the one
+    /// value.
+    /// 引数の鎖は最後のオペランドから並べ、末尾に `consumer` を置く。
+    fn receiverCall(self: *Machine, consumer: Value, received: Value) Error!Call {
+        const ctx = self.ctx;
+        // Why: GC はステップの間でしか走らない(ADR-0031)。作りかけの鎖はどのルートからも
+        // 辿れないが、同じステップのうちに適用されるので、回収されない。
+        var chain: *const Args = try ctx.create(Args, .{ .value = consumer, .next = null });
+        const items: []const Value = if (received.asMultipleValues()) |m| m.items else (&received)[0..1];
+        for (items) |item| chain = try ctx.create(Args, .{ .value = item, .next = chain });
+        return .{ .args = chain, .count = items.len };
     }
 
     /// The condition `(error message obj ...)` makes: the message, and the
@@ -2266,15 +2337,13 @@ test "the arguments of call/cc and of a continuation are checked" {
     defer f.deinit();
     try f.expectFails("wrong type of argument to call/cc", "(call/cc 5)");
     try f.expectFails("wrong number of arguments to call/cc", "(call/cc)");
-    try f.expectFails("wrong number of arguments: expected 1, got 2", "(call/cc (lambda (k) (k 1 2)))");
-    try f.expectFails("wrong number of arguments: expected 1, got 0", "(call/cc (lambda (k) (k)))");
     try f.expectFails("wrong number of arguments: expected 0, got 1", "(call/cc (lambda () 1))");
     try f.expectFails("wrong type of argument to dynamic-wind", "(dynamic-wind 1 (lambda () 2) (lambda () 3))");
     try f.expectFails("wrong type of argument to dynamic-wind", "(dynamic-wind (lambda () 1) 2 (lambda () 3))");
     try f.expectFails("wrong type of argument to dynamic-wind", "(dynamic-wind (lambda () 1) (lambda () 2) 3)");
-    // 継続は手続きなので、`dynamic-wind` の型の検査を通る。値を1つ取るので、引数なしで呼ぶ
-    // `after` としては、呼んだときに個数の誤りになる。
-    try f.expectFails("wrong number of arguments: expected 1, got 0", "(call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 5) k)))");
+    // 継続は手続きなので、`dynamic-wind` の型の検査を通る。継続は任意個の値を取るので、
+    // 引数なしで呼ぶ `after` としては、0個の値を渡して脱出する。
+    try std.testing.expectEqual(0, (try f.eval("(call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 5) k)))")).asMultipleValues().?.items.len);
 }
 
 test "the procedure call/cc calls runs in tail position, so a loop through call/cc does not grow the continuation" {
@@ -2448,4 +2517,118 @@ test "a raise at the limit, the call of its handler and an escape through a wind
     const used = f.ctx.heap.accounted - start;
     try std.testing.expect(used > 0);
     try std.testing.expect(4 * used <= heap_mod.default_raise_reserve);
+}
+
+test "values returns one value as it is, and anything else as a multiple-values object" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectInt(5, "(values 5)");
+    const none = (try f.eval("(values)")).asMultipleValues().?;
+    try std.testing.expectEqual(0, none.items.len);
+    const some = (try f.eval("(values 1 2 3)")).asMultipleValues().?;
+    try std.testing.expectEqual(3, some.items.len);
+    // 書いた順に並ぶ。
+    for (some.items, 1..) |item, i| try std.testing.expectEqual(@as(i64, @intCast(i)), item.asFixnum().?);
+    // オペランドが、機械が自前のスタックに持つ数より多いとき。
+    const many = (try f.eval("(values 1 2 3 4 5 6 7 8 9 10)")).asMultipleValues().?;
+    try std.testing.expectEqual(10, many.items.len);
+    try std.testing.expectEqual(10, many.items[9].asFixnum().?);
+    // 0個の値の呼び出しのたびに、新しいオブジェクトができる。
+    try std.testing.expect((try f.eval("(values)")).asMultipleValues().? != none);
+}
+
+test "call-with-values gives the consumer the values the producer returns" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectInt(3, "(call-with-values (lambda () (values 1 2)) +)");
+    try f.expectInt(7, "(call-with-values (lambda () 7) (lambda (x) x))");
+    try f.expectInt(0, "(call-with-values (lambda () (values)) +)");
+    try f.expectInt(6, "(call-with-values (lambda () (values 1 2 3)) (lambda args (apply + args)))");
+    // 引数の個数の誤りは、手続き呼び出しの誤りと同じである。
+    try f.expectFails("wrong number of arguments: expected 1, got 2", "(call-with-values (lambda () (values 1 2)) (lambda (a) a))");
+    try f.expectFails("wrong type of argument to call-with-values", "(call-with-values 1 +)");
+    try f.expectFails("wrong type of argument to call-with-values", "(call-with-values (lambda () 1) 2)");
+}
+
+test "a frame that takes one value rejects multiple values, and the others do not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const rejected = "wrong number of values: expected 1, got 2";
+    try f.expectFails(rejected, "(+ 1 (values 1 2))");
+    try f.expectFails(rejected, "(if (values 1 2) 1 2)");
+    try f.expectFails(rejected, "(define x (values 1 2))");
+    try f.expectFails("wrong number of values: expected 1, got 0", "(list (values))");
+    // 捨てる群と、そのまま渡す群。
+    try f.expectInt(3, "(begin (values 1 2) 3)");
+    try f.expectInt(3, "((lambda () (values) 3))");
+    try f.expectInt(4, "(call-with-values (lambda () (dynamic-wind (lambda () (values 1 2)) (lambda () (values 1 2)) (lambda () (values)))) (lambda (a b) (+ a b 1)))");
+    try f.expectInt(3, "(call-with-values (lambda () (with-exception-handler (lambda (c) (values 1 2)) (lambda () (raise-continuable 'x)))) +)");
+}
+
+test "a continuation takes any number of values, through a rewind too" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectInt(3, "(call-with-values (lambda () (call/cc (lambda (k) (k 1 2)))) +)");
+    try f.expectInt(0, "(call-with-values (lambda () (call/cc (lambda (k) (k)))) +)");
+    try f.expectInt(3, "(call-with-values (lambda () (call/cc (lambda (k) (dynamic-wind (lambda () 0) (lambda () (k 1 2)) (lambda () 0))))) +)");
+    // 巻き戻しの途中で呼ばれる `after` が、継続を0個の値で呼ぶ(予約領域から確保する)。
+    try f.expectInt(0, "(call-with-values (lambda () (call/cc (lambda (k2) (call/cc (lambda (k) (dynamic-wind (lambda () 0) (lambda () (k 1)) k2)))))) +)");
+    // 複数値を受けた継続の再起動は、受け手をもう一度呼ぶ。
+    _ = try f.eval("(define k #f) (define total 0)");
+    try f.expectInt(3, "(call-with-values (lambda () (call/cc (lambda (c) (set! k c) (values 1 2)))) (lambda (a b) (set! total (+ total a b)) total))");
+    try f.expectInt(10, "(k 3 4)");
+}
+
+test "a continuation invoked with no values from the reserve makes its multiple values there" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    // 継続を先に作り、呼び出しの引数の鎖もヒープを埋める前に作る。
+    const k = try f.eval("(call/cc (lambda (k) k))");
+    const call = try f.ctx.heap.create(Args, .{ .value = k, .next = null });
+    try fillToLimit(&f);
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = null;
+    // 巻き戻しの途中で呼ばれる `after` が継続のときと同じく、予約の budget で適用する。上限の
+    // budget なら、0個の値の複数値のオブジェクトが作れず、HeapLimit になる。
+    switch (try f.machine.apply(&kont, &dyn, call, 0, .raise_reserve)) {
+        .value => |v| try std.testing.expect(v.kind() == .multiple_values),
+        .body => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+}
+
+test "the consumer of call-with-values runs in tail position, and the producer does not" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (call-with-values (lambda () (values (- n 1) 0)) (lambda (m z) (loop m)))))");
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(loop 10)");
+    const small = f.machine.peak_depth;
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(loop 5000)");
+    try std.testing.expectEqual(small, f.machine.peak_depth);
+    // 対照: 生産者の中の呼び出しは、末尾位置でないので、回数に比例して深くなる。
+    _ = try f.eval("(define (count n) (if (= n 0) 0 (call-with-values (lambda () (+ 1 (count (- n 1)))) (lambda (m) m))))");
+    f.machine.peak_depth = 0;
+    try f.expectInt(5000, "(count 5000)");
+    try std.testing.expect(f.machine.peak_depth >= 5000);
+}
+
+test "multiple values survive a collection at every step, and are collected once nothing reaches them" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .stress = true });
+    defer f.deinit();
+    try f.expectInt(10, "(call-with-values (lambda () (values (list 1 2) (list 3 4) (list 5 6))) (lambda (a b c) (+ (car a) (car (cdr b)) (car c))))");
+    // 再起動した継続が運ぶ複数値も、ステップごとの GC を越えて読める。
+    _ = try f.eval("(define k #f) (define total 0)");
+    try f.expectInt(3, "(call-with-values (lambda () (call/cc (lambda (c) (set! k c) (values (list 1) (list 2))))) (lambda (a b) (set! total (+ total (car a) (car b))) total))");
+    try f.expectInt(10, "(k (list 3) (list 4))");
+    f.ctx.heap.collect(Machine.Roots{ .ctx = &f.ctx, .env = null, .kont = null, .value = .unspecified_value, .dyn = null });
+    try std.testing.expectEqual(0, f.ctx.heap.countOf(value_mod.MultipleValues));
 }

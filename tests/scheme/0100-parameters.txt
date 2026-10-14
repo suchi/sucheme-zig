@@ -166,3 +166,19 @@ error: bad parameterize: a body needs an expression after its definitions
 
 (define parameterize list) (parameterize 1 2)
 (1 2)
+
+# パラメータを作る式と束縛する式で、1個を要求する位置に複数値が届いたら誤りにする(2f の複数値との接点)。
+(make-parameter (values 1 2))
+error: wrong number of values: expected 1, got 2
+
+(make-parameter 1 (lambda (x) (values x x)))
+error: wrong number of values: expected 1, got 2
+
+(define p (make-parameter 1)) (parameterize (((values p p) 3)) 1)
+error: wrong number of values: expected 1, got 2
+
+(define p (make-parameter 1)) (parameterize ((p (values 1 2))) (p))
+error: wrong number of values: expected 1, got 2
+
+(define p (make-parameter 1 (lambda (x) (values x x)))) (parameterize ((p 5)) (p))
+error: wrong number of values: expected 1, got 2

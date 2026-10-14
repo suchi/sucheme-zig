@@ -149,6 +149,12 @@ pub const Context = struct {
         return self.heap.createFrameIn(budget, size, parent) catch |e| return self.budgetFailure(budget, e);
     }
 
+    /// A new multiple-values object of a copy of `items`, held to `budget`.
+    /// 個数は 0 か 2 以上でなければならない。
+    pub fn createValuesIn(self: *Context, budget: heap_mod.Budget, items: []const Value) Error!*value_mod.MultipleValues {
+        return self.heap.createMultipleValuesIn(budget, items) catch |e| return self.budgetFailure(budget, e);
+    }
+
     /// The error an allocation held to `budget` fails with.
     fn budgetFailure(self: *Context, budget: heap_mod.Budget, e: heap_mod.Error) Error {
         return switch (budget) {

@@ -1,0 +1,181 @@
+# スライス 2f: 複数値(R7RS 6.10)。`values` と `call-with-values`。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 受け手は、生産者が返した値を引数として受け取る。
+(call-with-values (lambda () (values 1 2)) list)
+(1 2)
+
+(call-with-values (lambda () (values 1 2)) +)
+3
+
+(call-with-values (lambda () (values 1 2)) (lambda (a b) (- a b)))
+-1
+
+(call-with-values (lambda () (values 1 2 3)) (lambda args args))
+(1 2 3)
+
+(call-with-values (lambda () (values 1 2 3)) (lambda (a . rest) (list a rest)))
+(1 (2 3))
+
+# 1個の値は、複数値のオブジェクトにならない。
+(call-with-values (lambda () (values 7)) list)
+(7)
+
+(call-with-values (lambda () 7) list)
+(7)
+
+(+ 1 (values 2))
+3
+
+# 0個の値も受け取れる。`values` 自身を生産者にもできる。
+(call-with-values (lambda () (values)) list)
+()
+
+(call-with-values values list)
+()
+
+(call-with-values (lambda () (values)) (lambda () 'none))
+none
+
+# 受け手は、引数の個数が合わなければ、ふつうの手続き呼び出しと同じ誤りになる。
+(call-with-values (lambda () (values 1 2)) (lambda (a) a))
+error: wrong number of arguments: expected 1, got 2
+
+(call-with-values (lambda (x) x) list)
+error: wrong number of arguments: expected 1, got 0
+
+(call-with-values (lambda () 1))
+error: wrong number of arguments to call-with-values #<procedure>
+
+# 最上位の REPL は、複数値を1行に1つずつ出す。0個なら何も出さない。
+(values 1 2)
+1
+2
+
+(values 1 (quote (a b)) "c")
+1
+(a b)
+"c"
+
+(values)
+<no output>
+
+(values 5)
+5
+
+# 値の1つが未規定値なら、最上位の未規定値と同じく出さない。
+(values (if #f #f) 1)
+1
+
+# R7RS 6.10: 式の列の最後でない式の継続は、任意個の値を受け取って捨てる。
+(begin (values 1 2) (quote x))
+x
+
+((lambda () (values) 1))
+1
+
+((lambda () (if #t (begin (values 1 2) 3))))
+3
+
+((lambda () (values 1 2) (values) 3))
+3
+
+# docs/design/runtime.md の複数値の事例。ハンドラが返した複数値は、そのまま渡る。
+(call-with-values (lambda () (with-exception-handler (lambda (c) (values 1 2)) (lambda () (raise-continuable (quote x))))) list)
+(1 2)
+
+# 動的範囲の `thunk` が返した複数値は、`dynamic-wind` の値としてそのまま渡る。
+(call-with-values (lambda () (dynamic-wind (lambda () #f) (lambda () (values 1 2)) (lambda () #f))) list)
+(1 2)
+
+# `before` と `after` の戻りは、個数にかかわらず捨てる。
+(dynamic-wind (lambda () #t) (lambda () (quote body)) (lambda () (values 1 2)))
+body
+
+(dynamic-wind (lambda () (values 1 2)) (lambda () (quote body)) (lambda () (values)))
+body
+
+# 継続は、複数の値を渡して起動できる。
+(call-with-values (lambda () (call/cc (lambda (k) (k 1 2)))) list)
+(1 2)
+
+(call-with-values (lambda () (call/cc (lambda (k) (k)))) list)
+()
+
+(call/cc (lambda (k) (k 1 2)))
+1
+2
+
+(call/cc (lambda (k) (k)))
+<no output>
+
+# 巻き戻しを通る起動でも、複数値は失われない。
+(call-with-values (lambda () (call/cc (lambda (k) (dynamic-wind (lambda () #f) (lambda () (k 1 2)) (lambda () #f))))) list)
+(1 2)
+
+(define log (quote ())) (call-with-values (lambda () (call/cc (lambda (k) (dynamic-wind (lambda () (set! log (cons (quote in) log))) (lambda () (k 1 2)) (lambda () (set! log (cons (quote out) log))))))) (lambda (a b) (list a b log)))
+(1 2 (out in))
+
+# 巻き戻しの途中で呼ばれる `after` が継続なら、0個の値でその継続へ脱出する。
+(call-with-values (lambda () (call/cc (lambda (k2) (call/cc (lambda (k) (dynamic-wind (lambda () #f) (lambda () (k 1)) k2)))))) list)
+()
+
+# 複数値を受けた継続を再び起動すると、受け手がもう一度呼ばれる。
+(define k #f) (define r (quote ())) (call-with-values (lambda () (call/cc (lambda (c) (set! k c) (values 1 2)))) (lambda (a b) (set! r (cons (list a b) r)) (if (< (length r) 2) (k 3 4) r)))
+((3 4) (1 2))
+
+# 入れ子にできる。
+(call-with-values (lambda () (call-with-values (lambda () (values 1 2)) (lambda (a b) (values b a)))) list)
+(2 1)
+
+# 「1個を要求する」継続に、1個以外の値が届いたら誤りにする。
+(+ 1 (values 2 3))
+error: wrong number of values: expected 1, got 2
+
+(+ (values) 1)
+error: wrong number of values: expected 1, got 0
+
+(list 1 (values 2 3))
+error: wrong number of values: expected 1, got 2
+
+((values 1 2) 3)
+error: wrong number of values: expected 1, got 2
+
+(if (values 1 2) (quote a) (quote b))
+error: wrong number of values: expected 1, got 2
+
+(define x (values 1 2))
+error: wrong number of values: expected 1, got 2
+
+(define x 1) (set! x (values 1 2))
+error: wrong number of values: expected 1, got 2
+
+((lambda () (define y (values 1 2)) y))
+error: wrong number of values: expected 1, got 2
+
+((lambda (x) (set! x (values 1 2))) 0)
+error: wrong number of values: expected 1, got 2
+
+(car (values 1 2))
+error: wrong number of values: expected 1, got 2
+
+(+ 1 (call/cc (lambda (k) (k 1 2))))
+error: wrong number of values: expected 1, got 2
+
+# ハンドラが返した複数値は、そのまま渡った先で数えられる。
+(+ 1 (with-exception-handler (lambda (c) (values 1 2)) (lambda () (raise-continuable (quote x)))))
+error: wrong number of values: expected 1, got 2
+
+# `raise` の引数も1個を要求する。複数値のオブジェクトが送出されることはない。
+(raise (values 1 2))
+error: wrong number of values: expected 1, got 2
+
+(with-exception-handler (lambda (c) 42) (lambda () (+ 1 (values 1 2))))
+error: handler returned from non-continuable raise #<condition "wrong number of values: expected 1, got 2">
+
+# 型と個数の誤り。
+(call-with-values 5 list)
+error: wrong type of argument to call-with-values 5 #<procedure list>
+
+(call-with-values (lambda () 1) 5)
+error: wrong type of argument to call-with-values #<procedure> 5

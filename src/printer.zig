@@ -89,6 +89,10 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             .continuation => try out.writeAll("#<continuation>"),
             // パラメータも手続きである(R7RS 4.2.6)。同じく読めない表記で、種類を書く。
             .parameter => try out.writeAll("#<parameter>"),
+            // 複数値のオブジェクトは、1個を要求する継続に届くと誤りになるので、データの中には
+            // 入らない。最上位の値は `Interpreter` が1つずつ書く。漏れたときに分かるよう、
+            // それでも書く。
+            .multiple_values => try out.writeAll("#<values>"),
             .primitive => try out.print("#<procedure {s}>", .{x.asPrimitive().?.name}),
             .pair => {
                 const p = x.asPair().?;
