@@ -1,0 +1,158 @@
+# スライス 2g: パラメータ(R7RS 4.2.6)。make-parameter が作るパラメータオブジェクトは、
+# 引数なしで呼ぶ手続きで、その時点の値を返す。parameterize は、本体の動的範囲の間だけ
+# 値を差し替える。各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 変換手続きは、生成時の初期値に適用される。その戻り値が、パラメータの初期値である。
+((make-parameter 10 (lambda (x) (* x 2))))
+20
+
+# 変換手続きが無ければ、初期値そのものである。
+((make-parameter 10))
+10
+
+(procedure? (make-parameter 1))
+#t
+
+# 外部表現は読めない表記である。
+(make-parameter 1)
+#<parameter>
+
+(define p (make-parameter 1)) (eq? p p)
+#t
+
+(eq? (make-parameter 1) (make-parameter 1))
+#f
+
+# apply を通しても呼べる。
+(apply (make-parameter 3) '())
+3
+
+# parameterize は、本体の間だけ値を差し替え、出れば戻す。
+(define p (make-parameter 10)) (list (p) (parameterize ((p 20)) (p)) (p))
+(10 20 10)
+
+# 動的範囲である。本体から呼ばれた手続きにも、差し替えた値が見える。
+(define p (make-parameter 1)) (define (get) (p)) (list (get) (parameterize ((p 2)) (get)) (get))
+(1 2 1)
+
+# 入れ子では、内側の値が外側の値を隠し、出れば外側の値に戻る。同じ式の中の複数の束縛も効く。
+(define p (make-parameter 1)) (define q (make-parameter 2)) (parameterize ((p 10)) (list (p) (q) (parameterize ((q 20) (p 11)) (list (p) (q))) (p) (q)))
+(10 2 (11 20) 10 2)
+
+# 本体は本体である。先頭に定義を置ける。
+(define p (make-parameter 1)) (parameterize ((p 5)) (define x (p)) (+ x 1))
+6
+
+# 束縛が空でもよい。値は本体の最後の式の値である。
+(parameterize () 1 2)
+2
+
+# 本体の外側の変数が見える。本体の中の定義は外に出ない。
+(define p (make-parameter 1)) ((lambda (a) (parameterize ((p 2)) (define b 10) (+ a b (p)))) 100)
+112
+
+(define p (make-parameter 1)) (parameterize ((p 2)) (define hidden 1) hidden) hidden
+1
+error: unbound variable: hidden
+
+# 変換手続きが呼ばれる回数: 生成時に1回、parameterize の値ごとに1回。読み出しでも、出るときも
+# 呼ばない。変換手続きは冪等でない(10 倍にする)ので、2回適用すると値が変わる。
+(define count 0) (define p (make-parameter 1 (lambda (x) (set! count (+ count 1)) (* x 10)))) (define a (p)) (define b (parameterize ((p 2)) (list (p) (p)))) (define c (p)) (list a b c count)
+(10 (20 20) 10 2)
+
+# 変換手続きは、そのパラメータの束縛にだけ使われる。別のパラメータには使われない。
+(define p (make-parameter 1 (lambda (x) (* x 10)))) (define q (make-parameter 1)) (parameterize ((q 2) (p 3)) (list (p) (q)))
+(30 2)
+
+# 変換手続きは、束縛を積む前の動的環境で呼ぶ。同じ parameterize の別の束縛は、まだ見えない。
+(define p (make-parameter 1)) (define q (make-parameter 5 (lambda (x) (list x (p))))) (parameterize ((p 100) (q 6)) (q))
+(6 1)
+
+(define p (make-parameter 1)) (define q (make-parameter 5 (lambda (x) (list x (p))))) (parameterize ((q 6) (p 100)) (list (q) (p)))
+((6 1) 100)
+
+# 継続で本体の外へ脱出すれば、束縛は戻る。
+(define p (make-parameter 1)) (list (call/cc (lambda (k) (parameterize ((p 2)) (k (p))))) (p))
+(2 1)
+
+# 本体へ継続で再入すれば、束縛は戻ってくる。再入した本体の残りが走り、行の残りの式が続く。
+(define p (make-parameter 'out)) (define k #f) (define n 0) (define log '()) (parameterize ((p 'in)) (call/cc (lambda (c) (set! k c))) (set! log (cons (p) log))) (set! log (cons (p) log)) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (list (reverse log) (p))
+((in out in) out)
+
+# 入れ子の2つの束縛が、それぞれ戻ってくる。
+(define p (make-parameter 0)) (define k #f) (define n 0) (define log '()) (parameterize ((p 1)) (parameterize ((p 2)) (call/cc (lambda (c) (set! k c))) (set! log (cons (p) log))) (set! log (cons (p) log))) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (list (reverse log) (p))
+((2 1 2 1) 0)
+
+# 例外の事例4: ハンドラの内側で parameterize した束縛は、送出の時点の束縛として、ハンドラから見える。
+(define p (make-parameter 'outer)) (with-exception-handler (lambda (c) (p)) (lambda () (parameterize ((p 'inner)) (raise-continuable 'oops))))
+inner
+
+# ハンドラの外側の parameterize の束縛も見える。
+(define p (make-parameter 'outer)) (parameterize ((p 'around)) (with-exception-handler (lambda (c) (p)) (lambda () (raise-continuable 'oops))))
+around
+
+# 変換手続きの中の送出は、束縛を積む前なので、束縛は残らない。
+(define p (make-parameter 1 (lambda (x) (if (< x 0) (raise 'negative) x)))) (list (call/cc (lambda (k) (with-exception-handler (lambda (c) (k c)) (lambda () (parameterize ((p -1)) (p)))))) (p))
+(negative 1)
+
+# 本体の中の送出で、ハンドラが継続で脱出すれば、束縛は戻る。
+(define p (make-parameter 1)) (list (call/cc (lambda (k) (with-exception-handler (lambda (c) (k (p))) (lambda () (parameterize ((p 2)) (raise 'oops)))))) (p))
+(2 1)
+
+# 未処理の送出で行を打ち切っても、次の行では束縛が戻っている。
+(define p (make-parameter 1)) (parameterize ((p 2)) (car 5))
+error: wrong type of argument to car 5
+
+# 生成時の変換手続きの失敗は、そのまま報告される。
+(make-parameter 1 (lambda (x) (car x)))
+error: wrong type of argument to car 1
+
+# 引数の個数。パラメータは引数なしで呼ぶ。
+((make-parameter 1) 2)
+error: wrong number of arguments: expected 0, got 1
+
+(make-parameter)
+error: wrong number of arguments to make-parameter
+
+(make-parameter 1 car 3)
+error: wrong number of arguments to make-parameter 1 #<procedure car> 3
+
+# 変換手続きは手続きでなければならない。
+(make-parameter 1 2)
+error: wrong type of argument to make-parameter 1 2
+
+# parameterize の対象は、パラメータでなければならない。
+(parameterize ((5 1)) 1)
+error: wrong type of argument to parameterize 5
+
+(define p 7) (parameterize ((p 1)) p)
+error: wrong type of argument to parameterize 7
+
+# 構文の誤り。
+(parameterize)
+error: bad parameterize: expected (parameterize ((parameter value) ...) body ...)
+
+(parameterize ())
+error: bad parameterize: expected (parameterize ((parameter value) ...) body ...)
+
+(parameterize 5 1)
+error: bad parameterize: the bindings must be a list
+
+(define p (make-parameter 1)) (parameterize ((p)) 1)
+error: bad parameterize: a binding must be (parameter value)
+
+(define p (make-parameter 1)) (parameterize ((p 1 2)) 1)
+error: bad parameterize: a binding must be (parameter value)
+
+(define p (make-parameter 1)) (parameterize ((p 1) . 5) 1)
+error: bad parameterize: the bindings must be a list
+
+(define p (make-parameter 1)) (parameterize ((p 1)) (define x 1))
+error: bad parameterize: a body needs an expression after its definitions
+
+# parameterize は特殊形式の名前であり、仮引数や定義が隠せる。
+((lambda (parameterize) (parameterize 1 2)) list)
+(1 2)
+
+(define parameterize list) (parameterize 1 2)
+(1 2)
