@@ -92,8 +92,8 @@
 - [x] 完全な `call/cc` と `dynamic-wind` (スライス 2e)
 - [ ] `values` と `call-with-values`、複数値のオブジェクト
 - [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
-- [ ] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md))
-- [ ] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる
+- [x] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md)) (スライス 2d・2e・2g)
+- [x] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる (スライス 2g)
 - [x] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`) (スライス 2i から 2l)
 - [x] マクロの展開のメモリを有界にする(展開の作業領域と節点を、ヒープの上限に計上する)。止まらないマクロの適用が、ヒープの上限を大きく超えて伸びていた。保証するのは1行の中の展開で、残りは下の「マクロの展開の有界化の残り」の項目にある([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記と、2026-10-14 のスライス 2l の追記) (スライス 2l)
 - [ ] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
