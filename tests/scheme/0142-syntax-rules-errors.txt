@@ -1,5 +1,4 @@
-# スライス 2k と 2l: syntax-rules の誤りは、定義の時点で報告する。2l の途中で入る形(定数パターン、
-# テンプレートの省略記号のエスケープ、利用者指定の省略記号)は、入るまでは
+# スライス 2k と 2l: syntax-rules の誤りは、定義の時点で報告する。2l の途中で入る形(テンプレートの省略記号のエスケープ、利用者指定の省略記号)は、入るまでは
 # 黙って別の意味に読まず、まだ扱えないと報告する。それらの行は、入れるコミットが書き換える。
 
 (define-syntax m (syntax-rules () ((_ x) 1))) (m)
@@ -54,9 +53,6 @@ error: bad define-syntax: expected (define-syntax keyword transformer)
 error: bad syntax-rules: it is only allowed as the transformer of a syntax definition
 
 # 2l が入れる形。
-(define-syntax m (syntax-rules () ((_ 1) 1)))
-error: bad syntax-rules: constant patterns are not supported yet
-
 (define-syntax m (syntax-rules () ((_ a) (... ...))))
 error: bad syntax-rules: ellipsis escapes are not supported yet
 

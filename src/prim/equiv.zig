@@ -102,7 +102,7 @@ const Stack = struct {
 /// 段階3の最初のスライスで入れる(docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
 ///
 /// 同じペアやベクタの比較は、中を見ずに真とする。`eqv?` が真なら `equal?` も真だからである。
-fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
+pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
     var stack: Stack = .{ .scratch = scratch };
     defer stack.deinit();
     var left = a;

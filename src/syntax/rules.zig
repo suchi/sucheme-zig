@@ -30,6 +30,7 @@ const Context = context.Context;
 const syntax_env = @import("env.zig");
 const SyntacticEnv = syntax_env.SyntacticEnv;
 const properLength = @import("../prim/pair.zig").properLength;
+const isEqual = @import("../prim/equiv.zig").isEqual;
 
 pub const Error = context.Error;
 
@@ -278,7 +279,9 @@ const Spec = struct {
                 const shape = try self.shapeOfVector(item.form, true);
                 for (shape.elems) |e| try stack.append(self.scratch, .{ .form = e.form, .depth = item.depth + e.ellipses });
             },
-            else => return self.ctx.raise("bad syntax-rules: constant patterns are not supported yet", .{}),
+            // 定数は何も束縛しない。リーダが作るのは、この4種類だけである。
+            .fixnum, .boolean, .character, .string => {},
+            else => return self.ctx.raise("bad syntax-rules: this datum cannot be a pattern", .{}),
         };
         return vars.items;
     }
@@ -367,7 +370,8 @@ const Spec = struct {
                             try stack.append(self.scratch, .{ .match = .{ .pattern = e.form, .form = item, .out = t.out } });
                     } else if (!try self.matchRepeated(&stack, shape, vector.items, .empty_list_value, vars, t.out)) return false;
                 },
-                else => unreachable,
+                // 定数のパターンは、入力が equal? の意味で等しいときに照合する(R7RS 4.3.2)。
+                else => if (!try isEqual(self.scratch, t.pattern, t.form)) return false,
             },
         };
         return true;
