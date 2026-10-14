@@ -28,6 +28,7 @@ fn wasmPanic(msg: []const u8, _: ?usize) noreturn {
 const Status = struct {
     const ok: i32 = 0;
     const scheme_error: i32 = -1;
+    const unrecoverable: i32 = -2;
     const invalid_utf8: i32 = -3;
     const wrong_order: i32 = -4;
     const not_initialized: i32 = -5;
@@ -43,6 +44,13 @@ const allocator = std.heap.wasm_allocator;
 
 var interp: sucheme.Interpreter = undefined;
 var initialized = false;
+/// Whether an evaluation used up the reserve for raising, so that only
+/// `sucheme_reset` may be called until it is cleared (status -2).
+/// Why: 予約も尽きた状態は、条件を作れずに送出できなかった状態で、回復不能として扱う
+/// (docs/design/runtime.md の上限超過と確保の失敗、docs/design/platform-and-web.md の
+/// 状態コードの表)。上限超過(-1)と分けるのは、上限超過がハンドラで捕まえられる Scheme の
+/// エラーだからである。
+var unrecoverable = false;
 
 /// The output buffer and the writer into it.
 /// `out.end` が出力の長さである。
@@ -116,6 +124,7 @@ export fn sucheme_reset() i32 {
     }
     const limit = interp.ctx.heap.options.limit;
     interp.deinit();
+    unrecoverable = false;
     interp.initWithOptions(allocator, .{ .limit = limit }) catch {
         initialized = false;
         allocator.free(output);
@@ -180,11 +189,17 @@ fn firstInvalidUtf8(bytes: []const u8) ?usize {
 /// Evaluates every expression of the input and writes the results to the output buffer.
 ///
 /// 返す値は 0(完了)、-1(Scheme のエラー。`error: ...` の一行を出力に書く)、
-/// -3(不正な UTF-8。位置を出力に書き、状態は変えない)、-4、-5、-8。
+/// -2(回復不能。送出のための予約も尽きた。`error: ...` の一行を出力に書き、以後は
+/// `sucheme_reset` だけを受け付ける)、-3(不正な UTF-8。位置を出力に書き、状態は変えない)、
+/// -4(-2 のあとで `sucheme_reset` の前に呼ばれた。状態は変えない)、-5、-8。
 export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
     if (!initialized) {
         appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
         return Status.not_initialized;
+    }
+    if (unrecoverable) {
+        appendTail(&out, output, "error: the interpreter cannot go on; call sucheme_reset\n");
+        return Status.wrong_order;
     }
     if (!insideRegion(ptr, len)) {
         appendTail(&out, output, "error: the region was not returned by sucheme_alloc\n");
@@ -209,6 +224,10 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
             else => interp.diagnostic(),
         };
         appendTail(&out, output, sucheme.errorLine(&buf, message));
+        if (e == error.ReserveExhausted) {
+            unrecoverable = true;
+            return Status.unrecoverable;
+        }
         return Status.scheme_error;
     };
     return Status.ok;

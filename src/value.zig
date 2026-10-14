@@ -68,6 +68,10 @@ pub const Value = union(enum) {
     /// primitives check a record against.
     /// GC ヒープにある。
     record_type: *RecordType,
+    /// A continuation that `call/cc` captured (R7RS 6.10): a procedure that
+    /// takes the computation back to where it was captured.
+    /// GC ヒープにある。
+    continuation: *Continuation,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -131,11 +135,15 @@ pub const Value = union(enum) {
         return .{ .record_type = t };
     }
 
+    pub fn fromContinuation(c: *Continuation) Value {
+        return .{ .continuation = c };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type => true,
+            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
@@ -158,6 +166,7 @@ pub const Value = union(enum) {
             .alias => .alias,
             .record => .record,
             .record_type => .record_type,
+            .continuation => .continuation,
         };
     }
 
@@ -257,6 +266,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The continuation, or null when the value is not one.
+    pub fn asContinuation(self: Value) ?*Continuation {
+        return switch (self) {
+            .continuation => |c| c,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -294,6 +311,7 @@ pub const Value = union(enum) {
             .alias => |x| b.asAlias() == x,
             .record => |x| b.asRecord() == x,
             .record_type => |x| b.asRecordType() == x,
+            .continuation => |x| b.asContinuation() == x,
         };
     }
 
@@ -509,6 +527,11 @@ pub const MachineOp = enum {
     /// `(error message obj ...)` (R7RS 6.11): makes a condition and raises it
     /// as `raise` does.
     @"error",
+    /// `(call-with-current-continuation proc)` and `(call/cc proc)` (R7RS
+    /// 6.10).
+    call_cc,
+    /// `(dynamic-wind before thunk after)` (R7RS 6.10).
+    dynamic_wind,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -666,6 +689,43 @@ pub const Kont = struct {
         /// The value is what a handler called by `raise` or `raise-continuable`
         /// returned.
         handler_return: HandlerReturn,
+        /// The value is what the `before` of a `dynamic-wind` returned: the wind
+        /// point goes on, and the thunk is called.
+        /// 値は捨てる(docs/design/runtime.md の複数値の表の「捨てる」群)。
+        wind_before: WindBefore,
+        /// The value is what the thunk of a `dynamic-wind` returned: the wind
+        /// point comes off, and its `after` is called.
+        /// R7RS 6.10 は `after` を `thunk` の動的範囲の外で呼ぶとするので、点を外してから呼ぶ。
+        wind_body: *const DynPoint,
+        /// The value is what the `after` of a `dynamic-wind` returned; it is
+        /// dropped, and this value, which the thunk returned, passes on.
+        wind_after: Value,
+        /// The value is what an `after` or a `before` called while a
+        /// continuation is invoked returned; it is dropped, and the rewind goes
+        /// on by one point (docs/design/runtime.md, the progress of a rewind).
+        rewind: RewindStep,
+    };
+
+    pub const WindBefore = struct {
+        /// The point the `dynamic-wind` puts on once `before` returns.
+        point: *const DynPoint,
+        /// What runs in the extent of `point`.
+        thunk: Value,
+    };
+
+    pub const RewindStep = struct {
+        /// What every frame of one invocation shares.
+        state: *const Rewind,
+        /// The link of the path whose `before` returned, so that its point goes
+        /// on next; null when the rewind is still leaving the points between
+        /// the invocation and the common ancestor.
+        entered: ?*const WindPath,
+        /// The dynamic point this frame was put on at, and where the dynamic
+        /// state is when its value arrives.
+        /// 巻き戻しの位置は列のレジスタそのものである(docs/design/runtime.md)。これは、
+        /// フレームが値を受け取るときの列が、フレームを積んだときの列と同じであるという
+        /// 機械の不変条件を、安全ビルドで確かめるためだけに持つ。
+        at: ?*const DynPoint,
     };
 
     pub const HandlerReturn = struct {
@@ -692,8 +752,8 @@ pub const Kont = struct {
 /// the running code have put in place, innermost first (ADR-0016).
 /// 点は不変で、親へのリンクで連なる。機械のレジスタが最も内側の点を指し、`null` は
 /// 何も置かれていない状態である。現在の例外ハンドラは独立したレジスタでなく、この列から
-/// `currentHandler` で導く。点の種別のうち、`dynamic-wind` の点とパラメータの点は、
-/// それを使うスライス(2e、2g)が足す。
+/// `currentHandler` で導く。点の種別のうち、パラメータの点は、それを使うスライス 2g が
+/// 足す。
 pub const DynPoint = struct {
     parent: ?*const DynPoint,
     /// The number of points from this one out, itself included.
@@ -716,7 +776,87 @@ pub const DynPoint = struct {
         /// current handler becomes this handler point, the one that was current
         /// when the handler being called was installed (R7RS 6.11).
         handler_shift: ?*const DynPoint,
+        /// Put on by `dynamic-wind` once `before` returns, and taken off
+        /// before `after` is called (R7RS 6.10).
+        /// 継続の起動で、この点を出るときに `after` を、入るときに `before` を呼ぶ。どちらも
+        /// この点の親の列で呼ぶ(docs/design/runtime.md の巻き戻しの進行)。
+        wind: Wind,
     };
+
+    pub const Wind = struct {
+        before: Value,
+        after: Value,
+    };
+};
+
+/// The innermost point that `a` and `b` both have, themselves included, or
+/// null when they have none in common.
+/// 深い側を浅い側の深さまで上り、それから両方を1つずつ上る(docs/design/runtime.md の
+/// 動的状態)。点は親へのリンクしか持たないので、深さが要る。
+pub fn commonAncestor(a: ?*const DynPoint, b: ?*const DynPoint) ?*const DynPoint {
+    var x = a;
+    var y = b;
+    while (depthOf(x) > depthOf(y)) x = x.?.parent;
+    while (depthOf(y) > depthOf(x)) y = y.?.parent;
+    while (x != y) {
+        x = x.?.parent;
+        y = y.?.parent;
+    }
+    return x;
+}
+
+/// The depth of `point`: 0 for no point.
+fn depthOf(point: ?*const DynPoint) u32 {
+    const p = point orelse return 0;
+    return p.depth;
+}
+
+/// Whether a wind point lies from `from` out to `ancestor`, `from` included
+/// and `ancestor` not.
+/// `ancestor` は `from` 自身か、その外側の点か、null でなければならない。
+pub fn windBetween(from: ?*const DynPoint, ancestor: ?*const DynPoint) bool {
+    var it = from;
+    while (it != ancestor) {
+        const p = it.?;
+        if (p.kind == .wind) return true;
+        it = p.parent;
+    }
+    return false;
+}
+
+/// What `call/cc` captures: the continuation and the dynamic state of the
+/// call (docs/design/runtime.md, the full continuation).
+/// 継続のフレームと動的点はどちらも不変なので、捕捉は2つのポインタを写すだけで、何度でも
+/// 起動できる。現在の例外ハンドラは列から導くので、ほかに保存するものは無い(ADR-0016)。
+pub const Continuation = struct {
+    kont: ?*const Kont,
+    dyn: ?*const DynPoint,
+};
+
+/// What every frame of one invocation of a continuation shares: where it
+/// goes, the value it takes there, and the point where leaving ends and
+/// entering starts.
+/// 起動ごとに1つ作り、変えない。巻き戻しの途中の `after` と `before` の中で捕捉した継続を
+/// 後で起動しても、フレームが指すこれは変わっていないので、その時点から正しく再開する。
+pub const Rewind = struct {
+    /// Where the value goes, or null for the outermost continuation of the
+    /// run, to which the value is delivered as raised (an unhandled raise,
+    /// docs/design/runtime.md).
+    target: ?*const Continuation,
+    value: Value,
+    /// The innermost point that the dynamic state of the invocation and of
+    /// the target have in common.
+    ancestor: ?*const DynPoint,
+};
+
+/// One link of the path a rewind enters: the wind points from the common
+/// ancestor in to the target, outermost first.
+/// 列は親へのリンクしか持たないので、退出を終えたときに目標から上って作る。作った後は
+/// 変えず、進入の各段のフレームが共有する。`before` を呼ぶ必要のない点(ハンドラの点など)
+/// は入れない。それらは、次の wind 点の親を列に入れるときと、目標の列を入れるときに入る。
+pub const WindPath = struct {
+    point: *const DynPoint,
+    next: ?*const WindPath,
 };
 
 /// The current exception handler at `point`: a handler point, or null when no
@@ -738,7 +878,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -747,7 +887,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -877,6 +1017,56 @@ test "a point is one deeper than its parent, and the first is at depth 1" {
     try std.testing.expectEqual(4, depthAbove(&p));
 }
 
+/// A chain of points for the tests of the dynamic state: `a` at depth 1,
+/// `b` a wind point on it, `c` a handler point on `b`, and `d` a wind point
+/// on `a` beside `b`.
+const TestPoints = struct {
+    a: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } },
+    b: DynPoint = undefined,
+    c: DynPoint = undefined,
+    d: DynPoint = undefined,
+
+    fn link(self: *TestPoints) void {
+        const wind: DynPoint.Variant = .{ .wind = .{ .before = .fromFixnum(0), .after = .fromFixnum(0) } };
+        self.b = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = wind };
+        self.c = .{ .parent = &self.b, .depth = 3, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+        self.d = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = wind };
+    }
+};
+
+test "the common ancestor of two points is the innermost point they share" {
+    var t: TestPoints = .{};
+    t.link();
+    try std.testing.expectEqual(null, commonAncestor(null, null));
+    try std.testing.expectEqual(null, commonAncestor(&t.c, null));
+    try std.testing.expectEqual(null, commonAncestor(null, &t.d));
+    try std.testing.expectEqual(&t.c, commonAncestor(&t.c, &t.c).?);
+    // 一方が他方の外側なら、外側の点である。深さが違うので、深い側を先に上る。
+    try std.testing.expectEqual(&t.b, commonAncestor(&t.c, &t.b).?);
+    try std.testing.expectEqual(&t.b, commonAncestor(&t.b, &t.c).?);
+    // 枝が分かれていれば、分かれる前の点である。深さが違っても同じである。
+    try std.testing.expectEqual(&t.a, commonAncestor(&t.c, &t.d).?);
+    try std.testing.expectEqual(&t.a, commonAncestor(&t.d, &t.c).?);
+    try std.testing.expectEqual(&t.a, commonAncestor(&t.b, &t.d).?);
+    // 根の違う2つの点は、共通の点を持たない。
+    var other: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    try std.testing.expectEqual(null, commonAncestor(&t.c, &other));
+}
+
+test "a wind point between a point and an ancestor is found, the point included and the ancestor not" {
+    var t: TestPoints = .{};
+    t.link();
+    try std.testing.expect(!windBetween(null, null));
+    try std.testing.expect(!windBetween(&t.c, &t.c));
+    // `c` 自身はハンドラの点で、その外の `b` が wind 点である。
+    try std.testing.expect(windBetween(&t.c, &t.a));
+    try std.testing.expect(windBetween(&t.c, null));
+    // 始めの点は数え、終わりの点は数えない。
+    try std.testing.expect(windBetween(&t.b, &t.a));
+    try std.testing.expect(!windBetween(&t.c, &t.b));
+    try std.testing.expect(!windBetween(&t.a, null));
+}
+
 test "a fixnum reads back as itself" {
     const v: Value = .fromFixnum(-7);
     try std.testing.expectEqual(Kind.fixnum, v.kind());
@@ -984,6 +1174,17 @@ test "a record and a record type are heap objects, each answering to its own acc
     try std.testing.expect(Value.fromFixnum(1).asRecord() == null);
     try std.testing.expect(Value.fromFixnum(1).asRecordType() == null);
     try std.testing.expect(rv.isTrue() and tv.isTrue());
+}
+
+test "a continuation is a heap object of its own kind" {
+    var k: Continuation = .{ .kont = null, .dyn = null };
+    const v: Value = .fromContinuation(&k);
+    try std.testing.expectEqual(Kind.continuation, v.kind());
+    try std.testing.expectEqual(&k, v.asContinuation().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(Value.fromFixnum(1).asContinuation() == null);
+    try std.testing.expect(v.isTrue());
 }
 
 test "allAscii looks at every byte" {
@@ -1154,6 +1355,9 @@ const Samples = struct {
     fields_b: [1]Value = .{.{ .fixnum = 1 }},
     record_a: Record = undefined,
     record_b: Record = undefined,
+    // 同じ継続と列を捕捉した2つの継続。
+    continuation_a: Continuation = .{ .kont = null, .dyn = null },
+    continuation_b: Continuation = .{ .kont = null, .dyn = null },
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -1179,7 +1383,7 @@ const Samples = struct {
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [30]Value {
+    fn all(self: *Samples) [32]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -1211,6 +1415,8 @@ const Samples = struct {
             .fromRecordType(&self.record_type_b),
             .fromRecord(&self.record_a),
             .fromRecord(&self.record_b),
+            .fromContinuation(&self.continuation_a),
+            .fromContinuation(&self.continuation_b),
         };
     }
 };
