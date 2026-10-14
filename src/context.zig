@@ -8,6 +8,7 @@ const value_mod = @import("value.zig");
 const env = @import("env.zig");
 const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
+const library = @import("syntax/library.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
 
@@ -48,6 +49,9 @@ pub const Context = struct {
     /// アリーナにあるのは、`globals` がこれを指すので、コンテキストを動かしても
     /// アドレスが変わらないようにするためである。
     core: *env.Core,
+    /// The libraries a program has defined, and the forms being processed
+    /// (src/syntax/library.zig).
+    libraries: library.Registry = .{},
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
@@ -98,13 +102,14 @@ pub const Context = struct {
     }
 
     /// Tells the collector of the roots the context holds: the cells of the
-    /// global variables and of `core`, the constants of the code and the value
-    /// raised.
+    /// global variables and of `core`, the libraries, the constants of the code and
+    /// the value raised.
     /// 機械は自分のルートを加える。機械の実行をまたいでヒープの値を持つものは、
     /// すべてここに挙げる(ADR-0035)。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
         self.core.mark(marker);
+        self.libraries.mark(marker);
         for (self.code_roots.items) |v| marker.value(v);
         if (self.raised) |v| marker.value(v);
     }

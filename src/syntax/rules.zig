@@ -220,7 +220,8 @@ const Spec = struct {
     }
 
     /// Whether `id` means, where the transformer is defined, what `name` means
-    /// at the top level.
+    /// at the top level of the same library (the REPL's, for a transformer
+    /// defined at the REPL).
     /// 綴りを先に比べる。比べずに解決すると、最上位で定義したマクロのパターン変数の
     /// それぞれに、REPL の未束縛のセルを作ることになる。綴りが同じなら、意味を引いた
     /// 識別子として `consulted` に足す。
@@ -234,7 +235,7 @@ const Spec = struct {
         }
         return syntax_env.sameDenotation(
             try syntax_env.resolve(self.ctx, self.env, id),
-            try syntax_env.resolve(self.ctx, null, .fromSymbol(symbol)),
+            try syntax_env.resolve(self.ctx, syntax_env.topOf(self.env), .fromSymbol(symbol)),
         );
     }
 

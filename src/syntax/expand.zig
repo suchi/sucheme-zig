@@ -23,6 +23,7 @@ const context = @import("../context.zig");
 const Context = context.Context;
 const core = @import("../core.zig");
 const syntax_env = @import("env.zig");
+const env_mod = @import("../env.zig");
 const SyntacticEnv = syntax_env.SyntacticEnv;
 const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
@@ -45,6 +46,32 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 }
 
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
+    return expandIn(ctx, scratch, form, .{ .table = &ctx.globals }, limits);
+}
+
+/// What a form is expanded for: which top level it is part of, and whether the
+/// rules for a program or those for the REPL apply (R7RS 5.2).
+pub const Target = struct {
+    /// The table of the bindings of the top level the form is in.
+    table: *env_mod.Global,
+    /// The environment of a library body, or null for the REPL.
+    root: ?*SyntacticEnv = null,
+    mode: Mode = .repl,
+};
+
+/// The rules for writing to the bindings a top level imported.
+/// R7RS 5.2 は、プログラムとライブラリ宣言の中では、インポートした束縛の再定義と
+/// 代入を誤りとし、REPL では許すべきとしている。
+pub const Mode = enum {
+    /// The REPL: a definition or an assignment shadows what was imported.
+    repl,
+    /// The body of a library: a definition or an assignment of an imported binding is a
+    /// syntax error.
+    library,
+};
+
+/// Expands `form`, which is at the top level of `target`.
+pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: Target, limits: Limits) Error!*const Node {
     // 展開は機械のステップの外で走り、その間は GC が走らない(ADR-0031)。展開が使う作業領域
     // と節点はヒープの外にあるので、止まらないマクロの適用が、上限を大きく超えてメモリを使う。
     // それを避けるため、作業領域と節点を、ヒープの上限に対して計上する(`heap.Charged`)。
@@ -64,11 +91,14 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
         .nodes = node_charge.allocator(),
         .work = .init(work_charge.allocator()),
         .limits = limits,
+        .top = target.table,
+        .root = target.root,
+        .mode = target.mode,
     };
     defer e.work.deinit();
     // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
     // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
-    errdefer ctx.globals.undoShadows();
+    errdefer target.table.undoShadows();
     // 失敗した形式の定数も、同じ理由で手放す。失敗した形式の節点は実行されず、どこからも
     // 指されないので、この展開が登録した定数を生かしておく理由が無い。残すと、ヒープの
     // 上限を、セッションの終わりまで理由なく使い続ける。
@@ -79,7 +109,7 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
         if (err == error.OutOfMemory and ctx.heap.external_refused) return ctx.raise(context.heap_limit_message, .{});
         return err;
     };
-    ctx.globals.commitShadows();
+    target.table.commitShadows();
     return root;
 }
 
@@ -106,12 +136,18 @@ const Expander = struct {
     /// The work area of one application of a macro, emptied after each one.
     work: std.heap.ArenaAllocator,
     limits: Limits,
+    /// The table of the top level the forms are part of.
+    top: *env_mod.Global,
+    /// The environment of the top level's forms: the root of a library body, or null at
+    /// the REPL.
+    root: ?*SyntacticEnv,
+    mode: Mode,
     stack: std.ArrayList(Task) = .empty,
 
     /// Expands `form`, which is at the top level, and returns its node.
     fn run(self: *Expander, form: Value) Error!*const Node {
         const root = try self.nodes.create(Node);
-        try self.stack.append(self.scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
+        try self.stack.append(self.scratch, .{ .form = form, .env = self.root, .pos = .top, .dest = root });
         while (self.stack.pop()) |task| try self.step(task);
         return root;
     }
@@ -410,7 +446,8 @@ const Expander = struct {
         if (!syntax_env.isIdentifier(items[1]))
             return self.ctx.raise("bad set!: the name must be an identifier", .{});
         const id = syntax_env.baseSymbol(items[1]);
-        switch (try syntax_env.resolve(self.ctx, task.env, items[1])) {
+        const resolution = try syntax_env.resolveAt(self.ctx, task.env, items[1]);
+        switch (resolution.denotation) {
             .special, .macro, .auxiliary => return self.ctx.raise(
                 "bad set!: {s} is a syntactic keyword and cannot be assigned",
                 .{self.ctx.symbols.nameOf(id)},
@@ -420,12 +457,24 @@ const Expander = struct {
                 const value = try self.child(items[2], task.env, .expression);
                 task.dest.* = .{ .local_set = .{ .address = where, .name = id, .value = value } };
             },
-            .global => {
+            .global => |resolved| {
                 // 解決が大域変数を返したので、名前は最上位で変数であり、対象のセルがある。
                 // 別名も、構文環境に束縛が無ければ、最上位の束縛を元のシンボルの名前で引く
                 // (`syntax_env.resolve`)ので、同じセルになる。
-                const cell = (self.ctx.globals.assignTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
-                    return self.ctx.heapFailure(e)).?;
+                const table = resolution.table.?;
+                const cell = if (self.mode == .repl and table == self.top)
+                    // REPL 自身の変数ならそのセルに、インポートした変数なら遮蔽した新しいセルに代入する。
+                    (table.assignTarget(self.ctx.persist, &self.ctx.heap, resolution.symbol) catch |e|
+                        return self.ctx.heapFailure(e)).?
+                else blk: {
+                    // ライブラリの本体と、マクロが持ち込んだ別のライブラリの変数は、遮蔽せずに、
+                    // その変数のセルに代入する。インポートした束縛への代入は誤りである。
+                    if (table.lookup(resolution.symbol).?.imported) return self.ctx.raise(
+                        "bad set!: {s} is an imported binding and cannot be assigned",
+                        .{self.ctx.symbols.nameOf(id)},
+                    );
+                    break :blk resolved;
+                };
                 const value = try self.child(items[2], task.env, .expression);
                 task.dest.* = .{ .global_set = .{ .cell = cell, .value = value } };
             },
@@ -464,7 +513,8 @@ const Expander = struct {
                 // 名前が別名(マクロのテンプレートが導入したもの)なら、元のシンボルの名前を
                 // 束縛する。最上位の束縛の表は名前で引くので、同じ展開の中の同じ別名の参照
                 // も、このセルに解決される。
-                const cell = self.ctx.globals.defineTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
+                if (self.mode == .library) try self.checkNotImported(id, "define");
+                const cell = self.top.defineTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
                     return self.ctx.heapFailure(e);
                 const value = try self.definedValue(task, items, shorthand);
                 task.dest.* = .{ .global_define = .{ .cell = cell, .value = value } };
@@ -820,6 +870,18 @@ const Expander = struct {
         return error.Raised;
     }
 
+    /// Checks, in a library body, that the top level did not import `name`.
+    /// Why: R7RS 5.2 は、プログラムとライブラリ宣言の中で、インポートした束縛を `define` や
+    /// `define-syntax` で再定義することを誤りとしている。REPL は許す(`Mode`)。
+    fn checkNotImported(self: *Expander, name: @import("../symbol.zig").SymbolId, comptime form_name: []const u8) Error!void {
+        if (self.top.lookup(name)) |b| {
+            if (b.imported) return self.ctx.raise(
+                "bad " ++ form_name ++ ": {s} is an imported binding and cannot be redefined",
+                .{self.ctx.symbols.nameOf(name)},
+            );
+        }
+    }
+
     /// `(define-syntax keyword transformer)` at the top level (R7RS 5.4).
     /// REPL の最上位の束縛の表で、名前をマクロに束縛する。それより前に展開したコードの
     /// 参照は変わらない(同節)。名前が別名なら、`define` と同じく元のシンボルの名前を
@@ -831,7 +893,9 @@ const Expander = struct {
             .top => {},
         }
         const syntax = try self.syntaxDefinition(task.env, items, null);
-        try self.ctx.globals.defineSyntax(self.ctx.persist, syntax_env.baseSymbol(syntax.name), syntax.macro);
+        const name = syntax_env.baseSymbol(syntax.name);
+        if (self.mode == .library) try self.checkNotImported(name, "define-syntax");
+        try self.top.defineSyntax(self.ctx.persist, name, syntax.macro);
         try self.constant(task, .unspecified_value);
     }
 

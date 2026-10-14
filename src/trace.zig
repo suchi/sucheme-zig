@@ -328,6 +328,55 @@ test "a cell is followed through its value, and its name is a symbol" {
     try q.expect(&.{});
 }
 
+test "a library is followed through its name, its exports and the environment of its body" {
+    var name: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var bytes = "f".*;
+    var external: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(1)), .value = .fromFixnum(1) };
+    var older: value_mod.Export = .{ .name = &external, .denotation = .{ .special = .@"if" }, .imported = false, .next = null };
+    var newer: value_mod.Export = .{ .name = &external, .denotation = .{ .global = &cell }, .imported = true, .next = &older };
+    var root: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 0, .bindings = null };
+    const library: value_mod.Library = .{ .name = .{ .pair = &name }, .state = .loaded, .exports = &newer, .root = &root, .table = @fromBackingInt(@intCast(3)) };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Library, &library);
+    // 名前、最初の書き出し、本体の環境の順である。状態と表の番号は、報告されない。
+    try r.expect(&.{ addr(&name), addr(&newer), addr(&root) });
+    try std.testing.expectEqual(0, r.symbol_count);
+    // 本体の環境は、自分のライブラリを指す。それもたどられる。
+    var loading: value_mod.Library = .{ .name = .empty_list_value, .state = .loading, .exports = null, .root = null, .table = @fromBackingInt(@intCast(0)) };
+    const env: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 0, .bindings = null, .library = &loading };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.SyntacticEnv, &env);
+    try q.expect(&.{addr(&loading)});
+    // まだ何も持たないライブラリは、何も報告しない。
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.Library, &loading);
+    try s.expect(&.{});
+}
+
+test "an export is followed through its name, what it means and the next export" {
+    var bytes = "f".*;
+    var external: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(1)), .value = .fromFixnum(1) };
+    var next: value_mod.Export = .{ .name = &external, .denotation = .{ .auxiliary = .@"else" }, .imported = false, .next = null };
+    const global: value_mod.Export = .{ .name = &external, .denotation = .{ .global = &cell }, .imported = false, .next = &next };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Export, &global);
+    try r.expect(&.{ addr(&external), addr(&cell), addr(&next) });
+    // 特殊形式と補助構文の意味は、ヒープのものを指さない。名前と次だけである。
+    const syntax: value_mod.Export = .{ .name = &external, .denotation = .{ .auxiliary = .@"else" }, .imported = true, .next = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Export, &syntax);
+    try q.expect(&.{addr(&external)});
+    try std.testing.expectEqual(0, q.symbol_count);
+}
+
+test "the classes of the types of libraries" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Library).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Export).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
+}
+
 test "a dynamic point is followed through its parent, its current handler and what its kind holds" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.DynPoint).?);
     var c: Closure = .{ .lambda = undefined, .env = null };

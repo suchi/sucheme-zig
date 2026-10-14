@@ -1048,7 +1048,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -1121,6 +1121,12 @@ pub const SyntacticEnv = struct {
     /// The bindings, the newest first.
     /// 探索は先頭から線形に進む。同じ識別子を束縛し直すと、後のものが前のものを隠す。
     bindings: ?*SyntacticBinding,
+    /// The library whose top level this environment is the root of; null for any
+    /// environment that is not the root of a library body.
+    /// REPL の最上位に根の環境は無く、親の無い環境は REPL のものである。ライブラリの本体の
+    /// 環境は、すべてこの根に行き着く。識別子が最上位まで解決されたとき、どの最上位の表を
+    /// 引くかは、根のこの値で決まる(`src/syntax/env.zig` の `resolve`)。
+    library: ?*Library = null,
 };
 
 /// One binding of a syntactic environment: an identifier and what it means.
@@ -1129,6 +1135,45 @@ pub const SyntacticBinding = struct {
     id: Value,
     denotation: Denotation,
     next: ?*SyntacticBinding,
+};
+
+/// A library that a program defined (R7RS 5.6, docs/design/frontend.md, the
+/// library system).
+/// GC ヒープにある。`Context` の登録表が、定義されたライブラリをすべて指すので、回収される
+/// のは、定義に失敗して表から外れたライブラリだけである。最上位の束縛の表は、ハッシュ表なので
+/// ヒープの外にあり(`src/env.zig` の `Global`)、登録表の `tables` が `table` で引く。
+pub const Library = struct {
+    /// The name: a list of identifiers and non-negative integers.
+    name: Value,
+    state: State,
+    /// What the library exports, the newest first.
+    /// 本体の処理が終わるまでは空で、`export` の解決がここに作る。
+    exports: ?*Export,
+    /// The environment the forms of the library body are expanded in.
+    root: ?*SyntacticEnv,
+    /// Which table of the registry holds the bindings of the library's top level.
+    table: TableId,
+
+    pub const State = enum {
+        /// The body is being processed. Importing the library meets itself.
+        loading,
+        loaded,
+    };
+};
+
+/// Which table of the registry a library's top level is.
+pub const TableId = enum(u32) { _ };
+
+/// One export of a library: the name it is imported under, and what it means.
+/// 名前は、独立に所有した文字列である。シンボルを共有すると、シンボル表が弱い表になったとき
+/// (`(export (rename internal external))` の `external` はどの束縛にも入らない)、解放済みの
+/// 名前を引くことになる。ヒープの文字列は、ヒープが数え、回収する。
+pub const Export = struct {
+    name: *String,
+    denotation: Denotation,
+    /// Whether the library itself imported the binding it exports.
+    imported: bool,
+    next: ?*Export,
 };
 
 /// A local variable as the expander sees it: the rib that binds it, and its
