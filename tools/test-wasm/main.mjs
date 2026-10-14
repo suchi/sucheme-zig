@@ -220,6 +220,18 @@ test("a library is defined, imported and called, and a failed definition leaves 
   assert.deepEqual(h.run("(import (t a))"), [SCHEME_ERROR, "error: unknown library: (t a)\n"]);
 });
 
+// WASM にはファイルを開く手段が無いので、定義されていないライブラリは、ファイルを探さずに
+// 「見つからない」になる(スライス 2n)。ファイルの名前にならない名前は、その理由つきで断る。
+test("a library that is not defined is not found, since there is no file system", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(import (foo bar))"), [SCHEME_ERROR, "error: unknown library: (foo bar)\n"]);
+  assert.deepEqual(
+    h.run("(import (CON))"),
+    [SCHEME_ERROR, "error: unknown library: (CON): a library with that name cannot be a file, because a component is the name of a device\n"],
+  );
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 // 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
 // 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
 // メッセージが上限と予約の和より長くなる未束縛の名前を使う。

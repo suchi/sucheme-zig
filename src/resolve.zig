@@ -8,6 +8,7 @@
 //! ファイル名と埋め込みの仮想ファイルシステムは、それぞれ 2o と段階3が足す。
 
 const std = @import("std");
+const builtin = @import("builtin");
 const symbol = @import("symbol.zig");
 const Value = @import("value.zig").Value;
 const Dir = std.Io.Dir;
@@ -127,6 +128,9 @@ pub fn openLibrary(files: Files, scratch: std.mem.Allocator, symbols: *const sym
     const parts = try libraryParts(scratch, symbols, name);
     const directories = parts[0 .. parts.len - 1];
     const file_name = try std.mem.concat(scratch, u8, &.{ parts[parts.len - 1], library_extension });
+    // Why: WASM(`freestanding`)は実ファイルシステムを持たない。`Dir.cwd()` はその
+    // ターゲットではコンパイルできないので、ここで打ち切り、以降を解析させない。
+    if (comptime builtin.os.tag == .freestanding) return error.NotFound;
     for (files.roots) |root| {
         if (try openBeneath(files.io, root, directories, file_name)) |file| return file;
     }
