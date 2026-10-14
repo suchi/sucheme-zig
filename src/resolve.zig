@@ -307,29 +307,33 @@ test "the name of a device is refused in any case, with an extension or without"
 }
 
 /// A directory tree that the file tests build, and the path of its root.
-const Tree = struct {
+pub const Tree = struct {
     tmp: testing.TmpDir,
     /// The absolute path of the temporary directory.
     path: [:0]const u8,
+    /// `path` as the list of the one root, for `Files`.
+    /// 木を動かさない限り、`Files.roots` が指してよい。
+    roots: [1][]const u8,
 
-    fn init(self: *Tree, allocator: std.mem.Allocator) !void {
+    pub fn init(self: *Tree, allocator: std.mem.Allocator) !void {
         self.tmp = testing.tmpDir(.{});
         errdefer self.tmp.cleanup();
         self.path = try self.tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+        self.roots = .{self.path};
     }
 
-    fn deinit(self: *Tree, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Tree, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         self.tmp.cleanup();
     }
 
-    fn write(self: *Tree, sub_path: []const u8, data: []const u8) !void {
+    pub fn write(self: *Tree, sub_path: []const u8, data: []const u8) !void {
         try self.tmp.dir.createDirPath(testing.io, Dir.path.dirname(sub_path) orelse ".");
         try self.tmp.dir.writeFile(testing.io, .{ .sub_path = sub_path, .data = data });
     }
 
     /// Makes a link, or skips the test where the system does not let it.
-    fn link(self: *Tree, target: []const u8, sub_path: []const u8, is_directory: bool) !void {
+    pub fn link(self: *Tree, target: []const u8, sub_path: []const u8, is_directory: bool) !void {
         try self.tmp.dir.createDirPath(testing.io, Dir.path.dirname(sub_path) orelse ".");
         self.tmp.dir.symLink(testing.io, target, sub_path, .{ .is_directory = is_directory }) catch |e| switch (e) {
             // Windows は、権限が無いとリンクを作れない。
@@ -339,7 +343,7 @@ const Tree = struct {
     }
 
     /// The path of `sub_path` in the tree.
-    fn at(self: *Tree, allocator: std.mem.Allocator, sub_path: []const u8) ![]const u8 {
+    pub fn at(self: *Tree, allocator: std.mem.Allocator, sub_path: []const u8) ![]const u8 {
         return Dir.path.join(allocator, &.{ self.path, sub_path });
     }
 };

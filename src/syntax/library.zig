@@ -20,8 +20,21 @@ const expand = @import("expand.zig");
 const machine = @import("../machine.zig");
 const SymbolId = @import("../symbol.zig").SymbolId;
 const printer = @import("../printer.zig");
+const reader = @import("../reader.zig");
+const resolve = @import("../resolve.zig");
 
 pub const Error = context.Error;
+
+/// The most `define-library` forms and `import` lines being processed at once:
+/// libraries that are files and import one another, to this depth.
+/// Why: 読み込みは、import を見つけたところから入れ子に進む。入れ子の深さは、ファイルの鎖の
+/// 長さで決まり、外部入力が決める。Zig のスタックを使い切らないよう、実装制限として報告する。
+pub const max_load_depth = 64;
+
+/// The most bytes of the file of a library.
+/// Why: ファイルを丸ごとメモリに読むので、探索ルートの下にある巨大なファイルや、無限に読める
+/// ファイルで、ホストのメモリを使い切らないための上限である。
+pub const max_file_bytes = 16 * 1024 * 1024;
 
 /// The libraries that have been defined, or whose definition is in progress.
 pub const Registry = struct {
@@ -187,13 +200,85 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
         }
         return names;
     }
-    const lib = ctx.libraries.find(name) orelse
-        return ctx.raise("unknown library: {s}", .{try nameText(ctx, scratch, name)});
+    const lib = ctx.libraries.find(name) orelse try loadFile(ctx, scratch, name);
     if (lib.state == .loading)
         return ctx.raise("bad import: circular import of the library {s}", .{try nameText(ctx, scratch, name)});
     var export_it = lib.exports;
     while (export_it) |e| : (export_it = e.next) try names.put(scratch, e.name.bytes, e.denotation);
     return names;
+}
+
+/// Defines the library named `name` from its file, which an import found no
+/// definition of, and returns it.
+/// ファイルは、探索ルートの配下にある `foo/bar.sld`(`(foo bar)` の場合)で、1つの
+/// `define-library` を持つ。読む、名前を照合する、展開して本体を機械で走らせる、の順に進める。
+/// ファイルのデータを読む前は、GC の境目である(ADR-0035)。呼び出し側の保持するものは、すべて
+/// 登録表の `loading` がルートとして持つ形式の中か、登録表の中にある。ファイルの名前は、
+/// ファイルシステムが無いときも検査する。
+fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Library {
+    const text = try nameText(ctx, scratch, name);
+    _ = resolve.libraryParts(scratch, &ctx.symbols, name) catch |e| return nameFailure(ctx, text, e);
+    const files = ctx.files orelse return ctx.raise("unknown library: {s}", .{text});
+    if (ctx.libraries.loading.items.len >= max_load_depth)
+        return ctx.raise("implementation restriction: libraries import one another more than {d} deep, at {s}", .{ max_load_depth, text });
+    const file = resolve.openLibrary(files, scratch, &ctx.symbols, name) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.NotFound => return ctx.raise("unknown library: {s}", .{text}),
+        error.LinkRefused => return ctx.raise("cannot load the library {s}: its file, or a directory on the way to it, is a link", .{text}),
+        error.NotRegularFile => return ctx.raise("cannot load the library {s}: its file is not a regular file", .{text}),
+        error.Unreadable => return ctx.raise("cannot load the library {s}: the system refused to open its file", .{text}),
+        else => |n| return nameFailure(ctx, text, n),
+    };
+    defer file.close(files.io);
+    var buffer: [4096]u8 = undefined;
+    var file_reader: std.Io.File.Reader = .init(file, files.io, &buffer);
+    const source = file_reader.interface.allocRemaining(ctx.heap.backing, .limited(max_file_bytes)) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.StreamTooLong => return ctx.raise("cannot load the library {s}: its file is larger than {d} bytes", .{ text, max_file_bytes }),
+        error.ReadFailed => return ctx.raise("cannot load the library {s}: its file could not be read", .{text}),
+    };
+    defer ctx.heap.backing.free(source);
+    if (!std.unicode.utf8ValidateSlice(source)) return ctx.raise("cannot load the library {s}: its file is not valid UTF-8", .{text});
+    if (ctx.heap.shouldCollect()) ctx.collectIdle();
+    var r: reader.Reader = .init(source);
+    const sink: reader.Sink = .{ .alloc = ctx.persist, .heap = &ctx.heap, .symbols = &ctx.symbols };
+    const form = (try readDatum(ctx, &r, scratch, sink, text)) orelse
+        return ctx.raise("cannot load the library {s}: its file is empty", .{text});
+    if (topLevelForm(ctx, form) != .define_library)
+        return ctx.raise("cannot load the library {s}: its file must hold one (define-library ...) form", .{text});
+    if ((try readDatum(ctx, &r, scratch, sink, text)) != null)
+        return ctx.raise("cannot load the library {s}: its file holds more than one form", .{text});
+    // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
+    if (form.asPair().?.cdr.asPair()) |rest| {
+        if (!sameName(rest.car, name)) return ctx.raise(
+            "bad import: the file of the library {s} defines the library {s}",
+            .{ text, try nameText(ctx, scratch, rest.car) },
+        );
+    }
+    try defineLibrary(ctx, scratch, form);
+    return ctx.libraries.find(name).?;
+}
+
+/// The next datum of the file `r` reads, or null at its end.
+fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, sink: reader.Sink, text: []const u8) Error!?Value {
+    return r.next(scratch, sink) catch |e| switch (e) {
+        error.OutOfMemory, error.HeapLimit => |heap_error| ctx.heapFailure(heap_error),
+        else => |syntax| ctx.raise("cannot load the library {s}: {s}", .{ text, reader.describe(syntax) }),
+    };
+}
+
+/// What can go wrong in checking that a library name can name a file.
+const NameFailure = resolve.NameError || error{OutOfMemory};
+
+/// The error for a library name that cannot name a file.
+fn nameFailure(ctx: *Context, text: []const u8, e: NameFailure) Error {
+    return switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => |refused| ctx.raise(
+            "unknown library: {s}: a library with that name cannot be a file, because {s}",
+            .{ text, resolve.describeNameError(refused) },
+        ),
+    };
 }
 
 /// The name an identifier of an import set is written as.
@@ -290,6 +375,10 @@ pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: ex
 pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!void {
     const items = try itemsOf(ctx, scratch, form, "import");
     if (items.len < 2) return ctx.raise("bad import: expected (import <import set> ...)", .{});
+    // 集合を評価する間に、ファイルのライブラリを読んで本体を走らせると、GC が走る。
+    // この形式は、そのあいだ読み手の外にあるので、作業中の形式としてルートに載せる。
+    try ctx.libraries.loading.append(ctx.persist, form);
+    defer _ = ctx.libraries.loading.pop();
     const sets = try scratch.alloc(Names, items.len - 1);
     for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
     for (sets) |set| try bindImports(ctx, &ctx.globals, set, .repl);
@@ -472,7 +561,6 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-const reader = @import("../reader.zig");
 const core = @import("../core.zig");
 
 /// What the tests share: a context, a library and the means to read and expand
