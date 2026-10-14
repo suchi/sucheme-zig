@@ -1,0 +1,105 @@
+# Slice 2m: `define-library` (R7RS 5.6.1) defines a library whose body is expanded in a top
+# level of its own, and `import` brings what it exports. The body sees only what it imports,
+# and what it defines is invisible outside unless it is exported.
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1))) (import (t a)) (f)
+1
+
+# 定義は何も表示しない。
+(define-library (t a) (export) (import (sucheme core)) (begin (define x 1)))
+<no output>
+
+# 本体の定義はライブラリの中のもので、エクスポートしなければ外から見えない。
+(define-library (t a) (export f) (import (sucheme core)) (begin (define secret 41) (define (f) (+ secret 1)))) (import (t a)) (list (f) secret)
+error: unbound variable: secret
+
+(define-library (t a) (export f) (import (sucheme core)) (begin (define secret 41) (define (f) (+ secret 1)))) (import (t a)) (f)
+42
+
+# REPL に同じ名前の変数があっても、ライブラリの本体は自分の変数を見る。
+(define x 'repl) (define-library (t a) (export get) (import (sucheme core)) (begin (define x 'library) (define (get) x))) (import (t a)) (list (get) x)
+(library repl)
+
+# エクスポートした変数は、セルを共有する。値のコピーではない。
+(define-library (t counter) (export bump! count) (import (sucheme core)) (begin (define n 0) (define (bump!) (set! n (+ n 1))) (define (count) n))) (import (t counter)) (bump!) (bump!) (count)
+2
+
+# `export` は、本体の後に置いてもよい。本体より前に書いた名前も、本体の終わりに解決される。
+(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1))) (import (t a)) (f)
+1
+
+(define-library (t a) (import (sucheme core)) (begin (define (f) 1)) (export f)) (import (t a)) (f)
+1
+
+# `export` は何度書いてもよく、1つの宣言に複数の名前を書ける。
+(define-library (t a) (export f) (export g h) (import (sucheme core)) (begin (define (f) 1) (define (g) 2) (define (h) 3))) (import (t a)) (list (f) (g) (h))
+(1 2 3)
+
+# `(rename internal external)` は、別の名前でエクスポートする。
+(define-library (t a) (export (rename put! set-it!) get) (import (sucheme core)) (begin (define v 0) (define (put! x) (set! v x)) (define (get) v))) (import (t a)) (set-it! 5) (get)
+5
+
+(define-library (t a) (export (rename put! set-it!)) (import (sucheme core)) (begin (define (put! x) x))) (import (t a)) put!
+error: unbound variable: put!
+
+# 本体の中の前方参照は通る。相互再帰する手続きの対も書ける。
+(define-library (t a) (export even2?) (import (sucheme core)) (begin (define (even2? n) (if (= n 0) #t (odd2? (- n 1)))) (define (odd2? n) (if (= n 0) #f (even2? (- n 1)))))) (import (t a)) (list (even2? 10) (even2? 7))
+(#t #f)
+
+# ライブラリは別のライブラリをインポートできる。
+(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 'a))) (define-library (t b) (export g) (import (sucheme core) (t a)) (begin (define (g) (list (f) 'b)))) (import (t b)) (g)
+(a b)
+
+# 再エクスポートできる。インポートした束縛は、元のライブラリのセルを指す。
+(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 'a))) (define-library (t b) (export f) (import (t a))) (import (t b)) (f)
+a
+
+# 特殊形式と補助構文も、エクスポートも改名もできる。
+(define-library (t syn) (export if (rename lambda fun) else) (import (sucheme core))) (import (t syn)) ((fun (x) (if x 1 2)) #f)
+2
+
+(define-library (t syn) (export if (rename lambda fun)) (import (sucheme core))) (import (rename (t syn) (if when-true))) (when-true #t 1 2)
+1
+
+(define-library (t syn) (export if (rename lambda fun)) (import (sucheme core))) (import (prefix (t syn) s:)) (s:if #t 1 2)
+1
+
+(define-library (t syn) (export (rename else otherwise)) (import (sucheme core))) (import (t syn)) (define-syntax pick (syntax-rules (otherwise) ((_ otherwise) 'yes) ((_ x) 'no))) (list (pick else) (pick otherwise) (pick 1))
+(yes yes no)
+
+# 5つの `import` の形式は、ライブラリの本体の中でも使える。
+(define-library (t a) (export f g) (import (sucheme core)) (begin (define (f) 'f) (define (g) 'g))) (define-library (t b) (export r) (import (only (sucheme core) define lambda list quote) (only (t a) f) (prefix (t a) a:) (rename (only (t a) g) (g h))) (begin (define (r) (list (f) (a:f) (a:g) (h))))) (import (t b)) (r)
+(f f g g)
+
+(define-library (t a) (export f g) (import (sucheme core)) (begin (define (f) 'f) (define (g) 'g))) (define-library (t b) (export r) (import (only (sucheme core) define quote list) (except (t a) g)) (begin (define (r) (list (f)) ))) (import (t b)) (r)
+(f)
+
+# 同じ識別子を同じ束縛で2回インポートしてよい。
+(define-library (t a) (export f) (import (sucheme core) (only (sucheme core) car) (rename (sucheme core) (car first)) (only (sucheme core) car)) (begin (define (f) (car '(1))))) (import (t a)) (f)
+1
+
+# 本体は、インポートしたものだけを見る。
+(define-library (t a) (export f) (begin (define (f) 1)))
+error: unbound variable: define
+
+# 本体が参照して、最後まで束縛されない名前は、名前を挙げて報告される。1つなら単数形で、
+# 複数なら名前の順に並べて報告する。
+(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (car 1))))
+error: unbound identifier in library (t a): car
+
+(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (list (cdr 1) (car 2) (cdr 3)))))
+error: unbound identifiers in library (t a): car, cdr, list
+
+# エクスポートした名前が、本体で定義されていないときも同じである。
+(define-library (t a) (export f g) (import (only (sucheme core) define)) (begin (define (f) 1)))
+error: unbound identifier in library (t a): g
+
+# インポートの前に参照した名前は、本体の終わりに未束縛として報告される。
+(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (car 1))) (import (only (sucheme core) car)))
+error: unbound identifier in library (t a): car
+
+# インポートより後の定義への前方参照は、本体の中で通る。
+(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (g)) (define (g) 2)))
+<no output>

@@ -17,6 +17,8 @@ const env_mod = @import("../env.zig");
 const heap_mod = @import("../heap.zig");
 const syntax_env = @import("env.zig");
 const expand = @import("expand.zig");
+const machine = @import("../machine.zig");
+const SymbolId = @import("../symbol.zig").SymbolId;
 const printer = @import("../printer.zig");
 
 pub const Error = context.Error;
@@ -290,6 +292,157 @@ pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Er
     for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
     for (sets) |set| try bindImports(ctx, &ctx.globals, set, .repl);
     ctx.globals.commitShadows();
+}
+
+/// One `export` the library declares: the identifier of its body and the name
+/// it is exported under.
+const PendingExport = struct { internal: SymbolId, external: SymbolId };
+
+/// `(define-library <name> <declaration> ...)` (R7RS 5.6.1): defines the library,
+/// processing its declarations from left to right.
+/// 本体の `begin` は、フォームごとに展開して機械で走らせる。展開器は機械の実行をまたいで
+/// 状態を持たない(ADR-0035)。処理中の形式は登録表の `loading` がルートとして持ち、フォームの
+/// 間でだけ GC が走る。どこかで失敗したら、ライブラリは登録表から外れ、REPL の最上位は何も
+/// 変わらない。`export` の解決は本体の処理が終わってからで、本体の終わりに、未束縛の
+/// 識別子を名前を挙げて報告する(docs/design/frontend.md)。
+pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!void {
+    const items = try itemsOf(ctx, scratch, form, "define-library");
+    if (items.len < 2) return ctx.raise("bad define-library: expected (define-library <name> <declaration> ...)", .{});
+    const name = items[1];
+    try checkName(ctx, name);
+    if (isCoreName(ctx, name) or ctx.libraries.find(name) != null)
+        return ctx.raise("bad define-library: the library {s} is already defined", .{try nameText(ctx, scratch, name)});
+    const lib = try ctx.libraries.begin(ctx, name);
+    errdefer ctx.libraries.abandon(lib);
+    try ctx.libraries.loading.append(ctx.persist, form);
+    defer _ = ctx.libraries.loading.pop();
+    var pending: std.ArrayList(PendingExport) = .empty;
+    for (items[2..]) |declaration| try declare(ctx, scratch, lib, declaration, &pending);
+    try finish(ctx, scratch, lib, pending.items);
+}
+
+/// Processes one declaration of a library.
+fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration: Value, pending: *std.ArrayList(PendingExport)) Error!void {
+    const bad = "bad define-library: a declaration must be a list that starts with an identifier";
+    if (declaration.asPair() == null) return ctx.raise(bad, .{});
+    const parts = try itemsOf(ctx, scratch, declaration, "define-library");
+    const head = parts[0].asSymbol() orelse return ctx.raise(bad, .{});
+    const keyword = ctx.symbols.nameOf(head);
+    const table = ctx.libraries.tableOf(lib);
+    if (std.mem.eql(u8, keyword, "export")) {
+        for (parts[1..]) |spec| try pending.append(scratch, try exportSpec(ctx, scratch, spec));
+    } else if (std.mem.eql(u8, keyword, "import")) {
+        // 集合を先にすべて評価してから束縛する。
+        const sets = try scratch.alloc(Names, parts.len - 1);
+        for (sets, parts[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
+        for (sets) |set| try bindImports(ctx, table, set, .library);
+        table.commitShadows();
+    } else if (std.mem.eql(u8, keyword, "begin")) {
+        const target: expand.Target = .{ .table = table, .root = lib.root, .mode = .library };
+        for (parts[1..]) |body| {
+            // フォームの間は、機械もリーダも何も保持していない境目である(ADR-0035)。
+            if (ctx.heap.shouldCollect()) ctx.collectIdle();
+            const node = try expand.expandIn(ctx, scratch, body, target, .{});
+            var m: machine.Machine = .init(ctx, scratch);
+            _ = try m.run(node);
+        }
+    } else if (isLaterDeclaration(keyword)) {
+        return ctx.raise("bad define-library: the declaration {s} is not supported yet", .{keyword});
+    } else {
+        return ctx.raise("bad define-library: {s} is not a library declaration", .{keyword});
+    }
+}
+
+/// Whether `keyword` begins a declaration that R7RS has and a later slice adds.
+fn isLaterDeclaration(keyword: []const u8) bool {
+    for ([_][]const u8{ "include", "include-ci", "include-library-declarations", "cond-expand" }) |later| {
+        if (std.mem.eql(u8, keyword, later)) return true;
+    }
+    return false;
+}
+
+/// The export `spec` of an `export` declaration: an identifier, or
+/// `(rename <internal> <external>)` (R7RS 5.6.1).
+fn exportSpec(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Error!PendingExport {
+    if (spec.asSymbol()) |id| return .{ .internal = id, .external = id };
+    const bad = "bad export: expected an identifier or (rename <internal> <external>)";
+    const parts = itemsOf(ctx, scratch, spec, "export") catch return ctx.raise(bad, .{});
+    if (parts.len != 3) return ctx.raise(bad, .{});
+    const keyword = parts[0].asSymbol() orelse return ctx.raise(bad, .{});
+    if (!std.mem.eql(u8, ctx.symbols.nameOf(keyword), "rename")) return ctx.raise(bad, .{});
+    return .{
+        .internal = parts[1].asSymbol() orelse return ctx.raise(bad, .{}),
+        .external = parts[2].asSymbol() orelse return ctx.raise(bad, .{}),
+    };
+}
+
+/// Ends the definition of a library whose body is processed: resolves the
+/// exports, checks that nothing the body refers to is unbound, and makes the
+/// library loaded.
+fn finish(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, pending: []const PendingExport) Error!void {
+    const table = ctx.libraries.tableOf(lib);
+    for (pending) |p| {
+        const denotation = try syntax_env.resolve(ctx, lib.root, .fromSymbol(p.internal));
+        const external = ctx.symbols.nameOf(p.external);
+        var existing = lib.exports;
+        while (existing) |e| : (existing = e.next) {
+            if (!std.mem.eql(u8, e.name.bytes, external)) continue;
+            if (syntax_env.sameDenotation(e.denotation, denotation)) break;
+            return ctx.raise("bad export: {s} is exported twice with different bindings", .{external});
+        } else {
+            const name = ctx.heap.createString(external) catch |e| return ctx.heapFailure(e);
+            lib.exports = try ctx.create(value_mod.Export, .{
+                .name = name,
+                .denotation = denotation,
+                .imported = table.lookup(p.internal).?.imported,
+                .next = lib.exports,
+            });
+        }
+    }
+    const unbound = try unboundNames(ctx, scratch, table);
+    if (unbound.len > 0) {
+        var list: std.Io.Writer.Allocating = .init(scratch);
+        for (unbound, 0..) |n, i| list.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", n }) catch return error.OutOfMemory;
+        return ctx.raise("{s} in library {s}: {s}", .{
+            if (unbound.len == 1) "unbound identifier" else "unbound identifiers",
+            try nameText(ctx, scratch, lib.name),
+            list.written(),
+        });
+    }
+    lib.state = .loaded;
+}
+
+/// The names that the top level of a library refers to and never binds, in
+/// order, each once: variables that have no value, including those that a later
+/// `import` or `define-syntax` replaced.
+/// Why: 本体の処理中は、見つからない識別子を、その最上位自身の未束縛のセルに解決する。
+/// 同じ本体の後の `define` への前方参照が通るためである。本体の終わりまで値を持たない
+/// セルが、定義もインポートもされなかった名前である。
+fn unboundNames(ctx: *Context, scratch: std.mem.Allocator, table: *const env_mod.Global) Error![]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = table.bindings.valueIterator();
+    while (it.next()) |b| {
+        if (b.imported) continue;
+        switch (b.denotation) {
+            .global => |cell| if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.symbols.nameOf(cell.name)),
+            else => {},
+        }
+    }
+    for (table.displaced_cells.items) |cell| {
+        if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.symbols.nameOf(cell.name));
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    var unique: usize = 0;
+    for (names.items) |n| {
+        if (unique > 0 and std.mem.eql(u8, names.items[unique - 1], n)) continue;
+        names.items[unique] = n;
+        unique += 1;
+    }
+    return names.items[0..unique];
 }
 
 /// Whether two library names are the same: lists of the same length whose
