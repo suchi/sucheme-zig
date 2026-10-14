@@ -847,6 +847,10 @@ pub const Macro = struct {
     /// Where the identifiers of the patterns and templates are resolved; null is
     /// the top level.
     env: ?*SyntacticEnv,
+    /// The identifier that `(syntax-rules ellipsis (literal ...) rule ...)` names
+    /// as the ellipsis, or null for `...`.
+    /// 指定したとき、`...` はふつうの識別子である。
+    ellipsis: ?Value = null,
 
     /// The kinds of transformer a macro can have.
     /// 段階2は `syntax-rules` だけである。Scheme の手続きを変換子にする種類は、要求が

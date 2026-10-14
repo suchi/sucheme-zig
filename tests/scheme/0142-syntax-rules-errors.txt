@@ -1,5 +1,4 @@
-# スライス 2k と 2l: syntax-rules の誤りは、定義の時点で報告する。2l の途中で入る形(テンプレートの省略記号のエスケープ、利用者指定の省略記号)は、入るまでは
-# 黙って別の意味に読まず、まだ扱えないと報告する。それらの行は、入れるコミットが書き換える。
+# スライス 2k と 2l: syntax-rules の誤りは、定義の時点で報告する。
 
 (define-syntax m (syntax-rules () ((_ x) 1))) (m)
 error: bad syntax: no rule of m matches the form
@@ -53,12 +52,6 @@ error: bad define-syntax: expected (define-syntax keyword transformer)
 error: bad syntax-rules: it is only allowed as the transformer of a syntax definition
 
 # 2l が入れる形。
-(define-syntax m (syntax-rules () ((_ a) (... ...))))
-error: bad syntax-rules: ellipsis escapes are not supported yet
-
-(define-syntax m (syntax-rules ::: () ((_ a) 1)))
-error: bad syntax-rules: a custom ellipsis is not supported yet
-
 (define-syntax m (syntax-rules () ((_ a ...) (a ... ...))))
 error: bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed
 
@@ -80,3 +73,9 @@ error: bad syntax-rules: a needs as many ellipses in the template as in its patt
 
 (define-syntax m (syntax-rules () ((_ a) #(... a))))
 error: bad syntax-rules: an ellipsis must follow a template
+
+(define-syntax m (syntax-rules :::))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)
+
+(define-syntax m (syntax-rules ::: ::: ((_) 1)))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)
