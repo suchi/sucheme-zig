@@ -1,0 +1,42 @@
+# スライス 2l: 入れ子の省略記号(docs/design/frontend.md の syntax-rules の要件)。
+# 1ケースは1行で、各ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# 省略記号の内側の部分パターンが、さらに省略記号を持つ。
+(define-syntax pairs (syntax-rules () ((_ (a b ...) ...) '((a b ...) ...)))) (pairs (1 2 3) (4))
+((1 2 3) (4))
+
+# 繰り返しが0回のときも、外側の並びは作られる。
+(define-syntax pairs (syntax-rules () ((_ (a b ...) ...) '((a b ...) ...)))) (list (pairs) (pairs (1)) (pairs (1) (2 3)))
+(() ((1)) ((1) (2 3)))
+
+# 内側だけを取り出す。外側の並びを経て、1つのリストに平らにする(省略記号を2つ続ける)。
+(define-syntax flat (syntax-rules () ((_ (a ...) ...) '(a ... ...)))) (list (flat) (flat (1 2) () (3)))
+(() (1 2 3))
+
+# 深さ3。
+(define-syntax deep (syntax-rules () ((_ ((a ...) ...) ...) '(a ... ... ...)))) (deep ((1 2) (3)) () ((4) () (5 6)))
+(1 2 3 4 5 6)
+
+# 深さ1の変数は、深さ2の位置に置ける。内側の省略記号が使い、外側は別の変数が駆動する。
+(define-syntax outer (syntax-rules () ((_ (a ...) (b ...)) '((a b ...) ...)))) (outer (1 2) (x y z))
+((1 x y z) (2 x y z))
+
+# 外側の駆動を内側の変数が使い切る。
+(define-syntax rows (syntax-rules () ((_ (a b ...) ...) '((b ... a) ...)))) (rows (1 2 3) (4) (5 6))
+((2 3 1) (4) (6 5))
+
+# 深さ0の変数は、どの深さにも複製される。
+(define-syntax tag (syntax-rules () ((_ t (a ...) ...) '((t a ...) ...)))) (tag k (1 2) () (3))
+((k 1 2) (k) (k 3))
+
+# 繰り返しで駆動する変数の長さが合わないのは、展開のエラーである。
+(define-syntax zip (syntax-rules () ((_ (a ...) (b ...)) '((a b) ...)))) (zip (1 2) (3))
+error: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together
+
+# 内側の長さは繰り返しごとに違ってよい。
+(define-syntax zip-rows (syntax-rules () ((_ (a b ...) ...) '((a . (b ...)) ...)))) (zip-rows (1 2) (3) (4 5 6))
+((1 2) (3) (4 5 6))
+
+# 入れ子の省略記号を持つ規則でも、先の規則に合わなければ次の規則を試す。
+(define-syntax which (syntax-rules () ((_ (a ...) ...) 'nested) ((_ a ...) 'flat))) (list (which (1) (2 3)) (which 1 2) (which))
+(nested flat nested)

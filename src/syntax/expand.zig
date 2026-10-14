@@ -26,6 +26,7 @@ const syntax_env = @import("env.zig");
 const SyntacticEnv = syntax_env.SyntacticEnv;
 const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
+const heap_mod = @import("../heap.zig");
 
 pub const Error = context.Error;
 
@@ -44,8 +45,27 @@ pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*con
 }
 
 pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits: Limits) Error!*const Node {
-    var e: Expander = .{ .ctx = ctx, .scratch = scratch, .limits = limits };
-    const root = try ctx.persist.create(Node);
+    // 展開は機械のステップの外で走り、その間は GC が走らない(ADR-0031)。展開が使う作業領域
+    // と節点はヒープの外にあるので、止まらないマクロの適用が、上限を大きく超えてメモリを使う。
+    // それを避けるため、作業領域と節点を、ヒープの上限に対して計上する(`heap.Charged`)。
+    // 上限に収まらなければ、他の確保と同じ `heap limit exceeded` で終わる。上限の検査は、最初の
+    // マクロの適用から効く(`Heap.external_enforced`)。
+    ctx.heap.external_refused = false;
+    defer {
+        ctx.heap.external = 0;
+        ctx.heap.external_enforced = false;
+    }
+    var scratch_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = scratch };
+    var node_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.persist };
+    var work_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.heap.backing };
+    var e: Expander = .{
+        .ctx = ctx,
+        .scratch = scratch_charge.allocator(),
+        .nodes = node_charge.allocator(),
+        .work = .init(work_charge.allocator()),
+        .limits = limits,
+    };
+    defer e.work.deinit();
     // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
     // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
     errdefer ctx.globals.undoShadows();
@@ -54,8 +74,11 @@ pub fn expandWith(ctx: *Context, scratch: std.mem.Allocator, form: Value, limits
     // 上限を、セッションの終わりまで理由なく使い続ける。
     const roots = ctx.code_roots.items.len;
     errdefer ctx.code_roots.shrinkRetainingCapacity(roots);
-    try e.stack.append(scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
-    while (e.stack.pop()) |task| try e.step(task);
+    const root = e.run(form) catch |err| {
+        // 計上の上限で断られた確保は、呼び出し側には確保の失敗に見える。
+        if (err == error.OutOfMemory and ctx.heap.external_refused) return ctx.raise(context.heap_limit_message, .{});
+        return err;
+    };
     ctx.globals.commitShadows();
     return root;
 }
@@ -76,9 +99,22 @@ const Task = struct {
 
 const Expander = struct {
     ctx: *Context,
+    /// Where the work of the expansion goes, counted against the limit of the heap.
     scratch: std.mem.Allocator,
+    /// Where the nodes go, which stay after the expansion, counted while it runs.
+    nodes: std.mem.Allocator,
+    /// The work area of one application of a macro, emptied after each one.
+    work: std.heap.ArenaAllocator,
     limits: Limits,
     stack: std.ArrayList(Task) = .empty,
+
+    /// Expands `form`, which is at the top level, and returns its node.
+    fn run(self: *Expander, form: Value) Error!*const Node {
+        const root = try self.nodes.create(Node);
+        try self.stack.append(self.scratch, .{ .form = form, .env = null, .pos = .top, .dest = root });
+        while (self.stack.pop()) |task| try self.step(task);
+        return root;
+    }
 
     fn step(self: *Expander, task: Task) Error!void {
         switch (task.form.kind()) {
@@ -88,8 +124,21 @@ const Expander = struct {
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),
             .pair => {
+                // Why: マクロの適用は、先頭が決まれば、形式がドット対でもよい(R7RS 4.3.2 は
+                // 末尾のパターンを許す)。リストであることを求めるのは、特殊形式と呼び出しだけで
+                // ある。
+                const head = try self.headOf(task.env, task.form.asPair().?.car);
+                if (head) |denotation| switch (denotation) {
+                    // 適用の結果は、同じ位置の同じ節点を埋める形式として展開し直す。
+                    .macro => |m| {
+                        const output = try rules.transform(self.ctx, &self.work, m, task.form, task.env);
+                        try self.stack.append(self.scratch, .{ .form = output, .env = task.env, .pos = task.pos, .dest = task.dest });
+                        return;
+                    },
+                    else => {},
+                };
                 const items = try self.itemsOf(task.form);
-                if (try self.headOf(task.env, items[0])) |head| switch (head) {
+                if (head) |denotation| switch (denotation) {
                     .special => |special| return switch (special) {
                         .define => self.define(task, items),
                         .quote => self.quote(task, items),
@@ -99,13 +148,11 @@ const Expander = struct {
                         .@"set!" => self.set(task, items),
                         .@"define-syntax" => self.defineSyntax(task, items),
                         .@"syntax-rules" => self.ctx.raise("bad syntax-rules: it is only allowed as the transformer of a syntax definition", .{}),
+                        .@"let-syntax" => self.letSyntax(task, items, false),
+                        .@"letrec-syntax" => self.letSyntax(task, items, true),
+                        .@"syntax-error" => self.syntaxError(items),
                     },
-                    // 適用の結果は、同じ位置の同じ節点を埋める形式として展開し直す。
-                    .macro => |m| {
-                        const output = try rules.transform(self.ctx, self.scratch, m, task.form, task.env);
-                        try self.stack.append(self.scratch, .{ .form = output, .env = task.env, .pos = task.pos, .dest = task.dest });
-                        return;
-                    },
+                    .macro => unreachable,
                     .local, .global => {},
                 };
                 try self.call(task, items);
@@ -219,7 +266,7 @@ const Expander = struct {
 
     /// Queues `form` to fill a new node, and returns the node.
     fn child(self: *Expander, form: Value, env: ?*SyntacticEnv, pos: Position) Error!*Node {
-        const node = try self.ctx.persist.create(Node);
+        const node = try self.nodes.create(Node);
         try self.stack.append(self.scratch, .{ .form = form, .env = env, .pos = pos, .dest = node });
         return node;
     }
@@ -303,9 +350,9 @@ const Expander = struct {
             try self.stack.append(self.scratch, .{ .form = forms[0], .env = env, .pos = pos, .dest = dest });
             return;
         }
-        const nodes = try self.ctx.persist.alloc(*const Node, forms.len);
+        const nodes = try self.nodes.alloc(*const Node, forms.len);
         // 節点は順に作り、後ろのものから先にスタックに積む。
-        for (nodes) |*n| n.* = try self.ctx.persist.create(Node);
+        for (nodes) |*n| n.* = try self.nodes.create(Node);
         var i = forms.len;
         while (i > 0) {
             i -= 1;
@@ -405,7 +452,7 @@ const Expander = struct {
 
     /// The node of the value a `define` gives its name.
     fn definedValue(self: *Expander, task: Task, items: []const Value, shorthand: bool) Error!*Node {
-        const value = try self.ctx.persist.create(Node);
+        const value = try self.nodes.create(Node);
         if (shorthand) {
             try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.env, "define");
         } else {
@@ -455,9 +502,9 @@ const Expander = struct {
         // 定義だけの本体には、返す値がない。
         if (scanned.defines == scanned.forms.len)
             return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
-        const body_node = try self.ctx.persist.create(Node);
+        const body_node = try self.nodes.create(Node);
         try self.sequence(body_node, scanned.forms, inner, .expression, scanned.defines);
-        const lambda = try self.ctx.persist.create(value_mod.Lambda);
+        const lambda = try self.nodes.create(value_mod.Lambda);
         lambda.* = .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node };
         dest.* = .{ .lambda = lambda };
     }
@@ -549,7 +596,7 @@ const Expander = struct {
                     },
                     .macro => |m| {
                         try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
-                        form = try rules.transform(self.ctx, self.scratch, m, form, rib);
+                        form = try rules.transform(self.ctx, &self.work, m, form, rib);
                         continue;
                     },
                     .local, .global => break false,
@@ -632,8 +679,6 @@ const Expander = struct {
 
     /// Checks `(define-syntax keyword transformer)` (R7RS 5.4), and makes the
     /// macro of the transformer in `env`.
-    /// 変換子は `syntax-rules` の形式で、その先頭は `env` で `syntax-rules` を意味しなければ
-    /// ならない。同じ綴りを仮引数が束縛していれば、`syntax-rules` ではない。
     /// `consulted` が null でなければ、変換子の先頭と、`rules.compile` が意味を引いた
     /// 識別子を足す。
     fn syntaxDefinition(self: *Expander, env: ?*SyntacticEnv, items: []const Value, consulted: ?*std.ArrayList(Value)) Error!SyntaxDefinition {
@@ -641,13 +686,104 @@ const Expander = struct {
             return self.ctx.raise("bad define-syntax: expected (define-syntax keyword transformer)", .{});
         if (!syntax_env.isIdentifier(items[1]))
             return self.ctx.raise("bad define-syntax: the keyword must be an identifier", .{});
-        const spec = items[2].asPair() orelse
-            return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
+        return .{ .name = items[1], .macro = try self.transformer(env, items[2], consulted, "define-syntax") };
+    }
+
+    /// The macro of the transformer `form`, made in `env`.
+    /// 変換子は `syntax-rules` の形式で、その先頭は `env` で `syntax-rules` を意味しなければ
+    /// ならない。同じ綴りを仮引数が束縛していれば、`syntax-rules` ではない。
+    fn transformer(self: *Expander, env: ?*SyntacticEnv, form: Value, consulted: ?*std.ArrayList(Value), comptime form_name: []const u8) Error!*value_mod.Macro {
+        const spec = form.asPair() orelse
+            return self.ctx.raise("bad " ++ form_name ++ ": the transformer must be a syntax-rules form", .{});
         if (try self.specialOf(env, spec.car) != .@"syntax-rules")
-            return self.ctx.raise("bad define-syntax: the transformer must be a syntax-rules form", .{});
+            return self.ctx.raise("bad " ++ form_name ++ ": the transformer must be a syntax-rules form", .{});
         if (consulted) |list| try list.append(self.scratch, spec.car);
-        const m = try rules.compile(self.ctx, self.scratch, items[2], env, consulted);
-        return .{ .name = items[1], .macro = m };
+        return rules.compile(self.ctx, self.scratch, form, env, consulted);
+    }
+
+    /// `(let-syntax ((keyword transformer) ...) body ...)` and `letrec-syntax`
+    /// (R7RS 4.3.1).
+    /// 本体は、キーワードを束縛した新しい環境で展開する。環境は rib を持たないので、
+    /// 本体の中の局所変数の番地は、外側と同じ深さから数える(`extendWithoutRib`)。
+    /// `let-syntax` の変換子は外側の環境で読み、`letrec-syntax` の変換子は、束縛を
+    /// 足した環境で読む。後者は、同じ束縛の中のキーワード(自分自身を含む)を見える。
+    ///
+    /// 本体は式の並びで、定義は置けない(式の位置の `begin` と同じ)。R7RS は本体と書くが、
+    /// rib を持たない環境には、定義が置くスロットが無い。仮に決めた制限である。
+    /// Why: 変換子が `_` や省略記号の意味を `letrec-syntax` の環境で引くので、環境の束縛を
+    /// 先に置いてから変換子を作る。後から束縛が増えると、定義の時点の検査が見ていない読み方で
+    /// 適用される。束縛はいったん空のマクロに置き、変換子ができたら中身を入れ替える。
+    fn letSyntax(self: *Expander, task: Task, items: []const Value, comptime recursive: bool) Error!void {
+        const form_name = if (recursive) "letrec-syntax" else "let-syntax";
+        if (items.len < 3)
+            return self.ctx.raise("bad " ++ form_name ++ ": expected (" ++ form_name ++ " ((keyword transformer) ...) body ...)", .{});
+        const bindings = try self.itemsOfBindings(items[1], form_name);
+        const inner = try syntax_env.extendWithoutRib(self.ctx, task.env);
+        const placeholders = try self.scratch.alloc(*value_mod.Macro, bindings.len);
+        // 変換子を読む環境。`letrec-syntax` では、束縛を足した環境である。
+        const read_in = if (recursive) inner else task.env;
+        for (bindings, placeholders, 0..) |binding, *placeholder, i| {
+            const pair = try self.itemsOfBinding(binding, form_name);
+            for (bindings[0..i]) |earlier| {
+                if (syntax_env.boundIdentifierEq(earlier.asPair().?.car, pair[0])) return self.ctx.raise(
+                    "bad " ++ form_name ++ ": {s} is bound twice",
+                    .{self.nameOf(pair[0])},
+                );
+            }
+            if (recursive) {
+                placeholder.* = try self.ctx.create(value_mod.Macro, .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = inner });
+                try syntax_env.bindMacro(self.ctx, inner, pair[0], placeholder.*);
+            }
+        }
+        for (bindings, placeholders) |binding, placeholder| {
+            const pair = try self.itemsOfBinding(binding, form_name);
+            const macro = try self.transformer(read_in, pair[1], null, form_name);
+            if (recursive) {
+                placeholder.* = macro.*;
+            } else {
+                try syntax_env.bindMacro(self.ctx, inner, pair[0], macro);
+            }
+        }
+        try self.sequence(task.dest, items[2..], inner, .expression, 0);
+    }
+
+    /// The bindings of a `let-syntax`, a list of forms.
+    fn itemsOfBindings(self: *Expander, form: Value, comptime form_name: []const u8) Error![]const Value {
+        var items: std.ArrayList(Value) = .empty;
+        var rest = form;
+        while (rest.asPair()) |p| : (rest = p.cdr) try items.append(self.scratch, p.car);
+        if (rest.kind() != .empty_list)
+            return self.ctx.raise("bad " ++ form_name ++ ": the bindings must be a list", .{});
+        return items.items;
+    }
+
+    /// The keyword and the transformer of one binding of a `let-syntax`.
+    fn itemsOfBinding(self: *Expander, binding: Value, comptime form_name: []const u8) Error![2]Value {
+        const bad = "bad " ++ form_name ++ ": a binding must be (keyword transformer)";
+        const first = binding.asPair() orelse return self.ctx.raise(bad, .{});
+        const second = first.cdr.asPair() orelse return self.ctx.raise(bad, .{});
+        if (second.cdr.kind() != .empty_list) return self.ctx.raise(bad, .{});
+        if (!syntax_env.isIdentifier(first.car))
+            return self.ctx.raise("bad " ++ form_name ++ ": the keyword must be an identifier", .{});
+        return .{ first.car, second.car };
+    }
+
+    /// `(syntax-error message datum ...)` (R7RS 4.3.3): an error found while
+    /// expanding, which a handler cannot catch because nothing has run yet.
+    /// 引数は評価せず、データとして報告する。マクロのテンプレートが導入した識別子は、
+    /// 元のシンボルで書く。
+    fn syntaxError(self: *Expander, items: []const Value) Error!void {
+        const message = if (items.len >= 2) items[1].asString() else null;
+        if (message == null)
+            return self.ctx.raise("bad syntax-error: expected (syntax-error \"message\" datum ...)", .{});
+        var irritants: Value = .empty_list_value;
+        var i = items.len;
+        while (i > 2) {
+            i -= 1;
+            irritants = self.ctx.heap.cons(try self.stripAliases(items[i]), irritants) catch |e| return self.ctx.heapFailure(e);
+        }
+        self.ctx.raised = try self.ctx.makeCondition(.@"error", "{s}", .{message.?.bytes}, irritants);
+        return error.Raised;
     }
 
     /// `(define-syntax keyword transformer)` at the top level (R7RS 5.4).
@@ -669,8 +805,8 @@ const Expander = struct {
     /// to right.
     /// Why: R7RS は評価順を規定していない。読み手が期待するのは左から右である。
     fn call(self: *Expander, task: Task, items: []const Value) Error!void {
-        const operands = try self.ctx.persist.alloc(*const Node, items.len - 1);
-        for (operands) |*n| n.* = try self.ctx.persist.create(Node);
+        const operands = try self.nodes.alloc(*const Node, items.len - 1);
+        for (operands) |*n| n.* = try self.nodes.create(Node);
         var i = items.len;
         while (i > 1) {
             i -= 1;
@@ -1146,6 +1282,35 @@ test "a macro's template binds its own tmp, apart from the tmp of the use" {
         "(lambda (tmp x) (swap! tmp x))",
         "(lambda 2 2 (call (lambda 1 1 (seq (set-local tmp 1 0 (local x 1 1)) (set-local x 1 1 (local tmp 0 0)))) (local tmp 0 0)))",
     );
+}
+
+test "the body of a let-syntax counts frames from the lambda around it, not from the syntactic scope" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // let-syntax の環境は rib を持たないので、本体の中の外側の変数は、深さ0である。
+    try f.expectExpands("(lambda (x) (let-syntax ((m (syntax-rules () ((_) x)))) (m)))", "(lambda 1 1 (local x 0 0))");
+    try f.expectExpands("(lambda (x) (let-syntax ((m (syntax-rules () ((_) x)))) (lambda (y) (m))))", "(lambda 1 1 (lambda 1 1 (local x 1 0)))");
+    try f.expectExpands("(lambda (x) (letrec-syntax ((m (syntax-rules () ((_) x)))) (m)))", "(lambda 1 1 (local x 0 0))");
+    // 入れ子の let-syntax と letrec-syntax も、深さを足さない。
+    try f.expectExpands(
+        "(lambda (x) (let-syntax ((a (syntax-rules () ((_) x)))) (letrec-syntax ((b (syntax-rules () ((_) (a))))) (b))))",
+        "(lambda 1 1 (local x 0 0))",
+    );
+    // 本体は式の並びで、最後の式が値になる。
+    try f.expectExpands("(let-syntax () 1 2)", "(seq (const 1) (const 2))");
+}
+
+test "a let-syntax keyword hides the one around it only inside the body" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) 1)))", "(const #<unspecified>)");
+    try f.expectExpands("(let-syntax ((m (syntax-rules () ((_) 2)))) (m))", "(const 2)");
+    try f.expectExpands("(m)", "(const 1)");
+    // let-syntax の変換子は外側の環境で読み、letrec-syntax の変換子は自分たちの環境で読む。
+    try f.expectExpands("(let-syntax ((m (syntax-rules () ((_) (m))))) (m))", "(const 1)");
+    try f.expectExpands("(letrec-syntax ((m (syntax-rules () ((_ 0) 3) ((_ n) (m 0))))) (m 5))", "(const 3)");
 }
 
 test "the scan of a body expands a macro use once, and uses what it expanded to" {

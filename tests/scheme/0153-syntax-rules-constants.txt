@@ -1,0 +1,35 @@
+# スライス 2l: 定数のパターンと、リテラルの一覧に置いた `_` と省略記号。
+
+# パターンが定数のとき、入力が equal? の意味で等しければ照合する。
+(define-syntax num (syntax-rules () ((_ 1) 'one) ((_ 2) 'two) ((_ x) 'many))) (list (num 1) (num 2) (num 3))
+(one two many)
+
+(define-syntax kind (syntax-rules () ((_ #t) 'true) ((_ #f) 'false) ((_ #\a) 'char-a) ((_ "s") 'string-s) ((_ x) 'other))) (list (kind #t) (kind #f) (kind #\a) (kind "s") (kind "t") (kind 1))
+(true false char-a string-s other other)
+
+# 定数は、リストの要素にも置ける。省略記号の後ろにも置ける。
+(define-syntax zero-first (syntax-rules () ((_ (0 x ...)) '(x ...)) ((_ other) 'nope))) (list (zero-first (0 1 2)) (zero-first (1 2)) (zero-first 0))
+((1 2) nope nope)
+
+(define-syntax end-with (syntax-rules () ((_ x ... 9) '(x ...)) ((_ x ...) 'no-nine))) (list (end-with 1 2 9) (end-with 9) (end-with 1 2))
+((1 2) () no-nine)
+
+# 空リストは定数のパターンである。
+(define-syntax nil (syntax-rules () ((_ ()) 'empty) ((_ x) 'full))) (list (nil ()) (nil (1)))
+(empty full)
+
+# 定数は何も束縛しない。
+(define-syntax second (syntax-rules () ((_ 1 x) 'x))) (second 1 foo)
+foo
+
+# 文字列は内容で比べる。
+(define-syntax str (syntax-rules () ((_ "ab") 'matched) ((_ x) 'no))) (str "ab")
+matched
+
+# `_` をリテラルの一覧に置くと、パターンの `_` は何にでも照合するのでなく、`_` に照合する。
+(define-syntax under (syntax-rules (_) ((_ _) 'lit) ((_ x) 'other))) (list (under _) (under 1))
+(lit other)
+
+# 省略記号をリテラルの一覧に置くと、繰り返しでなく、省略記号に照合する。
+(define-syntax dots (syntax-rules (...) ((_ a ...) 'lit) ((_ a) 'one))) (list (dots 1 ...) (dots 1))
+(lit one)

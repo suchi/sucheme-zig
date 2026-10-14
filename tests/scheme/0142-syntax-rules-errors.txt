@@ -1,7 +1,4 @@
-# スライス 2k: syntax-rules の誤りは、定義の時点で報告する。2l が入れる形(入れ子の
-# 省略記号、省略記号の後の固定パターン、非真正リスト、ベクタ、定数パターン、
-# テンプレートの省略記号のエスケープ、利用者指定の省略記号)は、黙って別の意味に
-# 読まず、まだ扱えないと報告する。それらの行は 2l が書き換える。
+# スライス 2k と 2l: syntax-rules の誤りは、定義の時点で報告する。
 
 (define-syntax m (syntax-rules () ((_ x) 1))) (m)
 error: bad syntax: no rule of m matches the form
@@ -55,32 +52,30 @@ error: bad define-syntax: expected (define-syntax keyword transformer)
 error: bad syntax-rules: it is only allowed as the transformer of a syntax definition
 
 # 2l が入れる形。
-(define-syntax m (syntax-rules () ((_ (a ...) ...) 1)))
-error: bad syntax-rules: nested ellipses are not supported yet
-
-(define-syntax m (syntax-rules () ((_ a ... b) 1)))
-error: bad syntax-rules: patterns after an ellipsis are not supported yet
-
-(define-syntax m (syntax-rules () ((_ (a . b)) 1)))
-error: bad syntax-rules: improper list patterns are not supported yet
-
-(define-syntax m (syntax-rules () ((_ #(a)) 1)))
-error: bad syntax-rules: vector patterns are not supported yet
-
-(define-syntax m (syntax-rules () ((_ 1) 1)))
-error: bad syntax-rules: constant patterns are not supported yet
-
-(define-syntax m (syntax-rules () ((_ a) (... ...))))
-error: bad syntax-rules: ellipsis escapes are not supported yet
-
-(define-syntax m (syntax-rules ::: () ((_ a) 1)))
-error: bad syntax-rules: a custom ellipsis is not supported yet
-
 (define-syntax m (syntax-rules () ((_ a ...) (a ... ...))))
-error: bad syntax-rules: nested ellipses are not supported yet
+error: bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed
 
-(define-syntax m (syntax-rules () ((_ a) (a . a))))
-error: bad syntax-rules: improper list templates are not supported yet
+(define-syntax m (syntax-rules () ((_ a ... b ...) 1)))
+error: bad syntax-rules: a list pattern can have only one ellipsis
 
-(define-syntax m (syntax-rules () ((_ a) #(a))))
-error: bad syntax-rules: vector templates are not supported yet
+(define-syntax m (syntax-rules () ((_ a ... ...) 1)))
+error: bad syntax-rules: a list pattern can have only one ellipsis
+
+# 内側の変数が深さ2なのに、テンプレートの省略記号が1つだけ。
+(define-syntax m (syntax-rules () ((_ (a ...) ...) '(a ...))))
+error: bad syntax-rules: a needs as many ellipses in the template as in its pattern
+
+(define-syntax m (syntax-rules () ((_ #(a ... b ...)) 1)))
+error: bad syntax-rules: a list pattern can have only one ellipsis
+
+(define-syntax m (syntax-rules () ((_ #(a ...)) #(a))))
+error: bad syntax-rules: a needs as many ellipses in the template as in its pattern
+
+(define-syntax m (syntax-rules () ((_ a) #(... a))))
+error: bad syntax-rules: an ellipsis must follow a template
+
+(define-syntax m (syntax-rules :::))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)
+
+(define-syntax m (syntax-rules ::: ::: ((_) 1)))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)

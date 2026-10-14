@@ -38,6 +38,16 @@ pub fn extend(ctx: *Context, parent: ?*SyntacticEnv) Error!*SyntacticEnv {
     return ctx.create(SyntacticEnv, .{ .parent = parent, .rib_depth = depth, .bindings = null });
 }
 
+/// A new environment inside `parent` (null at the top level) that adds bindings
+/// but no rib.
+/// rib の深さは外側と同じである。局所変数の字句アドレスは rib の深さの差で求めるので、
+/// ここで深さを増やすと、この環境の内側から外側の変数を参照したときの深さが1大きくなり、
+/// 存在しない rib をたどる(docs/design/frontend.md)。`let-syntax` と `letrec-syntax` が、
+/// マクロの束縛を置くために使う。
+pub fn extendWithoutRib(ctx: *Context, parent: ?*SyntacticEnv) Error!*SyntacticEnv {
+    return ctx.create(SyntacticEnv, .{ .parent = parent, .rib_depth = ribDepth(parent), .bindings = null });
+}
+
 /// The rib depth of `env`; the top level is 0.
 pub fn ribDepth(env: ?*const SyntacticEnv) u32 {
     return if (env) |e| e.rib_depth else 0;
@@ -227,6 +237,26 @@ test "a rib's binding hides the special form, the global and an outer rib's bind
     try std.testing.expectEqual(1, outer_x.rib_depth);
     try std.testing.expectEqual(1, outer_x.index);
     try std.testing.expectEqual(2, inner_x.rib_depth);
+}
+
+test "an environment without a rib has the depth of the one around it, and hides what it binds" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const x = try f.id("x");
+    const outer = try extend(&f.ctx, null);
+    const local = try bindLocal(&f.ctx, outer, x, 0);
+    const scope = try extendWithoutRib(&f.ctx, outer);
+    try std.testing.expectEqual(outer.rib_depth, scope.rib_depth);
+    try std.testing.expectEqual(0, ribDepth(try extendWithoutRib(&f.ctx, null)));
+    // 外側の rib の束縛は、そのまま見える。ここでの束縛は外側を隠し、外側には見えない。
+    try std.testing.expectEqual(local, (try resolve(&f.ctx, scope, x)).local);
+    var m: value_mod.Macro = .{ .literals = .empty_list_value, .rules = .empty_list_value, .env = scope };
+    try bindMacro(&f.ctx, scope, x, &m);
+    try std.testing.expectEqual(&m, (try resolve(&f.ctx, scope, x)).macro);
+    try std.testing.expectEqual(local, (try resolve(&f.ctx, outer, x)).local);
+    // rib を足すと、深さはその分だけ増える。
+    try std.testing.expectEqual(outer.rib_depth + 1, (try extend(&f.ctx, scope)).rib_depth);
 }
 
 test "a later binding in the same rib hides an earlier one, and each binding is its own object" {
