@@ -1,0 +1,9 @@
+# tests/scheme-slow/0015-call-cc-scale.txt の縮小版。同じ論理を、毎回の門で走る大きさで
+# 通す。多数の wind 点を通る脱出と再入と、長く回るジェネレータで、GC が何度も走る
+# (実行器は1ステップごとに GC するモードでも走らせる)。
+
+(define k #f) (define ins 0) (define outs 0) (define round 0) (define (nest n thunk) (if (= n 0) (thunk) (dynamic-wind (lambda () (set! ins (+ ins 1))) (lambda () (nest (- n 1) thunk)) (lambda () (set! outs (+ outs 1)))))) (define r (call/cc (lambda (out) (nest 500 (lambda () (call/cc (lambda (c) (set! k c))) (out 'escaped)))))) (set! round (+ round 1)) (if (= round 1) (k #f)) (list r round ins outs)
+(escaped 1 1000 1000)
+
+(define ins 0) (define outs 0) (define (make-counter) (define return #f) (define resume #f) (define (loop i) (call/cc (lambda (r) (set! resume r) (return i))) (loop (+ i 1))) (lambda () (call/cc (lambda (r) (set! return r) (if resume (resume #f) (dynamic-wind (lambda () (set! ins (+ ins 1))) (lambda () (loop 0)) (lambda () (set! outs (+ outs 1))))))))) (define g (make-counter)) (define (drain n last) (if (= n 0) last (drain (- n 1) (g)))) (list (drain 5000 #f) ins outs)
+(4999 5000 5000)

@@ -73,13 +73,16 @@ pub const Machine = struct {
         /// (`Budget.limit`)で断られる。生きている量がソフトな上限以上なら、その間は
         /// ステップごとに GC が走り、毎回ほぼヒープの全体をマークする。ハンドラの作るごみは
         /// 回収されるので、この状態はハンドラが戻るか送出し直すか、GC が余裕を見つける
-        /// まで続く。2d には継続での脱出が無いので、深い継続はその間ずっと残る。
+        /// まで続く。ハンドラが継続で外へ脱出すれば(2e)、深い継続は辿れなくなり、その後の
+        /// GC が余裕を見つけて印を戻す。
         limit_reported: bool = false,
     };
 
     /// Runs `node` to its value.
-    /// 送出された値は、現在の例外ハンドラに渡す。ハンドラが無ければ、送出された値を
-    /// `ctx.raised` に置いて `error.Raised` を返す。
+    /// 送出された値は、現在の例外ハンドラに渡す。ハンドラが無ければ、実行の最も外側の継続
+    /// (空の継続と空の列)へ脱出する。脱出は継続の起動と同じく巻き戻しの経路を通り、
+    /// 途中の `dynamic-wind` の `after` をすべて呼ぶ。着いたら、送出された値を `ctx.raised`
+    /// に置いて `error.Raised` を返す(docs/design/runtime.md の未処理例外)。
     pub fn run(self: *Machine, root: *const Node) Error!Value {
         var regs: Registers = .{ .control = root };
         while (true) {
@@ -93,21 +96,32 @@ pub const Machine = struct {
     }
 
     /// Hands what was raised, which is in `ctx.raised`, to the current
-    /// handler, as `raise` does.
+    /// handler, as `raise` does, or, when there is none, escapes with it to the
+    /// outermost continuation of the run.
     /// ハンドラを呼ぶこと自体が送出すれば(ハンドラが手続きでない、引数の個数が合わない
     /// など)、その値を同じように渡す。そのときの列はハンドラ切り替えの点を積んだあとなので、
-    /// 外側のハンドラに届き、周回は止まる。ハンドラが無ければ、値を `ctx.raised` に戻して
-    /// `error.Raised` を返す。
+    /// 外側のハンドラに届き、周回は止まる。脱出の途中に `after` があれば、それを呼ぶ巻き戻しの
+    /// フレームを継続に置いて戻り、`run` が実行を続ける。無ければ、その場で着き、値を
+    /// `ctx.raised` に戻して `error.Raised` を返す。
+    /// Why: 未処理例外に専用の機構を作らず、最外の継続への脱出として扱う
+    /// (docs/design/runtime.md の未処理例外)。`after` の中の未処理例外は、その時点の列
+    /// (`after` の点の親)から改めて脱出するので、巻き戻しは1つ外側の点から再開する。
+    /// 着いたあとの列と継続は空なので、`run` がもう一度ここに来ても、ハンドラも `after` も
+    /// 無く、すぐに `error.Raised` を返す。
     fn handOver(self: *Machine, regs: *Registers) Error!void {
         const ctx = self.ctx;
         while (true) {
             const raised = ctx.raised.?;
             ctx.raised = null;
-            if (self.callHandler(regs, raised)) |handled| {
-                if (handled) return;
-                ctx.raised = raised;
-                return error.Raised;
-            } else |e| if (e != error.Raised) return e;
+            const handled = self.callHandler(regs, raised) catch |e| {
+                if (e != error.Raised) return e;
+                continue;
+            };
+            if (handled) return;
+            regs.control = null;
+            regs.env = null;
+            regs.value = try self.invoke(&regs.kont, &regs.dyn, null, raised);
+            return;
         }
     }
 
@@ -271,14 +285,10 @@ pub const Machine = struct {
                         if (received <= c.call.operands.len) {
                             kont = try self.push(kont, env, .{ .call = .{ .call = c.call, .args = args, .received = received } });
                             control = c.call.operands[received - 1];
-                        } else switch (try self.apply(&kont, &dyn, args, received - 1, .limit)) {
-                            .value => |v| value = v,
+                        } else {
                             // 末尾呼び出し: 本体は呼び出しの継続のもとで走る。その継続は
                             // `kont` に残っているものである。
-                            .body => |entry| {
-                                env = entry.env;
-                                control = entry.body;
-                            },
+                            take(try self.apply(&kont, &dyn, args, received - 1, .limit), &env, &control, &value);
                         }
                     },
                     // 値は、そのまま次のフレームに渡る。
@@ -289,6 +299,27 @@ pub const Machine = struct {
                         // そのハンドラを再び現在のハンドラにする(R7RS 6.11)。
                         dyn = h.dyn;
                     },
+                    // `before` が戻った。点を積み、その範囲で `thunk` を呼ぶ。`before` の値は捨てる。
+                    .wind_before => |w| {
+                        std.debug.assert(dyn == w.point.parent);
+                        const call = try ctx.create(Args, .{ .value = w.thunk, .next = null });
+                        kont = try self.push(kont, null, .{ .wind_body = w.point });
+                        dyn = w.point;
+                        take(try self.apply(&kont, &dyn, call, 0, .limit), &env, &control, &value);
+                    },
+                    // `thunk` が戻った。点を外してから `after` を呼び、`thunk` の値を残す
+                    // (R7RS 6.10)。確保を済ませてから列を書き換えるので、確保が失敗して送出した
+                    // ときは点の中にいて、その脱出が `after` を呼ぶ。
+                    .wind_body => |point| {
+                        std.debug.assert(dyn == point);
+                        const call = try ctx.create(Args, .{ .value = point.kind.wind.after, .next = null });
+                        kont = try self.push(kont, null, .{ .wind_after = value });
+                        dyn = point.parent;
+                        take(try self.apply(&kont, &dyn, call, 0, .limit), &env, &control, &value);
+                    },
+                    // `after` が戻った。その値は捨て、`thunk` の値を渡す。
+                    .wind_after => |v| value = v,
+                    .rewind => |r| take(try self.rewind(&kont, &dyn, r), &env, &control, &value),
                 }
             }
         }
@@ -309,6 +340,110 @@ pub const Machine = struct {
         value: Value,
         body: struct { env: *Frame, body: *const Node },
     };
+
+    /// Puts what `apply` gave into the registers of a step: the value, or
+    /// the body to run and the frame to run it in.
+    fn take(applied: Applied, env: *?*Frame, control: *?*const Node, value: *Value) void {
+        switch (applied) {
+            .value => |v| value.* = v,
+            .body => |entry| {
+                env.* = entry.env;
+                control.* = entry.body;
+            },
+        }
+    }
+
+    /// Invokes `target` with `v`: takes the continuation and the dynamic
+    /// state to it, and gives `v` as the value to deliver. A null `target` is
+    /// the outermost continuation of the run, to which `v` goes as what was
+    /// raised (`error.Raised`).
+    /// 現在の列から目標の列へ移る途中に wind 点が無ければ、その場で着く。あれば、巻き戻しの
+    /// フレームを1つ継続に置くだけで戻り、`after` と `before` は次のステップから呼ぶ。
+    /// Why: 次のステップの先頭で GC が走るので、捨てた継続(上限超過を起こした深い再帰など)は、
+    /// `after` を呼ぶ前に回収できる。その場で呼ぶと、上限に達したままのヒープで `after` を
+    /// 呼ぶことになる。巻き戻しの状態とフレームは、送出のための予約から確保する
+    /// (docs/design/runtime.md の送出のための予約領域)。
+    fn invoke(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, target: ?*const value_mod.Continuation, v: Value) Error!Value {
+        const ctx = self.ctx;
+        const to = if (target) |t| t.dyn else null;
+        const ancestor = value_mod.commonAncestor(dyn.*, to);
+        if (!value_mod.windBetween(dyn.*, ancestor) and !value_mod.windBetween(to, ancestor)) return self.arrive(kont, dyn, target, v);
+        const state = try ctx.createIn(.raise_reserve, value_mod.Rewind, .{ .target = target, .value = v, .ancestor = ancestor });
+        kont.* = try self.pushIn(.raise_reserve, null, null, .{ .rewind = .{ .state = state, .entered = null, .at = dyn.* } });
+        return .unspecified_value;
+    }
+
+    /// Takes the registers to `target` and returns `v`; for the outermost
+    /// continuation, empties them and raises `v`.
+    fn arrive(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, target: ?*const value_mod.Continuation, v: Value) Error!Value {
+        if (target) |t| {
+            kont.* = t.kont;
+            dyn.* = t.dyn;
+            return v;
+        }
+        kont.* = null;
+        dyn.* = null;
+        self.ctx.raised = v;
+        return error.Raised;
+    }
+
+    /// Takes the rewind of an invocation one wind point further: calls the
+    /// next `after` while it leaves the points out to the common ancestor,
+    /// then the next `before` while it enters the points in to the target, and
+    /// arrives when there is none left (docs/design/runtime.md, the progress of
+    /// a rewind).
+    /// 各 `after` と各 `before` は、その wind 点の親の列で呼ぶ(R7RS 6.10 の「same dynamic
+    /// environment as the call to dynamic-wind」)。退出では点を外してから `after` を呼び、
+    /// 進入では親の列で `before` を呼んで、戻ってから点を積む。呼ぶたびに、位置を1つ進めた
+    /// 巻き戻しのフレームを継続に置く。フレームと進入の経路は不変なので、`after` や
+    /// `before` の中で捕捉した継続を後で起動しても、その位置から再開する。
+    fn rewind(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, r: Kont.RewindStep) Error!Applied {
+        std.debug.assert(dyn.* == r.at);
+        const state = r.state;
+        const path = if (r.entered) |link| next: {
+            dyn.* = link.point;
+            break :next link.next;
+        } else path: {
+            while (dyn.* != state.ancestor) {
+                const point = dyn.*.?;
+                dyn.* = point.parent;
+                switch (point.kind) {
+                    .wind => |w| return self.callWinder(kont, dyn, state, null, w.after),
+                    .handler, .handler_shift => {},
+                }
+            }
+            break :path try self.windPath(state.ancestor, if (state.target) |t| t.dyn else null);
+        };
+        if (path) |link| {
+            dyn.* = link.point.parent;
+            return self.callWinder(kont, dyn, state, link, link.point.kind.wind.before);
+        }
+        return .{ .value = try self.arrive(kont, dyn, state.target, state.value) };
+    }
+
+    /// Calls `winder`, an `after` or a `before` of a rewind, with no
+    /// arguments, under a rewind frame that goes on from `entered`.
+    /// 呼び出しの確保は、ハンドラの呼び出しと同じく送出のための予約から行う(2d の前例)。
+    /// `winder` の本体の評価は予約から行わない。
+    fn callWinder(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, state: *const value_mod.Rewind, entered: ?*const value_mod.WindPath, winder: Value) Error!Applied {
+        const call = try self.ctx.createIn(.raise_reserve, Args, .{ .value = winder, .next = null });
+        kont.* = try self.pushIn(.raise_reserve, kont.*, null, .{ .rewind = .{ .state = state, .entered = entered, .at = dyn.* } });
+        return self.apply(kont, dyn, call, 0, .raise_reserve);
+    }
+
+    /// The wind points from `ancestor` in to `to`, outermost first.
+    /// `ancestor` は `to` 自身か、その外側の点か、null でなければならない。目標から
+    /// 上りながら先頭に継ぎ足すと、外側から内側の順になる。
+    fn windPath(self: *Machine, ancestor: ?*const DynPoint, to: ?*const DynPoint) Error!?*const value_mod.WindPath {
+        var path: ?*const value_mod.WindPath = null;
+        var it = to;
+        while (it != ancestor) {
+            const point = it.?;
+            if (point.kind == .wind) path = try self.ctx.createIn(.raise_reserve, value_mod.WindPath, .{ .point = point, .next = path });
+            it = point.parent;
+        }
+        return path;
+    }
 
     /// Applies the operator at the end of `args` to the `count` operands before
     /// it, in the continuation `kont` and at the dynamic point `dyn`.
@@ -369,9 +504,27 @@ pub const Machine = struct {
                         count = 1;
                         budget = .raise_reserve;
                     },
+                    // Why: `proc` を、継続のフレームを積まずに捕捉した継続で呼ぶ。`call/cc` の
+                    // 第1引数の呼び出しは末尾呼び出しである(R7RS 3.5)。捕捉した継続は、この
+                    // 呼び出しの継続そのものである。
+                    .call_cc => {
+                        args = try self.captureFor(prim, kont.*, dyn.*, args);
+                        count = 1;
+                        budget = .limit;
+                    },
+                    .dynamic_wind => {
+                        args = try self.enterWind(prim, kont, dyn.*, args);
+                        count = 0;
+                        budget = .limit;
+                    },
                 },
             }
         };
+        if (operator.asContinuation()) |k| {
+            // 複数値は段階2のスライス 2f で入る。それまで、継続は値を1つだけ受け取る。
+            if (count != 1) return ctx.raise("wrong number of arguments: expected 1, got {d}", .{count});
+            return .{ .value = try self.invoke(kont, dyn, k, args.value) };
+        }
         const closure = operator.asClosure() orelse
             return ctx.raise("not a procedure", .{});
         const lambda = closure.lambda;
@@ -485,6 +638,43 @@ pub const Machine = struct {
         const call = try ctx.create(Args, .{ .value = thunk, .next = null });
         kont.* = try self.push(kont.*, null, .{ .dynamic_exit = dyn.* });
         dyn.* = point;
+        return call;
+    }
+
+    /// The call `(call/cc proc)` stands for: `proc` applied to the
+    /// continuation of the call of `call/cc`, which it captures with the
+    /// dynamic state `dyn`.
+    /// `args` は `proc`、`prim` の順に並ぶ。継続は捕捉の時点のフレームと点を指すだけで、
+    /// 写さない(フレームも点も不変である)。
+    fn captureFor(self: *Machine, prim: *const value_mod.Primitive, kont: ?*const Kont, dyn: ?*const DynPoint, args: *const Args) Error!*const Args {
+        const ctx = self.ctx;
+        const proc = args.value;
+        if (!isProcedure(proc)) return primitiveFailure(ctx, prim, error.WrongType, args, 1);
+        const k = try ctx.create(value_mod.Continuation, .{ .kont = kont, .dyn = dyn });
+        const procedure = try ctx.create(Args, .{ .value = proc, .next = null });
+        return ctx.create(Args, .{ .value = .fromContinuation(k), .next = procedure });
+    }
+
+    /// What `(dynamic-wind before thunk after)` does first (R7RS 6.10): makes
+    /// the wind point, puts the frame that puts it on once `before` returns,
+    /// and returns the call of `before`.
+    /// `args` は `after`、`thunk`、`before`、`prim` の順に並ぶ。`before` は点を積む前の
+    /// 列で呼ぶ。点の現在のハンドラは親のものである(ADR-0016)。確保を済ませてから継続を
+    /// 書き換える。
+    fn enterWind(self: *Machine, prim: *const value_mod.Primitive, kont: *?*const Kont, dyn: ?*const DynPoint, args: *const Args) Error!*const Args {
+        const ctx = self.ctx;
+        const after = args.value;
+        const thunk = args.next.?.value;
+        const before = args.next.?.next.?.value;
+        if (!isProcedure(before) or !isProcedure(thunk) or !isProcedure(after)) return primitiveFailure(ctx, prim, error.WrongType, args, 3);
+        const point = try ctx.create(DynPoint, .{
+            .parent = dyn,
+            .depth = value_mod.depthAbove(dyn),
+            .current_handler = value_mod.currentHandler(dyn),
+            .kind = .{ .wind = .{ .before = before, .after = after } },
+        });
+        const call = try ctx.create(Args, .{ .value = before, .next = null });
+        kont.* = try self.push(kont.*, null, .{ .wind_before = .{ .point = point, .thunk = thunk } });
         return call;
     }
 
@@ -626,7 +816,7 @@ pub const Machine = struct {
 
 /// Whether `v` can be applied.
 fn isProcedure(v: Value) bool {
-    return v.asClosure() != null or v.asPrimitive() != null;
+    return v.asClosure() != null or v.asPrimitive() != null or v.asContinuation() != null;
 }
 
 /// The slot of a local variable: `depth` frames out from `env`, then `index`.
@@ -1400,6 +1590,14 @@ const stress_programs = [_]struct { src: []const u8, expected: i64 }{
     .{ .src = "(define (down n) (if (= n 0) (raise-continuable 0) (+ 1 (down (- n 1))))) (with-exception-handler (lambda (c) 100) (lambda () (down 300)))", .expected = 400 },
     .{ .src = "(with-exception-handler (lambda (c) (* c 2)) (lambda () (+ (raise-continuable 1) (raise-continuable 10))))", .expected = 22 },
     .{ .src = "(with-exception-handler (lambda (c) (+ c 100)) (lambda () (with-exception-handler (lambda (c) (raise-continuable (+ c 10))) (lambda () (raise-continuable 1)))))", .expected = 111 },
+    // 継続と wind 点は、捕捉した継続の値からしか辿れない。脱出と再入、巻き戻しの途中の
+    // `after` と `before` が、毎ステップの GC を生き延びる。
+    .{ .src = "(define kk #f) (define log 0) (define (bump) (set! log (+ log 1))) (+ 100 (dynamic-wind bump (lambda () (call/cc (lambda (c) (set! kk c) 1))) bump))", .expected = 101 },
+    .{ .src = "(if (= log 2) (kk 2) log)", .expected = 102 },
+    .{ .src = "(if (= log 4) (kk 3) log)", .expected = 103 },
+    .{ .src = "log", .expected = 6 },
+    .{ .src = "(call/cc (lambda (out) (dynamic-wind bump (lambda () (with-exception-handler (lambda (c) (out (+ c log))) (lambda () (raise 10)))) bump)))", .expected = 17 },
+    .{ .src = "log", .expected = 8 },
 };
 
 test "the programs give the same results with a collection at every step, whatever the marking list holds" {
@@ -1916,4 +2114,222 @@ test "the secondary exception of a handler that returned is made from the reserv
     try std.testing.expectEqual(5, irritants.car.asFixnum().?);
     try std.testing.expectEqual(value_mod.Kind.empty_list, irritants.cdr.kind());
     try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+}
+
+// 以下は継続と `dynamic-wind` のテストである(スライス 2e)。
+
+test "a continuation escapes, and each invocation starts again from the operands evaluated before the capture" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectInt(42, "(call/cc (lambda (k) (+ 1 (k 42))))");
+    try f.expectInt(42, "(call-with-current-continuation (lambda (k) (+ 1 (k 42))))");
+    // 継続を呼ばずに戻れば、その値が `call/cc` の値である。
+    try f.expectInt(3, "(+ 1 (call/cc (lambda (k) 2)))");
+    // 引数の評価の途中で捕捉した継続を何度も起動する。捕捉の前に評価した引数は、起動の
+    // たびに捕捉の時点の値で、後ろの引数は起動のたびに評価し直す(フレームと引数の鎖は不変)。
+    _ = try f.eval("(define k #f) (define n 0) (define (next) (set! n (+ n 1)) n)");
+    var buf: [8]i64 = undefined;
+    const cases = [_]struct { src: []const u8, expected: []const i64 }{
+        .{ .src = "(list (next) (call/cc (lambda (c) (set! k c) 0)) (next))", .expected = &.{ 1, 0, 2 } },
+        .{ .src = "(k 10)", .expected = &.{ 1, 10, 3 } },
+        .{ .src = "(k 20)", .expected = &.{ 1, 20, 4 } },
+    };
+    for (cases) |c| {
+        const len = fixnums(try f.eval(c.src), &buf);
+        try std.testing.expectEqualSlices(i64, c.expected, buf[0..len]);
+    }
+    // `apply` で呼んでも、ハンドラとして呼ばれても、継続である。
+    try f.expectInt(7, "(+ 1 (call/cc (lambda (k) (apply k '(6)))))");
+    try f.expectInt(9, "(call/cc (lambda (k) (with-exception-handler k (lambda () (raise 9)))))");
+}
+
+test "the arguments of call/cc and of a continuation are checked" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectFails("wrong type of argument to call/cc", "(call/cc 5)");
+    try f.expectFails("wrong number of arguments to call/cc", "(call/cc)");
+    try f.expectFails("wrong number of arguments: expected 1, got 2", "(call/cc (lambda (k) (k 1 2)))");
+    try f.expectFails("wrong number of arguments: expected 1, got 0", "(call/cc (lambda (k) (k)))");
+    try f.expectFails("wrong number of arguments: expected 0, got 1", "(call/cc (lambda () 1))");
+    try f.expectFails("wrong type of argument to dynamic-wind", "(dynamic-wind 1 (lambda () 2) (lambda () 3))");
+    try f.expectFails("wrong type of argument to dynamic-wind", "(dynamic-wind (lambda () 1) 2 (lambda () 3))");
+    try f.expectFails("wrong type of argument to dynamic-wind", "(dynamic-wind (lambda () 1) (lambda () 2) 3)");
+    // 継続は手続きなので、`dynamic-wind` の型の検査を通る。値を1つ取るので、引数なしで呼ぶ
+    // `after` としては、呼んだときに個数の誤りになる。
+    try f.expectFails("wrong number of arguments: expected 1, got 0", "(call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 5) k)))");
+}
+
+test "the procedure call/cc calls runs in tail position, so a loop through call/cc does not grow the continuation" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (call/cc (lambda (k) (loop (- n 1))))))");
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(loop 10)");
+    const small = f.machine.peak_depth;
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(loop 5000)");
+    try std.testing.expectEqual(small, f.machine.peak_depth);
+    // 対照: 値を使う、末尾でないループは、回数に比例して深くなる。
+    _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (call/cc (lambda (k) (count (- n 1)))))))");
+    f.machine.peak_depth = 0;
+    try f.expectInt(5000, "(count 5000)");
+    try std.testing.expect(f.machine.peak_depth >= 5000);
+}
+
+test "dynamic-wind calls before, the thunk and after in order, and gives the value of the thunk" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.eval("(define log '()) (define (note x) (set! log (cons x log)) x)");
+    try f.expectInt(2, "(dynamic-wind (lambda () (note 1)) (lambda () (note 2)) (lambda () (note 3)))");
+    var buf: [8]i64 = undefined;
+    var len = fixnums(try f.eval("log"), &buf);
+    try std.testing.expectEqualSlices(i64, &.{ 3, 2, 1 }, buf[0..len]);
+    // 継続で脱出すると、`after` が呼ばれる。再入すると、`before` がまた呼ばれる。
+    _ = try f.eval("(set! log '()) (define k #f)");
+    try f.expectInt(10, "(+ 10 (dynamic-wind (lambda () (note 1)) (lambda () (call/cc (lambda (c) (set! k c) 0))) (lambda () (note 3))))");
+    try f.expectInt(15, "(k 5)");
+    len = fixnums(try f.eval("log"), &buf);
+    try std.testing.expectEqualSlices(i64, &.{ 3, 1, 3, 1 }, buf[0..len]);
+    // 脱出の外へ出るときの `after` は、内側から順に呼ばれる。
+    _ = try f.eval("(set! log '())");
+    try f.expectInt(0, "(call/cc (lambda (out) (dynamic-wind (lambda () (note 1)) (lambda () (dynamic-wind (lambda () (note 2)) (lambda () (out 0)) (lambda () (note 3)))) (lambda () (note 4)))))");
+    len = fixnums(try f.eval("log"), &buf);
+    try std.testing.expectEqualSlices(i64, &.{ 4, 3, 2, 1 }, buf[0..len]);
+}
+
+test "with no handler, a heap limit in the body of a dynamic-wind runs after once, and the line ends" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    _ = try f.eval("(define n 0) (define (forever x) (+ 1 (forever x)))");
+    try f.expectFails("heap limit exceeded", "(dynamic-wind (lambda () #f) (lambda () (forever 0)) (lambda () (set! n (+ n 1))))");
+    try f.expectInt(1, "n");
+    // 型の誤りでも同じである。脱出は列を空にするので、次の行には何も残らない。
+    try f.expectFails("wrong type of argument to car", "(dynamic-wind (lambda () #f) (lambda () (car 5)) (lambda () (set! n (+ n 1))))");
+    try f.expectInt(2, "n");
+    // `after` の中の未処理の送出は、その点の外から脱出を続け、報告されるのはその値である。
+    try f.expectFails("unbound variable: nope", "(dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (car 5)) (lambda () nope))) (lambda () (set! n (+ n 1))))");
+    try f.expectInt(3, "n");
+}
+
+test "a handler that escapes with call/cc from a heap limit in the body of a dynamic-wind runs after once, and the run can report the limit again" {
+    var f: Fixture = undefined;
+    try f.initWith(small_heap);
+    defer f.deinit();
+    _ = try f.eval(
+        \\(define n 0) (define (forever x) (+ 1 (forever x)))
+        \\(define (catch) (call/cc (lambda (k) (with-exception-handler (lambda (c) (k c))
+        \\  (lambda () (dynamic-wind (lambda () #f) (lambda () (forever 0)) (lambda () (set! n (+ n 1)))))))))
+    );
+    const before = f.ctx.heap.collections;
+    try std.testing.expectEqualStrings("heap limit exceeded", try conditionMessage(&f, "(catch)"));
+    try f.expectInt(1, "n");
+    const one = f.ctx.heap.collections - before;
+    // 同じ実行の中で、もう一度上限に達する。脱出のあとの GC が余裕を見つけて報告済みの印を
+    // 戻すので、2度目も GC が報告する。印が戻らなければ、2度目の再帰は上限の近くで毎ステップ
+    // GC しながら、確保が断られるまで進む。
+    try std.testing.expectEqualStrings("heap limit exceeded", try conditionMessage(&f, "(begin (catch) (catch))"));
+    try f.expectInt(3, "n");
+    try std.testing.expect(f.ctx.heap.collections - before <= 3 * one + 8);
+}
+
+test "every allocation of a rewind is made from the reserve" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    // 列: 外側から、`after` と `before` が `(lambda () 7)` の wind 点 `w`、その内側にハンドラの
+    // 点 `h`。継続 `inside` は `h` に、継続 `outside` は空の列にいる。
+    const winder = try f.eval("(lambda () 7)");
+    const w = try f.ctx.heap.create(DynPoint, .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .wind = .{ .before = winder, .after = winder } } });
+    const h = try handlerPoint(&f, winder);
+    h.parent = w;
+    h.depth = 2;
+    const inside = try f.ctx.heap.create(value_mod.Continuation, .{ .kont = null, .dyn = h });
+    const outside = try f.ctx.heap.create(value_mod.Continuation, .{ .kont = null, .dyn = null });
+    try fillToLimit(&f);
+    // 外へ出る: `h` を外し、`w` を外してから、その親の列で `after` を呼ぶ。
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = h;
+    try std.testing.expectEqual(value_mod.Kind.unspecified, (try f.machine.invoke(&kont, &dyn, outside, .fromFixnum(5))).kind());
+    var frame = kont.?;
+    kont = frame.next;
+    switch (try f.machine.rewind(&kont, &dyn, frame.step.rewind)) {
+        .body => |entry| try std.testing.expectEqual(0, entry.env.values.len),
+        .value => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(null, dyn);
+    try std.testing.expectEqual(null, kont.?.step.rewind.entered);
+    // `after` が戻ると、着く。
+    frame = kont.?;
+    kont = frame.next;
+    try std.testing.expectEqual(5, (try f.machine.rewind(&kont, &dyn, frame.step.rewind)).value.asFixnum().?);
+    try std.testing.expectEqual(null, dyn);
+    // 中へ入る: 経路を作り、`w` の親の列で `before` を呼ぶ。戻ったら `w` を積み、目標の列で着く。
+    try std.testing.expectEqual(value_mod.Kind.unspecified, (try f.machine.invoke(&kont, &dyn, inside, .fromFixnum(6))).kind());
+    frame = kont.?;
+    kont = frame.next;
+    try std.testing.expect(try f.machine.rewind(&kont, &dyn, frame.step.rewind) == .body);
+    try std.testing.expectEqual(null, dyn);
+    try std.testing.expectEqual(w, kont.?.step.rewind.entered.?.point);
+    frame = kont.?;
+    kont = frame.next;
+    try std.testing.expectEqual(6, (try f.machine.rewind(&kont, &dyn, frame.step.rewind)).value.asFixnum().?);
+    try std.testing.expectEqual(h, dyn.?);
+    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+}
+
+test "a continuation invoked with no wind point on the way arrives at once, without allocating" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    const winder = try f.eval("(lambda () 7)");
+    const h = try handlerPoint(&f, winder);
+    const target = try f.ctx.heap.create(value_mod.Continuation, .{ .kont = null, .dyn = null });
+    try fillToLimit(&f);
+    const accounted = f.ctx.heap.accounted;
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = h;
+    try std.testing.expectEqual(5, (try f.machine.invoke(&kont, &dyn, target, .fromFixnum(5))).asFixnum().?);
+    try std.testing.expectEqual(null, dyn);
+    // 最外の継続(目標が null)へは、送出された値として着く。
+    dyn = h;
+    try std.testing.expectError(error.Raised, f.machine.invoke(&kont, &dyn, null, .fromFixnum(6)));
+    try std.testing.expectEqual(6, f.ctx.raised.?.asFixnum().?);
+    try std.testing.expectEqual(null, dyn);
+    try std.testing.expectEqual(accounted, f.ctx.heap.accounted);
+}
+
+test "a raise at the limit, the call of its handler and an escape through a wind point fit four times in the reserve" {
+    // Why: 予約の大きさを決める測定である(docs/design/runtime.md の送出のための予約領域)。
+    // 上限に達した状態で、送出と、ハンドラの呼び出しと、捕捉した継続への wind 点を通る脱出の
+    // 予約の地点を1回ずつ通す。その確保の合計の4倍が、既定の予約に収まることを確かめる。
+    // ハンドラの中の送出は、ほかの確保が上限に断られても、予約から数段重ねられる。
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    const winder = try f.eval("(lambda () 7)");
+    const handler = try f.eval("(lambda (c) c)");
+    const w = try f.ctx.heap.create(DynPoint, .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .wind = .{ .before = winder, .after = winder } } });
+    const h = try handlerPoint(&f, handler);
+    h.parent = w;
+    h.depth = 2;
+    const outside = try f.ctx.heap.create(value_mod.Continuation, .{ .kont = null, .dyn = null });
+    try fillToLimit(&f);
+    const start = f.ctx.heap.accounted;
+    var kont: ?*const Kont = null;
+    var dyn: ?*const DynPoint = h;
+    try std.testing.expectEqual(error.Raised, f.ctx.raise("wrong type of argument to car", .{}));
+    const call = (try f.machine.enterHandler(&kont, &dyn, f.ctx.raised.?, false)).?;
+    try std.testing.expect(try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve) == .body);
+    _ = try f.machine.invoke(&kont, &dyn, outside, call.value);
+    const frame = kont.?;
+    kont = frame.next;
+    try std.testing.expect(try f.machine.rewind(&kont, &dyn, frame.step.rewind) == .body);
+    const used = f.ctx.heap.accounted - start;
+    try std.testing.expect(used > 0);
+    try std.testing.expect(4 * used <= heap_mod.default_raise_reserve);
 }

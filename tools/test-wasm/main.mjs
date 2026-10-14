@@ -22,6 +22,7 @@ if (wasmPath === undefined) {
 // 状態コード(設計文書の表)。
 const OK = 0;
 const SCHEME_ERROR = -1;
+const UNRECOVERABLE = -2;
 const INVALID_UTF8 = -3;
 const WRONG_ORDER = -4;
 const NOT_INITIALIZED = -5;
@@ -181,6 +182,42 @@ test("a raised value that is not a condition is reported as write shows it, and 
   );
   assert.deepEqual(h.run("(error-object-message got)"), [OK, '"wrong type of argument to car"\n']);
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
+// 継続は第一級の値で、未処理例外は最外の継続への脱出として、途中の dynamic-wind の after を
+// 呼んでから報告される(スライス 2e)。
+test("a continuation escapes, and an unhandled raise runs the after of a dynamic-wind before it is reported", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(call/cc (lambda (k) (+ 1 (k 42))))"), [OK, "42\n"]);
+  assert.deepEqual(
+    h.run("(define k #f) (define n 0) (list (call/cc (lambda (c) (set! k c) 0)) (begin (set! n (+ n 1)) n))"),
+    [OK, "(0 1)\n"],
+  );
+  // 前の行で捕捉した継続を起動すると、捕捉した式の残りだけが走る。
+  assert.deepEqual(h.run("(k 5)"), [OK, "(5 2)\n"]);
+  // after の送出が報告されることで、after が呼ばれたことを見る。
+  assert.deepEqual(
+    h.run("(dynamic-wind (lambda () #f) (lambda () (car 5)) (lambda () (raise 'after-ran)))"),
+    [SCHEME_ERROR, "error: after-ran\n"],
+  );
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
+// 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
+// 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
+// メッセージが上限と予約の和より長くなる未束縛の名前を使う。
+test("a raise that uses up the reserve is unrecoverable until a reset", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(small_limit), OK);
+  const [status, text] = h.run("x".repeat(small_limit + 8192));
+  assert.equal(status, UNRECOVERABLE);
+  assert.equal(text, "error: heap limit exceeded\n");
+  // リセットの前の評価は、何も変えずに呼び出し順序の誤りを返す。
+  assert.deepEqual(h.run("(+ 1 2)"), [WRONG_ORDER, "error: the interpreter cannot go on; call sucheme_reset\n"]);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+  // 対照: 同じ上限で、メッセージが予約に収まる名前なら、ふつうの Scheme のエラーである。
+  assert.deepEqual(h.run("nope"), [SCHEME_ERROR, "error: unbound variable: nope\n"]);
 });
 
 // 診断の一行が境界のバッファ(320 バイト)に収まらなければ、メッセージを文字の境目で切って

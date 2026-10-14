@@ -395,6 +395,31 @@ test "a closure keeps its frame after the line that made it is gone" {
     try std.testing.expectEqualStrings("41\n42\n", w.buffered());
 }
 
+test "a continuation captured on an earlier line runs the rest of the form it was captured in, and no line after it" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const lines = [_][]const u8{
+        "(define k #f) (define log '()) (define (note x) (set! log (cons x log)))",
+        // 捕捉した行の式は、定義と、その後ろの式である。
+        "(define r (+ 1 (dynamic-wind (lambda () (note 'in)) (lambda () (call/cc (lambda (c) (set! k c) 0))) (lambda () (note 'out))))) (note 'after-the-define)",
+        "r",
+        // 後の行で起動すると、捕捉した式(定義)の残りだけが走る。wind 点へ再入するので
+        // `before` が、出るときに `after` が呼ばれる。捕捉した行の後ろの式と、起動した行の
+        // 後ろの式は走らない。起動した式の値は、捕捉した式の値(定義なので何も出ない)になる。
+        "(begin (k 10) (note 'not-reached))",
+        "r log",
+    };
+    for (lines) |line| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        try interp.evalPrint(arena.allocator(), line, &w);
+    }
+    try std.testing.expectEqualStrings("1\n11\n(out in after-the-define out in)\n", w.buffered());
+}
+
 test "a line that ends at the limit of the heap does not end the session" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();

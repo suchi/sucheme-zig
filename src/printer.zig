@@ -85,6 +85,8 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // Why: R7RS は手続きの外部表現を決めていない。多くの処理系は `read` が
             // 受け付けない表記で書き、ここでもそうする。
             .closure => try out.writeAll("#<procedure>"),
+            // 継続も手続きである(R7RS 6.10)。手続きと同じく読めない表記で、種類を書く。
+            .continuation => try out.writeAll("#<continuation>"),
             .primitive => try out.print("#<procedure {s}>", .{x.asPrimitive().?.name}),
             .pair => {
                 const p = x.asPair().?;
@@ -280,6 +282,17 @@ test "write and display show a record and its type by the name of the type, not 
     // データの中でも同じである。
     const both = try f.list(&.{ .fromRecord(&r), .fromRecordType(&t) }, .empty_list_value);
     try std.testing.expectEqualStrings("(#<record <point>> #<record-type <point>>)", try f.written(&buf, both));
+}
+
+test "write and display show a continuation as #<continuation>" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var k: value_mod.Continuation = .{ .kont = null, .dyn = null };
+    try std.testing.expectEqualStrings("#<continuation>", try f.written(&buf, .fromContinuation(&k)));
+    try std.testing.expectEqualStrings("#<continuation>", try f.displayed(&buf, .fromContinuation(&k)));
+    const l = try f.list(&.{ .fromContinuation(&k), .fromFixnum(1) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<continuation> 1)", try f.written(&buf, l));
 }
 
 test "write prints the unspecified value as #<unspecified>" {

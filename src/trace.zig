@@ -462,6 +462,102 @@ test "the classes of the types of records" {
     try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(value_mod.RecordType).?);
 }
 
+test "a wind point is followed through its parent, its current handler, its before and its after" {
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    var d: Closure = .{ .lambda = undefined, .env = null };
+    var outer: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+    outer.current_handler = &outer;
+    const wind: value_mod.DynPoint = .{ .parent = &outer, .depth = 2, .current_handler = &outer, .kind = .{ .wind = .{ .before = .{ .closure = &c }, .after = .{ .closure = &d } } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.DynPoint, &wind);
+    try r.expect(&.{ addr(&outer), addr(&outer), addr(&c), addr(&d) });
+    // 手続きがヒープのものでなければ(プリミティブ)、親と現在のハンドラだけである。
+    const bare: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .wind = .{ .before = .fromFixnum(1), .after = .fromFixnum(2) } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.DynPoint, &bare);
+    try q.expect(&.{});
+}
+
+test "a continuation is followed through its frames and its dynamic point" {
+    var rest: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .dynamic_exit = null } };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    const k: value_mod.Continuation = .{ .kont = &rest, .dyn = &point };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Continuation, &k);
+    try r.expect(&.{ addr(&rest), addr(&point) });
+    // 実行の最も外側で捕捉した継続は、何も指さない。
+    const empty: value_mod.Continuation = .{ .kont = null, .dyn = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Continuation, &empty);
+    try q.expect(&.{});
+}
+
+test "the shared state of a rewind is followed through its target, its value and the common ancestor" {
+    const k: value_mod.Continuation = .{ .kont = null, .dyn = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    const state: value_mod.Rewind = .{ .target = &k, .value = .{ .pair = &p }, .ancestor = &point };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Rewind, &state);
+    try r.expect(&.{ addr(&k), addr(&p), addr(&point) });
+    // 最外の継続への脱出(目標が null)で、共通の点が無いとき。
+    const unhandled: value_mod.Rewind = .{ .target = null, .value = .fromFixnum(1), .ancestor = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Rewind, &unhandled);
+    try q.expect(&.{});
+}
+
+test "a link of the path a rewind enters is followed through its point and the next link" {
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var last: value_mod.WindPath = .{ .point = &point, .next = null };
+    const first: value_mod.WindPath = .{ .point = &point, .next = &last };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.WindPath, &first);
+    try r.expect(&.{ addr(&point), addr(&last) });
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.WindPath, &last);
+    try q.expect(&.{addr(&point)});
+}
+
+test "the frames of dynamic-wind are followed through the point, the thunk and the value they keep" {
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const before: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .wind_before = .{ .point = &point, .thunk = .{ .closure = &c } } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &before);
+    try r.expect(&.{ addr(&point), addr(&c) });
+    const body: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .wind_body = &point } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &body);
+    try q.expect(&.{addr(&point)});
+    const after: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .wind_after = .{ .pair = &p } } };
+    var s: Recorder = .{};
+    interpreter.children(&s, Kont, &after);
+    try s.expect(&.{addr(&p)});
+}
+
+test "a rewind frame is followed through its shared state, the link it entered and the point it was put on at" {
+    const state: value_mod.Rewind = .{ .target = null, .value = .fromFixnum(1), .ancestor = null };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var link: value_mod.WindPath = .{ .point = &point, .next = null };
+    const entering: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .rewind = .{ .state = &state, .entered = &link, .at = &point } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &entering);
+    try r.expect(&.{ addr(&state), addr(&link), addr(&point) });
+    const leaving: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .rewind = .{ .state = &state, .entered = null, .at = null } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &leaving);
+    try q.expect(&.{addr(&state)});
+}
+
+test "the classes of the types of continuations" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Continuation).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Continuation).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Rewind).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.WindPath).?);
+}
+
 test "a type the walk cannot sort has no class" {
     // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
     // テストが答えられる形で行う。
