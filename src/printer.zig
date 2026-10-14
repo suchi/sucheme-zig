@@ -87,6 +87,8 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             .closure => try out.writeAll("#<procedure>"),
             // 継続も手続きである(R7RS 6.10)。手続きと同じく読めない表記で、種類を書く。
             .continuation => try out.writeAll("#<continuation>"),
+            // パラメータも手続きである(R7RS 4.2.6)。同じく読めない表記で、種類を書く。
+            .parameter => try out.writeAll("#<parameter>"),
             .primitive => try out.print("#<procedure {s}>", .{x.asPrimitive().?.name}),
             .pair => {
                 const p = x.asPair().?;

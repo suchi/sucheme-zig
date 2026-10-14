@@ -76,11 +76,11 @@ error: unbound variable: hidden
 (2 1)
 
 # 本体へ継続で再入すれば、束縛は戻ってくる。再入した本体の残りが走り、行の残りの式が続く。
-(define p (make-parameter 'out)) (define k #f) (define n 0) (define log '()) (parameterize ((p 'in)) (call/cc (lambda (c) (set! k c))) (set! log (cons (p) log))) (set! log (cons (p) log)) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (list (reverse log) (p))
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 'out)) (define k #f) (define n 0) (define log '()) (parameterize ((p 'in)) (call/cc (lambda (c) (set! k c))) (set! log (cons (p) log))) (set! log (cons (p) log)) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (list (rev log '()) (p))
 ((in out in) out)
 
 # 入れ子の2つの束縛が、それぞれ戻ってくる。
-(define p (make-parameter 0)) (define k #f) (define n 0) (define log '()) (parameterize ((p 1)) (parameterize ((p 2)) (call/cc (lambda (c) (set! k c))) (set! log (cons (p) log))) (set! log (cons (p) log))) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (list (reverse log) (p))
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 0)) (define k #f) (define n 0) (define log '()) (parameterize ((p 1)) (parameterize ((p 2)) (call/cc (lambda (c) (set! k c))) (set! log (cons (p) log))) (set! log (cons (p) log))) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (list (rev log '()) (p))
 ((2 1 2 1) 0)
 
 # 例外の事例4: ハンドラの内側で parameterize した束縛は、送出の時点の束縛として、ハンドラから見える。

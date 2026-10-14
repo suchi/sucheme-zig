@@ -11,7 +11,7 @@
 //! が GC ヒープにある)を加え、スライス 2j は大域変数の束縛セル(同じく GC ヒープに
 //! ある)を加える。スライス 2h は、レコードとレコード型を加える。スライス 2k は、
 //! マクロのテンプレートが導入した識別子である別名と、マクロを加える。別名は値の変種
-//! だが、展開器の中だけにあり、機械には届かない。
+//! だが、展開器の中だけにあり、機械には届かない。スライス 2g は、パラメータを加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -72,6 +72,10 @@ pub const Value = union(enum) {
     /// takes the computation back to where it was captured.
     /// GC ヒープにある。
     continuation: *Continuation,
+    /// A parameter object that `make-parameter` made (R7RS 4.2.6): a procedure
+    /// of no arguments that returns the value `parameterize` gave it.
+    /// GC ヒープにある。
+    parameter: *Parameter,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -139,11 +143,15 @@ pub const Value = union(enum) {
         return .{ .continuation = c };
     }
 
+    pub fn fromParameter(p: *Parameter) Value {
+        return .{ .parameter = p };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation => true,
+            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .parameter => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
@@ -167,6 +175,7 @@ pub const Value = union(enum) {
             .record => .record,
             .record_type => .record_type,
             .continuation => .continuation,
+            .parameter => .parameter,
         };
     }
 
@@ -274,6 +283,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The parameter object, or null when the value is not one.
+    pub fn asParameter(self: Value) ?*Parameter {
+        return switch (self) {
+            .parameter => |p| p,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -312,6 +329,7 @@ pub const Value = union(enum) {
             .record => |x| b.asRecord() == x,
             .record_type => |x| b.asRecordType() == x,
             .continuation => |x| b.asContinuation() == x,
+            .parameter => |x| b.asParameter() == x,
         };
     }
 
@@ -532,6 +550,9 @@ pub const MachineOp = enum {
     call_cc,
     /// `(dynamic-wind before thunk after)` (R7RS 6.10).
     dynamic_wind,
+    /// `(make-parameter init)` and `(make-parameter init converter)` (R7RS
+    /// 4.2.6).
+    make_parameter,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -580,12 +601,33 @@ pub const Node = union(enum) {
     local_define: LocalAssign,
     global_set: GlobalAssign,
     global_define: GlobalAssign,
+    /// `(parameterize ((param value) ...) body ...)` (R7RS 4.2.6).
+    parameterize: *const Parameterize,
     @"if": If,
     /// `begin` and the body of a `lambda`: one or more nodes, the last one's
     /// value is the value of the sequence.
     sequence: []const *const Node,
     lambda: *const Lambda,
     call: Call,
+};
+
+/// What a `parameterize` means: the bindings, and the body to run in the
+/// extent of the new values.
+/// 本体は、引数の無い `lambda` の本体と同じ形で展開してある。本体は定義を先頭に置ける
+/// (R7RS 4.2.6 の本体は `<body>` である)ので、その定義の置き場が要る。機械は、クロージャを
+/// 作らずに、`parameterize` を評価したフレームの子として、そのためのフレームを作って
+/// 本体を走らせる。
+pub const Parameterize = struct {
+    /// In the order they were written; may be empty.
+    bindings: []const ParameterBinding,
+    /// Only `frame_size` and `body` are used: it takes no parameters.
+    body: *const Lambda,
+};
+
+/// One `(param value)` of a `parameterize`.
+pub const ParameterBinding = struct {
+    param: *const Node,
+    value: *const Node,
 };
 
 /// A local variable read.
@@ -683,8 +725,8 @@ pub const Kont = struct {
         call: CallStep,
         /// The value is what the body of a dynamic extent returned; the dynamic
         /// point goes back to this one, and the value passes on as it is.
-        /// `with-exception-handler` が、点を積む前の点を持たせて置く(docs/design/runtime.md の
-        /// 動的範囲の通常終了)。
+        /// `with-exception-handler` と `parameterize` が、点を積む前の点を持たせて置く
+        /// (docs/design/runtime.md の動的範囲の通常終了)。
         dynamic_exit: ?*const DynPoint,
         /// The value is what a handler called by `raise` or `raise-continuable`
         /// returned.
@@ -704,6 +746,42 @@ pub const Kont = struct {
         /// continuation is invoked returned; it is dropped, and the rewind goes
         /// on by one point (docs/design/runtime.md, the progress of a rewind).
         rewind: RewindStep,
+        /// `make-parameter` called its converter, and the value is what it
+        /// returned, which becomes the initial value of the new parameter.
+        /// 持つのは変換手続きである(docs/design/runtime.md の「必要なフレームの種類」)。
+        make_parameter: Value,
+        /// The value is the parameter of a binding of a `parameterize`; the value
+        /// expression of the binding runs next.
+        parameterize_param: ParameterizeStep,
+        /// The value is the new value of a binding; its converter is called if
+        /// the parameter has one, and the binding is made at once if not.
+        parameterize_value: ParameterizeBound,
+        /// The value is what the converter of a binding returned; the binding is
+        /// made with it, without a second conversion.
+        /// 変換手続きの戻りと値の式の戻りは、同じ形で1個の値を受け取る。区別しないと、変換を
+        /// 2回するか、しないかになる(docs/design/runtime.md の `parameterize` の3つの局面)。
+        parameterize_convert: ParameterizeBound,
+    };
+
+    /// Where a `parameterize` is, between the evaluation of its expressions.
+    /// 3つのフレームの状態は、不変のまま、起動のたびに共有される。束縛の点は、すべて変換した
+    /// あとで列に積む。それまでに作った点は `pending` の鎖に持ち、列のレジスタは書き換えない。
+    /// 変換手続きと式は、`parameterize` の外の動的環境で走る。
+    pub const ParameterizeStep = struct {
+        node: *const Parameterize,
+        /// The binding the value belongs to.
+        index: u32,
+        /// The points of the bindings made so far, the latest first; the first one
+        /// is on the dynamic point the `parameterize` started at.
+        pending: ?*const DynPoint,
+    };
+
+    /// `ParameterizeStep`, and the parameter of the binding it is about.
+    pub const ParameterizeBound = struct {
+        node: *const Parameterize,
+        index: u32,
+        pending: ?*const DynPoint,
+        param: *Parameter,
     };
 
     pub const WindBefore = struct {
@@ -752,8 +830,7 @@ pub const Kont = struct {
 /// the running code have put in place, innermost first (ADR-0016).
 /// 点は不変で、親へのリンクで連なる。機械のレジスタが最も内側の点を指し、`null` は
 /// 何も置かれていない状態である。現在の例外ハンドラは独立したレジスタでなく、この列から
-/// `currentHandler` で導く。点の種別のうち、パラメータの点は、それを使うスライス 2g が
-/// 足す。
+/// `currentHandler` で導く。パラメータの値も、この列から `parameterValue` で引く。
 pub const DynPoint = struct {
     parent: ?*const DynPoint,
     /// The number of points from this one out, itself included.
@@ -781,11 +858,23 @@ pub const DynPoint = struct {
         /// 継続の起動で、この点を出るときに `after` を、入るときに `before` を呼ぶ。どちらも
         /// この点の親の列で呼ぶ(docs/design/runtime.md の巻き戻しの進行)。
         wind: Wind,
+        /// Put on by `parameterize`: inside this point, the parameter has this
+        /// value (R7RS 4.2.6).
+        /// 継続の起動では、退出でも進入でも何も呼ばない。点を外すのは列のレジスタを戻すことで、
+        /// 目標の列が点を含むなら、着いたときに列ごと戻る。
+        parameter: ParameterValue,
     };
 
     pub const Wind = struct {
         before: Value,
         after: Value,
+    };
+
+    /// The value a `parameterize` gave a parameter, which is what the
+    /// conversion procedure returned.
+    pub const ParameterValue = struct {
+        param: *Parameter,
+        value: Value,
     };
 };
 
@@ -823,6 +912,18 @@ pub fn windBetween(from: ?*const DynPoint, ancestor: ?*const DynPoint) bool {
     }
     return false;
 }
+
+/// A parameter object: the value it was made with, and the procedure that
+/// converts the values `parameterize` gives it.
+/// 値は作られたときのもので、変えない。`parameterize` の間の値は、動的状態の列の点にある
+/// (`parameterValue`)。変換手続きが無いパラメータは、`null` を持つ。
+pub const Parameter = struct {
+    /// What the parameter has outside every `parameterize`: the initial value,
+    /// converted if there is a converter.
+    value: Value,
+    /// The conversion procedure, or null when `make-parameter` was not given one.
+    converter: ?Value,
+};
 
 /// What `call/cc` captures: the continuation and the dynamic state of the
 /// call (docs/design/runtime.md, the full continuation).
@@ -869,6 +970,18 @@ pub fn currentHandler(point: ?*const DynPoint) ?*const DynPoint {
     return p.current_handler;
 }
 
+/// The value of `param` at `point`: what the innermost `parameterize` around it
+/// gave, or the value the parameter was made with when there is none.
+/// 列を内側から外側へたどって、最初に見つかったそのパラメータの点の値を返す。
+pub fn parameterValue(point: ?*const DynPoint, param: *const Parameter) Value {
+    var it = point;
+    while (it) |p| : (it = p.parent) switch (p.kind) {
+        .parameter => |b| if (b.param == param) return b.value,
+        .handler, .handler_shift, .wind => {},
+    };
+    return param.value;
+}
+
 /// The depth a point put on `parent` has.
 pub fn depthAbove(parent: ?*const DynPoint) u32 {
     const p = parent orelse return 1;
@@ -878,21 +991,21 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, Parameter };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive };
+pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, parameter };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
-pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error" };
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error", parameterize };
 
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).

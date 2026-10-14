@@ -237,6 +237,16 @@ pub const Machine = struct {
                         kont = try self.push(kont, env, .{ .call = .{ .call = c, .args = null, .received = 0 } });
                         control = c.operator;
                     },
+                    .parameterize => |pz| {
+                        if (pz.bindings.len == 0) {
+                            const next = try self.enterParameterize(&kont, &dyn, env, pz, null);
+                            env = next.env;
+                            control = next.control;
+                        } else {
+                            kont = try self.push(kont, env, .{ .parameterize_param = .{ .node = pz, .index = 0, .pending = null } });
+                            control = pz.bindings[0].param;
+                        }
+                    },
                 }
             } else {
                 // 値は継続の先頭のフレームに渡す。そのフレームは先に外すので、
@@ -320,6 +330,34 @@ pub const Machine = struct {
                     // `after` が戻った。その値は捨て、`thunk` の値を渡す。
                     .wind_after => |v| value = v,
                     .rewind => |r| take(try self.rewind(&kont, &dyn, r), &env, &control, &value),
+                    // 変換手続きが戻った。その戻り値が、新しいパラメータの初期値である。
+                    .make_parameter => |converter| {
+                        value = .fromParameter(try ctx.create(value_mod.Parameter, .{ .value = value, .converter = converter }));
+                    },
+                    // 束縛のパラメータが届いた。値の式を、同じ動的環境で評価する。
+                    .parameterize_param => |s| {
+                        const param = value.asParameter() orelse return notParameter(ctx, value);
+                        kont = try self.push(kont, env, .{ .parameterize_value = .{ .node = s.node, .index = s.index, .pending = s.pending, .param = param } });
+                        control = s.node.bindings[s.index].value;
+                    },
+                    // 束縛の値が届いた。変換手続きがあれば、束縛を積む前の動的環境で呼び、その戻りで
+                    // 束縛する。無ければ、そのまま束縛する。
+                    .parameterize_value => |b| if (b.param.converter) |converter| {
+                        const procedure = try ctx.create(Args, .{ .value = converter, .next = null });
+                        const call = try ctx.create(Args, .{ .value = value, .next = procedure });
+                        kont = try self.push(kont, env, .{ .parameterize_convert = b });
+                        take(try self.apply(&kont, &dyn, call, 1, .limit), &env, &control, &value);
+                    } else {
+                        const next = try self.bindParameter(&kont, &dyn, env, b, value);
+                        env = next.env;
+                        control = next.control;
+                    },
+                    // 変換手続きが戻った。戻り値で束縛する。もう一度は変換しない。
+                    .parameterize_convert => |b| {
+                        const next = try self.bindParameter(&kont, &dyn, env, b, value);
+                        env = next.env;
+                        control = next.control;
+                    },
                 }
             }
         }
@@ -334,6 +372,42 @@ pub const Machine = struct {
         const irritant = try ctx.createIn(.raise_reserve, value_mod.Pair, .{ .car = raised, .cdr = .empty_list_value });
         ctx.raised = try ctx.makeCondition(.@"error", "handler returned from non-continuable raise", .{}, .{ .pair = irritant });
         return error.Raised;
+    }
+
+    /// What a step goes on with: the node to run, and the frame to run it in.
+    const Next = struct { env: ?*Frame, control: *const Node };
+
+    /// Makes the binding `b` of a `parameterize` with the value `converted`, which
+    /// is the value after the conversion, and goes on with the next binding, or
+    /// with the body once there is none.
+    /// 点は、`pending` の鎖の先頭に継ぎ足す。列のレジスタは、すべての束縛を作り終えるまで
+    /// 書き換えない。変換手続きと式が、束縛を積む前の動的環境で走るようにするためである。
+    /// 確保を済ませてから継続を書き換える。
+    fn bindParameter(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, env: ?*Frame, b: Kont.ParameterizeBound, converted: Value) Error!Next {
+        const ctx = self.ctx;
+        const parent = b.pending orelse dyn.*;
+        const point = try ctx.create(DynPoint, .{
+            .parent = parent,
+            .depth = value_mod.depthAbove(parent),
+            .current_handler = value_mod.currentHandler(parent),
+            .kind = .{ .parameter = .{ .param = b.param, .value = converted } },
+        });
+        const next = b.index + 1;
+        if (next == b.node.bindings.len) return self.enterParameterize(kont, dyn, env, b.node, point);
+        kont.* = try self.push(kont.*, env, .{ .parameterize_param = .{ .node = b.node, .index = next, .pending = point } });
+        return .{ .env = env, .control = b.node.bindings[next].param };
+    }
+
+    /// Puts the points of a `parameterize`, `innermost` being the last of them or
+    /// null when it has no binding, on the dynamic state, and returns its body with
+    /// the frame it runs in.
+    /// 本体の終わりで列を戻すフレームを、点を積む前の列を持たせて置く(docs/design/runtime.md
+    /// の動的範囲の通常終了)。本体は末尾位置ではない。フレームが残るからである。
+    fn enterParameterize(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, env: ?*Frame, node: *const value_mod.Parameterize, innermost: ?*const DynPoint) Error!Next {
+        const frame = try self.ctx.createFrame(node.body.frame_size, env);
+        kont.* = try self.push(kont.*, null, .{ .dynamic_exit = dyn.* });
+        dyn.* = innermost orelse dyn.*;
+        return .{ .env = frame, .control = node.body.body };
     }
 
     const Applied = union(enum) {
@@ -409,7 +483,7 @@ pub const Machine = struct {
                 dyn.* = point.parent;
                 switch (point.kind) {
                     .wind => |w| return self.callWinder(kont, dyn, state, null, w.after),
-                    .handler, .handler_shift => {},
+                    .handler, .handler_shift, .parameter => {},
                 }
             }
             break :path try self.windPath(state.ancestor, if (state.target) |t| t.dyn else null);
@@ -517,6 +591,17 @@ pub const Machine = struct {
                         count = 0;
                         budget = .limit;
                     },
+                    .make_parameter => {
+                        // 変換手続きが無ければ、パラメータをそのまま返す。あれば、初期値に適用して、
+                        // 戻りでパラメータを作る。
+                        if (count == 1) {
+                            const param = try ctx.create(value_mod.Parameter, .{ .value = args.value, .converter = null });
+                            return .{ .value = .fromParameter(param) };
+                        }
+                        args = try self.convertInitial(prim, kont, args, count);
+                        count = 1;
+                        budget = .limit;
+                    },
                 },
             }
         };
@@ -524,6 +609,10 @@ pub const Machine = struct {
             // 複数値は段階2のスライス 2f で入る。それまで、継続は値を1つだけ受け取る。
             if (count != 1) return ctx.raise("wrong number of arguments: expected 1, got {d}", .{count});
             return .{ .value = try self.invoke(kont, dyn, k, args.value) };
+        }
+        if (operator.asParameter()) |param| {
+            if (count != 0) return ctx.raise("wrong number of arguments: expected 0, got {d}", .{count});
+            return .{ .value = value_mod.parameterValue(dyn.*, param) };
         }
         const closure = operator.asClosure() orelse
             return ctx.raise("not a procedure", .{});
@@ -678,6 +767,20 @@ pub const Machine = struct {
         return call;
     }
 
+    /// The call `(converter init)` that `(make-parameter init converter)` makes
+    /// first, with the frame that makes the parameter from what it returns.
+    /// `args` は `converter`、`init`、`prim` の順に並ぶ。変換手続きは末尾位置で呼ばない。
+    /// 戻りを受けるフレームが残るからである。確保を済ませてから継続を書き換える。
+    fn convertInitial(self: *Machine, prim: *const value_mod.Primitive, kont: *?*const Kont, args: *const Args, count: usize) Error!*const Args {
+        const ctx = self.ctx;
+        const converter = args.value;
+        if (!isProcedure(converter)) return primitiveFailure(ctx, prim, error.WrongType, args, count);
+        const procedure = try ctx.create(Args, .{ .value = converter, .next = null });
+        const call = try ctx.create(Args, .{ .value = args.next.?.value, .next = procedure });
+        kont.* = try self.push(kont.*, null, .{ .make_parameter = converter });
+        return call;
+    }
+
     /// The condition `(error message obj ...)` makes: the message, and the
     /// objects after it as a new list (R7RS 6.11).
     /// `args` は最後のオペランドから並び、末尾に `prim` がある。メッセージの文字列は
@@ -739,6 +842,19 @@ pub const Machine = struct {
             it = it.next orelse break;
         }
         return list;
+    }
+
+    /// The error that a `parameterize` of `v`, which is not a parameter object, is.
+    /// 条件の irritant は `v` である。確保は上限に従い、当たったときは irritant を諦める
+    /// (`operandList` と同じ理由である)。
+    fn notParameter(ctx: *Context, v: Value) Error {
+        const irritants: Value = if (ctx.heap.create(value_mod.Pair, .{ .car = v, .cdr = .empty_list_value })) |cell|
+            .{ .pair = cell }
+        else |e| switch (e) {
+            error.HeapLimit => .empty_list_value,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        return raiseWith(ctx, irritants, "wrong type of argument to parameterize", .{});
     }
 
     /// Raises a condition with the message `fmt` formatted with `args` and
@@ -816,7 +932,7 @@ pub const Machine = struct {
 
 /// Whether `v` can be applied.
 fn isProcedure(v: Value) bool {
-    return v.asClosure() != null or v.asPrimitive() != null or v.asContinuation() != null;
+    return v.asClosure() != null or v.asPrimitive() != null or v.asContinuation() != null or v.asParameter() != null;
 }
 
 /// The slot of a local variable: `depth` frames out from `env`, then `index`.
