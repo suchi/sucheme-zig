@@ -129,6 +129,7 @@
 - [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
 - [ ] `apply` の周回を、ステップの境目を通る形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 の追記)。今は、`apply` が並べ直した引数の鎖と、`apply` で `apply` を呼ぶ入れ子の周回が、1ステップの中で確保され、その間は GC が走らない。`set-car!` などが入る最初のスライスまでに要る。自分を指す引数のリストで、1ステップの中で終わらない周回が作れるようになるためである (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
+- [ ] 複数値の確保(`values` と継続の多値での起動の `Machine.valuesOf`、`call-with-values` の `Machine.receiverCall`)を、個数に比例する量を1ステップの中で確保しない形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 の追記のスライス 2f の項)。上の `apply` の項と同じ直し方で、同じスライスで扱える (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 
 完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。[design/runtime.md](design/runtime.md) の事例のうち、段階2で入力を書けなかったもの(容量0で `string->symbol` が成立し続ける事例と、`let` と `when` を使う複数値の事例の元の形)が通る。リリース v0.3.0 を出す。
 
