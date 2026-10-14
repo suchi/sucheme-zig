@@ -74,10 +74,12 @@ pub const Registry = struct {
     }
 
     /// Takes a library whose definition failed out of the registry.
-    /// 表の中身も手放す。ライブラリが作ったセルとマクロは、ほかから指されなければ
-    /// 回収される。
+    /// Why: 表は手放さない。失敗した本体が、実行の途中で、ほかのライブラリの状態にクロージャを
+    /// 残すことがある。そのクロージャのコードは、このライブラリのセルを `global_ref` の節点で
+    /// 指す。GC はコードをたどらないので、表が持ち続けないと、セルが回収されて、あとで
+    /// そのクロージャを呼ぶと解放済みの値を読む。ライブラリだけを登録表から外し、同じ名前で
+    /// もう一度定義できるようにする。
     pub fn abandon(self: *Registry, lib: *Library) void {
-        self.tableOf(lib).* = .{};
         for (self.list.items, 0..) |item, i| {
             if (item == lib) {
                 _ = self.list.orderedRemove(i);

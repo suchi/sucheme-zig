@@ -363,6 +363,24 @@ test "a library whose definition fails leaves nothing behind, and the same defin
     }
 }
 
+test "a closure that a failed library handed to a live library keeps reaching its cells" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        // 生きているライブラリ (t a) が、ほかのライブラリのクロージャを状態に残せる。
+        try expectLinePrints(&interp, "(define-library (t a) (export register! run-all) (import (sucheme core)) (begin (define handlers '()) (define (register! f) (set! handlers (cons f handlers))) (define (run-all) (if (null? handlers) 'none ((car handlers))))))", "");
+        // (t b) は、自分のセル x を指すクロージャを (t a) に渡してから失敗する。
+        try expectLineFails(&interp, "(define-library (t b) (export) (import (sucheme core) (t a)) (begin (define x (list 42)) (register! (lambda () (car x))) (car 5)))", "wrong type of argument to car 5");
+        try expectLinePrints(&interp, "(import (t a))", "");
+        // Why: 失敗した (t b) の表を手放すと、x のセルは、どこからも指されない。GC はコードを
+        // たどらないので、回収されて、次の行が解放済みの値を読む。
+        interp.ctx.collectIdle();
+        interp.ctx.collectIdle();
+        try expectLinePrints(&interp, "(run-all)", "42\n");
+    }
+}
+
 test "the libraries, their exports and the macros they define survive the collections between lines, and a closure the library kept still reaches its cells" {
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 0 }) |capacity| {
