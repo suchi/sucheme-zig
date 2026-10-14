@@ -61,7 +61,7 @@ pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*Sy
     while (r.asPair()) |p| : (r = p.cdr) {
         const rule = try s.ruleOf(p.car);
         const vars = try s.patternVars(rule.pattern);
-        try s.checkTemplate(rule.template, vars);
+        _ = try s.transcribe(rule.template, vars, try s.dryMatches(vars), null, 0, true);
     }
     if (r.kind() != .empty_list) return ctx.raise(shape, .{});
     return ctx.create(Macro, .{ .literals = literals, .rules = rules, .env = env });
@@ -85,7 +85,7 @@ pub fn transform(ctx: *Context, scratch: std.mem.Allocator, macro: *const Macro,
         // で書かれていても、マクロのキーワードである。
         if (try s.match(rule.pattern, form.asPair().?.cdr, vars, matches, use_env)) {
             const mark = try ctx.newMark();
-            return s.transcribe(rule.template, vars, matches, macro.env, mark);
+            return s.transcribe(rule.template, vars, matches, macro.env, mark, false);
         }
     }
     return ctx.raise("bad syntax: no rule of {s} matches the form", .{
@@ -108,6 +108,32 @@ const Role = enum { literal, underscore, ellipsis, variable };
 
 /// A rule: its pattern after the keyword, and its template.
 const Rule = struct { pattern: Value, template: Value };
+
+/// The elements of a list pattern or template, and what follows its last pair.
+const Shape = struct {
+    elems: []const Elem,
+    /// The empty list for a proper list.
+    tail: Value,
+
+    /// An element, and how many ellipses follow it.
+    const Elem = struct { form: Value, ellipses: u32 };
+
+    /// The index of the element a pattern's ellipsis follows.
+    fn repeated(self: Shape) ?usize {
+        for (self.elems, 0..) |e, i| {
+            if (e.ellipses > 0) return i;
+        }
+        return null;
+    }
+};
+
+/// One pass of an ellipsis in a template: the variables it repeats over, and
+/// what each matched in this pass.
+const Pass = struct {
+    parent: ?*const Pass,
+    vars: []const usize,
+    matched: []const Match,
+};
 
 /// What the identifiers of a transformer are read against: its literals, and
 /// the environment it was defined in.
@@ -178,10 +204,33 @@ const Spec = struct {
         );
     }
 
-    /// Whether the element after `p` in a list is the ellipsis.
-    fn ellipsisFollows(self: Spec, p: *const value_mod.Pair) Error!bool {
-        const next = p.cdr.asPair() orelse return false;
-        return syntax_env.isIdentifier(next.car) and try self.isEllipsis(next.car);
+    /// Whether `form` is the ellipsis.
+    fn isEllipsisForm(self: Spec, form: Value) Error!bool {
+        return syntax_env.isIdentifier(form) and try self.isEllipsis(form);
+    }
+
+    /// The elements of the list `form`, each with the ellipses that follow it.
+    /// 省略記号は、直前の要素に付く。パターンの1つの階層には、省略記号は1つしか置けず、
+    /// 続けて並べることもできない(R7RS 4.3.2)。テンプレートは、続けて並べられる。
+    fn shapeOf(self: Spec, form: Value, comptime pattern: bool) Error!Shape {
+        var elems: std.ArrayList(Shape.Elem) = .empty;
+        var rest = form;
+        var repeated = false;
+        while (rest.asPair()) |p| {
+            var count: u32 = 0;
+            rest = p.cdr;
+            while (rest.asPair()) |q| : (rest = q.cdr) {
+                if (!try self.isEllipsisForm(q.car)) break;
+                count += 1;
+            }
+            if (pattern and count > 0) {
+                if (count > 1 or repeated)
+                    return self.ctx.raise("bad syntax-rules: a list pattern can have only one ellipsis", .{});
+                repeated = true;
+            }
+            try elems.append(self.scratch, .{ .form = p.car, .ellipses = count });
+        }
+        return .{ .elems = elems.items, .tail = rest };
     }
 
     /// The pattern variables of `pattern`, after checking that it uses only the
@@ -209,22 +258,9 @@ const Spec = struct {
             },
             .empty_list => {},
             .pair => {
-                var rest = item.form;
-                while (rest.asPair()) |p| : (rest = p.cdr) {
-                    if (try self.ellipsisFollows(p)) {
-                        const after = p.cdr.asPair().?.cdr;
-                        if (after.kind() != .empty_list)
-                            return self.ctx.raise("bad syntax-rules: patterns after an ellipsis are not supported yet", .{});
-                        if (item.depth > 0)
-                            return self.ctx.raise("bad syntax-rules: nested ellipses are not supported yet", .{});
-                        try stack.append(self.scratch, .{ .form = p.car, .depth = item.depth + 1 });
-                        rest = after;
-                        break;
-                    }
-                    try stack.append(self.scratch, .{ .form = p.car, .depth = item.depth });
-                }
-                if (rest.kind() != .empty_list)
-                    return self.ctx.raise("bad syntax-rules: improper list patterns are not supported yet", .{});
+                const shape = try self.shapeOf(item.form, true);
+                try stack.append(self.scratch, .{ .form = shape.tail, .depth = item.depth });
+                for (shape.elems) |e| try stack.append(self.scratch, .{ .form = e.form, .depth = item.depth + e.ellipses });
             },
             .vector => return self.ctx.raise("bad syntax-rules: vector patterns are not supported yet", .{}),
             else => return self.ctx.raise("bad syntax-rules: constant patterns are not supported yet", .{}),
@@ -232,65 +268,14 @@ const Spec = struct {
         return vars.items;
     }
 
-    /// Checks that each pattern variable in `template` is followed by at least
-    /// as many ellipses as in its pattern, and that each ellipsis repeats one.
-    /// Why: R7RS 4.3.2 が制約するのは、省略記号つきの部分パターンに現れる変数だけで
-    /// ある。深さ0の変数は、省略記号の内側に置いてよく、繰り返しの回数だけ複製される
-    /// (docs/design/frontend.md の深さの規則)。一律に深さの一致を求めると、R7RS 7.3 の
-    /// `define-values` の定義が拒否される。
-    fn checkTemplate(self: Spec, template: Value, vars: []const Var) Error!void {
-        const Item = struct { form: Value, depth: u32 };
-        var stack: std.ArrayList(Item) = .empty;
-        defer stack.deinit(self.scratch);
-        try stack.append(self.scratch, .{ .form = template, .depth = 0 });
-        while (stack.pop()) |item| switch (item.form.kind()) {
-            .symbol, .alias => if (varIndex(vars, item.form)) |v| {
-                if (vars[v].depth > item.depth) return self.ctx.raise(
-                    "bad syntax-rules: {s} needs as many ellipses in the template as in its pattern",
-                    .{self.ctx.symbols.nameOf(syntax_env.baseSymbol(item.form))},
-                );
-            } else if (try self.isEllipsis(item.form)) {
-                return self.ctx.raise("bad syntax-rules: an ellipsis must follow a template", .{});
-            },
-            .pair => {
-                const first = item.form.asPair().?;
-                if (syntax_env.isIdentifier(first.car) and try self.isEllipsis(first.car))
-                    return self.ctx.raise("bad syntax-rules: ellipsis escapes are not supported yet", .{});
-                var rest = item.form;
-                while (rest.asPair()) |p| {
-                    if (try self.ellipsisFollows(p)) {
-                        // `ellipsis` は省略記号のペアで、その後ろから続ける。
-                        const ellipsis = p.cdr.asPair().?;
-                        if (item.depth > 0 or try self.ellipsisFollows(ellipsis))
-                            return self.ctx.raise("bad syntax-rules: nested ellipses are not supported yet", .{});
-                        if ((try self.repeatedVars(p.car, vars)).len == 0)
-                            return self.ctx.raise("bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed", .{});
-                        try stack.append(self.scratch, .{ .form = p.car, .depth = item.depth + 1 });
-                        rest = ellipsis.cdr;
-                    } else {
-                        try stack.append(self.scratch, .{ .form = p.car, .depth = item.depth });
-                        rest = p.cdr;
-                    }
-                }
-                if (rest.kind() != .empty_list)
-                    return self.ctx.raise("bad syntax-rules: improper list templates are not supported yet", .{});
-            },
-            .vector => return self.ctx.raise("bad syntax-rules: vector templates are not supported yet", .{}),
-            else => {},
-        };
-    }
-
-    /// The indexes of the variables in `form` that an ellipsis followed in
-    /// their pattern.
-    fn repeatedVars(self: Spec, form: Value, vars: []const Var) Error![]usize {
+    /// The indexes of the variables in the pattern `form`.
+    fn varsIn(self: Spec, form: Value, vars: []const Var) Error![]usize {
         var found: std.ArrayList(usize) = .empty;
         var stack: std.ArrayList(Value) = .empty;
         defer stack.deinit(self.scratch);
         try stack.append(self.scratch, form);
         while (stack.pop()) |v| switch (v.kind()) {
-            .symbol, .alias => if (varIndex(vars, v)) |i| {
-                if (vars[i].depth > 0 and std.mem.indexOfScalar(usize, found.items, i) == null) try found.append(self.scratch, i);
-            },
+            .symbol, .alias => if (varIndex(vars, v)) |i| try found.append(self.scratch, i),
             .pair => {
                 const p = v.asPair().?;
                 try stack.append(self.scratch, p.cdr);
@@ -305,152 +290,258 @@ const Spec = struct {
     /// variable of `vars` matched, in `out`.
     /// `pattern` は規則のパターンの全体で、`form` は利用の形式の先頭を除いた残りである。
     fn match(self: Spec, pattern: Value, form: Value, vars: []const Var, out: []Match, use_env: ?*const SyntacticEnv) Error!bool {
-        // `index` は、省略記号が繰り返した何番目の形式の中にいるかである。
-        const Task = struct { pattern: Value, form: Value, index: ?usize };
+        const Task = union(enum) {
+            /// Match `pattern` against `form`, noting what the variables matched
+            /// in `out`.
+            match: struct { pattern: Value, form: Value, out: []Match },
+            /// After the passes of an ellipsis: the matches of its variables,
+            /// one list of what each pass matched.
+            gather: struct { repeated: []const usize, passes: []const []Match, out: []Match },
+        };
         var stack: std.ArrayList(Task) = .empty;
         defer stack.deinit(self.scratch);
-        try stack.append(self.scratch, .{ .pattern = pattern.asPair().?.cdr, .form = form, .index = null });
-        while (stack.pop()) |t| switch (t.pattern.kind()) {
-            .symbol, .alias => switch (try self.role(t.pattern)) {
-                .underscore => {},
-                // R7RS 4.3.2: 入力が識別子で、利用側でのその意味と、定義側でのリテラルの
-                // 意味が同じときに限り照合する。綴りが同じでも、別の束縛なら照合しない。
-                .literal => {
-                    if (!syntax_env.isIdentifier(t.form)) return false;
-                    const used = try syntax_env.resolve(self.ctx, use_env, t.form);
-                    const literal = try syntax_env.resolve(self.ctx, self.env, t.pattern);
-                    if (!syntax_env.sameDenotation(used, literal)) return false;
-                },
-                .variable => {
-                    const v = varIndex(vars, t.pattern).?;
-                    if (t.index) |k| out[v].many[k] = .{ .one = t.form } else out[v] = .{ .one = t.form };
-                },
-                .ellipsis => unreachable,
+        try stack.append(self.scratch, .{ .match = .{ .pattern = pattern.asPair().?.cdr, .form = form, .out = out } });
+        while (stack.pop()) |task| switch (task) {
+            .gather => |g| for (g.repeated) |v| {
+                const many = try self.scratch.alloc(Match, g.passes.len);
+                for (many, g.passes) |*slot, pass| slot.* = pass[v];
+                g.out[v] = .{ .many = many };
             },
-            .empty_list => if (t.form.kind() != .empty_list) return false,
-            .pair => {
-                var fixed: usize = 0;
-                var repeated: ?Value = null;
-                var rest = t.pattern;
-                while (rest.asPair()) |p| : (rest = p.cdr) {
-                    if (try self.ellipsisFollows(p)) {
-                        repeated = p.car;
-                        break;
+            .match => |t| switch (t.pattern.kind()) {
+                .symbol, .alias => switch (try self.role(t.pattern)) {
+                    .underscore => {},
+                    // R7RS 4.3.2: 入力が識別子で、利用側でのその意味と、定義側でのリテラルの
+                    // 意味が同じときに限り照合する。綴りが同じでも、別の束縛なら照合しない。
+                    .literal => {
+                        if (!syntax_env.isIdentifier(t.form)) return false;
+                        const used = try syntax_env.resolve(self.ctx, use_env, t.form);
+                        const literal = try syntax_env.resolve(self.ctx, self.env, t.pattern);
+                        if (!syntax_env.sameDenotation(used, literal)) return false;
+                    },
+                    .variable => t.out[varIndex(vars, t.pattern).?] = .{ .one = t.form },
+                    .ellipsis => unreachable,
+                },
+                .empty_list => if (t.form.kind() != .empty_list) return false,
+                .pair => {
+                    const shape = try self.shapeOf(t.pattern, true);
+                    const repeated = shape.repeated() orelse {
+                        // 省略記号が無ければ、要素を1つずつ対応させ、残りを末尾のパターンに渡す。
+                        var f = t.form;
+                        for (shape.elems) |e| {
+                            const p = f.asPair() orelse return false;
+                            try stack.append(self.scratch, .{ .match = .{ .pattern = e.form, .form = p.car, .out = t.out } });
+                            f = p.cdr;
+                        }
+                        try stack.append(self.scratch, .{ .match = .{ .pattern = shape.tail, .form = f, .out = t.out } });
+                        continue;
+                    };
+                    // 省略記号は、あとに続く要素のために残した分を除いて、できるだけ多くの形式に
+                    // 照合する。入力の末尾が空リストでなければ、それが末尾のパターンに渡る。
+                    var items: std.ArrayList(Value) = .empty;
+                    var f = t.form;
+                    while (f.asPair()) |p| : (f = p.cdr) try items.append(self.scratch, p.car);
+                    const after = shape.elems.len - repeated - 1;
+                    if (items.items.len < repeated + after) return false;
+                    const n = items.items.len - repeated - after;
+                    try stack.append(self.scratch, .{ .match = .{ .pattern = shape.tail, .form = f, .out = t.out } });
+                    for (shape.elems[repeated + 1 ..], items.items[repeated + n ..]) |e, item|
+                        try stack.append(self.scratch, .{ .match = .{ .pattern = e.form, .form = item, .out = t.out } });
+                    const sub = shape.elems[repeated].form;
+                    const inside = try self.varsIn(sub, vars);
+                    // 繰り返しの1回ごとに、中の変数の照合結果を置く場所を作り、終わってから、
+                    // 変数ごとにその並びにまとめる。変数が無ければ、書く先は要らない。
+                    const passes = try self.scratch.alloc([]Match, if (inside.len == 0) 0 else n);
+                    for (passes) |*pass| {
+                        pass.* = try self.scratch.alloc(Match, vars.len);
+                        @memset(pass.*, .{ .one = .unspecified_value });
                     }
-                    fixed += 1;
-                }
-                const length = properLength(t.form) orelse return false;
-                if (length < fixed or (repeated == null and length != fixed)) return false;
-                var ps = t.pattern;
-                var fs = t.form;
-                for (0..fixed) |_| {
-                    const p = ps.asPair().?;
-                    const f = fs.asPair().?;
-                    try stack.append(self.scratch, .{ .pattern = p.car, .form = f.car, .index = t.index });
-                    ps = p.cdr;
-                    fs = f.cdr;
-                }
-                if (repeated) |sub| {
-                    // 深さ1の省略記号だけなので、ここに来るのは省略記号の外である。
-                    std.debug.assert(t.index == null);
-                    const n = length - fixed;
-                    for (try self.repeatedVars(sub, vars)) |v| out[v] = .{ .many = try self.scratch.alloc(Match, n) };
-                    for (0..n) |k| {
-                        const f = fs.asPair().?;
-                        try stack.append(self.scratch, .{ .pattern = sub, .form = f.car, .index = k });
-                        fs = f.cdr;
+                    if (inside.len > 0) try stack.append(self.scratch, .{ .gather = .{ .repeated = inside, .passes = passes, .out = t.out } });
+                    var k = n;
+                    while (k > 0) {
+                        k -= 1;
+                        try stack.append(self.scratch, .{ .match = .{
+                            .pattern = sub,
+                            .form = items.items[repeated + k],
+                            .out = if (inside.len == 0) t.out else passes[k],
+                        } });
                     }
-                }
+                    for (shape.elems[0..repeated], items.items[0..repeated]) |e, item|
+                        try stack.append(self.scratch, .{ .match = .{ .pattern = e.form, .form = item, .out = t.out } });
+                },
+                else => unreachable,
             },
-            else => unreachable,
         };
         return true;
+    }
+
+    /// What the variable `v` matched where the passes `pass` have got to, and how
+    /// many ellipses a template still has to put after it.
+    const Binding = struct { match: Match, remaining: u32 };
+
+    fn lookup(vars: []const Var, matches: []const Match, pass: ?*const Pass, v: usize) Binding {
+        var found: ?Match = null;
+        var consumed: u32 = 0;
+        var p = pass;
+        while (p) |node| : (p = node.parent) {
+            if (std.mem.indexOfScalar(usize, node.vars, v)) |i| {
+                if (found == null) found = node.matched[i];
+                consumed += 1;
+            }
+        }
+        return .{ .match = found orelse matches[v], .remaining = vars[v].depth - consumed };
+    }
+
+    /// The variables of `form` that the ellipses after it repeat over, as the
+    /// passes `pass` leave them.
+    /// 変数が繰り返しを駆動するのは、まだ使っていない深さが、`form` の中でその出現を囲む
+    /// 省略記号の数と、`form` の後ろにまだ残っている省略記号の数 `extra` の合計より大きいとき
+    /// である。それ以外の出現は、内側の省略記号が使うか、複製される(R7RS 4.3.2)。
+    fn drivers(self: Spec, form: Value, extra: u32, vars: []const Var, matches: []const Match, pass: ?*const Pass) Error![]const usize {
+        const Item = struct { form: Value, inner: u32 };
+        var found: std.ArrayList(usize) = .empty;
+        var stack: std.ArrayList(Item) = .empty;
+        defer stack.deinit(self.scratch);
+        try stack.append(self.scratch, .{ .form = form, .inner = 0 });
+        while (stack.pop()) |item| switch (item.form.kind()) {
+            .symbol, .alias => if (varIndex(vars, item.form)) |v| {
+                if (lookup(vars, matches, pass, v).remaining > item.inner + extra and
+                    std.mem.indexOfScalar(usize, found.items, v) == null) try found.append(self.scratch, v);
+            },
+            .pair => {
+                const shape = try self.shapeOf(item.form, false);
+                // 書かれた順に見つかるように、後ろから積む。メッセージが先に書かれた変数を挙げる。
+                try stack.append(self.scratch, .{ .form = shape.tail, .inner = item.inner });
+                var i = shape.elems.len;
+                while (i > 0) {
+                    i -= 1;
+                    const e = shape.elems[i];
+                    try stack.append(self.scratch, .{ .form = e.form, .inner = item.inner + e.ellipses });
+                }
+            },
+            else => {},
+        };
+        return found.items;
     }
 
     /// The output of `template`, with the pattern variables replaced by what
     /// they matched and every other identifier renamed to an alias with `mark`
     /// in `env`.
-    fn transcribe(self: Spec, template: Value, vars: []const Var, matches: []const Match, env: ?*SyntacticEnv, mark: u64) Error!Value {
+    /// `dry` なら、何も作らずに同じ道をたどる。そのとき `matches` は、各変数を深さの数だけ
+    /// 長さ1の並びに包んだものである。マクロの定義の時点で、テンプレートの誤りを見つける
+    /// ために使う。
+    fn transcribe(self: Spec, template: Value, vars: []const Var, matches: []const Match, env: ?*SyntacticEnv, mark: u64, dry: bool) Error!Value {
         const Work = union(enum) {
-            /// A template to transcribe, and the place in the repetition of
-            /// the ellipsis it is under.
-            template: struct { form: Value, index: ?usize },
-            /// The list of the outputs from `start` on.
-            list: usize,
+            /// A template to transcribe, and the passes of the ellipses around it.
+            template: struct { form: Value, pass: ?*const Pass },
+            /// A template that `left` ellipses follow.
+            repeat: struct { form: Value, left: u32, pass: ?*const Pass },
+            /// The list of the outputs from `start` on; the last one is its
+            /// tail when `dotted`.
+            list: struct { start: usize, dotted: bool },
         };
         var work: std.ArrayList(Work) = .empty;
         defer work.deinit(self.scratch);
         var results: std.ArrayList(Value) = .empty;
         defer results.deinit(self.scratch);
-        try work.append(self.scratch, .{ .template = .{ .form = template, .index = null } });
+        try work.append(self.scratch, .{ .template = .{ .form = template, .pass = null } });
         while (work.pop()) |w| switch (w) {
-            .list => |start| {
-                var list: Value = .empty_list_value;
-                var i = results.items.len;
-                while (i > start) {
-                    i -= 1;
-                    list = self.ctx.heap.cons(results.items[i], list) catch |e| return self.ctx.heapFailure(e);
+            .list => |l| {
+                var list: Value = .unspecified_value;
+                if (!dry) {
+                    list = if (l.dotted) results.pop().? else .empty_list_value;
+                    var i = results.items.len;
+                    while (i > l.start) {
+                        i -= 1;
+                        list = self.ctx.heap.cons(results.items[i], list) catch |e| return self.ctx.heapFailure(e);
+                    }
                 }
-                results.shrinkRetainingCapacity(start);
+                results.shrinkRetainingCapacity(l.start);
                 try results.append(self.scratch, list);
+            },
+            .repeat => |r| {
+                const driving = try self.drivers(r.form, r.left - 1, vars, matches, r.pass);
+                if (driving.len == 0) return self.ctx.raise(
+                    "bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed",
+                    .{},
+                );
+                const lists = try self.scratch.alloc([]Match, driving.len);
+                for (lists, driving) |*slot, v| slot.* = lookup(vars, matches, r.pass, v).match.many;
+                for (lists[1..], driving[1..]) |list, v| {
+                    if (list.len != lists[0].len) return self.ctx.raise(
+                        "bad syntax: {s} and {s} matched different numbers of forms but an ellipsis repeats them together",
+                        .{
+                            self.ctx.symbols.nameOf(syntax_env.baseSymbol(vars[driving[0]].id)),
+                            self.ctx.symbols.nameOf(syntax_env.baseSymbol(vars[v].id)),
+                        },
+                    );
+                }
+                var k = lists[0].len;
+                while (k > 0) {
+                    k -= 1;
+                    const matched = try self.scratch.alloc(Match, driving.len);
+                    for (matched, lists) |*slot, list| slot.* = list[k];
+                    const pass = try self.scratch.create(Pass);
+                    pass.* = .{ .parent = r.pass, .vars = driving, .matched = matched };
+                    try work.append(self.scratch, if (r.left == 1)
+                        .{ .template = .{ .form = r.form, .pass = pass } }
+                    else
+                        .{ .repeat = .{ .form = r.form, .left = r.left - 1, .pass = pass } });
+                }
             },
             .template => |t| switch (t.form.kind()) {
                 .symbol, .alias => if (varIndex(vars, t.form)) |v| {
-                    const m = matches[v];
-                    try results.append(self.scratch, if (vars[v].depth == 0) m.one else m.many[t.index.?].one);
+                    const b = lookup(vars, matches, t.pass, v);
+                    if (b.remaining != 0) return self.ctx.raise(
+                        "bad syntax-rules: {s} needs as many ellipses in the template as in its pattern",
+                        .{self.ctx.symbols.nameOf(syntax_env.baseSymbol(t.form))},
+                    );
+                    try results.append(self.scratch, b.match.one);
+                } else if (try self.isEllipsis(t.form)) {
+                    return self.ctx.raise("bad syntax-rules: an ellipsis must follow a template", .{});
+                } else if (dry) {
+                    try results.append(self.scratch, .unspecified_value);
                 } else {
                     const alias = try self.ctx.create(value_mod.Alias, .{ .inner = t.form, .env = env, .mark = mark });
                     try results.append(self.scratch, .fromAlias(alias));
                 },
                 .pair => {
-                    try work.append(self.scratch, .{ .list = results.items.len });
-                    // 要素を先頭から集め、後ろのものから積む。積んだ順と逆に取り出される。
-                    const Element = struct { form: Value, repeated: bool };
-                    var elements: std.ArrayList(Element) = .empty;
-                    var rest = t.form;
-                    while (rest.asPair()) |p| {
-                        const repeated = try self.ellipsisFollows(p);
-                        try elements.append(self.scratch, .{ .form = p.car, .repeated = repeated });
-                        // 繰り返す要素なら、後ろの省略記号を飛ばす。
-                        rest = if (repeated) p.cdr.asPair().?.cdr else p.cdr;
-                    }
-                    var i = elements.items.len;
+                    if (try self.isEllipsisForm(t.form.asPair().?.car))
+                        return self.ctx.raise("bad syntax-rules: ellipsis escapes are not supported yet", .{});
+                    const shape = try self.shapeOf(t.form, false);
+                    const dotted = shape.tail.kind() != .empty_list;
+                    // 要素を先頭から集めて、後ろのものから積む。積んだ順と逆に取り出される。
+                    try work.append(self.scratch, .{ .list = .{ .start = results.items.len, .dotted = dotted } });
+                    if (dotted) try work.append(self.scratch, .{ .template = .{ .form = shape.tail, .pass = t.pass } });
+                    var i = shape.elems.len;
                     while (i > 0) {
                         i -= 1;
-                        const e = elements.items[i];
-                        if (!e.repeated) {
-                            try work.append(self.scratch, .{ .template = .{ .form = e.form, .index = t.index } });
-                            continue;
-                        }
-                        const n = try self.repetitions(e.form, vars, matches);
-                        var k = n;
-                        while (k > 0) {
-                            k -= 1;
-                            try work.append(self.scratch, .{ .template = .{ .form = e.form, .index = k } });
-                        }
+                        const e = shape.elems[i];
+                        try work.append(self.scratch, if (e.ellipses == 0)
+                            .{ .template = .{ .form = e.form, .pass = t.pass } }
+                        else
+                            .{ .repeat = .{ .form = e.form, .left = e.ellipses, .pass = t.pass } });
                     }
                 },
+                .vector => return self.ctx.raise("bad syntax-rules: vector templates are not supported yet", .{}),
                 else => try results.append(self.scratch, t.form),
             },
         };
         return results.items[0];
     }
 
-    /// How many times the ellipsis after `form` repeats it: how many forms its
-    /// repeated variables matched, which must be the same for all of them.
-    fn repetitions(self: Spec, form: Value, vars: []const Var, matches: []const Match) Error!usize {
-        const repeated = try self.repeatedVars(form, vars);
-        const n = matches[repeated[0]].many.len;
-        for (repeated[1..]) |v| {
-            if (matches[v].many.len != n) return self.ctx.raise(
-                "bad syntax: {s} and {s} matched different numbers of forms but an ellipsis repeats them together",
-                .{
-                    self.ctx.symbols.nameOf(syntax_env.baseSymbol(vars[repeated[0]].id)),
-                    self.ctx.symbols.nameOf(syntax_env.baseSymbol(vars[v].id)),
-                },
-            );
+    /// `matches` for a dry run of `transcribe`: each variable matched once at
+    /// every depth.
+    fn dryMatches(self: Spec, vars: []const Var) Error![]Match {
+        const matches = try self.scratch.alloc(Match, vars.len);
+        for (matches, vars) |*slot, v| {
+            slot.* = .{ .one = .unspecified_value };
+            for (0..v.depth) |_| {
+                const layer = try self.scratch.alloc(Match, 1);
+                layer[0] = slot.*;
+                slot.* = .{ .many = layer };
+            }
         }
-        return n;
+        return matches;
     }
 };
 

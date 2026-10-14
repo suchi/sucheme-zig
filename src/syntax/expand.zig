@@ -88,8 +88,21 @@ const Expander = struct {
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),
             .pair => {
+                // Why: マクロの適用は、先頭が決まれば、形式がドット対でもよい(R7RS 4.3.2 は
+                // 末尾のパターンを許す)。リストであることを求めるのは、特殊形式と呼び出しだけで
+                // ある。
+                const head = try self.headOf(task.env, task.form.asPair().?.car);
+                if (head) |denotation| switch (denotation) {
+                    // 適用の結果は、同じ位置の同じ節点を埋める形式として展開し直す。
+                    .macro => |m| {
+                        const output = try rules.transform(self.ctx, self.scratch, m, task.form, task.env);
+                        try self.stack.append(self.scratch, .{ .form = output, .env = task.env, .pos = task.pos, .dest = task.dest });
+                        return;
+                    },
+                    else => {},
+                };
                 const items = try self.itemsOf(task.form);
-                if (try self.headOf(task.env, items[0])) |head| switch (head) {
+                if (head) |denotation| switch (denotation) {
                     .special => |special| return switch (special) {
                         .define => self.define(task, items),
                         .quote => self.quote(task, items),
@@ -100,12 +113,7 @@ const Expander = struct {
                         .@"define-syntax" => self.defineSyntax(task, items),
                         .@"syntax-rules" => self.ctx.raise("bad syntax-rules: it is only allowed as the transformer of a syntax definition", .{}),
                     },
-                    // 適用の結果は、同じ位置の同じ節点を埋める形式として展開し直す。
-                    .macro => |m| {
-                        const output = try rules.transform(self.ctx, self.scratch, m, task.form, task.env);
-                        try self.stack.append(self.scratch, .{ .form = output, .env = task.env, .pos = task.pos, .dest = task.dest });
-                        return;
-                    },
+                    .macro => unreachable,
                     .local, .global => {},
                 };
                 try self.call(task, items);
