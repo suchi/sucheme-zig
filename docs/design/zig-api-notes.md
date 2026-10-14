@@ -78,6 +78,23 @@ var fr: Io.File.Reader = .init(f, io, &buf);
 const all = try fr.interface.allocRemaining(gpa, .unlimited);
 ```
 
+## リンクを辿らずに、ルートの配下のファイルを開く
+
+処理系がソースとして読むファイル(ライブラリの `.sld`)は、探索ルートの配下にあり、リンクを辿らずに開く必要がある([frontend.md](frontend.md) の探索とパス名への対応付け)。`src/resolve.zig` が1成分ずつ開く。次は Linux(カーネル 6.18、Zig 0.17.0)で、一時のディレクトリに外を指すリンクを作って確かめた結果である。
+
+| 試したこと | 結果 |
+| --- | --- |
+| `dir.openFile(io, "linkdir/secret.sld", .{ .follow_symlinks = false })`(`linkdir` はルートの外のディレクトリを指すリンク) | 開く。外のファイルの中身が読めた。`follow_symlinks = false` は `O_NOFOLLOW` で、効くのは最後の成分だけである。途中の成分のリンクは辿る |
+| `dir.openFile(io, "../outside/secret.sld", .{ .follow_symlinks = false, .resolve_beneath = true })` | 開く。Linux では `resolve_beneath` が無視される。`std.posix.O` に `RESOLVE_BENEATH` の欄があるのは、それを持つ OS(FreeBSD など)だけで、Linux の `openat2` は標準ライブラリが包んでいない。ドキュメントコメントの「対応しない OS では無視される」のとおりである |
+| 最後の成分がリンクのファイルを `follow_symlinks = false` で `openFile` | `error.SymLinkLoop` |
+| リンクのディレクトリを `dir.openDir(io, "linkdir", .{ .follow_symlinks = false })` | `error.NotDir`(`O_DIRECTORY` と `O_NOFOLLOW` の組。`SymLinkLoop` ではない) |
+| 実ディレクトリを `follow_symlinks = false` で `openDir` し、そのハンドルから `openFile` | 開く。`stat` の種別は `directory` と `file` |
+| ディレクトリを `openFile` で開く | 開く。種別が `directory` のハンドルが返るので、開いたあとに `stat` の種別が `file` であることを確かめる |
+
+結論として、Linux では、ルートのハンドルから成分を1つずつ `openDir(..., .{ .follow_symlinks = false })` で辿り、最後に `openFile(..., .{ .follow_symlinks = false })` で開き、開いたハンドルの `stat` の種別を確かめる方法が、`resolve_beneath` なしで、途中の成分のリンクも拒否する。各段は前の段のハンドルからの相対で開くので、開く前に確かめたパス文字列が、開く操作の前に差し替えられる余地は無い。リンクの判別は、`openDir` の `NotDir` と `SymLinkLoop` のとき、`dir.statFile(io, 成分, .{ .follow_symlinks = false })` の種別が `sym_link` かで行う(実在するふつうのファイルがディレクトリの位置にある場合と区別する)。
+
+Windows は、標準ライブラリのソースを読んだだけで、実行していない(未確認)。`follow_symlinks = false` は `NtCreateFile` の `OPEN_REPARSE_POINT` になり、リンクや junction は辿られず、リンク自身が開かれる(`dirOpenDirWindows` と `dirOpenFileWindows`)。開いたハンドルの `stat` は、再解析点が名前の代理(シンボリックリンクと junction)なら種別を `sym_link` と、それ以外の再解析点なら `unknown` と報告する(`fileStat` の Windows の分岐)。このため、1成分ごとに開いたハンドルの種別が `directory` でなければ、最後が `file` でなければ拒否する形にすると、リンクと再解析点を黙って通さない。実行環境が無いので、この拒否が実際に効くかは未確認である。
+
 ## 標準入力の行読み取り
 
 ```zig
