@@ -154,7 +154,8 @@ const Expander = struct {
                         .parameterize => self.parameterizeForm(task, items),
                     },
                     .macro => unreachable,
-                    .local, .global => {},
+                    // 補助構文は、演算子の位置でも変数として使えない。呼び出しの演算子の展開が報告する。
+                    .local, .global, .auxiliary => {},
                 };
                 try self.call(task, items);
             },
@@ -173,7 +174,7 @@ const Expander = struct {
         const d = try self.headOf(env, head) orelse return null;
         return switch (d) {
             .special => |special| special,
-            .local, .global, .macro => null,
+            .local, .global, .macro, .auxiliary => null,
         };
     }
 
@@ -298,8 +299,9 @@ const Expander = struct {
     fn reference(self: *Expander, task: Task) Error!void {
         const id = syntax_env.baseSymbol(task.form);
         task.dest.* = switch (try syntax_env.resolve(self.ctx, task.env, task.form)) {
-            // R7RS 4.3 は、マクロのキーワードを式として使うことを定めていない。
-            .special, .macro => return self.ctx.raise(
+            // R7RS 4.3 は、マクロのキーワードを式として使うことを定めていない。補助構文も
+            // 式にならない。
+            .special, .macro, .auxiliary => return self.ctx.raise(
                 "{s} is a syntactic keyword and cannot be used as a variable",
                 .{self.ctx.symbols.nameOf(id)},
             ),
@@ -409,7 +411,7 @@ const Expander = struct {
             return self.ctx.raise("bad set!: the name must be an identifier", .{});
         const id = syntax_env.baseSymbol(items[1]);
         switch (try syntax_env.resolve(self.ctx, task.env, items[1])) {
-            .special, .macro => return self.ctx.raise(
+            .special, .macro, .auxiliary => return self.ctx.raise(
                 "bad set!: {s} is a syntactic keyword and cannot be assigned",
                 .{self.ctx.symbols.nameOf(id)},
             ),
@@ -631,7 +633,7 @@ const Expander = struct {
                         form = try rules.transform(self.ctx, &self.work, m, form, rib);
                         continue;
                     },
-                    .local, .global => break false,
+                    .local, .global, .auxiliary => break false,
                 }
                 try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
                 break true;

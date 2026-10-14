@@ -24,6 +24,7 @@ pub const SyntacticBinding = value_mod.SyntacticBinding;
 pub const LocalBinding = value_mod.LocalBinding;
 pub const Denotation = value_mod.Denotation;
 pub const Special = value_mod.Special;
+pub const Auxiliary = value_mod.Auxiliary;
 pub const Alias = value_mod.Alias;
 pub const Macro = value_mod.Macro;
 const SymbolId = @import("../symbol.zig").SymbolId;
@@ -158,6 +159,10 @@ pub fn sameDenotation(a: Denotation, b: Denotation) bool {
         },
         .macro => |x| switch (b) {
             .macro => |y| x == y,
+            else => false,
+        },
+        .auxiliary => |x| switch (b) {
+            .auxiliary => |y| x == y,
             else => false,
         },
     };

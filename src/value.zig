@@ -1064,11 +1064,36 @@ pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, cl
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
 pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error", parameterize };
 
+/// The auxiliary syntax: identifiers that are not expressions by themselves and
+/// that other syntax reads as literals (R7RS 4.2.1, 4.2.8, 4.3.2).
+/// R7RS 付録A の `(scheme base)` が 6 個をエクスポートする。意味を持たせることで、
+/// インポートと改名の対象になり、リテラルの照合が、綴りでなく束縛の同一性で決まる。
+pub const Auxiliary = enum {
+    ellipsis,
+    underscore,
+    @"else",
+    @"=>",
+    unquote,
+    @"unquote-splicing",
+
+    /// How the identifier is written.
+    pub fn spelling(self: Auxiliary) []const u8 {
+        return switch (self) {
+            .ellipsis => "...",
+            .underscore => "_",
+            .@"else" => "else",
+            .@"=>" => "=>",
+            .unquote => "unquote",
+            .@"unquote-splicing" => "unquote-splicing",
+        };
+    }
+};
+
 /// What an identifier means where it is used (ADR-0019,
 /// docs/design/frontend.md).
-/// ADR-0019 の6種のうち、補助構文は、それを使うスライスが足す。パターン変数は変種に
-/// しない。照合器とテンプレート展開器(src/syntax/rules.zig)が規則ごとの表で引き、構文
-/// 環境に束縛しないからである(ADR-0019 の 2026-10-13 の追記)。
+/// ADR-0019 の6種のうち、パターン変数は変種にしない。照合器とテンプレート展開器
+/// (src/syntax/rules.zig)が規則ごとの表で引き、構文環境に束縛しないからである
+/// (ADR-0019 の 2026-10-13 の追記)。
 pub const Denotation = union(enum) {
     special: Special,
     local: *LocalBinding,
@@ -1076,6 +1101,9 @@ pub const Denotation = union(enum) {
     global: *Cell,
     /// A macro: its transformer and the environment it was defined in.
     macro: *Macro,
+    /// An auxiliary syntax: it has no meaning of its own, and the identifiers
+    /// that mean the same one match as literals.
+    auxiliary: Auxiliary,
 };
 
 /// A syntactic environment: the bindings of one rib, and the environment
