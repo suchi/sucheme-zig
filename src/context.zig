@@ -8,6 +8,7 @@ const value_mod = @import("value.zig");
 const env = @import("env.zig");
 const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
+const library = @import("syntax/library.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
 
@@ -39,10 +40,18 @@ pub const Context = struct {
     /// この中のものは、インタプリタが解放されるまで解放されない。
     persist: std.mem.Allocator,
     symbols: symbol.Table = .{},
-    /// The bindings of the REPL's top level: the special forms and the
-    /// primitives it imports, and the variables it defines (src/env.zig).
+    /// The bindings of the REPL's top level: what it imports from `core`, and the
+    /// variables and macros it defines (src/env.zig).
     /// 特殊形式の名前は予約語ではなく、REPL の最上位の構文の束縛である。
     globals: env.Global = .{},
+    /// What `(sucheme core)` exports: the special forms, the auxiliary syntax and
+    /// the primitives (src/env.zig).
+    /// アリーナにあるのは、`globals` がこれを指すので、コンテキストを動かしても
+    /// アドレスが変わらないようにするためである。
+    core: *env.Core,
+    /// The libraries a program has defined, and the forms being processed
+    /// (src/syntax/library.zig).
+    libraries: library.Registry = .{},
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
@@ -59,8 +68,7 @@ pub const Context = struct {
     /// 残り、その規則が別名を含みうるので、行ごとに数え直すことはできない。
     next_mark: u64 = 0,
 
-    /// A context whose top level imports each primitive and each special form
-    /// under its name.
+    /// A context whose top level imports everything `(sucheme core)` exports.
     /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
     /// オブジェクトを確保するアロケータである。`deinit` が解放するのはヒープで、
     /// アリーナではない。
@@ -69,16 +77,23 @@ pub const Context = struct {
     }
 
     pub fn initWithOptions(persist: std.mem.Allocator, gpa: std.mem.Allocator, options: heap_mod.Options) error{OutOfMemory}!Context {
-        var ctx: Context = .{ .heap = .init(gpa, options), .persist = persist };
+        const core = try persist.create(env.Core);
+        core.* = .{};
+        var ctx: Context = .{ .heap = .init(gpa, options), .persist = persist, .core = core };
         errdefer ctx.heap.deinit();
         for (&table.all) |*p| {
             const id = try ctx.symbols.intern(persist, p.name);
-            try ctx.globals.importPrimitive(persist, id, p);
+            try core.addPrimitive(persist, id, p);
         }
         for (std.enums.values(value_mod.Special)) |special| {
             const id = try ctx.symbols.intern(persist, @tagName(special));
-            try ctx.globals.importSpecial(persist, id, special);
+            try core.addSyntax(persist, id, .{ .special = special });
         }
+        for (std.enums.values(value_mod.Auxiliary)) |auxiliary| {
+            const id = try ctx.symbols.intern(persist, auxiliary.spelling());
+            try core.addSyntax(persist, id, .{ .auxiliary = auxiliary });
+        }
+        ctx.globals.base = core;
         return ctx;
     }
 
@@ -87,11 +102,14 @@ pub const Context = struct {
     }
 
     /// Tells the collector of the roots the context holds: the cells of the
-    /// global variables, the constants of the code and the value raised.
+    /// global variables and of `core`, the libraries, the constants of the code and
+    /// the value raised.
     /// 機械は自分のルートを加える。機械の実行をまたいでヒープの値を持つものは、
     /// すべてここに挙げる(ADR-0035)。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
+        self.core.mark(marker);
+        self.libraries.mark(marker);
         for (self.code_roots.items) |v| marker.value(v);
         if (self.raised) |v| marker.value(v);
     }

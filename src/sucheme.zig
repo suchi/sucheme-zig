@@ -27,6 +27,7 @@ const reader = @import("reader.zig");
 pub const isIncomplete = reader.isIncomplete;
 
 const expand = @import("syntax/expand.zig");
+const library = @import("syntax/library.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
@@ -142,6 +143,14 @@ pub const Interpreter = struct {
             // 次の行を読む前にここで回収される。
             if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
             const form = try r.next(arena, sink) orelse break;
+            // `import` と `define-library` は最上位の形式で、何も表示しない。
+            if (library.topLevelForm(&self.ctx, form)) |kind| {
+                switch (kind) {
+                    .import => try library.importIntoRepl(&self.ctx, arena, form),
+                    .define_library => try library.defineLibrary(&self.ctx, arena, form),
+                }
+                continue;
+            }
             const node = try expand.expand(&self.ctx, arena, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
@@ -278,7 +287,7 @@ test "isBound answers for the primitives, the special forms and nothing else" {
     // プリミティブは大域環境の束縛、特殊形式は REPL の最上位の構文の束縛である。
     try std.testing.expect(interp.isBound("+"));
     try std.testing.expect(interp.isBound(">="));
-    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!", "define-syntax", "syntax-rules", "let-syntax", "letrec-syntax", "syntax-error", "parameterize" }) |keyword| {
+    for ([_][]const u8{ "define", "quote", "if", "lambda", "begin", "set!", "define-syntax", "syntax-rules", "let-syntax", "letrec-syntax", "syntax-error", "parameterize", "else", "=>", "_", "...", "unquote", "unquote-splicing" }) |keyword| {
         try std.testing.expect(interp.isBound(keyword));
     }
     // Why: 未束縛の例は、どの段階でも束縛されない名前にする。R7RS の名前は、いつか束縛される
@@ -310,6 +319,99 @@ test "isBound follows definitions, and a name that was only read is not bound" {
     // 失敗した行が定義しなかった名前は束縛されない。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(define y nope)", &w));
     try std.testing.expect(!interp.isBound("y"));
+}
+
+test "a failed import binds nothing, and a successful one is kept for the next line" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define-syntax kar (syntax-rules () ((_) 'macro)))", "");
+    try expectLineFails(&interp, "(import (rename (only (sucheme core) car) (car kar)) (only (sucheme core) nope))", "bad import: nope is not exported by the import set");
+    // 先の集合は束縛されず、REPL のマクロはそのままである。
+    try expectLinePrints(&interp, "(kar)", "macro\n");
+    try expectLinePrints(&interp, "(import (rename (only (sucheme core) car) (car kar)))", "");
+    try expectLinePrints(&interp, "(kar '(1 2))", "1\n");
+}
+
+test "a library whose definition fails leaves nothing behind, and the same definition can be tried again" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        const definition = "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1) (define x (car 5))))";
+        // 実行の誤り、展開の誤り、本体の終わりの未束縛の識別子のどれも、登録を残さない。
+        try expectLineFails(&interp, definition, "wrong type of argument to car 5");
+        try expectLineFails(&interp, "(import (t a))", "unknown library: (t a)");
+        try expectLineFails(&interp, "(define-library (t a) (export f) (import (sucheme core)) (begin (if)))", "bad if: expected (if test consequent) or (if test consequent alternative)");
+        try expectLineFails(&interp, "(import (t a))", "unknown library: (t a)");
+        try expectLineFails(&interp, "(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (g))))", "unbound identifier in library (t a): g");
+        try expectLineFails(&interp, "(import (t a))", "unknown library: (t a)");
+        // REPL の最上位には、何も束縛されない。
+        try expectLineFails(&interp, "f", "unbound variable: f");
+        try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+        // 失敗したライブラリのオブジェクトは、次の GC で回収される。
+        interp.ctx.collectIdle();
+        try std.testing.expectEqual(0, interp.ctx.heap.countOf(value.Library));
+        try std.testing.expectEqual(0, interp.ctx.heap.countOf(value.Export));
+        // 同じ名前で、正しい定義が通る。
+        try expectLinePrints(&interp, "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1)))", "");
+        try expectLinePrints(&interp, "(import (t a)) (f)", "1\n");
+        try std.testing.expectEqual(1, interp.ctx.libraries.list.items.len);
+        // 定義し直すことはできない。
+        try expectLineFails(&interp, "(define-library (t a) (export) (import (sucheme core)))", "bad define-library: the library (t a) is already defined");
+        try expectLinePrints(&interp, "(f)", "1\n");
+    }
+}
+
+test "a closure that a failed library handed to a live library keeps reaching its cells" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        // 生きているライブラリ (t a) が、ほかのライブラリのクロージャを状態に残せる。
+        try expectLinePrints(&interp, "(define-library (t a) (export register! run-all) (import (sucheme core)) (begin (define handlers '()) (define (register! f) (set! handlers (cons f handlers))) (define (run-all) (if (null? handlers) 'none ((car handlers))))))", "");
+        // (t b) は、自分のセル x を指すクロージャを (t a) に渡してから失敗する。
+        try expectLineFails(&interp, "(define-library (t b) (export) (import (sucheme core) (t a)) (begin (define x (list 42)) (register! (lambda () (car x))) (car 5)))", "wrong type of argument to car 5");
+        try expectLinePrints(&interp, "(import (t a))", "");
+        // Why: 失敗した (t b) の表を手放すと、x のセルは、どこからも指されない。GC はコードを
+        // たどらないので、回収されて、次の行が解放済みの値を読む。
+        interp.ctx.collectIdle();
+        interp.ctx.collectIdle();
+        try expectLinePrints(&interp, "(run-all)", "42\n");
+    }
+}
+
+test "the libraries, their exports and the macros they define survive the collections between lines, and a closure the library kept still reaches its cells" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            try expectLinePrints(&interp, "(define-library (t a) (export bump! get twice) (import (sucheme core)) (begin (define n (list 0)) (define (bump!) (set! n (list (+ (car n) 1)))) (define (get) (car n)) (define-syntax twice (syntax-rules () ((_ e) (begin e e))))))", "");
+            try expectLinePrints(&interp, "(import (t a))", "");
+            interp.ctx.collectIdle();
+            try expectLinePrints(&interp, "(bump!) (twice (bump!)) (get)", "3\n");
+            interp.ctx.collectIdle();
+            try expectLinePrints(&interp, "(bump!) (get)", "4\n");
+            // ライブラリと、書き出し(名前、意味、次)と、本体の環境が残っている。
+            try std.testing.expectEqual(1, interp.ctx.heap.countOf(value.Library));
+            try std.testing.expectEqual(3, interp.ctx.heap.countOf(value.Export));
+            try std.testing.expectEqual(1, interp.ctx.libraries.list.items.len);
+        }
+    }
+}
+
+test "a library that imports another loads from the registry, and a library under a small heap limit ends with the heap's error" {
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1)))", "");
+    try expectLinePrints(&interp, "(define-library (t b) (export g) (import (sucheme core) (t a)) (begin (define (g) (+ (f) 1))))", "");
+    try expectLinePrints(&interp, "(import (t b)) (g)", "2\n");
+    // 本体が上限まで確保し続けると、その行だけが終わり、ライブラリは登録されない。
+    try expectLineFails(&interp, "(define-library (t c) (export) (import (sucheme core)) (begin (define (grow acc) (grow (cons 1 acc))) (grow '())))", "heap limit exceeded");
+    try expectLineFails(&interp, "(import (t c))", "unknown library: (t c)");
+    try expectLinePrints(&interp, "(g)", "2\n");
 }
 
 test "evalPrint writes each result on its own line" {

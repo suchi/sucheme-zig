@@ -1,0 +1,35 @@
+# Slice 2m: the auxiliary syntax (`...` `_` `else` `=>` `unquote` `unquote-splicing`) is
+# exported by `(sucheme core)`, which the REPL imports. Each is a syntactic keyword with no
+# meaning of its own: not an expression, not a variable to assign. A define at the top level
+# gives the name a new location, as for a special form (R7RS 5.3.1).
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+else
+error: else is a syntactic keyword and cannot be used as a variable
+
+(list 1 =>)
+error: => is a syntactic keyword and cannot be used as a variable
+
+(else 1)
+error: else is a syntactic keyword and cannot be used as a variable
+
+(set! unquote 1)
+error: bad set!: unquote is a syntactic keyword and cannot be assigned
+
+(define else 5) else
+5
+
+(define unquote-splicing (lambda (x) x)) (unquote-splicing 3)
+3
+
+# 仮引数が同じ綴りを束縛すれば、その内側では変数である。
+((lambda (else) (list else 1)) 7)
+(7 1)
+
+# リテラルとして照合するとき、同じ補助構文は一致し、仮引数が隠したものは一致しない。
+(define-syntax is-else (syntax-rules (else) ((_ else) #t) ((_ x) #f))) (list (is-else else) (is-else 1) ((lambda (else) (is-else else)) 1))
+(#t #f #f)
+
+(define-syntax arrow (syntax-rules (=>) ((_ => x) (list 'arrow x)) ((_ y x) (list 'other x)))) (list (arrow => 1) (arrow 0 2))
+((arrow 1) (other 2))

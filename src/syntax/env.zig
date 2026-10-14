@@ -18,12 +18,14 @@ const value_mod = @import("../value.zig");
 const Value = value_mod.Value;
 const context = @import("../context.zig");
 const Context = context.Context;
+const env_mod = @import("../env.zig");
 
 pub const SyntacticEnv = value_mod.SyntacticEnv;
 pub const SyntacticBinding = value_mod.SyntacticBinding;
 pub const LocalBinding = value_mod.LocalBinding;
 pub const Denotation = value_mod.Denotation;
 pub const Special = value_mod.Special;
+pub const Auxiliary = value_mod.Auxiliary;
 pub const Alias = value_mod.Alias;
 pub const Macro = value_mod.Macro;
 const SymbolId = @import("../symbol.zig").SymbolId;
@@ -83,21 +85,69 @@ pub fn lookupRib(env: *const SyntacticEnv, id: Value) ?*SyntacticBinding {
 /// `id` は識別子でなければならない。構文環境に束縛が無く、`id` が別名なら、別名を
 /// 1段剥がした内側の識別子を、別名の環境(マクロを定義した環境)で解決し直す。別名
 /// 自身でなく内側を渡すので、剥がすたびに別名の層が1つ減り、必ず止まる。最後は、
-/// シンボルの名前で REPL の最上位の束縛を引く。最上位の表に無い名前には、REPL 自身の
-/// 未束縛のセルを作る(src/env.zig)。確保しうるのはその場合だけである。
+/// シンボルの名前で、その環境の最上位の束縛を引く(`topTable`)。最上位の表に無い名前には、
+/// その最上位自身の未束縛のセルを作る(src/env.zig)。確保しうるのはその場合だけである。
 pub fn resolve(ctx: *Context, env: ?*const SyntacticEnv, id: Value) Error!Denotation {
+    return (try resolveAt(ctx, env, id)).denotation;
+}
+
+/// What an identifier means, and where a name that no environment binds was
+/// looked up.
+pub const Resolution = struct {
+    denotation: Denotation,
+    /// The table of the top level the name was looked up in, or null when an
+    /// environment bound the identifier.
+    table: ?*env_mod.Global,
+    /// The name looked up in `table`: the innermost symbol of the identifier.
+    symbol: SymbolId,
+};
+
+/// What `id` means in `env`, and the top level it was resolved in, if it was
+/// resolved to the top level.
+/// 別名の環境が別のライブラリのものなら、最上位の表もそのライブラリのものである。
+/// `set!` が、REPL 自身の束縛と、マクロが持ち込んだ別のライブラリの束縛を分けるために
+/// 使う。
+pub fn resolveAt(ctx: *Context, env: ?*const SyntacticEnv, id: Value) Error!Resolution {
     var e = env;
     var ident = id;
     while (true) {
         var scope = e;
+        var root = e;
         while (scope) |s| : (scope = s.parent) {
-            if (lookupRib(s, ident)) |binding| return binding.denotation;
+            if (lookupRib(s, ident)) |binding| return .{ .denotation = binding.denotation, .table = null, .symbol = baseSymbol(ident) };
+            root = s;
         }
-        const alias = ident.asAlias() orelse break;
+        const alias = ident.asAlias() orelse {
+            const table = topTable(ctx, root);
+            const symbol = ident.asSymbol().?;
+            return .{
+                .denotation = table.resolve(ctx.persist, &ctx.heap, symbol) catch |err| return ctx.heapFailure(err),
+                .table = table,
+                .symbol = symbol,
+            };
+        };
         ident = alias.inner;
         e = alias.env;
     }
-    return ctx.globals.resolve(ctx.persist, &ctx.heap, ident.asSymbol().?) catch |err| ctx.heapFailure(err);
+}
+
+/// The table of the top level that the environment with the root `root` is in:
+/// the library's, or the REPL's when `root` is not the root of a library.
+/// `root` は環境の鎖のいちばん外側である(鎖が空なら null)。
+pub fn topTable(ctx: *Context, root: ?*const SyntacticEnv) *env_mod.Global {
+    if (root) |r| if (r.library) |lib| return ctx.libraries.tableOf(lib);
+    return &ctx.globals;
+}
+
+/// The outermost environment of the chain that starts at `env`, when it is the
+/// root of a library body; null for the REPL's top level.
+/// 識別子を最上位で引くときの環境として使う。REPL の環境の鎖は、根を持たない。
+pub fn topOf(env: ?*const SyntacticEnv) ?*const SyntacticEnv {
+    var scope = env;
+    var root: ?*const SyntacticEnv = null;
+    while (scope) |s| : (scope = s.parent) root = s;
+    if (root) |r| if (r.library != null) return r;
+    return null;
 }
 
 /// Whether `v` is an identifier: a symbol or an alias.
@@ -158,6 +208,10 @@ pub fn sameDenotation(a: Denotation, b: Denotation) bool {
         },
         .macro => |x| switch (b) {
             .macro => |y| x == y,
+            else => false,
+        },
+        .auxiliary => |x| switch (b) {
+            .auxiliary => |y| x == y,
             else => false,
         },
     };

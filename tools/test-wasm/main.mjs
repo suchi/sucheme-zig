@@ -203,6 +203,23 @@ test("a continuation escapes, and an unhandled raise runs the after of a dynamic
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// ライブラリを定義して、`import` した手続きを呼ぶ(スライス 2m)。定義とインポートは何も
+// 出力せず、失敗した定義は登録を残さない。リセットは登録したライブラリも忘れる。
+test("a library is defined, imported and called, and a failed definition leaves nothing", () => {
+  const h = instantiate().init();
+  const definition = "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1)))";
+  assert.deepEqual(h.run(definition), [OK, ""]);
+  assert.deepEqual(h.run("(import (t a)) (f)"), [OK, "1\n"]);
+  assert.deepEqual(
+    h.run("(define-library (t b) (export) (import (sucheme core)) (begin (define x (car 5))))"),
+    [SCHEME_ERROR, "error: wrong type of argument to car 5\n"],
+  );
+  assert.deepEqual(h.run("(import (t b))"), [SCHEME_ERROR, "error: unknown library: (t b)\n"]);
+  assert.deepEqual(h.run("(f)"), [OK, "1\n"]);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.deepEqual(h.run("(import (t a))"), [SCHEME_ERROR, "error: unknown library: (t a)\n"]);
+});
+
 // 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
 // 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
 // メッセージが上限と予約の和より長くなる未束縛の名前を使う。

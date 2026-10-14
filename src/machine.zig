@@ -1471,7 +1471,7 @@ const Probe = struct {
     fn bind(f: *Fixture) !void {
         for ([_]*const value_mod.Primitive{ &primitive, &variadic, &nullary, &greedy }) |p| {
             const id = try f.ctx.symbols.intern(f.ctx.persist, p.name);
-            try f.ctx.globals.importPrimitive(f.ctx.persist, id, p);
+            try f.ctx.core.addPrimitive(f.ctx.persist, id, p);
         }
     }
 
