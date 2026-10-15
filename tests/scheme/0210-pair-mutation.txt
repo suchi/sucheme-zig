@@ -1,0 +1,49 @@
+# スライス 3b: ペアの変更(R7RS 6.4)。`set-car!` と `set-cdr!` は、ペアの半分を置き換え、
+# 同じペアを指すものすべてから見える。戻り値は未規定で、REPL は何も出さない。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+# 変更が作れる循環したデータは、ここでは表示しない(プリンタはデータラベルを持たない)。
+
+(define p (cons 1 2)) (set-car! p 10) p
+(10 . 2)
+
+(define p (cons 1 2)) (set-cdr! p 20) p
+(1 . 20)
+
+(define p (cons 1 2)) (set-car! p 'a) (set-cdr! p 'b) p
+(a . b)
+
+(define p (cons 1 2)) (set-car! p 10)
+<no output>
+
+(define p (cons 1 2)) (set-cdr! p 10)
+<no output>
+
+# 戻り値は、値として使える。
+(define p (cons 1 2)) (list (set-car! p 3))
+(#<unspecified>)
+
+# どちらの半分にも、どんな値でも入る。
+(define p (cons 1 2)) (set-car! p '(1 2)) (set-cdr! p #(3)) p
+((1 2) . #(3))
+
+# 同じペアを指すものすべてから見える。
+(define p (list 1 2 3)) (define q (cdr p)) (set-car! q 'x) (list p q)
+((1 x 3) (x 3))
+
+# リストの途中を切ると、後ろは切り離される。
+(define p (list 1 2 3)) (define rest (cdr p)) (set-cdr! p '()) (list p rest)
+((1) (2 3))
+
+# 変更はペアの中身を替えるので、ペアそのものは `eq?` のままである。
+(define p (cons 1 2)) (define q p) (set-car! p 5) (eq? p q)
+#t
+
+# 変更のあとに GC が何度も走っても、書き込んだ値は残る。
+(define p (cons 1 2)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (set-car! p (list 1 2 3)) (spin 20000) (set-cdr! p (list 4 5)) (spin 20000) p
+ok
+ok
+((1 2 3) 4 5)
+
+# 輪にしたリストは、リストではない。
+(define p (list 1 2 3)) (set-cdr! (cdr (cdr p)) p) (list? p)
+#f

@@ -1,7 +1,7 @@
 //! Pairs and lists (R7RS 6.4).
 //!
-//! 段階1のペアとリストの手続きである。データを変更する手続き(`set-car!` など)は
-//! 段階3で入る(docs/roadmap.md の段階3)。
+//! ペアとリストの手続きである。段階1が作る手続きと取り出す手続きを入れ、段階3の
+//! スライス 3b が、ペアを書き換える `set-car!` と `set-cdr!` を足した。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -16,6 +16,8 @@ pub const primitives = [_]Primitive{
     .{ .name = "cons", .min_args = 2, .max_args = 2, .body = .{ .pure = &cons } },
     .{ .name = "car", .min_args = 1, .max_args = 1, .body = .{ .pure = &car } },
     .{ .name = "cdr", .min_args = 1, .max_args = 1, .body = .{ .pure = &cdr } },
+    .{ .name = "set-car!", .min_args = 2, .max_args = 2, .body = .{ .pure = &setCar } },
+    .{ .name = "set-cdr!", .min_args = 2, .max_args = 2, .body = .{ .pure = &setCdr } },
     .{ .name = "pair?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isPair } },
     .{ .name = "null?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isNull } },
     .{ .name = "list", .min_args = 0, .max_args = null, .body = .{ .pure = &list } },
@@ -27,9 +29,9 @@ pub const primitives = [_]Primitive{
 /// chain ends in something other than the empty list, or never ends.
 ///
 /// R7RS 6.4 は、リストを有限の長さを持ち空リストで終わるものと定めている。輪になった
-/// 鎖は、尾を無限に進むので、リストではない。段階1の Scheme からは輪を作れない
-/// (変更する手続きが無い)が、段階3の変更操作が入ったとき `length` と `list?` が止まる
-/// ことを、ここで保っておく。
+/// 鎖は、尾を無限に進むので、リストではない。段階1は Scheme から輪を作れなかったが、
+/// `set-cdr!` が入ってからは作れる。`length` と `list?` と `apply` が止まることを、
+/// ここで保つ。
 ///
 /// 速い印は2歩ずつ、遅い印は1歩ずつ進める(Floyd の方法)。輪があれば2つの印はいずれ
 /// 同じペアで出会う。作業領域を使わず、長さに比例する時間で終わる。
@@ -91,6 +93,27 @@ fn cdr(_: *const Services, args: []const Value) Error!Value {
     return p.cdr;
 }
 
+/// `(set-car! pair obj)`: replaces the first half of `pair` with `obj`.
+///
+/// 戻り値は未規定である(R7RS 6.4)。確保しない。GC は世代別でも増分でもなく、
+/// `Heap.collect` が1回の呼び出しの中でマークとスイープを終えるので、書き込みバリアは
+/// 要らない。書き込んだ値は、次の GC でペアの子として走査される。
+/// リテラル定数の変更を禁じる R7RS 3.4 の扱いは、ここにない。ヘッダに不変の印が
+/// 無いので、`quote` したデータも書き換えられる(docs/design/runtime.md のリテラルの不変性)。
+fn setCar(_: *const Services, args: []const Value) Error!Value {
+    const p = args[0].asPair() orelse return error.WrongType;
+    p.car = args[1];
+    return .unspecified_value;
+}
+
+/// `(set-cdr! pair obj)`: replaces the second half of `pair` with `obj`.
+/// 書き込みバリアと不変の印については `setCar` と同じである。
+fn setCdr(_: *const Services, args: []const Value) Error!Value {
+    const p = args[0].asPair() orelse return error.WrongType;
+    p.cdr = args[1];
+    return .unspecified_value;
+}
+
 /// `(pair? obj)`: whether `obj` is a pair.
 /// 空リストはペアではない(R7RS 6.4)。
 fn isPair(_: *const Services, args: []const Value) Error!Value {
@@ -146,6 +169,8 @@ test "the pair primitives take the numbers of arguments the language gives them"
         .{ .name = "cons", .min = 2, .max = 2 },
         .{ .name = "car", .min = 1, .max = 1 },
         .{ .name = "cdr", .min = 1, .max = 1 },
+        .{ .name = "set-car!", .min = 2, .max = 2 },
+        .{ .name = "set-cdr!", .min = 2, .max = 2 },
         .{ .name = "pair?", .min = 1, .max = 1 },
         .{ .name = "null?", .min = 1, .max = 1 },
         .{ .name = "list", .min = 0, .max = null },
@@ -470,4 +495,69 @@ test "list? and length agree on every shape" {
         try std.testing.expect(!try isListTrue(&f, ring));
         try std.testing.expectEqual(null, try lengthOf(&f, ring));
     }
+}
+
+test "set-car! and set-cdr! replace one half of the pair and leave the other, and allocate nothing" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try f.heap.cons(fix(1), fix(2));
+    const before = f.heap.count;
+    const first = try f.call(&primitives, "set-car!", &.{ p, fix(10) });
+    try std.testing.expectEqual(.unspecified, first.kind());
+    try std.testing.expectEqual(10, p.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(2, p.asPair().?.cdr.asFixnum().?);
+    const second = try f.call(&primitives, "set-cdr!", &.{ p, fix(20) });
+    try std.testing.expectEqual(.unspecified, second.kind());
+    try std.testing.expectEqual(10, p.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(20, p.asPair().?.cdr.asFixnum().?);
+    try std.testing.expectEqual(before, f.heap.count);
+}
+
+test "set-car! and set-cdr! take any value, and the pair is changed in place" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try f.heap.cons(fix(1), fix(2));
+    const alias = p;
+    const other = try f.heap.cons(fix(3), Value.empty_list_value);
+    _ = try f.call(&primitives, "set-car!", &.{ p, other });
+    _ = try f.call(&primitives, "set-cdr!", &.{ p, Value.empty_list_value });
+    // 同じペアを指すものすべてから見える。
+    try std.testing.expect(alias.asPair().?.car.asPair().? == other.asPair().?);
+    try std.testing.expectEqual(.empty_list, alias.asPair().?.cdr.kind());
+    for (try notPairs(&f)) |v| {
+        _ = try f.call(&primitives, "set-car!", &.{ p, v });
+        try std.testing.expectEqual(v.kind(), p.asPair().?.car.kind());
+        _ = try f.call(&primitives, "set-cdr!", &.{ p, v });
+        try std.testing.expectEqual(v.kind(), p.asPair().?.cdr.kind());
+    }
+}
+
+test "set-car! and set-cdr! of what is not a pair is a wrong type, the empty list included" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    for ((try notPairs(&f)) ++ [_]Value{Value.empty_list_value}) |v| {
+        try std.testing.expectError(error.WrongType, f.call(&primitives, "set-car!", &.{ v, fix(1) }));
+        try std.testing.expectError(error.WrongType, f.call(&primitives, "set-cdr!", &.{ v, fix(1) }));
+    }
+}
+
+test "a list that the program made loop back is no longer a list" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const l = try listOf(&f, &.{ 1, 2, 3 }, Value.empty_list_value);
+    try std.testing.expect(try isListTrue(&f, l));
+    try std.testing.expectEqual(3, (try lengthOf(&f, l)).?);
+    // 最後のペアの cdr を先頭に向けると輪になる。変更した手続きで作るので、Zig でペアを
+    // 直接書き換える場合と違い、Scheme から作れる形がそのまま `length` と `list?` に届く。
+    _ = try f.call(&primitives, "set-cdr!", &.{ .{ .pair = lastPair(l) }, l });
+    try std.testing.expect(!try isListTrue(&f, l));
+    try std.testing.expectEqual(null, try lengthOf(&f, l));
+    // 自分自身を指すペア。
+    const self_loop = try f.heap.cons(fix(1), Value.empty_list_value);
+    _ = try f.call(&primitives, "set-cdr!", &.{ self_loop, self_loop });
+    try std.testing.expect(!try isListTrue(&f, self_loop));
 }
