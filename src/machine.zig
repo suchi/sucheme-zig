@@ -563,10 +563,10 @@ pub const Machine = struct {
         var args = initial_args;
         var count = initial_count;
         var budget = initial_budget;
-        // Why: `apply` の被呼び出し側を、Zig の再帰でなく周回で適用する。`apply` で `apply`
-        // を呼ぶ入れ子は、データから好きなだけ深く作れるので、再帰にすると Zig のスタックを
-        // 使い切りうる。ただし周回は1ステップの中で回るので、その間にできたごみは回収
-        // されない。この制約と直す時期は、ADR-0031 の 2026-10-13 の追記にある。
+        // Why: 機械操作プリミティブが置き換えた呼び出しを、Zig の再帰でなく周回で適用する。
+        // 他の機械操作プリミティブは、手続きの引数の個数が決まっているので、データから好きなだけ
+        // 深い入れ子は作れない。作れるのは `apply` で、`apply` は並べ直しを継続のフレームに
+        // 持たせて戻るので、周回に入らない(ADR-0031 の 2026-10-15 の追記(3))。
         const operator = while (true) {
             var operator_node = args;
             while (operator_node.next) |n| operator_node = n;
