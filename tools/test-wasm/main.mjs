@@ -244,6 +244,14 @@ test("an include reports that there is no file to read, and refuses a form that 
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// `wasm` は、WASM のビルドでだけ真で、WASM のビルドは OS の名前を持たない(スライス 2p)。
+test("the wasm feature is true in this build, and the names of an operating system are not", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(cond-expand (wasm 'wasm) (else 'other))"), [OK, "wasm\n"]);
+  assert.deepEqual(h.run("(cond-expand ((or unix windows linux macos) 'os) (else 'none))"), [OK, "none\n"]);
+  assert.deepEqual(h.run("(cond-expand ((and r7rs sucheme) 'both) (else 'no))"), [OK, "both\n"]);
+});
+
 // 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
 // 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
 // メッセージが上限と予約の和より長くなる未束縛の名前を使う。

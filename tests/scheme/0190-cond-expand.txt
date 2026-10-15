@@ -106,3 +106,7 @@ error: bad cond-expand: the clause that applies has no expression
 
 (define (has? l s) (if (null? l) #f (if (eq? (car l) s) #t (has? (cdr l) s)))) (list (has? (features) 'r7rs) (has? (features) 'sucheme) (has? (features) 'no-such-feature))
 (#t #t #f)
+
+# このテストの実行器は、WASM でなく、実行ファイルと同じビルドである。
+(cond-expand (wasm 'wasm) (else 'native))
+native
