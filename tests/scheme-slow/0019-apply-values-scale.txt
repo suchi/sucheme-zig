@@ -1,0 +1,29 @@
+# スライス 3b を規模で試す。`apply` の周回と、複数値の引数の並べ直しが、ステップの
+# 境目を通ること。実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ
+# 走り、全コミットでは走らない(docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で
+# 通す双子が tests/scheme/0217-apply-values-scale-small.txt にある。
+# ここで見るのは、回数と長さに比例して壊れる種類の誤りである。1ステップの中で周回すると、
+# 周回のごみが回収されずに上限(この実行器では 64 MiB)を超える。境目を通れば、生きている
+# データだけが上限に収まればよい。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# apply で apply を呼ぶ、40万段の入れ子。生きているのは入れ子のリストだけで、周回のごみは
+# 3 * 40万個の引数の鎖である。両方を合わせると上限を超え、境目で回収しなければ終わらない。
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 400000 (list + '(1 2))))
+3
+
+# 同じ入れ子を、続けて2回通す。回収したあとのヒープで、もう一度周回できる。
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (define l (nest 300000 (list + '(1 2)))) (list (apply apply l) (apply apply l))
+(3 3)
+
+# 30万要素の複数値を、`apply` で並べ、`call-with-values` の受け手に渡す。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 300000 '())) (call-with-values (lambda () (apply values xs)) +)
+45000150000
+
+# 同じ呼び出しを繰り返す。1回ごとに、並べた鎖と複数値のオブジェクトがごみになる。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 100000 '())) (define (rep k) (if (= k 0) 'done (begin (call-with-values (lambda () (apply values xs)) +) (rep (- k 1))))) (rep 30)
+done
+
+# 継続を、30万個の引数で起動する。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 300000 '())) (call-with-values (lambda () (call/cc (lambda (k) (apply k xs)))) +)
+45000150000
