@@ -232,6 +232,18 @@ test("a library that is not defined is not found, since there is no file system"
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
+// 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
+test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run('(include "a.scm")'),
+    [SCHEME_ERROR, "error: bad include: this interpreter has no files to read: a.scm\n"],
+  );
+  assert.deepEqual(h.run("(include 1)"), [SCHEME_ERROR, "error: bad include: a file name must be a string\n"]);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 // 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
 // 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
 // メッセージが上限と予約の和より長くなる未束縛の名前を使う。

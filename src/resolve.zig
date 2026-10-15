@@ -119,22 +119,129 @@ pub fn libraryParts(scratch: std.mem.Allocator, symbols: *const symbol.Table, na
     return parts.items;
 }
 
+/// Where a file that is being read came from: the root that has it, and its path
+/// beneath the root.
+/// `include` は、含むファイルのディレクトリを基準にし、同じルートの配下を引く。
+pub const Origin = struct {
+    root: []const u8,
+    /// The components of the path of the file, the last being the file itself.
+    path: []const []const u8,
+
+    /// The components of the path of the directory the file is in.
+    pub fn directory(self: Origin) []const []const u8 {
+        return if (self.path.len == 0) self.path else self.path[0 .. self.path.len - 1];
+    }
+
+    /// Whether `a` and `b` are the same file: the same root and the same path.
+    pub fn same(a: Origin, b: Origin) bool {
+        if (!std.mem.eql(u8, a.root, b.root) or a.path.len != b.path.len) return false;
+        for (a.path, b.path) |x, y| if (!std.mem.eql(u8, x, y)) return false;
+        return true;
+    }
+};
+
+/// A file that is open, and where it came from.
+pub const Opened = struct { file: File, origin: Origin };
+
 /// Opens the file of the library named `name`: `foo/bar.sld` for `(foo bar)`,
 /// beneath the first root that has it. The caller closes the file.
 /// Why: 戻り値をパスの文字列にしない。確かめたあとに対象が差し替わる余地を残さない
 /// ためである。ルートのハンドルから成分を1つずつ、リンクを辿らずに開き、開いたハンドルの
 /// 種別を確かめる(docs/design/zig-api-notes.md)。`resolve_beneath` は Linux で効かない。
-pub fn openLibrary(files: Files, scratch: std.mem.Allocator, symbols: *const symbol.Table, name: Value) (NameError || OpenError)!File {
+pub fn openLibrary(files: Files, scratch: std.mem.Allocator, symbols: *const symbol.Table, name: Value) (NameError || OpenError)!Opened {
     const parts = try libraryParts(scratch, symbols, name);
     const directories = parts[0 .. parts.len - 1];
     const file_name = try std.mem.concat(scratch, u8, &.{ parts[parts.len - 1], library_extension });
+    const path = try scratch.alloc([]const u8, parts.len);
+    @memcpy(path[0..directories.len], directories);
+    path[directories.len] = file_name;
     // Why: WASM(`freestanding`)は実ファイルシステムを持たない。`Dir.cwd()` はその
     // ターゲットではコンパイルできないので、ここで打ち切り、以降を解析させない。
     if (comptime builtin.os.tag == .freestanding) return error.NotFound;
     for (files.roots) |root| {
-        if (try openBeneath(files.io, root, directories, file_name)) |file| return file;
+        if (try openBeneath(files.io, root, directories, file_name)) |file|
+            return .{ .file = file, .origin = .{ .root = root, .path = path } };
     }
     return error.NotFound;
+}
+
+/// Why a file name that an `include` gives does not name a file.
+pub const IncludeNameError = error{
+    /// The name has no characters.
+    EmptyName,
+    /// The name starts with a slash.
+    AbsolutePath,
+    /// A component has a character that a path cannot hold on every system.
+    BadCharacter,
+    /// A component ends with a dot or a space.
+    EndsWithDotOrSpace,
+    /// A component names a device on Windows.
+    ReservedDeviceName,
+    /// The path goes up out of the root.
+    EscapesRoot,
+    /// The path names a directory, or nothing.
+    NamesNoFile,
+    OutOfMemory,
+};
+
+/// The text of what `e` says about a file name, for an error message.
+pub fn describeIncludeNameError(e: IncludeNameError) []const u8 {
+    return switch (e) {
+        error.EmptyName => "the file name is empty",
+        error.AbsolutePath => "the file name must not be an absolute path",
+        error.BadCharacter => "a component of the file name has a character that is not allowed",
+        error.EndsWithDotOrSpace => "a component of the file name ends with a dot or a space",
+        error.ReservedDeviceName => "a component of the file name is the name of a device",
+        error.EscapesRoot => "the file name goes up out of the directory the files are searched in",
+        error.NamesNoFile => "the file name names a directory, not a file",
+        error.OutOfMemory => "out of memory",
+    };
+}
+
+/// The path of the file that `name`, a file name an `include` gives, means when it
+/// is read from a file in `directory`: the components beneath the root, the last
+/// being the file.
+/// Why: 名前は `/` で区切り、`.` と `..` を字句的に解決する。`..` でルートの外に出る名前は
+/// 拒否する(docs/design/frontend.md)。リンクは辿らないので、字句的な解決が実ファイルの
+/// 解決と食い違うことはない。絶対パスと、システムによって意味が変わる文字は拒否する。
+pub fn includePath(scratch: std.mem.Allocator, directory: []const []const u8, name: []const u8) IncludeNameError![]const []const u8 {
+    if (name.len == 0) return error.EmptyName;
+    if (name[0] == '/') return error.AbsolutePath;
+    var path: std.ArrayList([]const u8) = .empty;
+    try path.appendSlice(scratch, directory);
+    var names_directory = false;
+    var it = std.mem.splitScalar(u8, name, '/');
+    while (it.next()) |component| {
+        names_directory = true;
+        if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
+        if (std.mem.eql(u8, component, "..")) {
+            if (path.items.len == 0) return error.EscapesRoot;
+            path.items.len -= 1;
+            continue;
+        }
+        try checkFileComponent(component);
+        try path.append(scratch, component);
+        names_directory = false;
+    }
+    if (names_directory or path.items.len == 0) return error.NamesNoFile;
+    return path.items;
+}
+
+/// Checks that `text`, a component of the file name an `include` gives, can be a
+/// part of a path on every system.
+fn checkFileComponent(text: []const u8) IncludeNameError!void {
+    for (text) |c| {
+        if (c < 0x20 or c == 0x7f or std.mem.indexOfScalar(u8, "\\:*?\"<>|", c) != null) return error.BadCharacter;
+    }
+    if (text[text.len - 1] == '.' or text[text.len - 1] == ' ') return error.EndsWithDotOrSpace;
+    if (isDeviceName(text)) return error.ReservedDeviceName;
+}
+
+/// Opens the file at `path` beneath `root`, where `path` is what `includePath`
+/// returned. The caller closes the file.
+pub fn openIncluded(files: Files, root: []const u8, path: []const []const u8) OpenError!File {
+    if (comptime builtin.os.tag == .freestanding) return error.NotFound;
+    return (try openBeneath(files.io, root, path[0 .. path.len - 1], path[path.len - 1])) orelse error.NotFound;
 }
 
 /// The file `file_name` in the directories `directories` beneath `root`, or null
@@ -360,7 +467,8 @@ fn readLibrary(allocator: std.mem.Allocator, roots: []const []const u8, names: [
     var parts: std.ArrayList(Part) = .empty;
     for (names) |n| try parts.append(allocator, .{ .id = n });
     const name = try buildName(&ctx, parts.items);
-    const file = try openLibrary(.{ .io = testing.io, .roots = roots }, allocator, &ctx.symbols, name);
+    const opened = try openLibrary(.{ .io = testing.io, .roots = roots }, allocator, &ctx.symbols, name);
+    const file = opened.file;
     defer file.close(testing.io);
     var buf: [256]u8 = undefined;
     var reader: File.Reader = .init(file, testing.io, &buf);
@@ -485,4 +593,83 @@ test "the root itself may be a link, and a name that is refused opens nothing" {
     try expectOpenFails(&.{try tree.at(arena.allocator(), "real")}, &.{"con"}, error.ReservedDeviceName);
     try expectOpenFails(&.{try tree.at(arena.allocator(), "real")}, &.{".hidden"}, error.DotAtEdge);
     try expectOpenFails(&.{try tree.at(arena.allocator(), "real")}, &.{ "..", "real", "a" }, error.DotAtEdge);
+}
+
+fn expectIncludePath(directory: []const []const u8, name: []const u8, expected: []const []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const got = try includePath(arena.allocator(), directory, name);
+    try testing.expectEqual(expected.len, got.len);
+    for (expected, got) |want, have| try testing.expectEqualStrings(want, have);
+}
+
+fn expectIncludeRefused(directory: []const []const u8, name: []const u8, expected: IncludeNameError) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(expected, includePath(arena.allocator(), directory, name));
+}
+
+test "a file name of an include is read from the directory of the file that includes it" {
+    try expectIncludePath(&.{}, "a.scm", &.{"a.scm"});
+    try expectIncludePath(&.{ "lib", "sub" }, "a.scm", &.{ "lib", "sub", "a.scm" });
+    try expectIncludePath(&.{ "lib", "sub" }, "x/y.scm", &.{ "lib", "sub", "x", "y.scm" });
+    // `.` と空の成分は何も変えない。
+    try expectIncludePath(&.{"lib"}, "./a//b.scm", &.{ "lib", "a", "b.scm" });
+    // `..` は、ルートに着くまで上がれる。
+    try expectIncludePath(&.{ "lib", "sub" }, "../a.scm", &.{ "lib", "a.scm" });
+    try expectIncludePath(&.{ "lib", "sub" }, "../../a.scm", &.{"a.scm"});
+    try expectIncludePath(&.{"lib"}, "x/../a.scm", &.{ "lib", "a.scm" });
+    // 空白と非 ASCII は、成分の文字として通る。
+    try expectIncludePath(&.{}, "my file.scm", &.{"my file.scm"});
+    try expectIncludePath(&.{}, "\u{3042}.scm", &.{"\u{3042}.scm"});
+}
+
+test "a file name of an include that is absolute, leaves the root or cannot be a file is refused" {
+    try expectIncludeRefused(&.{}, "", error.EmptyName);
+    try expectIncludeRefused(&.{ "lib", "sub" }, "/etc/passwd", error.AbsolutePath);
+    // ルートの外へ出る。字句的に出てから戻る名前も、出た時点で拒否する。
+    try expectIncludeRefused(&.{ "lib", "sub" }, "../../../a.scm", error.EscapesRoot);
+    try expectIncludeRefused(&.{}, "../a.scm", error.EscapesRoot);
+    try expectIncludeRefused(&.{"lib"}, "../../lib/a.scm", error.EscapesRoot);
+    // ディレクトリか、何も指さない名前。
+    try expectIncludeRefused(&.{}, "a/", error.NamesNoFile);
+    try expectIncludeRefused(&.{}, ".", error.NamesNoFile);
+    try expectIncludeRefused(&.{"lib"}, "..", error.NamesNoFile);
+    try expectIncludeRefused(&.{}, "a/..", error.NamesNoFile);
+    // システムによって意味が変わる文字と、Windows のデバイス名。
+    try expectIncludeRefused(&.{}, "a\\b.scm", error.BadCharacter);
+    try expectIncludeRefused(&.{}, "c:a.scm", error.BadCharacter);
+    try expectIncludeRefused(&.{}, "a\x00b.scm", error.BadCharacter);
+    try expectIncludeRefused(&.{}, "a\nb.scm", error.BadCharacter);
+    try expectIncludeRefused(&.{}, "a*.scm", error.BadCharacter);
+    try expectIncludeRefused(&.{}, "a.", error.EndsWithDotOrSpace);
+    try expectIncludeRefused(&.{}, "a ", error.EndsWithDotOrSpace);
+    try expectIncludeRefused(&.{}, "x/con.scm", error.ReservedDeviceName);
+    try expectIncludeRefused(&.{}, "NUL", error.ReservedDeviceName);
+}
+
+test "the origin of a file says where its directory is, and which files are the same" {
+    const a: Origin = .{ .root = ".", .path = &.{ "lib", "a.sld" } };
+    try testing.expectEqual(1, a.directory().len);
+    try testing.expectEqualStrings("lib", a.directory()[0]);
+    const repl: Origin = .{ .root = ".", .path = &.{} };
+    try testing.expectEqual(0, repl.directory().len);
+    try testing.expect(a.same(.{ .root = ".", .path = &.{ "lib", "a.sld" } }));
+    try testing.expect(!a.same(.{ .root = "other", .path = &.{ "lib", "a.sld" } }));
+    try testing.expect(!a.same(.{ .root = ".", .path = &.{ "lib", "b.sld" } }));
+    try testing.expect(!a.same(.{ .root = ".", .path = &.{"a.sld"} }));
+}
+
+test "the characters that a file name of an include is refused for are each refused" {
+    for ([_][]const u8{ "a\x7fb.scm", "a?b.scm", "a\"b.scm", "a<b.scm", "a>b.scm", "a|b.scm", "a*b.scm", "a:b.scm", "a\\b.scm", "a\tb.scm" }) |name| {
+        try expectIncludeRefused(&.{}, name, error.BadCharacter);
+    }
+    // 通る文字との境目。
+    try expectIncludePath(&.{}, "a-b_c.d~e!f.scm", &.{"a-b_c.d~e!f.scm"});
+}
+
+test "files with the same name in different directories are not the same file" {
+    const a: Origin = .{ .root = ".", .path = &.{ "lib", "x.scm" } };
+    try testing.expect(!a.same(.{ .root = ".", .path = &.{ "other", "x.scm" } }));
+    try testing.expect(!a.same(.{ .root = ".", .path = &.{ "x.scm", "lib" } }));
 }
