@@ -144,7 +144,7 @@ R7RS 4.1.2 は「As noted in section 3.4, it is an error to attempt to alter a c
 
 段階2のスライス 2b の実装では、予約領域から確保したものも同じ計上に入る。予約は別枠の領域でなく、予約から確保してよい地点に上限を超えることを許す幅である(下の送出のための予約領域の節、[ADR-0035](../adr/0035-stage-2-gc-roots-and-raise-reserve.md))。
 
-段階2までの実装では、表のうち、WASM の出力バッファとホストから受け取った入力領域は、計上の外にある。`src/wasm.zig` が `std.heap.wasm_allocator` から直接確保するエントリ層の例外で、出力バッファは固定の大きさ、入力領域は `sucheme_alloc` の呼び出しごとの確保である。入力領域ごとの記録と、評価ごとのアリーナも、同じ確保元から直接確保し、計上の外にある([architecture.md](architecture.md) の確保点の一元化、[platform-and-web.md](platform-and-web.md))。ポートのバッファは、ポートが入る段階5で、この表に従って計上の対象にする。
+段階2までの実装では、表のうち、WASM の出力バッファとホストから受け取った入力領域は、計上の外にある。`src/wasm.zig` が `std.heap.wasm_allocator` から直接確保するエントリ層の例外で、出力バッファは固定の大きさ、入力領域は `sucheme_alloc` の呼び出しごとの確保である。入力領域ごとの記録と、評価ごとのアリーナも、同じ確保元から直接確保し、計上の外にある。エントリ層の例外として認めた([ADR-0038](../adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md)。[architecture.md](architecture.md) の確保点の一元化、[platform-and-web.md](platform-and-web.md))。ポートのバッファは、ポートが入る段階5で、この表に従って計上の対象にする。
 
 GC の作業リストを計上の対象にできないのは、GC が走るのが計上量が閾値を超えたときだからである。計上の対象にすると、作業リストの確保そのものが上限超過になる。上限超過は Scheme のエラーであり、その送出は機械の実行を要するが、GC は `heap.zig` の確保の内部で停止型で走っているので機械を再帰的に起動できない。行き先のない経路になる。
 

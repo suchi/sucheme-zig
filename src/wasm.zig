@@ -43,8 +43,9 @@ const output_capacity = 256 * 1024;
 // エントリ層である。ここで直接確保するもの(出力バッファと、`sucheme_alloc` が返す
 // ホストの入力領域)は、docs/design/architecture.md の確保点の一元化の対象外にあり、
 // ヒープの上限(`heap_limit_bytes`)に計上されない。docs/design/runtime.md の計上の対象は
-// この2つを挙げているので、設計との食い違いである(同文書と platform-and-web.md に現状を
-// 書いた)。出力バッファは固定の大きさで伸びないが、入力領域は呼び出しごとに確保され、
+// この2つを挙げているので設計との食い違いだが、エントリ層の例外として認めた
+// (docs/adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md)。
+// 出力バッファは固定の大きさで伸びないが、入力領域は呼び出しごとに確保され、
 // 起動と終了に限らない。入力領域ごとの記録(`regions`)と、評価ごとのアリーナも、
 // 同じ確保元から直接確保し、計上されない。Scheme の値やそのペイロードは、ここでは確保しない。
 const allocator = std.heap.wasm_allocator;
