@@ -1387,6 +1387,38 @@ test "slow: a million tail calls through apply keep the continuation at the same
     try std.testing.expectEqual(depths[0], depths[1]);
 }
 
+/// 生きているデータは収まり、1周ごとのごみを周回の回数ぶんためると収まらない上限。
+/// `(nest n l)` のリストは、1段ごとにペア2個を持つ。`(apply apply l)` は1周ごとに引数の
+/// 鎖のノードを3個(`apply` と、リストの2要素)確保する。
+fn applyNestLimit(n: usize) usize {
+    const live = 2 * n * heap_mod.cellBytes(value_mod.Pair);
+    return live + live / 4;
+}
+
+test "rounds of apply inside one step end the line with heap limit exceeded although little of the heap is live" {
+    const n = 4000;
+    const nest = "(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l))))";
+    // 上限は、生きている量が収まる大きさにして、周回のごみ(3n 個の引数のノード)は
+    // 収まらない大きさにしてある。
+    try std.testing.expect(3 * n * heap_mod.cellBytes(Args) > applyNestLimit(n) / 4);
+    // 対照: 同じデータは、ゆとりのある上限なら通る。
+    {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        _ = try f.eval(nest);
+        _ = try f.eval(std.fmt.comptimePrint("(define l (nest {d} (list + '(1 2))))", .{n}));
+        try f.expectInt(3, "(apply apply l)");
+    }
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = applyNestLimit(n), .min_threshold = 16 * 1024 });
+    defer f.deinit();
+    _ = try f.eval(nest);
+    _ = try f.eval(std.fmt.comptimePrint("(define l (nest {d} (list + '(1 2))))", .{n}));
+    // 周回は1ステップの中で回るので、その間のごみは回収されない。
+    try f.expectFails("heap limit exceeded", "(apply apply l)");
+}
+
 test "apply reports a last argument that is not a list before it allocates anything" {
     var f: Fixture = undefined;
     // 上限は、`n` 要素のリストの全部と、それを並べた引数の鎖の半分が入る大きさである。
