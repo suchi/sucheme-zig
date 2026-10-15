@@ -229,6 +229,25 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
         error.Unreadable => return ctx.raise("cannot load the library {s}: the system refused to open its file", .{text}),
         else => |n| return nameFailure(ctx, text, n),
     };
+    const form = try readLibraryForm(ctx, scratch, files, file, text);
+    // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
+    if (form.asPair().?.cdr.asPair()) |rest| {
+        if (!sameName(rest.car, name)) return ctx.raise(
+            "bad import: the file of the library {s} defines the library {s}",
+            .{ text, try nameText(ctx, scratch, rest.car) },
+        );
+    }
+    try defineLibrary(ctx, scratch, form);
+    return ctx.libraries.find(name).?;
+}
+
+/// The one `define-library` form that `file` holds, closing `file` and letting go
+/// of its text before it returns.
+/// Why: 本体の評価は、`import` を通して次のファイルを読む。ファイルの内容(最大
+/// `max_file_bytes`)をその間も持ち続けると、入れ子の深さ分が同時にメモリに載る。リーダが
+/// 作る値は、内容を指さない(シンボルは永続領域へ、文字列はヒープへ複製する)ので、読み終えた
+/// 時点で手放す。
+fn readLibraryForm(ctx: *Context, scratch: std.mem.Allocator, files: resolve.Files, file: std.Io.File, text: []const u8) Error!Value {
     defer file.close(files.io);
     var buffer: [4096]u8 = undefined;
     var file_reader: std.Io.File.Reader = .init(file, files.io, &buffer);
@@ -248,15 +267,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
         return ctx.raise("cannot load the library {s}: its file must hold one (define-library ...) form", .{text});
     if ((try readDatum(ctx, &r, scratch, sink, text)) != null)
         return ctx.raise("cannot load the library {s}: its file holds more than one form", .{text});
-    // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
-    if (form.asPair().?.cdr.asPair()) |rest| {
-        if (!sameName(rest.car, name)) return ctx.raise(
-            "bad import: the file of the library {s} defines the library {s}",
-            .{ text, try nameText(ctx, scratch, rest.car) },
-        );
-    }
-    try defineLibrary(ctx, scratch, form);
-    return ctx.libraries.find(name).?;
+    return form;
 }
 
 /// The next datum of the file `r` reads, or null at its end.
