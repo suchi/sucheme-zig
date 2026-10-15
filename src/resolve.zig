@@ -4,8 +4,9 @@
 //! 処理系がソースとして読むファイルを開く経路は、ここ1か所に閉じる。ライブラリ名から
 //! パスを組み立て、探索ルートの配下にあることを確かめ、リンクを辿らずに開く。名前は外部
 //! 入力である(縦棒で囲んだ識別子は、任意の文字を含みうる)ので、検証を通らない名前は
-//! ファイルに対応付けない。段階2は、ライブラリ名の経路と、`include` の文字列の
-//! ファイル名の経路(2o)を持つ。埋め込みの仮想ファイルシステムは、段階3が足す。
+//! ファイルに対応付けない。ライブラリ名の経路と、`include` の文字列のファイル名の経路を
+//! 持つ。どちらも、実行ファイルに埋め込んだファイル(`Embedded`)を先に引き、なければ
+//! 探索ルートの実ファイルを引く。WASM は埋め込みだけを引く。
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -140,27 +141,89 @@ pub const Origin = struct {
     }
 };
 
-/// A file that is open, and where it came from.
-pub const Opened = struct { file: File, origin: Origin };
+/// One source file that the executable carries.
+/// `build.zig` が `lib/` の下を走査して作る。
+pub const EmbeddedFile = struct {
+    /// The path beneath `lib/`, with `/` between the components.
+    path: []const u8,
+    data: []const u8,
+};
 
-/// Opens the file of the library named `name`: `foo/bar.sld` for `(foo bar)`,
-/// beneath the first root that has it. The caller closes the file.
+/// The source files the executable carries (docs/design/frontend.md, 埋め込み).
+/// ネイティブも WASM も同じものを持つ。WASM は、これだけを引く。
+pub const Embedded = struct {
+    files: []const EmbeddedFile,
+
+    /// The data of the file at `path`, the components beneath the root, or null.
+    pub fn find(self: Embedded, path: []const []const u8) ?[]const u8 {
+        for (self.files) |f| {
+            if (pathIs(f.path, path)) return f.data;
+        }
+        return null;
+    }
+};
+
+/// Whether `joined`, a path with `/` between its components, is the path whose
+/// components are `parts`.
+fn pathIs(joined: []const u8, parts: []const []const u8) bool {
+    var rest = joined;
+    for (parts, 0..) |part, i| {
+        if (!std.mem.startsWith(u8, rest, part)) return false;
+        rest = rest[part.len..];
+        if (i + 1 == parts.len) break;
+        if (rest.len == 0 or rest[0] != '/') return false;
+        rest = rest[1..];
+    }
+    return rest.len == 0 and parts.len > 0;
+}
+
+/// The root of a file that is one of the embedded ones.
+/// Why: 埋め込みのファイルの `include` は、同じ埋め込みの中から引く。実ファイルの
+/// ルートと区別するため、文字列の中身ではなく、この定数の同一性で見分ける(利用者が
+/// `-I` で同じ綴りのディレクトリを渡しても、実ファイルとして扱う)。
+pub const embedded_root: []const u8 = "<embedded>";
+
+/// Whether `root` is `embedded_root` itself.
+pub fn isEmbeddedRoot(root: []const u8) bool {
+    return root.ptr == embedded_root.ptr and root.len == embedded_root.len;
+}
+
+/// What a source file is read from: a file that is open, or the bytes of an
+/// embedded one.
+pub const Source = union(enum) {
+    file: File,
+    bytes: []const u8,
+};
+
+/// A source that is open, and where it came from.
+pub const Opened = struct { source: Source, origin: Origin };
+
+/// Opens the file of the library named `name`: `foo/bar.sld` for `(foo bar)`.
+/// The embedded files come first, and then the first root that has it. The caller
+/// closes the file of a `Source.file`.
 /// Why: 戻り値をパスの文字列にしない。確かめたあとに対象が差し替わる余地を残さない
 /// ためである。ルートのハンドルから成分を1つずつ、リンクを辿らずに開き、開いたハンドルの
 /// 種別を確かめる(docs/design/zig-api-notes.md)。`resolve_beneath` は Linux で効かない。
-pub fn openLibrary(files: Files, scratch: std.mem.Allocator, symbols: *const symbol.Table, name: Value) (NameError || OpenError)!Opened {
+/// 埋め込みを先に引くのは、標準ライブラリを、作業ディレクトリのファイルが差し替えられない
+/// ようにするためである(docs/design/frontend.md)。
+pub fn openLibrary(files: ?Files, embedded: ?Embedded, scratch: std.mem.Allocator, symbols: *const symbol.Table, name: Value) (NameError || OpenError)!Opened {
     const parts = try libraryParts(scratch, symbols, name);
     const directories = parts[0 .. parts.len - 1];
     const file_name = try std.mem.concat(scratch, u8, &.{ parts[parts.len - 1], library_extension });
     const path = try scratch.alloc([]const u8, parts.len);
     @memcpy(path[0..directories.len], directories);
     path[directories.len] = file_name;
+    if (embedded) |e| {
+        if (e.find(path)) |data|
+            return .{ .source = .{ .bytes = data }, .origin = .{ .root = embedded_root, .path = path } };
+    }
+    const real = files orelse return error.NotFound;
     // Why: WASM(`freestanding`)は実ファイルシステムを持たない。`Dir.cwd()` はその
     // ターゲットではコンパイルできないので、ここで打ち切り、以降を解析させない。
     if (comptime builtin.os.tag == .freestanding) return error.NotFound;
-    for (files.roots) |root| {
-        if (try openBeneath(files.io, root, directories, file_name)) |file|
-            return .{ .file = file, .origin = .{ .root = root, .path = path } };
+    for (real.roots) |root| {
+        if (try openBeneath(real.io, root, directories, file_name)) |file|
+            return .{ .source = .{ .file = file }, .origin = .{ .root = root, .path = path } };
     }
     return error.NotFound;
 }
@@ -238,10 +301,17 @@ fn checkFileComponent(text: []const u8) IncludeNameError!void {
 }
 
 /// Opens the file at `path` beneath `root`, where `path` is what `includePath`
-/// returned. The caller closes the file.
-pub fn openIncluded(files: Files, root: []const u8, path: []const []const u8) OpenError!File {
+/// returned. The caller closes the file of a `Source.file`.
+/// `root` が埋め込みのルートなら、埋め込みのファイルから引く。
+pub fn openIncluded(files: ?Files, embedded: ?Embedded, root: []const u8, path: []const []const u8) OpenError!Source {
+    if (isEmbeddedRoot(root)) {
+        const e = embedded orelse return error.NotFound;
+        return .{ .bytes = e.find(path) orelse return error.NotFound };
+    }
     if (comptime builtin.os.tag == .freestanding) return error.NotFound;
-    return (try openBeneath(files.io, root, path[0 .. path.len - 1], path[path.len - 1])) orelse error.NotFound;
+    const real = files orelse return error.NotFound;
+    const file = (try openBeneath(real.io, root, path[0 .. path.len - 1], path[path.len - 1])) orelse return error.NotFound;
+    return .{ .file = file };
 }
 
 /// The file `file_name` in the directories `directories` beneath `root`, or null
@@ -467,8 +537,8 @@ fn readLibrary(allocator: std.mem.Allocator, roots: []const []const u8, names: [
     var parts: std.ArrayList(Part) = .empty;
     for (names) |n| try parts.append(allocator, .{ .id = n });
     const name = try buildName(&ctx, parts.items);
-    const opened = try openLibrary(.{ .io = testing.io, .roots = roots }, allocator, &ctx.symbols, name);
-    const file = opened.file;
+    const opened = try openLibrary(.{ .io = testing.io, .roots = roots }, null, allocator, &ctx.symbols, name);
+    const file = opened.source.file;
     defer file.close(testing.io);
     var buf: [256]u8 = undefined;
     var reader: File.Reader = .init(file, testing.io, &buf);
@@ -503,6 +573,59 @@ test "the library (foo bar) is the file foo/bar.sld beneath a root" {
     // 拡張子が違うファイルは、ライブラリのファイルではない。
     try tree.write("other.scm", "x");
     try expectOpenFails(&.{tree.path}, &.{"other"}, error.NotFound);
+}
+
+test "pathIs matches the components, not a prefix of them" {
+    try testing.expect(pathIs("foo/bar.sld", &.{ "foo", "bar.sld" }));
+    try testing.expect(pathIs("solo.sld", &.{"solo.sld"}));
+    try testing.expect(!pathIs("foo/bar.sld", &.{"foo"}));
+    try testing.expect(!pathIs("foo/bar.sld", &.{ "foo", "bar" }));
+    try testing.expect(!pathIs("foo/bar.sld", &.{ "foo", "bar.sld", "x" }));
+    try testing.expect(!pathIs("foobar.sld", &.{ "foo", "bar.sld" }));
+    try testing.expect(!pathIs("foo/bar.sld", &.{}));
+    try testing.expect(!pathIs("", &.{}));
+}
+
+test "an embedded library is found before a root, and its includes stay among the embedded files" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ctx = try context.Context.init(allocator, testing.allocator);
+    defer ctx.deinit();
+    const name = try buildName(&ctx, &.{ .{ .id = "foo" }, .{ .id = "bar" } });
+    const embedded: Embedded = .{ .files = &.{
+        .{ .path = "foo/bar.sld", .data = "embedded" },
+        .{ .path = "foo/helper.scm", .data = "helper" },
+    } };
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.write("foo/bar.sld", "on disk");
+    const files: Files = .{ .io = testing.io, .roots = &.{tree.path} };
+
+    // 埋め込みが先である。実ファイルシステムの同じ名前のファイルは見えない。
+    const found = try openLibrary(files, embedded, allocator, &ctx.symbols, name);
+    try testing.expectEqualStrings("embedded", found.source.bytes);
+    try testing.expect(isEmbeddedRoot(found.origin.root));
+    try testing.expectEqualStrings("bar.sld", found.origin.path[1]);
+    // ファイルシステムが無くても見つかる(WASM)。
+    const without_files = try openLibrary(null, embedded, allocator, &ctx.symbols, name);
+    try testing.expectEqualStrings("embedded", without_files.source.bytes);
+    // 埋め込みに無い名前は、実ファイルを引く。どちらにも無ければ NotFound である。
+    const other = try buildName(&ctx, &.{ .{ .id = "foo" }, .{ .id = "baz" } });
+    try testing.expectError(error.NotFound, openLibrary(files, embedded, allocator, &ctx.symbols, other));
+    try testing.expectError(error.NotFound, openLibrary(null, null, allocator, &ctx.symbols, name));
+    const on_disk = try openLibrary(files, null, allocator, &ctx.symbols, name);
+    defer on_disk.source.file.close(testing.io);
+
+    // 埋め込みのルートからの `include` は、埋め込みの中を引く。
+    const included = try openIncluded(null, embedded, embedded_root, &.{ "foo", "helper.scm" });
+    try testing.expectEqualStrings("helper", included.bytes);
+    try testing.expectError(error.NotFound, openIncluded(null, embedded, embedded_root, &.{ "foo", "nope.scm" }));
+    try testing.expectError(error.NotFound, openIncluded(files, null, embedded_root, &.{ "foo", "helper.scm" }));
+    // 利用者が同じ綴りのルートを渡しても、それは埋め込みのルートではない。
+    const copy = try allocator.dupe(u8, embedded_root);
+    try testing.expect(!isEmbeddedRoot(copy));
 }
 
 test "the roots are searched in order, and a root that cannot be opened has nothing" {
