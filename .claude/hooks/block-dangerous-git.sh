@@ -5,8 +5,8 @@
 # (AGENTS.md) and asks for user confirmation on destructive ones, so the
 # guard also works in auto-accept permission modes.
 #
-# Requires jq to parse the hook payload (personal/README.md: prerequisite
-# tools). If jq is missing or the payload does not parse, the hook asks
+# Requires jq to parse the hook payload (jq is a prerequisite tool of this
+# repository). If jq is missing or the payload does not parse, the hook asks
 # instead of deciding, so the guard fails safe rather than silently
 # allowing everything.
 
@@ -20,7 +20,7 @@ emit() {
 }
 
 if ! command -v jq >/dev/null 2>&1; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"jq is required by this hook but was not found. Install jq (personal/README.md: prerequisite tools)."}}\n'
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"jq is required by this hook but was not found. Install jq (a prerequisite tool of this repository)."}}\n'
   exit 0
 fi
 

@@ -59,7 +59,7 @@
       "Bash(echo:*)",
       "Bash(printf:*)",
       "Bash(pwd)",
-      "Bash(python $HOME/.claude/projects/d--Project-Dev-local-sucheme-zig/tools/:*)"
+      "Bash(python tools/review-harness/:*)"
     ],
     "ask": [
       "Bash(git merge:*)",
