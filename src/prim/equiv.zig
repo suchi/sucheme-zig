@@ -2,6 +2,21 @@
 //!
 //! `eq?` と `eqv?` の実体は `Value` の関数である(値の表現を隠す、ADR-0002)。`equal?`
 //! は構造を比べるのでここに置く。
+//!
+//! 訪問済みの集合の実装(段階3のスライス 3b で決めた): 組(ペア2つ、ベクタ2つ)を
+//! そのまま持つハッシュ表(`PairSet`)ではなく、番地の union-find(`UnionFind`)にする。
+//! 比べた2つの対を同じ類に併合し、同じ類の対に再び出会ったら等しいとして打ち切る。
+//! 選んだ理由は、記録の個数の増え方である。`PairSet` は、長さの互いに素な2つの輪
+//! (`(equal? ring-n ring-m)`)で、組の数(n と m の積)だけ記録して比べる。`UnionFind` は
+//! 併合のたびに根が1つ減るので、記録は両辺の節点の数(n と m の和)を超えない。
+//! 長い非循環リストと、同じ部分を何度も指すデータ(はしご形)では、2つの実装の記録の
+//! 個数は同じで、1回あたりの時間もほぼ同じである。1段ごとに1回引く費用は残るので、
+//! 先頭の `unrecorded_steps` 回の降下は記録せず、短いデータの比較では表を確保しない。
+//!
+//! 再現の手順: `-Dslow=true` で走るテスト `BENCH visited structures` が、2つの実装を
+//! 3つの形((A)長い非循環リスト、(B)はしご形の共有構造、(C)互いに素な輪)で比べ、
+//! 表を引いた回数(`steps=`)と時間(`ms=`)を標準エラーに出す。(C) の `steps=` が、
+//! `PairSet` では輪の長さの積に、`UnionFind` では和に比例して増える。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -91,20 +106,13 @@ const Stack = struct {
     }
 };
 
-/// Whether `a` and `b` are `equal?`: pairs and vectors compared by their parts,
-/// strings by their characters, everything else by `eqv?` (R7RS 6.1).
-///
-/// Zig の再帰を使わず、`Stack` に未比較の組を積んで進める。ペアは car を先に降り、
-/// cdr を積む。長いリストは cdr を積んでは取り出すので、積みは深くならない。ベクタは、
-/// 次の要素の位置を積む。データの変更が無いので循環は作れず、止まらなくなることはない。
-/// 訪問済みの集合は持たない。そのため、同じ部分を何度も指すデータ(共有構造)では、
-/// 比較の回数が深さに対して指数に増える。循環の停止と合わせて、データの変更が入る
-/// 段階3の最初のスライスで入れる(docs/roadmap.md の段階3。経緯は docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
-///
-/// 同じペアやベクタの比較は、中を見ずに真とする。`eqv?` が真なら `equal?` も真だからである。
-pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
+/// EXPERIMENT (to be removed): the loop with the visited structure as a parameter.
+fn compareWith(comptime V: type, scratch: std.mem.Allocator, set_alloc: std.mem.Allocator, naive_limit: usize, a: Value, b: Value, stats: *Stats) error{OutOfMemory}!bool {
     var stack: Stack = .{ .scratch = scratch };
     defer stack.deinit();
+    var visited: V = .{};
+    defer visited.deinit(set_alloc);
+    var steps: usize = 0;
     var left = a;
     var right = b;
     while (true) {
@@ -113,10 +121,14 @@ pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory
                 const x = left.asPair().?;
                 const y = right.asPair() orelse return false;
                 if (x != y) {
-                    try stack.push(.{ .values = .{ .a = x.cdr, .b = y.cdr } });
-                    left = x.car;
-                    right = y.car;
-                    continue;
+                    steps += 1;
+                    stats.steps += 1;
+                    if (steps <= naive_limit or !try visited.seen(set_alloc, @intFromPtr(x), @intFromPtr(y))) {
+                        try stack.push(.{ .values = .{ .a = x.cdr, .b = y.cdr } });
+                        left = x.car;
+                        right = y.car;
+                        continue;
+                    }
                 }
             },
             .vector => {
@@ -124,18 +136,20 @@ pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory
                 const y = right.asVector() orelse return false;
                 if (x.items.len != y.items.len) return false;
                 if (x != y and x.items.len > 0) {
-                    if (x.items.len > 1) try stack.push(.{ .elements = .{ .a = x.items, .b = y.items, .next = 1 } });
-                    left = x.items[0];
-                    right = y.items[0];
-                    continue;
+                    steps += 1;
+                    stats.steps += 1;
+                    if (steps <= naive_limit or !try visited.seen(set_alloc, @intFromPtr(x), @intFromPtr(y))) {
+                        if (x.items.len > 1) try stack.push(.{ .elements = .{ .a = x.items, .b = y.items, .next = 1 } });
+                        left = x.items[0];
+                        right = y.items[0];
+                        continue;
+                    }
                 }
             },
             .string => {
                 const y = right.asString() orelse return false;
                 if (!std.mem.eql(u8, left.asString().?.bytes, y.bytes)) return false;
             },
-            // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
-            // `equal?` が中身を比べるべき種別(バイトベクタなど)を見落とさないようにする。
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter => {
                 if (!left.isEqv(right)) return false;
             },
@@ -153,6 +167,54 @@ pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory
             },
         }
     }
+}
+
+pub const Stats = struct { steps: usize = 0, entries: usize = 0 };
+
+/// Pair-set: a set of the (x, y) pairs under comparison.
+pub const PairSet = struct {
+    map: std.AutoHashMapUnmanaged([2]usize, void) = .empty,
+    fn deinit(self: *PairSet, a: std.mem.Allocator) void {
+        self.map.deinit(a);
+    }
+    /// true when already present
+    fn seen(self: *PairSet, a: std.mem.Allocator, x: usize, y: usize) error{OutOfMemory}!bool {
+        const r = try self.map.getOrPut(a, .{ x, y });
+        return r.found_existing;
+    }
+};
+
+/// Union-find over node addresses.
+pub const UnionFind = struct {
+    map: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    fn deinit(self: *UnionFind, a: std.mem.Allocator) void {
+        self.map.deinit(a);
+    }
+    fn find(self: *UnionFind, node: usize) usize {
+        var n = node;
+        while (self.map.getPtr(n)) |parent| {
+            // path halving
+            if (self.map.get(parent.*)) |grand| parent.* = grand;
+            n = parent.*;
+        }
+        return n;
+    }
+    fn seen(self: *UnionFind, a: std.mem.Allocator, x: usize, y: usize) error{OutOfMemory}!bool {
+        const rx = self.find(x);
+        const ry = self.find(y);
+        if (rx == ry) return true;
+        try self.map.put(a, rx, ry);
+        return false;
+    }
+};
+
+/// The number of descents into pairs and vectors that are not recorded.
+const unrecorded_steps = 256;
+
+pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
+    var stats: Stats = .{};
+    // 次の段階で、計上を通す確保に差し替える。
+    return compareWith(UnionFind, scratch, std.heap.page_allocator, unrecorded_steps, a, b, &stats);
 }
 
 test {
@@ -432,4 +494,69 @@ test "equal? returns the scratch space it took when the scratch space fails whil
     const a = try nest(&f, .car, 100, int(1));
     const b = try nest(&f, .car, 100, int(1));
     try std.testing.expectError(error.OutOfMemory, callWith(&f, "equal?", a, b));
+}
+
+fn nowNs() u64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+fn bench(comptime name: []const u8, comptime V: type, a: Value, b: Value, limit: usize, expected: bool) !void {
+    var stats: Stats = .{};
+    const t0 = nowNs();
+    const r = try compareWith(V, std.heap.page_allocator, std.heap.page_allocator, limit, a, b, &stats);
+    const t1 = nowNs();
+    try std.testing.expectEqual(expected, r);
+    std.debug.print("BENCH {s} {s} steps={d} ms={d}\n", .{ name, @typeName(V), stats.steps, (t1 - t0) / 1_000_000 });
+}
+
+test "BENCH visited structures" {
+    try tier.slow();
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.options.limit = std.math.maxInt(usize);
+    // (A) acyclic long lists
+    for ([_]usize{ 1000, 10_000, 100_000, 1_000_000 }) |n| {
+        const a = try nest(&f, .cdr, n, .empty_list_value);
+        const b = try nest(&f, .cdr, n, .empty_list_value);
+        std.debug.print("BENCH A n={d}\n", .{n});
+        try bench("A-naive", UnionFind, a, b, std.math.maxInt(usize), true);
+        try bench("A-set0", PairSet, a, b, 0, true);
+        try bench("A-set0", UnionFind, a, b, 0, true);
+    }
+    // (B) ladder DAG: x_i = (x_{i+1} . x_{i+1})
+    for ([_]usize{ 30, 1000, 100_000 }) |d| {
+        var x: Value = int(1);
+        var y: Value = int(1);
+        for (0..d) |_| {
+            x = try cons(&f, x, x);
+            y = try cons(&f, y, y);
+        }
+        std.debug.print("BENCH B depth={d}\n", .{d});
+        try bench("B", PairSet, x, y, 0, true);
+        try bench("B", UnionFind, x, y, 0, true);
+    }
+    // (C) coprime cycles
+    for ([_][2]usize{ .{ 10, 9 }, .{ 100, 99 }, .{ 1000, 999 }, .{ 3000, 2999 } }) |nm| {
+        const mk = struct {
+            fn ring(ff: *test_support.Fixture, k: usize) !Value {
+                const head = try cons(ff, int(1), .empty_list_value);
+                var last = head;
+                for (1..k) |_| {
+                    const c = try cons(ff, int(1), .empty_list_value);
+                    last.asPair().?.cdr = c;
+                    last = c;
+                }
+                last.asPair().?.cdr = head;
+                return head;
+            }
+        };
+        const x = try mk.ring(&f, nm[0]);
+        const y = try mk.ring(&f, nm[1]);
+        std.debug.print("BENCH C n={d} m={d}\n", .{ nm[0], nm[1] });
+        try bench("C", PairSet, x, y, 0, true);
+        try bench("C", UnionFind, x, y, 0, true);
+    }
 }
