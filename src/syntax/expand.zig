@@ -435,6 +435,10 @@ const Expander = struct {
     fn includeFile(self: *Expander, task: Task) Error!void {
         const name = task.form.asString().?.bytes;
         const opened = try source.openIncluded(self.ctx, self.scratch, name, "include");
+        // Why: ファイルのデータは、大きさが REPL の1行の上限に縛られず、1 MiB のファイル1つが
+        // 数十 MiB の節点になる。入れ子や名前の並びで掛け算になるので、マクロの適用を待たず、
+        // ファイルを読む時点から、作業領域と節点をヒープの上限に数える(`Heap.external_enforced`)。
+        self.ctx.heap.external_enforced = true;
         const subject = try std.fmt.allocPrint(self.scratch, "include {s}", .{name});
         const data = try source.readData(self.ctx, self.scratch, self.ctx.files.?, opened.file, subject);
         if (data.len == 0) return self.constant(task, .unspecified_value);

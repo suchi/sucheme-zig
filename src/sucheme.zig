@@ -663,6 +663,85 @@ fn source_limit() usize {
     return @import("syntax/source.zig").max_open_files;
 }
 
+test "a macro the first of two included files defines is used by the second, in the order they are named" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("m.scm", "(define-syntax twice (syntax-rules () ((_ e) (* 2 e))))");
+    try tree.write("use.scm", "(define v (twice 21))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(include \"m.scm\" \"use.scm\") v", "42\n");
+    // 逆の順に書くと、マクロはまだ定義されていない(別のインタプリタで確かめる。マクロは残る)。
+    var reversed: Interpreter = undefined;
+    try initOnTree(&reversed, &tree, false);
+    defer reversed.deinit();
+    try expectLineFails(&reversed, "(include \"use.scm\" \"m.scm\") v", "unbound variable: twice");
+}
+
+test "a macro that expands to an include reads the file, and the include is the special form it was written as" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("a.scm", "(define x 7)");
+    try tree.write("e.scm", "(+ 1 2)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define-syntax inc (syntax-rules () ((_ f) (include f))))", "");
+    try expectLinePrints(&interp, "(inc \"a.scm\") x", "7\n");
+    // 利用者が `include` を別の束縛で隠しても、マクロが導入した `include` は特殊形式のままである。
+    try expectLinePrints(&interp, "(define (use include) (inc \"e.scm\") include) (use 3)", "3\n");
+}
+
+test "the search goes through the roots in order, and an include is read beneath the root that has the library" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        // 第2のルートだけが、ライブラリを持つ。同じ名前の `h.scm` が、第1のルートにもある。
+        try tree.write("one/lib/h.scm", "(define (h) 'from-the-first-root)");
+        try tree.write("two/lib/x.sld", "(define-library (lib x) (export g) (import (sucheme core)) " ++
+            "(include \"h.scm\") (begin (define (g) (h))))");
+        // 読んだファイルの中の `include` も、そのファイルのあるルートを基準にする。
+        try tree.write("one/lib/h2.scm", "(define (h2) 'from-the-first-root)");
+        try tree.write("two/lib/h.scm", "(include \"h2.scm\") (define (h) (h2))");
+        try tree.write("two/lib/h2.scm", "(define (h2) 'from-the-second-root)");
+        const roots = [_][]const u8{ try tree.at(arena.allocator(), "one"), try tree.at(arena.allocator(), "two") };
+        var interp: Interpreter = undefined;
+        try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &roots });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (lib x)) (g)", "from-the-second-root\n");
+        // REPL の `include` は、第1のルートを基準にする。
+        try expectLinePrints(&interp, "(include \"lib/h.scm\") (h)", "from-the-first-root\n");
+    }
+}
+
+test "the data of an include are held to the limit of the heap, from the first file on" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    // 100 KB の式の並びは、約 50000 個の節点になる。
+    const ones = try std.testing.allocator.alloc(u8, 100 * 1024);
+    defer std.testing.allocator.free(ones);
+    for (ones, 0..) |*b, i| b.* = if (i % 2 == 0) '1' else ' ';
+    try tree.write("ones.scm", ones);
+    var small: Interpreter = undefined;
+    try small.initWithFiles(std.testing.allocator, .{ .limit = 512 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    defer small.deinit();
+    // 小さい上限では、マクロの適用が無くても、ヒープの上限のエラーで終わり、次の行は読める。
+    try expectLineFails(&small, "(include \"ones.scm\")", "heap limit exceeded");
+    try expectLinePrints(&small, "(+ 1 2)", "3\n");
+    // 既定の上限では、通る。名前を並べても、合計が上限を超えれば、同じエラーになる。
+    var normal: Interpreter = undefined;
+    try initOnTree(&normal, &tree, false);
+    defer normal.deinit();
+    try expectLinePrints(&normal, "(include \"ones.scm\") 5", "1\n5\n");
+}
+
 test "a file name of an include that leaves the root, is absolute, or cannot be a file is refused" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);

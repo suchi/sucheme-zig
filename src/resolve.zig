@@ -659,3 +659,17 @@ test "the origin of a file says where its directory is, and which files are the 
     try testing.expect(!a.same(.{ .root = ".", .path = &.{ "lib", "b.sld" } }));
     try testing.expect(!a.same(.{ .root = ".", .path = &.{"a.sld"} }));
 }
+
+test "the characters that a file name of an include is refused for are each refused" {
+    for ([_][]const u8{ "a\x7fb.scm", "a?b.scm", "a\"b.scm", "a<b.scm", "a>b.scm", "a|b.scm", "a*b.scm", "a:b.scm", "a\\b.scm", "a\tb.scm" }) |name| {
+        try expectIncludeRefused(&.{}, name, error.BadCharacter);
+    }
+    // 通る文字との境目。
+    try expectIncludePath(&.{}, "a-b_c.d~e!f.scm", &.{"a-b_c.d~e!f.scm"});
+}
+
+test "files with the same name in different directories are not the same file" {
+    const a: Origin = .{ .root = ".", .path = &.{ "lib", "x.scm" } };
+    try testing.expect(!a.same(.{ .root = ".", .path = &.{ "other", "x.scm" } }));
+    try testing.expect(!a.same(.{ .root = ".", .path = &.{ "x.scm", "lib" } }));
+}
