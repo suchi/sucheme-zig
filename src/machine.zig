@@ -369,8 +369,7 @@ pub const Machine = struct {
                     // 受け手を呼ぶ。このフレームはすでに外れているので、受け手は末尾呼び出し
                     // である(R7RS 3.5)。
                     .values_receiver => |consumer| {
-                        const call = try self.receiverCall(consumer, value);
-                        take(try self.apply(&kont, &dyn, call.args, call.count, .limit), &env, &control, &value);
+                        take(try self.receive(&kont, &dyn, consumer, value), &env, &control, &value);
                     },
                     // 引数の並べ直しの続きである。1ステップで並べるのは、一定の個数までにする。
                     // 残りが無くなったら、このフレームは外れているので、末尾呼び出しとして適用する。
@@ -717,9 +716,6 @@ pub const Machine = struct {
         return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e, args, count);
     }
 
-    /// A call and the number of its operands, as `apply` takes them.
-    const Call = struct { args: *const Args, count: usize };
-
     /// How many operands one step lines up (`Kont.Step.spread`).
     /// Why: 1ステップで確保する量を、リストの長さによらず一定にするためである。大きすぎると、
     /// 境目の GC が走る前に上限までの余りを使い切る(ADR-0031)。小さすぎると、ステップと
@@ -893,18 +889,22 @@ pub const Machine = struct {
         return call;
     }
 
-    /// The call of `consumer` with `received`, what a producer returned: its
-    /// values when it returned a multiple-values object, and otherwise the one
-    /// value.
+    /// Calls `consumer` with `received`, what a producer returned: with its values
+    /// when it returned a multiple-values object, and otherwise with the one value.
+    /// 複数値のオブジェクトの値は、`apply` のリストと同じく、境目を挟む複数のステップに
+    /// 分けて並べる。1個の値は、並べるのが一定の量なので、その場で呼ぶ。
     /// 引数の鎖は最後のオペランドから並べ、末尾に `consumer` を置く。
-    fn receiverCall(self: *Machine, consumer: Value, received: Value) Error!Call {
+    fn receive(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, consumer: Value, received: Value) Error!Applied {
         const ctx = self.ctx;
         // Why: GC はステップの間でしか走らない(ADR-0031)。作りかけの鎖はどのルートからも
-        // 辿れないが、同じステップのうちに適用されるので、回収されない。
-        var chain: *const Args = try ctx.create(Args, .{ .value = consumer, .next = null });
-        const items: []const Value = if (received.asMultipleValues()) |m| m.items else (&received)[0..1];
-        for (items) |item| chain = try ctx.create(Args, .{ .value = item, .next = chain });
-        return .{ .args = chain, .count = items.len };
+        // 辿れないが、同じステップのうちに適用されるか、フレームに載るので、回収されない。
+        const chain: *const Args = try ctx.create(Args, .{ .value = consumer, .next = null });
+        if (received.asMultipleValues() == null) {
+            const args = try ctx.create(Args, .{ .value = received, .next = chain });
+            return self.apply(kont, dyn, args, 1, .limit);
+        }
+        kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = chain, .count = 0, .rest = received, .index = 0 } });
+        return .{ .value = .unspecified_value };
     }
 
     /// The condition `(error message obj ...)` makes: the message, and the
@@ -1459,6 +1459,27 @@ test "a collection runs between the rounds of an apply nested as deep as the dat
         try f.expectInt(3, "(apply apply l)");
         try std.testing.expect(f.ctx.heap.collections > before);
     }
+}
+
+test "a collection runs while a call-with-values lines up the values it received" {
+    const n = 4000;
+    const cell = heap_mod.cellBytes;
+    // 受け手を呼ぶ時点で、ヒープには、リスト `xs` と、`(apply values xs)` が並べた引数の鎖
+    // (もうごみである)と、複数値のオブジェクトがある。受け手に渡す引数の鎖は、その上に
+    // さらに `n` 個のノードを足す。上限は、鎖を1ステップで並べ切ると収まらず、塊ごとに
+    // 境目で GC が走れば収まる大きさにする。生きているのは、鎖の分を除いて、`xs` と
+    // オブジェクトだけである。
+    const before = n * (cell(value_mod.Pair) + cell(Args) + @sizeOf(Value));
+    const limit = before + n * cell(Args) - 1;
+    try std.testing.expect(limit - limit / 16 > before);
+    var f: Fixture = undefined;
+    // 最初の GC を、上限の手前まで遅らせる。
+    try f.initWith(.{ .limit = limit, .min_threshold = limit });
+    defer f.deinit();
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    _ = try f.eval(std.fmt.comptimePrint("(define xs (build {d} '()))", .{n}));
+    const sum: i64 = n * (n + 1) / 2;
+    try f.expectInt(sum, "(call-with-values (lambda () (apply values xs)) +)");
 }
 
 test "apply lines up a list in chunks and keeps the order around the size of a chunk" {
