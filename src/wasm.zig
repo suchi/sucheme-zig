@@ -45,7 +45,8 @@ const output_capacity = 256 * 1024;
 // ヒープの上限(`heap_limit_bytes`)に計上されない。docs/design/runtime.md の計上の対象は
 // この2つを挙げているので、設計との食い違いである(同文書と platform-and-web.md に現状を
 // 書いた)。出力バッファは固定の大きさで伸びないが、入力領域は呼び出しごとに確保され、
-// 起動と終了に限らない。Scheme の値やそのペイロードは、ここでは確保しない。
+// 起動と終了に限らない。入力領域ごとの記録(`regions`)と、評価ごとのアリーナも、
+// 同じ確保元から直接確保し、計上されない。Scheme の値やそのペイロードは、ここでは確保しない。
 const allocator = std.heap.wasm_allocator;
 
 var interp: sucheme.Interpreter = undefined;
