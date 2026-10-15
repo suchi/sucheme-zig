@@ -3,6 +3,8 @@
 - ステータス: 採用
 - 日付: 2026-10-04
 
+> 2026-10-15 追記: 決定の意図は変えない。決定の第1項の `LineReader` の union は、段階1から段階2の実装では置いていない。スライス 1l の計画([0010](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の合意を求める点の7)で、変種が1つだけの union は使われない構造になるので作らないと合意した。いま境界として保っているのは第2項の完結判定の共有である。リーダが不足を表す `Incomplete` を返し、`sucheme.isIncomplete`(定義は `reader.isIncomplete`)が入力の完結を判定し、REPL(`src/main.zig` の `repl`)は `*std.Io.Reader` から行を読んで、この関数が偽になるまで継続行として保留に足す。union は、`rich` を入れる段階7で作る。それまでの `dumb` に当たるものは、`repl` が `*std.Io.Reader` を直接読む形である。
+
 ## 背景
 
 要件として、最終的に REPL で複数行編集と Emacs バインディングによる編集ができることが求められている。一方、初期の段階ではこの機能は不要とされている。

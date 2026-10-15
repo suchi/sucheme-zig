@@ -1,7 +1,7 @@
 # Slice 1h: vector literals. `#(` starts a vector whose elements are data, so a
 # vector evaluates to itself and its elements are not evaluated. A vector prints
-# as `#(` and its elements. There are no procedures on vectors yet, so these
-# cases read a vector and print it back.
+# as `#(` and its elements. At slice 1h there were no procedures on vectors, so
+# these cases read a vector and print it back (0023 covers the procedures).
 
 #(1 2 3)
 #(1 2 3)

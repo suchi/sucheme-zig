@@ -19,6 +19,8 @@
 
 `sucheme_init` が受け取る `heap_limit_bytes` は、[runtime.md](runtime.md) の計上の対象に挙げたすべての合計に対する上限である。オブジェクト本体だけの上限ではない。対象の一覧をここに複製せず、同文書を参照する。上限に達した場合の扱いは後述の状態コードの節で定める。1 GiB を超える値は 1 GiB に丸める。wasm32 の線形メモリは全体で 4 GiB で、計上は実メモリの約半分なので、丸めないと上限に届く前に実メモリが尽きて trap する。
 
+段階2までの実装では、計上の対象のうち、WASM の出力バッファ(固定の大きさ)とホストが `sucheme_alloc` で受け取る入力領域が、上限の外にある。どちらも `src/wasm.zig` が `std.heap.wasm_allocator` から直接確保する、エントリ層の例外である([architecture.md](architecture.md) の確保点の一元化、[ADR-0038](../adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md))。
+
 選択はコンパイル時に行う。仮想関数テーブルは使わない。
 
 Zig 0.17.0 ではファイルとディレクトリの操作が `std.fs` から `std.Io.Dir` と `std.Io.File` へ移っている。`std.fs.cwd` は存在しない。時刻は `std.time` も残っているが、`Io` を引数に取る `std.Io.Clock.now` を使って入出力と同じ抽象に揃える。使用する記法は [zig-api-notes.md](zig-api-notes.md) に従う。
@@ -59,6 +61,13 @@ sucheme_version_ptr() -> u32
 sucheme_version_len() -> u32
 ```
 
+上の一覧は設計の目標である。段階2まで(`src/wasm.zig`)で実装しているのは、次の部分集合である。
+
+- 状態コードを返すもの: `sucheme_init`、`sucheme_eval_begin`、`sucheme_reset`
+- 状態コードを返さないもの: `sucheme_alloc`、`sucheme_free`、`sucheme_output_ptr`、`sucheme_output_len`、`sucheme_output_clear`、`sucheme_version_ptr`、`sucheme_version_len`
+
+`sucheme_step`、`sucheme_provide_input`、`sucheme_provide_eof`、`sucheme_set_command_line`、`sucheme_exit_code` は、まだ無い。`web/sucheme.js` もこれらを呼ばない。`sucheme_eval_begin` は、入力の式をすべて、完了まで同期して評価してから戻る。戻す値は 0、-1、-2、-3、-4、-5、-8 のどれかで、1(継続)、2(入力待ち)、-6(`exit`)は戻さない。再開可能な機械は、段階8の「`read` による対話」と「処理の中断」で入れる([roadmap](../roadmap.md)、[plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md) の合意を求める点の1)。`sucheme_set_command_line` と `sucheme_exit_code` は、`command-line` と `exit` が入る段階5で足す。以下の状態コードと再開可能性の記述は、この完全な設計の契約であり、現状で実現しているのは上の部分集合に限る。
+
 文字列はすべて UTF-8 とする。文字列表現に UTF-8 を選んだ理由の一つがこの境界である。
 
 ### UTF-8 の妥当性検証
@@ -71,7 +80,7 @@ sucheme_version_len() -> u32
 | --- | --- |
 | `sucheme_eval_begin` と `sucheme_provide_input` が受け取るバイト列 | 状態コード `-3` を返し、出力バッファに位置を示す説明を書く。インタプリタの状態は変えない |
 | `sucheme_set_command_line` が受け取るバイト列 | 0 を返して設定を変えない。出力バッファには書かない |
-| ネイティブのコマンドライン引数 | 起動時に検証し、不正なら標準エラーに説明を書いて非ゼロの終了コードで終わる |
+| ネイティブのコマンドライン引数 | 起動時に検証し、不正なら標準エラーに説明を書いて非ゼロの終了コードで終わる。これは設計で、`command-line` が入る段階5で入れる。段階2までの `sucheme` は、引数を UTF-8 として検査せず、ファイルの実行は未実装として非ゼロで終わる(`src/main.zig` の doc コメントが正) |
 | ネイティブの標準入力(REPL の行読み取り、パイプ、リダイレクト) | 読んだ行を検証し、不正なら読み取りエラーとして報告してプロンプトに戻る。処理系は終了しない |
 | ネイティブの環境変数 | `get-environment-variable` と `get-environment-variables` の呼び出し時に検証する。単数形は条件オブジェクトを送出する。複数形は不正な項目を結果の alist から除く |
 | ファイルから読んだバイト列(テキストポート) | 下の表に従って報告する |
@@ -226,7 +235,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 
 これを定めるのは、Zig のアロケータが解放時に長さを受け取り、長さからサイズクラスを決めるためである。`sucheme_alloc(100)` で得た領域に 50 バイトだけ書き込んで `sucheme_free(ptr, 50)` を呼ぶと、100 バイトの確保を別のサイズクラスとして解放し、アロケータの内部状態を壊す。`TextEncoder.encodeInto` の結果の長さをそのまま渡す形が最も踏みやすい。
 
-ホストは確保時の長さを保持し、解放時にそれを渡す。`web/sucheme.js` は確保した領域をラップするオブジェクトを返し、長さを利用者に管理させない形にする。契約違反を検出できるよう、Zig 側は `Debug` ビルドで確保した長さを記録し、不一致なら panic する。状態コードで報告しないのは、`sucheme_free` が状態コードを返さない群に属するためである。
+ホストは確保時の長さを保持し、解放時にそれを渡す。`web/sucheme.js` は確保した領域をラップするオブジェクトを返し、長さを利用者に管理させない形にする。契約違反を検出できるよう、Zig 側は全ビルドで確保した長さを記録し、不一致なら panic する。状態コードで報告しないのは、`sucheme_free` が状態コードを返さない群に属するためである。
 
 ### 所有権と有効期限の契約
 
@@ -269,11 +278,13 @@ env.host_now_ms() -> f64
 
 import を増やさないのは、ホスト側が用意しなければならない関数を最小に保つためである。エクスポートと状態コードで表せるものは import にしない。import 関数を通じた出力と、エクスポートの出力バッファ経由の取得の両方を用意するのは、逐次出力と一括取得の両方を使いたいためである。
 
+段階2までの `src/wasm.zig` が宣言する import は `host_write_stderr` だけで、パニックのときの書き込みにだけ使う。`host_write_stdout` と `host_now_ms` は宣言していない。出力は出力バッファだけを通り、`host_now_ms` は時刻の手続きが入る段階5で足す([open-questions.md](open-questions.md) の時刻の import の形の行)。`host_write_stdout` を足す段階は決めていない。
+
 ホスト関数の import と、`alloc` による領域確保、文字列の往復は実機で確認した。
 
 ### 再開可能性
 
-`sucheme_step` が歩数制限で戻る設計は、ランタイム設計の `step_budget` に対応する。これにより次の3つが同時に成立する。
+`sucheme_step` が歩数制限で戻る設計は、[runtime.md](runtime.md) の機械の状態の「歩数の残り」に対応する。段階2までの実装には歩数の制限も `sucheme_step` も無く、機械は完了まで走る。停止ボタンは、`web/app.js` が Worker を `terminate()` で捨てて作り直す形で、作り直した処理系は初期状態に戻る。以下は設計の目標で、段階8で入れる。これにより次の3つが同時に成立する。
 
 - ブラウザのメインスレッドを長時間占有しない。
 - 実行の中断(停止ボタン)を実現できる。
@@ -283,7 +294,7 @@ import を増やさないのは、ホスト側が用意しなければならな�
 
 終端は専用のエクスポート `sucheme_provide_eof()` で伝える。`sucheme_provide_input(ptr, 0)` を終端の意味にはしない。長さ0の入力(空行)と終端は別の事象であり、同じ呼び出しで表すとホストが空行を渡せなくなる。このエクスポートは状態コードを返す群に入るので、群の件数は6つになる。
 
-渡したバイト列が1回の読み取りより長い場合は、残りを WASM 側の入力バッファに保持し、次の読み取りが先にそこから取る。捨てない。捨てると `(list (read-char) (read-char))` に `sucheme_provide_input("ab")` を1回渡したときの結果が実装によって変わる。バッファが空になってから次の読み取りが来たときに 2 を返す。終端を受け取った後は、以降のすべての読み取りが EOF を返す。入力バッファも計上の対象に含める([runtime.md](runtime.md) の計上の対象)。
+渡したバイト列が1回の読み取りより長い場合は、残りを WASM 側の入力バッファに保持し、次の読み取りが先にそこから取る。捨てない。捨てると `(list (read-char) (read-char))` に `sucheme_provide_input("ab")` を1回渡したときの結果が実装によって変わる。バッファが空になってから次の読み取りが来たときに 2 を返す。終端を受け取った後は、以降のすべての読み取りが EOF を返す。入力バッファも計上の対象に含める([runtime.md](runtime.md) の計上の対象)。入力バッファは `sucheme_provide_input` とともに入れる設計で、段階2までには無い。ホストが `sucheme_alloc` で受け取る領域は、いまは計上の外にある(下の「所有権と有効期限の契約」の入力領域)。
 
 ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とする。配置先を段階8まで決めないので([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))、ヘッダを設定できる保証がない。ローカルで開く場合も、簡易な静的サーバがこれらのヘッダを返すとは限らない。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
 
@@ -346,9 +357,11 @@ sequenceDiagram
     A->>U: 結果を表示
 ```
 
+図の `sucheme_step` の周回は設計の目標である(上の再開可能性)。段階2までは、`sucheme_eval_begin` の1回の呼び出しで評価が終わり、Worker はその後で出力を取得する。
+
 Worker 上で動かすことで、長時間の計算中も画面が応答し、停止ボタンが機能する。
 
-各ラウンドで出力を取得したら `sucheme_output_clear` を呼ぶ。呼ばないとバッファが単調増加し、同じ内容を毎ラウンド再送するため転送量が出力長の二乗に比例する。無限ループの `display` で線形メモリを食い潰す。出力バッファも計上の対象である([runtime.md](runtime.md) の計上の対象)。
+各ラウンドで出力を取得したら `sucheme_output_clear` を呼ぶ。呼ばないとバッファが単調増加し、同じ内容を毎ラウンド再送するため転送量が出力長の二乗に比例する。無限ループの `display` で線形メモリを食い潰す。出力バッファは、設計では計上の対象である([runtime.md](runtime.md) の計上の対象)。段階2までの実装は、固定の大きさ(`src/wasm.zig` の `output_capacity`)のバッファを `std.heap.wasm_allocator` から確保し、計上の外に置く。溢れる書き込みは失敗し、評価は `output buffer full` で終わるので、バッファは単調に増えない。
 
 ### 段階ごとの範囲
 
@@ -371,6 +384,8 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 最終的に複数行編集と Emacs バインディングを要件とする。段階1では素朴な行読み取りで始めるため、境界を先に定めておく。
 
+段階2までの実装は、次の `union` をまだ置いていない。境界として保っているのは、完結判定の共有だけである。REPL(`src/main.zig` の `repl`)は `*std.Io.Reader` から行を読み、リーダが提供する `isIncomplete` が偽になるまで継続行として保留に足す。`union` は `rich` が入る段階7で作る([ADR-0014](../adr/0014-repl-line-editor-boundary.md) の追記、[plans/0010-slices-1k-1l-primitives-and-repl-continuation.md](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の合意を求める点の7)。下の型は、そのときの設計の形である。
+
 ```zig
 pub const LineReader = union(enum) {
     dumb: Dumb,  // 行単位。端末でない入力(パイプ・ファイル)でも使う
@@ -391,4 +406,4 @@ pub const LineReader = union(enum) {
 - 識別子の補完
 - 端末の生モード。POSIX では termios、Windows では仮想端末シーケンスの有効化
 
-自前実装にするか既存の C ライブラリを取り込むかは段階7で判断する。段階1から段階6では `dumb` のみを使い、`rich` の有無が他の部分に影響しない構造を保つ。
+自前実装にするか既存の C ライブラリを取り込むかは段階7で判断する。段階1から段階6では `dumb` に当たる行読み取り(`repl` が `*std.Io.Reader` を直接読む形)のみを使い、`rich` の有無が他の部分に影響しない構造を保つ。

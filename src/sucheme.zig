@@ -1,7 +1,7 @@
 //! sucheme: an R7RS-small Scheme interpreter.
 //!
-//! インタプリタの公開の入口である。段階1の各スライスが、読んで評価できるものを
-//! 増やしていく。各スライスが何を足すかは docs/plans/0003-phase1-minimal-slice.md に、
+//! インタプリタの公開の入口である。各段階のスライスが、読んで評価できるものを
+//! 増やしていく。スライスの進み具合は docs/roadmap.md の「現在地」が指す計画書に、
 //! 育っていく先のモジュールは docs/design/architecture.md にある。
 
 const std = @import("std");

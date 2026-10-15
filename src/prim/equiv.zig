@@ -99,7 +99,7 @@ const Stack = struct {
 /// 次の要素の位置を積む。データの変更が無いので循環は作れず、止まらなくなることはない。
 /// 訪問済みの集合は持たない。そのため、同じ部分を何度も指すデータ(共有構造)では、
 /// 比較の回数が深さに対して指数に増える。循環の停止と合わせて、データの変更が入る
-/// 段階3の最初のスライスで入れる(docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
+/// 段階3の最初のスライスで入れる(docs/roadmap.md の段階3。経緯は docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
 ///
 /// 同じペアやベクタの比較は、中を見ずに真とする。`eqv?` が真なら `equal?` も真だからである。
 pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {

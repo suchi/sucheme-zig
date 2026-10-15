@@ -1,6 +1,8 @@
 //! Reads the external representation of data (R7RS 7.1.2).
 //!
-//! スライス 1c が読むのは、10 進整数、真偽値、識別子、丸括弧のリスト、`'` の略記である。
+//! 読むのは、10 進整数、真偽値、識別子、文字、文字列、丸括弧のリスト、ベクタ、`'` の略記
+//! である。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と文字名を小文字にする。
+//! 読めない記法は `InvalidToken` などの誤りにする。
 //! `Value` を直接作る。ペアは渡された GC ヒープに確保し、識別子は渡されたシンボル表に
 //! インターンする。読み取りの途中でヒープは GC しないので、`next` が返した時点で
 //! データは完全な形をしている。何からも参照されなくなればすぐにゴミになるが、
@@ -237,7 +239,7 @@ pub const Reader = struct {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
-            // このスライスが読まない区切り文字: `|`。
+            // 今のリーダが読まない区切り文字: `|`。
             self.pos += 1;
             return error.InvalidToken;
         }

@@ -53,7 +53,7 @@
 
 ### 段階1: 通しで動く最小の縦切り
 
-作業は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) が10個のスライスに割っている。下のチェックボックスは段階の全体で、スライスごとの完了条件はその計画書が正である。1つの PR に段階1の全部を入れると段階0の経緯が繰り返されるので、スライスごとにマージする。
+作業は [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md) がスライスに割っている。下のチェックボックスは段階の全体で、スライスごとの完了条件はその計画書が正である。1つの PR に段階1の全部を入れると段階0の経緯が繰り返されるので、スライスごとにマージする。
 
 意図的に小さくする。10進整数と記号と手続き呼び出しだけで `(define (fact n) ...)` が動く状態を目標にする。この時点で値表現、ヒープ、GC、機械、リーダ、プリンタ、REPL、WASM、Web UI、CI がすべて最小の形でそろう。以降の段階はこの縦切りを太らせる作業になる。
 
@@ -111,13 +111,13 @@
 
 ### 段階3: Schemeによる標準ライブラリ
 
-- [ ] リーダに `` ` `` `,` `,@` の略記と文字リテラルを追加(`quasiquote` の定義に必要)
-- [ ] 文字と EOF の値、バイトベクタと約束の値
+- [ ] リーダに `` ` `` `,` `,@` の略記を追加(`quasiquote` の定義に必要。文字リテラルはスライス 1h から読める)
+- [ ] EOF の値、バイトベクタと約束の値(文字の値はスライス 1h で入った)
 - [ ] 派生構文を `lib/sucheme/derived.scm` に `syntax-rules` で定義
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
-- [ ] 本体の先頭に置かれた `begin`(定義だけを含むもの、空の `(begin)` を含む)を、定義の並びとして展開する(R7RS 7.1.3、7.1.6、5.3.2)。例: `(lambda () (begin) 1)` と `(lambda () (begin (define x 1)) x)` は、今は `bad begin` になる。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
+- [ ] 本体の先頭に置かれた `begin`(定義だけを含むもの、空の `(begin)` を含む)と、本体の先頭の `include` と `cond-expand` が持つ定義を、定義の並びとして展開する(R7RS 7.1.3、7.1.6、5.3.2、4.1.7、4.2.1)。今は、空の `(begin)` は `bad begin: expected (begin expression ...)` になる(例: `(lambda () (begin) 1)`)。定義を含む `begin`、定義を含むファイルの `include`、定義を含む節の `cond-expand` は、`bad define: a definition is only allowed at the top level or at the start of a body` になる(例: `(lambda () (begin (define x 1)) x)` と `(lambda () (cond-expand (r7rs (define x 1))) x)`)。式だけを含む `begin` と `include` は、本体の先頭でも動く。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
 - [ ] パラメータの読み出しは、動的点の列の長さに比例して遅くなる(毎段、別のパラメータを `parameterize` する深い再帰で、束縛していないパラメータを読むと、深さの2乗になる)。結果は正しく、メモリは有界である。パラメータごとの束縛の索引を持つかどうかは、実際のプログラムで読み出しが支配的になったときに決める([design/open-questions.md](design/open-questions.md) の「パラメータの読み出しの費用」)。スライス未割り当て
 - [ ] ライブラリの表と `import` の作業領域を、ヒープの上限に計上するか、表を共有する形にする。今は、ライブラリごとの最上位の環境の表(インポートした名前の全部を持つ)が永続アリーナにあり、失敗した定義の表も残るので、約 100 KB の入力で上限(256 MiB)を超えるメモリを使いうる。入れ子の `prefix` の `import` も、1 行の中で計上されない量を確保する。2n のファイルの読み取りでは、リーダの作業領域も計上されない(上限は `max_file_bytes` の 1 MiB に下げて抑えた)。結果は正しい。ユーザーが 2026-10-15 に、2m では直さず、受け入れた制約として扱うと判断した。直す時期は、段階3のコアIRと構文環境を GC ヒープに移すスライスと同時に決める([design/open-questions.md](design/open-questions.md) の「ライブラリの表と `import` の作業領域が、ヒープの上限の外にある」)。スライス未割り当て
 - [ ] マクロの展開の有界化の残り。(1) 入れ子の `lambda` を重ねる止まらないマクロは、構文環境の探索が深さに比例して重くなり、時間で終わらない(例: `(define-syntax f (syntax-rules () ((_) (lambda () (f)))))` の `(f)`)。環境の探索を深さに依存しない形にするか、展開の深さの上限を置く。(2) 失敗した展開の節点は行をまたいで残り、失敗を繰り返すと上限の外のメモリが増える。節点を GC ヒープへ移すときに外れる。経緯は [ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 のスライス 2l の追記にある。スライス未割り当て
@@ -129,7 +129,7 @@
 - [ ] ファイルの実行(`sucheme prog.scm`)。R7RS 5.1 のプログラムは `import` で始まるので、`(scheme base)` ができてから入れる([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の6)
 - [ ] シンボル表を弱い表にする。`string->symbol` が入るスライスで、シンボルの操作と同時に決める([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
-- [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
+- [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える。v0.2.0 のノートはこの名前の取り消しに触れていないので、段階3のリリースのノートに取り消しを書く([ADR-0037](adr/0037-core-library-exposed-in-stage-2.md) の 2026-10-15 の追記、[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
 - [ ] `apply` の周回を、ステップの境目を通る形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 の追記)。今は、`apply` が並べ直した引数の鎖と、`apply` で `apply` を呼ぶ入れ子の周回が、1ステップの中で確保され、その間は GC が走らない。`set-car!` などが入る最初のスライスまでに要る。自分を指す引数のリストで、1ステップの中で終わらない周回が作れるようになるためである (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 - [ ] 複数値の確保(`values` と継続の多値での起動の `Machine.valuesOf`、`call-with-values` の `Machine.receiverCall`)を、個数に比例する量を1ステップの中で確保しない形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 の追記のスライス 2f の項)。上の `apply` の項と同じ直し方で、同じスライスで扱える (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 
@@ -137,7 +137,7 @@
 
 この段階で未実装として表れてよいのは、後の段階の機能を必要とする識別子である。数値塔を必要とするもの(`/` `exact` `inexact` `sqrt` など)は段階4、ポートを引数に取るか返すもの(`read-char` `write-string` `open-input-string` など)は段階5である。どの族にも属さず後の段階にも割り当てられない識別子が残っていれば、それは [ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md) の族の一覧の漏れである。
 
-残していること: なし。open-questions.md に段階3の節はない。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階3までに決める」の行。件数と内容をここに複製しない。
 
 ### 段階4: 数値塔とUnicode
 
@@ -201,12 +201,12 @@
 
 完了条件: ブラウザで R7RS のサンプルが一通り動く。配置した URL でも動く。リリース v1.2.0 を出す。
 
-残していること: なし。ここが最終段階である。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階8までに決める」の行。件数と内容をここに複製しない。ここが最終段階である。
 
 ## 横断的に続ける作業
 
 - ドキュメントとコードの整合性チェックを節目ごとに実施する。
-- PR は自前の敵対的レビューを実行し、必須の新規指摘ゼロになるまで修正する([ADR-0023](adr/0023-mandatory-zero-convergence.md))。推奨と任意は `docs/review/` に記録して該当する段階の作業項目に回す。手順の正は `AGENTS.md` の「PR・レビュー・マージ」の節である。「この詳細が未規定である」という指摘のうち実装時に決めると判断したものは [design/open-questions.md](design/open-questions.md) に記録して閉じる([ADR-0018](adr/0018-incremental-vertical-slices.md))。
+- PR は自前の敵対的レビューを実行し、必須の新規指摘ゼロになるまで修正する([ADR-0027](adr/0027-severity-by-consequence-and-a-cost-side-stop.md))。推奨と任意は `docs/review/` に記録して該当する段階の作業項目に回す。手順の正は `AGENTS.md` の「PR・レビュー・マージ」の節である。「この詳細が未規定である」という指摘のうち実装時に決めると判断したものは [design/open-questions.md](design/open-questions.md) に記録して閉じる([ADR-0018](adr/0018-incremental-vertical-slices.md))。
 - 技術選択と設計判断、およびレビュー提案をあえて採用しない場合は ADR に記録する。
 - 段階の完了時に、確定したことを設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す。
 - 1コミット=1論理変更を守る。コミットは節目ごとに作り、push はまとめる(`AGENTS.md` の進め方の「Actions の分数」の規則)。

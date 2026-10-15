@@ -21,7 +21,7 @@ description: 現在の状況を短いダッシュボードで報告する。Issu
 | サブエージェント | `ListAgents`。「到達できる他のエージェントはいない」と返ったら、サブエージェントは0件と書く |
 | 予約 | `list_triggers`(`enabled: true`)。生存確認や PR の見守りの予約が残っているかを見る |
 | この会話の用事 | `TaskList`。会話の中でユーザーに聞いて、まだ答えが無いこと(判断待ち)を、直近の自分の発言から拾う |
-| ローカル | `git branch --show-current`、`git status --short`。[docs/plans/0003-phase1-minimal-slice.md](../../../docs/plans/0003-phase1-minimal-slice.md) の進捗表と「次にやること」(スライスの現在地) |
+| ローカル | `git branch --show-current`、`git status --short`。[docs/roadmap.md](../../../docs/roadmap.md) の「現在地」が指す計画書の進捗表と「次にやること」(スライスの現在地) |
 
 出力ファイル(`tasks/*.output`)はシェルで読まない。記録全体が入っていて、文脈を溢れさせる([watch-subagent](../watch-subagent/SKILL.md))。
 

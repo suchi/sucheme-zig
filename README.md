@@ -69,7 +69,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 名前の似た Unlicense(パブリックドメインへの献呈)とは逆の意味です。取り違えないでください。
 
-`tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。
+`tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。このディレクトリは、取り込みを行う段階6で作ります(まだありません)。
 
 `tools/extract-r7rs-required/appendix-a.html` は R7RS の付録A の逐語コピーです。R7RS 自身が全文または一部の複製を許諾しています。出典と許諾の根拠は [tools/extract-r7rs-required/SOURCE.md](tools/extract-r7rs-required/SOURCE.md) にあります。
 

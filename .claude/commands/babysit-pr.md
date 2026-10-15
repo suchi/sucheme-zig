@@ -15,12 +15,12 @@ PR #$ARGUMENTS の未解決レビュースレッドと最新レビューを確�
    c. スレッドに対応内容を日本語で返信する
       (`gh api repos/{owner}/{repo}/pulls/$ARGUMENTS/comments --method POST -f body="修正しました: ..." -F in_reply_to=COMMENT_ID`)
    d. `resolveReviewThread` GraphQL mutationでスレッドを解決する
-4. Copilotに再レビューを依頼する: 必ず`gh pr edit $ARGUMENTS --add-reviewer @copilot`(gh 2.88.0以上が必要)。REST APIの`.../requested_reviewers`はレビュー済みPRの再レビューをトリガーしない。
-5. 未解決スレッドと新規コメントを確認する。未解決スレッドがなく、必須の新規指摘もなければ「必須の新規指摘ゼロ」と報告する([ADR-0023](../../docs/adr/0023-mandatory-zero-convergence.md))。Copilot に依頼した場合は、下記「Copilot の応答の判定」を10分おきに最大6回ポーリングし、満たされなければ「Copilot の応答なし」と記録して判定に進む。応答の有無はマージの条件ではないので、ここで待ち続けない。マージはしない — マージには明示的なユーザー承認が必要(/merge-pr)。
+4. Copilotへの依頼は任意で、自前のレビューが収束してから1回だけ行う(AGENTS.md の「PR・レビュー・マージ」の節)。依頼するときは`gh pr edit $ARGUMENTS --add-reviewer @copilot`(gh 2.88.0以上が必要)を使う。REST APIの`.../requested_reviewers`はレビュー済みPRの再レビューをトリガーしない。修正のたびに依頼し直さない。
+5. 未解決スレッドと新規コメントを確認する。未解決スレッドがなく、必須の新規指摘もなければ「必須の新規指摘ゼロ」と報告する([ADR-0027](../../docs/adr/0027-severity-by-consequence-and-a-cost-side-stop.md))。Copilot に依頼した場合は、下記「Copilot の応答の判定」を10分おきに最大6回ポーリングし、満たされなければ「Copilot の応答なし」と記録して判定に進む。応答の有無はマージの条件ではないので、ここで待ち続けない。マージはしない — マージには明示的なユーザー承認が必要(/merge-pr)。
 
 ## Copilot の応答の判定
 
-マージの条件としての「レビュー完了」は、自前の敵対的レビューで必須の新規指摘ゼロになったことを指す([ADR-0023](../../docs/adr/0023-mandatory-zero-convergence.md))。外部レビューの可否は含めない。本節の2条件は、Copilot にレビューを依頼した場合に「その依頼の応答が返ったか」を判定するためのものである。離脱の条件は手順5が持つ(10分おきに最大6回)。
+マージの条件としての「レビュー完了」は、自前の敵対的レビューで必須の新規指摘ゼロになったことを指す([ADR-0027](../../docs/adr/0027-severity-by-consequence-and-a-cost-side-stop.md))。外部レビューの可否は含めない。本節の2条件は、Copilot にレビューを依頼した場合に「その依頼の応答が返ったか」を判定するためのものである。離脱の条件は手順5が持つ(10分おきに最大6回)。
 
 次の両方を満たすまで「その依頼の応答が返った」と判定しない(監視ループはこの2条件をポーリングする):
 

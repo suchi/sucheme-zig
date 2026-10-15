@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0002](../adr/0002-value-representation.md), [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md), [ADR-0008](../adr/0008-string-representation.md), [ADR-0014](../adr/0014-repl-line-editor-boundary.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md), [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md)
 - 段階: 1(スライス 1k と 1l)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-11
-- 状態: 合意済み(2026-10-11)。「合意を求める点」の9つは、5を除いて勧める案のとおり。5は、行コメントを 1l から切り出して最初に入れる形に変わった。実装の状況: 1l は L1 が #43、L2 と L3 が #55 でマージ済み。1k は K0 から K5 がマージ済みで、K6(統合)の PR で完了する。進捗の表は [0003](0003-phase1-minimal-slice.md) が正
+- 状態: 合意済み(2026-10-11)。「合意を求める点」の9つは、5を除いて勧める案のとおり。5は、行コメントを 1l から切り出して最初に入れる形に変わった。実装の状況: 1l は L1 が #43、L2 と L3 が #55 でマージ済み。1k は K0 から K5 がマージ済みで、K6(統合)は [#58](https://github.com/suchi/sucheme-zig/pull/58) でマージされ、1k は完了した。進捗の表は [0003](0003-phase1-minimal-slice.md) が正
 
 ## 解こうとしている問題
 

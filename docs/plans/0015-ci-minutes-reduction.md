@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md)(CI のテスト対象)、[ADR-0020](../adr/0020-repository-visibility-private.md)(private では分数が枠に計上される)
 - 段階: 横断の運用。段階2の最中に起きた
 - 日付: 2026-10-13
-- 状態: 合意済み(2026-10-13)。案 A の運用の規則と、案 B のうち B1 と B2 を、PR #86 で入れる。B3 は採らない
+- 状態: 合意済み(2026-10-13)。案 A の運用の規則と、案 B のうち B1 と B2 を、[#86](https://github.com/suchi/sucheme-zig/pull/86) で入れ、`main` に入った。B3 は採らない。実績の確認は未了である
 
 ## 解こうとしている問題
 
@@ -100,6 +100,6 @@ B3. Windows の test ジョブで走らせる step を、プラットフォー�
 
 | 作業 | 状態 |
 | --- | --- |
-| 案 A の運用の規則 | PR #86 で入れる |
-| 案 B の B1 と B2 | PR #86 で入れる |
-| 実績の確認 | マージ後。Billing の使用量レポートで確かめ、この計画書に足す |
+| 案 A の運用の規則 | [#86](https://github.com/suchi/sucheme-zig/pull/86) で入った |
+| 案 B の B1 と B2 | [#86](https://github.com/suchi/sucheme-zig/pull/86) で入った |
+| 実績の確認 | 未了。Billing の使用量レポートで確かめ、この計画書に足す |

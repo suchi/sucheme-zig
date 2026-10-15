@@ -129,8 +129,7 @@ pub fn main(init: std.process.Init) !void {
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
                     "-I <dir> adds a directory to search for the files of libraries; the working\n" ++
                     "directory is searched first.\n" ++
-                    "Integers, booleans, lists, variables, procedures and arithmetic only for now;\n" ++
-                    "see docs/roadmap.md.\n",
+                    "Only the core of the language is bound for now; see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
             );
             try out.flush();
@@ -192,7 +191,7 @@ pub fn classify(args: []const []const u8) Request {
         }
         // 先頭が `-` で一致しないものは、ファイル名でなく打ち間違いである。
         // ただし `-` だけは別で、慣習では標準入力を指す。これは名前の側に
-        // 落ち、段階1で意味が与えられる。
+        // 落ち、ファイルの実行が入る段階で意味が与えられる。
         if (arg.len > 1 and arg[0] == '-') return .{ .unknown_option = arg };
         named = true;
     }

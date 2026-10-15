@@ -4,6 +4,8 @@
 - 日付: 2026-10-14
 - 一部置き換え: [ADR-0006: library-system-and-scheme-level-stdlib](0006-library-system-and-scheme-level-stdlib.md) の決定のうち、「`(sucheme core)` は利用者に公開しない」を、段階2の間だけ置き換える。Zig が `(sucheme core)` を登録すること、その上に `lib/sucheme/derived.scm` と `lib/scheme/base.sld` を重ねる起動順序、族の一覧は変わらない
 
+> 2026-10-15 追記: 決定は変わらない。結果の節は、段階2のリリース(v0.2.0)のリリースノートに、この名前が段階3で使えなくなることを書くとしているが、v0.2.0 のノートにその記述は入らなかった。公開済みのノートは書き換えない。段階3で公開を取り消すスライスが、そのリリースのノートに取り消しを書く(roadmap の段階3の該当項目に添えた)。
+
 ## 背景
 
 [ADR-0006](0006-library-system-and-scheme-level-stdlib.md) と [frontend.md](../design/frontend.md) の起動順序の節は、次の順序を決めている。Zig がコアの特殊形式とプリミティブを内部用のライブラリ `(sucheme core)` として登録する。その上で `lib/sucheme/derived.scm` が派生構文を定義し、`lib/scheme/base.sld` が `(scheme base)` を構成する。`(sucheme core)` は内部用なので、利用者には公開しない。

@@ -1,7 +1,7 @@
 //! The expander: data in, core IR out.
 //!
-//! 仕事は、特殊形式(`quote`、`if`、`lambda`、`set!`、`define`、`begin`、
-//! `define-syntax`)と、マクロの適用と、呼び出しの変換である。マクロの変換子は
+//! 仕事は、特殊形式(`value.Special` の列挙が一覧である)と、マクロの適用と、呼び出しの
+//! 変換である。マクロの変換子は
 //! `syntax-rules` で、照合とテンプレートの展開は src/syntax/rules.zig にある。マクロの
 //! 適用の結果は、同じ位置の形式として展開し直す。
 //!
@@ -250,7 +250,7 @@ const Expander = struct {
 
     /// Makes the node of `task` the constant `v`.
     /// コードはまだ GC ヒープの中にない。そのため、ヒープを指す定数はコンテキストに
-    /// 知らせ、コンテキストが生かしておく。定数を作る箇所は、この 2 つだけである。
+    /// 知らせ、コンテキストが生かしておく。
     /// マクロのテンプレートが導入した別名は、ここで元のシンボルに戻す(`stripAliases`)。
     fn constant(self: *Expander, task: Task, v: Value) Error!void {
         const datum = try self.stripAliases(v);

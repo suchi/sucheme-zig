@@ -41,7 +41,7 @@ flowchart TB
     roadmap --> plan["docs/plans/<br/>段階ごとの実装計画"]
     arch["docs/design/architecture.md<br/>全体構成と不変条件"] --> detail["docs/design/<br/>各領域の詳細"]
     arch --> adr["docs/adr/<br/>決定の理由"]
-    plan --> code["src/ lib/ web/ tests/"]
+    plan --> code["src/ web/ tests/<br/>(lib/ は段階3で作る)"]
     detail --> code
 ```
 
@@ -60,11 +60,11 @@ flowchart TB
 | パス | 内容 |
 | --- | --- |
 | `src/` | Zig で書くインタプリタ本体 |
-| `lib/` | Scheme で書く標準ライブラリ。ビルド時に実行ファイルへ埋め込む |
+| `lib/` | Scheme で書く標準ライブラリ。ビルド時に実行ファイルへ埋め込む。未作成(段階3で作る) |
 | `web/` | Web UI。依存パッケージを持たない素の HTML/CSS/JS |
 | `tests/scheme/` | Scheme レベルの振る舞いテスト |
 | `tests/scheme-slow/` | 規模を試す Scheme レベルのテスト(`-Dslow=true` のときだけ走る。[plans/0007-test-tiers.md](plans/0007-test-tiers.md)) |
-| `tests/vendor/` | 外部から取り込んだ準拠テストスイート。改変しない |
+| `tests/vendor/` | 外部から取り込んだ準拠テストスイート。改変しない。未作成(段階6で取り込む) |
 | `tools/` | テーブル生成などの補助プログラム |
 | `docs/` | 設計、決定、計画、進捗 |
 | `.agents/skills/` | Claude Code・Copilot・Codex で共有するスキル |
@@ -99,7 +99,7 @@ PR には、`.github/workflows/preview.yml` が成果物 `sucheme-web` を上げ
 
 ### 派生構文を追加する
 
-Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md))。`lib/sucheme/derived.scm` に `syntax-rules` で定義し、衛生性を壊していないかを確認するテストを添える。
+Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system-and-scheme-level-stdlib.md))。`lib/` は段階3で作る。作ったあとは `lib/sucheme/derived.scm` に `syntax-rules` で定義し、衛生性を壊していないかを確認するテストを添える。
 
 ### 設計判断をした
 
