@@ -239,7 +239,7 @@ pub const Reader = struct {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
-            // このスライスが読まない区切り文字: `|`。
+            // 今のリーダが読まない区切り文字: `|`。
             self.pos += 1;
             return error.InvalidToken;
         }

@@ -250,7 +250,7 @@ const Expander = struct {
 
     /// Makes the node of `task` the constant `v`.
     /// コードはまだ GC ヒープの中にない。そのため、ヒープを指す定数はコンテキストに
-    /// 知らせ、コンテキストが生かしておく。定数を作る箇所は、この 2 つだけである。
+    /// 知らせ、コンテキストが生かしておく。
     /// マクロのテンプレートが導入した別名は、ここで元のシンボルに戻す(`stripAliases`)。
     fn constant(self: *Expander, task: Task, v: Value) Error!void {
         const datum = try self.stripAliases(v);

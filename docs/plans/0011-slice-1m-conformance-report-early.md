@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1m)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-11
-- 状態: 合意済み(2026-10-11)。後述の案Bを、勧める最小の形で承認した。`ci.yml` に `zig build check-report` を1行足すことも承認した。実装済みで、PR のレビュー待ち
+- 状態: 合意済み(2026-10-11)。後述の案Bを、勧める最小の形で承認した。`ci.yml` に `zig build check-report` を1行足すことも承認した。実装は [#44](https://github.com/suchi/sucheme-zig/pull/44) で `main` に入った
 
 ## 解こうとしている問題
 

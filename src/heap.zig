@@ -60,9 +60,11 @@ pub const Options = struct {
 };
 
 /// The reserve for raising: 4 KiB.
-/// 段階2のスライス 2b の初期値である。いま予約から確保するのは、条件オブジェクトと
-/// そのメッセージだけで、メッセージが約 4000 バイトまでなら収まる。ハンドラと巻き戻しの
-/// 確保地点が加わる 2d と 2e で測り直し、2e で決める(docs/design/open-questions.md)。
+/// 段階2のスライス 2b の初期値で、2e が測って 4 KiB のまま変えないと決めた。予約から
+/// 確保する地点には、条件オブジェクトとそのメッセージ、ハンドラの呼び出し、継続の起動の
+/// 巻き戻しがある。根拠は docs/design/runtime.md の送出のための予約領域の節と、
+/// src/machine.zig の単体テスト(送出と、ハンドラの呼び出しと、wind 点を1つ通る脱出が
+/// 予約に4回分収まること)にある。
 pub const default_raise_reserve: usize = 4 * 1024;
 
 /// What an allocation is held to.
@@ -343,8 +345,10 @@ const reserve_divisor = 16;
 
 /// The account a collection is asked for at the latest.
 /// 上限までの余裕は、機械の1ステップが2つのセーフポイントの間に確保してよい量である。
-/// 例外が1つある。`apply` は、最後の引数のリストの長さに比例する量を1ステップの中で
-/// 確保し、この余裕を超えうる(ADR-0031 の 2026-10-13 の追記)。
+/// 例外が2つある。`apply` は、最後の引数のリストの長さに比例する量を1ステップの中で
+/// 確保し(ADR-0031 の 2026-10-13 の追記)、`values` と `receiverCall` は、複数値の
+/// 個数に比例する量を確保する(同じ ADR の 2026-10-14 の追記)。どちらもこの余裕を
+/// 超えうる。
 fn softLimit(limit: usize) usize {
     return limit - limit / reserve_divisor;
 }

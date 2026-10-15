@@ -24,7 +24,7 @@ fn wasmPanic(msg: []const u8, _: ?usize) noreturn {
 }
 
 /// Status codes (the table of the design document).
-/// 1i の関数が返すものだけを置く。
+/// エクスポートした関数が返す状態コードを置く(-2 は回復不能、-4 は呼び出しの順序の誤り)。
 const Status = struct {
     const ok: i32 = 0;
     const scheme_error: i32 = -1;
@@ -40,6 +40,12 @@ const Status = struct {
 /// 初期化のときに1回だけ確保し、伸ばさない。
 const output_capacity = 256 * 1024;
 
+// エントリ層である。ここで直接確保するもの(出力バッファと、`sucheme_alloc` が返す
+// ホストの入力領域)は、docs/design/architecture.md の確保点の一元化の対象外にあり、
+// ヒープの上限(`heap_limit_bytes`)に計上されない。docs/design/runtime.md の計上の対象は
+// この2つを挙げているので、設計との食い違いである(同文書と platform-and-web.md に現状を
+// 書いた)。出力バッファは固定の大きさで伸びないが、入力領域は呼び出しごとに確保され、
+// 起動と終了に限らない。Scheme の値やそのペイロードは、ここでは確保しない。
 const allocator = std.heap.wasm_allocator;
 
 var interp: sucheme.Interpreter = undefined;

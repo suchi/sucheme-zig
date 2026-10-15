@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0018](../adr/0018-incremental-vertical-slices.md)
 - 段階: 1 の終わり。段階の全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-13
-- 状態: 合意済み(2026-10-13)。変更の範囲と、`current_stage` を同じ PR で上げることを、勧める案どおりに承認した。実装済みで、PR のレビューとマージを待っている
+- 状態: 合意済み(2026-10-13)。変更の範囲と、`current_stage` を同じ PR で上げることを、勧める案どおりに承認した。実装は [#74](https://github.com/suchi/sucheme-zig/pull/74) と [#75](https://github.com/suchi/sucheme-zig/pull/75) で `main` に入った
 
 ## 解こうとしている問題
 
@@ -45,9 +45,8 @@
 | 項目 | 状態 |
 | --- | --- |
 | 変更 1(この計画書) | 合意済み |
-| 変更 2 から 5 | 実装済み。敵対的レビューとマージを待っている |
+| 変更 2 から 5 | `main` に入った([#74](https://github.com/suchi/sucheme-zig/pull/74)、[#75](https://github.com/suchi/sucheme-zig/pull/75)) |
 
 ## 次にやること
 
-1. 敵対的レビューを 1 巡行い、必須が無くなってから ready にする。
-2. マージ後に、段階2の計画書(`0014-phase2-...`)を作る。計画書のない段階の実装は始めない([README](README.md))。
+なし。この計画書の作業は終わっている。段階2の計画書は [0014](0014-phase2-core-language.md) である。

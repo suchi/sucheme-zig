@@ -558,8 +558,8 @@ pub const Primitive = struct {
 };
 
 /// The operations of the machine that a primitive can name as its body.
-/// 残りの変種は、docs/plans/0014-phase2-core-language.md の「スライス」の表が
-/// 機械操作プリミティブを割り当てたスライスが、それぞれ足す。
+/// 段階2の機械操作プリミティブはすべて変種になっている。`eval` と `exit` は
+/// 段階5で、それを入れるスライスが足す(docs/design/runtime.md)。
 pub const MachineOp = enum {
     /// `(apply proc arg1 ... args)` (R7RS 6.10).
     apply,

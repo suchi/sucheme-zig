@@ -2,7 +2,9 @@
 
 値、メモリ、評価器についての決定。全体整合性に必要な範囲まで詳細を決め、それ以外は実装時に決める([ADR-0018](../adr/0018-incremental-vertical-slices.md))。実装時に決めるものは [open-questions.md](open-questions.md) に一覧がある。
 
-対応する決定: [ADR-0002](../adr/0002-value-representation.md)、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)、[ADR-0004](../adr/0004-cek-machine-evaluator.md)、[ADR-0008](../adr/0008-string-representation.md)、[ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md)。
+対応する決定: [ADR-0002](../adr/0002-value-representation.md)、[ADR-0003](../adr/0003-precise-mark-sweep-gc.md)、[ADR-0004](../adr/0004-cek-machine-evaluator.md)、[ADR-0008](../adr/0008-string-representation.md)、[ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md)、[ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md)、[ADR-0030](../adr/0030-lexical-address-width-u32.md)、[ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md)、[ADR-0035](../adr/0035-stage-2-gc-roots-and-raise-reserve.md)。
+
+この文書は設計の目標を書き、実装が先へ進んでいない部分には、その箇所に「段階2までの実装では」と現状を添える。現状とこの文書の食い違いは、そう書いていない限り誤りである。
 
 ## 値の表現
 
@@ -13,10 +15,12 @@
 | 区分 | 種類 | 導入する段階 |
 | --- | --- | --- |
 | 即値 | 空リスト、未規定値、真偽値、固定長整数、シンボルID、未初期化を表す内部値(スライス 1e で `Value` の即値の変種にした)。未束縛は、スライス 1b では大域環境に名前が無いことで表した。スライス 2j から、大域変数の束縛セルが、未初期化を表す内部値を値として持つことで表す(`src/env.zig`)。大域変数には未初期化の段階が無いので、同じ内部値を未束縛の印に使う | 1 |
-| ヒープ | ペア、文字列、ベクタ、クロージャ、プリミティブ、継続、条件オブジェクト | 1 |
+| ヒープ | ペア、文字列、ベクタ、クロージャ、継続、条件オブジェクト | 1 |
+| ヒープの外 | プリミティブ(Zig で実装した手続き。`Value` の変種は静的な `*const Primitive` を持ち、GC の対象ではない) | 1 |
 | ヒープ | 展開時の別名、複数値 | 2 |
 | ヒープ | パラメータ、レコード、レコード型 | 2 |
-| 即値 | 文字、EOF | 3 |
+| 即値 | 文字(`Value` の変種としては、スライス 1h から。`integer->char` などで作れる。リーダの文字リテラル `#\a` は段階3) | 1 |
+| 即値 | EOF | 3 |
 | ヒープ | バイトベクタ、約束 | 3 |
 | 即値 | 浮動小数点数 | 4 |
 | ヒープ | 多倍長整数、有理数、複素数 | 4 |
@@ -49,11 +53,13 @@ GC ヒープに置くオブジェクトは次の2群である。種別タグは�
 | 群 | 内容 |
 | --- | --- |
 | `Value` の変種 | 上の値の表現の表のヒープの行 |
-| `Value` に包めないもの | コアIRの節点、継続フレーム、環境のフレーム、構文環境、束縛、局所束縛、マクロ、パターン変数、動的点、巻き戻しの状態、進入の経路の節、ライブラリ、エクスポート表 |
+| `Value` に包めないもの | コアIRの節点、継続フレーム、引数の蓄積、環境のフレーム、大域変数の束縛セル、構文環境、束縛、局所束縛、マクロ、パターン変数、動的点、巻き戻しの状態、進入の経路の節、ライブラリ、エクスポート表 |
 
 第2群は Scheme の値として利用者に見えない。利用者が `eq?` や `write` に渡す経路がないので `Value` のタグにしない。ただし GC の走査とスイープの対象であり、ヘッダを持ち、計上の対象に含まれる。この2群の和が種別タグの定義域であり、走査関数を生成する対象でもある。
 
 第2群の導入段階は、コアIRの節点と継続フレームと環境のフレームが段階1、残りが段階2である。
+
+段階2までの実装では、コアIRの節点(`Node`、`Lambda` など、`src/value.zig` の `code_types`)は GC ヒープに置かれていない。展開器が `Interpreter` の永続アリーナに作り、セッションの終わりまで回収されない([architecture.md](architecture.md) の評価の進行点の一元化)。パターン変数の束縛木も、展開の作業用のアリーナにあり、ヒープのオブジェクトではない。コアIRをヒープに移すのは段階3で、[roadmap](../roadmap.md) の段階3に項目がある。どの型が GC ヒープに入るかは、`value.zig` の `heap_types` が正である。ここの2群の一覧と、`heap_types` と `code_types` の分け方が食い違うときは、コードが正である。
 
 全ヒープオブジェクトは共通ヘッダのフィールドを持つ。GC の走査とスイープが依存するため設計時に決める。
 
@@ -63,6 +69,8 @@ GC ヒープに置くオブジェクトは次の2群である。種別タグは�
 | マーク | マーク・スイープの印 |
 | 不変の印 | リテラル由来のオブジェクトへの破壊的操作を拒否する |
 | 確保済みリストの次へのリンク | スイープで全オブジェクトを辿る |
+
+段階2までの実装の `Header` は、種別、マーク、次へのリンクの3つだけを持ち、不変の印はまだ無い。不変の印は、リテラルに対する破壊的操作の手続き(`set-car!` など)が入る段階3の最初のスライスで足す([plans/0010-slices-1k-1l-primitives-and-repl-continuation.md](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の送り先の表)。
 
 「先頭に持つ」とは書かない。Zig の通常の `struct` は配置順を保証せず、宣言の位置も実際の位置も根拠にできない。実機で確認したところ、ヘッダを2番目に宣言した構造体で `@offsetOf` が0になる例と16になる例の両方が再現した。
 
@@ -110,7 +118,7 @@ R7RS 4.1.2 は「As noted in section 3.4, it is an error to attempt to alter a c
 
 `bytevector-copy!` `bytevector-u8-set!` `list-set!` `read-bytevector!` `set-car!` `set-cdr!` `string-copy!` `string-fill!` `string-set!` `vector-copy!` `vector-fill!` `vector-set!`
 
-`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。この一覧が原文からの抽出と一致することを検査にかける。
+`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。この一覧が原文からの抽出と一致することを検査にかける。検査は、一覧の手続きが入る段階3で足す。段階2までは、この一覧の手続きも、一覧を検査する仕組みも、不変の印も無い。
 
 ## ガベージコレクション
 
@@ -135,6 +143,8 @@ R7RS 4.1.2 は「As noted in section 3.4, it is an error to attempt to alter a c
 計上しないのは2つである。送出のための予約領域と、GC の作業リストである。どちらも上限の外側に置く。
 
 段階2のスライス 2b の実装では、予約領域から確保したものも同じ計上に入る。予約は別枠の領域でなく、予約から確保してよい地点に上限を超えることを許す幅である(下の送出のための予約領域の節、[ADR-0035](../adr/0035-stage-2-gc-roots-and-raise-reserve.md))。
+
+段階2までの実装では、表のうち、WASM の出力バッファとホストから受け取った入力領域は、計上の外にある。`src/wasm.zig` が `std.heap.wasm_allocator` から直接確保するエントリ層の例外で、出力バッファは固定の大きさ、入力領域は `sucheme_alloc` の呼び出しごとの確保である([architecture.md](architecture.md) の確保点の一元化、[platform-and-web.md](platform-and-web.md))。ポートのバッファは、ポートが入る段階5で、この表に従って計上の対象にする。
 
 GC の作業リストを計上の対象にできないのは、GC が走るのが計上量が閾値を超えたときだからである。計上の対象にすると、作業リストの確保そのものが上限超過になる。上限超過は Scheme のエラーであり、その送出は機械の実行を要するが、GC は `heap.zig` の確保の内部で停止型で走っているので機械を再帰的に起動できない。行き先のない経路になる。
 
@@ -331,7 +341,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 
 呼び出しの節点には末尾位置の印を付ける。展開器が付け、機械はその印を信用する。判定の責任を1箇所にまとめる。段階1の機械は、呼び出しで戻り先のフレームを積まないので印を読まない。印は、読む機構が入る段階で足す([ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md))。
 
-コアIRの節点は GC ヒープに置く。定数が値を持ち、`lambda` が実行時にクロージャとして参照されるため、プログラム本体も収集対象にする必要がある(REPL で再定義を繰り返すとコードも捨てられる)。
+コアIRの節点は GC ヒープに置く。段階2までの実装では、まだ置いていない。節点は展開器が永続アリーナに作り、回収されない。ヒープに移すのは段階3である([roadmap](../roadmap.md) の段階3、[architecture.md](architecture.md) の評価の進行点の一元化)。以下は、移したあとの設計である。定数が値を持ち、`lambda` が実行時にクロージャとして参照されるため、プログラム本体も収集対象にする必要がある(REPL で再定義を繰り返すとコードも捨てられる)。
 
 節点は位置情報を持つ。リーダが記録する副表は1つのトップレベルフォームの読み取りから展開までの作業表であり、展開が終わったら破棄する([frontend.md](frontend.md))。実行時にも必要な位置は節点に複製する。これにより位置情報の生存期間がコードの生存期間と一致し、鍵の再利用の問題が起きない。
 
@@ -348,7 +358,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 | 継続 | 継続フレームの列。空なら実行完了 |
 | 直前の値 | 直近の評価結果 |
 | 動的状態の列 | `dynamic-wind`、ハンドラ、ハンドラ切り替え、パラメータの束縛 |
-| 歩数の残り | WASM で制御を戻すための制限 |
+| 歩数の残り | WASM で制御を戻すための制限。段階2までの機械は持たず、完了まで走る。入れるのは段階8である([platform-and-web.md](platform-and-web.md) の再開可能性) |
 
 現在の例外ハンドラは独立した状態にしない。動的状態の列から定数時間で導出する([ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md))。
 
@@ -399,7 +409,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 
 プリミティブの呼び出し規約は次のとおりである(コードが正で、`src/value.zig` の `Primitive` と `MachineOp` と `Services`、`src/machine.zig` の `apply` にある)。`Primitive` は引数の個数の範囲(`min_args` と `max_args`)を省略できない形で持ち、機械が呼び出しの前に1か所で検査する。範囲外の個数ではプリミティブの本体を呼ばない。本体 `body` は、純粋プリミティブなら `.pure` の関数、機械操作プリミティブなら `.machine` の操作の名前(`MachineOp`)である。`.pure` の関数は `Services`(ヒープと、呼び出しの間だけ使える一時領域)と引数を受け取り、確保は `Services.heap` の API だけで行う。失敗は Zig の `error`(`PrimitiveError`)で返し、機械が条件に写して、機械の中で送出する。段階2もこの形のままにした(上の「上限超過と確保の失敗」の 2d の段落)。
 
-このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。2d が `with-exception-handler` `raise` `raise-continuable` を足した。2d は `error` も機械操作プリミティブにした。上の一覧に無いが、条件を作ったあとに `raise` と同じく送出するので、レジスタを書き換える。残りは、[0014](../plans/0014-phase2-core-language.md) の「スライス」の表が割り当てるスライスが、`MachineOp` に変種を足して入れる。操作は `src/machine.zig` の `apply` が行う。
+このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。2d が `with-exception-handler` `raise` `raise-continuable` を足した。2d は `error` も機械操作プリミティブにした。上の一覧に無いが、条件を作ったあとに `raise` と同じく送出するので、レジスタを書き換える。残る `call/cc`、`dynamic-wind`、`make-parameter`、`values`、`call-with-values` も、段階2のほかのスライスが `MachineOp` に変種を足して入れた。`(features)`(2p)も、上の一覧に無い機械操作プリミティブである。操作は `src/machine.zig` の `apply` が行う。
 
 `exit` が機械操作プリミティブなのは、R7RS 6.14 が「Runs all outstanding dynamic-wind after procedures, terminates the running program, and communicates an exit value to the operating system」と規定しているためである。同項の Note は「Because of the requirement to run handlers, this procedure is not just the operating system's exit procedure」と明示している。`after` は Scheme 手続きなので、純粋プリミティブの中からは呼べない。`exit` は未処理例外と同じ巻き戻しの経路を使って最外まで戻り、その途中で各 `after` を呼ぶ。`emergency-exit` は同節が「Terminates the program without running any outstanding dynamic-wind after procedures」とするので純粋プリミティブでよい。
 
@@ -525,7 +535,7 @@ R7RS 6.11 は `raise` について次のように規定している。
 
 `after` の中でさらに未処理例外が起きた場合、巻き戻しは1つ外側の点から再開する。したがって `after` が新しい点を積まなければ有限回で最外に到達する。
 
-積む場合は停止を保証できない。`(define (loop) (dynamic-wind (lambda () #t) (lambda () (car '())) (lambda () (loop))))` は、脱出のたびに `after` が新しい wind 点を作って再び例外を起こすため巡回する。継続フレームは脱出のたびに捨てられるので計上量は増えず、上限超過にもならない。R7RS はこのプログラムの停止を要求していないので非準拠ではない。利用者が `after` の中に無限の再帰を書いた場合に限る。歩数制限があるため WASM ではホストに制御が戻り、停止ボタンで中断できる。
+積む場合は停止を保証できない。`(define (loop) (dynamic-wind (lambda () #t) (lambda () (car '())) (lambda () (loop))))` は、脱出のたびに `after` が新しい wind 点を作って再び例外を起こすため巡回する。継続フレームは脱出のたびに捨てられるので計上量は増えず、上限超過にもならない。R7RS はこのプログラムの停止を要求していないので非準拠ではない。利用者が `after` の中に無限の再帰を書いた場合に限る。歩数制限が入ったあと(段階8)は、WASM ではホストに制御が戻り、停止ボタンで中断できる。段階2までの機械には歩数制限が無く、ブラウザでは停止ボタンが Worker を捨てて作り直すことで止める(状態は初期化される)。ネイティブでは、プロセスを止める以外に止める手段が無い。
 
 起動時に既定のハンドラを積む方式は採らない。R7RS 6.11 の「インストールした時点のハンドラ」の計算に実在しないインストール点が混ざり、切り替え先の意味が曖昧になる。
 
@@ -556,7 +566,7 @@ R7RS 6.11 は `raise` について次のように規定している。
 
 | 群 | 対象 | 扱い |
 | --- | --- | --- |
-| 捨てる | 式の列の最後でない式の継続、`dynamic-wind` の `before` と `after` の戻り(通常経路と巻き戻しの両方)、`exit` の巻き戻しの各段 | 任意個を受け取り、捨てて次へ進む。0個でもよい |
+| 捨てる | 式の列の最後でない式の継続、`dynamic-wind` の `before` の戻り(通常経路と巻き戻しの両方。`after` の戻りは「無視する」群)、`exit` の巻き戻しの各段 | 任意個を受け取り、捨てて次へ進む。0個でもよい |
 | そのまま渡す | 動的範囲の通常終了、`dynamic-wind` の `thunk` の結果を運ぶ経路、`raise-continuable` のハンドラの戻り | 値をそのまま親の継続に渡す。個数を検査しない |
 | 受け取る | `call-with-values` の受け手、最外の REPL | 個数をそのまま消費者に渡す |
 | 無視する | `dynamic-wind` の `after` の戻り、巻き戻しの各段の戻り | 値を使わない。個数を検査しない |
@@ -599,10 +609,12 @@ R7RS 6.1 は「Even if its arguments are circular data structures, equal? must a
 (equal? a b)  ; => #t で停止しなければならない
 ```
 
-集合は走査の作業領域なので計上の対象に含め、GC のルートとして登録する。対象はペア、ベクタ、バイトベクタに限る。文字列と数値の比較は循環を作れない。集合の実装は段階5で決める([open-questions.md](open-questions.md))。
+集合は走査の作業領域なので計上の対象に含め、GC のルートとして登録する。対象はペア、ベクタ、バイトベクタに限る。文字列と数値の比較は循環を作れない。集合の実装は、データの変更が入る段階3の最初のスライスで決める([open-questions.md](open-questions.md)、`src/prim/equiv.zig` の `isEqual` の doc コメント)。
 
 ## 歩数制限とWASM
 
 ブラウザではメインスレッドを長時間占有できない。機械のループは歩数の制限で制御を呼び出し元に返す。WASM のエクスポートは続きがあるかどうかを状態コードで返し、JS 側が再開する。この構造はネイティブ側でも割り込み処理に使える。
+
+これは設計の目標で、入れるのは段階8である。段階2までの実装には、歩数の制限も、続きを返すエクスポート(`sucheme_step`)も無い。`Machine.run` は完了するまで走り、`sucheme_eval_begin` は評価を完了して戻る([platform-and-web.md](platform-and-web.md) のエクスポートと再開可能性)。
 
 深い再帰はヒープフレームを消費するだけなので Zig のスタックは溢れない。フレームは計上の対象なので、無限再帰は上限超過として Scheme のエラーになる。フレーム数に別の上限を設けるかどうかは実装時に決める([open-questions.md](open-questions.md))。

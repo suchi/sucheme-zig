@@ -46,9 +46,10 @@ pub const Registry = struct {
     /// Every library whose definition began and has not failed, oldest first.
     list: std.ArrayList(*Library) = .empty,
     /// The tables of the libraries' top levels, indexed by `Library.table`.
-    /// 表はアリーナにあり、定義に失敗したライブラリの表も残る(空にする)。表の番号を
-    /// 再利用しないので、失敗したライブラリを指す古い識別子が、別のライブラリの表を引くことは
-    /// ない。
+    /// 表はアリーナにあり、定義に失敗したライブラリの表も、中身を残したまま持ち続ける
+    /// (`abandon` が外すのは `list` からだけである)。失敗した本体がほかのライブラリに
+    /// 渡したクロージャが、その表のセルを指し続けうるためである。表の番号を再利用しない
+    /// ので、失敗したライブラリを指す古い識別子が、別のライブラリの表を引くことはない。
     tables: std.ArrayList(*env_mod.Global) = .empty,
     /// The `define-library` forms being processed, innermost last.
     /// 本体の処理は機械を走らせるので、その間に GC が走る。処理中の宣言は、このリストが

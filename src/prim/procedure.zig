@@ -1,8 +1,8 @@
 //! Procedure primitives (R7RS 6.10): `procedure?`, `apply`, `call/cc`,
 //! `dynamic-wind`, `values`, `call-with-values` and `make-parameter` (R7RS 4.2.6).
 //!
-//! `apply`、`call/cc`(`call-with-current-continuation`)、`dynamic-wind`、`make-parameter`
-//! は機械操作プリミティブである。ここには名前と引数の個数の範囲だけを置き、操作は `Machine.apply`
+//! `apply`、`call/cc`(`call-with-current-continuation`)、`dynamic-wind`、`values`、
+//! `call-with-values`、`make-parameter`、`features` は機械操作プリミティブである。ここには名前と引数の個数の範囲だけを置き、操作は `Machine.apply`
 //! が行う。`apply` は並べ直した呼び出しを、同じ関数の中の周回で適用し、継続のフレームを
 //! 積まない。`call/cc` も同じく、捕捉した継続を渡す呼び出しをフレームを積まずに適用する。ほかの機械操作プリミティブ(段階5の `eval` と `exit` を
 //! 含む)と、それぞれが入る段階は、docs/design/runtime.md の「機械操作プリミティブと

@@ -1,7 +1,7 @@
 //! Pairs and lists (R7RS 6.4).
 //!
 //! 段階1のペアとリストの手続きである。データを変更する手続き(`set-car!` など)は
-//! 段階3で入る(docs/plans/0010)。
+//! 段階3で入る(docs/roadmap.md の段階3)。
 
 const std = @import("std");
 const value = @import("../value.zig");
