@@ -1,0 +1,108 @@
+# Slice 2p: `cond-expand` (R7RS 4.2.1, 5.6.1) and `features` (6.14). The feature
+# requirements of every shape, in the position of an expression and in a library
+# declaration, and what a build says it has. The names of the system and the version
+# depend on the build, so the cases ask only for what is the same on every build.
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+# 最初の失敗するテスト。
+(cond-expand ((and r7rs (not no-such-feature)) 1) (else 2))
+1
+
+# 識別子。
+(cond-expand (r7rs 'yes) (else 'no))
+yes
+
+(cond-expand (sucheme 'yes) (else 'no))
+yes
+
+(cond-expand (no-such-feature 'yes) (else 'no))
+no
+
+# 結合子。
+(cond-expand ((and) 'yes) (else 'no))
+yes
+
+(cond-expand ((or) 'yes) (else 'no))
+no
+
+(cond-expand ((and r7rs sucheme) 'yes) (else 'no))
+yes
+
+(cond-expand ((and r7rs no-such-feature) 'yes) (else 'no))
+no
+
+(cond-expand ((or no-such-feature r7rs) 'yes) (else 'no))
+yes
+
+(cond-expand ((or no-such-feature also-missing) 'yes) (else 'no))
+no
+
+(cond-expand ((not no-such-feature) 'yes) (else 'no))
+yes
+
+(cond-expand ((not r7rs) 'yes) (else 'no))
+no
+
+(cond-expand ((not (not r7rs)) 'yes) (else 'no))
+yes
+
+(cond-expand ((and (or no-such-feature r7rs) (not (and sucheme no-such-feature))) 'yes) (else 'no))
+yes
+
+# 最初に当てはまる節が選ばれる。
+(cond-expand (r7rs 1) (sucheme 2) (else 3))
+1
+
+(cond-expand (no-such-feature 1) (sucheme 2) (else 3))
+2
+
+# 本体は、最後の式の値になる。
+(cond-expand (r7rs 1 2 3))
+3
+
+# ライブラリ。(sucheme core) は常にインポートできる。定義されていないものは、できない。
+(cond-expand ((library (sucheme core)) 'yes) (else 'no))
+yes
+
+(cond-expand ((library (no such library)) 'yes) (else 'no))
+no
+
+(cond-expand ((not (library (no such library))) 'yes) (else 'no))
+yes
+
+(define-library (t here) (export) (import (sucheme core))) (cond-expand ((library (t here)) 'yes) (else 'no))
+yes
+
+# 最上位では、本体の定義は最上位の定義になる。
+(cond-expand (r7rs (define chosen 'r7rs)) (else (define chosen 'else))) chosen
+r7rs
+
+(cond-expand (no-such-feature (define chosen2 'a)) (else (define chosen2 'else))) chosen2
+else
+
+# どの節も当てはまらず `else` も無いときは、最上位では何もしない。式の位置では、誤りにする。
+(cond-expand (no-such-feature 1)) 'after
+after
+
+(cond-expand) 'after
+after
+
+(list (cond-expand (no-such-feature 1)))
+error: bad cond-expand: no clause applies, and there is no else clause
+
+(list (cond-expand (r7rs)))
+error: bad cond-expand: the clause that applies has no expression
+
+# `features`。
+(list? (features))
+#t
+
+(not (eq? (features) (features)))
+#t
+
+(> (length (features)) 3)
+#t
+
+(define (has? l s) (if (null? l) #f (if (eq? (car l) s) #t (has? (cdr l) s)))) (list (has? (features) 'r7rs) (has? (features) 'sucheme) (has? (features) 'no-such-feature))
+(#t #t #f)

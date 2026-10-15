@@ -29,6 +29,7 @@ const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
 const heap_mod = @import("../heap.zig");
 const source = @import("source.zig");
+const cond_expand = @import("cond_expand.zig");
 
 pub const Error = context.Error;
 
@@ -212,6 +213,7 @@ const Expander = struct {
                         .@"syntax-error" => self.syntaxError(items),
                         .parameterize => self.parameterizeForm(task, items),
                         .include => self.includeForm(task, items),
+                        .@"cond-expand" => self.condExpand(task, items),
                     },
                     .macro => unreachable,
                     // 補助構文は、演算子の位置でも変数として使えない。呼び出しの演算子の展開が報告する。
@@ -402,6 +404,24 @@ const Expander = struct {
         }
         const pos: Position = if (task.pos == .top) .top else .expression;
         try self.sequence(task.dest, items[1..], task.env, pos, 0);
+    }
+
+    /// `(cond-expand <clause> ...)` (R7RS 4.2.1): the body of the clause that applies,
+    /// expanded as the forms of a `begin` in the same position.
+    /// どの節も当てはまらず `else` も無いときの結果は、R7RS が定めていない(原文は未確認)。
+    /// 最上位では何もしない(`(begin)` と同じ)。式の位置では、値を作れないので、誤りにする。
+    fn condExpand(self: *Expander, task: Task, items: []const Value) Error!void {
+        const chosen = try cond_expand.select(self.ctx, self.scratch, items[1..]) orelse {
+            if (task.pos == .top) return self.constant(task, .unspecified_value);
+            return self.ctx.raise("bad cond-expand: no clause applies, and there is no else clause", .{});
+        };
+        const body = try self.itemsOf(chosen);
+        if (body.len == 0) {
+            if (task.pos == .top) return self.constant(task, .unspecified_value);
+            return self.ctx.raise("bad cond-expand: the clause that applies has no expression", .{});
+        }
+        const pos: Position = if (task.pos == .top) .top else .expression;
+        try self.sequence(task.dest, body, task.env, pos, 0);
     }
 
     /// `(include <string> ...)` (R7RS 4.1.7, 5.6.1): the data in the files, expanded as
