@@ -1,0 +1,19 @@
+# スライス 3b の `equal?` の訪問済み集合を規模で試す。実行に時間がかかるので
+# `zig build test-scheme -Dslow=true` のときだけ走り、全コミットでは走らない
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0211-equal-circular.txt と tests/scheme/0212-equal-shared.txt にある。
+# ここで見るのは、節点の数に比例して壊れる種類の誤りである。集合が節点の数に比例して
+# 伸びること(長さの互いに素な輪で、組の数に比例する実装は上限に当たる)、
+# 深い共有構造の比較が段数に比例する時間で終わること、集合の確保が計上されることである。
+
+# 段数が2万の共有構造。各段が次の段を2回指す。
+(define (dup x) (list x x)) (define (d n b) (if (= n 0) b (dup (d (- n 1) b)))) (define x (d 20000 'a)) (list (equal? x (d 20000 'a)) (equal? x (d 20000 'b)))
+(#t #f)
+
+# 長さの互いに素な、2万個前後のペアの輪。組を覚える実装では、覚える組の数が長さの積になる。
+(define (extend! last k n head) (if (= k n) (set-cdr! last head) (begin (set-cdr! last (list 1)) (extend! (cdr last) (+ k 1) n head)))) (define (ring n) ((lambda (head) (extend! head 1 n head) head) (list 1))) (list (equal? (ring 20000) (ring 19999)) (equal? (ring 20000) (ring 20000)))
+(#t #t)
+
+# 長さが同じで、1つの要素だけが違う2つの輪。
+(define (extend! last k n head x) (if (= k n) (set-cdr! last head) (begin (set-cdr! last (list (if (= k (- n 1)) x 1))) (extend! (cdr last) (+ k 1) n head x)))) (define (ring n x) ((lambda (head) (extend! head 1 n head x) head) (list 1))) (list (equal? (ring 20000 1) (ring 20000 1)) (equal? (ring 20000 1) (ring 20000 2)))
+(#t #f)
