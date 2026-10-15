@@ -919,6 +919,98 @@ test "a macro can expand to a cond-expand, and the names inside it are read as t
     try expectLinePrints(&interp, "((lambda (cond-expand) cond-expand) 5)", "5\n");
 }
 
+test "include-ci reads the file with identifiers and character names folded, and an include does not" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("b.scm", "(DEFINE (F X) X)");
+        try tree.write("lits.scm", "(Define c1 #\\A) (DEFINE C2 #\\NEWLINE) (define s \"MiXed\") (define C3 #\\X41)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // 最初の失敗するテスト。
+        try expectLinePrints(&interp, "(include-ci \"b.scm\") (f 1)", "1\n");
+        // 同じファイルを `include` で読むと、畳み込まれず、`DEFINE` は未束縛である。
+        try expectLineFails(&interp, "(include \"b.scm\")", "unbound variable: DEFINE");
+        // 文字リテラルと文字列は畳み込まない。文字名と16進の `x` は畳み込む。
+        try expectLinePrints(&interp, "(include-ci \"lits.scm\") (list c1 c2 s c3)", "(#\\A #\\newline \"MiXed\" #\\A)\n");
+        // 複数のファイルは、どれも畳み込んで読み、後のものは前のものの定義を使える。
+        try tree.write("m1.scm", "(DEFINE M1 1)");
+        try tree.write("m2.scm", "(DEFINE M2 (+ M1 1))");
+        try expectLinePrints(&interp, "(include-ci \"m1.scm\" \"m2.scm\") m2", "2\n");
+        // 式の位置でも、同じである。
+        try tree.write("e.scm", "(IF #T 1 2)");
+        try expectLineFails(&interp, "(include-ci \"e.scm\")", "cannot include-ci e.scm: unreadable token");
+        try tree.write("e2.scm", "(IF #t (QUOTE Abc) 2)");
+        try expectLinePrints(&interp, "((lambda (n) (include-ci \"e2.scm\")) 5)", "abc\n");
+        // 畳み込みは、読むファイルだけに効く。
+        try expectLinePrints(&interp, "(quote Abc)", "Abc\n");
+    }
+}
+
+test "the file that an include-ci file includes is read as an include reads it, and an include-ci there folds" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("outer.scm", "(INCLUDE \"plain.scm\") (Include-CI \"folded.scm\")");
+    try tree.write("plain.scm", "(define Plain-Name 'p)");
+    try tree.write("folded.scm", "(DEFINE Folded-Name 'f)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // `outer.scm` の `INCLUDE` は畳み込まれて `include` になる。`plain.scm` は畳み込まずに読む。
+    // 畳み込んだ読み手の `Include-CI` は `include-ci` で、`folded.scm` の名前は小文字になる。
+    try expectLinePrints(&interp, "(include-ci \"outer.scm\") (list Plain-Name folded-name)", "(p f)\n");
+    try expectLineFails(&interp, "plain-name", "unbound variable: plain-name");
+    try expectLineFails(&interp, "Folded-Name", "unbound variable: Folded-Name");
+}
+
+test "an include-ci declaration of a library folds the file, and a library keeps its own names" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/ci.sld", "(define-library (t ci) (export f g) (import (sucheme core)) (include-ci \"ci-body.scm\") (begin (define (g) (f))))");
+        try tree.write("t/ci-body.scm", "(DEFINE (F) 7)");
+        try tree.write("t/decls.scm", "(EXPORT h) (Import (sucheme core)) (BEGIN (define (h) 3))");
+        try tree.write("t/decl.sld", "(define-library (t decl) (include-library-declarations \"decls.scm\"))");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t ci)) (list (f) (g))", "(7 7)\n");
+        // 宣言の綴りは畳み込まない。`include-library-declarations` は、畳み込む版を持たない。
+        try expectLineFails(&interp, "(import (t decl))", "bad define-library: EXPORT is not a library declaration");
+    }
+}
+
+test "include-ci refuses a file name and a file as include does, and says its own name" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("open.scm", "(define x");
+    try tree.write("hash.scm", "(define x #z)");
+    try tree.write("greek.scm", "(define \xce\xbb 1)");
+    try tree.write("self.scm", "(include-ci \"self.scm\")");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(include-ci)", "bad include-ci: expected (include-ci <file name> ...)");
+    try expectLineFails(&interp, "(include-ci 1)", "bad include-ci: a file name must be a string");
+    try expectLineFails(&interp, "(include-ci \"missing.scm\")", "bad include-ci: missing.scm: no such file");
+    try expectLineFails(&interp, "(include-ci \"../x.scm\")", "bad include-ci: ../x.scm: the file name goes up out of the directory the files are searched in");
+    try expectLineFails(&interp, "(include-ci \"open.scm\")", "cannot include-ci open.scm: unexpected end of input");
+    try expectLineFails(&interp, "(include-ci \"hash.scm\")", "cannot include-ci hash.scm: unreadable token");
+    try expectLineFails(&interp, "(include-ci \"self.scm\")", "bad include-ci: self.scm includes itself, directly or through other files");
+    // ASCII でない文字の識別子は、畳み込む読み手も畳み込まない読み手も、まだ読めない。
+    try expectLineFails(&interp, "(include-ci \"greek.scm\")", "cannot include-ci greek.scm: unreadable token");
+    try expectLineFails(&interp, "(include \"greek.scm\")", "cannot include greek.scm: unreadable token");
+    var bare: Interpreter = undefined;
+    try bare.init(std.testing.allocator);
+    defer bare.deinit();
+    try expectLineFails(&bare, "(include-ci \"a.scm\")", "bad include-ci: this interpreter has no files to read: a.scm");
+}
+
 test "the clause of a cond-expand that applies may include a file, in an expression and in a library" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);

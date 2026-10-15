@@ -48,7 +48,10 @@ error: bad include: a file name must be a string
 error: bad include-library-declarations: a file name must be a string
 
 (define-library (t a) (include-ci "a.scm"))
-error: bad define-library: the declaration include-ci is not supported yet
+error: bad include-ci: this interpreter has no files to read: a.scm
+
+(define-library (t a) (include-ci 1))
+error: bad include-ci: a file name must be a string
 
 (define-library (t a) (cond-expand (else (frob))))
 error: bad define-library: frob is not a library declaration

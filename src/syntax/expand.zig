@@ -131,6 +131,8 @@ const Task = struct {
     pos: Position,
     dest: *Node,
     op: Op = .expand,
+    /// For `include_file`: whether the file is read with case folded (`include-ci`).
+    fold_case: bool = false,
 
     /// What a task does.
     const Op = enum {
@@ -212,7 +214,8 @@ const Expander = struct {
                         .@"letrec-syntax" => self.letSyntax(task, items, true),
                         .@"syntax-error" => self.syntaxError(items),
                         .parameterize => self.parameterizeForm(task, items),
-                        .include => self.includeForm(task, items),
+                        .include => self.includeForm(task, items, false),
+                        .@"include-ci" => self.includeForm(task, items, true),
                         .@"cond-expand" => self.condExpand(task, items),
                     },
                     .macro => unreachable,
@@ -424,20 +427,23 @@ const Expander = struct {
         try self.sequence(task.dest, body, task.env, pos, 0);
     }
 
-    /// `(include <string> ...)` (R7RS 4.1.7, 5.6.1): the data in the files, expanded as
-    /// the forms of a `begin` in the same position.
+    /// `(include <string> ...)` and `(include-ci <string> ...)` (R7RS 4.1.7, 5.6.1): the
+    /// data in the files, expanded as the forms of a `begin` in the same position.
+    /// `include-ci` は、ファイルを `#!fold-case` で始まるものとして読む。リーダの畳み込みの
+    /// 状態を真にして読むだけで、展開は `include` と同じである。
     /// Why: ファイルは、展開が進んでそこに着いたときに読む。ファイルのデータを展開し終えるまで、
     /// そのファイルは「読んでいる最中のファイル」として `ctx.sources` に載り、`include` の
     /// 基準のディレクトリになり、自分自身を含む鎖を見つける。展開は再帰しないので、終わりの
     /// 印を、データの下にスタックしておく(`leave_file`)。名前が複数あれば、1つずつ順に読む。
-    fn includeForm(self: *Expander, task: Task, items: []const Value) Error!void {
+    fn includeForm(self: *Expander, task: Task, items: []const Value, fold_case: bool) Error!void {
+        const what = if (fold_case) "include-ci" else "include";
         const names = items[1..];
-        if (names.len == 0) return self.ctx.raise("bad include: expected (include <file name> ...)", .{});
+        if (names.len == 0) return self.ctx.raise("bad {s}: expected ({s} <file name> ...)", .{ what, what });
         for (names) |name| {
-            if (name.asString() == null) return self.ctx.raise("bad include: a file name must be a string", .{});
+            if (name.asString() == null) return self.ctx.raise("bad {s}: a file name must be a string", .{what});
         }
         if (names.len == 1) {
-            try self.stack.append(self.scratch, .{ .form = names[0], .env = task.env, .pos = task.pos, .dest = task.dest, .op = .include_file });
+            try self.stack.append(self.scratch, .{ .form = names[0], .env = task.env, .pos = task.pos, .dest = task.dest, .op = .include_file, .fold_case = fold_case });
             return;
         }
         const nodes = try self.nodes.alloc(*const Node, names.len);
@@ -445,7 +451,7 @@ const Expander = struct {
         var i = names.len;
         while (i > 0) {
             i -= 1;
-            try self.stack.append(self.scratch, .{ .form = names[i], .env = task.env, .pos = task.pos, .dest = @constCast(nodes[i]), .op = .include_file });
+            try self.stack.append(self.scratch, .{ .form = names[i], .env = task.env, .pos = task.pos, .dest = @constCast(nodes[i]), .op = .include_file, .fold_case = fold_case });
         }
         task.dest.* = .{ .sequence = nodes };
     }
@@ -454,13 +460,14 @@ const Expander = struct {
     /// `task.dest`, in order. A file with no data does nothing.
     fn includeFile(self: *Expander, task: Task) Error!void {
         const name = task.form.asString().?.bytes;
-        const opened = try source.openIncluded(self.ctx, self.scratch, name, "include");
+        const what = if (task.fold_case) "include-ci" else "include";
+        const opened = try source.openIncluded(self.ctx, self.scratch, name, what);
         // Why: ファイルのデータは、大きさが REPL の1行の上限に縛られず、1 MiB のファイル1つが
         // 数十 MiB の節点になる。入れ子や名前の並びで掛け算になるので、マクロの適用を待たず、
         // ファイルを読む時点から、作業領域と節点をヒープの上限に数える(`Heap.external_enforced`)。
         self.ctx.heap.external_enforced = true;
-        const subject = try std.fmt.allocPrint(self.scratch, "include {s}", .{name});
-        const data = try source.readData(self.ctx, self.scratch, self.ctx.files.?, opened.file, subject);
+        const subject = try std.fmt.allocPrint(self.scratch, "{s} {s}", .{ what, name });
+        const data = try source.readData(self.ctx, self.scratch, self.ctx.files.?, opened.file, subject, task.fold_case);
         if (data.len == 0) return self.constant(task, .unspecified_value);
         try self.ctx.sources.append(self.ctx.persist, opened.origin);
         // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。
