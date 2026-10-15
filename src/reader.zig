@@ -19,10 +19,8 @@ const Heap = @import("heap.zig").Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
 
-pub const Error = error{
-    OutOfMemory,
-    /// The pairs of the datum do not fit in the heap.
-    HeapLimit,
+/// What the reader cannot read: the input is not a datum.
+pub const SyntaxError = error{
     /// The input ended inside a list or after a `'`.
     /// REPL はこれを見て、続きの 1 行を求められる(ADR-0014)。そのため、ほかの構文
     /// エラーとは分けてある。
@@ -50,6 +48,28 @@ pub const Error = error{
     /// 報告してよいとしている。
     IntegerOutOfRange,
 };
+
+pub const Error = error{
+    OutOfMemory,
+    /// The pairs of the datum do not fit in the heap.
+    HeapLimit,
+} || SyntaxError;
+
+/// The message for a failure to read.
+/// REPL と、ライブラリのファイルの読み込みが、同じ文言を使う。
+pub fn describe(e: SyntaxError) []const u8 {
+    return switch (e) {
+        error.Incomplete => "unexpected end of input",
+        error.UnexpectedCloseParen => "unexpected )",
+        error.MissingDatum => "quote needs a datum",
+        error.UnexpectedDot => "unexpected .",
+        error.InvalidEscape => "invalid escape in string",
+        error.InvalidCharacter => "invalid character",
+        error.InvalidUtf8 => "invalid UTF-8 input",
+        error.InvalidToken => "unreadable token",
+        error.IntegerOutOfRange => "integer out of range",
+    };
+}
 
 /// Where what the reader builds goes.
 /// これらは呼び出しより長く生きる。

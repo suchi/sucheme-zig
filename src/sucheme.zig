@@ -28,6 +28,8 @@ pub const isIncomplete = reader.isIncomplete;
 
 const expand = @import("syntax/expand.zig");
 const library = @import("syntax/library.zig");
+/// Opens the files of libraries.
+pub const resolve = @import("resolve.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
 const printer = @import("printer.zig");
@@ -64,9 +66,17 @@ pub const Interpreter = struct {
     }
 
     pub fn initWithOptions(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
+        return self.initWithFiles(gpa, options, null);
+    }
+
+    /// Initializes an interpreter that opens the files of libraries with `files`,
+    /// or one that has no file system, when `files` is null.
+    /// `files` の探索ルートの文字列は、インタプリタが解放されるまで、呼び出し側が持つ。
+    pub fn initWithFiles(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options, files: ?resolve.Files) error{OutOfMemory}!void {
         self.arena = .init(gpa);
         errdefer self.arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
+        self.ctx.files = files;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
     }
@@ -246,15 +256,16 @@ fn writeIrritants(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *con
 /// The message for an error that nothing described more closely.
 fn describe(e: Error) []const u8 {
     return switch (e) {
-        error.Incomplete => "unexpected end of input",
-        error.UnexpectedCloseParen => "unexpected )",
-        error.MissingDatum => "quote needs a datum",
-        error.UnexpectedDot => "unexpected .",
-        error.InvalidEscape => "invalid escape in string",
-        error.InvalidCharacter => "invalid character",
-        error.InvalidUtf8 => "invalid UTF-8 input",
-        error.InvalidToken => "unreadable token",
-        error.IntegerOutOfRange => "integer out of range",
+        error.Incomplete,
+        error.UnexpectedCloseParen,
+        error.MissingDatum,
+        error.UnexpectedDot,
+        error.InvalidEscape,
+        error.InvalidCharacter,
+        error.InvalidUtf8,
+        error.InvalidToken,
+        error.IntegerOutOfRange,
+        => |syntax| reader.describe(syntax),
         error.OutOfMemory => "out of memory",
         // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。
         error.HeapLimit, error.ReserveExhausted => context.heap_limit_message,
@@ -412,6 +423,238 @@ test "a library that imports another loads from the registry, and a library unde
     try expectLineFails(&interp, "(define-library (t c) (export) (import (sucheme core)) (begin (define (grow acc) (grow (cons 1 acc))) (grow '())))", "heap limit exceeded");
     try expectLineFails(&interp, "(import (t c))", "unknown library: (t c)");
     try expectLinePrints(&interp, "(g)", "2\n");
+}
+
+/// Starts `interp` on the files beneath `tree`, the way the tests of the libraries
+/// that are files do.
+fn initOnTree(interp: *Interpreter, tree: *resolve.Tree, stress: bool) !void {
+    try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &tree.roots });
+}
+
+test "a library that is not defined is read from the file of its name beneath a root" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("foo/bar.sld", "(define-library (foo bar) (export f) (import (sucheme core)) (begin (define (f) 1)))");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (foo bar)) (f)", "1\n");
+        try std.testing.expectEqual(1, interp.ctx.libraries.list.items.len);
+    }
+}
+
+/// Writes the file of the library `name` beneath `tree`: a `define-library` form
+/// that exports `export`, imports `(sucheme core)` and what `imports` lists, and
+/// has `body`.
+fn writeLibrary(tree: *resolve.Tree, comptime path: []const u8, comptime library_name: []const u8, comptime imports: []const u8, comptime body: []const u8) !void {
+    try tree.write(path, "(define-library " ++ library_name ++ " (export) (import (sucheme core) " ++ imports ++ ") (begin " ++ body ++ "))");
+}
+
+test "a library whose file imports other libraries loads them in order, each once" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        // (t a) -> (t b) と (t c)、(t b) -> (t c)。(t c) は2経路から届く。
+        try tree.write("t/c.sld", "(define-library (t c) (export count-c) (import (sucheme core)) (begin (define n 0) (set! n (+ n 1)) (define (count-c) n)))");
+        try tree.write("t/b.sld", "(define-library (t b) (export (rename b-up up)) (import (sucheme core) (t c)) (begin (define (b-up) (+ 10 (count-c)))))");
+        try tree.write("t/a.sld", "(define-library (t a) (export a-up) (import (sucheme core) (t b) (t c)) (begin (define (a-up) (+ (up) (count-c)))))");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t a)) (a-up)", "12\n");
+        try std.testing.expectEqual(3, interp.ctx.libraries.list.items.len);
+        // 読み込んだライブラリは、登録表にある。ファイルが無くなっても、同じライブラリを使う。
+        try tree.tmp.dir.deleteTree(std.testing.io, "t");
+        try expectLinePrints(&interp, "(import (t b)) (up)", "11\n");
+        // 本体は1回しか走らない。
+        try expectLinePrints(&interp, "(import (t c)) (count-c)", "1\n");
+        try std.testing.expectEqual(3, interp.ctx.libraries.list.items.len);
+    }
+}
+
+test "a library defined at the REPL is not looked for in a file" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/a.sld", "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 'file)))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 'repl)))", "");
+    try expectLinePrints(&interp, "(import (t a)) (f)", "repl\n");
+}
+
+test "a file that defines another library than the one asked for is refused, the case of a letter too" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/a.sld", "(define-library (t b) (export) (import (sucheme core)))");
+    try tree.write("t/c.sld", "(define-library (t C) (export) (import (sucheme core)))");
+    try tree.write("t/d.sld", "(define-library (t d))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(import (t a))", "bad import: the file of the library (t a) defines the library (t b)");
+    try expectLineFails(&interp, "(import (t c))", "bad import: the file of the library (t c) defines the library (t C)");
+    // 照合に失敗したファイルは、何も登録しない。
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+    // 名前が合えば、ほかの宣言が無くてもよい。
+    try expectLinePrints(&interp, "(import (t d))", "");
+}
+
+test "a file that is not exactly one define-library form is refused, and says why" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/empty.sld", "  ; nothing\n");
+    try tree.write("t/plain.sld", "(define x 1)");
+    try tree.write("t/two.sld", "(define-library (t two)) (define-library (t three))");
+    try tree.write("t/open.sld", "(define-library (t open)");
+    try tree.write("t/bad.sld", "(define-library (t bad) #z)");
+    try tree.write("t/utf.sld", "(define-library (t utf)) \xff");
+    try tree.write("t/dir.sld/inner", "x");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(import (t empty))", "cannot load the library (t empty): its file is empty");
+    try expectLineFails(&interp, "(import (t plain))", "cannot load the library (t plain): its file must hold one (define-library ...) form");
+    try expectLineFails(&interp, "(import (t two))", "cannot load the library (t two): its file holds more than one form");
+    try expectLineFails(&interp, "(import (t open))", "cannot load the library (t open): unexpected end of input");
+    try expectLineFails(&interp, "(import (t bad))", "cannot load the library (t bad): unreadable token");
+    try expectLineFails(&interp, "(import (t utf))", "cannot load the library (t utf): its file is not valid UTF-8");
+    // ディレクトリは、ファイルではないので、見つからない。
+    try expectLineFails(&interp, "(import (t dir))", "unknown library: (t dir)");
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+}
+
+test "a file of the largest size is read, and one byte more is refused before it is read" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    const blank = try std.testing.allocator.alloc(u8, library.max_file_bytes + 1);
+    defer std.testing.allocator.free(blank);
+    @memset(blank, ' ');
+    try tree.write("t/fits.sld", blank[0..library.max_file_bytes]);
+    try tree.write("t/over.sld", blank);
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 空白だけのファイルは、読まれて、空だと言われる。大きさの上限の手前で拒否されない。
+    try expectLineFails(&interp, "(import (t fits))", "cannot load the library (t fits): its file is empty");
+    var expected: [128]u8 = undefined;
+    try expectLineFails(&interp, "(import (t over))", try std.fmt.bufPrint(&expected, "cannot load the library (t over): its file is larger than {d} bytes", .{library.max_file_bytes}));
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+}
+
+test "a library that cannot be loaded leaves nothing behind, and an error inside its body reaches the importer" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/good.sld", "(define-library (t good) (export g) (import (sucheme core)) (begin (define (g) 1)))");
+        try tree.write("t/bad.sld", "(define-library (t bad) (export) (import (sucheme core) (t good)) (begin (car 5)))");
+        try tree.write("t/outer.sld", "(define-library (t outer) (export) (import (sucheme core) (t bad)))");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLineFails(&interp, "(import (t outer))", "wrong type of argument to car 5");
+        // 成功した依存は残り、失敗した2つは残らない。
+        try std.testing.expectEqual(1, interp.ctx.libraries.list.items.len);
+        try expectLinePrints(&interp, "(import (t good)) (g)", "1\n");
+        // 直したファイルは、もう一度読まれる。
+        try tree.write("t/bad.sld", "(define-library (t bad) (export) (import (sucheme core) (t good)) (begin (g)))");
+        try expectLinePrints(&interp, "(import (t outer))", "");
+        try std.testing.expectEqual(3, interp.ctx.libraries.list.items.len);
+    }
+}
+
+test "libraries that import each other through files are a circular import" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try writeLibrary(&tree, "t/a.sld", "(t a)", "(t b)", "");
+    try writeLibrary(&tree, "t/b.sld", "(t b)", "(t a)", "");
+    try writeLibrary(&tree, "t/self.sld", "(t self)", "(t self)", "");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(import (t a))", "bad import: circular import of the library (t a)");
+    try expectLineFails(&interp, "(import (t self))", "bad import: circular import of the library (t self)");
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+}
+
+test "a chain of files that import one another is loaded to a depth, and refused beyond it" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    // 深さの上限 `max_load_depth` のうち、REPL の `import` が1つ使う。
+    const fits = library.max_load_depth - 1;
+    var path_buf: [32]u8 = undefined;
+    var next_buf: [32]u8 = undefined;
+    var text_buf: [160]u8 = undefined;
+    for (0..fits + 1) |i| {
+        const path = try std.fmt.bufPrint(&path_buf, "chain/l{d}.sld", .{i});
+        const next = if (i == fits) "" else try std.fmt.bufPrint(&next_buf, "(chain l{d})", .{i + 1});
+        const text = try std.fmt.bufPrint(&text_buf, "(define-library (chain l{d}) (export up{d}) (import (sucheme core) {s}) (begin (define (up{d}) {d})))", .{ i, i, next, i, i });
+        try tree.write(path, text);
+    }
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 末尾(l{fits})は上限の外で、その1つ前までが入る。
+    var expected_fail: [128]u8 = undefined;
+    try expectLineFails(&interp, "(import (chain l0))", try std.fmt.bufPrint(&expected_fail, "implementation restriction: libraries import one another more than {d} deep, at (chain l{d})", .{ library.max_load_depth, fits }));
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+    // 末尾を、何も import しない形にすれば、鎖の全体が入る。
+    const last = try std.fmt.bufPrint(&path_buf, "chain/l{d}.sld", .{fits - 1});
+    const text = try std.fmt.bufPrint(&text_buf, "(define-library (chain l{d}) (export up{d}) (import (sucheme core)) (begin (define (up{d}) {d})))", .{ fits - 1, fits - 1, fits - 1, fits - 1 });
+    try tree.write(last, text);
+    try expectLinePrints(&interp, "(import (chain l0)) (up0)", "0\n");
+    try std.testing.expectEqual(fits, interp.ctx.libraries.list.items.len);
+}
+
+test "a link where a library file should be is refused, and the libraries of other roots stay reachable" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("outside/t/evil.sld", "(define-library (t evil) (export) (import (sucheme core)))");
+    try tree.write("root/t/ok.sld", "(define-library (t ok) (export) (import (sucheme core)))");
+    try tree.link("../../outside/t/evil.sld", "root/t/evil.sld", false);
+    try tree.link("../outside/t", "root/t2", true);
+    const root = try tree.at(std.testing.allocator, "root");
+    defer std.testing.allocator.free(root);
+    var interp: Interpreter = undefined;
+    try interp.initWithFiles(std.testing.allocator, .{}, .{ .io = std.testing.io, .roots = &.{root} });
+    defer interp.deinit();
+    try expectLineFails(&interp, "(import (t evil))", "cannot load the library (t evil): its file, or a directory on the way to it, is a link");
+    try expectLineFails(&interp, "(import (t2 evil))", "cannot load the library (t2 evil): its file, or a directory on the way to it, is a link");
+    try expectLinePrints(&interp, "(import (t ok))", "");
+}
+
+test "a name that cannot be a file is refused with the reason, with a file system and without" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var with: Interpreter = undefined;
+    try initOnTree(&with, &tree, false);
+    defer with.deinit();
+    var without: Interpreter = undefined;
+    try without.init(std.testing.allocator);
+    defer without.deinit();
+    for ([_]*Interpreter{ &with, &without }) |interp| {
+        try expectLineFails(interp, "(import (CON))", "unknown library: (CON): a library with that name cannot be a file, because a component is the name of a device");
+        try expectLineFails(interp, "(import (foo con.scm))", "unknown library: (foo con.scm): a library with that name cannot be a file, because a component is the name of a device");
+        try expectLineFails(interp, "(import (a -1))", "bad library name: a name is a non-empty list of identifiers and non-negative integers");
+        // 縦棒で囲んだ識別子は、リーダが段階5まで読めない。ここでは、読める綴りだけを確かめる。
+        try expectLineFails(interp, "(import (foo bar.))", "unknown library: (foo bar.): a library with that name cannot be a file, because a component starts or ends with a dot");
+        try expectLineFails(interp, "(import (foo +))", "unknown library: (foo +): a library with that name cannot be a file, because a component has a character other than A-Z a-z 0-9 - _ .");
+    }
+    // 検証を通る名前は、ファイルシステムが無ければ見つからないだけで、あっても無ければ同じである。
+    try expectLineFails(&with, "(import (foo bar))", "unknown library: (foo bar)");
+    try expectLineFails(&without, "(import (foo bar))", "unknown library: (foo bar)");
 }
 
 test "evalPrint writes each result on its own line" {

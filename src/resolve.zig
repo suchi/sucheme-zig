@@ -1,0 +1,488 @@
+//! Opens the source files that a program names (docs/design/frontend.md, the
+//! search and the paths a name maps to).
+//!
+//! 処理系がソースとして読むファイルを開く経路は、ここ1か所に閉じる。ライブラリ名から
+//! パスを組み立て、探索ルートの配下にあることを確かめ、リンクを辿らずに開く。名前は外部
+//! 入力である(縦棒で囲んだ識別子は、任意の文字を含みうる)ので、検証を通らない名前は
+//! ファイルに対応付けない。段階2は、ライブラリ名の経路だけを持つ。`include` の文字列の
+//! ファイル名と埋め込みの仮想ファイルシステムは、それぞれ 2o と段階3が足す。
+
+const std = @import("std");
+const builtin = @import("builtin");
+const symbol = @import("symbol.zig");
+const Value = @import("value.zig").Value;
+const Dir = std.Io.Dir;
+const File = std.Io.File;
+
+/// What the interpreter may open files with: the means of input and output, and
+/// the directories to search.
+/// 探索ルートの相対パスは、プロセスの作業ディレクトリを基準にする。WASM は実ファイル
+/// システムを持たないので、これを渡さない(`Context.files` が空になる)。
+pub const Files = struct {
+    io: std.Io,
+    /// The directories that are searched, in order. The first has the file wins.
+    roots: []const []const u8,
+};
+
+/// What follows the last component of a library name in the name of its file.
+pub const library_extension = ".sld";
+
+/// Why a library name does not name a file.
+pub const NameError = error{
+    /// The name has no components.
+    NoComponents,
+    /// A component is neither an identifier nor a non-negative integer.
+    NotAComponent,
+    /// A component has no characters.
+    EmptyComponent,
+    /// A component has a character other than `A-Z` `a-z` `0-9` `-` `_` `.`.
+    BadCharacter,
+    /// A component starts or ends with a dot.
+    DotAtEdge,
+    /// A component names a device on Windows.
+    ReservedDeviceName,
+};
+
+/// Why a file that a name maps to could not be opened.
+pub const OpenError = error{
+    /// No root has it.
+    NotFound,
+    /// A link, or on Windows a reparse point, is in the way.
+    LinkRefused,
+    /// What is there is neither a directory nor a file where one is needed.
+    NotRegularFile,
+    /// The system refused to open it.
+    Unreadable,
+    OutOfMemory,
+};
+
+/// The text of what `e` says about a name, for an error message.
+pub fn describeNameError(e: NameError) []const u8 {
+    return switch (e) {
+        error.NoComponents => "the name has no components",
+        error.NotAComponent => "a component is neither an identifier nor a non-negative integer",
+        error.EmptyComponent => "a component is empty",
+        error.BadCharacter => "a component has a character other than A-Z a-z 0-9 - _ .",
+        error.DotAtEdge => "a component starts or ends with a dot",
+        error.ReservedDeviceName => "a component is the name of a device",
+    };
+}
+
+/// Checks that `text`, a component of a library name, can be a part of a path.
+/// Why: 許可する文字集合は、R7RS 5.6.1 が「ライブラリ名の識別子に含めるのが望ましくない」
+/// と挙げる文字(`/` `\` `:` `+` `*` など)を含まない。`.` で始まる成分は `.` と `..` を
+/// 排除し、`.` で終わる成分は、末尾の `.` を取り除いて解決する Windows で別の名前に当たる
+/// のを防ぐ。デバイス名の判定は、ビルド対象の OS によらず常に行う。
+pub fn checkComponent(text: []const u8) NameError!void {
+    if (text.len == 0) return error.EmptyComponent;
+    for (text) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return error.BadCharacter;
+    }
+    if (text[0] == '.' or text[text.len - 1] == '.') return error.DotAtEdge;
+    if (isDeviceName(text)) return error.ReservedDeviceName;
+}
+
+/// Whether the part of `text` before its first dot is the name of a device on
+/// Windows, in any case: `CON` `PRN` `AUX` `NUL` `COM1`..`COM9` `LPT1`..`LPT9`.
+/// 拡張子を付けても、デバイスまたはその別名に解決されうる。
+fn isDeviceName(text: []const u8) bool {
+    const stem = text[0 .. std.mem.indexOfScalar(u8, text, '.') orelse text.len];
+    for ([_][]const u8{ "con", "prn", "aux", "nul" }) |device| {
+        if (std.ascii.eqlIgnoreCase(stem, device)) return true;
+    }
+    if (stem.len == 4 and stem[3] >= '1' and stem[3] <= '9') {
+        for ([_][]const u8{ "com", "lpt" }) |device| {
+            if (std.ascii.eqlIgnoreCase(stem[0..3], device)) return true;
+        }
+    }
+    return false;
+}
+
+/// The components of the library name `name`, as the text of path parts: the
+/// names of identifiers, and non-negative integers in decimal.
+/// 検査はここで済ませる。通らない名前は、ファイルに対応付けない。
+pub fn libraryParts(scratch: std.mem.Allocator, symbols: *const symbol.Table, name: Value) (NameError || error{OutOfMemory})![]const []const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    var rest = name;
+    while (rest.asPair()) |p| : (rest = p.cdr) {
+        const text = if (p.car.asSymbol()) |id|
+            symbols.nameOf(id)
+        else if (p.car.asFixnum()) |n|
+            (if (n >= 0) try std.fmt.allocPrint(scratch, "{d}", .{n}) else return error.NotAComponent)
+        else
+            return error.NotAComponent;
+        try checkComponent(text);
+        try parts.append(scratch, text);
+    }
+    if (rest.kind() != .empty_list) return error.NotAComponent;
+    if (parts.items.len == 0) return error.NoComponents;
+    return parts.items;
+}
+
+/// Opens the file of the library named `name`: `foo/bar.sld` for `(foo bar)`,
+/// beneath the first root that has it. The caller closes the file.
+/// Why: 戻り値をパスの文字列にしない。確かめたあとに対象が差し替わる余地を残さない
+/// ためである。ルートのハンドルから成分を1つずつ、リンクを辿らずに開き、開いたハンドルの
+/// 種別を確かめる(docs/design/zig-api-notes.md)。`resolve_beneath` は Linux で効かない。
+pub fn openLibrary(files: Files, scratch: std.mem.Allocator, symbols: *const symbol.Table, name: Value) (NameError || OpenError)!File {
+    const parts = try libraryParts(scratch, symbols, name);
+    const directories = parts[0 .. parts.len - 1];
+    const file_name = try std.mem.concat(scratch, u8, &.{ parts[parts.len - 1], library_extension });
+    // Why: WASM(`freestanding`)は実ファイルシステムを持たない。`Dir.cwd()` はその
+    // ターゲットではコンパイルできないので、ここで打ち切り、以降を解析させない。
+    if (comptime builtin.os.tag == .freestanding) return error.NotFound;
+    for (files.roots) |root| {
+        if (try openBeneath(files.io, root, directories, file_name)) |file| return file;
+    }
+    return error.NotFound;
+}
+
+/// The file `file_name` in the directories `directories` beneath `root`, or null
+/// when `root` does not have it.
+/// 開けない根は、何も持たないものとして読み飛ばす。ルートの指定は利用者のもので、
+/// リンクを禁止する対象ではない(ルート自身がリンクでもよい)。
+fn openBeneath(io: std.Io, root: []const u8, directories: []const []const u8, file_name: []const u8) OpenError!?File {
+    var current = Dir.cwd().openDir(io, root, .{}) catch return null;
+    defer current.close(io);
+    for (directories) |name| {
+        const next = (try openChildDir(io, current, name)) orelse return null;
+        current.close(io);
+        current = next;
+    }
+    return openChildFile(io, current, file_name);
+}
+
+/// What `name` in `parent` is, without following a link; null when there is
+/// nothing by that name.
+fn kindOf(io: std.Io, parent: Dir, name: []const u8) OpenError!?File.Kind {
+    const stat = parent.statFile(io, name, .{ .follow_symlinks = false }) catch |e| switch (e) {
+        error.FileNotFound, error.NotDir => return null,
+        else => return error.Unreadable,
+    };
+    return stat.kind;
+}
+
+/// Whether `kind` is what a link, or a reparse point of another kind, is
+/// reported as.
+fn isLink(kind: File.Kind) bool {
+    return kind == .sym_link or kind == .unknown;
+}
+
+/// The directory `name` in `parent`, or null when there is none.
+fn openChildDir(io: std.Io, parent: Dir, name: []const u8) OpenError!?Dir {
+    const kind = (try kindOf(io, parent, name)) orelse return null;
+    if (isLink(kind)) return error.LinkRefused;
+    if (kind != .directory) return null;
+    const child = parent.openDir(io, name, .{ .follow_symlinks = false }) catch |e| switch (e) {
+        // 確かめたあとに、リンクに差し替えられた。
+        error.NotDir, error.SymLinkLoop => return error.LinkRefused,
+        error.FileNotFound => return null,
+        else => return error.Unreadable,
+    };
+    // Windows は、再解析点を辿らず、それ自身を開く。開いたハンドルの種別で拒否する。
+    const stat = child.stat(io) catch {
+        child.close(io);
+        return error.Unreadable;
+    };
+    if (stat.kind != .directory) {
+        child.close(io);
+        return if (isLink(stat.kind)) error.LinkRefused else error.NotRegularFile;
+    }
+    return child;
+}
+
+/// The file `name` in `parent`, or null when there is none.
+fn openChildFile(io: std.Io, parent: Dir, name: []const u8) OpenError!?File {
+    const kind = (try kindOf(io, parent, name)) orelse return null;
+    if (isLink(kind)) return error.LinkRefused;
+    // Why: 開く前に種別を見るのは、FIFO を開いて書き手を待ち続けないためである。
+    if (kind == .directory) return null;
+    if (kind != .file) return error.NotRegularFile;
+    const file = parent.openFile(io, name, .{ .follow_symlinks = false, .allow_directory = false }) catch |e| switch (e) {
+        error.SymLinkLoop => return error.LinkRefused,
+        error.FileNotFound, error.IsDir => return null,
+        else => return error.Unreadable,
+    };
+    const stat = file.stat(io) catch {
+        file.close(io);
+        return error.Unreadable;
+    };
+    if (stat.kind != .file) {
+        file.close(io);
+        return if (isLink(stat.kind)) error.LinkRefused else error.NotRegularFile;
+    }
+    return file;
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}
+
+const testing = std.testing;
+const context = @import("context.zig");
+
+/// A part of a library name that a test builds: the reader cannot read every
+/// name that this file must refuse, such as `|..|`.
+const Part = union(enum) { id: []const u8, int: i64 };
+
+fn buildName(ctx: *context.Context, parts: []const Part) !Value {
+    var list: Value = .empty_list_value;
+    var i = parts.len;
+    while (i > 0) {
+        i -= 1;
+        const car: Value = switch (parts[i]) {
+            .id => |text| .fromSymbol(try ctx.symbols.intern(ctx.persist, text)),
+            .int => |n| .fromFixnum(n),
+        };
+        list = try ctx.heap.cons(car, list);
+    }
+    return list;
+}
+
+fn expectParts(parts: []const Part, expected: []const []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var ctx = try context.Context.init(arena.allocator(), testing.allocator);
+    defer ctx.deinit();
+    const name = try buildName(&ctx, parts);
+    const got = try libraryParts(arena.allocator(), &ctx.symbols, name);
+    try testing.expectEqual(expected.len, got.len);
+    for (expected, got) |want, have| try testing.expectEqualStrings(want, have);
+}
+
+fn expectRefused(parts: []const Part, expected: NameError) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var ctx = try context.Context.init(arena.allocator(), testing.allocator);
+    defer ctx.deinit();
+    const name = try buildName(&ctx, parts);
+    try testing.expectError(expected, libraryParts(arena.allocator(), &ctx.symbols, name));
+}
+
+test "a name of identifiers and integers is the parts of a path" {
+    try expectParts(&.{ .{ .id = "foo" }, .{ .id = "bar" } }, &.{ "foo", "bar" });
+    try expectParts(&.{.{ .id = "foo" }}, &.{"foo"});
+    try expectParts(&.{ .{ .id = "srfi" }, .{ .int = 1 } }, &.{ "srfi", "1" });
+    try expectParts(&.{ .{ .id = "v" }, .{ .int = 0 }, .{ .int = 120 } }, &.{ "v", "0", "120" });
+    // 許可する文字は、すべて通る。大文字と小文字は区別する。
+    try expectParts(&.{ .{ .id = "Foo-bar_2.x" }, .{ .id = "a..b" } }, &.{ "Foo-bar_2.x", "a..b" });
+}
+
+test "a component that could leave the root or name something else is refused" {
+    // 親へ出る成分と、現在のディレクトリ。
+    try expectRefused(&.{ .{ .id = ".." }, .{ .id = "passwd" } }, error.DotAtEdge);
+    try expectRefused(&.{ .{ .id = "foo" }, .{ .id = ".." } }, error.DotAtEdge);
+    try expectRefused(&.{ .{ .id = "." }, .{ .id = "foo" } }, error.DotAtEdge);
+    // `.` で始まる成分と、`.` で終わる成分。
+    try expectRefused(&.{.{ .id = ".hidden" }}, error.DotAtEdge);
+    try expectRefused(&.{ .{ .id = "foo" }, .{ .id = "bar." } }, error.DotAtEdge);
+    // 区切りを含む成分。縦棒で囲んだ識別子は、どんな文字でも含みうる。
+    try expectRefused(&.{.{ .id = "../../etc" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "a/b" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "a\\b" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "/etc" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "c:" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "a b" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "a+b" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "a\x00b" }}, error.BadCharacter);
+    try expectRefused(&.{.{ .id = "café" }}, error.BadCharacter);
+    // 空の成分は、パスの結合で取り除かれ、別の名前と同じファイルを指す。
+    try expectRefused(&.{ .{ .id = "" }, .{ .id = "base" } }, error.EmptyComponent);
+    try expectRefused(&.{ .{ .id = "foo" }, .{ .id = "" } }, error.EmptyComponent);
+    // 成分が1つもない名前は、ルート自身を指す。
+    try expectRefused(&.{}, error.NoComponents);
+    // 負の整数は、名前の成分ではない。
+    try expectRefused(&.{ .{ .id = "foo" }, .{ .int = -1 } }, error.NotAComponent);
+}
+
+test "the name of a device is refused in any case, with an extension or without" {
+    for ([_][]const u8{ "CON", "con", "Con", "PRN", "AUX", "NUL", "nul", "COM1", "com9", "Lpt1", "LPT9", "CON.scm", "con.x.y", "aux.txt", "COM3.sld" }) |name| {
+        try expectRefused(&.{.{ .id = name }}, error.ReservedDeviceName);
+        try expectRefused(&.{ .{ .id = "foo" }, .{ .id = name } }, error.ReservedDeviceName);
+        // どの位置の成分でも拒否する(途中のディレクトリの名前でも)。
+        try expectRefused(&.{ .{ .id = name }, .{ .id = "foo" } }, error.ReservedDeviceName);
+    }
+    // 似ているだけの名前は通る。
+    for ([_][]const u8{ "console", "conx", "com", "com0", "com10", "lpt0", "lpt", "auxiliary", "nulls", "pr", "prnx", "xcon", "con-1" }) |name| {
+        try expectParts(&.{.{ .id = name }}, &.{name});
+    }
+    // 整数の成分は、10進の数字だけで、デバイス名にならない。
+    try expectParts(&.{.{ .int = 1 }}, &.{"1"});
+}
+
+/// A directory tree that the file tests build, and the path of its root.
+pub const Tree = struct {
+    tmp: testing.TmpDir,
+    /// The absolute path of the temporary directory.
+    path: [:0]const u8,
+    /// `path` as the list of the one root, for `Files`.
+    /// 木を動かさない限り、`Files.roots` が指してよい。
+    roots: [1][]const u8,
+
+    pub fn init(self: *Tree, allocator: std.mem.Allocator) !void {
+        self.tmp = testing.tmpDir(.{});
+        errdefer self.tmp.cleanup();
+        self.path = try self.tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+        self.roots = .{self.path};
+    }
+
+    pub fn deinit(self: *Tree, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.tmp.cleanup();
+    }
+
+    pub fn write(self: *Tree, sub_path: []const u8, data: []const u8) !void {
+        try self.tmp.dir.createDirPath(testing.io, Dir.path.dirname(sub_path) orelse ".");
+        try self.tmp.dir.writeFile(testing.io, .{ .sub_path = sub_path, .data = data });
+    }
+
+    /// Makes a link, or skips the test where the system does not let it.
+    pub fn link(self: *Tree, target: []const u8, sub_path: []const u8, is_directory: bool) !void {
+        try self.tmp.dir.createDirPath(testing.io, Dir.path.dirname(sub_path) orelse ".");
+        self.tmp.dir.symLink(testing.io, target, sub_path, .{ .is_directory = is_directory }) catch |e| switch (e) {
+            // Windows は、権限が無いとリンクを作れない。
+            error.AccessDenied, error.PermissionDenied, error.Unexpected => return error.SkipZigTest,
+            else => return e,
+        };
+    }
+
+    /// The path of `sub_path` in the tree.
+    pub fn at(self: *Tree, allocator: std.mem.Allocator, sub_path: []const u8) ![]const u8 {
+        return Dir.path.join(allocator, &.{ self.path, sub_path });
+    }
+};
+
+/// Opens the library `name` (identifiers only) beneath `roots`, and returns what
+/// the file holds.
+fn readLibrary(allocator: std.mem.Allocator, roots: []const []const u8, names: []const []const u8) ![]u8 {
+    var ctx = try context.Context.init(allocator, testing.allocator);
+    defer ctx.deinit();
+    var parts: std.ArrayList(Part) = .empty;
+    for (names) |n| try parts.append(allocator, .{ .id = n });
+    const name = try buildName(&ctx, parts.items);
+    const file = try openLibrary(.{ .io = testing.io, .roots = roots }, allocator, &ctx.symbols, name);
+    defer file.close(testing.io);
+    var buf: [256]u8 = undefined;
+    var reader: File.Reader = .init(file, testing.io, &buf);
+    return reader.interface.allocRemaining(allocator, .unlimited);
+}
+
+fn expectOpenFails(roots: []const []const u8, names: []const []const u8, expected: anyerror) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(expected, readLibrary(arena.allocator(), roots, names));
+}
+
+test "the library (foo bar) is the file foo/bar.sld beneath a root" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.write("foo/bar.sld", "(define-library (foo bar))");
+    try tree.write("solo.sld", "alone");
+    try tree.write("foo/bar/deep.sld", "deep");
+    try testing.expectEqualStrings("(define-library (foo bar))", try readLibrary(arena.allocator(), &.{tree.path}, &.{ "foo", "bar" }));
+    try testing.expectEqualStrings("alone", try readLibrary(arena.allocator(), &.{tree.path}, &.{"solo"}));
+    try testing.expectEqualStrings("deep", try readLibrary(arena.allocator(), &.{tree.path}, &.{ "foo", "bar", "deep" }));
+    // 別の名前のファイルは、別の名前のライブラリである。
+    try expectOpenFails(&.{tree.path}, &.{ "foo", "baz" }, error.NotFound);
+    // Why: 大文字と小文字だけが違う名前は、区別するファイルシステムでは別のファイルだが、区別しない
+    // もの(Windows の既定)では同じファイルを開く。後者でファイルの定義が名前と合わないことは、
+    // 読み込み側が名前を照合して拒否する(`src/sucheme.zig` のテスト)。
+    if (comptime builtin.os.tag == .linux) try expectOpenFails(&.{tree.path}, &.{ "Foo", "bar" }, error.NotFound);
+    try expectOpenFails(&.{tree.path}, &.{ "foo", "bar", "deeper" }, error.NotFound);
+    // 拡張子が違うファイルは、ライブラリのファイルではない。
+    try tree.write("other.scm", "x");
+    try expectOpenFails(&.{tree.path}, &.{"other"}, error.NotFound);
+}
+
+test "the roots are searched in order, and a root that cannot be opened has nothing" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.write("one/a.sld", "first");
+    try tree.write("one/b.sld", "only in one");
+    try tree.write("two/a.sld", "second");
+    try tree.write("two/c.sld", "only in two");
+    const one = try tree.at(arena.allocator(), "one");
+    const two = try tree.at(arena.allocator(), "two");
+    const missing = try tree.at(arena.allocator(), "missing");
+    const roots = [_][]const u8{ missing, one, two };
+    try testing.expectEqualStrings("first", try readLibrary(arena.allocator(), &roots, &.{"a"}));
+    try testing.expectEqualStrings("only in one", try readLibrary(arena.allocator(), &roots, &.{"b"}));
+    try testing.expectEqualStrings("only in two", try readLibrary(arena.allocator(), &roots, &.{"c"}));
+    try expectOpenFails(&roots, &.{"d"}, error.NotFound);
+    // ルートが1つもなければ、何も見つからない。
+    try expectOpenFails(&.{}, &.{"a"}, error.NotFound);
+    // ルートが指す名前が、ファイルのときも。
+    try testing.expectEqualStrings("second", try readLibrary(arena.allocator(), &.{ try tree.at(arena.allocator(), "one/b.sld"), two }, &.{"a"}));
+}
+
+test "a link on the way, or at the end, is refused, even when it stays inside the root" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.write("outside/secret.sld", "SECRET");
+    try tree.write("root/real/ok.sld", "ok");
+    try tree.write("root/other/inner.sld", "inner");
+    const root = try tree.at(arena.allocator(), "root");
+    // 対照: リンクでない通常のファイルは通る。
+    try testing.expectEqualStrings("ok", try readLibrary(arena.allocator(), &.{root}, &.{ "real", "ok" }));
+    // 途中の成分が、ルートの外のディレクトリへのリンク。
+    try tree.link("../outside", "root/linkdir", true);
+    try expectOpenFails(&.{root}, &.{ "linkdir", "secret" }, error.LinkRefused);
+    // 最後の成分が、ルートの外のファイルへのリンク。
+    try tree.link("../../outside/secret.sld", "root/real/linkfile.sld", false);
+    try expectOpenFails(&.{root}, &.{ "real", "linkfile" }, error.LinkRefused);
+    // ルートの中を指すリンクも、辿らない。
+    try tree.link("other", "root/alias", true);
+    try expectOpenFails(&.{root}, &.{ "alias", "inner" }, error.LinkRefused);
+    try tree.link("../other/inner.sld", "root/real/inside.sld", false);
+    try expectOpenFails(&.{root}, &.{ "real", "inside" }, error.LinkRefused);
+    // 前のルートのリンクは、あとのルートに同じものがあっても、黙って通り過ぎない。
+    try tree.write("later/linkdir/secret.sld", "later");
+    const later = try tree.at(arena.allocator(), "later");
+    try expectOpenFails(&.{ root, later }, &.{ "linkdir", "secret" }, error.LinkRefused);
+    // 名前の位置にあるファイルがディレクトリや通常のファイルのときは、見つからないだけである。
+    try tree.write("root/plain", "a file where a directory is needed");
+    try expectOpenFails(&.{root}, &.{ "plain", "x" }, error.NotFound);
+    try tree.write("root/dir.sld/inner", "x");
+    try expectOpenFails(&.{root}, &.{"dir"}, error.NotFound);
+}
+
+test "a FIFO where the file should be is refused, not opened" {
+    // Why: FIFO を開くと、書き手が現れるまで戻らない。開く前の種別の確認が外れると、この
+    // テストは失敗でなく止まるので、`ci.yml` の `--test-timeout` が失敗にする。
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.tmp.dir.createDirPath(testing.io, "fifo");
+    const rc = std.os.linux.mknodat(tree.tmp.dir.handle, "fifo/p.sld", std.os.linux.S.IFIFO | 0o600, 0);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(rc));
+    try expectOpenFails(&.{tree.path}, &.{ "fifo", "p" }, error.NotRegularFile);
+}
+
+test "the root itself may be a link, and a name that is refused opens nothing" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.write("real/a.sld", "through the root link");
+    try tree.link("real", "rootlink", true);
+    try testing.expectEqualStrings("through the root link", try readLibrary(arena.allocator(), &.{try tree.at(arena.allocator(), "rootlink")}, &.{"a"}));
+    // 検証を通らない名前は、ファイルがあっても開かない。
+    try tree.write("real/con.sld", "x");
+    try tree.write("real/.hidden.sld", "x");
+    try expectOpenFails(&.{try tree.at(arena.allocator(), "real")}, &.{"con"}, error.ReservedDeviceName);
+    try expectOpenFails(&.{try tree.at(arena.allocator(), "real")}, &.{".hidden"}, error.DotAtEdge);
+    try expectOpenFails(&.{try tree.at(arena.allocator(), "real")}, &.{ "..", "real", "a" }, error.DotAtEdge);
+}

@@ -9,6 +9,7 @@ const env = @import("env.zig");
 const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
 const library = @import("syntax/library.zig");
+const resolve = @import("resolve.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
 
@@ -52,6 +53,11 @@ pub const Context = struct {
     /// The libraries a program has defined, and the forms being processed
     /// (src/syntax/library.zig).
     libraries: library.Registry = .{},
+    /// What the files of the libraries are opened with, when the host has a file
+    /// system (src/resolve.zig).
+    /// WASM は実ファイルシステムを持たないので、空のままである。このとき、ライブラリの
+    /// ファイルを引く経路は、見つからないことになる。
+    files: ?resolve.Files = null,
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
