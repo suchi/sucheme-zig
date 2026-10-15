@@ -12,8 +12,8 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階2(コア言語の完成)。段階1は v0.1.0 で完了した(スライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md))。段階2の実装計画は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) が正で、スライスの分け方と進捗はその計画書の表が正である。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
-| 最新リリース | [v0.1.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0)([リリースノート](releases/v0.1.0.md)) |
+| 現在の段階 | 段階3(Schemeによる標準ライブラリ)。段階1は v0.1.0 で、段階2は v0.2.0 で完了した(段階1のスライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md)。段階2の実装計画と進捗は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) が正である)。段階3の計画書は、まだ無い。計画書のない段階の実装は始めない([plans/README.md](plans/README.md))。段階の数値は `build.zig` の `current_stage` が正で、上げると `zig build check-docs` が新しい行をCIに要求する |
+| 最新リリース | [v0.2.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.2.0)([リリースノート](releases/v0.2.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(段階1の最小版が生成されている。必須の識別子ごとに、インタプリタが束縛しているかだけを見る。`lib/` のエクスポートは段階3、準拠スイートの結果は段階6で足す) |
 
@@ -125,6 +125,7 @@
 - [ ] REPL で解決した名前ごとに残る未束縛のセルの回収(または数の上限)。最上位で解決した未知の名前は、実行されなくても REPL 自身の未束縛のセルになり、GC ヒープの上限に計上され続ける([design/open-questions.md](design/open-questions.md))。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
 - [ ] 準拠マトリクスの入力に、`lib/` のエクスポート節を足す。`lib/` のエクスポート節が実在するこの段階で入れる。段階1の最小版は、`tests/r7rs-required` の識別子をインタプリタが束縛しているかだけを見ている
 - [ ] `equal?` の循環したデータでの停止と、共有構造(同じ部分を何度も指すデータ)で比較回数が深さに対して指数に増える問題への対応(訪問済みの集合)。循環は、データの変更(`set-car!` など)が入ると作れるので、その最初のスライスと同時に要る。共有構造での指数時間は、変更が無くても Scheme から作れる(再現入力は計画書 0010 の `equal?` の注に書いた)。段階1では、この既知の制約を受け入れた(ユーザーが 2026-10-12 に判断した)。`src/prim/equiv.zig` の `isEqual` の doc コメントが参照している (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
+- [ ] マクロが導入した最上位の `define` と `define-syntax` を、衛生的にする。今は、名前が別名なら、元のシンボルの名前を REPL の表に束縛するので、マクロが導入した最上位の定義が、利用側の同じ綴りの最上位の変数を書き換える(例は [design/frontend.md](design/frontend.md) の解決規則の節)。v0.2.0 に既知の制限として入れた(ユーザーが 2026-10-15 に判断した)。経緯は [design/open-questions.md](design/open-questions.md) の「マクロが導入した名前の最上位の定義」の行にある。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
 - [ ] ファイルの実行(`sucheme prog.scm`)。R7RS 5.1 のプログラムは `import` で始まるので、`(scheme base)` ができてから入れる([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の6)
 - [ ] シンボル表を弱い表にする。`string->symbol` が入るスライスで、シンボルの操作と同時に決める([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)

@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0003](../adr/0003-precise-mark-sweep-gc.md), [ADR-0004](../adr/0004-cek-machine-evaluator.md), [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md), [ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0019](../adr/0019-denotations-and-identifier-resolution.md), [ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md), [ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md), [ADR-0030](../adr/0030-lexical-address-width-u32.md), [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md)。衛生性の方式の経緯として [ADR-0005](../adr/0005-hygienic-expander-by-renaming.md)(非推奨、ADR-0019 に置き換え)
 - 段階: 2(コア言語の完成)。段階の作業項目と完了条件は [roadmap.md](../roadmap.md) の段階2の節が正
 - 日付: 2026-10-13
-- 状態: 合意済み(2026-10-13)。「合意を求める点」の11点すべてを、勧める案どおりに承認した。問い3と問い4の新しい ADR は、それぞれを引き受けるスライスの PR で書く
+- 状態: 完了(2026-10-15)。合意済み(2026-10-13)で、「合意を求める点」の11点すべてを、勧める案どおりに承認した。全スライス(2a から 2r)が main に入り、v0.2.0 が公開された。次の段階の計画書は、まだ無い
 
 ## 解こうとしている問題
 
@@ -763,15 +763,8 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2o | main に入った。敵対的レビューの指摘を反映して、層2 の前。`include` が読む時点から、展開の作業領域と節点をヒープの上限に数える(行をまたいで残るコードは、ADR-0031 の追記が記録している)。`include` は特殊形式で、式の位置と最上位では、ファイルのデータを `begin` の形式として展開する。ライブラリの宣言の位置の `include` と `include-library-declarations` は、データを順に処理する。ファイル名は、含むファイルのディレクトリ(REPL は作業ディレクトリ)を基準にし、ルートの外へ出る名前、絶対パス、システムによって意味が変わる文字を拒否する(拒否の範囲は [frontend.md](../design/frontend.md) の「実装が拒否するもの」)。読んでいる最中のファイルの集合(`Context.sources`)で、自分自身を含む鎖を見つけて拒否し、鎖は 64 個までにする。本体の先頭にある `(include ...)` が定義を持つ場合は、本体の先頭の `begin` を受け付けない制限(roadmap の「スライス未割り当て」の項目)と同じ理由で、まだ受け付けない。WASM はファイルを開く手段が無く、「ファイルが無い」と報告する | [#96](https://github.com/suchi/sucheme-zig/pull/96) |
 | 2p | main に入った。敵対的レビューは、2 本のうち 1 本が完走せず、テストの強さの担当のミューテーションの指摘をテストで塞いだ。`cond-expand` は特殊形式で、フィーチャ要件は識別子、`library`、`and`、`or`、`not` と最後の `else` である。式の位置と最上位では、当てはまる節の本体を `begin` のように展開し、ライブラリの宣言の位置では宣言として処理する。`features` は機械が作る新しいリストを返す。一覧は `src/features.zig` に1つあり、`r7rs` `sucheme` `sucheme-<major>.<minor>`、OS の名前、`wasm`、エンディアンを挙げる。どの節も当てはまらず `else` も無いときは、最上位と宣言では何もせず、式の位置では誤りにする(ユーザーの了承済み。R7RS の原文は、この環境から取得できず、未確認)。`(library <name>)` は、定義済みか、ファイルが開けるときに真で、ファイルは読まない。実装の選択は [frontend.md](../design/frontend.md) の「実装の選択」にある | [#98](https://github.com/suchi/sucheme-zig/pull/98) |
 | 2q | main に入った([#99](https://github.com/suchi/sucheme-zig/pull/99))。リーダが畳み込みの状態(`Reader.fold_case`)を持ち、真のとき識別子を ASCII の小文字にし、文字名と16進の `x` を大文字小文字を区別せずに読む。文字リテラルと文字列は畳み込まない。`include-ci` は、式の位置とライブラリ宣言の位置で、対象のファイルを畳み込む状態で読む。ファイルの中の入れ子の `include` は、それが書かれたとおりに読む。合意を求める点の8は、この段階のリーダが ASCII でない識別子をそもそも読めないので、畳み込みのエラーは生まれない(実装の選択は [frontend.md](../design/frontend.md) にある) | |
-| 2r | リリース準備の PR を出した。版を `0.2.0` にし、リリースノート `docs/releases/v0.2.0.md` を足し、roadmap の段階2の未チェックの3項目にチェックを入れ、open-questions の「段階2までに決める」の節を整理した(決めた行は設計文書に書いて消し、決めなかった行は段階を定めない保留へ移した)。残りは、ユーザーが `main` のマージコミットにタグ `v0.2.0` を打ち、`release.yml` の下書きを確かめて公開してから行う。版を `0.3.0-dev` に戻すこと、roadmap の「現在地」と最新リリース、`current_stage` の更新、[0012](0012-schedule-estimates-and-actuals.md) の実績と補正である | |
+| 2r | 完了。リリース準備の PR([#100](https://github.com/suchi/sucheme-zig/pull/100))を main に入れ、ユーザーがタグ `v0.2.0` を push し、`release.yml` が下書きを作り、ユーザーが 2026-10-15 20:08 JST(11:08 UTC)に公開した。版は `0.3.0-dev` に戻し、`current_stage` を 3 に上げ、roadmap の「現在地」と最新リリースを更新した。計画書 0012 の実績と補正、振り返りは別の PR にある。マクロが導入した最上位の定義は、既知の制限として出すとユーザーが判断し、roadmap の段階3に項目を足した | [#100](https://github.com/suchi/sucheme-zig/pull/100) |
 
 ## 次にやること
 
-1. 2a のマージ後に、実行時の系列(2b と 2c)とフロントエンドの系列(2i)を並行に始める。2a の進行は、進捗の表の 2a の行に置く。
-2. 項目を引き受けるスライスの PR で roadmap に足すと決めたもの(2a の可変個引数の `lambda`、2p の `features` など)は、そのスライスの PR で足す。
-
-系列ごとの次の作業。各スライスの PR は、自分の系列の行だけを書き換える(「重なりの確認」)。
-
-- 実行時の系列(2b から 2h): 2b から 2h は、すべて main に入った。この系列の残りはない。
-- マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2i から 2l は、すべて main に入った。2l の展開のメモリの有界化は、1行の中の展開まで入れた。残りは roadmap の項目にある。これで、マクロの系列は 2r を待つだけになる。
-- ライブラリの系列(2m から 2q): すべて main に入った。
+1. 段階3の計画書(`0016-phase3-...`)を書き、ユーザーの合意を得る。計画書のない段階の実装は始めない([README](README.md))。段階3の roadmap の項目と、段階2から送った「スライス未割り当て」の項目の割り当てを、その計画書で決める。
