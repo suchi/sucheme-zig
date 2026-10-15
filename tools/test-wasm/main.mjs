@@ -232,6 +232,17 @@ test("a library that is not defined is not found, since there is no file system"
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// `lib/` のファイルは実行ファイルに埋め込まれているので、ファイルを開く手段の無い WASM でも
+// `import` できる(スライス 3a)。埋め込みのファイルの `include` も、埋め込みの中から引く。
+test("an embedded library is imported without a file system", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(import (sucheme derived)) (list (when #t 1 2) (unless #f 3 4))"), [OK, "(2 4)\n"]);
+  assert.deepEqual(h.run("(when #t 5)"), [OK, "5\n"]);
+  // 埋め込みに無いライブラリは、これまでどおり見つからない。
+  assert.deepEqual(h.run("(import (sucheme nope))"), [SCHEME_ERROR, "error: unknown library: (sucheme nope)\n"]);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {
