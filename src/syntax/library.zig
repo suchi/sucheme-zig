@@ -444,9 +444,10 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             var m: machine.Machine = .init(ctx, scratch);
             _ = try m.run(node);
         }
-    } else if (std.mem.eql(u8, keyword, "include")) {
+    } else if (std.mem.eql(u8, keyword, "include") or std.mem.eql(u8, keyword, "include-ci")) {
+        const fold_case = std.mem.eql(u8, keyword, "include-ci");
         for (parts[1..]) |name| {
-            var rest = try enterIncluded(ctx, scratch, name, "include");
+            var rest = try enterIncluded(ctx, scratch, name, keyword, fold_case);
             defer leaveIncluded(ctx);
             const target: expand.Target = .{ .table = table, .root = lib.root, .mode = .library };
             while (rest.asPair()) |p| : (rest = p.cdr) {
@@ -458,7 +459,7 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
         }
     } else if (std.mem.eql(u8, keyword, "include-library-declarations")) {
         for (parts[1..]) |name| {
-            var rest = try enterIncluded(ctx, scratch, name, "include-library-declarations");
+            var rest = try enterIncluded(ctx, scratch, name, "include-library-declarations", false);
             defer leaveIncluded(ctx);
             while (rest.asPair()) |p| : (rest = p.cdr) try declare(ctx, scratch, lib, p.car, pending, depth + 1);
         }
@@ -467,8 +468,6 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
         const chosen = try cond_expand.select(ctx, scratch, parts[1..]) orelse return;
         for (try itemsOf(ctx, scratch, chosen, "cond-expand")) |chosen_declaration|
             try declare(ctx, scratch, lib, chosen_declaration, pending, depth + 1);
-    } else if (isLaterDeclaration(keyword)) {
-        return ctx.raise("bad define-library: the declaration {s} is not supported yet", .{keyword});
     } else {
         return ctx.raise("bad define-library: {s} is not a library declaration", .{keyword});
     }
@@ -479,11 +478,11 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
 /// `include`s in it are relative to, until `leaveIncluded`.
 /// Why: 宣言の処理は、データの間に機械を走らせるので、GC が走りうる。読み終えたデータは
 /// どこからも指されていないので、リストにして、登録表の `loading` にルートとして載せる。
-fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: []const u8) Error!Value {
+fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: []const u8, fold_case: bool) Error!Value {
     const text = (name.asString() orelse return ctx.raise("bad {s}: a file name must be a string", .{what})).bytes;
     const opened = try source_mod.openIncluded(ctx, scratch, text, what);
     const subject = try std.fmt.allocPrint(scratch, "{s} {s}", .{ what, text });
-    const data = try source_mod.readData(ctx, scratch, ctx.files.?, opened.file, subject);
+    const data = try source_mod.readData(ctx, scratch, ctx.files.?, opened.file, subject, fold_case);
     var list: Value = .empty_list_value;
     var i = data.len;
     while (i > 0) {
@@ -500,14 +499,6 @@ fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: [
 fn leaveIncluded(ctx: *Context) void {
     _ = ctx.sources.pop();
     _ = ctx.libraries.loading.pop();
-}
-
-/// Whether `keyword` begins a declaration that R7RS has and a later slice adds.
-fn isLaterDeclaration(keyword: []const u8) bool {
-    for ([_][]const u8{"include-ci"}) |later| {
-        if (std.mem.eql(u8, keyword, later)) return true;
-    }
-    return false;
 }
 
 /// The export `spec` of an `export` declaration: an identifier, or

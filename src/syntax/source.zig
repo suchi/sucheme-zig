@@ -59,11 +59,13 @@ pub fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, s
 
 /// Every datum of `file`, in order, and the file closed.
 /// ファイルの内容は、データを読み終えた時点で手放す。データは内容を指さない。
-pub fn readData(ctx: *Context, scratch: std.mem.Allocator, files: resolve.Files, file: std.Io.File, subject: []const u8) Error![]const Value {
+/// `fold_case` が真なら、リーダは識別子と文字名を畳み込む(`include-ci`)。
+pub fn readData(ctx: *Context, scratch: std.mem.Allocator, files: resolve.Files, file: std.Io.File, subject: []const u8, fold_case: bool) Error![]const Value {
     defer file.close(files.io);
     const source = try readText(ctx, files, file, subject);
     defer ctx.heap.backing.free(source);
     var r: reader.Reader = .init(source);
+    r.fold_case = fold_case;
     var data: std.ArrayList(Value) = .empty;
     while (try readDatum(ctx, &r, scratch, subject)) |datum| try data.append(scratch, datum);
     return data.items;
@@ -82,7 +84,7 @@ pub fn currentOrigin(ctx: *const Context, files: resolve.Files) resolve.Origin {
 
 /// Opens the file that `name`, a file name an `include` gives, means, and checks
 /// that it is not a file that is being read already.
-/// `what` は、`include` と `include-library-declarations` のどちらかである。
+/// `what` は、`include` と `include-ci` と `include-library-declarations` のいずれかである。
 pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8, what: []const u8) Error!Included {
     const files = ctx.files orelse return ctx.raise("bad {s}: this interpreter has no files to read: {s}", .{ what, name });
     const base = currentOrigin(ctx, files);

@@ -29,7 +29,10 @@ pub const ReadError = error{
 /// 呼び出し側は、`src` が妥当な UTF-8 であること、`src[pos.*..]` が `#\` で
 /// 始まることを保証する。バックスラッシュの直後の文字は、区切り文字であっても
 /// (`#\(`)、常にトークンの最初の文字として取る。
-pub fn read(src: []const u8, pos: *usize) ReadError!u21 {
+///
+/// `fold_case` が真のとき、名前と16進の `x` は大文字小文字を区別しない(R7RS 2.1 の
+/// `#!fold-case`)。1文字のリテラルは畳み込まない。`#\A` は `A` である。
+pub fn read(src: []const u8, pos: *usize, fold_case: bool) ReadError!u21 {
     const start = pos.* + 2;
     std.debug.assert(src[pos.*] == '#' and src[pos.* + 1] == '\\');
     if (start >= src.len) return error.Incomplete;
@@ -44,7 +47,7 @@ pub fn read(src: []const u8, pos: *usize) ReadError!u21 {
     while (end < src.len and !isDelimiter(src[end])) end += 1;
     const token = src[start..end];
 
-    const c = try decode(token, first_len, first);
+    const c = try decode(token, first_len, first, fold_case);
     pos.* = end;
     return c;
 }
@@ -53,11 +56,12 @@ pub fn read(src: []const u8, pos: *usize) ReadError!u21 {
 /// for.
 ///
 /// `first` はトークンの最初のコードポイント、`first_len` はそのバイト長である。
-fn decode(token: []const u8, first_len: usize, first: u21) ReadError!u21 {
+fn decode(token: []const u8, first_len: usize, first: u21, fold_case: bool) ReadError!u21 {
     if (token.len == first_len) return first;
-    if (token[0] == 'x') return parseHex(token[1..]);
+    if (token[0] == 'x' or (fold_case and token[0] == 'X')) return parseHex(token[1..]);
     for (names) |entry| {
-        if (std.mem.eql(u8, entry.name, token)) return entry.c;
+        const same = if (fold_case) std.ascii.eqlIgnoreCase(entry.name, token) else std.mem.eql(u8, entry.name, token);
+        if (same) return entry.c;
     }
     return error.InvalidCharacter;
 }
@@ -134,7 +138,7 @@ const Case = struct { src: []const u8, c: u21 };
 
 fn readAll(src: []const u8) !u21 {
     var pos: usize = 0;
-    const c = try read(src, &pos);
+    const c = try read(src, &pos, false);
     try std.testing.expectEqual(src.len, pos);
     return c;
 }
@@ -164,9 +168,32 @@ test "the nine names read as their characters and write back as their names" {
     }
 }
 
-test "names are case sensitive" {
+test "names are case sensitive unless the case is folded" {
     try std.testing.expectError(error.InvalidCharacter, readAll("#\\Space"));
     try std.testing.expectError(error.InvalidCharacter, readAll("#\\NEWLINE"));
+    try std.testing.expectError(error.InvalidCharacter, readAll("#\\X41"));
+}
+
+fn readFolded(src: []const u8) !u21 {
+    var pos: usize = 0;
+    const c = try read(src, &pos, true);
+    try std.testing.expectEqual(src.len, pos);
+    return c;
+}
+
+test "with case folding, names and the hexadecimal x ignore case, and a one-character literal does not fold" {
+    try std.testing.expectEqual(@as(u21, 0xa), try readFolded("#\\NEWLINE"));
+    try std.testing.expectEqual(@as(u21, 0xa), try readFolded("#\\NewLine"));
+    try std.testing.expectEqual(@as(u21, 0x20), try readFolded("#\\Space"));
+    try std.testing.expectEqual(@as(u21, 0x41), try readFolded("#\\X41"));
+    try std.testing.expectEqual(@as(u21, 0x41), try readFolded("#\\x41"));
+    // 1文字は、そのままの文字である。
+    try std.testing.expectEqual(@as(u21, 'A'), try readFolded("#\\A"));
+    try std.testing.expectEqual(@as(u21, 'X'), try readFolded("#\\X"));
+    try std.testing.expectEqual(@as(u21, 'a'), try readFolded("#\\a"));
+    // 畳み込みは、名前でないものを名前にしない。
+    try std.testing.expectError(error.InvalidCharacter, readFolded("#\\Foo"));
+    try std.testing.expectError(error.InvalidCharacter, readFolded("#\\X41g"));
 }
 
 test "hexadecimal form reads digits in either case" {
@@ -182,7 +209,7 @@ test "hexadecimal form reads digits in either case" {
 test "x alone is the character x" {
     try std.testing.expectEqual(@as(u21, 'x'), try readAll("#\\x"));
     var pos: usize = 0;
-    try std.testing.expectEqual(@as(u21, 'x'), try read("#\\x)", &pos));
+    try std.testing.expectEqual(@as(u21, 'x'), try read("#\\x)", &pos, false));
     try std.testing.expectEqual(@as(usize, 3), pos);
 }
 
@@ -237,7 +264,7 @@ test "the literal ends at a delimiter and pos stops before it" {
     };
     for (cases) |case| {
         var pos: usize = 0;
-        try std.testing.expectEqual(case.c, try read(case.src, &pos));
+        try std.testing.expectEqual(case.c, try read(case.src, &pos, false));
         try std.testing.expectEqual(case.end, pos);
     }
 }
@@ -249,22 +276,22 @@ test "every whitespace character ends the literal" {
     for (whitespace) |ws| {
         const src = [_]u8{ '#', '\\', 'a', ws, 'b' };
         var pos: usize = 0;
-        try std.testing.expectEqual(@as(u21, 'a'), try read(&src, &pos));
+        try std.testing.expectEqual(@as(u21, 'a'), try read(&src, &pos, false));
         try std.testing.expectEqual(@as(usize, 3), pos);
     }
 }
 
 test "read starts at pos" {
     var pos: usize = 3;
-    try std.testing.expectEqual(@as(u21, 'b'), try read("(a #\\b)", &pos));
+    try std.testing.expectEqual(@as(u21, 'b'), try read("(a #\\b)", &pos, false));
     try std.testing.expectEqual(@as(usize, 6), pos);
 }
 
 test "input that ends right after the backslash is incomplete" {
     var pos: usize = 0;
-    try std.testing.expectError(error.Incomplete, read("#\\", &pos));
+    try std.testing.expectError(error.Incomplete, read("#\\", &pos, false));
     pos = 3;
-    try std.testing.expectError(error.Incomplete, read("(a #\\", &pos));
+    try std.testing.expectError(error.Incomplete, read("(a #\\", &pos, false));
 }
 
 test "write writes the other control characters in hexadecimal" {

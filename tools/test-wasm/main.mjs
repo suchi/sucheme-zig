@@ -241,6 +241,10 @@ test("an include reports that there is no file to read, and refuses a form that 
     [SCHEME_ERROR, "error: bad include: this interpreter has no files to read: a.scm\n"],
   );
   assert.deepEqual(h.run("(include 1)"), [SCHEME_ERROR, "error: bad include: a file name must be a string\n"]);
+  assert.deepEqual(
+    h.run('(include-ci "a.scm")'),
+    [SCHEME_ERROR, "error: bad include-ci: this interpreter has no files to read: a.scm\n"],
+  );
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 

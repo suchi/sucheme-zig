@@ -114,6 +114,10 @@ const Frame = union(enum) {
 pub const Reader = struct {
     src: []const u8,
     pos: usize = 0,
+    /// Whether identifiers and character names are folded to lower case.
+    /// `include-ci` が読むファイルは、この状態で始まる(R7RS 4.1.7)。指令 `#!fold-case` で
+    /// 入力の途中から切り替える機能は、段階5で足す。
+    fold_case: bool = false,
 
     pub fn init(src: []const u8) Reader {
         return .{ .src = src };
@@ -152,13 +156,13 @@ pub const Reader = struct {
                         },
                     }
                     continue;
-                } else try self.atom(sink),
+                } else try self.atom(scratch, sink),
                 '"' => try string_syntax.read(self.src, &self.pos, scratch, sink.heap),
-                '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos)) else if (self.atVectorOpen()) {
+                '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos, self.fold_case)) else if (self.atVectorOpen()) {
                     self.pos += 2;
                     try open.append(scratch, .{ .vector = .empty });
                     continue;
-                } else try self.atom(sink),
+                } else try self.atom(scratch, sink),
                 '\'' => {
                     self.pos += 1;
                     try open.append(scratch, .quote);
@@ -176,7 +180,7 @@ pub const Reader = struct {
                         .vector => |items| break :blk .fromVector(try sink.heap.createVector(items.items)),
                     }
                 },
-                else => try self.atom(sink),
+                else => try self.atom(scratch, sink),
             };
             // 完成したデータは、それを待っているすべての `'` を閉じる。
             while (open.items.len != 0 and open.items[open.items.len - 1] == .quote) {
@@ -229,7 +233,7 @@ pub const Reader = struct {
     }
 
     /// Reads one token up to the next delimiter and classifies it.
-    fn atom(self: *Reader, sink: Sink) Error!Value {
+    fn atom(self: *Reader, scratch: std.mem.Allocator, sink: Sink) Error!Value {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
@@ -244,8 +248,26 @@ pub const Reader = struct {
             return .fromFixnum(n);
         }
         if (isUnsupportedNumber(token)) return error.InvalidToken;
-        if (isIdentifier(token)) return .fromSymbol(try sink.symbols.intern(sink.alloc, token));
+        if (isIdentifier(token)) return .fromSymbol(try sink.symbols.intern(sink.alloc, try self.folded(scratch, token)));
         return error.InvalidToken;
+    }
+
+    /// The identifier `token` as this reader reads it: folded to lower case when the
+    /// reader folds case.
+    /// ASCII の大文字を含まなければ、そのまま返す。確保するのは、含むときだけである。
+    /// Why: このリーダが識別子として読むのは ASCII だけなので、畳み込みは ASCII の小文字化で
+    /// 足りる。ASCII でない文字を識別子に許すときは、畳み込みの表(段階4)が要る。許すだけで
+    /// 畳み込みを直さないと、畳み込むべき識別子がそのまま通り、原因の分からない未束縛の変数に
+    /// なるので、ここで止める。
+    fn folded(self: *const Reader, scratch: std.mem.Allocator, token: []const u8) Error![]const u8 {
+        if (!self.fold_case) return token;
+        var has_upper = false;
+        for (token) |byte| {
+            std.debug.assert(byte < 0x80);
+            if (std.ascii.isUpper(byte)) has_upper = true;
+        }
+        if (!has_upper) return token;
+        return std.ascii.allocLowerString(scratch, token);
     }
 };
 
@@ -525,6 +547,7 @@ const Fixture = struct {
     arena: std.heap.ArenaAllocator,
     heap: Heap,
     symbols: symbol.Table = .{},
+    fold_case: bool = false,
 
     fn init() Fixture {
         return .{ .arena = .init(std.testing.allocator), .heap = .init(std.heap.smp_allocator, .{}) };
@@ -542,6 +565,7 @@ const Fixture = struct {
     /// Reads the only datum of `src`; any other count is an error.
     fn readOne(self: *Fixture, src: []const u8) Error!Value {
         var r: Reader = .init(src);
+        r.fold_case = self.fold_case;
         const d = (try r.next(self.arena.allocator(), self.sink())) orelse return error.Incomplete;
         if (try r.next(self.arena.allocator(), self.sink()) != null) return error.InvalidToken;
         return d;
@@ -590,6 +614,37 @@ test "next reads an identifier as the one symbol of its name" {
     // 識別子は大文字と小文字を区別する(R7RS 2.1)。
     try std.testing.expect(a != (try f.readOne("ABC")).asSymbol().?);
     try std.testing.expectEqualStrings("abc", f.symbols.nameOf(a));
+}
+
+test "a reader that folds case reads identifiers and character names in lower case, and not strings or one-character literals" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    f.fold_case = true;
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "(define foo-bar #\\newline #\\A \"MiXed\" x1 +soon ...)",
+        try f.roundTrip("(DEFINE Foo-Bar #\\NEWLINE #\\A \"MiXed\" X1 +SOON ...)", &buf),
+    );
+    // 大文字は、端の A も Z も畳み込む。
+    try std.testing.expectEqualStrings("abcdefghijklmnopqrstuvwxyz", f.symbols.nameOf((try f.readOne("ABCDEFGHIJKLMNOPQRSTUVWXYZ")).asSymbol().?));
+    try std.testing.expectEqualStrings("z", f.symbols.nameOf((try f.readOne("Z")).asSymbol().?));
+    // 読み手が畳み込まないときは、どれも変わらない。
+    f.fold_case = false;
+    try std.testing.expectEqualStrings("(DEFINE Foo-Bar #\\A)", try f.roundTrip("(DEFINE Foo-Bar #\\A)", &buf));
+    try std.testing.expectError(error.InvalidCharacter, f.readOne("#\\NEWLINE"));
+}
+
+test "a reader that folds case reads no identifier with a character that is not ASCII, as one that does not" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_]bool{ false, true }) |fold| {
+        f.fold_case = fold;
+        try std.testing.expectError(error.InvalidToken, f.readOne("λ"));
+        try std.testing.expectError(error.InvalidToken, f.readOne("(define Αβ 1)"));
+        // 文字列の中と、1文字のリテラルは、識別子ではない。
+        _ = try f.readOne("\"λ\"");
+        _ = try f.readOne("#\\λ");
+    }
 }
 
 test "next reads lists, the empty list and nesting" {
@@ -996,6 +1051,10 @@ const fuzz_inputs = [_][]const u8{
     "\"\xff\" #\\\xff #\\\xc3 \xe3\x81",
     "#\\\xe3\x81",
     "#\\\xe3",
+    // 畳み込む読み手の経路(`fuzzReadAll` は、入力の長さが奇数のときに畳み込む)。大文字の
+    // 識別子、文字名、16 進の `X`、ASCII でない識別子と、畳み込みで名前にならないもの。
+    "(DEFINE Foo #\\NEWLINE #\\X41 x) ",
+    "(DEFINE Foo λ) #\\X41g #\\Newlin ",
 };
 
 /// `fuzz_inputs` as corpus entries.
@@ -1041,6 +1100,8 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
     var symbols: symbol.Table = .{};
     const sink: Sink = .{ .alloc = arena.allocator(), .heap = &heap, .symbols = &symbols };
     var r: Reader = .init(src);
+    // 畳み込む読み手の経路も通すため、入力の長さの偶奇で切り替える。
+    r.fold_case = src.len % 2 == 1;
     while (true) {
         const before = r.pos;
         const datum = r.next(arena.allocator(), sink) catch |err| switch (err) {
@@ -1178,4 +1239,18 @@ test "fuzz: the reader leaks nothing wherever an allocation fails" {
     }
     // 入力が確保をしなければ、何も試していない。
     try std.testing.expect(n > 0);
+}
+
+test "the corpus has inputs that the reader reads with case folded, and that fold something" {
+    var folded: usize = 0;
+    for (fuzz_inputs) |text| {
+        if (text.len % 2 == 0) continue;
+        for (text) |byte| {
+            if (std.ascii.isUpper(byte)) {
+                folded += 1;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(folded >= 2);
 }

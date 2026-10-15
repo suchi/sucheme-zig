@@ -345,8 +345,12 @@ pub fn openSource(io: std.Io, roots: []const []const u8, request: Request) Error
 ### リーダ(`src/reader.zig`、2q)
 
 ```zig
-pub const Options = struct { fold_case: bool = false };
-pub fn initWith(src: []const u8, options: Options) Reader;
+pub const Reader = struct {
+    src: []const u8,
+    pos: usize = 0,
+    fold_case: bool = false, // 真なら、識別子と文字名を畳み込む。`include-ci` が読むファイルは真で始める
+    pub fn init(src: []const u8) Reader;
+};
 ```
 
 ## 各スライスの設計
@@ -758,7 +762,7 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 | 2n | main に入った([#95](https://github.com/suchi/sucheme-zig/pull/95))。ファイルの大きさの上限は 1 MiB で、リーダの作業領域が計上の外にある分は、受け入れた制約として [ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) に記録した。`import` が名指すライブラリは、登録表に無ければ、探索ルートの配下の `foo/bar.sld` から読む。リゾルバ(`src/resolve.zig`)は、名前の検証、装置の名前の拒否、ルートの配下で成分を1つずつリンクを辿らずに開く手順を持つ。探索ルートは作業ディレクトリと `-I <dir>`(繰り返せる)で、`src/main.zig` の契約を足した(合意を求める点の7の勧める案)。読んだファイルは、ちょうど1つの `define-library` で、名前が要求と同じでなければ拒否する。WASM はファイルを開く手段が無く、見つからないになる(`zig build test-wasm`)。Windows の reparse point は、標準ライブラリのソースを読んだだけで、実行していない([zig-api-notes.md](../design/zig-api-notes.md))。層2 の Windows のジョブの結果で確かめる | |
 | 2o | 実装済み。敵対的レビューの指摘を反映して、層2 の前。`include` が読む時点から、展開の作業領域と節点をヒープの上限に数える(行をまたいで残るコードは、ADR-0031 の追記が記録している)。`include` は特殊形式で、式の位置と最上位では、ファイルのデータを `begin` の形式として展開する。ライブラリの宣言の位置の `include` と `include-library-declarations` は、データを順に処理する。ファイル名は、含むファイルのディレクトリ(REPL は作業ディレクトリ)を基準にし、ルートの外へ出る名前、絶対パス、システムによって意味が変わる文字を拒否する(拒否の範囲は [frontend.md](../design/frontend.md) の「実装が拒否するもの」)。読んでいる最中のファイルの集合(`Context.sources`)で、自分自身を含む鎖を見つけて拒否し、鎖は 64 個までにする。本体の先頭にある `(include ...)` が定義を持つ場合は、本体の先頭の `begin` を受け付けない制限(roadmap の「スライス未割り当て」の項目)と同じ理由で、まだ受け付けない。WASM はファイルを開く手段が無く、「ファイルが無い」と報告する | |
 | 2p | 実装済み。敵対的レビューは、2 本のうち 1 本が完走せず、テストの強さの担当のミューテーションの指摘をテストで塞いだ。`cond-expand` は特殊形式で、フィーチャ要件は識別子、`library`、`and`、`or`、`not` と最後の `else` である。式の位置と最上位では、当てはまる節の本体を `begin` のように展開し、ライブラリの宣言の位置では宣言として処理する。`features` は機械が作る新しいリストを返す。一覧は `src/features.zig` に1つあり、`r7rs` `sucheme` `sucheme-<major>.<minor>`、OS の名前、`wasm`、エンディアンを挙げる。どの節も当てはまらず `else` も無いときは、最上位と宣言では何もせず、式の位置では誤りにする(ユーザーの了承済み。R7RS の原文は、この環境から取得できず、未確認)。`(library <name>)` は、定義済みか、ファイルが開けるときに真で、ファイルは読まない。実装の選択は [frontend.md](../design/frontend.md) の「実装の選択」にある | |
-| 2q | 未着手 | |
+| 2q | 実装済み。リーダが畳み込みの状態(`Reader.fold_case`)を持ち、真のとき識別子を ASCII の小文字にし、文字名と16進の `x` を大文字小文字を区別せずに読む。文字リテラルと文字列は畳み込まない。`include-ci` は、式の位置とライブラリ宣言の位置で、対象のファイルを畳み込む状態で読む。ファイルの中の入れ子の `include` は、それが書かれたとおりに読む。合意を求める点の8は、この段階のリーダが ASCII でない識別子をそもそも読めないので、畳み込みのエラーは生まれない(実装の選択は [frontend.md](../design/frontend.md) にある) | |
 | 2r | 未着手 | |
 
 ## 次にやること
@@ -770,4 +774,4 @@ runtime.md の事例には、同じ扱いが roadmap に書かれていない。
 
 - 実行時の系列(2b から 2h): 2b から 2h は、すべて main に入った。この系列の残りはない。
 - マクロの系列(2i から 2l。2i と 2j はライブラリの系列の土台でもある): 2i から 2l は、すべて main に入った。2l の展開のメモリの有界化は、1行の中の展開まで入れた。残りは roadmap の項目にある。これで、マクロの系列は 2r を待つだけになる。
-- ライブラリの系列(2m から 2q): 2m から 2o は main に入った。2p は実装済みで、PR のレビューは済んでいる。2q は、2p がマージされてから始める。
+- ライブラリの系列(2m から 2q): 2m から 2o は main に入った。2p はマージ済みである。2q は実装済みで、PR のレビューの前である。
