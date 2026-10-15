@@ -88,11 +88,22 @@ after
 (cond-expand) 'after
 after
 
+# 当てはまる節に本体が無いときも、最上位では何もしない。
+(cond-expand (r7rs)) 'after
+after
+
+(cond-expand (no-such-feature 1) (else)) 'after
+after
+
 (list (cond-expand (no-such-feature 1)))
 error: bad cond-expand: no clause applies, and there is no else clause
 
 (list (cond-expand (r7rs)))
 error: bad cond-expand: the clause that applies has no expression
+
+# 定義は、式の位置では置けない。
+(list (cond-expand (r7rs (define in-expression 1))))
+error: bad define: a definition is only allowed at the top level or at the start of a body
 
 # `features`。
 (list? (features))

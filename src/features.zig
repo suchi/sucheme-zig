@@ -71,7 +71,8 @@ test "a build has r7rs, sucheme, its version, its endianness and its system, eac
     try std.testing.expect(has("r7rs"));
     try std.testing.expect(has("sucheme"));
     try std.testing.expect(has(comptime "sucheme-" ++ majorMinor(build_options.version)));
-    try std.testing.expect(has("little-endian") != has("big-endian"));
+    try std.testing.expectEqual(builtin.cpu.arch.endian() == .little, has("little-endian"));
+    try std.testing.expectEqual(builtin.cpu.arch.endian() == .big, has("big-endian"));
     try std.testing.expect(!has("no-such-feature"));
     try std.testing.expect(!has("exact-closed"));
     for (names, 0..) |a, i| {
@@ -81,4 +82,9 @@ test "a build has r7rs, sucheme, its version, its endianness and its system, eac
     try std.testing.expect(has("wasm") or has("unix") or has("windows"));
     try std.testing.expectEqual(builtin.os.tag == .linux, has("linux"));
     try std.testing.expectEqual(builtin.os.tag == .windows, has("windows"));
+    // Windows と WASM 以外は POSIX 系で、付録Bの `unix` と `posix` を持つ。
+    const posix = builtin.os.tag != .windows and !builtin.cpu.arch.isWasm();
+    try std.testing.expectEqual(posix, has("unix"));
+    try std.testing.expectEqual(posix, has("posix"));
+    try std.testing.expectEqual(builtin.cpu.arch.isWasm(), has("wasm"));
 }

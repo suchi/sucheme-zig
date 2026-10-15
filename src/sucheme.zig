@@ -5,6 +5,7 @@
 //! 育っていく先のモジュールは docs/design/architecture.md にある。
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 /// Implementation name reported by `(features)` and the `--version` output.
@@ -840,6 +841,11 @@ test "a cond-expand that is malformed is refused, whichever part of the requirem
     try expectLineFails(&interp, "(cond-expand (r7rs (frob)))", "unbound variable: frob");
     // 要求は、当てはまる節より後ろの節まで調べない。
     try expectLinePrints(&interp, "(cond-expand (r7rs 1) ((frob) 2))", "1\n");
+    // 当てはまる節の本体が不正なリストなら、式の位置でも最上位でも宣言でも誤りである。
+    const improper = "bad syntax: a form must be a proper list";
+    try expectLineFails(&interp, "(cond-expand (r7rs 1 . 2))", improper);
+    try expectLineFails(&interp, "(cond-expand (no-such-feature 1) (else 1 . 2))", improper);
+    try expectLineFails(&interp, "(define-library (t improper) (export) (import (sucheme core)) (cond-expand (r7rs (export) . x)))", "bad cond-expand: expected a proper list");
 }
 
 test "the nesting of a feature requirement is bounded, and a chain at the bound is read" {
@@ -883,6 +889,22 @@ test "a library is available to a requirement when its file can be opened, and t
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
     // 読み込みは、インポートがする。
     try expectLineFails(&interp, "(import (foo bar))", "wrong type of argument to car 5");
+}
+
+test "asking whether a library is available does not leave its file open" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("foo/bar.sld", "(define-library (foo bar) (export) (import (sucheme core)))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 開いたままにすると、記述子が尽きて開けなくなり、要求は偽になる。上限を低くして、繰り返す。
+    const original = try std.posix.getrlimit(.NOFILE);
+    try std.posix.setrlimit(.NOFILE, .{ .cur = @min(64, original.max), .max = original.max });
+    defer std.posix.setrlimit(.NOFILE, original) catch {};
+    for (0..300) |_| try expectLinePrints(&interp, "(cond-expand ((library (foo bar)) 'yes) (else 'no))", "yes\n");
 }
 
 test "a macro can expand to a cond-expand, and the names inside it are read as they were written" {

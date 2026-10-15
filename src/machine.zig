@@ -808,12 +808,6 @@ pub const Machine = struct {
         return call;
     }
 
-    /// What `(values obj ...)` returns for the `count` operands in `args`: the
-    /// operand itself when there is one, and otherwise a multiple-values object
-    /// of them (R7RS 6.10).
-    /// `args` は最後のオペランドから並ぶ(末尾に演算子があってもよい)。1個の値を複数値の
-    /// オブジェクトにしないのは、`(+ 1 (values 2))` のように、値を1個要求する継続が
-    /// 受け取れるようにするためである。オブジェクトは、呼び出しの `budget` から確保する。
     /// A new list of the feature identifiers of the build, as symbols.
     /// Why: 呼ぶたびに新しいリストを作る。返したリストを書き換えても、次の呼び出しに響かない。
     fn featureList(self: *Machine) Error!Value {
@@ -828,6 +822,12 @@ pub const Machine = struct {
         return list;
     }
 
+    /// What `(values obj ...)` returns for the `count` operands in `args`: the
+    /// operand itself when there is one, and otherwise a multiple-values object
+    /// of them (R7RS 6.10).
+    /// `args` は最後のオペランドから並ぶ(末尾に演算子があってもよい)。1個の値を複数値の
+    /// オブジェクトにしないのは、`(+ 1 (values 2))` のように、値を1個要求する継続が
+    /// 受け取れるようにするためである。オブジェクトは、呼び出しの `budget` から確保する。
     fn valuesOf(self: *Machine, args: *const Args, count: usize, budget: heap_mod.Budget) Error!Value {
         if (count == 1) return args.value;
         var small: [small_operands]Value = undefined;
