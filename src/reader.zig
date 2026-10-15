@@ -625,6 +625,9 @@ test "a reader that folds case reads identifiers and character names in lower ca
         "(define foo-bar #\\newline #\\A \"MiXed\" x1 +soon ...)",
         try f.roundTrip("(DEFINE Foo-Bar #\\NEWLINE #\\A \"MiXed\" X1 +SOON ...)", &buf),
     );
+    // 大文字は、端の A も Z も畳み込む。
+    try std.testing.expectEqualStrings("abcdefghijklmnopqrstuvwxyz", f.symbols.nameOf((try f.readOne("ABCDEFGHIJKLMNOPQRSTUVWXYZ")).asSymbol().?));
+    try std.testing.expectEqualStrings("z", f.symbols.nameOf((try f.readOne("Z")).asSymbol().?));
     // 読み手が畳み込まないときは、どれも変わらない。
     f.fold_case = false;
     try std.testing.expectEqualStrings("(DEFINE Foo-Bar #\\A)", try f.roundTrip("(DEFINE Foo-Bar #\\A)", &buf));
