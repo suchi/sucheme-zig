@@ -387,7 +387,10 @@ test "the library (foo bar) is the file foo/bar.sld beneath a root" {
     try testing.expectEqualStrings("deep", try readLibrary(arena.allocator(), &.{tree.path}, &.{ "foo", "bar", "deep" }));
     // 別の名前のファイルは、別の名前のライブラリである。
     try expectOpenFails(&.{tree.path}, &.{ "foo", "baz" }, error.NotFound);
-    try expectOpenFails(&.{tree.path}, &.{ "Foo", "bar" }, error.NotFound);
+    // Why: 大文字と小文字だけが違う名前は、区別するファイルシステムでは別のファイルだが、区別しない
+    // もの(Windows の既定)では同じファイルを開く。後者でファイルの定義が名前と合わないことは、
+    // 読み込み側が名前を照合して拒否する(`src/sucheme.zig` のテスト)。
+    if (comptime builtin.os.tag == .linux) try expectOpenFails(&.{tree.path}, &.{ "Foo", "bar" }, error.NotFound);
     try expectOpenFails(&.{tree.path}, &.{ "foo", "bar", "deeper" }, error.NotFound);
     // 拡張子が違うファイルは、ライブラリのファイルではない。
     try tree.write("other.scm", "x");
