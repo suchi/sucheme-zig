@@ -104,3 +104,7 @@ pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8,
     };
     return .{ .file = file, .origin = origin };
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

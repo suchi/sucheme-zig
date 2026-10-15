@@ -8,7 +8,7 @@
 
 | ライブラリ | 束縛済み | 全体 |
 | --- | ---: | ---: |
-| `(scheme base)` | 71 | 238 |
+| `(scheme base)` | 72 | 238 |
 | `(scheme case-lambda)` | 0 | 1 |
 | `(scheme char)` | 0 | 22 |
 | `(scheme complex)` | 0 | 6 |
@@ -24,4 +24,4 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 71 | 339 |
+| 一意の識別子の合計 | 72 | 339 |
