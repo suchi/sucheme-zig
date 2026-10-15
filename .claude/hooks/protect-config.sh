@@ -21,8 +21,8 @@
 # intended failure direction. Read these files with the Read tool, which the
 # deny rules cover, rather than through a shell.
 #
-# Requires jq to parse the hook payload (personal/README.md: prerequisite
-# tools). If jq is missing or the payload does not parse, the hook asks
+# Requires jq to parse the hook payload (jq is a prerequisite tool of this
+# repository). If jq is missing or the payload does not parse, the hook asks
 # instead of deciding, so the guard fails safe rather than silently
 # allowing everything.
 
@@ -36,7 +36,7 @@ emit() {
 }
 
 if ! command -v jq >/dev/null 2>&1; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"jq is required by this hook but was not found. Install jq (personal/README.md: prerequisite tools)."}}\n'
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"jq is required by this hook but was not found. Install jq (a prerequisite tool of this repository)."}}\n'
   exit 0
 fi
 

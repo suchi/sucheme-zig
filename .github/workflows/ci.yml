@@ -68,17 +68,16 @@ jobs:
         with:
           version: 0.17.0
           use-cache: false
-      # Why: the Zig cache is kept by this step and not by setup-zig
-      # (use-cache: false above). setup-zig saves the cache at the end of every
-      # run, whatever its result, under a new key, and a restore takes the newest
-      # entry without checking it. A run cancelled while the cache was still
-      # being unpacked saved the half-unpacked directory, every later run
-      # restored it and failed, and each failed run saved it again
-      # (docs/adr/0032-ci-zig-cache-saved-only-by-successful-runs.md).
+      # Why: Zig のキャッシュは、setup-zig ではなくこの step が持つ(上の
+      # `use-cache: false`)。setup-zig は、結果にかかわらず毎回の実行の最後に、新しい
+      # キーでキャッシュを保存し、復元は検査せずに最新の項目を取る。キャッシュを
+      # 展開している途中で中断された実行が、展開しかけのディレクトリを保存し、
+      # 以後の実行がそれを復元して失敗し、失敗した実行がまた保存した
+      # (docs/adr/0032-ci-zig-cache-saved-only-by-successful-runs.md)。
       #
-      # actions/cache saves only when the job succeeded and only when this exact
-      # key was missing. The key holds what decides the cache's contents, so the
-      # number of entries stays small. To throw the cache away, change v1.
+      # actions/cache は、ジョブが成功し、かつこのキーが無かったときだけ保存する。
+      # キーには、キャッシュの中身を決めるものを入れるので、項目の数は少ないままである。
+      # キャッシュを捨てるには、v1 を変える。
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .zig-cache
