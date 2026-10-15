@@ -115,6 +115,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - 10分を超えそうな用事(敵対的レビューなど)は、別セッションに任せる。バックグラウンドのサブエージェントや別セッションに用事を任せたら、[.agents/skills/watch-subagent/SKILL.md](.agents/skills/watch-subagent/SKILL.md) に従って生存確認を予約する。完了通知が来ないことを、実行中の根拠にしない。
 - 状況を一覧で知りたいとき、またはユーザーが判断すべきこと(マージ・承認・判断)をまとめて示したいときは、[.agents/skills/briefing/SKILL.md](.agents/skills/briefing/SKILL.md)(`/briefing`)に従う。PR・Issue・別セッション・サブエージェントの進行と、ユーザーがやることを1画面で報告する。
 - 作業ブロックに入る前に、そこで打つ予定のコマンドを列挙して1回でまとめて許可を得る。報告と承認依頼には「全体計画のどの手順の、何件中の何件目か」を書く。
+- 新しいセッションや別のエージェントは、最初に[docs/handoff.md](docs/handoff.md)を読む。作業を続けるのに要る、進め方の実際、環境の癖、判断の履歴、ユーザーに確認したい進め方がある。進捗の正は`docs/roadmap.md`の「現在地」と`docs/plans/`で、`handoff.md`には書かない。
 - 過去の失敗と対処は[docs/review/process-lessons.md](docs/review/process-lessons.md)にある。新しいセッションで同じ失敗を繰り返さないために読む。
 
 ## 情報源
