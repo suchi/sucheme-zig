@@ -979,6 +979,11 @@ test "an include-ci declaration of a library folds the file, and a library keeps
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
         try expectLinePrints(&interp, "(import (t ci)) (list (f) (g))", "(7 7)\n");
+        // 名前が複数あっても、どのファイルも畳み込んで読む。
+        try tree.write("t/ci2.sld", "(define-library (t ci2) (export u v) (import (sucheme core)) (include-ci \"u.scm\" \"v.scm\"))");
+        try tree.write("t/u.scm", "(DEFINE (U) 1)");
+        try tree.write("t/v.scm", "(DEFINE (V) (+ (U) 1))");
+        try expectLinePrints(&interp, "(import (t ci2)) (v)", "2\n");
         // 宣言の綴りは畳み込まない。`include-library-declarations` は、畳み込む版を持たない。
         try expectLineFails(&interp, "(import (t decl))", "bad define-library: EXPORT is not a library declaration");
     }

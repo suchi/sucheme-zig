@@ -1051,6 +1051,10 @@ const fuzz_inputs = [_][]const u8{
     "\"\xff\" #\\\xff #\\\xc3 \xe3\x81",
     "#\\\xe3\x81",
     "#\\\xe3",
+    // 畳み込む読み手の経路(`fuzzReadAll` は、入力の長さが奇数のときに畳み込む)。大文字の
+    // 識別子、文字名、16 進の `X`、ASCII でない識別子と、畳み込みで名前にならないもの。
+    "(DEFINE Foo #\\NEWLINE #\\X41 x) ",
+    "(DEFINE Foo λ) #\\X41g #\\Newlin ",
 };
 
 /// `fuzz_inputs` as corpus entries.
@@ -1235,4 +1239,18 @@ test "fuzz: the reader leaks nothing wherever an allocation fails" {
     }
     // 入力が確保をしなければ、何も試していない。
     try std.testing.expect(n > 0);
+}
+
+test "the corpus has inputs that the reader reads with case folded, and that fold something" {
+    var folded: usize = 0;
+    for (fuzz_inputs) |text| {
+        if (text.len % 2 == 0) continue;
+        for (text) |byte| {
+            if (std.ascii.isUpper(byte)) {
+                folded += 1;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(folded >= 2);
 }

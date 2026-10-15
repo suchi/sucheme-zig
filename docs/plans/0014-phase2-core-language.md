@@ -345,8 +345,12 @@ pub fn openSource(io: std.Io, roots: []const []const u8, request: Request) Error
 ### リーダ(`src/reader.zig`、2q)
 
 ```zig
-pub const Options = struct { fold_case: bool = false };
-pub fn initWith(src: []const u8, options: Options) Reader;
+pub const Reader = struct {
+    src: []const u8,
+    pos: usize = 0,
+    fold_case: bool = false, // 真なら、識別子と文字名を畳み込む。`include-ci` が読むファイルは真で始める
+    pub fn init(src: []const u8) Reader;
+};
 ```
 
 ## 各スライスの設計
