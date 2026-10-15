@@ -129,7 +129,7 @@
 - [ ] ファイルの実行(`sucheme prog.scm`)。R7RS 5.1 のプログラムは `import` で始まるので、`(scheme base)` ができてから入れる([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の6)
 - [ ] シンボル表を弱い表にする。`string->symbol` が入るスライスで、シンボルの操作と同時に決める([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
-- [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
+- [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える。v0.2.0 のノートはこの名前の取り消しに触れていないので、段階3のリリースのノートに取り消しを書く([ADR-0037](adr/0037-core-library-exposed-in-stage-2.md) の 2026-10-15 の追記、[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
 - [ ] `apply` の周回を、ステップの境目を通る形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 の追記)。今は、`apply` が並べ直した引数の鎖と、`apply` で `apply` を呼ぶ入れ子の周回が、1ステップの中で確保され、その間は GC が走らない。`set-car!` などが入る最初のスライスまでに要る。自分を指す引数のリストで、1ステップの中で終わらない周回が作れるようになるためである (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 - [ ] 複数値の確保(`values` と継続の多値での起動の `Machine.valuesOf`、`call-with-values` の `Machine.receiverCall`)を、個数に比例する量を1ステップの中で確保しない形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 の追記のスライス 2f の項)。上の `apply` の項と同じ直し方で、同じスライスで扱える (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 
