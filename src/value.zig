@@ -785,6 +785,15 @@ pub const Kont = struct {
         /// arguments of this procedure, the consumer, which is called in the
         /// continuation of the `call-with-values`.
         values_receiver: Value,
+        /// The value is dropped, and the operands of a call go on being lined up:
+        /// a chunk of the operands that are left come from `rest`, and the call is
+        /// applied once none is left.
+        /// `apply` と `call-with-values` が、個数がデータで決まる引数の並べ直しを、
+        /// 境目を挟む複数のステップに分けるために積む。このフレームが継続に載っている間、
+        /// 作りかけの鎖と残りの引数は継続から辿れるので、GC のルートは増えない(ADR-0035)。
+        /// 呼び出しを適用するときはこのフレームが外れているので、呼ばれるものは末尾呼び出し
+        /// である。
+        spread: Spread,
 
         /// `make-parameter` called its converter, and the value is what it
         /// returned, which becomes the initial value of the new parameter.
@@ -806,7 +815,7 @@ pub const Kont = struct {
         /// the table of multiple values).
         /// Why: 網羅的な `switch` にしてあるのは、新しいフレームの種類を足す人が、複数値の
         /// 表の5群のどれに属するかを決めずにコンパイルを通せないようにするためである。
-        /// 捨てる群(`sequence` `wind_before`)、そのまま渡す群(`dynamic_exit` `handler_return`
+        /// 捨てる群(`sequence` `wind_before` `spread`)、そのまま渡す群(`dynamic_exit` `handler_return`
         /// `wind_body`)、受け取る群(`values_receiver`)、無視する群(`wind_after` `rewind`)は
         /// 個数を検査しない。それ以外は1個を要求する。`make-parameter` と `parameterize` の
         /// 4つのフレームは、パラメータ、初期値、新しい値、変換手続きの戻りという、1個の値を
@@ -815,11 +824,43 @@ pub const Kont = struct {
             return switch (step) {
                 .branch, .local_set, .local_define, .global_set, .global_define, .call => true,
                 .make_parameter, .parameterize_param, .parameterize_value, .parameterize_convert => true,
-                .sequence, .wind_before => false,
+                .sequence, .wind_before, .spread => false,
                 .dynamic_exit, .handler_return, .wind_body => false,
                 .values_receiver => false,
                 .wind_after, .rewind => false,
             };
+        }
+    };
+
+    /// A call whose operands are being lined up (`Step.spread`).
+    pub const Spread = struct {
+        /// The operands lined up so far, the latest first, with the operator at the
+        /// end, as `Machine.apply` takes them.
+        chain: *const Args,
+        /// How many operands `chain` holds, not counting the operator.
+        count: usize,
+        /// What the operands still to line up come from: a list, or a
+        /// multiple-values object, from `index` on.
+        /// 空のリストか、`index` が末尾に達した複数値のオブジェクトなら、残りは無い。
+        rest: Value,
+        index: usize,
+
+        /// Takes the next operand off `rest`, or null when none is left.
+        pub fn takeNext(self: *Spread) ?Value {
+            if (self.rest.asMultipleValues()) |m| {
+                if (self.index == m.items.len) return null;
+                self.index += 1;
+                return m.items[self.index - 1];
+            }
+            const cell = self.rest.asPair() orelse return null;
+            self.rest = cell.cdr;
+            return cell.car;
+        }
+
+        /// Whether no operand is left in `rest`.
+        pub fn isDone(self: Spread) bool {
+            if (self.rest.asMultipleValues()) |m| return self.index == m.items.len;
+            return self.rest.asPair() == null;
         }
     };
 
@@ -1501,6 +1542,7 @@ test "only the frames that take one value ask for exactly one" {
     const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
     const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
     var parameter: Parameter = .{ .value = .unspecified_value, .converter = null };
+    const spread_args: Args = .{ .value = .unspecified_value, .next = null };
     const asks_one = [_]Kont.Step{
         .{ .branch = &if_node },
         .{ .local_set = &assign },
@@ -1523,6 +1565,7 @@ test "only the frames that take one value ask for exactly one" {
         .{ .wind_after = .unspecified_value },
         .{ .rewind = .{ .state = &rewind, .entered = null, .at = null } },
         .{ .values_receiver = .unspecified_value },
+        .{ .spread = .{ .chain = &spread_args, .count = 0, .rest = .empty_list_value, .index = 0 } },
     };
     for (takes_any) |step| try std.testing.expect(!step.requiresOneValue());
 }
