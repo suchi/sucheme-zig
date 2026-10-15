@@ -240,6 +240,9 @@ test("an embedded library is imported without a file system", () => {
   assert.deepEqual(h.run("(when #t 5)"), [OK, "5\n"]);
   // 埋め込みに無いライブラリは、これまでどおり見つからない。
   assert.deepEqual(h.run("(import (sucheme nope))"), [SCHEME_ERROR, "error: unknown library: (sucheme nope)\n"]);
+  // `cond-expand` の `(library ...)` も、埋め込みのライブラリを見つける。
+  assert.deepEqual(h.run("(cond-expand ((library (sucheme derived)) 1) (else 2))"), [OK, "1\n"]);
+  assert.deepEqual(h.run("(cond-expand ((library (sucheme nope)) 1) (else 2))"), [OK, "2\n"]);
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
