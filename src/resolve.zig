@@ -452,6 +452,21 @@ test "a link on the way, or at the end, is refused, even when it stays inside th
     try expectOpenFails(&.{root}, &.{"dir"}, error.NotFound);
 }
 
+test "a FIFO where the file should be is refused, not opened" {
+    // Why: FIFO を開くと、書き手が現れるまで戻らない。開く前の種別の確認が外れると、この
+    // テストは失敗でなく止まるので、`ci.yml` の `--test-timeout` が失敗にする。
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var tree: Tree = undefined;
+    try tree.init(testing.allocator);
+    defer tree.deinit(testing.allocator);
+    try tree.tmp.dir.createDirPath(testing.io, "fifo");
+    const rc = std.os.linux.mknodat(tree.tmp.dir.handle, "fifo/p.sld", std.os.linux.S.IFIFO | 0o600, 0);
+    try testing.expectEqual(std.os.linux.E.SUCCESS, std.os.linux.errno(rc));
+    try expectOpenFails(&.{tree.path}, &.{ "fifo", "p" }, error.NotRegularFile);
+}
+
 test "the root itself may be a link, and a name that is refused opens nothing" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();

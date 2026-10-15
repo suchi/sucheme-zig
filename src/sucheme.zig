@@ -530,6 +530,25 @@ test "a file that is not exactly one define-library form is refused, and says wh
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
 }
 
+test "a file of the largest size is read, and one byte more is refused before it is read" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    const blank = try std.testing.allocator.alloc(u8, library.max_file_bytes + 1);
+    defer std.testing.allocator.free(blank);
+    @memset(blank, ' ');
+    try tree.write("t/fits.sld", blank[0..library.max_file_bytes]);
+    try tree.write("t/over.sld", blank);
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 空白だけのファイルは、読まれて、空だと言われる。大きさの上限の手前で拒否されない。
+    try expectLineFails(&interp, "(import (t fits))", "cannot load the library (t fits): its file is empty");
+    var expected: [128]u8 = undefined;
+    try expectLineFails(&interp, "(import (t over))", try std.fmt.bufPrint(&expected, "cannot load the library (t over): its file is larger than {d} bytes", .{library.max_file_bytes}));
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+}
+
 test "a library that cannot be loaded leaves nothing behind, and an error inside its body reaches the importer" {
     for ([_]bool{ false, true }) |stress| {
         var tree: resolve.Tree = undefined;
