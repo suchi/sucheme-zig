@@ -35,6 +35,7 @@ const context = @import("context.zig");
 const Context = context.Context;
 const heap_mod = @import("heap.zig");
 const pair = @import("prim/pair.zig");
+const features = @import("features.zig");
 
 pub const Error = context.Error;
 
@@ -623,6 +624,7 @@ pub const Machine = struct {
                         budget = .limit;
                     },
                     .values => return .{ .value = try self.valuesOf(args, count, budget) },
+                    .features => return .{ .value = try self.featureList() },
                     .call_with_values => {
                         args = try self.enterReceiver(prim, kont, args);
                         count = 0;
@@ -804,6 +806,20 @@ pub const Machine = struct {
         const call = try ctx.create(Args, .{ .value = args.next.?.value, .next = procedure });
         kont.* = try self.push(kont.*, null, .{ .make_parameter = converter });
         return call;
+    }
+
+    /// A new list of the feature identifiers of the build, as symbols.
+    /// Why: 呼ぶたびに新しいリストを作る。返したリストを書き換えても、次の呼び出しに響かない。
+    fn featureList(self: *Machine) Error!Value {
+        const ctx = self.ctx;
+        var list: Value = .empty_list_value;
+        var i = features.names.len;
+        while (i > 0) {
+            i -= 1;
+            const id = try ctx.symbols.intern(ctx.persist, features.names[i]);
+            list = ctx.heap.cons(.fromSymbol(id), list) catch |e| return ctx.heapFailure(e);
+        }
+        return list;
     }
 
     /// What `(values obj ...)` returns for the `count` operands in `args`: the

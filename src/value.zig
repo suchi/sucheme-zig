@@ -584,6 +584,9 @@ pub const MachineOp = enum {
     values,
     /// `(call-with-values producer consumer)` (R7RS 6.10).
     call_with_values,
+    /// `(features)` (R7RS 6.14): the feature identifiers of the build, as a new list of
+    /// symbols.
+    features,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -1062,7 +1065,7 @@ pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, cl
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
 /// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
-pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error", parameterize, include };
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error", parameterize, include, @"cond-expand" };
 
 /// The auxiliary syntax: identifiers that are not expressions by themselves and
 /// that other syntax reads as literals (R7RS 4.2.1, 4.2.8, 4.3.2).

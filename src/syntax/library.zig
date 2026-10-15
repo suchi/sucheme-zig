@@ -23,6 +23,7 @@ const printer = @import("../printer.zig");
 const reader = @import("../reader.zig");
 const resolve = @import("../resolve.zig");
 const source_mod = @import("source.zig");
+const cond_expand = @import("cond_expand.zig");
 
 pub const Error = context.Error;
 
@@ -31,6 +32,11 @@ pub const Error = context.Error;
 /// Why: 読み込みは、import を見つけたところから入れ子に進む。入れ子の深さは、ファイルの鎖の
 /// 長さで決まり、外部入力が決める。Zig のスタックを使い切らないよう、実装制限として報告する。
 pub const max_load_depth = 64;
+
+/// The deepest nesting of library declarations: `cond-expand` and
+/// `include-library-declarations` inside one another.
+/// Why: 宣言の入れ子は、入力が決める。処理は再帰するので、実装制限として報告する。
+pub const max_declaration_depth = 64;
 
 /// The most bytes of a source file (src/syntax/source.zig).
 pub const max_file_bytes = source_mod.max_file_bytes;
@@ -142,7 +148,7 @@ fn nameText(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error![]cons
 
 /// Checks that `name` is a library name: a list of at least one identifier or
 /// non-negative integer (R7RS 5.6.1).
-fn checkName(ctx: *Context, name: Value) Error!void {
+pub fn checkName(ctx: *Context, name: Value) Error!void {
     const bad = "bad library name: a name is a non-empty list of identifiers and non-negative integers";
     if (name.asPair() == null) return ctx.raise(bad, .{});
     var rest = name;
@@ -155,7 +161,7 @@ fn checkName(ctx: *Context, name: Value) Error!void {
 }
 
 /// Whether `name` is `(sucheme core)`.
-fn isCoreName(ctx: *const Context, name: Value) bool {
+pub fn isCoreName(ctx: *const Context, name: Value) bool {
     var rest = name;
     for ([_][]const u8{ "sucheme", "core" }) |expected| {
         const p = rest.asPair() orelse return false;
@@ -407,12 +413,14 @@ pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Err
     try ctx.libraries.loading.append(ctx.persist, form);
     defer _ = ctx.libraries.loading.pop();
     var pending: std.ArrayList(PendingExport) = .empty;
-    for (items[2..]) |declaration| try declare(ctx, scratch, lib, declaration, &pending);
+    for (items[2..]) |declaration| try declare(ctx, scratch, lib, declaration, &pending, 0);
     try finish(ctx, scratch, lib, pending.items);
 }
 
 /// Processes one declaration of a library.
-fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration: Value, pending: *std.ArrayList(PendingExport)) Error!void {
+fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration: Value, pending: *std.ArrayList(PendingExport), depth: usize) Error!void {
+    if (depth >= max_declaration_depth)
+        return ctx.raise("implementation restriction: library declarations are nested more than {d} deep", .{max_declaration_depth});
     const bad = "bad define-library: a declaration must be a list that starts with an identifier";
     if (declaration.asPair() == null) return ctx.raise(bad, .{});
     const parts = try itemsOf(ctx, scratch, declaration, "define-library");
@@ -452,8 +460,13 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
         for (parts[1..]) |name| {
             var rest = try enterIncluded(ctx, scratch, name, "include-library-declarations");
             defer leaveIncluded(ctx);
-            while (rest.asPair()) |p| : (rest = p.cdr) try declare(ctx, scratch, lib, p.car, pending);
+            while (rest.asPair()) |p| : (rest = p.cdr) try declare(ctx, scratch, lib, p.car, pending, depth + 1);
         }
+    } else if (std.mem.eql(u8, keyword, "cond-expand")) {
+        // どの節も当てはまらず `else` も無ければ、宣言は何も足さない。
+        const chosen = try cond_expand.select(ctx, scratch, parts[1..]) orelse return;
+        for (try itemsOf(ctx, scratch, chosen, "cond-expand")) |chosen_declaration|
+            try declare(ctx, scratch, lib, chosen_declaration, pending, depth + 1);
     } else if (isLaterDeclaration(keyword)) {
         return ctx.raise("bad define-library: the declaration {s} is not supported yet", .{keyword});
     } else {
@@ -491,7 +504,7 @@ fn leaveIncluded(ctx: *Context) void {
 
 /// Whether `keyword` begins a declaration that R7RS has and a later slice adds.
 fn isLaterDeclaration(keyword: []const u8) bool {
-    for ([_][]const u8{ "include-ci", "cond-expand" }) |later| {
+    for ([_][]const u8{"include-ci"}) |later| {
         if (std.mem.eql(u8, keyword, later)) return true;
     }
     return false;

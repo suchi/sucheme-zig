@@ -5,6 +5,7 @@
 //! 育っていく先のモジュールは docs/design/architecture.md にある。
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 /// Implementation name reported by `(features)` and the `--version` output.
@@ -796,6 +797,177 @@ test "an included file that is not valid text or does not read is refused with t
     try expectLineFails(&interp, "(include \"hash.scm\")", "cannot include hash.scm: unreadable token");
     // 失敗した読み込みは、何も定義しない。
     try expectLineFails(&interp, "x", "unbound variable: x");
+}
+
+test "a cond-expand declaration of a library is chosen by the same requirements, and nests" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, null);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define-library (t a) (export x y z) (import (sucheme core)) " ++
+            "(cond-expand ((and r7rs (not no-such-feature)) (begin (define x 1)) " ++
+            "(cond-expand (sucheme (begin (define y 5))) (else (begin (define y 6))))) " ++
+            "(else (begin (define x 2) (define y 3)))) " ++
+            "(cond-expand (no-such-feature (begin (define z 'no))) (else (begin (define z 'yes)))))", "");
+        try expectLinePrints(&interp, "(import (t a)) (list x y z)", "(1 5 yes)\n");
+        // どの節も当てはまらず `else` も無い宣言は、何も足さない。
+        try expectLinePrints(&interp, "(define-library (t b) (export) (import (sucheme core)) (cond-expand (no-such-feature (begin (define q 1)))))", "");
+        try expectLinePrints(&interp, "(import (t b))", "");
+    }
+}
+
+test "a cond-expand that is malformed is refused, whichever part of the requirement would have decided" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    const clause = "bad cond-expand: a clause is (<feature requirement> <body> ...) or (else <body> ...)";
+    const requirement = "bad cond-expand: a feature requirement is an identifier or a list that starts with library, and, or or not";
+    try expectLineFails(&interp, "(cond-expand r7rs)", clause);
+    try expectLineFails(&interp, "(cond-expand ())", clause);
+    try expectLineFails(&interp, "(cond-expand (else 1) (r7rs 2))", "bad cond-expand: the else clause must be the last");
+    try expectLineFails(&interp, "(cond-expand (5 1))", requirement);
+    try expectLineFails(&interp, "(cond-expand ((frob a) 1))", requirement);
+    try expectLineFails(&interp, "(cond-expand (() 1))", requirement);
+    try expectLineFails(&interp, "(cond-expand ((not) 1))", "bad cond-expand: expected (not <feature requirement>)");
+    try expectLineFails(&interp, "(cond-expand ((not a b) 1))", "bad cond-expand: expected (not <feature requirement>)");
+    try expectLineFails(&interp, "(cond-expand ((library) 1))", "bad cond-expand: expected (library <library name>)");
+    try expectLineFails(&interp, "(cond-expand ((library (a) (b)) 1))", "bad cond-expand: expected (library <library name>)");
+    try expectLineFails(&interp, "(cond-expand ((library 5) 1))", "bad library name: a name is a non-empty list of identifiers and non-negative integers");
+    try expectLineFails(&interp, "(cond-expand ((and r7rs . x) 1))", "bad cond-expand: a feature requirement must be a proper list");
+    // 部分の要求は、短絡せずにすべて調べる。前の部分が決めていても、後ろの誤りは見逃さない。
+    try expectLineFails(&interp, "(cond-expand ((or r7rs (frob)) 1))", requirement);
+    try expectLineFails(&interp, "(cond-expand ((and no-such-feature (frob)) 1))", requirement);
+    // 当てはまる節の本体が、その位置で誤りなら、その誤りが出る。
+    try expectLineFails(&interp, "(cond-expand (r7rs (frob)))", "unbound variable: frob");
+    // 要求は、当てはまる節より後ろの節まで調べない。
+    try expectLinePrints(&interp, "(cond-expand (r7rs 1) ((frob) 2))", "1\n");
+    // 当てはまる節の本体が不正なリストなら、式の位置でも最上位でも宣言でも誤りである。
+    const improper = "bad syntax: a form must be a proper list";
+    try expectLineFails(&interp, "(cond-expand (r7rs 1 . 2))", improper);
+    try expectLineFails(&interp, "(cond-expand (no-such-feature 1) (else 1 . 2))", improper);
+    try expectLineFails(&interp, "(define-library (t improper) (export) (import (sucheme core)) (cond-expand (r7rs (export) . x)))", "bad cond-expand: expected a proper list");
+}
+
+test "the nesting of a feature requirement is bounded, and a chain at the bound is read" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    const max = @import("syntax/cond_expand.zig").max_depth;
+    var buffer: [1024]u8 = undefined;
+    for ([_]usize{ max, max + 1 }) |depth| {
+        var w: std.Io.Writer = .fixed(&buffer);
+        try w.writeAll("(cond-expand (");
+        for (0..depth) |_| try w.writeAll("(not ");
+        try w.writeAll("r7rs");
+        for (0..depth) |_| try w.writeAll(")");
+        try w.writeAll(" 'yes) (else 'no))");
+        if (depth <= max) {
+            // `not` を偶数回で、元の真偽に戻る。
+            try expectLinePrints(&interp, w.buffered(), if (depth % 2 == 0) "yes\n" else "no\n");
+        } else {
+            var expected: [128]u8 = undefined;
+            try expectLineFails(&interp, w.buffered(), try std.fmt.bufPrint(&expected, "implementation restriction: feature requirements are nested more than {d} deep", .{max}));
+        }
+    }
+}
+
+test "a library is available to a requirement when its file can be opened, and the file is not read" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    // 読み込めば、本体が誤りになる。要求が読み込むなら、先頭の行が誤りで終わる。
+    try tree.write("foo/bar.sld", "(define-library (foo bar) (export) (import (sucheme core)) (begin (car 5)))");
+    try tree.write("foo/dir.sld/inner", "x");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(cond-expand ((library (foo bar)) 'yes) (else 'no))", "yes\n");
+    try expectLinePrints(&interp, "(cond-expand ((library (foo baz)) 'yes) (else 'no))", "no\n");
+    try expectLinePrints(&interp, "(cond-expand ((library (foo dir)) 'yes) (else 'no))", "no\n");
+    // 名前がファイルの名前にならなければ、偽である。誤りにはしない。
+    try expectLinePrints(&interp, "(cond-expand ((library (con)) 'yes) (else 'no))", "no\n");
+    try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
+    // 読み込みは、インポートがする。
+    try expectLineFails(&interp, "(import (foo bar))", "wrong type of argument to car 5");
+}
+
+test "asking whether a library is available does not leave its file open" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("foo/bar.sld", "(define-library (foo bar) (export) (import (sucheme core)))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 開いたままにすると、記述子が尽きて開けなくなり、要求は偽になる。上限を低くして、繰り返す。
+    const original = try std.posix.getrlimit(.NOFILE);
+    try std.posix.setrlimit(.NOFILE, .{ .cur = @min(64, original.max), .max = original.max });
+    defer std.posix.setrlimit(.NOFILE, original) catch {};
+    for (0..300) |_| try expectLinePrints(&interp, "(cond-expand ((library (foo bar)) 'yes) (else 'no))", "yes\n");
+}
+
+test "a macro can expand to a cond-expand, and the names inside it are read as they were written" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(define-syntax pick (syntax-rules () ((_ a b) (cond-expand ((and r7rs (not no-such-feature)) a) (else b)))))", "");
+    try expectLinePrints(&interp, "(pick 1 2)", "1\n");
+    // 利用者が、`and` や `else` と同じ綴りの変数を持っていても、要求の綴りには関係しない。
+    try expectLinePrints(&interp, "((lambda (and else r7rs) (pick 1 2)) 7 8 9)", "1\n");
+    // 特殊形式の名前は予約語ではない。
+    try expectLinePrints(&interp, "((lambda (cond-expand) cond-expand) 5)", "5\n");
+}
+
+test "the clause of a cond-expand that applies may include a file, in an expression and in a library" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("native.scm", "(define where 'native)");
+    try tree.write("other.scm", "(define where 'other)");
+    try tree.write("t/lib.sld", "(define-library (t lib) (export w) (import (sucheme core)) " ++
+        "(cond-expand (no-such-feature (include \"missing.scm\")) (else (include \"w.scm\"))))");
+    try tree.write("t/w.scm", "(define w 'from-the-clause)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(cond-expand ((and r7rs (not wasm)) (include \"native.scm\")) (else (include \"other.scm\"))) where", "native\n");
+    try expectLinePrints(&interp, "(import (t lib)) w", "from-the-clause\n");
+}
+
+test "features returns the identifiers of the build in the order of its list, as a new list each time" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const joined = try std.mem.join(a, " ", @import("features.zig").names);
+    const expected = try std.fmt.allocPrint(a, "({s})\n", .{joined});
+    try expectLinePrints(&interp, "(features)", expected);
+    try expectLinePrints(&interp, "(car (features))", "r7rs\n");
+}
+
+test "the nesting of the cond-expand declarations of a library is bounded, and a chain at the bound is read" {
+    const max = library.max_declaration_depth;
+    var buffer: [2048]u8 = undefined;
+    for ([_]usize{ max - 1, max }) |depth| {
+        var interp: Interpreter = undefined;
+        try interp.init(std.testing.allocator);
+        defer interp.deinit();
+        var w: std.Io.Writer = .fixed(&buffer);
+        try w.writeAll("(define-library (t deep) (export) (import (sucheme core)) ");
+        for (0..depth) |_| try w.writeAll("(cond-expand (r7rs ");
+        try w.writeAll("(export)");
+        for (0..depth) |_| try w.writeAll("))");
+        try w.writeAll(")");
+        if (depth < max) {
+            try expectLinePrints(&interp, w.buffered(), "");
+        } else {
+            var expected: [128]u8 = undefined;
+            try expectLineFails(&interp, w.buffered(), try std.fmt.bufPrint(&expected, "implementation restriction: library declarations are nested more than {d} deep", .{max}));
+        }
+    }
 }
 
 test "a file of the largest size is read, and one byte more is refused before it is read" {

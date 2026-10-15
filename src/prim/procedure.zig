@@ -28,6 +28,8 @@ pub const primitives = [_]Primitive{
     .{ .name = "call-with-values", .min_args = 2, .max_args = 2, .body = .{ .machine = .call_with_values } },
     // `(make-parameter init [converter])`: 変換手続きは省ける。
     .{ .name = "make-parameter", .min_args = 1, .max_args = 2, .body = .{ .machine = .make_parameter } },
+    // `(features)`: 引数は取らない。シンボル表に触れるので、機械が作る。
+    .{ .name = "features", .min_args = 0, .max_args = 0, .body = .{ .machine = .features } },
 };
 
 /// `(procedure? obj)`: true of the procedures made by `lambda`, of the ones
@@ -56,7 +58,7 @@ fn callWith(arg: Value) !bool {
 }
 
 test "procedure? takes one argument, apply two or more, call/cc one, dynamic-wind three, values any number, call-with-values two and make-parameter one or two" {
-    try std.testing.expectEqual(8, primitives.len);
+    try std.testing.expectEqual(9, primitives.len);
     try std.testing.expectEqualStrings("procedure?", primitives[0].name);
     try std.testing.expectEqual(1, primitives[0].min_args);
     try std.testing.expectEqual(1, primitives[0].max_args.?);
