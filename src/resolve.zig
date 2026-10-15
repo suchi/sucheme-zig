@@ -582,6 +582,8 @@ test "pathIs matches the components, not a prefix of them" {
     try testing.expect(!pathIs("foo/bar.sld", &.{ "foo", "bar" }));
     try testing.expect(!pathIs("foo/bar.sld", &.{ "foo", "bar.sld", "x" }));
     try testing.expect(!pathIs("foobar.sld", &.{ "foo", "bar.sld" }));
+    // 成分の間にあるのが `/` でなければ、別のパスである。
+    try testing.expect(!pathIs("fooXbar.sld", &.{ "foo", "bar.sld" }));
     try testing.expect(!pathIs("foo/bar.sld", &.{}));
     try testing.expect(!pathIs("", &.{}));
 }
