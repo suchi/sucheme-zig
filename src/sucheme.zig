@@ -913,6 +913,41 @@ test "the clause of a cond-expand that applies may include a file, in an express
     try expectLinePrints(&interp, "(import (t lib)) w", "from-the-clause\n");
 }
 
+test "features returns the identifiers of the build in the order of its list, as a new list each time" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const joined = try std.mem.join(a, " ", @import("features.zig").names);
+    const expected = try std.fmt.allocPrint(a, "({s})\n", .{joined});
+    try expectLinePrints(&interp, "(features)", expected);
+    try expectLinePrints(&interp, "(car (features))", "r7rs\n");
+}
+
+test "the nesting of the cond-expand declarations of a library is bounded, and a chain at the bound is read" {
+    const max = library.max_declaration_depth;
+    var buffer: [2048]u8 = undefined;
+    for ([_]usize{ max - 1, max }) |depth| {
+        var interp: Interpreter = undefined;
+        try interp.init(std.testing.allocator);
+        defer interp.deinit();
+        var w: std.Io.Writer = .fixed(&buffer);
+        try w.writeAll("(define-library (t deep) (export) (import (sucheme core)) ");
+        for (0..depth) |_| try w.writeAll("(cond-expand (r7rs ");
+        try w.writeAll("(export)");
+        for (0..depth) |_| try w.writeAll("))");
+        try w.writeAll(")");
+        if (depth < max) {
+            try expectLinePrints(&interp, w.buffered(), "");
+        } else {
+            var expected: [128]u8 = undefined;
+            try expectLineFails(&interp, w.buffered(), try std.fmt.bufPrint(&expected, "implementation restriction: library declarations are nested more than {d} deep", .{max}));
+        }
+    }
+}
+
 test "a file of the largest size is read, and one byte more is refused before it is read" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);
