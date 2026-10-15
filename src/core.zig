@@ -37,7 +37,7 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             try out.writeByte(')');
         },
         .local_ref => |r| try out.print("(local {s} {d} {d})", .{ symbols.nameOf(r.name), r.address.depth, r.address.index }),
-        .global_ref => |id| try out.print("(global {s})", .{symbols.nameOf(id)}),
+        .global_ref => |cell| try out.print("(global {s})", .{symbols.nameOf(cell.name)}),
         .local_set => |a| {
             try out.print("(set-local {s} {d} {d} ", .{ symbols.nameOf(a.name), a.address.depth, a.address.index });
             try write(out, scratch, symbols, a.value);
@@ -49,12 +49,12 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             try out.writeByte(')');
         },
         .global_set => |a| {
-            try out.print("(set-global {s} ", .{symbols.nameOf(a.name)});
+            try out.print("(set-global {s} ", .{symbols.nameOf(a.cell.name)});
             try write(out, scratch, symbols, a.value);
             try out.writeByte(')');
         },
         .global_define => |a| {
-            try out.print("(define-global {s} ", .{symbols.nameOf(a.name)});
+            try out.print("(define-global {s} ", .{symbols.nameOf(a.cell.name)});
             try write(out, scratch, symbols, a.value);
             try out.writeByte(')');
         },
@@ -77,15 +77,20 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             }
             try out.writeByte(')');
         },
-        // 余りの引数を受ける手続きは、必須の個数のあとに `rest` と書く。固定個の手続きの
-        // 書き方は変えない。
-        .lambda => |l| {
-            if (l.rest) {
-                try out.print("(lambda {d} rest {d} ", .{ l.arity, l.frame_size });
-            } else {
-                try out.print("(lambda {d} {d} ", .{ l.arity, l.frame_size });
+        .lambda => |l| try writeLambda(out, scratch, symbols, l),
+        // 本体は、引数の無い `lambda` と同じ書き方で、束縛のあとに続く。
+        .parameterize => |p| {
+            try out.writeAll("(parameterize (");
+            for (p.bindings, 0..) |b, i| {
+                if (i != 0) try out.writeByte(' ');
+                try out.writeByte('(');
+                try write(out, scratch, symbols, b.param);
+                try out.writeByte(' ');
+                try write(out, scratch, symbols, b.value);
+                try out.writeByte(')');
             }
-            try write(out, scratch, symbols, l.body);
+            try out.writeAll(") ");
+            try writeLambda(out, scratch, symbols, p.body);
             try out.writeByte(')');
         },
         .call => |c| {
@@ -98,6 +103,18 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             try out.writeByte(')');
         },
     }
+}
+
+/// 余りの引数を受ける手続きは、必須の個数のあとに `rest` と書く。固定個の手続きの
+/// 書き方は変えない。
+fn writeLambda(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, l: *const value_mod.Lambda) Error!void {
+    if (l.rest) {
+        try out.print("(lambda {d} rest {d} ", .{ l.arity, l.frame_size });
+    } else {
+        try out.print("(lambda {d} {d} ", .{ l.arity, l.frame_size });
+    }
+    try write(out, scratch, symbols, l.body);
+    try out.writeByte(')');
 }
 
 test {
@@ -129,11 +146,13 @@ test "write names each kind of node and its parts" {
 
     const one = try make(a, .{ .constant = .fromFixnum(1) });
     const local = try make(a, .{ .local_ref = .{ .address = .{ .depth = 1, .index = 2 }, .name = x } });
-    const global = try make(a, .{ .global_ref = f });
+    // 大域変数の節点はセルを指し、書き出すのはセルの名前である。
+    var cell: value_mod.Cell = .{ .name = f, .value = .uninitialized_value };
+    const global = try make(a, .{ .global_ref = &cell });
     const set_local = try make(a, .{ .local_set = .{ .address = .{ .depth = 0, .index = 0 }, .name = x, .value = one } });
     const define_local = try make(a, .{ .local_define = .{ .address = .{ .depth = 0, .index = 1 }, .name = x, .value = one } });
-    const set_global = try make(a, .{ .global_set = .{ .name = f, .value = one } });
-    const define_global = try make(a, .{ .global_define = .{ .name = f, .value = one } });
+    const set_global = try make(a, .{ .global_set = .{ .cell = &cell, .value = one } });
+    const define_global = try make(a, .{ .global_define = .{ .cell = &cell, .value = one } });
     const no_alt = try make(a, .{ .@"if" = .{ .condition = one, .consequent = local, .alternative = null } });
     const with_alt = try make(a, .{ .@"if" = .{ .condition = one, .consequent = local, .alternative = global } });
     const seq = try make(a, .{ .sequence = &.{ one, local } });
@@ -142,6 +161,10 @@ test "write names each kind of node and its parts" {
     const variadic = value_mod.Lambda{ .arity = 1, .rest = true, .frame_size = 2, .body = local };
     const lam_rest = try make(a, .{ .lambda = &variadic });
     const call = try make(a, .{ .call = .{ .operator = global, .operands = &.{ one, local } } });
+    const none: value_mod.Parameterize = .{ .bindings = &.{}, .body = &lambda };
+    const empty = try make(a, .{ .parameterize = &none });
+    const two: value_mod.Parameterize = .{ .bindings = &.{ .{ .param = global, .value = one }, .{ .param = local, .value = call } }, .body = &variadic };
+    const parameterize = try make(a, .{ .parameterize = &two });
 
     const cases = [_]struct { node: *const Node, text: []const u8 }{
         .{ .node = one, .text = "(const 1)" },
@@ -157,6 +180,8 @@ test "write names each kind of node and its parts" {
         .{ .node = lam, .text = "(lambda 1 2 (seq (const 1) (local x 1 2)))" },
         .{ .node = lam_rest, .text = "(lambda 1 rest 2 (local x 1 2))" },
         .{ .node = call, .text = "(call (global f) (const 1) (local x 1 2))" },
+        .{ .node = empty, .text = "(parameterize () (lambda 1 2 (seq (const 1) (local x 1 2))))" },
+        .{ .node = parameterize, .text = "(parameterize (((global f) (const 1)) ((local x 1 2) (call (global f) (const 1) (local x 1 2)))) (lambda 1 rest 2 (local x 1 2)))" },
     };
     for (cases) |c| {
         const text = try written(std.testing.allocator, &symbols, c.node);

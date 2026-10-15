@@ -14,6 +14,8 @@ const procedure = @import("procedure.zig");
 const char = @import("char.zig");
 const string = @import("string.zig");
 const vector = @import("vector.zig");
+const condition = @import("condition.zig");
+const record = @import("record.zig");
 
 /// The primitives of each family, in the order they are bound.
 const families = [_][]const Primitive{
@@ -26,6 +28,8 @@ const families = [_][]const Primitive{
     &char.primitives,
     &string.primitives,
     &vector.primitives,
+    &condition.primitives,
+    &record.primitives,
 };
 
 const total = blk: {
@@ -73,7 +77,7 @@ test "the table holds every primitive of every family" {
         for (family) |p| {
             var found = false;
             for (all) |q| {
-                if (std.mem.eql(u8, p.name, q.name) and p.call == q.call) found = true;
+                if (std.mem.eql(u8, p.name, q.name) and std.meta.eql(p.body, q.body)) found = true;
             }
             try std.testing.expect(found);
         }

@@ -89,17 +89,18 @@
 動的状態の機構と衛生的マクロとライブラリシステムを入れる。この3つは互いに依存するため同じ段階に置く。
 
 - [ ] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3)
-- [ ] 完全な `call/cc` と `dynamic-wind`
-- [ ] `values` と `call-with-values`、複数値のオブジェクト
-- [ ] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト)
-- [ ] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md))
-- [ ] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる
-- [ ] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`)
+- [x] 完全な `call/cc` と `dynamic-wind` (スライス 2e)
+- [x] `values` と `call-with-values`、複数値のオブジェクト (スライス 2f)
+- [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
+- [x] 動的点の単一リストと `handler_shift`([ADR-0016](adr/0016-exception-handler-as-dynamic-point.md)) (スライス 2d・2e・2g)
+- [x] `make-parameter` と `parameterize`。動的点の3つめの利用者として同じ段階でそろえる (スライス 2g)
+- [x] 衛生的マクロ展開器(`syntax-rules` `let-syntax` `letrec-syntax`) (スライス 2i から 2l)
+- [x] マクロの展開のメモリを有界にする(展開の作業領域と節点を、ヒープの上限に計上する)。止まらないマクロの適用が、ヒープの上限を大きく超えて伸びていた。保証するのは1行の中の展開で、残りは下の「マクロの展開の有界化の残り」の項目にある([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記と、2026-10-14 のスライス 2l の追記) (スライス 2l)
 - [ ] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
 - [ ] ポートごとのケースフォールディング状態と `include-ci`。リーダの `#!fold-case` 指令は段階5だが、ポートの状態と `include-ci` はここで実装する。機構がないまま `include-ci` を提供すると `include` に退化し、畳み込みを期待したファイルが未束縛識別子のエラーになる
 - [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路)
 - [ ] 機械操作プリミティブ9個(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter`)。`eval` と `exit` は環境の値とプロセス文脈が必要なので段階5
-- [ ] `define-record-type` の基盤(レコードとレコード型のプリミティブ)
+- [x] `define-record-type` の基盤(レコードとレコード型のプリミティブ)。スライス 2h
 - [x] 可変個引数の `lambda`(`(lambda args ...)` と `(lambda (a . rest) ...)`、`define` の略記を含む)。スライス 2a
 
 完了条件: [design/frontend.md](design/frontend.md) の衛生性の検証項目のうち、段階2で入力を書けるものがすべて通る。[design/runtime.md](design/runtime.md) のテストに含める事例のうち、段階2で入力を書けるものがすべて通る(書けない事例は、段階3と段階5の完了条件に移した。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の9)。継続の多重起動と `dynamic-wind` の相互作用のテストが通る。`include-ci` が対象ファイルを畳み込んで読む。リリース v0.2.0 を出す。
@@ -116,12 +117,20 @@
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
+- [ ] 本体の先頭に置かれた `begin`(定義だけを含むもの、空の `(begin)` を含む)を、定義の並びとして展開する(R7RS 7.1.3、7.1.6、5.3.2)。例: `(lambda () (begin) 1)` と `(lambda () (begin (define x 1)) x)` は、今は `bad begin` になる。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
+- [ ] パラメータの読み出しは、動的点の列の長さに比例して遅くなる(毎段、別のパラメータを `parameterize` する深い再帰で、束縛していないパラメータを読むと、深さの2乗になる)。結果は正しく、メモリは有界である。パラメータごとの束縛の索引を持つかどうかは、実際のプログラムで読み出しが支配的になったときに決める([design/open-questions.md](design/open-questions.md) の「パラメータの読み出しの費用」)。スライス未割り当て
+- [ ] ライブラリの表と `import` の作業領域を、ヒープの上限に計上するか、表を共有する形にする。今は、ライブラリごとの最上位の環境の表(インポートした名前の全部を持つ)が永続アリーナにあり、失敗した定義の表も残るので、約 100 KB の入力で上限(256 MiB)を超えるメモリを使いうる。入れ子の `prefix` の `import` も、1 行の中で計上されない量を確保する。2n のファイルの読み取りでは、リーダの作業領域も計上されない(上限は `max_file_bytes` の 1 MiB に下げて抑えた)。結果は正しい。ユーザーが 2026-10-15 に、2m では直さず、受け入れた制約として扱うと判断した。直す時期は、段階3のコアIRと構文環境を GC ヒープに移すスライスと同時に決める([design/open-questions.md](design/open-questions.md) の「ライブラリの表と `import` の作業領域が、ヒープの上限の外にある」)。スライス未割り当て
+- [ ] マクロの展開の有界化の残り。(1) 入れ子の `lambda` を重ねる止まらないマクロは、構文環境の探索が深さに比例して重くなり、時間で終わらない(例: `(define-syntax f (syntax-rules () ((_) (lambda () (f)))))` の `(f)`)。環境の探索を深さに依存しない形にするか、展開の深さの上限を置く。(2) 失敗した展開の節点は行をまたいで残り、失敗を繰り返すと上限の外のメモリが増える。節点を GC ヒープへ移すときに外れる。経緯は [ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 のスライス 2l の追記にある。スライス未割り当て
+- [ ] `let-syntax` と `letrec-syntax` の本体に `define` と `define-syntax` を置けるようにする(R7RS 4.3.1 の本体は定義を許す)。今は `bad define-syntax: a definition is only allowed at the top level or at the start of a body` になる。スライス未割り当て
+- [ ] REPL で解決した名前ごとに残る未束縛のセルの回収(または数の上限)。最上位で解決した未知の名前は、実行されなくても REPL 自身の未束縛のセルになり、GC ヒープの上限に計上され続ける([design/open-questions.md](design/open-questions.md))。スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる
 - [ ] 準拠マトリクスの入力に、`lib/` のエクスポート節を足す。`lib/` のエクスポート節が実在するこの段階で入れる。段階1の最小版は、`tests/r7rs-required` の識別子をインタプリタが束縛しているかだけを見ている
 - [ ] `equal?` の循環したデータでの停止と、共有構造(同じ部分を何度も指すデータ)で比較回数が深さに対して指数に増える問題への対応(訪問済みの集合)。循環は、データの変更(`set-car!` など)が入ると作れるので、その最初のスライスと同時に要る。共有構造での指数時間は、変更が無くても Scheme から作れる(再現入力は計画書 0010 の `equal?` の注に書いた)。段階1では、この既知の制約を受け入れた(ユーザーが 2026-10-12 に判断した)。`src/prim/equiv.zig` の `isEqual` の doc コメントが参照している (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 - [ ] ファイルの実行(`sucheme prog.scm`)。R7RS 5.1 のプログラムは `import` で始まるので、`(scheme base)` ができてから入れる([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の6)
 - [ ] シンボル表を弱い表にする。`string->symbol` が入るスライスで、シンボルの操作と同時に決める([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] コアIRを GC ヒープに移し、`Context.code_roots` を要らなくする([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5)
 - [ ] `(sucheme core)` を利用者から隠し、REPL の初期環境を `(scheme base)` などに替える。段階2に書いた `(import (sucheme core))` を含むテストを書き換える([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の3)
+- [ ] `apply` の周回を、ステップの境目を通る形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 の追記)。今は、`apply` が並べ直した引数の鎖と、`apply` で `apply` を呼ぶ入れ子の周回が、1ステップの中で確保され、その間は GC が走らない。`set-car!` などが入る最初のスライスまでに要る。自分を指す引数のリストで、1ステップの中で終わらない周回が作れるようになるためである (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
+- [ ] 複数値の確保(`values` と継続の多値での起動の `Machine.valuesOf`、`call-with-values` の `Machine.receiverCall`)を、個数に比例する量を1ステップの中で確保しない形にする([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-14 の追記のスライス 2f の項)。上の `apply` の項と同じ直し方で、同じスライスで扱える (スライス未割り当て。割り当てる計画は段階3の最初のスライスの計画で立てる)
 
 完了条件: `(scheme base)` のエクスポート一覧が揃い、未実装の識別子が準拠マトリクスに正しく表れる。衛生性の検証項目のうち `cond` のリテラル `else` の項目が通る。[design/runtime.md](design/runtime.md) の事例のうち、段階2で入力を書けなかったもの(容量0で `string->symbol` が成立し続ける事例と、`let` と `when` を使う複数値の事例の元の形)が通る。リリース v0.3.0 を出す。
 
@@ -199,7 +208,7 @@
 - PR は自前の敵対的レビューを実行し、必須の新規指摘ゼロになるまで修正する([ADR-0023](adr/0023-mandatory-zero-convergence.md))。推奨と任意は `docs/review/` に記録して該当する段階の作業項目に回す。手順の正は `AGENTS.md` の「PR・レビュー・マージ」の節である。「この詳細が未規定である」という指摘のうち実装時に決めると判断したものは [design/open-questions.md](design/open-questions.md) に記録して閉じる([ADR-0018](adr/0018-incremental-vertical-slices.md))。
 - 技術選択と設計判断、およびレビュー提案をあえて採用しない場合は ADR に記録する。
 - 段階の完了時に、確定したことを設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す。
-- 1コミット=1論理変更を守り、節目ごとにプッシュする。
+- 1コミット=1論理変更を守る。コミットは節目ごとに作り、push はまとめる(`AGENTS.md` の進め方の「Actions の分数」の規則)。
 
 ## 未確定の事項
 

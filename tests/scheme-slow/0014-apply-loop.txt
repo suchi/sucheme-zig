@@ -1,0 +1,32 @@
+# スライス 2c を規模で試す。apply を通した末尾呼び出しのループと、長いリストを
+# 引数に並べる apply である。実行に時間がかかるので `zig build test-scheme -Dslow=true`
+# のときだけ走り、全コミットでは走らない(docs/plans/0007-test-tiers.md)。同じ論理を
+# 小さい規模で通す双子が tests/scheme/0061-apply-scale-small.txt にある。
+# ここで見るのは、回数と長さに比例して壊れる種類の誤りである。apply が並べ直す
+# 引数の鎖と、引数のリストが、GC が何度も走る間も保たれること、長いリストを並べても
+# Zig のスタックを使わないことである。
+# 継続の深さが一定であること(apply が継続のフレームを積まないこと)は、ここでは
+# 確かめられない。既定のヒープの上限は、100万回ぶんのフレームが収まる大きさだからで
+# ある。それは src/machine.zig の単体テストが `peak_depth` を比べて確かめる(層1 の
+# 小さい回数と、`tier.slow()` の100万回)。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# apply を通した末尾呼び出しの100万回のループ。
+(define (loop n) (if (= n 0) 'done (apply loop (list (- n 1))))) (loop 1000000)
+done
+
+# apply で apply を呼ぶ形でも、同じである。
+(define (loop n) (if (= n 0) 'done (apply apply loop (list (list (- n 1)))))) (loop 1000000)
+done
+
+# 10万要素のリストを、apply で引数に並べる。純粋プリミティブにも、余りを受ける
+# クロージャにも渡す。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 100000 '())) (list (apply + xs) (length (apply list xs)) (apply (lambda (a b . r) (list a b (length r))) xs))
+(5000050000 100000 (1 2 99998))
+
+# apply で apply を呼ぶ、10万段の入れ子。(nest n l) は l を (apply l) で n 回包んだ
+# リストを作り、(apply apply (nest n l)) は n 回 apply を通って (apply + '(1 2)) になる。
+# 入れ子の深さはデータから決まる。機械はそれを Zig の再帰でなく `Machine.apply` の中の
+# 周回で解くので、Zig のスタックを使い切らない。
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 100000 (list + '(1 2))))
+3

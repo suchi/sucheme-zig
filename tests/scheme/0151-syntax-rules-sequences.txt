@@ -1,0 +1,52 @@
+# スライス 2l: 省略記号の後に固定のパターンを置く形と、末尾が非真正リストのパターン・
+# テンプレート。R5RS から R7RS で拡張された部分である。
+
+# 省略記号の後ろの固定パターンは、そのための要素を残して、繰り返しが残りを取る。
+(define-syntax last (syntax-rules () ((_ a ... b) 'b))) (list (last 1) (last 1 2) (last 1 2 3))
+(1 2 3)
+
+(define-syntax mid (syntax-rules () ((_ a b ... c d) '(a (b ...) c d)))) (list (mid 1 2 3) (mid 1 2 3 4) (mid 1 2 3 4 5))
+((1 () 2 3) (1 (2) 3 4) (1 (2 3) 4 5))
+
+# 固定パターンに足りないときは、照合しない。
+(define-syntax mid (syntax-rules () ((_ a b ... c d) '(a (b ...) c d)))) (mid 1 2)
+error: bad syntax: no rule of mid matches the form
+
+# 繰り返す部分パターンが構造を持っても、後ろの固定パターンは同じように照合する。
+(define-syntax tail-pair (syntax-rules () ((_ (a b) ... (c d)) '((a ...) (b ...) c d)))) (tail-pair (1 2) (3 4) (5 6))
+((1 3) (2 4) 5 6)
+
+# 非真正リストのパターン。ドットの後ろは、入力の残りの全体に照合する。
+(define-syntax ip (syntax-rules () ((_ a b . c) '(a b c)))) (list (ip 1 2) (ip 1 2 3) (ip 1 2 3 4))
+((1 2 ()) (1 2 (3)) (1 2 (3 4)))
+
+# 入力の末尾が空リストでなければ、それが末尾のパターンに渡る。
+(define-syntax ip (syntax-rules () ((_ a b . c) '(a b c)))) (ip 1 2 3 . 4)
+(1 2 (3 . 4))
+
+(define-syntax ip (syntax-rules () ((_ a b . c) '(a b c)))) (ip 1 2 . 3)
+(1 2 3)
+
+# 省略記号と末尾のパターンを同時に持つ。
+(define-syntax ipe (syntax-rules () ((_ a ... . r) '((a ...) r)))) (list (ipe) (ipe 1 2) (ipe 1 2 . 3))
+((() ()) ((1 2) ()) ((1 2) 3))
+
+(define-syntax ipe (syntax-rules () ((_ a ... b . r) '((a ...) b r)))) (list (ipe 1) (ipe 1 2 3) (ipe 1 2 . 3))
+((() 1 ()) ((1 2) 3 ()) ((1) 2 3))
+
+# 末尾が空リストのパターンは、非真正リストの入力に照合しない。
+(define-syntax proper (syntax-rules () ((_ a ...) '(a ...)))) (proper 1 . 2)
+error: bad syntax: no rule of proper matches the form
+
+# 非真正リストのテンプレート。
+(define-syntax dt (syntax-rules () ((_ a b) '(a . b)))) (dt 1 2)
+(1 . 2)
+
+(define-syntax dt (syntax-rules () ((_ a ...) '((a . a) ...)))) (dt 1 2)
+((1 . 1) (2 . 2))
+
+(define-syntax dt (syntax-rules () ((_ a b ...) '(a b ... . end)))) (list (dt 1) (dt 1 2 3))
+((1 . end) (1 2 3 . end))
+
+(define-syntax dt (syntax-rules () ((_ a . b) '(a . b)))) (list (dt 1) (dt 1 2) (dt 1 2 . 3))
+((1) (1 2) (1 2 . 3))

@@ -1,0 +1,46 @@
+# スライス 2l: ベクタのパターンとテンプレート。ベクタの要素は、リストと同じ規則で
+# 照合・展開する(省略記号とその後ろの固定パターンを含む)。
+
+(define-syntax vec (syntax-rules () ((_ #(a b)) '(a b)))) (vec #(1 2))
+(1 2)
+
+# 要素の数が違うベクタには照合しない。ベクタでない入力にも照合しない。
+(define-syntax vec (syntax-rules () ((_ #(a b)) '(a b)) ((_ x) 'other))) (list (vec #(1)) (vec #(1 2 3)) (vec (1 2)) (vec 5))
+(other other other other)
+
+(define-syntax vec (syntax-rules () ((_ #(a ...)) '(a ...)))) (list (vec #()) (vec #(1 2 3)))
+(() (1 2 3))
+
+# 省略記号の後ろに固定のパターンを置ける。
+(define-syntax vec (syntax-rules () ((_ #(a b ... c)) '(a (b ...) c)))) (list (vec #(1 2)) (vec #(1 2 3)) (vec #(1 2 3 4)))
+((1 () 2) (1 (2) 3) (1 (2 3) 4))
+
+# ベクタの中のベクタ、ベクタの中の入れ子の省略記号。
+(define-syntax vec (syntax-rules () ((_ #(#(a ...) ...)) '((a ...) ...)))) (vec #(#(1 2) #() #(3)))
+((1 2) () (3))
+
+# リストの中のベクタ、省略記号が繰り返すベクタ。
+(define-syntax vec (syntax-rules () ((_ #(a b) ...) '((a ...) (b ...))))) (vec #(1 2) #(3 4))
+((1 3) (2 4))
+
+# テンプレートのベクタは、新しいベクタになる。
+(define-syntax vec (syntax-rules () ((_ a b) #(a b 3)))) (vec 1 2)
+#(1 2 3)
+
+(define-syntax vec (syntax-rules () ((_ a ...) #(a ... end)))) (list (vec) (vec 1 2))
+(#(end) #(1 2 end))
+
+(define-syntax vec (syntax-rules () ((_ (a ...) ...) #(#(a ...) ...)))) (vec (1 2) () (3))
+#(#(1 2) #() #(3))
+
+# ベクタの中のテンプレートの識別子は別名になり、quote で元のシンボルに戻る。
+(define-syntax vec (syntax-rules () ((_ a) '#(a x)))) (vec 1)
+#(1 x)
+
+# ベクタのテンプレートの識別子は、定義側の意味を保つ(参照透明性)。
+(define-syntax vec (syntax-rules () ((_ a) (vector-ref #(a) 0)))) ((lambda (vector-ref) (vec 7)) car)
+7
+
+# ベクタの中の省略記号の繰り返しが長さを合わせる。
+(define-syntax vec (syntax-rules () ((_ #(a ...) #(b ...)) '((a b) ...)))) (vec #(1 2) #(3))
+error: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together

@@ -1,0 +1,45 @@
+# スライス 2g: パラメータの束縛と dynamic-wind、継続の起動の巻き戻し(R7RS 4.2.6 と 6.10)。
+# before と after は dynamic-wind を呼んだ時点の動的環境で呼ばれ、thunk は dynamic-wind の
+# 動的範囲の中で呼ばれる。それぞれが読むパラメータの値で、どの列で呼ばれたかが分かる。
+# 記録は、新しいものが先頭のリストである。各ケースは新しいインタプリタで走る。
+
+# 通常の実行: before と after は呼び出しの時点の束縛を見て、thunk は内側の束縛を見る。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 'outer)) (define log '()) (define (note tag) (set! log (cons (list tag (p)) log))) (parameterize ((p 'site)) (dynamic-wind (lambda () (note 'before)) (lambda () (parameterize ((p 'body)) (note 'thunk))) (lambda () (note 'after)))) (rev log '())
+((before site) (thunk body) (after site))
+
+# 継続で脱出するとき、after は呼び出しの時点の束縛を見る。本体の内側の束縛は、もう外れている。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 'outer)) (define log '()) (define (note tag) (set! log (cons (list tag (p)) log))) (call/cc (lambda (out) (parameterize ((p 'site)) (dynamic-wind (lambda () (note 'before)) (lambda () (parameterize ((p 'body)) (out 'escaped))) (lambda () (note 'after)))))) (list (rev log '()) (p))
+escaped
+(((before site) (after site)) outer)
+
+# 継続で本体へ再入するとき、before は呼び出しの時点の束縛を見る。本体に着いてから、内側の
+# 束縛が戻る。1度目の実行の後、別の形式から起動する。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 'outer)) (define log '()) (define (note tag) (set! log (cons (list tag (p)) log))) (define k #f) (define n 0) (parameterize ((p 'site)) (dynamic-wind (lambda () (note 'before)) (lambda () (parameterize ((p 'body)) (call/cc (lambda (c) (set! k c))) (note 'thunk))) (lambda () (note 'after)))) (set! n (+ n 1)) (if (< n 2) (k #f) 'done) (rev log '())
+((before site) (thunk body) (after site) (before site) (thunk body) (after site))
+
+# 再入の途中の before の中で捕捉した継続へ、あとから入り直す。進入の巻き戻しの途中から再開し、
+# before を呼び直さずに、残りの進入を終えて本体に着く。before は site の束縛を見たまま、本体は
+# 内側の束縛を見る。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 0)) (define log '()) (define (note tag) (set! log (cons (list tag (p)) log))) (define body-k #f) (define before-k #f) (define n 0) (parameterize ((p 1)) (dynamic-wind (lambda () (note 'before) (call/cc (lambda (c) (if (= n 1) (set! before-k c))))) (lambda () (parameterize ((p 2)) (call/cc (lambda (c) (set! body-k c))) (note 'body))) (lambda () (note 'after)))) (set! n 1) (body-k #f) (if (= n 1) (begin (set! n 2) (before-k #f)) 'skip) (rev log '())
+((before 1) (body 2) (after 1) (before 1) (body 2) (after 1) (body 2) (after 1))
+
+# after の中で捕捉した継続も同じである。脱出の巻き戻しの途中で捕捉して、あとから入り直す。
+# 入り直した先では、after の続きの巻き戻しが、その時点の束縛で再開し、脱出を最後まで終えて、
+# 最初に脱出した継続の値を、もう一度行の値として表示する。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 0)) (define log '()) (define (note tag) (set! log (cons (list tag (p)) log))) (define after-k #f) (define n 0) (call/cc (lambda (out) (parameterize ((p 1)) (dynamic-wind (lambda () (note 'before)) (lambda () (parameterize ((p 2)) (out 'escaped))) (lambda () (note 'after) (call/cc (lambda (c) (if (= n 0) (set! after-k c)))) (note 'after-end)))))) (set! n 1) (if (= n 1) (begin (set! n 2) (after-k #f)) 'skip) (rev log '())
+escaped
+escaped
+((before 1) (after 1) (after-end 1) (after-end 1))
+
+# 束縛を積む値の式の中で捕捉した継続は、起動のたびに別の値で parameterize を続ける。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define p (make-parameter 0)) (define k #f) (define n 0) (define log '()) (parameterize ((p (call/cc (lambda (c) (set! k c) 1)))) (set! log (cons (p) log))) (set! n (+ n 1)) (if (< n 2) (k 5) 'done) (rev log '())
+(1 5)
+
+# 変換手続きの中で捕捉した継続も、その戻り値を新しい値として、束縛を続ける。戻り値を、
+# もう一度変換することはない。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define k #f) (define cap #f) (define p (make-parameter 0 (lambda (x) (call/cc (lambda (c) (if cap (set! k c)) x))))) (define n 0) (define log '()) (set! cap #t) (parameterize ((p 1)) (set! log (cons (p) log))) (set! cap #f) (set! n (+ n 1)) (if (< n 2) (k 7) 'done) (rev log '())
+(1 7)
+
+# 複数の束縛の間でも、再入は途中の状態から再開する。先に変換した値は、そのまま残る。
+(define (rev l a) (if (null? l) a (rev (cdr l) (cons (car l) a)))) (define k #f) (define cap #f) (define count 0) (define p (make-parameter 0 (lambda (x) (set! count (+ count 1)) x))) (define q (make-parameter 0 (lambda (x) (call/cc (lambda (c) (if cap (set! k c)) x))))) (define n 0) (define log '()) (set! cap #t) (set! count 0) (parameterize ((p 1) (q 2)) (set! log (cons (list (p) (q) count) log))) (set! cap #f) (set! n (+ n 1)) (if (< n 2) (k 9) 'done) (rev log '())
+((1 2 1) (1 9 1))

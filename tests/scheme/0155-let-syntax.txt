@@ -1,0 +1,92 @@
+# スライス 2l: `let-syntax` と `letrec-syntax`(R7RS 4.3.1)。本体は、キーワードを束縛した
+# 構文環境で展開する。その環境は rib を持たないので、外側の変数への相対深さは変わらない。
+
+(let-syntax ((m (syntax-rules () ((_ x) (list x x))))) (m 3))
+(3 3)
+
+# 本体は式の並びで、値は最後の式のものである。
+(let-syntax ((m (syntax-rules () ((_) 1)))) (m) (m) 2)
+2
+
+# 複数のキーワードを一度に束縛する。
+(let-syntax ((one (syntax-rules () ((_) 1))) (two (syntax-rules () ((_) 2)))) (list (one) (two)))
+(1 2)
+
+# 束縛は本体の中だけで見える。外では今までの意味のままである。
+(define-syntax m (syntax-rules () ((_) 'outer))) (list (let-syntax ((m (syntax-rules () ((_) 'inner)))) (m)) (m))
+(inner outer)
+
+# 衛生性の検証項目4: テンプレートの識別子は、マクロを定義した側の意味を保つ。
+(let-syntax ((m (syntax-rules () ((_ l) (car l))))) ((lambda (car) (m '(1 2))) cdr))
+1
+
+(define helper (lambda (x) (list 'helper x))) (let-syntax ((m (syntax-rules () ((_ x) (helper x))))) ((lambda (helper) (m 5)) 0))
+(helper 5)
+
+# 衛生性の検証項目3の形: 本体で `if` を再束縛しても、テンプレートの `if` は特殊形式のままである。
+(let-syntax ((given-that (syntax-rules () ((_ test stmt1 stmt2 ...) (if test (begin stmt1 stmt2 ...)))))) ((lambda (if) (given-that if (set! if 'now)) if) #t))
+now
+
+# 衛生性の検証項目10: 外側の lambda の変数を本体から参照する。深さは、環境が rib を持たないので変わらない。
+((lambda (x) (let-syntax ((m (syntax-rules () ((_) x)))) (m))) 7)
+7
+
+((lambda (x) (let-syntax ((m (syntax-rules () ((_ y) (list x y))))) ((lambda (y) (m y)) 8))) 7)
+(7 8)
+
+# 本体の中の lambda から、外側の変数を参照する。
+((lambda (a) (let-syntax ((get (syntax-rules () ((_) a)))) ((lambda (b) ((lambda (c) (list a b c (get))) 3)) 2))) 1)
+(1 2 3 1)
+
+# let-syntax のキーワードの変換子は、外側の環境で読む。同じ束縛の中の別のキーワードは見えない。
+(define-syntax inner (syntax-rules () ((_) 'global))) (let-syntax ((inner (syntax-rules () ((_) 'local))) (user (syntax-rules () ((_) (inner))))) (list (inner) (user)))
+(local global)
+
+# 入れ子の let-syntax が、外側のキーワードを遮蔽する。
+(let-syntax ((m (syntax-rules () ((_) 1)))) (let-syntax ((m (syntax-rules () ((_) 2)))) (m)))
+2
+
+# letrec-syntax: 変換子は、同じ束縛の中のキーワードを見える。再帰的なマクロが書ける。
+(letrec-syntax ((my-or (syntax-rules () ((_) #f) ((_ e) e) ((_ e r ...) ((lambda (t) (if t t (my-or r ...))) e))))) ((lambda (t) (my-or #f t)) 5))
+5
+
+(letrec-syntax ((even (syntax-rules () ((_) #t) ((_ x . r) (odd . r)))) (odd (syntax-rules () ((_) #f) ((_ x . r) (even . r))))) (list (even 1 2) (even 1 2 3)))
+(#t #f)
+
+# letrec-syntax のマクロは、外側の同じ名前のキーワードを遮蔽し、自分自身を呼べる。
+(define-syntax m (syntax-rules () ((_ n) 'outer))) (letrec-syntax ((m (syntax-rules () ((_ 0) 'done) ((_ n) (m 0))))) (m 5))
+done
+
+# let-syntax で束縛したキーワードは、変数としては使えない。
+(let-syntax ((m (syntax-rules () ((_) 1)))) m)
+error: m is a syntactic keyword and cannot be used as a variable
+
+# 誤り。
+(let-syntax ((m (syntax-rules () ((_) 1)))))
+error: bad let-syntax: expected (let-syntax ((keyword transformer) ...) body ...)
+
+(let-syntax (m) 1)
+error: bad let-syntax: a binding must be (keyword transformer)
+
+(let-syntax ((1 (syntax-rules () ((_) 1)))) 1)
+error: bad let-syntax: the keyword must be an identifier
+
+(let-syntax ((m 1)) 1)
+error: bad let-syntax: the transformer must be a syntax-rules form
+
+(let-syntax ((m (syntax-rules () ((_) 1))) (m (syntax-rules () ((_) 2)))) 1)
+error: bad let-syntax: m is bound twice
+
+(letrec-syntax ((m (syntax-rules () ((_) 1))) (m (syntax-rules () ((_) 2)))) 1)
+error: bad letrec-syntax: m is bound twice
+
+(letrec-syntax m 1)
+error: bad letrec-syntax: the bindings must be a list
+
+# 本体の定義は、まだ受け付けない。
+(let-syntax ((m (syntax-rules () ((_) 1)))) (define x 1) x)
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+# let-syntax は変数として使えず、仮引数が同じ綴りを束縛すれば変数になる。
+((lambda (let-syntax) (let-syntax 1 2)) list)
+(1 2)

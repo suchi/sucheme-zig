@@ -1,0 +1,47 @@
+# スライス 2k: 本体の define-syntax が、変換子を読むのに使った束縛(`_`、省略記号、
+# 変換子の先頭の syntax-rules)を、同じ本体の後の定義が束縛し直すことは誤りである
+# (R7RS 5.4)。照合器は適用のたびにこれらの意味を引くので、束縛し直した後の適用は、
+# 定義の時点の検査が見ていない読み方になる。定義が束縛した時点で報告する。
+
+# 後の定義が `_` をパターン変数に変える。適用は深さの検査を通っていない読み方になる。
+((lambda () (define-syntax m (syntax-rules () ((_ _ ...) (list _)))) (define _ 0) (m 1 2)))
+error: bad define: _ is defined after a syntax definition of this body that depends on its meaning
+
+# 後の定義が省略記号をパターン変数に変える。
+((lambda () (define-syntax m (syntax-rules () ((_ a ...) (quote (a ...))))) (define ... 0) (m 1 2)))
+error: bad define: ... is defined after a syntax definition of this body that depends on its meaning
+
+((lambda () (define-syntax m (syntax-rules () ((_ a ...) (quote (a ...))))) (define ... 0) (m 1)))
+error: bad define: ... is defined after a syntax definition of this body that depends on its meaning
+
+# 変換子の先頭の syntax-rules。
+((lambda () (define-syntax m (syntax-rules () ((_) 1))) (define syntax-rules 5) (m)))
+error: bad define: syntax-rules is defined after a syntax definition of this body that depends on its meaning
+
+# define-syntax で束縛し直すのも同じである。
+((lambda () (define-syntax m (syntax-rules () ((_ _) 1))) (define-syntax _ (syntax-rules () ((k) 2))) (m 0)))
+error: bad define-syntax: _ is defined after a syntax definition of this body that depends on its meaning
+
+# 定義に展開されるマクロの適用が束縛するのも同じである。
+((lambda () (define-syntax def (syntax-rules () ((k n v) (define n v)))) (define-syntax m (syntax-rules () ((_ _ ...) (list _)))) (def _ 0) (m 1 2)))
+error: bad define: _ is defined after a syntax definition of this body that depends on its meaning
+
+# 前の定義が `_` を束縛していれば、`_` は定義の時点からパターン変数である。
+((lambda () (define _ 0) (define-syntax m (syntax-rules () ((_ _ ...) (list _ ...)))) (m 1 2)))
+(1 2)
+
+# テンプレートが導入した `_` の定義は別名を束縛するので、利用側の `_` の意味を変えない。
+((lambda () (define-syntax def (syntax-rules () ((k v) (define _ v)))) (define-syntax m (syntax-rules () ((_ _ ...) (list 1)))) (def 0) (m 1 2)))
+(1)
+
+# 変換子が読むのに使っていない名前の定義は、誤りではない。
+((lambda () (define-syntax m (syntax-rules () ((_ a ...) (list a ...)))) (define x 0) (m 1 2)))
+(1 2)
+
+# テンプレートの `_` はパターン変数にならないので、その意味は変換子の読み方を変えない。
+((lambda () (define-syntax m (syntax-rules () ((k x) (_ x)))) (define (_ v) (+ v 1)) (m 1)))
+2
+
+# 最上位では、`_` の意味は最上位でのその名前の意味と比べるので、後の define で変わらない。
+(define-syntax m (syntax-rules () ((_ _ ...) (list _)))) (define _ 0) (m 1 2)
+(0)

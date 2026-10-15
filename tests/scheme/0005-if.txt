@@ -68,11 +68,12 @@ error: bad if: expected (if test consequent) or (if test consequent alternative)
 if
 error: if is a syntactic keyword and cannot be used as a variable
 
-(define if 1)
-error: bad define: if is a syntactic keyword and cannot be redefined
+# 最上位の定義の後、if は変数である(R7RS 5.3.1、スライス 2j)。
+(define if 1) if
+1
 
 (if #t (define y 1) 2)
 error: bad define: a definition is only allowed at the top level or at the start of a body
 
 (+ 1 (if #f 1))
-error: wrong type of argument to +
+error: wrong type of argument to + 1 #<unspecified>

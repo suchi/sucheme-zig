@@ -6,7 +6,12 @@
 //! 1e は未定義の変数の目印を加える。スライス 1f は条件オブジェクトと、コア IR と
 //! 継続のレイアウトを加える。この2つは値ではないが、同じようにたどられる。
 //! スライス 1g は、ペア・クロージャ・フレーム・継続フレーム・引数リストを GC ヒープ
-//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。
+//! (src/heap.zig)に置く。スライス 1h は文字・文字列・ベクタを加える。スライス 2b は
+//! 条件オブジェクトを GC ヒープに移す。スライス 2i は、展開器の構文環境(値ではない
+//! が GC ヒープにある)を加え、スライス 2j は大域変数の束縛セル(同じく GC ヒープに
+//! ある)を加える。スライス 2h は、レコードとレコード型を加える。スライス 2k は、
+//! マクロのテンプレートが導入した識別子である別名と、マクロを加える。別名は値の変種
+//! だが、展開器の中だけにあり、機械には届かない。スライス 2g は、パラメータを加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -42,6 +47,7 @@ pub const Value = union(enum) {
     /// プログラムに届くことはない。
     uninitialized,
     /// What a Scheme error is: an object that says what went wrong (R7RS 6.11).
+    /// GC ヒープにある。
     condition: *Condition,
     /// A character: a Unicode scalar value (R7RS 6.6), so never a surrogate.
     character: u21,
@@ -51,6 +57,30 @@ pub const Value = union(enum) {
     /// A vector.
     /// GC ヒープにある。
     vector: *Vector,
+    /// An identifier that a macro's template put into its output (ADR-0019).
+    /// GC ヒープにある。展開の途中だけに現れる。`quote` の中のものは定数にする時点で
+    /// 元のシンボルに戻すので、機械には届かない。
+    alias: *Alias,
+    /// A record: an instance of a record type (R7RS 5.5).
+    /// GC ヒープにある。
+    record: *Record,
+    /// A record type: what `%make-record-type` makes, and what the record
+    /// primitives check a record against.
+    /// GC ヒープにある。
+    record_type: *RecordType,
+    /// A continuation that `call/cc` captured (R7RS 6.10): a procedure that
+    /// takes the computation back to where it was captured.
+    /// GC ヒープにある。
+    continuation: *Continuation,
+    /// A parameter object that `make-parameter` made (R7RS 4.2.6): a procedure
+    /// of no arguments that returns the value `parameterize` gave it.
+    /// GC ヒープにある。
+    parameter: *Parameter,
+    /// What `values` returns when it is not given exactly one value: the values
+    /// of a computation that has more or fewer than one (R7RS 6.10).
+    /// GC ヒープにある。1個を要求しない継続(受け手など)だけが受け取り、それ以外の継続に
+    /// 届くと誤りになるので、変数やデータに入ることはない(docs/design/runtime.md の複数値)。
+    multiple_values: *MultipleValues,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -102,12 +132,36 @@ pub const Value = union(enum) {
         return .{ .vector = v };
     }
 
+    pub fn fromAlias(a: *Alias) Value {
+        return .{ .alias = a };
+    }
+
+    pub fn fromRecord(r: *Record) Value {
+        return .{ .record = r };
+    }
+
+    pub fn fromRecordType(t: *RecordType) Value {
+        return .{ .record_type = t };
+    }
+
+    pub fn fromContinuation(c: *Continuation) Value {
+        return .{ .continuation = c };
+    }
+
+    pub fn fromParameter(p: *Parameter) Value {
+        return .{ .parameter = p };
+    }
+
+    pub fn fromMultipleValues(m: *MultipleValues) Value {
+        return .{ .multiple_values = m };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector => true,
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .condition, .character => false,
+            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter => true,
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
         };
     }
 
@@ -126,6 +180,12 @@ pub const Value = union(enum) {
             .character => .character,
             .string => .string,
             .vector => .vector,
+            .alias => .alias,
+            .record => .record,
+            .record_type => .record_type,
+            .continuation => .continuation,
+            .parameter => .parameter,
+            .multiple_values => .multiple_values,
         };
     }
 
@@ -201,6 +261,54 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The alias, or null when the value is not one.
+    pub fn asAlias(self: Value) ?*Alias {
+        return switch (self) {
+            .alias => |a| a,
+            else => null,
+        };
+    }
+
+    /// The record, or null when the value is not one.
+    pub fn asRecord(self: Value) ?*Record {
+        return switch (self) {
+            .record => |r| r,
+            else => null,
+        };
+    }
+
+    /// The record type, or null when the value is not one.
+    pub fn asRecordType(self: Value) ?*RecordType {
+        return switch (self) {
+            .record_type => |t| t,
+            else => null,
+        };
+    }
+
+    /// The continuation, or null when the value is not one.
+    pub fn asContinuation(self: Value) ?*Continuation {
+        return switch (self) {
+            .continuation => |c| c,
+            else => null,
+        };
+    }
+
+    /// The parameter object, or null when the value is not one.
+    pub fn asParameter(self: Value) ?*Parameter {
+        return switch (self) {
+            .parameter => |p| p,
+            else => null,
+        };
+    }
+
+    /// The multiple values, or null when the value is not them.
+    pub fn asMultipleValues(self: Value) ?*MultipleValues {
+        return switch (self) {
+            .multiple_values => |m| m,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -235,6 +343,12 @@ pub const Value = union(enum) {
             .primitive => |x| b.asPrimitive() == x,
             .closure => |x| b.asClosure() == x,
             .condition => |x| b.asCondition() == x,
+            .alias => |x| b.asAlias() == x,
+            .record => |x| b.asRecord() == x,
+            .record_type => |x| b.asRecordType() == x,
+            .continuation => |x| b.asContinuation() == x,
+            .parameter => |x| b.asParameter() == x,
+            .multiple_values => |x| b.asMultipleValues() == x,
         };
     }
 
@@ -248,12 +362,26 @@ pub const Value = union(enum) {
     }
 };
 
-/// The object an error is.
-/// スライス 1f はメッセージだけを持つ。段階2で、エラーの種類と、`error` が取る
-/// irritant を加える(R7RS 6.11)。
+/// The object an error is: what kind of error, the message, and the objects
+/// the message is about (R7RS 6.11).
+/// GC ヒープにある(スライス 2b)。上限に達していても作れるよう、作る地点は送出の
+/// ための予約領域から確保する(`Context.makeCondition`)。
 pub const Condition = struct {
-    message: []const u8,
+    kind: ConditionKind,
+    /// A string.
+    message: Value,
+    /// A list, empty when the message is about nothing in particular.
+    irritants: Value,
+
+    /// The text of the message.
+    pub fn messageText(self: *const Condition) []const u8 {
+        return self.message.asString().?.bytes;
+    }
 };
+
+/// Which of the predicates of R7RS 6.11 a condition answers to.
+/// `error-object?` はすべてに真で、`read-error?` と `file-error?` はそれぞれ1つに真である。
+pub const ConditionKind = enum { @"error", read, file };
 
 pub const Pair = struct {
     car: Value,
@@ -314,6 +442,33 @@ pub const Vector = struct {
     items: []Value,
 };
 
+/// A record type: its name, and how many fields its records have.
+/// フィールドは添字で読み書きする。フィールドの名前から添字を求めるのは、段階3の
+/// `define-record-type` の展開であり、型はフィールドの名前を持たない
+/// (docs/plans/0014-phase2-core-language.md の 2h の節)。型の同一性はオブジェクトの
+/// 同一性で、名前が同じでも別の型である。
+pub const RecordType = struct {
+    /// The name the type was made with, for the printer.
+    name: SymbolId,
+    field_count: u32,
+};
+
+/// A record: its type, and the values of its fields in order.
+/// フィールドの値は、ヒープが所有し、計上するペイロードで、GC はそれをたどる。
+/// 個数は型の `field_count` と等しい。
+pub const Record = struct {
+    record_type: *RecordType,
+    fields: []Value,
+};
+
+/// The values of a computation that returns other than one value: what the
+/// registers hold from `values` until a continuation takes them apart.
+/// 個数は 0 か 2 以上である(1個の値は、それ自身で運ぶ)。要素は、ヒープが所有し、
+/// 計上するペイロードで、GC はそれをたどる。
+pub const MultipleValues = struct {
+    items: []Value,
+};
+
 /// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
 /// #x10FFFF (R7RS 6.6), the code points a character can be.
 /// 数から文字を作るものはすべて、まずこれを問い合わせる。そのため、サロゲートや範囲外
@@ -334,8 +489,9 @@ pub const PrimitiveError = error{
     /// 多倍長整数(bignum)は段階4で入る。
     IntegerOverflow,
     /// A number of arguments the primitive does not take, such as `(-)`.
-    /// 機械が、`Primitive` の個数の範囲から返す。プリミティブの本体は、個数を検査
-    /// しない。
+    /// 機械が、`Primitive` の個数の範囲から返す。プリミティブの本体は、その範囲を検査
+    /// しない。例外は、受け取る個数がほかの引数で決まるプリミティブで、本体がそれを
+    /// 検査して返す(`%make-record` は、型のフィールドの数だけ値を受け取る)。
     WrongArgumentCount,
     /// The divisor is zero.
     DivisionByZero,
@@ -370,17 +526,28 @@ pub const Services = struct {
 ///
 /// 引数の個数の範囲は、省略できない。省略時の既定を可変長にすると、書き忘れた関数が
 /// 範囲外の添字を読む。個数は機械が呼び出しの前に検査する(`Machine.apply`)ので、
-/// `call` が受け取る `args` は、必ずこの範囲に収まる。
+/// 本体が受け取る `args` は、必ずこの範囲に収まる。
 pub const Primitive = struct {
     /// The type of the function that is the primitive.
     pub const Fn = *const fn (services: *const Services, args: []const Value) PrimitiveError!Value;
+
+    /// What the primitive does when it is applied.
+    /// 純粋プリミティブと機械操作プリミティブは、呼び出しの規約が違う。前者は `Services`
+    /// と引数から値を返し、後者は機械のレジスタを書き換える(docs/design/runtime.md の
+    /// 機械操作プリミティブ)。後者の操作は `Machine.apply` にあり、ここには名前だけを置く。
+    pub const Body = union(enum) {
+        /// A function from the arguments to a value.
+        pure: Fn,
+        /// An operation the machine carries out on its registers.
+        machine: MachineOp,
+    };
 
     name: []const u8,
     /// The fewest arguments the primitive takes.
     min_args: u8,
     /// The most arguments the primitive takes, or null when there is no limit.
     max_args: ?u8,
-    call: Fn,
+    body: Body,
 
     /// Whether the primitive takes `count` arguments.
     pub fn acceptsCount(self: *const Primitive, count: usize) bool {
@@ -388,6 +555,35 @@ pub const Primitive = struct {
         const max = self.max_args orelse return true;
         return count <= max;
     }
+};
+
+/// The operations of the machine that a primitive can name as its body.
+/// 残りの変種は、docs/plans/0014-phase2-core-language.md の「スライス」の表が
+/// 機械操作プリミティブを割り当てたスライスが、それぞれ足す。
+pub const MachineOp = enum {
+    /// `(apply proc arg1 ... args)` (R7RS 6.10).
+    apply,
+    /// `(with-exception-handler handler thunk)` (R7RS 6.11).
+    with_exception_handler,
+    /// `(raise obj)` (R7RS 6.11).
+    raise,
+    /// `(raise-continuable obj)` (R7RS 6.11).
+    raise_continuable,
+    /// `(error message obj ...)` (R7RS 6.11): makes a condition and raises it
+    /// as `raise` does.
+    @"error",
+    /// `(call-with-current-continuation proc)` and `(call/cc proc)` (R7RS
+    /// 6.10).
+    call_cc,
+    /// `(dynamic-wind before thunk after)` (R7RS 6.10).
+    dynamic_wind,
+    /// `(make-parameter init)` and `(make-parameter init converter)` (R7RS
+    /// 4.2.6).
+    make_parameter,
+    /// `(values obj ...)` (R7RS 6.10).
+    values,
+    /// `(call-with-values producer consumer)` (R7RS 6.10).
+    call_with_values,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -426,8 +622,8 @@ pub const Node = union(enum) {
     /// A literal, or the datum of a `quote`.
     constant: Value,
     local_ref: LocalRef,
-    /// A global variable, found by name until stage 2 gives it a cell.
-    global_ref: SymbolId,
+    /// A global variable: the cell the expander resolved its name to.
+    global_ref: *Cell,
     /// `set!` of a local variable.
     /// 変数は値を持っていなければならない。
     local_set: LocalAssign,
@@ -436,12 +632,33 @@ pub const Node = union(enum) {
     local_define: LocalAssign,
     global_set: GlobalAssign,
     global_define: GlobalAssign,
+    /// `(parameterize ((param value) ...) body ...)` (R7RS 4.2.6).
+    parameterize: *const Parameterize,
     @"if": If,
     /// `begin` and the body of a `lambda`: one or more nodes, the last one's
     /// value is the value of the sequence.
     sequence: []const *const Node,
     lambda: *const Lambda,
     call: Call,
+};
+
+/// What a `parameterize` means: the bindings, and the body to run in the
+/// extent of the new values.
+/// 本体は、引数の無い `lambda` の本体と同じ形で展開してある。本体は定義を先頭に置ける
+/// (R7RS 4.2.6 の本体は `<body>` である)ので、その定義の置き場が要る。機械は、クロージャを
+/// 作らずに、`parameterize` を評価したフレームの子として、そのためのフレームを作って
+/// 本体を走らせる。
+pub const Parameterize = struct {
+    /// In the order they were written; may be empty.
+    bindings: []const ParameterBinding,
+    /// Only `frame_size` and `body` are used: it takes no parameters.
+    body: *const Lambda,
+};
+
+/// One `(param value)` of a `parameterize`.
+pub const ParameterBinding = struct {
+    param: *const Node,
+    value: *const Node,
 };
 
 /// A local variable read.
@@ -457,8 +674,10 @@ pub const LocalAssign = struct {
     value: *const Node,
 };
 
+/// `set!` or the definition of a global variable: the cell to give the value.
+/// 展開器が、REPL の束縛の表の規則でセルを選んである(src/env.zig)。
 pub const GlobalAssign = struct {
-    name: SymbolId,
+    cell: *Cell,
     value: *const Node,
 };
 
@@ -535,6 +754,125 @@ pub const Kont = struct {
         /// operand.
         /// `args` には、それより前に届いた値が入る。
         call: CallStep,
+        /// The value is what the body of a dynamic extent returned; the dynamic
+        /// point goes back to this one, and the value passes on as it is.
+        /// `with-exception-handler` と `parameterize` が、点を積む前の点を持たせて置く
+        /// (docs/design/runtime.md の動的範囲の通常終了)。
+        dynamic_exit: ?*const DynPoint,
+        /// The value is what a handler called by `raise` or `raise-continuable`
+        /// returned.
+        handler_return: HandlerReturn,
+        /// The value is what the `before` of a `dynamic-wind` returned: the wind
+        /// point goes on, and the thunk is called.
+        /// 値は捨てる(docs/design/runtime.md の複数値の表の「捨てる」群)。
+        wind_before: WindBefore,
+        /// The value is what the thunk of a `dynamic-wind` returned: the wind
+        /// point comes off, and its `after` is called.
+        /// R7RS 6.10 は `after` を `thunk` の動的範囲の外で呼ぶとするので、点を外してから呼ぶ。
+        wind_body: *const DynPoint,
+        /// The value is what the `after` of a `dynamic-wind` returned; it is
+        /// dropped, and this value, which the thunk returned, passes on.
+        wind_after: Value,
+        /// The value is what an `after` or a `before` called while a
+        /// continuation is invoked returned; it is dropped, and the rewind goes
+        /// on by one point (docs/design/runtime.md, the progress of a rewind).
+        rewind: RewindStep,
+        /// The value is what the producer of a `call-with-values` returned: one
+        /// value, or the values of a multiple-values object. They are the
+        /// arguments of this procedure, the consumer, which is called in the
+        /// continuation of the `call-with-values`.
+        values_receiver: Value,
+
+        /// `make-parameter` called its converter, and the value is what it
+        /// returned, which becomes the initial value of the new parameter.
+        /// 持つのは変換手続きである(docs/design/runtime.md の「必要なフレームの種類」)。
+        make_parameter: Value,
+        /// The value is the parameter of a binding of a `parameterize`; the value
+        /// expression of the binding runs next.
+        parameterize_param: ParameterizeStep,
+        /// The value is the new value of a binding; its converter is called if
+        /// the parameter has one, and the binding is made at once if not.
+        parameterize_value: ParameterizeBound,
+        /// The value is what the converter of a binding returned; the binding is
+        /// made with it, without a second conversion.
+        /// 変換手続きの戻りと値の式の戻りは、同じ形で1個の値を受け取る。区別しないと、変換を
+        /// 2回するか、しないかになる(docs/design/runtime.md の `parameterize` の3つの局面)。
+        parameterize_convert: ParameterizeBound,
+        /// Whether a value that arrives at a frame of this kind must be one
+        /// value: a `multiple_values` object is an error there (docs/design/runtime.md,
+        /// the table of multiple values).
+        /// Why: 網羅的な `switch` にしてあるのは、新しいフレームの種類を足す人が、複数値の
+        /// 表の5群のどれに属するかを決めずにコンパイルを通せないようにするためである。
+        /// 捨てる群(`sequence` `wind_before`)、そのまま渡す群(`dynamic_exit` `handler_return`
+        /// `wind_body`)、受け取る群(`values_receiver`)、無視する群(`wind_after` `rewind`)は
+        /// 個数を検査しない。それ以外は1個を要求する。`make-parameter` と `parameterize` の
+        /// 4つのフレームは、パラメータ、初期値、新しい値、変換手続きの戻りという、1個の値を
+        /// 受け取る位置なので、この群に入る。
+        pub fn requiresOneValue(step: Step) bool {
+            return switch (step) {
+                .branch, .local_set, .local_define, .global_set, .global_define, .call => true,
+                .make_parameter, .parameterize_param, .parameterize_value, .parameterize_convert => true,
+                .sequence, .wind_before => false,
+                .dynamic_exit, .handler_return, .wind_body => false,
+                .values_receiver => false,
+                .wind_after, .rewind => false,
+            };
+        }
+    };
+
+    /// Where a `parameterize` is, between the evaluation of its expressions.
+    /// 3つのフレームの状態は、不変のまま、起動のたびに共有される。束縛の点は、すべて変換した
+    /// あとで列に積む。それまでに作った点は `pending` の鎖に持ち、列のレジスタは書き換えない。
+    /// 変換手続きと式は、`parameterize` の外の動的環境で走る。
+    pub const ParameterizeStep = struct {
+        node: *const Parameterize,
+        /// The binding the value belongs to.
+        index: u32,
+        /// The points of the bindings made so far, the latest first; the first one
+        /// is on the dynamic point the `parameterize` started at.
+        pending: ?*const DynPoint,
+    };
+
+    /// `ParameterizeStep`, and the parameter of the binding it is about.
+    pub const ParameterizeBound = struct {
+        node: *const Parameterize,
+        index: u32,
+        pending: ?*const DynPoint,
+        param: *Parameter,
+    };
+
+    pub const WindBefore = struct {
+        /// The point the `dynamic-wind` puts on once `before` returns.
+        point: *const DynPoint,
+        /// What runs in the extent of `point`.
+        thunk: Value,
+    };
+
+    pub const RewindStep = struct {
+        /// What every frame of one invocation shares.
+        state: *const Rewind,
+        /// The link of the path whose `before` returned, so that its point goes
+        /// on next; null when the rewind is still leaving the points between
+        /// the invocation and the common ancestor.
+        entered: ?*const WindPath,
+        /// The dynamic point this frame was put on at, and where the dynamic
+        /// state is when its value arrives.
+        /// 巻き戻しの位置は列のレジスタそのものである(docs/design/runtime.md)。これは、
+        /// フレームが値を受け取るときの列が、フレームを積んだときの列と同じであるという
+        /// 機械の不変条件を、安全ビルドで確かめるためだけに持つ。
+        at: ?*const DynPoint,
+    };
+
+    pub const HandlerReturn = struct {
+        /// The dynamic point of the raise, before the shift was put on it.
+        /// `raise-continuable` なら、ここに戻してから値を渡す。
+        dyn: ?*const DynPoint,
+        /// What was raised.
+        /// `raise` のハンドラが戻ったときの二次例外の irritant にする。
+        raised: Value,
+        /// Whether the raise was `raise-continuable`.
+        /// 偽なら、ハンドラが戻ることは二次例外である(R7RS 6.11)。
+        continuable: bool,
     };
 
     pub const CallStep = struct {
@@ -545,22 +883,431 @@ pub const Kont = struct {
     };
 };
 
+/// One point of the dynamic state: the list of what the dynamic extents around
+/// the running code have put in place, innermost first (ADR-0016).
+/// 点は不変で、親へのリンクで連なる。機械のレジスタが最も内側の点を指し、`null` は
+/// 何も置かれていない状態である。現在の例外ハンドラは独立したレジスタでなく、この列から
+/// `currentHandler` で導く。パラメータの値も、この列から `parameterValue` で引く。
+pub const DynPoint = struct {
+    parent: ?*const DynPoint,
+    /// The number of points from this one out, itself included.
+    /// 継続の起動で共通祖先を求めるために持つ(2e)。`u32` で足りるのは、点が1つ数十
+    /// バイトで、ヒープの上限(`heap.max_host_limit` の 1 GiB)に 2^32 個は入らないから
+    /// である。
+    depth: u32,
+    /// The handler point that is the current exception handler at this point,
+    /// or null when there is none.
+    /// 点を作るときに決め、以後変えない。ハンドラの点では自分自身、ハンドラ切り替えの
+    /// 点では切り替え先、それ以外の点では親のものである(ADR-0016 の表)。
+    current_handler: ?*const DynPoint,
+    kind: Variant,
+
+    pub const Variant = union(enum) {
+        /// Installed by `with-exception-handler`: inside this point, the
+        /// procedure is the current exception handler.
+        handler: Value,
+        /// Put on by `raise` and `raise-continuable` while a handler runs: the
+        /// current handler becomes this handler point, the one that was current
+        /// when the handler being called was installed (R7RS 6.11).
+        handler_shift: ?*const DynPoint,
+        /// Put on by `dynamic-wind` once `before` returns, and taken off
+        /// before `after` is called (R7RS 6.10).
+        /// 継続の起動で、この点を出るときに `after` を、入るときに `before` を呼ぶ。どちらも
+        /// この点の親の列で呼ぶ(docs/design/runtime.md の巻き戻しの進行)。
+        wind: Wind,
+        /// Put on by `parameterize`: inside this point, the parameter has this
+        /// value (R7RS 4.2.6).
+        /// 継続の起動では、退出でも進入でも何も呼ばない。点を外すのは列のレジスタを戻すことで、
+        /// 目標の列が点を含むなら、着いたときに列ごと戻る。
+        parameter: ParameterValue,
+    };
+
+    pub const Wind = struct {
+        before: Value,
+        after: Value,
+    };
+
+    /// The value a `parameterize` gave a parameter, which is what the
+    /// conversion procedure returned.
+    pub const ParameterValue = struct {
+        param: *Parameter,
+        value: Value,
+    };
+};
+
+/// The innermost point that `a` and `b` both have, themselves included, or
+/// null when they have none in common.
+/// 深い側を浅い側の深さまで上り、それから両方を1つずつ上る(docs/design/runtime.md の
+/// 動的状態)。点は親へのリンクしか持たないので、深さが要る。
+pub fn commonAncestor(a: ?*const DynPoint, b: ?*const DynPoint) ?*const DynPoint {
+    var x = a;
+    var y = b;
+    while (depthOf(x) > depthOf(y)) x = x.?.parent;
+    while (depthOf(y) > depthOf(x)) y = y.?.parent;
+    while (x != y) {
+        x = x.?.parent;
+        y = y.?.parent;
+    }
+    return x;
+}
+
+/// The depth of `point`: 0 for no point.
+fn depthOf(point: ?*const DynPoint) u32 {
+    const p = point orelse return 0;
+    return p.depth;
+}
+
+/// Whether a wind point lies from `from` out to `ancestor`, `from` included
+/// and `ancestor` not.
+/// `ancestor` は `from` 自身か、その外側の点か、null でなければならない。
+pub fn windBetween(from: ?*const DynPoint, ancestor: ?*const DynPoint) bool {
+    var it = from;
+    while (it != ancestor) {
+        const p = it.?;
+        if (p.kind == .wind) return true;
+        it = p.parent;
+    }
+    return false;
+}
+
+/// A parameter object: the value it was made with, and the procedure that
+/// converts the values `parameterize` gives it.
+/// 値は作られたときのもので、変えない。`parameterize` の間の値は、動的状態の列の点にある
+/// (`parameterValue`)。変換手続きが無いパラメータは、`null` を持つ。
+pub const Parameter = struct {
+    /// What the parameter has outside every `parameterize`: the initial value,
+    /// converted if there is a converter.
+    value: Value,
+    /// The conversion procedure, or null when `make-parameter` was not given one.
+    converter: ?Value,
+};
+
+/// What `call/cc` captures: the continuation and the dynamic state of the
+/// call (docs/design/runtime.md, the full continuation).
+/// 継続のフレームと動的点はどちらも不変なので、捕捉は2つのポインタを写すだけで、何度でも
+/// 起動できる。現在の例外ハンドラは列から導くので、ほかに保存するものは無い(ADR-0016)。
+pub const Continuation = struct {
+    kont: ?*const Kont,
+    dyn: ?*const DynPoint,
+};
+
+/// What every frame of one invocation of a continuation shares: where it
+/// goes, the value it takes there, and the point where leaving ends and
+/// entering starts.
+/// 起動ごとに1つ作り、変えない。巻き戻しの途中の `after` と `before` の中で捕捉した継続を
+/// 後で起動しても、フレームが指すこれは変わっていないので、その時点から正しく再開する。
+pub const Rewind = struct {
+    /// Where the value goes, or null for the outermost continuation of the
+    /// run, to which the value is delivered as raised (an unhandled raise,
+    /// docs/design/runtime.md).
+    target: ?*const Continuation,
+    value: Value,
+    /// The innermost point that the dynamic state of the invocation and of
+    /// the target have in common.
+    ancestor: ?*const DynPoint,
+};
+
+/// One link of the path a rewind enters: the wind points from the common
+/// ancestor in to the target, outermost first.
+/// 列は親へのリンクしか持たないので、退出を終えたときに目標から上って作る。作った後は
+/// 変えず、進入の各段のフレームが共有する。`before` を呼ぶ必要のない点(ハンドラの点など)
+/// は入れない。それらは、次の wind 点の親を列に入れるときと、目標の列を入れるときに入る。
+pub const WindPath = struct {
+    point: *const DynPoint,
+    next: ?*const WindPath,
+};
+
+/// The current exception handler at `point`: a handler point, or null when no
+/// handler is installed.
+/// 列は起動直後に空(`null`)である。省略可能型を直接展開せず、必ずこれを通す。空のときに
+/// 展開すると、ハンドラの無い状態での送出が安全ビルドで panic する(docs/design/runtime.md
+/// の動的状態)。
+pub fn currentHandler(point: ?*const DynPoint) ?*const DynPoint {
+    const p = point orelse return null;
+    return p.current_handler;
+}
+
+/// The value of `param` at `point`: what the innermost `parameterize` around it
+/// gave, or the value the parameter was made with when there is none.
+/// 列を内側から外側へたどって、最初に見つかったそのパラメータの点の値を返す。
+pub fn parameterValue(point: ?*const DynPoint, param: *const Parameter) Value {
+    var it = point;
+    while (it) |p| : (it = p.parent) switch (p.kind) {
+        .parameter => |b| if (b.param == param) return b.value,
+        .handler, .handler_shift, .wind => {},
+    };
+    return param.value;
+}
+
+/// The depth a point put on `parent` has.
+pub fn depthAbove(parent: ?*const DynPoint) u32 {
+    const p = parent orelse return 1;
+    return p.depth + 1;
+}
+
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
-/// IR, which until a later slice stays where the expander allocated it, the
-/// procedures implemented in Zig, and the conditions.
+/// IR, which until a later slice stays where the expander allocated it, and the
+/// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Condition };
+pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter };
+
+/// The special forms: the syntax the expander turns into core IR itself
+/// (ADR-0019).
+/// 名前は予約語ではなく、REPL の最上位の束縛である(src/syntax/env.zig)。
+pub const Special = enum { define, quote, @"if", lambda, begin, @"set!", @"define-syntax", @"syntax-rules", @"let-syntax", @"letrec-syntax", @"syntax-error", parameterize };
+
+/// The auxiliary syntax: identifiers that are not expressions by themselves and
+/// that other syntax reads as literals (R7RS 4.2.1, 4.2.8, 4.3.2).
+/// R7RS 付録A の `(scheme base)` が 6 個をエクスポートする。意味を持たせることで、
+/// インポートと改名の対象になり、リテラルの照合が、綴りでなく束縛の同一性で決まる。
+pub const Auxiliary = enum {
+    ellipsis,
+    underscore,
+    @"else",
+    @"=>",
+    unquote,
+    @"unquote-splicing",
+
+    /// How the identifier is written.
+    pub fn spelling(self: Auxiliary) []const u8 {
+        return switch (self) {
+            .ellipsis => "...",
+            .underscore => "_",
+            .@"else" => "else",
+            .@"=>" => "=>",
+            .unquote => "unquote",
+            .@"unquote-splicing" => "unquote-splicing",
+        };
+    }
+};
+
+/// What an identifier means where it is used (ADR-0019,
+/// docs/design/frontend.md).
+/// ADR-0019 の6種のうち、パターン変数は変種にしない。照合器とテンプレート展開器
+/// (src/syntax/rules.zig)が規則ごとの表で引き、構文環境に束縛しないからである
+/// (ADR-0019 の 2026-10-13 の追記)。
+pub const Denotation = union(enum) {
+    special: Special,
+    local: *LocalBinding,
+    /// A global variable: the cell that holds its value.
+    global: *Cell,
+    /// A macro: its transformer and the environment it was defined in.
+    macro: *Macro,
+    /// An auxiliary syntax: it has no meaning of its own, and the identifiers
+    /// that mean the same one match as literals.
+    auxiliary: Auxiliary,
+};
+
+/// A syntactic environment: the bindings of one rib, and the environment
+/// around it.
+/// GC ヒープにある。展開の途中では GC が走らない(ADR-0031)ので、展開器が作った
+/// 環境はルートにしない。コア IR の節点は環境を指さないので、展開が終われば到達
+/// できなくなり、回収される。
+pub const SyntacticEnv = struct {
+    parent: ?*SyntacticEnv,
+    /// How many ribs there are from the top level to this environment, this
+    /// one included.
+    /// 最上位は 0 で、`lambda` の rib は外側より 1 大きい。局所変数の字句アドレスの
+    /// 深さは、参照する側の環境のこの値から、束縛した rib のこの値を引いたものである。
+    rib_depth: u32,
+    /// The bindings, the newest first.
+    /// 探索は先頭から線形に進む。同じ識別子を束縛し直すと、後のものが前のものを隠す。
+    bindings: ?*SyntacticBinding,
+    /// The library whose top level this environment is the root of; null for any
+    /// environment that is not the root of a library body.
+    /// REPL の最上位に根の環境は無く、親の無い環境は REPL のものである。ライブラリの本体の
+    /// 環境は、すべてこの根に行き着く。識別子が最上位まで解決されたとき、どの最上位の表を
+    /// 引くかは、根のこの値で決まる(`src/syntax/env.zig` の `resolve`)。
+    library: ?*Library = null,
+};
+
+/// One binding of a syntactic environment: an identifier and what it means.
+pub const SyntacticBinding = struct {
+    /// The identifier: a symbol or an alias.
+    id: Value,
+    denotation: Denotation,
+    next: ?*SyntacticBinding,
+};
+
+/// A library that a program defined (R7RS 5.6, docs/design/frontend.md, the
+/// library system).
+/// GC ヒープにある。`Context` の登録表が、定義されたライブラリをすべて指すので、回収される
+/// のは、定義に失敗して表から外れたライブラリだけである。最上位の束縛の表は、ハッシュ表なので
+/// ヒープの外にあり(`src/env.zig` の `Global`)、登録表の `tables` が `table` で引く。
+pub const Library = struct {
+    /// The name: a list of identifiers and non-negative integers.
+    name: Value,
+    state: State,
+    /// What the library exports, the newest first.
+    /// 本体の処理が終わるまでは空で、`export` の解決がここに作る。
+    exports: ?*Export,
+    /// The environment the forms of the library body are expanded in.
+    root: ?*SyntacticEnv,
+    /// Which table of the registry holds the bindings of the library's top level.
+    table: TableId,
+
+    pub const State = enum {
+        /// The body is being processed. Importing the library meets itself.
+        loading,
+        loaded,
+    };
+};
+
+/// Which table of the registry a library's top level is.
+pub const TableId = enum(u32) { _ };
+
+/// One export of a library: the name it is imported under, and what it means.
+/// 名前は、独立に所有した文字列である。シンボルを共有すると、シンボル表が弱い表になったとき
+/// (`(export (rename internal external))` の `external` はどの束縛にも入らない)、解放済みの
+/// 名前を引くことになる。ヒープの文字列は、ヒープが数え、回収する。
+pub const Export = struct {
+    name: *String,
+    denotation: Denotation,
+    /// Whether the library itself imported the binding it exports.
+    imported: bool,
+    next: ?*Export,
+};
+
+/// A local variable as the expander sees it: the rib that binds it, and its
+/// slot in the frame of a call.
+/// 束縛ごとに1つ作り、意味が同じかはこのオブジェクトが同じかで判定する
+/// (ADR-0019)。深さは最上位から数えた絶対値であり、利用側からの相対値ではない。
+pub const LocalBinding = struct {
+    rib_depth: u32,
+    index: u32,
+};
+
+/// The location of a global variable (docs/design/runtime.md, the cells of the
+/// global bindings).
+/// GC ヒープにある。コア IR の節点(アリーナにある)はセルを指すが、GC は節点を
+/// たどらない。それでも回収されないのは、作られたセルがすべて、REPL の束縛の表か、
+/// 遮蔽されたインポートの束縛を持ち続ける表か、`define-syntax` が表から外したセルを
+/// 持ち続ける表から到達できるからである(src/env.zig)。
+pub const Cell = struct {
+    /// The name, for the message of an error.
+    name: SymbolId,
+    /// The value, or `uninitialized` while the variable is unbound.
+    /// 大域変数には「未初期化」の段階が無いので、局所変数の未初期化の目印を、未束縛の
+    /// 目印として使う。参照と `set!` は、どちらもこの値を1か所で調べる。
+    value: Value,
+};
+
+/// An identifier that a macro's template introduced (docs/design/frontend.md,
+/// the syntactic environment and identifiers).
+/// 別名が束縛されていない環境で解決すると、内側の識別子を `env` で解決する。同じ識別子
+/// かどうかは、内側、印、環境の3つで決める(src/syntax/env.zig の `boundIdentifierEq`)。
+pub const Alias = struct {
+    /// The identifier the template had: a symbol, or an alias of an outer
+    /// expansion.
+    inner: Value,
+    /// The environment the macro was defined in; null is the top level.
+    env: ?*SyntacticEnv,
+    /// Which application of a macro made the alias.
+    /// 適用ごとに新しい値を割り当て、同じ値を2回割り当てない(`Context.newMark`)。
+    mark: u64,
+};
+
+/// A macro: the rules of its `syntax-rules` and the environment it was
+/// defined in.
+/// 段階2の変換子は `syntax-rules` だけである。変換子を呼ぶ箇所は
+/// src/syntax/rules.zig の `transform` の1か所で、手続き的マクロに広げるときの境界になる。
+pub const Macro = struct {
+    /// The kind of transformer.
+    kind: TransformerKind = .syntax_rules,
+    /// The literals: a list of identifiers.
+    literals: Value,
+    /// The rules: a list of `(pattern template)`.
+    /// 形は定義の時点で `rules.compile` が検査してある。
+    rules: Value,
+    /// Where the identifiers of the patterns and templates are resolved; null is
+    /// the top level.
+    env: ?*SyntacticEnv,
+    /// The identifier that `(syntax-rules ellipsis (literal ...) rule ...)` names
+    /// as the ellipsis, or null for `...`.
+    /// 指定したとき、`...` はふつうの識別子である。
+    ellipsis: ?Value = null,
+
+    /// The kinds of transformer a macro can have.
+    /// 段階2は `syntax-rules` だけである。Scheme の手続きを変換子にする種類は、要求が
+    /// 出るまで足さない(docs/plans/0014-phase2-core-language.md の 2k の節)。
+    pub const TransformerKind = enum { syntax_rules };
+};
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "the current handler of no point is none, and of a point is the one the point holds" {
+    try std.testing.expectEqual(null, currentHandler(null));
+    var handler: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+    handler.current_handler = &handler;
+    try std.testing.expectEqual(&handler, currentHandler(&handler).?);
+    const shift: DynPoint = .{ .parent = &handler, .depth = 2, .current_handler = null, .kind = .{ .handler_shift = null } };
+    try std.testing.expectEqual(null, currentHandler(&shift));
+}
+
+test "a point is one deeper than its parent, and the first is at depth 1" {
+    try std.testing.expectEqual(1, depthAbove(null));
+    const p: DynPoint = .{ .parent = null, .depth = 3, .current_handler = null, .kind = .{ .handler_shift = null } };
+    try std.testing.expectEqual(4, depthAbove(&p));
+}
+
+/// A chain of points for the tests of the dynamic state: `a` at depth 1,
+/// `b` a wind point on it, `c` a handler point on `b`, and `d` a wind point
+/// on `a` beside `b`.
+const TestPoints = struct {
+    a: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } },
+    b: DynPoint = undefined,
+    c: DynPoint = undefined,
+    d: DynPoint = undefined,
+
+    fn link(self: *TestPoints) void {
+        const wind: DynPoint.Variant = .{ .wind = .{ .before = .fromFixnum(0), .after = .fromFixnum(0) } };
+        self.b = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = wind };
+        self.c = .{ .parent = &self.b, .depth = 3, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+        self.d = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = wind };
+    }
+};
+
+test "the common ancestor of two points is the innermost point they share" {
+    var t: TestPoints = .{};
+    t.link();
+    try std.testing.expectEqual(null, commonAncestor(null, null));
+    try std.testing.expectEqual(null, commonAncestor(&t.c, null));
+    try std.testing.expectEqual(null, commonAncestor(null, &t.d));
+    try std.testing.expectEqual(&t.c, commonAncestor(&t.c, &t.c).?);
+    // 一方が他方の外側なら、外側の点である。深さが違うので、深い側を先に上る。
+    try std.testing.expectEqual(&t.b, commonAncestor(&t.c, &t.b).?);
+    try std.testing.expectEqual(&t.b, commonAncestor(&t.b, &t.c).?);
+    // 枝が分かれていれば、分かれる前の点である。深さが違っても同じである。
+    try std.testing.expectEqual(&t.a, commonAncestor(&t.c, &t.d).?);
+    try std.testing.expectEqual(&t.a, commonAncestor(&t.d, &t.c).?);
+    try std.testing.expectEqual(&t.a, commonAncestor(&t.b, &t.d).?);
+    // 根の違う2つの点は、共通の点を持たない。
+    var other: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    try std.testing.expectEqual(null, commonAncestor(&t.c, &other));
+}
+
+test "a wind point between a point and an ancestor is found, the point included and the ancestor not" {
+    var t: TestPoints = .{};
+    t.link();
+    try std.testing.expect(!windBetween(null, null));
+    try std.testing.expect(!windBetween(&t.c, &t.c));
+    // `c` 自身はハンドラの点で、その外の `b` が wind 点である。
+    try std.testing.expect(windBetween(&t.c, &t.a));
+    try std.testing.expect(windBetween(&t.c, null));
+    // 始めの点は数え、終わりの点は数えない。
+    try std.testing.expect(windBetween(&t.b, &t.a));
+    try std.testing.expect(!windBetween(&t.c, &t.b));
+    try std.testing.expect(!windBetween(&t.a, null));
 }
 
 test "a fixnum reads back as itself" {
@@ -598,11 +1345,14 @@ test "the uninitialized marker is its own kind, and is true like any value but #
     try std.testing.expect(Value.unspecified_value.kind() != v.kind());
 }
 
-test "a condition is its own kind, and carries its message" {
-    var c: Condition = .{ .message = "went wrong" };
+test "a condition is its own kind, a heap object, and carries its message" {
+    var bytes = "went wrong".*;
+    var message: String = .{ .bytes = &bytes, .is_ascii = true };
+    var c: Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
     const v: Value = .fromCondition(&c);
     try std.testing.expectEqual(Kind.condition, v.kind());
-    try std.testing.expectEqualStrings("went wrong", v.asCondition().?.message);
+    try std.testing.expectEqualStrings("went wrong", v.asCondition().?.messageText());
+    try std.testing.expect(v.pointsIntoHeap());
     try std.testing.expect(v.asFixnum() == null);
     try std.testing.expect(v.asClosure() == null);
     try std.testing.expect(Value.fromFixnum(1).asCondition() == null);
@@ -647,6 +1397,131 @@ test "a string and a vector are heap objects, each answering to its own accessor
     try std.testing.expect(vv.pointsIntoHeap());
     try std.testing.expect(vv.asString() == null);
     try std.testing.expect(vv.isTrue() and sv.isTrue());
+}
+
+test "a record and a record type are heap objects, each answering to its own accessor" {
+    var t: RecordType = .{ .name = @fromBackingInt(@intCast(2)), .field_count = 1 };
+    const tv: Value = .fromRecordType(&t);
+    try std.testing.expectEqual(Kind.record_type, tv.kind());
+    try std.testing.expectEqual(&t, tv.asRecordType().?);
+    try std.testing.expect(tv.pointsIntoHeap());
+    try std.testing.expect(tv.asRecord() == null);
+    var fields = [_]Value{.fromFixnum(4)};
+    var r: Record = .{ .record_type = &t, .fields = &fields };
+    const rv: Value = .fromRecord(&r);
+    try std.testing.expectEqual(Kind.record, rv.kind());
+    try std.testing.expectEqual(&r, rv.asRecord().?);
+    try std.testing.expect(rv.pointsIntoHeap());
+    try std.testing.expect(rv.asRecordType() == null);
+    try std.testing.expect(rv.asVector() == null);
+    try std.testing.expect(Value.fromFixnum(1).asRecord() == null);
+    try std.testing.expect(Value.fromFixnum(1).asRecordType() == null);
+    try std.testing.expect(rv.isTrue() and tv.isTrue());
+}
+
+test "a continuation is a heap object of its own kind" {
+    var k: Continuation = .{ .kont = null, .dyn = null };
+    const v: Value = .fromContinuation(&k);
+    try std.testing.expectEqual(Kind.continuation, v.kind());
+    try std.testing.expectEqual(&k, v.asContinuation().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(Value.fromFixnum(1).asContinuation() == null);
+    try std.testing.expect(v.isTrue());
+}
+
+test "a parameter is a heap object of its own kind" {
+    var param: Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    const v: Value = .fromParameter(&param);
+    try std.testing.expectEqual(Kind.parameter, v.kind());
+    try std.testing.expectEqual(&param, v.asParameter().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(v.asContinuation() == null);
+    try std.testing.expect(Value.fromFixnum(1).asParameter() == null);
+    try std.testing.expect(v.isTrue());
+}
+
+/// A chain of points for the tests of the value of a parameter: `a` puts 10 on
+/// `first`, `b` is a handler point on it, `c` puts 20 on `first` on `b`, and `d`
+/// puts 30 on `second` on `c`.
+const ParameterPoints = struct {
+    first: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    second: Parameter = .{ .value = .{ .fixnum = 2 }, .converter = null },
+    third: Parameter = .{ .value = .{ .fixnum = 3 }, .converter = null },
+    a: DynPoint = undefined,
+    b: DynPoint = undefined,
+    c: DynPoint = undefined,
+    d: DynPoint = undefined,
+
+    fn link(self: *ParameterPoints) void {
+        self.a = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.first, .value = .fromFixnum(10) } } };
+        self.b = .{ .parent = &self.a, .depth = 2, .current_handler = null, .kind = .{ .handler_shift = null } };
+        self.c = .{ .parent = &self.b, .depth = 3, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.first, .value = .fromFixnum(20) } } };
+        self.d = .{ .parent = &self.c, .depth = 4, .current_handler = null, .kind = .{ .parameter = .{ .param = &self.second, .value = .fromFixnum(30) } } };
+    }
+};
+
+test "the value of a parameter is the innermost point that holds it, or the value it was made with" {
+    var t: ParameterPoints = .{};
+    t.link();
+    // 点が無ければ、作られたときの値である。
+    try std.testing.expectEqual(1, parameterValue(null, &t.first).asFixnum().?);
+    try std.testing.expectEqual(3, parameterValue(&t.d, &t.third).asFixnum().?);
+    // 最も内側のそのパラメータの点が勝つ。外側の点は隠れる。
+    try std.testing.expectEqual(10, parameterValue(&t.a, &t.first).asFixnum().?);
+    try std.testing.expectEqual(20, parameterValue(&t.c, &t.first).asFixnum().?);
+    try std.testing.expectEqual(20, parameterValue(&t.d, &t.first).asFixnum().?);
+    // 別のパラメータの点は読み飛ばし、ハンドラの点も読み飛ばす。
+    try std.testing.expectEqual(10, parameterValue(&t.b, &t.first).asFixnum().?);
+    try std.testing.expectEqual(2, parameterValue(&t.c, &t.second).asFixnum().?);
+    try std.testing.expectEqual(30, parameterValue(&t.d, &t.second).asFixnum().?);
+}
+
+test "multiple values are a heap object of their own kind" {
+    var items = [_]Value{ .fromFixnum(1), .fromFixnum(2) };
+    var m: MultipleValues = .{ .items = &items };
+    const v: Value = .fromMultipleValues(&m);
+    try std.testing.expectEqual(Kind.multiple_values, v.kind());
+    try std.testing.expectEqual(&m, v.asMultipleValues().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asVector() == null);
+    try std.testing.expect(Value.fromFixnum(1).asMultipleValues() == null);
+}
+
+test "only the frames that take one value ask for exactly one" {
+    const node: Node = .{ .constant = .unspecified_value };
+    const if_node: If = .{ .condition = &node, .consequent = &node, .alternative = null };
+    const assign: LocalAssign = .{ .address = .{ .depth = 0, .index = 0 }, .name = @fromBackingInt(@intCast(0)), .value = &node };
+    const global: GlobalAssign = .{ .cell = undefined, .value = &node };
+    const call: Call = .{ .operator = &node, .operands = &.{} };
+    const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
+    var parameter: Parameter = .{ .value = .unspecified_value, .converter = null };
+    const asks_one = [_]Kont.Step{
+        .{ .branch = &if_node },
+        .{ .local_set = &assign },
+        .{ .local_define = &assign },
+        .{ .global_set = &global },
+        .{ .global_define = &global },
+        .{ .call = .{ .call = &call, .args = null, .received = 0 } },
+        .{ .make_parameter = .unspecified_value },
+        .{ .parameterize_param = .{ .node = undefined, .index = 0, .pending = null } },
+        .{ .parameterize_value = .{ .node = undefined, .index = 0, .pending = null, .param = &parameter } },
+        .{ .parameterize_convert = .{ .node = undefined, .index = 0, .pending = null, .param = &parameter } },
+    };
+    for (asks_one) |step| try std.testing.expect(step.requiresOneValue());
+    const takes_any = [_]Kont.Step{
+        .{ .sequence = &.{&node} },
+        .{ .dynamic_exit = null },
+        .{ .handler_return = .{ .dyn = null, .raised = .unspecified_value, .continuable = true } },
+        .{ .wind_before = .{ .point = &point, .thunk = .unspecified_value } },
+        .{ .wind_body = &point },
+        .{ .wind_after = .unspecified_value },
+        .{ .rewind = .{ .state = &rewind, .entered = null, .at = null } },
+        .{ .values_receiver = .unspecified_value },
+    };
+    for (takes_any) |step| try std.testing.expect(!step.requiresOneValue());
 }
 
 test "allAscii looks at every byte" {
@@ -699,11 +1574,11 @@ test "each kind answers only to its own accessor" {
 }
 
 test "procedures answer only to their own accessor" {
-    const prim: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .call = struct {
+    const prim: Primitive = .{ .name = "p", .min_args = 0, .max_args = 0, .body = .{ .pure = struct {
         fn f(_: *const Services, _: []const Value) PrimitiveError!Value {
             return .unspecified_value;
         }
-    }.f };
+    }.f } };
     const pv: Value = .fromPrimitive(&prim);
     try std.testing.expectEqual(Kind.primitive, pv.kind());
     try std.testing.expectEqualStrings("p", pv.asPrimitive().?.name);
@@ -739,24 +1614,24 @@ test "a primitive takes the numbers of arguments from its minimum to its maximum
             return .unspecified_value;
         }
     }.f;
-    const one_or_two: Primitive = .{ .name = "a", .min_args = 1, .max_args = 2, .call = &nop };
+    const one_or_two: Primitive = .{ .name = "a", .min_args = 1, .max_args = 2, .body = .{ .pure = &nop } };
     try std.testing.expect(!one_or_two.acceptsCount(0));
     try std.testing.expect(one_or_two.acceptsCount(1));
     try std.testing.expect(one_or_two.acceptsCount(2));
     try std.testing.expect(!one_or_two.acceptsCount(3));
-    const none: Primitive = .{ .name = "b", .min_args = 0, .max_args = 0, .call = &nop };
+    const none: Primitive = .{ .name = "b", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } };
     try std.testing.expect(none.acceptsCount(0));
     try std.testing.expect(!none.acceptsCount(1));
     // 上限がなければ、`u8` を超える個数でも受け付ける。
-    const any: Primitive = .{ .name = "c", .min_args = 0, .max_args = null, .call = &nop };
+    const any: Primitive = .{ .name = "c", .min_args = 0, .max_args = null, .body = .{ .pure = &nop } };
     try std.testing.expect(any.acceptsCount(0));
     try std.testing.expect(any.acceptsCount(1000));
-    const two_or_more: Primitive = .{ .name = "d", .min_args = 2, .max_args = null, .call = &nop };
+    const two_or_more: Primitive = .{ .name = "d", .min_args = 2, .max_args = null, .body = .{ .pure = &nop } };
     try std.testing.expect(!two_or_more.acceptsCount(1));
     try std.testing.expect(two_or_more.acceptsCount(2));
     try std.testing.expect(two_or_more.acceptsCount(1000));
     // `u8` の上限は、usize の個数と比べても回り込まない。
-    const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .call = &nop };
+    const max: Primitive = .{ .name = "e", .min_args = 0, .max_args = 255, .body = .{ .pure = &nop } };
     try std.testing.expect(max.acceptsCount(255));
     try std.testing.expect(!max.acceptsCount(256));
 }
@@ -801,14 +1676,33 @@ const Samples = struct {
     items_b: [1]Value = .{.{ .fixnum = 1 }},
     vector_a: Vector = undefined,
     vector_b: Vector = undefined,
-    prim_a: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .call = &nop },
-    prim_b: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .call = &nop },
+    prim_a: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } },
+    prim_b: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } },
     body: Node = .{ .constant = .unspecified },
     lambda: Lambda = undefined,
     closure_a: Closure = undefined,
     closure_b: Closure = undefined,
-    condition_a: Condition = .{ .message = "m" },
-    condition_b: Condition = .{ .message = "m" },
+    message: String = undefined,
+    condition_a: Condition = undefined,
+    condition_b: Condition = undefined,
+    // 名前とフィールドの数が同じ2つの型。
+    record_type_a: RecordType = .{ .name = @fromBackingInt(@intCast(0)), .field_count = 1 },
+    record_type_b: RecordType = .{ .name = @fromBackingInt(@intCast(0)), .field_count = 1 },
+    fields_a: [1]Value = .{.{ .fixnum = 1 }},
+    fields_b: [1]Value = .{.{ .fixnum = 1 }},
+    record_a: Record = undefined,
+    record_b: Record = undefined,
+    // 同じ継続と列を捕捉した2つの継続。
+    continuation_a: Continuation = .{ .kont = null, .dyn = null },
+    continuation_b: Continuation = .{ .kont = null, .dyn = null },
+    // 値も変換手続きも同じ2つのパラメータ。
+    parameter_a: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    parameter_b: Parameter = .{ .value = .{ .fixnum = 1 }, .converter = null },
+    // 中身が同じ2つの複数値。
+    values_items_a: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
+    values_items_b: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
+    multiple_values_a: MultipleValues = undefined,
+    multiple_values_b: MultipleValues = undefined,
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -824,10 +1718,19 @@ const Samples = struct {
         self.lambda = .{ .arity = 0, .frame_size = 0, .body = &self.body };
         self.closure_a = .{ .lambda = &self.lambda, .env = null };
         self.closure_b = .{ .lambda = &self.lambda, .env = null };
+        self.message = .{ .bytes = &self.bytes_a, .is_ascii = true };
+        // 中身が同じ2つの条件。
+        self.condition_a = .{ .kind = .@"error", .message = .fromString(&self.message), .irritants = .empty_list_value };
+        self.condition_b = .{ .kind = .@"error", .message = .fromString(&self.message), .irritants = .empty_list_value };
+        // 型もフィールドの値も同じ2つのレコード。
+        self.record_a = .{ .record_type = &self.record_type_a, .fields = &self.fields_a };
+        self.record_b = .{ .record_type = &self.record_type_a, .fields = &self.fields_b };
+        self.multiple_values_a = .{ .items = &self.values_items_a };
+        self.multiple_values_b = .{ .items = &self.values_items_b };
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [26]Value {
+    fn all(self: *Samples) [36]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -855,6 +1758,16 @@ const Samples = struct {
             .fromClosure(&self.closure_b),
             .fromCondition(&self.condition_a),
             .fromCondition(&self.condition_b),
+            .fromRecordType(&self.record_type_a),
+            .fromRecordType(&self.record_type_b),
+            .fromRecord(&self.record_a),
+            .fromRecord(&self.record_b),
+            .fromContinuation(&self.continuation_a),
+            .fromContinuation(&self.continuation_b),
+            .fromParameter(&self.parameter_a),
+            .fromParameter(&self.parameter_b),
+            .fromMultipleValues(&self.multiple_values_a),
+            .fromMultipleValues(&self.multiple_values_b),
         };
     }
 };

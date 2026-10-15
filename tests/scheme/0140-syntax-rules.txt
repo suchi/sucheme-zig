@@ -1,0 +1,82 @@
+# スライス 2k: `define-syntax` と `syntax-rules` の基本。テンプレートが導入した識別子は
+# 別名になり、利用側の同じ綴りの束縛に捕まらない(docs/design/frontend.md の衛生性の
+# 検証項目)。`let` は段階3なので、テンプレートの一時変数は `lambda` で束縛する。
+# 1ケースは1行で、各ケースは既定と1ステップごとに GC するモードの2回走る。後者は、
+# マクロが行の中の形式をまたいで生き残ることを確かめる。
+
+# 衛生性の検証項目1: swap! が利用側の tmp を壊さない。
+(define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))) ((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)
+(2 1)
+
+# 最上位の変数に使っても同じである。定義と適用の間に機械が走る。
+(define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))) (define tmp 1) (define y 2) (swap! tmp y) (list tmp y)
+(2 1)
+
+# 衛生性の検証項目2: my-or が利用側の t を壊さない。適用は再帰する。
+(define-syntax my-or (syntax-rules () ((_) #f) ((_ e) e) ((_ e r ...) ((lambda (t) (if t t (my-or r ...))) e)))) ((lambda (t) (my-or #f t)) 5)
+5
+
+(define-syntax my-or (syntax-rules () ((_) #f) ((_ e) e) ((_ e r ...) ((lambda (t) (if t t (my-or r ...))) e)))) (list (my-or) (my-or #f) (my-or #f #f 7 8))
+(#f #f 7)
+
+# 衛生性の検証項目3: 利用側が if を再束縛していても、テンプレートの if は本来の意味を保つ。
+(define-syntax my-or (syntax-rules () ((_) #f) ((_ e) e) ((_ e r ...) ((lambda (t) (if t t (my-or r ...))) e)))) ((lambda (if) (my-or #f 3)) list)
+3
+
+# テンプレートの自由な識別子は、定義した場所の意味を指す(参照透明性)。
+(define-syntax first-of (syntax-rules () ((_ l) (car l)))) ((lambda (car) (first-of '(1 2))) cdr)
+1
+
+# 規則のパターンの先頭は照合に関与しない。キーワードの綴りでも `_` でもよい。
+(define-syntax two (syntax-rules () ((two a b) (list b a)))) (two 1 2)
+(2 1)
+
+(define-syntax pick (syntax-rules () ((_ a _) a))) (pick 1 2)
+1
+
+# 規則は左から順に試す。
+(define-syntax count-args (syntax-rules () ((_) 0) ((_ a) 1) ((_ a b) 2))) (list (count-args) (count-args x) (count-args x y))
+(0 1 2)
+
+# 省略記号は0回以上の繰り返しに照合し、テンプレートで同じ回数だけ展開する。
+(define-syntax my-list (syntax-rules () ((_ x ...) (list x ...)))) (list (my-list) (my-list 1 2 3))
+(() (1 2 3))
+
+(define-syntax pairs (syntax-rules () ((_ (a b) ...) '((a ...) (b ...))))) (pairs (1 2) (3 4) (5 6))
+((1 3 5) (2 4 6))
+
+# 深さ0のパターン変数は、省略記号の内側に置くと複製される(docs/design/frontend.md の深さの規則)。
+(define-syntax add-prefix (syntax-rules () ((_ p (x ...)) '((p x) ...)))) (add-prefix a (1 2 3))
+((a 1) (a 2) (a 3))
+
+# 省略記号の後に、固定の要素を続けるテンプレートも書ける。
+(define-syntax wrap (syntax-rules () ((_ x ...) '(start x ... end)))) (wrap 1 2)
+(start 1 2 end)
+
+# パターンの残りの全体に照合する変数。
+(define-syntax rest-of (syntax-rules () ((_ . args) 'args))) (rest-of 1 2)
+(1 2)
+
+# quote の中のテンプレートの識別子は、元のシンボルに戻る。
+(define-syntax q (syntax-rules () ((_ x) '(x tmp)))) (q a)
+(a tmp)
+
+(define-syntax q (syntax-rules () ((_) 'tmp))) (eq? (q) 'tmp)
+#t
+
+# リテラルは意味の一致で照合する。束縛の無い else どうしは同じ識別子である。
+(define-syntax g (syntax-rules (else) ((_ else) 'literal) ((_ x) 'other))) (list (g else) (g 1) ((lambda (else) (g else)) 1))
+(literal other other)
+
+# 衛生性の検証項目8: 別々の字句環境にある同名の局所束縛は、リテラルに一致しない。
+# 定義側の x と、内側の lambda の x は、それぞれの場所からの字句アドレスが同じになる。
+((lambda (x) (define-syntax m (syntax-rules (x) ((_ x) 'literal) ((_ y) 'other))) (list (m x) ((lambda (x) (m x)) 2))) 1)
+(literal other)
+
+# 仮引数が _ を束縛していれば、パターンの _ はパターン変数である。
+((lambda (_) (define-syntax m (syntax-rules () ((m _) _))) (m 5)) 0)
+5
+
+# 仮引数が ... を束縛していれば、パターンの ... もパターン変数で、繰り返しを表さない。
+((lambda (...) (define-syntax m (syntax-rules () ((_ a ...) (list a ...)))) (m 1 2 3)) 0)
+error: bad syntax: no rule of m matches the form

@@ -1,0 +1,125 @@
+# スライス 2h: レコードの基盤。段階3の define-record-type の展開先が使う低水準の
+# プリミティブで、型を作り、フィールドの値を並べてレコードを作り、型を判定し、
+# 添字でフィールドを読み書きする。名前は % で始める(src/prim/record.zig)。
+
+(define point (%make-record-type 'point 2)) (%record-ref (%make-record point 1 2) point 1)
+2
+
+(define point (%make-record-type 'point 2)) (define p (%make-record point 1 2)) (%record-ref p point 0)
+1
+
+# 書いた値を読み戻せ、ほかのフィールドは変わらない。
+(define point (%make-record-type 'point 2)) (define p (%make-record point 1 2)) (%record-set! p point 0 'x) (list (%record-ref p point 0) (%record-ref p point 1))
+(x 2)
+
+# 書き込みは、そのレコードだけを変える。
+(define point (%make-record-type 'point 1)) (define p (%make-record point 1)) (define q (%make-record point 1)) (%record-set! p point 0 2) (list (%record-ref p point 0) (%record-ref q point 0))
+(2 1)
+
+# フィールドには何でも入る。
+(define box (%make-record-type 'box 1)) (define b (%make-record box (list 1 "s" #\c))) (%record-ref b box 0)
+(1 "s" #\c)
+
+(define box (%make-record-type 'box 1)) (define b (%make-record box (%make-record box 5))) (%record-ref (%record-ref b box 0) box 0)
+5
+
+(define empty (%make-record-type 'empty 0)) (%record? (%make-record empty) empty)
+#t
+
+# 型の判定。名前が同じでも、別々に作った型は別の型である。
+(define a (%make-record-type 'thing 1)) (define b (%make-record-type 'thing 1)) (define x (%make-record a 0)) (list (%record? x a) (%record? x b))
+(#t #f)
+
+(define a (%make-record-type 'thing 1)) (list (%record? 1 a) (%record? '(1) a) (%record? (vector 1) a) (%record? a a))
+(#f #f #f #f)
+
+# 外部表現。R7RS は決めていないので、型の名前を添えた読めない表記で書く。
+(define point (%make-record-type 'point 2)) point
+#<record-type point>
+
+(define point (%make-record-type 'point 2)) (%make-record point 1 2)
+#<record point>
+
+(define point (%make-record-type 'point 1)) (list (%make-record point 1))
+(#<record point>)
+
+# レコードは手続きではない。
+(define point (%make-record-type 'point 1)) (procedure? (%make-record point 1))
+#f
+
+(define point (%make-record-type 'point 1)) (procedure? point)
+#f
+
+(define point (%make-record-type 'point 1)) ((%make-record point 1))
+error: not a procedure
+
+# 同一性で比べる。equal? も中を見ない。
+(define point (%make-record-type 'point 1)) (define p (%make-record point 1)) (list (eqv? p p) (eqv? p (%make-record point 1)) (equal? p (%make-record point 1)) (eq? point point))
+(#t #f #f #t)
+
+# 別の型のレコードを読み書きすると型エラー。
+(define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-ref (%make-record a 1) b 0)
+error: wrong type of argument to %record-ref #<record a> #<record-type b> 0
+
+(define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-set! (%make-record a 1) b 0 2)
+error: wrong type of argument to %record-set! #<record a> #<record-type b> 0 2
+
+# 型の誤りは、添字の範囲の誤りより先に報告する。
+(define a (%make-record-type 'a 1)) (define b (%make-record-type 'b 1)) (%record-ref (%make-record a 1) b 5)
+error: wrong type of argument to %record-ref #<record a> #<record-type b> 5
+
+# レコードでないものも型エラー。型でないものを型として渡しても型エラー。
+(define a (%make-record-type 'a 1)) (%record-ref (vector 1) a 0)
+error: wrong type of argument to %record-ref #(1) #<record-type a> 0
+
+(define a (%make-record-type 'a 1)) (%record-ref a a 0)
+error: wrong type of argument to %record-ref #<record-type a> #<record-type a> 0
+
+(define a (%make-record-type 'a 1)) (%record-ref (%make-record a 1) 'a 0)
+error: wrong type of argument to %record-ref #<record a> a 0
+
+(define a (%make-record-type 'a 1)) (%record? 1 'a)
+error: wrong type of argument to %record? 1 a
+
+(define a (%make-record-type 'a 1)) (%record-ref (%make-record a 1) a 'x)
+error: wrong type of argument to %record-ref #<record a> #<record-type a> x
+
+# 添字の範囲外は範囲エラー。個数ちょうどと、負の数。
+(define a (%make-record-type 'a 2)) (%record-ref (%make-record a 1 2) a 2)
+error: argument out of range in %record-ref #<record a> #<record-type a> 2
+
+(define a (%make-record-type 'a 2)) (%record-ref (%make-record a 1 2) a -1)
+error: argument out of range in %record-ref #<record a> #<record-type a> -1
+
+(define a (%make-record-type 'a 2)) (%record-set! (%make-record a 1 2) a 2 0)
+error: argument out of range in %record-set! #<record a> #<record-type a> 2 0
+
+(define a (%make-record-type 'a 0)) (%record-ref (%make-record a) a 0)
+error: argument out of range in %record-ref #<record a> #<record-type a> 0
+
+# 生成子は、型のフィールドの数だけ値を受け取る。
+(define a (%make-record-type 'a 2)) (%make-record a 1)
+error: wrong number of arguments to %make-record #<record-type a> 1
+
+(define a (%make-record-type 'a 2)) (%make-record a 1 2 3)
+error: wrong number of arguments to %make-record #<record-type a> 1 2 3
+
+(%make-record 'a 1)
+error: wrong type of argument to %make-record a 1
+
+(%make-record-type "a" 1)
+error: wrong type of argument to %make-record-type "a" 1
+
+(%make-record-type 'a -1)
+error: argument out of range in %make-record-type a -1
+
+(%make-record-type 'a)
+error: wrong number of arguments to %make-record-type a
+
+# 多くの GC を経ても、レコードとその型とフィールドは残る。到達しなくなったレコードが
+# 回収されることは、heap.zig の単体テストが固定する(このケースの規模は上限に届かない)。
+(define cell (%make-record-type 'cell 2)) (define (build n acc) (if (= n 0) acc (build (- n 1) (%make-record cell n acc)))) (define (sum r acc) (if (%record? r cell) (sum (%record-ref r cell 1) (+ acc (%record-ref r cell 0))) acc)) (sum (build 2000 '()) 0)
+2001000
+
+(define cell (%make-record-type 'cell 1)) (define (spin n r) (if (= n 0) (%record-ref r cell 0) (spin (- n 1) (%make-record cell n)))) (spin 30000 (%make-record cell 0))
+1

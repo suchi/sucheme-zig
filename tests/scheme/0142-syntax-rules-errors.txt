@@ -1,0 +1,81 @@
+# スライス 2k と 2l: syntax-rules の誤りは、定義の時点で報告する。
+
+(define-syntax m (syntax-rules () ((_ x) 1))) (m)
+error: bad syntax: no rule of m matches the form
+
+(define-syntax m (syntax-rules () ((_ a a) 1)))
+error: bad syntax-rules: duplicate pattern variable: a
+
+(define-syntax m (syntax-rules () ((_ a ...) a)))
+error: bad syntax-rules: a needs as many ellipses in the template as in its pattern
+
+(define-syntax m (syntax-rules () ((_ a) (a ...))))
+error: bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed
+
+(define-syntax m (syntax-rules () ((_ ... a) 1)))
+error: bad syntax-rules: an ellipsis must follow a pattern
+
+(define-syntax m (syntax-rules () ((_ a) ...)))
+error: bad syntax-rules: an ellipsis must follow a template
+
+(define-syntax m (syntax-rules () ((_ a) (list ...))))
+error: bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed
+
+(define-syntax m (syntax-rules () ((_ (a ...) (b ...)) '((a b) ...)))) (m (1 2) (3))
+error: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together
+
+(define-syntax m (syntax-rules () (_ 1)))
+error: bad syntax-rules: a pattern must be a list that starts with an identifier
+
+(define-syntax m (syntax-rules () ((1) 1)))
+error: bad syntax-rules: a pattern must be a list that starts with an identifier
+
+(define-syntax m (syntax-rules () ((_))))
+error: bad syntax-rules: a rule must be (pattern template)
+
+(define-syntax m (syntax-rules (1) ((_) 1)))
+error: bad syntax-rules: a literal must be an identifier
+
+(define-syntax m (syntax-rules))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)
+
+(define-syntax m 1)
+error: bad define-syntax: the transformer must be a syntax-rules form
+
+(define-syntax 1 (syntax-rules ()))
+error: bad define-syntax: the keyword must be an identifier
+
+(define-syntax m)
+error: bad define-syntax: expected (define-syntax keyword transformer)
+
+(syntax-rules () ((_) 1))
+error: bad syntax-rules: it is only allowed as the transformer of a syntax definition
+
+# 2l が入れる形。
+(define-syntax m (syntax-rules () ((_ a ...) (a ... ...))))
+error: bad syntax-rules: an ellipsis must follow a template with a pattern variable that an ellipsis followed
+
+(define-syntax m (syntax-rules () ((_ a ... b ...) 1)))
+error: bad syntax-rules: a list pattern can have only one ellipsis
+
+(define-syntax m (syntax-rules () ((_ a ... ...) 1)))
+error: bad syntax-rules: a list pattern can have only one ellipsis
+
+# 内側の変数が深さ2なのに、テンプレートの省略記号が1つだけ。
+(define-syntax m (syntax-rules () ((_ (a ...) ...) '(a ...))))
+error: bad syntax-rules: a needs as many ellipses in the template as in its pattern
+
+(define-syntax m (syntax-rules () ((_ #(a ... b ...)) 1)))
+error: bad syntax-rules: a list pattern can have only one ellipsis
+
+(define-syntax m (syntax-rules () ((_ #(a ...)) #(a))))
+error: bad syntax-rules: a needs as many ellipses in the template as in its pattern
+
+(define-syntax m (syntax-rules () ((_ a) #(... a))))
+error: bad syntax-rules: an ellipsis must follow a template
+
+(define-syntax m (syntax-rules :::))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)
+
+(define-syntax m (syntax-rules ::: ::: ((_) 1)))
+error: bad syntax-rules: expected (syntax-rules (literal ...) rule ...)

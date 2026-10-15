@@ -374,7 +374,7 @@ const slow_workflow = ".github/workflows/full.yml";
 /// それが走らせるものを落とすことになる。
 ///
 /// `zig build dist` は規模を試すテストではないが、表の CI の列が「PR を ready に
-/// するとき、`main` への push、手動」を含むので、同じ形で名指しする。落とすと、
+/// するとき、手動、タグの push」を含むので、同じ形で名指しする。落とすと、
 /// リリースの成果物の組み立てが、タグを打つまでどこでも走らなくなる。
 const slow_commands = [_][]const u8{
     "zig build test -Dslow=true",
@@ -432,8 +432,11 @@ fn checkCiRunsTheTable(
     // コミットごとのワークフローが実際に持つキーと値。ワークフローが走るかどうかを
     // 決めるものを、閉じた集合に固定できるようにする。
     var seen: std.ArrayList(struct { key: []const u8, value: []const u8 }) = .empty;
+    // 層2のワークフローが持つキーと値。Windows のテストと、層2が走る時機を固定する。
+    var slow_seen: std.ArrayList(struct { key: []const u8, value: []const u8 }) = .empty;
     for (workflows.items) |path| {
         const per_commit = std.mem.eql(u8, path, per_commit_workflow);
+        const is_slow = std.mem.eql(u8, path, slow_workflow);
         const body = read(gpa, io, cwd, rep, path) orelse continue;
         // step 自身のキーが置かれる桁。直近のリスト項目から求める。
         var step_keys_at: ?usize = null;
@@ -493,6 +496,10 @@ fn checkCiRunsTheTable(
                 .key = key,
                 .value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace),
             });
+            if (is_slow) try slow_seen.append(gpa, .{
+                .key = key,
+                .value = std.mem.trim(u8, line[key.len + 1 ..], &std.ascii.whitespace),
+            });
             if (!std.mem.eql(u8, key, "run")) continue;
 
             // 何かを実行するのは step 自身の `run` だけである。`with:` の下に置いた
@@ -531,7 +538,7 @@ fn checkCiRunsTheTable(
                 value = value[1 .. value.len - 1];
             }
             if (per_commit) try run_lines.append(gpa, value);
-            if (std.mem.eql(u8, path, slow_workflow)) try slow_run_lines.append(gpa, value);
+            if (is_slow) try slow_run_lines.append(gpa, value);
         }
     }
 
@@ -555,7 +562,7 @@ fn checkCiRunsTheTable(
         .{ .key = "runs-on", .value = "${{ matrix.os }}" },
         .{ .key = "strategy", .value = "" },
         .{ .key = "matrix", .value = "" },
-        .{ .key = "os", .value = "[ubuntu-latest, windows-latest]" },
+        .{ .key = "os", .value = "[ubuntu-latest]" },
     }) |want| {
         var found = false;
         for (seen.items) |got| {
@@ -611,6 +618,50 @@ fn checkCiRunsTheTable(
         if (!ran) rep.fail(
             "the slow tier's command `{s}` is not run by {s}",
             .{ command, slow_workflow },
+        );
+    }
+
+    // Windows のテストは層2のワークフローの windows ジョブで走る(ADR-0036)。
+    // 移す前は ci.yml の `os` の値が Windows を固定していたが、移したあとは何も
+    // 固定していなかった。ジョブを消す、Linux で走らせる、step を1つ落とす、
+    // 自動の起動を外す、のどれも1箇所の編集で、全コマンドが緑のまま Windows の
+    // テストが走らなくなった。
+    //
+    // 値は、どこか1箇所に現れればよい。`runs-on` は slow と dist の
+    // `ubuntu-latest` もあるので、全部が一致することは求められない。2つのジョブの
+    // `runs-on` を入れ替える編集はこれで見えないが、2箇所の編集を要する。
+    // 綴りの一致なので、windows ジョブを matrix の形(`runs-on: ${{ matrix.os }}` と
+    // `os: [windows-latest]`)に書き換える正当な編集も赤になり、そのときのメッセージは
+    // Windows のテストが走らないと言うが、実際は走る。
+    for ([_]struct { key: []const u8, value: []const u8 }{
+        .{ .key = "pull_request", .value = "" },
+        .{ .key = "types", .value = "[ready_for_review]" },
+        .{ .key = "workflow_dispatch", .value = "" },
+        .{ .key = "runs-on", .value = "windows-latest" },
+    }) |want| {
+        var found = false;
+        for (slow_seen.items) |got| {
+            if (std.mem.eql(u8, got.key, want.key) and std.mem.eql(u8, got.value, want.value)) found = true;
+        }
+        if (!found) rep.fail(
+            "{s} has no `{s}: {s}`, so the Windows tests or the slow tier do not run when AGENTS.md says they do",
+            .{ slow_workflow, want.key, want.value },
+        );
+    }
+
+    // windows ジョブは ci.yml の test ジョブと同じ step を走らせる(ADR-0036)。
+    // `runsCommand` でなく綴りの完全な一致で比べる。接尾辞を受理すると、
+    // `--test-timeout` を落とした step も同じと読む。ci.yml に Linux だけで
+    // 走らせる step を足すときは、ここで赤になる。そのときは、Windows で走らせない
+    // ことの意味を決めてから、この照合を変える。
+    for (run_lines.items) |line| {
+        var ran = false;
+        for (slow_run_lines.items) |slow| {
+            if (std.mem.eql(u8, slow, line)) ran = true;
+        }
+        if (!ran) rep.fail(
+            "{s} runs `{s}`, and {s} does not; its windows job runs the same steps as the per-commit job",
+            .{ per_commit_workflow, line, slow_workflow },
         );
     }
 
@@ -816,7 +867,7 @@ fn isForbiddenInPerCommit(key: []const u8) bool {
 /// The job names this repository's workflows define.
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
-const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist", "release" };
+const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist", "release", "windows" };
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///

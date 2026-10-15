@@ -30,7 +30,7 @@
 2432902008176640000
 
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 21)
-error: integer overflow in *
+error: integer overflow in * 21 2432902008176640000
 
 (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)
 55
@@ -53,7 +53,7 @@ error: integer overflow in *
 error: unbound variable: g
 
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 100)
-error: integer overflow in *
+error: integer overflow in * 21 2432902008176640000
 
 (define (f))
 error: bad define: expected (define (name parameter ...) body ...)
@@ -76,11 +76,12 @@ error: bad define: a parameter must be an identifier
 (define (f x x) x)
 error: bad define: duplicate parameter: x
 
-(define (f if) 1)
-error: bad define: if is a syntactic keyword and cannot be a parameter
+(define (f if) (if 1 2)) (f +)
+3
 
-(define (if x) 1)
-error: bad define: if is a syntactic keyword and cannot be redefined
+# 略記でも同じく、特殊形式の名前に手続きを定義できる(スライス 2j)。
+(define (if x) x) (if 7)
+7
 
 (+ 1 (define (f) 1))
 error: bad define: a definition is only allowed at the top level or at the start of a body

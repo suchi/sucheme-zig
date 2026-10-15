@@ -8,13 +8,22 @@
 //! | `--version` | 名前とバージョンを stdout に出す | 0 |
 //! | `--help`, `-h` | 使い方を stdout に出す | 0 |
 //! | 未知のオプション(2文字以上で `-` から始まるもの) | stderr にその名前を出す | 64 |
-//! | なし | stdin が尽きるまで REPL を走らせる | 0 |
+//! | `-I` が最後の引数で、ディレクトリが続かない | stderr にそのオプションの名前を出す | 64 |
+//! | なし、または `-I <dir>` だけ(繰り返せる) | stdin が尽きるまで REPL を走らせる | 0 |
 //! | `-` だけ | オプションでなく名前として扱う | 69 |
 //! | それ以外 | ファイルの実行は未実装だと伝える | 69 |
 //!
 //! 要求を決める最初の引数が優先される。このため `--version --bogus` はバージョンを
 //! 出し、`--bogus --version` は未知のオプションとしてその名前を出す。未知の
 //! オプションも要求を決める。それ以降の引数は調べない。
+//!
+//! `-I <dir>` は、ライブラリのファイルの探索ルートを足す。`import` が名指すライブラリは、
+//! 登録表に無ければ、探索ルートの配下の `foo/bar.sld`(`(foo bar)` の場合)から読まれる。
+//! 探索ルートは、作業ディレクトリが先頭で、`-I` の指定が書いた順に続く。ファイルは、
+//! 先に持っているルートのものが使われる。`-I` の次の引数は、`-` で始まっていても
+//! ディレクトリの名前である。`-I<dir>` の続けた形は無く、未知のオプションになる。
+//! 開けないルートは、何も持たないものとして読み飛ばす。環境変数は読まない。
+//! ルートの配下のリンクは辿らない。ルートそのものはリンクでもよい。
 //!
 //! 診断は stderr に出し、この段階で応えられない要求は非ゼロで終了する。
 //! `sucheme prog.scm && echo ok` が、プログラムを実行しないまま ok を出すことを
@@ -23,7 +32,8 @@
 //! REPL は、プロンプト `> ` と各結果を stdout に、エラーを stderr に
 //! `error: ` と `unbound variable: foo` のようなメッセージとして書く。エラーが
 //! 終わらせるのはその式の評価であり、REPL ではない。`;` から行末までは行コメント
-//! で、コメントだけの行は何も出力しない。
+//! で、コメントだけの行は何も出力しない。式が複数の値を返したときは、1行に1つずつ書く。
+//! 0個なら何も書かず、未規定値の要素も、最上位の未規定値と同じく書かない。
 //!
 //! 閉じていない式(リストやベクタの途中、`'` の直後、ドットの直後、閉じていない
 //! 文字列)で終わる行は、継続行になる(ADR-0014)。継続行のプロンプトは
@@ -74,6 +84,8 @@ pub const Request = union(enum) {
     /// 診断がその名前を出せるように運ぶ。「未実装」と「打ち間違い」は別の
     /// 失敗であり、1つの状態では区別できない。
     unknown_option: []const u8,
+    /// An option that needs a directory after it and has none.
+    missing_argument: []const u8,
 };
 
 /// Entry layer.
@@ -113,8 +125,10 @@ pub fn main(init: std.process.Init) !void {
         },
         .help => {
             try out.print(
-                "{s} {s}\n\nUsage: {s} [--version] [--help|-h]\n\n" ++
+                "{s} {s}\n\nUsage: {s} [--version] [--help|-h] [-I <dir>]...\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
+                    "-I <dir> adds a directory to search for the files of libraries; the working\n" ++
+                    "directory is searched first.\n" ++
                     "Integers, booleans, lists, variables, procedures and arithmetic only for now;\n" ++
                     "see docs/roadmap.md.\n",
                 .{ sucheme.name, sucheme.version, sucheme.name },
@@ -124,7 +138,8 @@ pub fn main(init: std.process.Init) !void {
         .repl => {
             var in_buf: [max_line]u8 = undefined;
             var stdin = std.Io.File.Reader.initStreaming(.stdin(), io, &in_buf);
-            try repl(init.gpa, &stdin.interface, out, err);
+            const roots = try searchRoots(init.arena.allocator(), rest);
+            try repl(init.gpa, .{ .io = io, .roots = roots }, &stdin.interface, out, err);
         },
         .not_implemented => {
             try err.print(
@@ -134,6 +149,12 @@ pub fn main(init: std.process.Init) !void {
             );
             try err.flush();
             std.process.exit(exit_not_implemented);
+        },
+        .missing_argument => |opt| {
+            try err.print("{s}: option {s} needs a directory\n", .{ sucheme.name, opt });
+            try err.print("Run with --help for the options available now.\n", .{});
+            try err.flush();
+            std.process.exit(exit_usage);
         },
         .unknown_option => |opt| {
             try err.print("{s}: unknown option {s}\n", .{ sucheme.name, opt });
@@ -152,17 +173,45 @@ pub const exit_not_implemented: u8 = 69;
 /// 64 は sysexits.h の EX_USAGE で、ここで慣習に最も近いものである。
 pub const exit_usage: u8 = 64;
 
+/// The option that adds a directory to search for the files of libraries.
+pub const include_option = "-I";
+
 /// Classifies the arguments after the program name.
 pub fn classify(args: []const []const u8) Request {
-    for (args) |arg| {
+    var named = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--version")) return .version;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return .help;
+        if (std.mem.eql(u8, arg, include_option)) {
+            // 次の引数は、`-` で始まっていても、ディレクトリの名前である。
+            if (i + 1 == args.len) return .{ .missing_argument = arg };
+            i += 1;
+            continue;
+        }
         // 先頭が `-` で一致しないものは、ファイル名でなく打ち間違いである。
         // ただし `-` だけは別で、慣習では標準入力を指す。これは名前の側に
         // 落ち、段階1で意味が与えられる。
         if (arg.len > 1 and arg[0] == '-') return .{ .unknown_option = arg };
+        named = true;
     }
-    return if (args.len == 0) .repl else .not_implemented;
+    return if (named) .not_implemented else .repl;
+}
+
+/// The directories the files of libraries are searched in: the working directory,
+/// then each `-I` of `args`, in order.
+/// `args` は `classify` が REPL と判定したものである。
+pub fn searchRoots(arena: std.mem.Allocator, args: []const []const u8) error{OutOfMemory}![]const []const u8 {
+    var roots: std.ArrayList([]const u8) = .empty;
+    try roots.append(arena, ".");
+    var i: usize = 0;
+    while (i + 1 < args.len) : (i += 1) {
+        if (!std.mem.eql(u8, args[i], include_option)) continue;
+        i += 1;
+        try roots.append(arena, args[i]);
+    }
+    return roots.items;
 }
 
 /// The size of the REPL's line buffer, newline included.
@@ -183,11 +232,11 @@ pub const continuation_prompt = "... ";
 /// 続きを読み、完結したところで評価する。各回には、評価中に要るものためのまっさらな
 /// アリーナを使う。リーダが作るものと定義が保持するものはそこに入らず、
 /// インタプリタの中でセッションの終わりまで生きる。
-pub fn repl(gpa: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
+pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var interp: sucheme.Interpreter = undefined;
-    try interp.init(gpa);
+    try interp.initWithFiles(gpa, .{}, files);
     defer interp.deinit();
     // 継続行の保留。エントリ層は確保を起動と終了に限るので、固定長にする。
     var pending: [max_line]u8 = undefined;
@@ -275,12 +324,54 @@ test "classify prefers a recognised option over a later unknown one" {
     try std.testing.expect(classify(&.{ "--version", "--bogus" }) == .version);
 }
 
+test "classify takes -I and the directory after it as the search roots, not as a request" {
+    try std.testing.expect(classify(&.{ "-I", "lib" }) == .repl);
+    try std.testing.expect(classify(&.{ "-I", "a", "-I", "b" }) == .repl);
+    // 次の引数は、`-` で始まっていても、ディレクトリの名前である。
+    try std.testing.expect(classify(&.{ "-I", "--version" }) == .repl);
+    try std.testing.expect(classify(&.{ "-I", "-x" }) == .repl);
+    // 名前が続けば、ファイルの実行を求めている。
+    try std.testing.expect(classify(&.{ "-I", "lib", "prog.scm" }) == .not_implemented);
+    try std.testing.expect(classify(&.{ "prog.scm", "-I", "lib" }) == .not_implemented);
+    // 要求を決める最初の引数が優先される。
+    try std.testing.expect(classify(&.{ "-I", "lib", "--version" }) == .version);
+    try std.testing.expect(classify(&.{ "-I", "lib", "-h" }) == .help);
+    const unknown = classify(&.{ "-I", "lib", "--bogus" });
+    try std.testing.expectEqualStrings("--bogus", unknown.unknown_option);
+    try std.testing.expect(classify(&.{ "--version", "-I" }) == .version);
+}
+
+test "classify reports -I without a directory, and does not accept the attached form" {
+    const last = classify(&.{"-I"});
+    try std.testing.expectEqualStrings("-I", last.missing_argument);
+    try std.testing.expectEqualStrings("-I", classify(&.{ "-I", "a", "-I" }).missing_argument);
+    // `-I` の次の引数が、ディレクトリとして使われるので、`-I -I` は欠けていない。
+    try std.testing.expect(classify(&.{ "-I", "-I" }) == .repl);
+    // 続けた形は、未知のオプションである。
+    try std.testing.expectEqualStrings("-Ilib", classify(&.{"-Ilib"}).unknown_option);
+}
+
+test "searchRoots puts the working directory first, then each -I in order" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const none = try searchRoots(arena.allocator(), &.{});
+    try std.testing.expectEqual(1, none.len);
+    try std.testing.expectEqualStrings(".", none[0]);
+    const roots = try searchRoots(arena.allocator(), &.{ "-I", "b", "-I", "a", "-I", "b" });
+    try std.testing.expectEqual(4, roots.len);
+    for ([_][]const u8{ ".", "b", "a", "b" }, roots) |want, have| try std.testing.expectEqualStrings(want, have);
+    // ディレクトリの名前が `-I` でも、2つめの `-I` は新しい指定ではない。
+    const odd = try searchRoots(arena.allocator(), &.{ "-I", "-I", "x" });
+    try std.testing.expectEqual(2, odd.len);
+    try std.testing.expectEqualStrings("-I", odd[1]);
+}
+
 /// Runs the REPL over `input` and returns what it wrote to stdout and stderr.
 fn replOver(input: []const u8, out_buf: []u8, err_buf: []u8) !struct { out: []const u8, err: []const u8 } {
     var in: std.Io.Reader = .fixed(input);
     var out: std.Io.Writer = .fixed(out_buf);
     var err: std.Io.Writer = .fixed(err_buf);
-    try repl(std.testing.allocator, &in, &out, &err);
+    try repl(std.testing.allocator, null, &in, &out, &err);
     return .{ .out = out.buffered(), .err = err.buffered() };
 }
 
@@ -555,7 +646,7 @@ test "repl drops what it kept when a line is longer than it reads" {
     var in = src.limited(.unlimited, &in_buf);
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, &in.interface, &out, &err);
+    try repl(std.testing.allocator, null, &in.interface, &out, &err);
     // 保留の "(" は捨てられるので、7 は新しい入力として評価され、終わりでも報告されない。
     try std.testing.expectEqualStrings("> ... > 7\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: the line does not fit in 65536 bytes, newline included\n", err.buffered());
@@ -577,7 +668,7 @@ test "repl skips a line longer than it reads and goes on" {
     var in = src.limited(.unlimited, &in_buf);
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, &in.interface, &out, &err);
+    try repl(std.testing.allocator, null, &in.interface, &out, &err);
     try std.testing.expectEqualStrings("> > 7\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: the line does not fit in 65536 bytes, newline included\n", err.buffered());
 }
@@ -595,7 +686,7 @@ test "repl reads the longest line that fits, newline included" {
     var in = src.limited(.unlimited, &in_buf);
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, &in.interface, &out, &err);
+    try repl(std.testing.allocator, null, &in.interface, &out, &err);
     try std.testing.expectEqualStrings("> 5\n> \n", out.buffered());
     try std.testing.expectEqualStrings("", err.buffered());
 }
@@ -606,4 +697,19 @@ test "repl keeps a definition for the lines after it" {
     const r = try replOver("(define x 40)\n(+ x 2)\n(+ y 1)\n(define y 1)\n(+ x y)\n", &ob, &eb);
     try std.testing.expectEqualStrings("> > 42\n> > > 41\n> \n", r.out);
     try std.testing.expectEqualStrings("error: unbound variable: y\n", r.err);
+}
+
+test "repl imports a library from a file beneath the roots it is given, and reports one that is not there" {
+    var tree: sucheme.resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("foo/bar.sld", "(define-library (foo bar) (export f) (import (sucheme core)) (begin (define (f) 7)))");
+    var input: std.Io.Reader = .fixed("(import (foo bar))\n(f)\n(import (foo baz))\n(f)\n");
+    var ob: [128]u8 = undefined;
+    var eb: [128]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&ob);
+    var err: std.Io.Writer = .fixed(&eb);
+    try repl(std.testing.allocator, .{ .io = std.testing.io, .roots = &tree.roots }, &input, &out, &err);
+    try std.testing.expectEqualStrings("> > 7\n> > 7\n> \n", out.buffered());
+    try std.testing.expectEqualStrings("error: unknown library: (foo baz)\n", err.buffered());
 }

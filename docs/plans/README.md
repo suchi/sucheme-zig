@@ -18,6 +18,7 @@
 | [0012-schedule-estimates-and-actuals.md](0012-schedule-estimates-and-actuals.md) | 完了時期の見積りと実績、段階ごとの補正の記録 |
 | [0013-stage1-completion.md](0013-stage1-completion.md) | 段階1の完了の手続き(`current_stage`、実績の記録、日付の訂正) |
 | [0014-phase2-core-language.md](0014-phase2-core-language.md) | 段階2(コア言語の完成)のスライスへの分割と実装計画 |
+| [0015-ci-minutes-reduction.md](0015-ci-minutes-reduction.md) | GitHub Actions の実行分数を抑える運用と、ワークフローの変更案 |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 

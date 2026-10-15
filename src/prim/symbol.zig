@@ -13,7 +13,7 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "symbol?", .min_args = 1, .max_args = 1, .call = &isSymbol },
+    .{ .name = "symbol?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isSymbol } },
 };
 
 /// `(symbol? obj)`: true of symbols only (R7RS 6.5).

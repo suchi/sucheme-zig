@@ -1,0 +1,72 @@
+# スライス 2e: 完全な call/cc(R7RS 6.10)。継続を値として捕まえ、何度でも起動できる。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。前の行で捕捉した
+# 継続を後の行で起動する場合は、src/sucheme.zig の単体テストが確かめる。
+
+# 継続で脱出すると、残りの計算(ここでは (+ 1 ...))は捨てられる。
+(call/cc (lambda (k) (+ 1 (k 42))))
+42
+
+(call-with-current-continuation (lambda (k) (+ 1 (k 42))))
+42
+
+# 継続を呼ばずに戻れば、その値が call/cc の値である。
+(+ 1 (call/cc (lambda (k) 2)))
+3
+
+# 継続は手続きで、読めない表記で書かれる。
+(call/cc procedure?)
+#t
+
+(call/cc (lambda (k) (list k)))
+(#<continuation>)
+
+(call/cc (lambda (k) (eq? k k)))
+#t
+
+# R7RS 6.10 の例: 継続で、リストの走査から脱出する。let の代わりに lambda を使う。
+(define (list-length obj) (call/cc (lambda (return) ((lambda (r) (set! r (lambda (obj) (if (null? obj) 0 (if (pair? obj) (+ (r (cdr obj)) 1) (return #f))))) (r obj)) #f)))) (list (list-length '(1 2 3 4)) (list-length '(a b . c)))
+(4 #f)
+
+# 多重起動: 引数の評価の途中で捕捉した継続を、何度も起動する。捕捉の前に評価した引数は
+# 捕捉の時点の値のままで、後ろの引数は起動のたびに評価し直す。
+(define k #f) (define n 0) (define (next) (set! n (+ n 1)) n) (define results '()) (define (keep x) (set! results (cons x results)) (if (< (length results) 3) (k (length results)) results)) (keep (list (next) (call/cc (lambda (c) (set! k c) 0)) (next)))
+((1 2 4) (1 1 3) (1 0 2))
+
+# 同じ行の後ろの式から起動しても、走るのは捕捉した式の残りだけで、起動した式の値は
+# その残りの値になる。行の残りの式は、その後に続けて走る。
+(define k #f) (define m 0) (+ 100 (call/cc (lambda (c) (set! k c) 0))) (if (= m 0) (begin (set! m 1) (k 5)) 'again) 'third
+100
+105
+third
+
+# ジェネレータ: 呼び出し側と生成側の2つの継続を行き来して、リストの要素を1つずつ取り出す。
+# 尽きたあとは done を返し続ける。
+(define (make-gen lst) (define return #f) (define resume-point #f) (define (walk l) (if (pair? l) (begin (call/cc (lambda (resume) (set! resume-point resume) (return (car l)))) (walk (cdr l))) (return 'done))) (lambda () (call/cc (lambda (r) (set! return r) (if resume-point (resume-point #f) (walk lst)))))) (define g (make-gen '(a b c))) (list (g) (g) (g) (g) (g))
+(a b c done done)
+
+# 継続は任意個の値を取る(スライス 2f)。複数値の振る舞いは 0090 にある。
+(call/cc (lambda (k) (k 1 2)))
+1
+2
+
+(call/cc (lambda (k) (k)))
+<no output>
+
+(call/cc 5)
+error: wrong type of argument to call/cc 5
+
+(call/cc)
+error: wrong number of arguments to call/cc
+
+(call/cc (lambda () 1))
+error: wrong number of arguments: expected 0, got 1
+
+# apply で呼んでも、ハンドラとして呼ばれても、継続である。
+(+ 1 (call/cc (lambda (k) (apply k '(6)))))
+7
+
+(call/cc (lambda (k) (with-exception-handler k (lambda () (raise 9)))))
+9
+
+(call/cc (lambda (k) (with-exception-handler (lambda (c) (k (error-object-message c))) (lambda () (car 5)))))
+"wrong type of argument to car"

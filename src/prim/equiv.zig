@@ -13,9 +13,9 @@ const PrimitiveError = value.PrimitiveError;
 pub const Error = PrimitiveError;
 
 pub const primitives = [_]Primitive{
-    .{ .name = "eq?", .min_args = 2, .max_args = 2, .call = &eq },
-    .{ .name = "eqv?", .min_args = 2, .max_args = 2, .call = &eqv },
-    .{ .name = "equal?", .min_args = 2, .max_args = 2, .call = &equal },
+    .{ .name = "eq?", .min_args = 2, .max_args = 2, .body = .{ .pure = &eq } },
+    .{ .name = "eqv?", .min_args = 2, .max_args = 2, .body = .{ .pure = &eqv } },
+    .{ .name = "equal?", .min_args = 2, .max_args = 2, .body = .{ .pure = &equal } },
 };
 
 /// `(eq? obj1 obj2)` (R7RS 6.1).
@@ -102,7 +102,7 @@ const Stack = struct {
 /// 段階3の最初のスライスで入れる(docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
 ///
 /// 同じペアやベクタの比較は、中を見ずに真とする。`eqv?` が真なら `equal?` も真だからである。
-fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
+pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
     var stack: Stack = .{ .scratch = scratch };
     defer stack.deinit();
     var left = a;
@@ -136,7 +136,7 @@ fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bo
             },
             // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
             // `equal?` が中身を比べるべき種別(バイトベクタなど)を見落とさないようにする。
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character => {
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter => {
                 if (!left.isEqv(right)) return false;
             },
         }

@@ -31,6 +31,9 @@ const Item = union(enum) {
     /// The rest of a vector from element `next` on: a space and that element,
     /// or the closing parenthesis once there are none left.
     elements: Elements,
+    /// The rest of the irritants of a condition: a space and the next one, or
+    /// the closing `>` at the end of the list.
+    irritants: Value,
 
     const Elements = struct { items: []const Value, next: usize };
 };
@@ -82,6 +85,14 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // Why: R7RS は手続きの外部表現を決めていない。多くの処理系は `read` が
             // 受け付けない表記で書き、ここでもそうする。
             .closure => try out.writeAll("#<procedure>"),
+            // 継続も手続きである(R7RS 6.10)。手続きと同じく読めない表記で、種類を書く。
+            .continuation => try out.writeAll("#<continuation>"),
+            // パラメータも手続きである(R7RS 4.2.6)。同じく読めない表記で、種類を書く。
+            .parameter => try out.writeAll("#<parameter>"),
+            // 複数値のオブジェクトは、1個を要求する継続に届くと誤りになるので、データの中には
+            // 入らない。最上位の値は `Interpreter` が1つずつ書く。漏れたときに分かるよう、
+            // それでも書く。
+            .multiple_values => try out.writeAll("#<values>"),
             .primitive => try out.print("#<procedure {s}>", .{x.asPrimitive().?.name}),
             .pair => {
                 const p = x.asPair().?;
@@ -96,9 +107,34 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // これを持つ変数を読むとエラーになるので、プログラムがこれを目にすることは
             // ない。漏れたときに分かるよう、それでも書く。
             .uninitialized => try out.writeAll("#<uninitialized>"),
-            // 条件オブジェクトを値として読むものはまだない。エラーは機械を出て、
-            // 報告される。漏れたときに分かるよう、それでも書く。
-            .condition => try out.writeAll("#<condition>"),
+            // 別名は展開器の中だけにあり、`quote` が元のシンボルに戻すので、機械にも
+            // プログラムにも届かない。展開器のテストが展開の結果を読めるよう、内側の
+            // 識別子を包む、読めない表記で書く。
+            .alias => {
+                try out.writeAll("#<alias ");
+                try stack.append(scratch, .{ .text = ">" });
+                try stack.append(scratch, .{ .value = x.asAlias().?.inner });
+            },
+            // Why: R7RS 5.5 はレコードとその型の外部表現を決めていない。手続きと同じく、
+            // `read` が受け付けない表記で、型の名前を添えて書く。フィールドの値は書かない。
+            .record => try out.print("#<record {s}>", .{symbols.nameOf(x.asRecord().?.record_type.name)}),
+            .record_type => try out.print("#<record-type {s}>", .{symbols.nameOf(x.asRecordType().?.name)}),
+            // Why: 条件オブジェクトはハンドラに渡る値で、書かれうる。R7RS は外部表現を決めて
+            // いないので、手続きと同じく `read` が受け付けない表記で、メッセージと irritant を
+            // 書く。
+            .condition => {
+                const c = x.asCondition().?;
+                try out.writeAll("#<condition ");
+                try stack.append(scratch, .{ .irritants = c.irritants });
+                try stack.append(scratch, .{ .value = c.message });
+            },
+        },
+        .irritants => |rest| if (rest.asPair()) |p| {
+            try out.writeByte(' ');
+            try stack.append(scratch, .{ .irritants = p.cdr });
+            try stack.append(scratch, .{ .value = p.car });
+        } else {
+            try out.writeByte('>');
         },
         .rest => |tail| switch (tail.kind()) {
             .empty_list => try out.writeByte(')'),
@@ -200,12 +236,69 @@ test "write shows an uninitialized marker that leaked" {
     try std.testing.expectEqualStrings("#<uninitialized>", try f.written(&buf, .uninitialized_value));
 }
 
-test "write shows a condition that leaked" {
+test "write shows a condition by its message" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    var c: value_mod.Condition = .{ .message = "boom" };
-    try std.testing.expectEqualStrings("#<condition>", try f.written(&buf, .fromCondition(&c)));
+    var bytes = "boom".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .empty_list_value };
+    try std.testing.expectEqualStrings("#<condition \"boom\">", try f.written(&buf, .fromCondition(&c)));
+    try std.testing.expectEqualStrings("#<condition boom>", try f.displayed(&buf, .fromCondition(&c)));
+}
+
+test "write shows a condition with its message and its irritants" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var bytes = "bad".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    const irritants = try f.list(&.{ .fromFixnum(1), try f.string("two"), try f.list(&.{try f.sym("a")}, .empty_list_value) }, .empty_list_value);
+    var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = irritants };
+    try std.testing.expectEqualStrings("#<condition \"bad\" 1 \"two\" (a)>", try f.written(&buf, .fromCondition(&c)));
+    try std.testing.expectEqualStrings("#<condition bad 1 two (a)>", try f.displayed(&buf, .fromCondition(&c)));
+    // 条件の中の条件も、同じ形で書く。
+    var outer: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = try f.list(&.{.fromCondition(&c)}, .empty_list_value) };
+    try std.testing.expectEqualStrings("#<condition \"bad\" #<condition \"bad\" 1 \"two\" (a)>>", try f.written(&buf, .fromCondition(&outer)));
+}
+
+test "write shows an alias around the identifier inside it" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var inner: value_mod.Alias = .{ .inner = try f.sym("tmp"), .env = null, .mark = 0 };
+    var outer: value_mod.Alias = .{ .inner = .fromAlias(&inner), .env = null, .mark = 1 };
+    try std.testing.expectEqualStrings("#<alias tmp>", try f.written(&buf, .fromAlias(&inner)));
+    try std.testing.expectEqualStrings("#<alias #<alias tmp>>", try f.written(&buf, .fromAlias(&outer)));
+    const l = try f.list(&.{ .fromAlias(&inner), .fromFixnum(1) }, Value.empty_list_value);
+    try std.testing.expectEqualStrings("(#<alias tmp> 1)", try f.written(&buf, l));
+}
+
+test "write and display show a record and its type by the name of the type, not the fields" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    const name = (try f.sym("<point>")).asSymbol().?;
+    var t: value_mod.RecordType = .{ .name = name, .field_count = 1 };
+    var fields = [_]Value{try f.string("x")};
+    var r: value_mod.Record = .{ .record_type = &t, .fields = &fields };
+    try std.testing.expectEqualStrings("#<record-type <point>>", try f.written(&buf, .fromRecordType(&t)));
+    try std.testing.expectEqualStrings("#<record <point>>", try f.written(&buf, .fromRecord(&r)));
+    try std.testing.expectEqualStrings("#<record <point>>", try f.displayed(&buf, .fromRecord(&r)));
+    // データの中でも同じである。
+    const both = try f.list(&.{ .fromRecord(&r), .fromRecordType(&t) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<record <point>> #<record-type <point>>)", try f.written(&buf, both));
+}
+
+test "write and display show a continuation as #<continuation>" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var k: value_mod.Continuation = .{ .kont = null, .dyn = null };
+    try std.testing.expectEqualStrings("#<continuation>", try f.written(&buf, .fromContinuation(&k)));
+    try std.testing.expectEqualStrings("#<continuation>", try f.displayed(&buf, .fromContinuation(&k)));
+    const l = try f.list(&.{ .fromContinuation(&k), .fromFixnum(1) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<continuation> 1)", try f.written(&buf, l));
 }
 
 test "write prints the unspecified value as #<unspecified>" {
@@ -247,11 +340,11 @@ test "write prints a procedure in a form read rejects" {
     const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
     var closure: value_mod.Closure = .{ .lambda = &lambda, .env = null };
     try std.testing.expectEqualStrings("#<procedure>", try f.written(&buf, .fromClosure(&closure)));
-    const prim: value_mod.Primitive = .{ .name = "plus", .min_args = 0, .max_args = null, .call = struct {
+    const prim: value_mod.Primitive = .{ .name = "plus", .min_args = 0, .max_args = null, .body = .{ .pure = struct {
         fn call(_: *const value_mod.Services, _: []const Value) value_mod.PrimitiveError!Value {
             return .unspecified_value;
         }
-    }.call };
+    }.call } };
     try std.testing.expectEqualStrings("#<procedure plus>", try f.written(&buf, .fromPrimitive(&prim)));
     // リストの中では、ほかと同じ 1 つの要素である。
     const l = try f.list(&.{ .fromPrimitive(&prim), .fromFixnum(1) }, Value.empty_list_value);

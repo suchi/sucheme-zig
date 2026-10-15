@@ -1,0 +1,84 @@
+# スライス 2e: dynamic-wind(R7RS 6.10)と、継続の起動の巻き戻し。番号は docs/design/runtime.md の
+# 例外の節の「テストに含める事例」のものである。各ケースは新しいインタプリタで走るので、
+# 記録の手続きは各行で定義する。記録は新しいものが先頭のリストである。
+
+# before、thunk、after の順に呼び、thunk の値を返す。after の値は捨てる。
+(define log '()) (define (note x) (set! log (cons x log))) (dynamic-wind (lambda () (note 'before)) (lambda () (note 'thunk) 'value) (lambda () (note 'after) 'ignored)) log
+value
+(after thunk before)
+
+# R7RS 6.10 の例。let を使わずに書き、パスは記録した逆の順で比べる。継続で本体の外へ出る
+# たびに after を、本体へ戻るたびに before を呼ぶ。
+(define path '()) (define c #f) (define (add s) (set! path (cons s path))) (define (run) (dynamic-wind (lambda () (add 'connect)) (lambda () (add (call/cc (lambda (c0) (set! c c0) 'talk1)))) (lambda () (add 'disconnect))) (if (< (length path) 4) (c 'talk2) path)) (run)
+(disconnect talk2 connect disconnect talk1 connect)
+
+# 脱出の外へ出るときは内側の after から、再入のときは外側の before から呼ぶ。
+(define log '()) (define (note x) (set! log (cons x log))) (define k #f) (define round 0) (define (run) (call/cc (lambda (out) (dynamic-wind (lambda () (note 'in1)) (lambda () (dynamic-wind (lambda () (note 'in2)) (lambda () (call/cc (lambda (c) (set! k c))) (out 'escaped)) (lambda () (note 'out2)))) (lambda () (note 'out1)))))) (define (again v) (set! round (+ round 1)) (if (= round 1) (k #f) log)) (again (run))
+(out1 out2 in2 in1 out1 out2 in2 in1)
+
+# 2つの wind の間を移る継続は、共通の点の外へは出ない。外側の after と before は呼ばれない。
+(define log '()) (define (note x) (set! log (cons x log))) (dynamic-wind (lambda () (note 'outer-in)) (lambda () (define j #f) (define round 0) (dynamic-wind (lambda () (note 'a-in)) (lambda () (call/cc (lambda (c) (set! j c)))) (lambda () (note 'a-out))) (set! round (+ round 1)) (if (= round 1) (dynamic-wind (lambda () (note 'b-in)) (lambda () (j #f)) (lambda () (note 'b-out))) round)) (lambda () (note 'outer-out))) log
+2
+(outer-out a-out a-in b-out b-in a-out a-in outer-in)
+
+# before が戻る前の脱出では、その wind の after は呼ばれない。点はまだ積まれていない。
+(define log '()) (define (note x) (set! log (cons x log))) (call/cc (lambda (k) (dynamic-wind (lambda () (note 'before) (k 'out)) (lambda () (note 'thunk)) (lambda () (note 'after))))) log
+out
+(before)
+
+# after の中で脱出しても、その wind の点はもう外れているので、after は2度呼ばれない。
+(define log '()) (define (note x) (set! log (cons x log))) (call/cc (lambda (k) (dynamic-wind (lambda () (note 'before)) (lambda () (note 'thunk)) (lambda () (note 'after) (k 'out))))) log
+out
+(after thunk before)
+
+# 事例9: dynamic-wind の内側で未処理例外が起きると、after を呼んでからプロンプトに戻る。
+# 行の残りの式は走らない。after が呼ばれたことは、after 自身の送出が報告されることで見る
+# (呼ばれた回数は src/machine.zig の単体テストが確かめる)。
+(dynamic-wind (lambda () #f) (lambda () (car '())) (lambda () (raise 'after-ran))) 'not-reached
+error: after-ran
+
+# after の中の未処理例外は、その点の外から脱出を続ける。報告するのは最後に送出された値で、
+# 外側の after も、内側の after の後に呼ばれる。
+(dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (raise 'boom)) (lambda () (raise 'inner-after)))) (lambda () (raise 'outer-after)))
+error: outer-after
+
+(dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (raise 'boom)) (lambda () (raise 'inner-after)))) (lambda () #f))
+error: inner-after
+
+# 事例1: ハンドラの中で dynamic-wind に入り、そこから継続で脱出したとき、after の中の
+# 例外は、実行中のハンドラでなく外側のハンドラに届く。
+(define log '()) (define (note x) (set! log (cons x log))) (with-exception-handler (lambda (c) (note (list 'outer c)) 'o) (lambda () (call/cc (lambda (k) (with-exception-handler (lambda (c) (note (list 'inner c)) (dynamic-wind (lambda () #f) (lambda () (k 'escaped)) (lambda () (raise-continuable 'from-after)))) (lambda () (raise-continuable 'x))))))) log
+escaped
+((outer from-after) (inner x))
+
+# 事例3(事例1の通常終了の経路): thunk が戻るときも、after が見るハンドラは同じである。
+(define log '()) (define (note x) (set! log (cons x log))) (with-exception-handler (lambda (c) (note (list 'outer c)) 'o) (lambda () (with-exception-handler (lambda (c) (note (list 'inner c)) (dynamic-wind (lambda () #f) (lambda () 'normal) (lambda () (raise-continuable 'from-after)))) (lambda () (raise-continuable 'x))))) log
+normal
+((outer from-after) (inner x))
+
+# 事例2: raise を囲む dynamic-wind からハンドラが継続で脱出したとき、after が見るハンドラは、
+# その dynamic-wind を呼んだ時点のハンドラである。
+(define log '()) (define (note x) (set! log (cons x log))) (with-exception-handler (lambda (c) (note (list 'outer c)) 'o) (lambda () (call/cc (lambda (k) (with-exception-handler (lambda (c) (note (list 'h c)) (if (eq? c 'boom) (k c) 'h-returned)) (lambda () (dynamic-wind (lambda () #f) (lambda () (raise 'boom)) (lambda () (raise-continuable 'after))))))))) log
+boom
+((h after) (h boom))
+
+# 事例3(事例2の通常終了の経路)。
+(define log '()) (define (note x) (set! log (cons x log))) (with-exception-handler (lambda (c) (note (list 'h c)) 'h-returned) (lambda () (dynamic-wind (lambda () #f) (lambda () 'normal) (lambda () (raise-continuable 'after))))) log
+normal
+((h after))
+
+# 事例10: before の中の raise-continuable は、その dynamic-wind を呼んだ時点のハンドラに届く。
+# 内側に with-exception-handler を置いた本体へ継続で再入する場合も、同じハンドラに届く。
+(define log '()) (define (note x) (set! log (cons x log))) (define k #f) (define (run) (with-exception-handler (lambda (c) (note (list 'outer c)) 0) (lambda () (dynamic-wind (lambda () (raise-continuable 'before)) (lambda () (with-exception-handler (lambda (c) (note (list 'inner c)) 0) (lambda () (call/cc (lambda (c) (set! k c) 'first))))) (lambda () #f))))) (define (again v) (if (eq? v 'first) (k 'second) (list v log))) (again (run))
+(second ((outer before) (outer before)))
+
+# 引数の検査。継続は手続きなので型の検査を通る。引数なしで呼ぶ `after` が継続なら、0個の値で
+# その継続へ脱出する。
+(dynamic-wind 1 (lambda () 2) (lambda () 3))
+error: wrong type of argument to dynamic-wind 1 #<procedure> #<procedure>
+
+(dynamic-wind (lambda () 1) (lambda () 2))
+error: wrong number of arguments to dynamic-wind #<procedure> #<procedure>
+
+(call-with-values (lambda () (call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 2) k)))) list)
+()

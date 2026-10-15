@@ -49,6 +49,10 @@ pub fn Tracer(comptime spec: Spec) type {
         /// how to sort it.
         /// `walk` は null をコンパイルエラーにする。
         pub fn classify(comptime T: type) ?Class {
+            // Why: 1つの関数の中のコンパイル時の評価は、分岐の上限を共有する。分類はヒープの
+            // 型の数に比例して分岐するので、型を足すたびに、問い合わせを並べたテストが上限を
+            // 超える。
+            @setEvalBranchQuota(100_000);
             return classifyAt(T, "", false);
         }
 
@@ -105,7 +109,14 @@ pub fn Tracer(comptime spec: Spec) type {
         /// heap object and `visitor.symbol(id)` for a symbol id, and does not
         /// follow the objects itself.
         pub fn walk(visitor: anytype, comptime T: type, value: T) void {
-            const class = comptime classifyAt(T, @typeName(T), true).?;
+            // Why: `classify` と同じく、分類の分岐の数はヒープの型の数に比例する。型を足すたびに
+            // 既定の上限(1000)を超えるので、`Value` のように多くのポインタを持つ型を走査する
+            // 呼び出しの側でも上限を上げる。継続フレームの種類を足したときも、1つの型の分類が
+            // 既定の上限を超える。
+            const class = comptime blk: {
+                @setEvalBranchQuota(100_000);
+                break :blk classifyAt(T, @typeName(T), true).?;
+            };
             if (class == .ignore) return;
             switch (@typeInfo(T)) {
                 .@"enum" => visitor.symbol(value),
@@ -253,6 +264,158 @@ test "the arguments gathered so far are followed through their value and their l
     try r.expect(&.{ addr(&p), addr(&older) });
 }
 
+test "a condition is followed through its message and its irritants" {
+    var bytes = "m".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var irritant: Pair = .{ .car = .fromFixnum(1), .cdr = .empty_list_value };
+    const condition: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = .{ .pair = &irritant } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Condition, &condition);
+    try r.expect(&.{ addr(&message), addr(&irritant) });
+    // irritant が空なら、メッセージだけが報告される。種別は報告されない。
+    const bare: value_mod.Condition = .{ .kind = .file, .message = .fromString(&message), .irritants = .empty_list_value };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Condition, &bare);
+    try q.expect(&.{addr(&message)});
+    try std.testing.expectEqual(0, q.symbol_count);
+}
+
+test "a syntactic environment is followed through its parent and its first binding" {
+    var outer: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
+    var local: value_mod.LocalBinding = .{ .rib_depth = 2, .index = 0 };
+    var binding: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(3))), .denotation = .{ .local = &local }, .next = null };
+    const env: value_mod.SyntacticEnv = .{ .parent = &outer, .rib_depth = 2, .bindings = &binding };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.SyntacticEnv, &env);
+    try r.expect(&.{ addr(&outer), addr(&binding) });
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.SyntacticEnv, &outer);
+    try q.expect(&.{});
+}
+
+test "a syntactic binding is followed through its identifier, its local variable and the next binding" {
+    var local: value_mod.LocalBinding = .{ .rib_depth = 1, .index = 4 };
+    var older: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(1))), .denotation = .{ .special = .@"if" }, .next = null };
+    const binding: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(2))), .denotation = .{ .local = &local }, .next = &older };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.SyntacticBinding, &binding);
+    try r.expect(&.{ addr(&local), addr(&older) });
+    try std.testing.expectEqual(1, r.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(2))), r.symbols[0]);
+    // 特殊形式の意味は、ヒープのものを指さない。大域変数の意味は、そのセルを指す。
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.SyntacticBinding, &older);
+    try q.expect(&.{});
+    var cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(5)), .value = .fromFixnum(1) };
+    const global: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(1))), .denotation = .{ .global = &cell }, .next = null };
+    var g: Recorder = .{};
+    interpreter.children(&g, value_mod.SyntacticBinding, &global);
+    try g.expect(&.{addr(&cell)});
+}
+
+test "a cell is followed through its value, and its name is a symbol" {
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(6)), .value = .{ .pair = &p } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Cell, &cell);
+    try r.expect(&.{addr(&p)});
+    try std.testing.expectEqual(1, r.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(6))), r.symbols[0]);
+    // 未束縛のセルは、ヒープのものを指さない。
+    const unbound: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(6)), .value = .uninitialized_value };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Cell, &unbound);
+    try q.expect(&.{});
+}
+
+test "a library is followed through its name, its exports and the environment of its body" {
+    var name: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var bytes = "f".*;
+    var external: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(1)), .value = .fromFixnum(1) };
+    var older: value_mod.Export = .{ .name = &external, .denotation = .{ .special = .@"if" }, .imported = false, .next = null };
+    var newer: value_mod.Export = .{ .name = &external, .denotation = .{ .global = &cell }, .imported = true, .next = &older };
+    var root: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 0, .bindings = null };
+    const library: value_mod.Library = .{ .name = .{ .pair = &name }, .state = .loaded, .exports = &newer, .root = &root, .table = @fromBackingInt(@intCast(3)) };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Library, &library);
+    // 名前、最初の書き出し、本体の環境の順である。状態と表の番号は、報告されない。
+    try r.expect(&.{ addr(&name), addr(&newer), addr(&root) });
+    try std.testing.expectEqual(0, r.symbol_count);
+    // 本体の環境は、自分のライブラリを指す。それもたどられる。
+    var loading: value_mod.Library = .{ .name = .empty_list_value, .state = .loading, .exports = null, .root = null, .table = @fromBackingInt(@intCast(0)) };
+    const env: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 0, .bindings = null, .library = &loading };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.SyntacticEnv, &env);
+    try q.expect(&.{addr(&loading)});
+    // まだ何も持たないライブラリは、何も報告しない。
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.Library, &loading);
+    try s.expect(&.{});
+}
+
+test "an export is followed through its name, what it means and the next export" {
+    var bytes = "f".*;
+    var external: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var cell: value_mod.Cell = .{ .name = @fromBackingInt(@intCast(1)), .value = .fromFixnum(1) };
+    var next: value_mod.Export = .{ .name = &external, .denotation = .{ .auxiliary = .@"else" }, .imported = false, .next = null };
+    const global: value_mod.Export = .{ .name = &external, .denotation = .{ .global = &cell }, .imported = false, .next = &next };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Export, &global);
+    try r.expect(&.{ addr(&external), addr(&cell), addr(&next) });
+    // 特殊形式と補助構文の意味は、ヒープのものを指さない。名前と次だけである。
+    const syntax: value_mod.Export = .{ .name = &external, .denotation = .{ .auxiliary = .@"else" }, .imported = true, .next = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Export, &syntax);
+    try q.expect(&.{addr(&external)});
+    try std.testing.expectEqual(0, q.symbol_count);
+}
+
+test "the classes of the types of libraries" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Library).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Export).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
+}
+
+test "a dynamic point is followed through its parent, its current handler and what its kind holds" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.DynPoint).?);
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    var outer: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .{ .closure = &c } } };
+    outer.current_handler = &outer;
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.DynPoint, &outer);
+    // 親は無く、現在のハンドラは自分自身で、ハンドラの手続き。
+    try r.expect(&.{ addr(&outer), addr(&c) });
+    var inner: value_mod.DynPoint = .{ .parent = &outer, .depth = 2, .current_handler = null, .kind = .{ .handler = .fromFixnum(1) } };
+    inner.current_handler = &inner;
+    const shift: value_mod.DynPoint = .{ .parent = &inner, .depth = 3, .current_handler = &outer, .kind = .{ .handler_shift = &outer } };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.DynPoint, &shift);
+    try q.expect(&.{ addr(&inner), addr(&outer), addr(&outer) });
+    // 切り替え先が無い切り替えの点は、親だけを持つ。
+    const bare: value_mod.DynPoint = .{ .parent = &inner, .depth = 3, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.DynPoint, &bare);
+    try s.expect(&.{addr(&inner)});
+}
+
+test "the frames of the exceptions are followed through the dynamic points and the value they keep" {
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var rest: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .dynamic_exit = null } };
+    const exit: Kont = .{ .next = &rest, .env = null, .depth = 2, .step = .{ .dynamic_exit = &point } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &exit);
+    try r.expect(&.{ addr(&rest), addr(&point) });
+    const returning: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .handler_return = .{ .dyn = &point, .raised = .{ .pair = &p }, .continuable = true } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &returning);
+    try q.expect(&.{ addr(&point), addr(&p) });
+    var s: Recorder = .{};
+    interpreter.children(&s, Kont, &rest);
+    try s.expect(&.{});
+}
+
 test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Pair).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Closure).?);
@@ -260,15 +423,269 @@ test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Kont).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Args).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(Value).?);
-    // コードと、その周りの単純なデータは、決してたどられない。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Condition).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Condition).?);
+}
+
+test "the code and the plain data around it are never followed" {
+    // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。`Value` の
+    // 変種が増えて上のテストに収まらなくなったので、分けてある。
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*value_mod.Condition).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Call).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(usize).?);
     try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(SymbolId).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(?*const Kont).?);
+}
+
+test "the classes of the types of the syntactic environment" {
+    // 分けたのは、上のテストがコンパイル時の分岐の上限を超えたためである。上限は
+    // いま `classify` が上げている。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticEnv).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.SyntacticBinding).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Denotation).?);
+    // 局所変数は、数を2つ持つだけである。
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.LocalBinding).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Cell).?);
+}
+
+test "the classes of the types of macros" {
+    // 上と同じ理由で分けてある。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Alias).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Macro).?);
+}
+
+test "an alias is followed through its inner identifier and its environment" {
+    var env: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
+    var inner: value_mod.Alias = .{ .inner = .fromSymbol(@fromBackingInt(@intCast(2))), .env = null, .mark = 0 };
+    const outer: value_mod.Alias = .{ .inner = .fromAlias(&inner), .env = &env, .mark = 1 };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Alias, &outer);
+    try r.expect(&.{ addr(&inner), addr(&env) });
+    // 最上位で定義したマクロの別名は、シンボルだけを持つ。
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Alias, &inner);
+    try q.expect(&.{});
+    try std.testing.expectEqual(1, q.symbol_count);
+}
+
+test "a macro is followed through its literals, its rules and its environment" {
+    var env: value_mod.SyntacticEnv = .{ .parent = null, .rib_depth = 1, .bindings = null };
+    var literals: Pair = .{ .car = .fromSymbol(@fromBackingInt(@intCast(1))), .cdr = .empty_list_value };
+    var rules: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const m: value_mod.Macro = .{ .literals = .{ .pair = &literals }, .rules = .{ .pair = &rules }, .env = &env };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Macro, &m);
+    try r.expect(&.{ addr(&literals), addr(&rules), addr(&env) });
+    // 構文環境の束縛がマクロを指すときは、そのマクロをたどる。
+    const binding: value_mod.SyntacticBinding = .{ .id = .fromSymbol(@fromBackingInt(@intCast(3))), .denotation = .{ .macro = @constCast(&m) }, .next = null };
+    var b: Recorder = .{};
+    interpreter.children(&b, value_mod.SyntacticBinding, &binding);
+    try b.expect(&.{addr(&m)});
+}
+
+test "a record is followed through its type and its fields" {
+    var t: value_mod.RecordType = .{ .name = @fromBackingInt(@intCast(6)), .field_count = 3 };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var other: value_mod.RecordType = .{ .name = @fromBackingInt(@intCast(7)), .field_count = 0 };
+    var fields = [_]Value{ .{ .pair = &p }, .fromFixnum(2), .fromRecordType(&other) };
+    const record: value_mod.Record = .{ .record_type = &t, .fields = &fields };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Record, &record);
+    // 型を先に、その後にフィールドを順に。ヒープのものでないフィールドは報告されない。
+    try r.expect(&.{ addr(&t), addr(&p), addr(&other) });
+    const bare: value_mod.Record = .{ .record_type = &other, .fields = &.{} };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Record, &bare);
+    try q.expect(&.{addr(&other)});
+}
+
+test "a record type is followed through nothing, and tells its name as a symbol" {
+    const t: value_mod.RecordType = .{ .name = @fromBackingInt(@intCast(6)), .field_count = 3 };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.RecordType, &t);
+    try r.expect(&.{});
+    try std.testing.expectEqual(1, r.symbol_count);
+    try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(6))), r.symbols[0]);
+}
+
+test "the classes of the types of records" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Record).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Record).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.RecordType).?);
+    // 型は、名前のシンボルと数を持つだけである。
+    try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(value_mod.RecordType).?);
+}
+
+test "a wind point is followed through its parent, its current handler, its before and its after" {
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    var d: Closure = .{ .lambda = undefined, .env = null };
+    var outer: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+    outer.current_handler = &outer;
+    const wind: value_mod.DynPoint = .{ .parent = &outer, .depth = 2, .current_handler = &outer, .kind = .{ .wind = .{ .before = .{ .closure = &c }, .after = .{ .closure = &d } } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.DynPoint, &wind);
+    try r.expect(&.{ addr(&outer), addr(&outer), addr(&c), addr(&d) });
+    // 手続きがヒープのものでなければ(プリミティブ)、親と現在のハンドラだけである。
+    const bare: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .wind = .{ .before = .fromFixnum(1), .after = .fromFixnum(2) } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.DynPoint, &bare);
+    try q.expect(&.{});
+}
+
+test "a continuation is followed through its frames and its dynamic point" {
+    var rest: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .dynamic_exit = null } };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    const k: value_mod.Continuation = .{ .kont = &rest, .dyn = &point };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Continuation, &k);
+    try r.expect(&.{ addr(&rest), addr(&point) });
+    // 実行の最も外側で捕捉した継続は、何も指さない。
+    const empty: value_mod.Continuation = .{ .kont = null, .dyn = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Continuation, &empty);
+    try q.expect(&.{});
+}
+
+test "the shared state of a rewind is followed through its target, its value and the common ancestor" {
+    const k: value_mod.Continuation = .{ .kont = null, .dyn = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    const state: value_mod.Rewind = .{ .target = &k, .value = .{ .pair = &p }, .ancestor = &point };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Rewind, &state);
+    try r.expect(&.{ addr(&k), addr(&p), addr(&point) });
+    // 最外の継続への脱出(目標が null)で、共通の点が無いとき。
+    const unhandled: value_mod.Rewind = .{ .target = null, .value = .fromFixnum(1), .ancestor = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Rewind, &unhandled);
+    try q.expect(&.{});
+}
+
+test "a link of the path a rewind enters is followed through its point and the next link" {
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var last: value_mod.WindPath = .{ .point = &point, .next = null };
+    const first: value_mod.WindPath = .{ .point = &point, .next = &last };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.WindPath, &first);
+    try r.expect(&.{ addr(&point), addr(&last) });
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.WindPath, &last);
+    try q.expect(&.{addr(&point)});
+}
+
+test "the frames of dynamic-wind are followed through the point, the thunk and the value they keep" {
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const before: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .wind_before = .{ .point = &point, .thunk = .{ .closure = &c } } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &before);
+    try r.expect(&.{ addr(&point), addr(&c) });
+    const body: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .wind_body = &point } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &body);
+    try q.expect(&.{addr(&point)});
+    const after: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .wind_after = .{ .pair = &p } } };
+    var s: Recorder = .{};
+    interpreter.children(&s, Kont, &after);
+    try s.expect(&.{addr(&p)});
+}
+
+test "a rewind frame is followed through its shared state, the link it entered and the point it was put on at" {
+    const state: value_mod.Rewind = .{ .target = null, .value = .fromFixnum(1), .ancestor = null };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var link: value_mod.WindPath = .{ .point = &point, .next = null };
+    const entering: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .rewind = .{ .state = &state, .entered = &link, .at = &point } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &entering);
+    try r.expect(&.{ addr(&state), addr(&link), addr(&point) });
+    const leaving: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .rewind = .{ .state = &state, .entered = null, .at = null } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &leaving);
+    try q.expect(&.{addr(&state)});
+}
+
+test "the classes of the types of continuations" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Continuation).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Continuation).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Rewind).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.WindPath).?);
+}
+
+test "a parameter is followed through its value and its converter, when it has one" {
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    const converting: value_mod.Parameter = .{ .value = .{ .pair = &p }, .converter = .{ .closure = &c } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Parameter, &converting);
+    try r.expect(&.{ addr(&p), addr(&c) });
+    // 変換手続きが無ければ、値だけである。ヒープのものでない値なら、何も報告しない。
+    const plain: value_mod.Parameter = .{ .value = .{ .pair = &p }, .converter = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Parameter, &plain);
+    try q.expect(&.{addr(&p)});
+    const flat: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.Parameter, &flat);
+    try s.expect(&.{});
+}
+
+test "a parameter point is followed through its parent, its current handler, its parameter and its value" {
+    var outer: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler = .fromFixnum(0) } };
+    outer.current_handler = &outer;
+    var param: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const point: value_mod.DynPoint = .{ .parent = &outer, .depth = 2, .current_handler = &outer, .kind = .{ .parameter = .{ .param = &param, .value = .{ .pair = &p } } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.DynPoint, &point);
+    try r.expect(&.{ addr(&outer), addr(&outer), addr(&param), addr(&p) });
+    // 値がヒープのものでなければ、パラメータまでである。
+    const flat: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .parameter = .{ .param = &param, .value = .fromFixnum(2) } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.DynPoint, &flat);
+    try q.expect(&.{addr(&param)});
+}
+
+test "the frames of make-parameter and parameterize are followed through what they keep" {
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    const made: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .make_parameter = .{ .closure = &c } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &made);
+    try r.expect(&.{addr(&c)});
+    const body: value_mod.Node = .{ .constant = .unspecified_value };
+    const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &body };
+    const node: value_mod.Parameterize = .{ .bindings = &.{}, .body = &lambda };
+    var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
+    var param: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
+    // 節点はコードで、たどらない。持つのは、作りかけの点の鎖だけである。
+    const step: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_param = .{ .node = &node, .index = 0, .pending = &point } } };
+    var q: Recorder = .{};
+    interpreter.children(&q, Kont, &step);
+    try q.expect(&.{addr(&point)});
+    const first: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_param = .{ .node = &node, .index = 0, .pending = null } } };
+    var f: Recorder = .{};
+    interpreter.children(&f, Kont, &first);
+    try f.expect(&.{});
+    // 値と変換の局面は、さらに束縛のパラメータを持つ。
+    const bound: value_mod.Kont.ParameterizeBound = .{ .node = &node, .index = 1, .pending = &point, .param = &param };
+    const valued: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_value = bound } };
+    var s: Recorder = .{};
+    interpreter.children(&s, Kont, &valued);
+    try s.expect(&.{ addr(&point), addr(&param) });
+    const converted: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_convert = bound } };
+    var t: Recorder = .{};
+    interpreter.children(&t, Kont, &converted);
+    try t.expect(&.{ addr(&point), addr(&param) });
+}
+
+test "the classes of the types of parameters" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Parameter).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Parameter).?);
+    // 節点と、その束縛は、コードである。
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Parameterize).?);
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.ParameterBinding).?);
 }
 
 test "a type the walk cannot sort has no class" {
@@ -302,7 +719,14 @@ test "of the code types only the node holds values, which the context's constant
     // そのことがここで表に出る。
     inline for (value_mod.code_types) |T| {
         const class = comptime interpreter.classify(T);
-        if (T == value_mod.Node) {
+        if (T == value_mod.Node or T == value_mod.GlobalAssign) {
+            // Why: 節点と大域変数への代入は、大域変数のセルを指す(スライス 2j)。セルは
+            // GC ヒープにあるが、GC が節点をたどらなくても回収されない。作られたセルは
+            // すべて、REPL の束縛の表か、遮蔽されたインポートのセルの表か、`define-syntax`
+            // が表から外したセルの表から到達できる(src/env.zig の `Global.mark`)。この
+            // 不変条件は、tests/scheme/ のステップごとに GC する方式で、遮蔽された
+            // プリミティブのセルや、マクロに置き換えられた変数のセルを、先に定義した
+            // 手続きから読むケースが確かめる。
             try std.testing.expectEqual(Class.follow, class.?);
         } else if (T == value_mod.Primitive) {
             // Zig の関数ポインタ。walk にはその分類がなく、たどることもない。

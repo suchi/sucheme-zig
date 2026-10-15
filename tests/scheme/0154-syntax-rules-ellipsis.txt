@@ -1,0 +1,67 @@
+# スライス 2l: テンプレートの省略記号のエスケープ `(... template)` と、利用者が指定する
+# 省略記号 `(syntax-rules ellipsis (literal ...) rule ...)`。
+
+# `(... ...)` は省略記号そのものを出力する。
+(define-syntax m (syntax-rules () ((_ a) '(a (... ...))))) (m 1)
+(1 ...)
+
+# `(... template)` の中では、省略記号は何も繰り返さない。パターン変数は置き換わる。
+(define-syntax m (syntax-rules () ((_ a b) '(... (a ... b))))) (m 1 2)
+(1 ... 2)
+
+# エスケープの外の省略記号は、今までどおり働く。
+(define-syntax m (syntax-rules () ((_ a ...) '((a ...) (... ...) (a ...))))) (m 1 2)
+((1 2) ... (1 2))
+
+# 衛生性の検証項目7: マクロを定義するマクロが、内側のマクロの省略記号を出力する。
+(define-syntax be-like-begin (syntax-rules () ((_ name) (define-syntax name (syntax-rules () ((_ expr (... ...)) (begin expr (... ...)))))))) (be-like-begin sequence) (sequence 1 2 3 4)
+4
+
+(define-syntax def-list (syntax-rules () ((_ name) (define-syntax name (syntax-rules () ((_ args (... ...)) (list args (... ...)))))))) (def-list my-list) (list (my-list) (my-list 1 2 3))
+(() (1 2 3))
+
+# エスケープした省略記号は、内側のマクロでも省略記号である(入れ子の省略記号を含む)。
+(define-syntax def-nest (syntax-rules () ((_ name) (define-syntax name (syntax-rules () ((_ (a b (... ...)) (... ...)) '((b (... ...)) (... ...)))))))) (def-nest nest) (nest (1 2 3) (4) (5 6))
+((2 3) () (6))
+
+# 衛生性の検証項目6: マクロを定義するマクロで、内側のマクロの衛生性が保たれる。
+(define-syntax def-swap (syntax-rules () ((_ name) (define-syntax name (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a))))))) (def-swap swap2) ((lambda (tmp x) (swap2 tmp x) (list tmp x)) 1 2)
+(2 1)
+
+# 内側のマクロの束縛の遮蔽は、外側の展開が導入した識別子と、利用者の識別子を区別する。
+(define-syntax def-const (syntax-rules () ((_ name val) (define-syntax name (syntax-rules () ((_) val)))))) (def-const five 5) ((lambda (val) (five)) 6)
+5
+
+# マクロを定義するマクロの、テンプレートの識別子は定義側の意味を保つ。
+(define-syntax def-first (syntax-rules () ((_ name) (define-syntax name (syntax-rules () ((_ l) (car l))))))) (def-first first-of) ((lambda (car) (first-of '(1 2))) cdr)
+1
+
+# エスケープの形が違うのは、定義の時点のエラーである。
+(define-syntax m (syntax-rules () ((_ a) (... a b))))
+error: bad syntax-rules: an ellipsis escape must be (... template)
+
+# 利用者が指定する省略記号。`...` は、ふつうの識別子になる。
+(define-syntax my-let (syntax-rules ::: () ((_ ((n v) :::) b :::) ((lambda (n :::) b :::) v :::)))) (my-let ((x 1) (y 2)) (+ x y))
+3
+
+(define-syntax m (syntax-rules ::: () ((_ a ...) '(... a)))) (m 1 2)
+(2 1)
+
+# 指定した省略記号のエスケープ。
+(define-syntax m (syntax-rules ::: () ((_ a) '(a (::: :::))))) (m 1)
+(1 :::)
+
+(define-syntax m (syntax-rules ::: () ((_ a) '((a) (::: (a :::)))))) (m 1)
+((1) (1 :::))
+
+# 指定した省略記号がリテラルの一覧にあれば、省略記号でなくリテラルである。
+(define-syntax m (syntax-rules ::: (:::) ((_ a :::) 'lit) ((_ a) 'one))) (list (m 1 :::) (m 1))
+(lit one)
+
+# 指定した省略記号は、パターンの先頭にも、深さの規則にも、既定の省略記号と同じに働く。
+(define-syntax pairs (syntax-rules ::: () ((_ (a b :::) :::) '((a b :::) :::)))) (pairs (1 2 3) (4))
+((1 2 3) (4))
+
+# エスケープの中のエスケープは、省略記号そのものを2重に包んでも1つの省略記号として出る。
+(define-syntax esc-nested (syntax-rules () ((_) '(... (... ...))))) (esc-nested)
+(... ...)
