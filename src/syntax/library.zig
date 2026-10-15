@@ -33,8 +33,12 @@ pub const max_load_depth = 64;
 
 /// The most bytes of the file of a library.
 /// Why: ファイルを丸ごとメモリに読むので、探索ルートの下にある巨大なファイルや、無限に読める
-/// ファイルで、ホストのメモリを使い切らないための上限である。
-pub const max_file_bytes = 16 * 1024 * 1024;
+/// ファイルで、ホストのメモリを使い切らないための上限である。リーダの作業領域は、ヒープの
+/// 上限に計上されない。閉じていない `(` だけが続くファイルでは、実測で、ファイルの大きさの
+/// 約 110 倍(1 MiB で約 127 MiB)の最大 RSS になった。1 MiB なら、既定のヒープの上限
+/// (256 MiB)に収まる。計上の外に残る分は、ADR-0031 の 2026-10-15 の追記が受け入れた制約として
+/// 記録している。
+pub const max_file_bytes = 1024 * 1024;
 
 /// The libraries that have been defined, or whose definition is in progress.
 pub const Registry = struct {
