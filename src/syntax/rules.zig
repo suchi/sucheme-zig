@@ -407,7 +407,7 @@ const Spec = struct {
                     } else if (!try self.matchRepeated(&stack, shape, vector.items, .empty_list_value, vars, t.out)) return false;
                 },
                 // 定数のパターンは、入力が equal? の意味で等しいときに照合する(R7RS 4.3.2)。
-                else => if (!try isEqual(self.scratch, t.pattern, t.form)) return false,
+                else => if (!try isEqual(self.scratch, self.scratch, t.pattern, t.form)) return false,
             },
         };
         return true;
