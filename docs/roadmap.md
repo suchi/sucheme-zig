@@ -88,7 +88,7 @@
 
 動的状態の機構と衛生的マクロとライブラリシステムを入れる。この3つは互いに依存するため同じ段階に置く。
 
-- [ ] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3)
+- [x] 精密GCの完成とルート管理規約の確立(範囲は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の5。コアIRのヒープ化と弱いシンボル表は段階3) (スライス 2b。新しいヒープの型は、それを入れる各スライス)
 - [x] 完全な `call/cc` と `dynamic-wind` (スライス 2e)
 - [x] `values` と `call-with-values`、複数値のオブジェクト (スライス 2f)
 - [x] 例外(`raise` `raise-continuable` `with-exception-handler` と条件オブジェクト) (スライス 2b・2d)
@@ -98,8 +98,8 @@
 - [x] マクロの展開のメモリを有界にする(展開の作業領域と節点を、ヒープの上限に計上する)。止まらないマクロの適用が、ヒープの上限を大きく超えて伸びていた。保証するのは1行の中の展開で、残りは下の「マクロの展開の有界化の残り」の項目にある([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-13 のスライス 2k の追記と、2026-10-14 のスライス 2l の追記) (スライス 2l)
 - [x] ライブラリシステム(`define-library` `import` `export` `begin` `cond-expand` `include` `include-library-declarations`)
 - [x] ポートごとのケースフォールディング状態と `include-ci`。リーダの `#!fold-case` 指令は段階5だが、ポートの状態と `include-ci` はここで実装する。機構がないまま `include-ci` を提供すると `include` に退化し、畳み込みを期待したファイルが未束縛識別子のエラーになる
-- [ ] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路)
-- [ ] 機械操作プリミティブ9個(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter`)。`eval` と `exit` は環境の値とプロセス文脈が必要なので段階5
+- [x] 第1類(処理系がソースとして読む)のファイル経路をリゾルバに通す([design/frontend.md](design/frontend.md) のファイルを開く経路) (スライス 2n・2o)
+- [x] 機械操作プリミティブ9個(`apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter`)。`eval` と `exit` は環境の値とプロセス文脈が必要なので段階5 (スライス 2c から 2g)
 - [x] `define-record-type` の基盤(レコードとレコード型のプリミティブ)。スライス 2h
 - [x] 可変個引数の `lambda`(`(lambda args ...)` と `(lambda (a . rest) ...)`、`define` の略記を含む)。スライス 2a
 
@@ -107,7 +107,7 @@
 
 衛生性の検証項目のうち2つは段階2では入力を書けない。`cond` のリテラル `else` の項目は `cond` が段階3の `lib/sucheme/derived.scm` で定義されるため、循環データの `quote` の項目はデータラベルの記法が段階5だからである。この2つは、それぞれ段階3と段階5の完了条件に含める。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階2までに決める」の行。件数と内容をここに複製しない。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階を定めずに保留しているもの」の行のうち、段階2の終わりに移したもの。段階2までに決めるとしていた行は、決めたものを設計文書に書いて消し、決めなかったものを移した。件数と内容をここに複製しない。
 
 ### 段階3: Schemeによる標準ライブラリ
 
