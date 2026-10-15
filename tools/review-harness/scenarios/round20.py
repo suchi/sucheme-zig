@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """20巡目が緑だと報告した経路が赤になるかを確認する。
 
-複製の作成・リセット・検証コマンドの実行はすべて review_harness が Python の
+複製の作成・リセット・検証コマンドの実行はすべて harness(`tools/review-harness/harness.py`)が Python の
 subprocess で行う。シェルで手打ちしないこと(harness.py の冒頭を参照)。
 """
 import pathlib

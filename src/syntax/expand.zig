@@ -1,7 +1,7 @@
 //! The expander: data in, core IR out.
 //!
-//! 仕事は、特殊形式(`quote`、`if`、`lambda`、`set!`、`define`、`begin`、
-//! `define-syntax`)と、マクロの適用と、呼び出しの変換である。マクロの変換子は
+//! 仕事は、特殊形式(`value.Special` の列挙が一覧である)と、マクロの適用と、呼び出しの
+//! 変換である。マクロの変換子は
 //! `syntax-rules` で、照合とテンプレートの展開は src/syntax/rules.zig にある。マクロの
 //! 適用の結果は、同じ位置の形式として展開し直す。
 //!

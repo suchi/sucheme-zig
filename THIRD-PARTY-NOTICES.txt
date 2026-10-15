@@ -2,8 +2,9 @@ THIRD-PARTY NOTICES
 
 sucheme is built with Zig 0.17.0. Its executables contain code from the Zig
 standard library, which is covered by the Zig license below. The executables
-for Linux are statically linked against musl libc, which Zig builds from
-source, and are covered by the musl license below as well.
+for Linux do not link a C library (the build does not link libc), so the musl
+license below is kept only as a precaution, in case a future build links musl
+libc, which Zig builds from source.
 
 This file is a copy. The two texts below were copied unchanged from the Zig
 0.17.0 toolchain (the Zig license and lib/libc/musl/COPYRIGHT). When the pinned

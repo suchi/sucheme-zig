@@ -283,7 +283,7 @@ const Spec = struct {
     }
 
     /// The pattern variables of `pattern`, after checking that it uses only the
-    /// forms this slice supports and binds no variable twice.
+    /// forms `syntax-rules` allows and binds no variable twice.
     /// `pattern` は規則のパターンの全体で、先頭のキーワードは見ない。
     fn patternVars(self: Spec, pattern: Value) Error![]Var {
         const Item = struct { form: Value, depth: u32 };

@@ -11,8 +11,9 @@
 - `sucheme-v<版>-<ターゲット>.tar.gz`(Linux と macOS)と `.zip`(Windows)。中身は
   `sucheme-v<版>-<ターゲット>/` の下の実行ファイル、`LICENSE`、
   `THIRD-PARTY-NOTICES.txt` である。`.pdb` は入れない。strip もしない。
-- `sucheme-web-v<版>.zip`。`web/` の中身と `sucheme.wasm` を同じ階層に並べる。
-  展開した先で `node serve.mjs .` と打てば開ける。
+- `sucheme-web-v<版>.zip`。`web/` の中身、`sucheme.wasm`、`LICENSE`、
+  `THIRD-PARTY-NOTICES.txt` を同じ階層に並べる。展開した先で `node serve.mjs .` と
+  打てば開ける。
 - `SHA256SUMS`。`sha256sum -c SHA256SUMS` を out-dir の中で実行して確かめられる。
 
 同じ入力から同じアーカイブを作る。順序は名前順、時刻は固定、権限は実行ファイルが
@@ -24,7 +25,7 @@
 ビットがあること、中身が入力と一致すること、チェックサムが一致すること、out-dir に
 余計なファイルが無いことである。版は `build.zig.zon` の `.version` から読む。
 
-終了コード: 0は成功。1は入力の不足か、読み直しの検査の失敗。
+終了コード: 0は成功。1は入力の不足か、読み直しの検査の失敗。2は引数の誤り(argparse)。
 """
 
 import argparse
