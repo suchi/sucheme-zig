@@ -58,6 +58,11 @@ pub const Context = struct {
     /// WASM は実ファイルシステムを持たないので、空のままである。このとき、ライブラリの
     /// ファイルを引く経路は、見つからないことになる。
     files: ?resolve.Files = null,
+    /// The files being read, the innermost last: the file of a library being loaded,
+    /// and each file an `include` reads (src/syntax/source.zig).
+    /// 含むファイルのディレクトリが `include` の基準になり、含んでいる最中のファイルを
+    /// もう一度含むことは、ここで見つけて拒否する。REPL の行は、ここに何も載せない。
+    sources: std.ArrayList(resolve.Origin) = .empty,
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは

@@ -530,6 +530,195 @@ test "a file that is not exactly one define-library form is refused, and says wh
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
 }
 
+test "an include at the REPL reads the file beneath the working directory, in order" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("a.scm", "(define x 1)");
+        try tree.write("b.scm", "(define y (+ x 10)) (define (twice n) (* n 2))");
+        try tree.write("sub/c.scm", "(define z (twice y))");
+        try tree.write("empty.scm", "; nothing\n");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(include \"a.scm\")", "");
+        try expectLinePrints(&interp, "x", "1\n");
+        // 複数のファイルは、書いた順に読まれ、後のものは前のものの定義を使える。
+        try expectLinePrints(&interp, "(include \"b.scm\" \"sub/c.scm\") z", "22\n");
+        // データの無いファイルは、何もしない。
+        try expectLinePrints(&interp, "(include \"empty.scm\")", "");
+        try expectLinePrints(&interp, "(begin (include \"a.scm\") x)", "1\n");
+        // 式の位置でも、ファイルの式の値が、その位置の値になる。
+        try tree.write("e.scm", "(+ n 1)");
+        try expectLinePrints(&interp, "((lambda (n) (include \"e.scm\")) 5)", "6\n");
+        // 読み込みの失敗は、その行を打ち切るだけで、次の行は読める。
+        try expectLineFails(&interp, "(include \"missing.scm\")", "bad include: missing.scm: no such file");
+        try expectLinePrints(&interp, "x", "1\n");
+    }
+}
+
+test "a macro the included file defines is used by the forms after it" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("m.scm", "(define-syntax twice (syntax-rules () ((_ e) (* 2 e)))) (define v (twice 21))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(include \"m.scm\") v", "42\n");
+    try expectLinePrints(&interp, "(twice 4)", "8\n");
+}
+
+test "a file name of an include is relative to the file that includes it, in a library too" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("p/q/lib.sld", "(define-library (p q lib) (export f g h) (import (sucheme core)) " ++
+            "(include \"helper.scm\") (begin (include \"../up.scm\") (define (h) (+ (f) (g)))))");
+        try tree.write("p/q/helper.scm", "(define (f) 1)");
+        try tree.write("p/up.scm", "(define (g) 20)");
+        // 同じ名前のファイルが作業ディレクトリにあっても、ライブラリのファイルのディレクトリが先である。
+        try tree.write("helper.scm", "(define (f) 1000)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (p q lib)) (h)", "21\n");
+        // ライブラリの外では、作業ディレクトリが基準に戻る。
+        try expectLinePrints(&interp, "(include \"helper.scm\") (f)", "1000\n");
+    }
+}
+
+test "include-library-declarations reads the declarations of a library from files" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\" \"more.scm\") (begin (define (g) (+ 1 (f)))))");
+        try tree.write("t/decls.scm", "(export f g) (import (sucheme core))");
+        // 宣言のファイルの中の `include` は、そのファイルのディレクトリが基準になる。
+        try tree.write("t/more.scm", "(begin (define (f) (offset)))  (include \"sub/off.scm\")");
+        try tree.write("t/sub/off.scm", "(define (offset) 41)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t lib)) (g)", "42\n");
+    }
+}
+
+test "a file that includes itself, or is included by a file it includes, is refused" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("self.scm", "(include \"self.scm\")");
+    try tree.write("a.scm", "(define a 1) (include \"b.scm\")");
+    try tree.write("b.scm", "(define b 2) (include \"./a.scm\")");
+    try tree.write("t/lib.sld", "(define-library (t lib) (export) (import (sucheme core)) (include \"lib.sld\"))");
+    try tree.write("t/via.sld", "(define-library (t via) (export) (import (sucheme core)) (begin (include \"loop.scm\")))");
+    try tree.write("t/loop.scm", "(include \"../t/via.sld\")");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(include \"self.scm\")", "bad include: self.scm includes itself, directly or through other files");
+    try expectLineFails(&interp, "(include \"a.scm\")", "bad include: ./a.scm includes itself, directly or through other files");
+    // ライブラリのファイル自身を含むことも、同じ鎖である。
+    try expectLineFails(&interp, "(import (t lib))", "bad include: lib.sld includes itself, directly or through other files");
+    try expectLineFails(&interp, "(import (t via))", "bad include: ../t/via.sld includes itself, directly or through other files");
+    // 失敗のあとは、読んでいる最中のファイルが空に戻り、同じ名前をもう一度含める。
+    try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+    try tree.write("self.scm", "(define fixed 1)");
+    try expectLinePrints(&interp, "(include \"self.scm\") fixed", "1\n");
+}
+
+test "the same file may be included twice, one after the other, but a chain of files is bounded" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("once.scm", "(define n (if (eq? 'n 'n) 1 2))");
+    // 長さ 64 の鎖(最初のファイルを入れて 64 個)は読めて、もう 1 つ長いと実装制限になる。
+    const max = source_limit();
+    var name_buf: [32]u8 = undefined;
+    for (0..max + 1) |i| {
+        const file_name = try std.fmt.bufPrint(&name_buf, "c{d}.scm", .{i});
+        var body_buf: [64]u8 = undefined;
+        const body = if (i < max)
+            try std.fmt.bufPrint(&body_buf, "(include \"c{d}.scm\")", .{i + 1})
+        else
+            "(define end 1)";
+        try tree.write(file_name, body);
+    }
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(include \"once.scm\" \"once.scm\") n", "1\n");
+    var expected: [128]u8 = undefined;
+    try expectLineFails(&interp, "(include \"c0.scm\")", try std.fmt.bufPrint(&expected, "implementation restriction: files include one another more than {d} deep, at c{d}.scm", .{ max, max }));
+    // 1つ短い鎖は読める。
+    try tree.write(try std.fmt.bufPrint(&name_buf, "c{d}.scm", .{max - 1}), "(define end 1)");
+    try expectLinePrints(&interp, "(include \"c0.scm\") end", "1\n");
+}
+
+fn source_limit() usize {
+    return @import("syntax/source.zig").max_open_files;
+}
+
+test "a file name of an include that leaves the root, is absolute, or cannot be a file is refused" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("sub/in.scm", "(define x 1)");
+    try tree.write("outside.scm", "(define leaked 1)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // ルートは、作業ディレクトリに当たる木の根である。その外へは出られない。
+    try expectLineFails(&interp, "(include \"../outside.scm\")", "bad include: ../outside.scm: the file name goes up out of the directory the files are searched in");
+    try expectLineFails(&interp, "(include \"/etc/passwd\")", "bad include: /etc/passwd: the file name must not be an absolute path");
+    try expectLineFails(&interp, "(include \"\")", "bad include: : the file name is empty");
+    try expectLineFails(&interp, "(include \"sub/\")", "bad include: sub/: the file name names a directory, not a file");
+    try expectLineFails(&interp, "(include \"sub\")", "bad include: sub: no such file");
+    try expectLineFails(&interp, "(include \"a\\\\b.scm\")", "bad include: a\\b.scm: a component of the file name has a character that is not allowed");
+    try expectLineFails(&interp, "(include \"con.scm\")", "bad include: con.scm: a component of the file name is the name of a device");
+    // 内側から `..` で戻る名前は、ルートの中なら読める。
+    try expectLinePrints(&interp, "(include \"sub/../outside.scm\") leaked", "1\n");
+}
+
+test "an include does not follow a link, and reads nothing where there is no file system" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("real/a.scm", "(define x 1)");
+    try tree.link("real", "alias", true);
+    try tree.link("real/a.scm", "linked.scm", false);
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(include \"alias/a.scm\")", "bad include: alias/a.scm: the file, or a directory on the way to it, is a link");
+    try expectLineFails(&interp, "(include \"linked.scm\")", "bad include: linked.scm: the file, or a directory on the way to it, is a link");
+    var bare: Interpreter = undefined;
+    try bare.init(std.testing.allocator);
+    defer bare.deinit();
+    try expectLineFails(&bare, "(include \"real/a.scm\")", "bad include: this interpreter has no files to read: real/a.scm");
+}
+
+test "an included file that is not valid text or does not read is refused with the name of the include" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("bad.scm", "(define x \xff)");
+    try tree.write("open.scm", "(define x");
+    try tree.write("hash.scm", "(define x #z)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFails(&interp, "(include \"bad.scm\")", "cannot include bad.scm: its file is not valid UTF-8");
+    try expectLineFails(&interp, "(include \"open.scm\")", "cannot include open.scm: unexpected end of input");
+    try expectLineFails(&interp, "(include \"hash.scm\")", "cannot include hash.scm: unreadable token");
+    // 失敗した読み込みは、何も定義しない。
+    try expectLineFails(&interp, "x", "unbound variable: x");
+}
+
 test "a file of the largest size is read, and one byte more is refused before it is read" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);

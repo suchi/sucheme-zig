@@ -1,0 +1,29 @@
+# Slice 2o: what `include` refuses before it opens anything. The runner has no file
+# system, so a name that is a file name is a file that cannot be read, and the forms
+# that are not well formed are told from it. What the files do (the directory a name
+# is relative to, a file that includes itself, the data in them) is checked by the unit
+# tests of src/resolve.zig and src/sucheme.zig, which have a temporary directory.
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(include)
+error: bad include: expected (include <file name> ...)
+
+(include 1)
+error: bad include: a file name must be a string
+
+(include "a.scm" 'b)
+error: bad include: a file name must be a string
+
+(include "a.scm")
+error: bad include: this interpreter has no files to read: a.scm
+
+(lambda () (include "a.scm"))
+error: bad include: this interpreter has no files to read: a.scm
+
+# 特殊形式の名前は予約語ではなく、局所の束縛が隠す。
+((lambda (include) include) 5)
+5
+
+(let-syntax ((include (syntax-rules () ((_ x) x)))) (include 7))
+7

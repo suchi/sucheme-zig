@@ -28,6 +28,7 @@ const SyntacticEnv = syntax_env.SyntacticEnv;
 const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
 const heap_mod = @import("../heap.zig");
+const source = @import("source.zig");
 
 pub const Error = context.Error;
 
@@ -104,6 +105,9 @@ pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: 
     // 上限を、セッションの終わりまで理由なく使い続ける。
     const roots = ctx.code_roots.items.len;
     errdefer ctx.code_roots.shrinkRetainingCapacity(roots);
+    // 失敗した展開が、読んでいる最中のファイルとして載せたものも、手放す。
+    const reading = ctx.sources.items.len;
+    errdefer ctx.sources.shrinkRetainingCapacity(reading);
     const root = e.run(form) catch |err| {
         // 計上の上限で断られた確保は、呼び出し側には確保の失敗に見える。
         if (err == error.OutOfMemory and ctx.heap.external_refused) return ctx.raise(context.heap_limit_message, .{});
@@ -125,6 +129,17 @@ const Task = struct {
     env: ?*SyntacticEnv,
     pos: Position,
     dest: *Node,
+    op: Op = .expand,
+
+    /// What a task does.
+    const Op = enum {
+        /// Expand `form`.
+        expand,
+        /// Read the file whose name `form` is, and expand the data in it in place of `dest`.
+        include_file,
+        /// The data of a file that an `include` read have all been expanded.
+        leave_file,
+    };
 };
 
 const Expander = struct {
@@ -153,6 +168,14 @@ const Expander = struct {
     }
 
     fn step(self: *Expander, task: Task) Error!void {
+        switch (task.op) {
+            .expand => {},
+            .include_file => return self.includeFile(task),
+            .leave_file => {
+                _ = self.ctx.sources.pop();
+                return;
+            },
+        }
         switch (task.form.kind()) {
             // 自己評価式(R7RS 4.1.2)。
             .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter => try self.constant(task, task.form),
@@ -188,6 +211,7 @@ const Expander = struct {
                         .@"letrec-syntax" => self.letSyntax(task, items, true),
                         .@"syntax-error" => self.syntaxError(items),
                         .parameterize => self.parameterizeForm(task, items),
+                        .include => self.includeForm(task, items),
                     },
                     .macro => unreachable,
                     // 補助構文は、演算子の位置でも変数として使えない。呼び出しの演算子の展開が報告する。
@@ -378,6 +402,47 @@ const Expander = struct {
         }
         const pos: Position = if (task.pos == .top) .top else .expression;
         try self.sequence(task.dest, items[1..], task.env, pos, 0);
+    }
+
+    /// `(include <string> ...)` (R7RS 4.1.7, 5.6.1): the data in the files, expanded as
+    /// the forms of a `begin` in the same position.
+    /// Why: ファイルは、展開が進んでそこに着いたときに読む。ファイルのデータを展開し終えるまで、
+    /// そのファイルは「読んでいる最中のファイル」として `ctx.sources` に載り、`include` の
+    /// 基準のディレクトリになり、自分自身を含む鎖を見つける。展開は再帰しないので、終わりの
+    /// 印を、データの下にスタックしておく(`leave_file`)。名前が複数あれば、1つずつ順に読む。
+    fn includeForm(self: *Expander, task: Task, items: []const Value) Error!void {
+        const names = items[1..];
+        if (names.len == 0) return self.ctx.raise("bad include: expected (include <file name> ...)", .{});
+        for (names) |name| {
+            if (name.asString() == null) return self.ctx.raise("bad include: a file name must be a string", .{});
+        }
+        if (names.len == 1) {
+            try self.stack.append(self.scratch, .{ .form = names[0], .env = task.env, .pos = task.pos, .dest = task.dest, .op = .include_file });
+            return;
+        }
+        const nodes = try self.nodes.alloc(*const Node, names.len);
+        for (nodes) |*n| n.* = try self.nodes.create(Node);
+        var i = names.len;
+        while (i > 0) {
+            i -= 1;
+            try self.stack.append(self.scratch, .{ .form = names[i], .env = task.env, .pos = task.pos, .dest = @constCast(nodes[i]), .op = .include_file });
+        }
+        task.dest.* = .{ .sequence = nodes };
+    }
+
+    /// Reads the file that the name `task.form` means and queues its data to fill
+    /// `task.dest`, in order. A file with no data does nothing.
+    fn includeFile(self: *Expander, task: Task) Error!void {
+        const name = task.form.asString().?.bytes;
+        const opened = try source.openIncluded(self.ctx, self.scratch, name, "include");
+        const subject = try std.fmt.allocPrint(self.scratch, "include {s}", .{name});
+        const data = try source.readData(self.ctx, self.scratch, self.ctx.files.?, opened.file, subject);
+        if (data.len == 0) return self.constant(task, .unspecified_value);
+        try self.ctx.sources.append(self.ctx.persist, opened.origin);
+        // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。
+        try self.stack.append(self.scratch, .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = task.dest, .op = .leave_file });
+        const pos: Position = if (task.pos == .top) .top else .expression;
+        try self.sequence(task.dest, data, task.env, pos, 0);
     }
 
     /// Fills `dest` with `forms` run in order: `defines` of them at the start

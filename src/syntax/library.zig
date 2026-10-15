@@ -22,6 +22,7 @@ const SymbolId = @import("../symbol.zig").SymbolId;
 const printer = @import("../printer.zig");
 const reader = @import("../reader.zig");
 const resolve = @import("../resolve.zig");
+const source_mod = @import("source.zig");
 
 pub const Error = context.Error;
 
@@ -31,14 +32,8 @@ pub const Error = context.Error;
 /// 長さで決まり、外部入力が決める。Zig のスタックを使い切らないよう、実装制限として報告する。
 pub const max_load_depth = 64;
 
-/// The most bytes of the file of a library.
-/// Why: ファイルを丸ごとメモリに読むので、探索ルートの下にある巨大なファイルや、無限に読める
-/// ファイルで、ホストのメモリを使い切らないための上限である。リーダの作業領域は、ヒープの
-/// 上限に計上されない。閉じていない `(` だけが続くファイルでは、実測で、ファイルの大きさの
-/// 約 110 倍(1 MiB で約 127 MiB)の最大 RSS になった。1 MiB なら、既定のヒープの上限
-/// (256 MiB)に収まる。計上の外に残る分は、ADR-0031 の 2026-10-15 の追記が受け入れた制約として
-/// 記録している。
-pub const max_file_bytes = 1024 * 1024;
+/// The most bytes of a source file (src/syntax/source.zig).
+pub const max_file_bytes = source_mod.max_file_bytes;
 
 /// The libraries that have been defined, or whose definition is in progress.
 pub const Registry = struct {
@@ -225,7 +220,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
     const files = ctx.files orelse return ctx.raise("unknown library: {s}", .{text});
     if (ctx.libraries.loading.items.len >= max_load_depth)
         return ctx.raise("implementation restriction: libraries import one another more than {d} deep, at {s}", .{ max_load_depth, text });
-    const file = resolve.openLibrary(files, scratch, &ctx.symbols, name) catch |e| switch (e) {
+    const opened = resolve.openLibrary(files, scratch, &ctx.symbols, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NotFound => return ctx.raise("unknown library: {s}", .{text}),
         error.LinkRefused => return ctx.raise("cannot load the library {s}: its file, or a directory on the way to it, is a link", .{text}),
@@ -233,7 +228,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
         error.Unreadable => return ctx.raise("cannot load the library {s}: the system refused to open its file", .{text}),
         else => |n| return nameFailure(ctx, text, n),
     };
-    const form = try readLibraryForm(ctx, scratch, files, file, text);
+    const form = try readLibraryForm(ctx, scratch, files, opened.file, text);
     // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
     if (form.asPair().?.cdr.asPair()) |rest| {
         if (!sameName(rest.car, name)) return ctx.raise(
@@ -241,6 +236,10 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
             .{ text, try nameText(ctx, scratch, rest.car) },
         );
     }
+    // 本体の `include` は、このファイルのディレクトリを基準にする。同じファイルを含む
+    // ことは、含んでいる最中のファイルとして見つけて拒否する。
+    try ctx.sources.append(ctx.persist, opened.origin);
+    defer _ = ctx.sources.pop();
     try defineLibrary(ctx, scratch, form);
     return ctx.libraries.find(name).?;
 }
@@ -253,33 +252,18 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
 /// 時点で手放す。
 fn readLibraryForm(ctx: *Context, scratch: std.mem.Allocator, files: resolve.Files, file: std.Io.File, text: []const u8) Error!Value {
     defer file.close(files.io);
-    var buffer: [4096]u8 = undefined;
-    var file_reader: std.Io.File.Reader = .init(file, files.io, &buffer);
-    const source = file_reader.interface.allocRemaining(ctx.heap.backing, .limited(max_file_bytes)) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.StreamTooLong => return ctx.raise("cannot load the library {s}: its file is larger than {d} bytes", .{ text, max_file_bytes }),
-        error.ReadFailed => return ctx.raise("cannot load the library {s}: its file could not be read", .{text}),
-    };
+    const subject = try std.fmt.allocPrint(scratch, "load the library {s}", .{text});
+    const source = try source_mod.readText(ctx, files, file, subject);
     defer ctx.heap.backing.free(source);
-    if (!std.unicode.utf8ValidateSlice(source)) return ctx.raise("cannot load the library {s}: its file is not valid UTF-8", .{text});
     if (ctx.heap.shouldCollect()) ctx.collectIdle();
     var r: reader.Reader = .init(source);
-    const sink: reader.Sink = .{ .alloc = ctx.persist, .heap = &ctx.heap, .symbols = &ctx.symbols };
-    const form = (try readDatum(ctx, &r, scratch, sink, text)) orelse
-        return ctx.raise("cannot load the library {s}: its file is empty", .{text});
+    const form = (try source_mod.readDatum(ctx, &r, scratch, subject)) orelse
+        return ctx.raise("cannot {s}: its file is empty", .{subject});
     if (topLevelForm(ctx, form) != .define_library)
-        return ctx.raise("cannot load the library {s}: its file must hold one (define-library ...) form", .{text});
-    if ((try readDatum(ctx, &r, scratch, sink, text)) != null)
-        return ctx.raise("cannot load the library {s}: its file holds more than one form", .{text});
+        return ctx.raise("cannot {s}: its file must hold one (define-library ...) form", .{subject});
+    if ((try source_mod.readDatum(ctx, &r, scratch, subject)) != null)
+        return ctx.raise("cannot {s}: its file holds more than one form", .{subject});
     return form;
-}
-
-/// The next datum of the file `r` reads, or null at its end.
-fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, sink: reader.Sink, text: []const u8) Error!?Value {
-    return r.next(scratch, sink) catch |e| switch (e) {
-        error.OutOfMemory, error.HeapLimit => |heap_error| ctx.heapFailure(heap_error),
-        else => |syntax| ctx.raise("cannot load the library {s}: {s}", .{ text, reader.describe(syntax) }),
-    };
 }
 
 /// What can go wrong in checking that a library name can name a file.
@@ -452,6 +436,24 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             var m: machine.Machine = .init(ctx, scratch);
             _ = try m.run(node);
         }
+    } else if (std.mem.eql(u8, keyword, "include")) {
+        for (parts[1..]) |name| {
+            var rest = try enterIncluded(ctx, scratch, name, "include");
+            defer leaveIncluded(ctx);
+            const target: expand.Target = .{ .table = table, .root = lib.root, .mode = .library };
+            while (rest.asPair()) |p| : (rest = p.cdr) {
+                if (ctx.heap.shouldCollect()) ctx.collectIdle();
+                const node = try expand.expandIn(ctx, scratch, p.car, target, .{});
+                var m: machine.Machine = .init(ctx, scratch);
+                _ = try m.run(node);
+            }
+        }
+    } else if (std.mem.eql(u8, keyword, "include-library-declarations")) {
+        for (parts[1..]) |name| {
+            var rest = try enterIncluded(ctx, scratch, name, "include-library-declarations");
+            defer leaveIncluded(ctx);
+            while (rest.asPair()) |p| : (rest = p.cdr) try declare(ctx, scratch, lib, p.car, pending);
+        }
     } else if (isLaterDeclaration(keyword)) {
         return ctx.raise("bad define-library: the declaration {s} is not supported yet", .{keyword});
     } else {
@@ -459,9 +461,37 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
     }
 }
 
+/// Reads the file that `name`, the file name of an `include` declaration, means, and
+/// returns its data as a list. The data are roots, and the file is the one that
+/// `include`s in it are relative to, until `leaveIncluded`.
+/// Why: 宣言の処理は、データの間に機械を走らせるので、GC が走りうる。読み終えたデータは
+/// どこからも指されていないので、リストにして、登録表の `loading` にルートとして載せる。
+fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: []const u8) Error!Value {
+    const text = (name.asString() orelse return ctx.raise("bad {s}: a file name must be a string", .{what})).bytes;
+    const opened = try source_mod.openIncluded(ctx, scratch, text, what);
+    const subject = try std.fmt.allocPrint(scratch, "{s} {s}", .{ what, text });
+    const data = try source_mod.readData(ctx, scratch, ctx.files.?, opened.file, subject);
+    var list: Value = .empty_list_value;
+    var i = data.len;
+    while (i > 0) {
+        i -= 1;
+        list = ctx.heap.cons(data[i], list) catch |e| return ctx.heapFailure(e);
+    }
+    try ctx.libraries.loading.append(ctx.persist, list);
+    errdefer _ = ctx.libraries.loading.pop();
+    try ctx.sources.append(ctx.persist, opened.origin);
+    return list;
+}
+
+/// Ends what `enterIncluded` began.
+fn leaveIncluded(ctx: *Context) void {
+    _ = ctx.sources.pop();
+    _ = ctx.libraries.loading.pop();
+}
+
 /// Whether `keyword` begins a declaration that R7RS has and a later slice adds.
 fn isLaterDeclaration(keyword: []const u8) bool {
-    for ([_][]const u8{ "include", "include-ci", "include-library-declarations", "cond-expand" }) |later| {
+    for ([_][]const u8{ "include-ci", "cond-expand" }) |later| {
         if (std.mem.eql(u8, keyword, later)) return true;
     }
     return false;
