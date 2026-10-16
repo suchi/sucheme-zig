@@ -1,0 +1,42 @@
+# スライス 3b: `apply` の周回が機械のステップの境目を通る。並べ直しは、継続のフレームに
+# 持たせて次のステップで続けるので、値と末尾呼び出しの意味は変わらない。ここでは、その
+# 形になってから境目をまたぐ組み合わせを確かめる。各ケースは新しいインタプリタで走るので、
+# 定義は使う式と同じ行に置く。規模を試す双子は tests/scheme/0217-apply-values-scale-small.txt と
+# tests/scheme-slow/0019-apply-values-scale.txt にある。
+
+# 1ステップで並べる個数(src/machine.zig の `spread_chunk`)の前後の長さのリスト。順序と個数が保たれる。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (check n) ((lambda (xs) (list (equal? (apply list xs) xs) (apply + xs))) (build n '()))) (list (check 63) (check 64) (check 65) (check 128) (check 129))
+((#t 2016) (#t 2080) (#t 2145) (#t 8256) (#t 8385))
+
+# リストの前の引数も、書いた順に並ぶ。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 130 '())) (equal? (apply list 'a 'b xs) (cons 'a (cons 'b xs)))
+#t
+
+# 並べたあとの呼び出しは、`apply` の呼び出しの継続のもとで走る。末尾でない位置では値が戻る。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (+ 1 (apply + (build 200 '())))
+20101
+
+# 入れ子の `apply` は、周回のたびに境目を通っても、同じ結果になる。
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 1000 (list + '(1 2))))
+3
+
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 1000 (list list 1 2 '(3 4))))
+(1 2 3 4)
+
+# 並べた呼び出しの失敗は、並べる前と同じ形で報告される。
+(apply car '(1 2))
+error: wrong number of arguments to car 1 2
+
+(apply (lambda (a) a) '(1 2))
+error: wrong number of arguments: expected 1, got 2
+
+(apply 1 '(2))
+error: not a procedure
+
+# 捕捉した継続は、`apply` を通った呼び出しの中でも、再び入れる。
+((lambda (k n) ((lambda (v) (set! n (+ n 1)) (if (< n 3) (k (+ v 10)) (list v n))) (apply (lambda (x) (call/cc (lambda (c) (set! k c) x))) '(1)))) #f 0)
+(21 3)
+
+# ハンドラは、`apply` が並べた呼び出しの失敗を受け取れる。
+(with-exception-handler (lambda (e) 42) (lambda () (+ 1 (raise-continuable (apply list '(c))))))
+43

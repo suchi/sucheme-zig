@@ -1,0 +1,9 @@
+# スライス 3b のレビューで、ミューテーションが生き残った箇所を固定する補足。
+# 生き残ったのは、`equal?` が記録を始める降下の数(src/prim/equiv.zig の `unrecorded_steps`)の
+# 境目と、`apply` が1ステップで並べる個数(src/machine.zig の `spread_chunk`)の大きさで、
+# どちらも単体テストで固定している。ここは、その境目をまたぐ値の結果が保たれることを、
+# Scheme から確かめる。各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 記録を始める降下の数(256)の前後の長さの、鎖の比較。
+(define (chain n) (if (= n 0) '() (cons 1 (chain (- n 1))))) (list (equal? (chain 255) (chain 255)) (equal? (chain 256) (chain 256)) (equal? (chain 257) (chain 257)) (equal? (chain 257) (chain 256)))
+(#t #t #t #f)

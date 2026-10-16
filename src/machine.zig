@@ -369,8 +369,18 @@ pub const Machine = struct {
                     // 受け手を呼ぶ。このフレームはすでに外れているので、受け手は末尾呼び出し
                     // である(R7RS 3.5)。
                     .values_receiver => |consumer| {
-                        const call = try self.receiverCall(consumer, value);
-                        take(try self.apply(&kont, &dyn, call.args, call.count, .limit), &env, &control, &value);
+                        take(try self.receive(&kont, &dyn, consumer, value), &env, &control, &value);
+                    },
+                    // 引数の並べ直しの続きである。1ステップで並べるのは、一定の個数までにする。
+                    // 残りが無くなったら、このフレームは外れているので、末尾呼び出しとして適用する。
+                    .spread => |s| {
+                        const lined = try self.lineUp(s);
+                        if (lined.isDone()) {
+                            take(try self.apply(&kont, &dyn, lined.chain, lined.count, .limit), &env, &control, &value);
+                        } else {
+                            kont = try self.push(kont, null, .{ .spread = lined });
+                            value = .unspecified_value;
+                        }
                     },
                 }
             }
@@ -553,10 +563,10 @@ pub const Machine = struct {
         var args = initial_args;
         var count = initial_count;
         var budget = initial_budget;
-        // Why: `apply` の被呼び出し側を、Zig の再帰でなく周回で適用する。`apply` で `apply`
-        // を呼ぶ入れ子は、データから好きなだけ深く作れるので、再帰にすると Zig のスタックを
-        // 使い切りうる。ただし周回は1ステップの中で回るので、その間にできたごみは回収
-        // されない。この制約と直す時期は、ADR-0031 の 2026-10-13 の追記にある。
+        // Why: 機械操作プリミティブが置き換えた呼び出しを、Zig の再帰でなく周回で適用する。
+        // 他の機械操作プリミティブは、手続きの引数の個数が決まっているので、データから好きなだけ
+        // 深い入れ子は作れない。作れるのは `apply` で、`apply` は並べ直しを継続のフレームに
+        // 持たせて戻るので、周回に入らない(ADR-0031 の 2026-10-15 の追記(3))。
         const operator = while (true) {
             var operator_node = args;
             while (operator_node.next) |n| operator_node = n;
@@ -572,11 +582,14 @@ pub const Machine = struct {
                     // Why: 並べ直した呼び出しは、継続のフレームを積まずに適用する。被呼び出し側は
                     // `apply` の呼び出しの継続のもとで走るので、`apply` の第1引数の呼び出しは
                     // 末尾呼び出しになる(R7RS 3.5、ADR-0029 の追記)。
+                    // Why: 並べ直しは、ここでは始めるだけで、継続のフレームに持たせて次の
+                    // ステップへ送る。周回のたびに境目を通るので、`apply` で `apply` を呼ぶ入れ子や、
+                    // 自分を指す引数のリストの周回でも、その間のごみを回収できる。フレームは
+                    // 次のステップが外してから適用するので、末尾呼び出しは保たれる。
                     .apply => {
-                        const spread = try self.spreadApply(prim, args, count);
-                        args = spread.args;
-                        count = spread.count;
-                        budget = .limit;
+                        const start = try self.startApply(prim, args, count);
+                        kont.* = try self.push(kont.*, null, .{ .spread = start });
+                        return .{ .value = .unspecified_value };
                     },
                     .with_exception_handler => {
                         args = try self.installHandler(prim, kont, dyn, args);
@@ -703,19 +716,27 @@ pub const Machine = struct {
         return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e, args, count);
     }
 
-    /// A call and the number of its operands, as `apply` takes them.
-    const Call = struct { args: *const Args, count: usize };
+    /// How many operands one step lines up (`Kont.Step.spread`).
+    /// Why: 1ステップで確保する量を、リストの長さによらず一定にするためである。大きすぎると、
+    /// 境目の GC が走る前に上限までの余りを使い切る(ADR-0031)。小さすぎると、ステップと
+    /// 継続のフレームが増える。
+    const spread_chunk = 64;
 
-    /// The call that `(apply proc arg1 ... list)` stands for: `proc` applied to
-    /// `arg1 ...` followed by the elements of `list` (R7RS 6.10).
+    /// Starts the call that `(apply proc arg1 ... list)` stands for: `proc` applied
+    /// to `arg1 ...` followed by the elements of `list` (R7RS 6.10). It lines up
+    /// `proc` and `arg1 ...`, and leaves the elements of `list` for `lineUp`.
     /// `args` は `apply` の呼び出しの値の鎖で、`list` から逆順に並び、末尾に `apply`
     /// 自身がある。鎖は捕捉された継続と共有されうる(`Args` の説明)ので書き換えず、
     /// `proc` を末尾に置く新しい鎖を作る。`prim` は `apply` 自身で、失敗の報告に使う。
-    fn spreadApply(self: *Machine, prim: *const value_mod.Primitive, args: *const Args, count: usize) Error!Call {
+    /// リストの前の引数は、ソースに書いた数のほかに、入れ子の `apply` が並べた分も
+    /// ありうるので、データの大きさに比例しうる。その分は、ここで1ステップに並べる。
+    fn startApply(self: *Machine, prim: *const value_mod.Primitive, args: *const Args, count: usize) Error!Kont.Spread {
         const ctx = self.ctx;
         const list = args.value;
         // 確保より前に検査する。長い非真正リストを、上限超過として報告しないためである。
-        const length = pair.properLength(list) orelse return primitiveFailure(ctx, prim, error.WrongType, args, count);
+        // 並べる個数は、`lineUp` が並べた分を数える。リストは、並べ終えるまでに書き換わらない。
+        // 間に走る Scheme のコードが無いからである。
+        _ = pair.properLength(list) orelse return primitiveFailure(ctx, prim, error.WrongType, args, count);
         // `proc` と、リストの前の引数を、書いた順に並べる。
         const leading = count - 1;
         var small: [small_operands]Value = undefined;
@@ -724,12 +745,25 @@ pub const Machine = struct {
         defer if (leading > small.len) self.scratch.free(before);
         fill(before, args.next.?);
         // Why: GC はステップの間でしか走らない(ADR-0031)。作りかけの鎖はどのルートからも
-        // 辿れないが、同じステップのうちに適用されるので、回収されない。
+        // 辿れないが、同じステップのうちにフレームに載るので、回収されない。
         var chain: *const Args = try ctx.create(Args, .{ .value = before[0], .next = null });
         for (before[1..]) |v| chain = try ctx.create(Args, .{ .value = v, .next = chain });
-        var it = list;
-        while (it.asPair()) |p| : (it = p.cdr) chain = try ctx.create(Args, .{ .value = p.car, .next = chain });
-        return .{ .args = chain, .count = leading - 1 + length };
+        return .{ .chain = chain, .count = leading - 1, .rest = list, .index = 0 };
+    }
+
+    /// Lines up the next chunk of the operands of `s`, at most `spread_chunk` of them,
+    /// and returns what is left to do.
+    /// 最後のオペランドから順に前へ継ぎ足すので、鎖は最後のオペランドから並ぶ。
+    /// Why: GC はステップの間でしか走らない(ADR-0031)。作りかけの鎖は、このステップの
+    /// うちに継続のフレームか呼び出しに載るので、回収されない。
+    fn lineUp(self: *Machine, s: Kont.Spread) Error!Kont.Spread {
+        var lined = s;
+        for (0..spread_chunk) |_| {
+            const operand = lined.takeNext() orelse break;
+            lined.chain = try self.ctx.create(Args, .{ .value = operand, .next = lined.chain });
+            lined.count += 1;
+        }
+        return lined;
     }
 
     /// What `(with-exception-handler handler thunk)` does (R7RS 6.11): puts a
@@ -855,18 +889,22 @@ pub const Machine = struct {
         return call;
     }
 
-    /// The call of `consumer` with `received`, what a producer returned: its
-    /// values when it returned a multiple-values object, and otherwise the one
-    /// value.
+    /// Calls `consumer` with `received`, what a producer returned: with its values
+    /// when it returned a multiple-values object, and otherwise with the one value.
+    /// 複数値のオブジェクトの値は、`apply` のリストと同じく、境目を挟む複数のステップに
+    /// 分けて並べる。1個の値は、並べるのが一定の量なので、その場で呼ぶ。
     /// 引数の鎖は最後のオペランドから並べ、末尾に `consumer` を置く。
-    fn receiverCall(self: *Machine, consumer: Value, received: Value) Error!Call {
+    fn receive(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, consumer: Value, received: Value) Error!Applied {
         const ctx = self.ctx;
         // Why: GC はステップの間でしか走らない(ADR-0031)。作りかけの鎖はどのルートからも
-        // 辿れないが、同じステップのうちに適用されるので、回収されない。
-        var chain: *const Args = try ctx.create(Args, .{ .value = consumer, .next = null });
-        const items: []const Value = if (received.asMultipleValues()) |m| m.items else (&received)[0..1];
-        for (items) |item| chain = try ctx.create(Args, .{ .value = item, .next = chain });
-        return .{ .args = chain, .count = items.len };
+        // 辿れないが、同じステップのうちに適用されるか、フレームに載るので、回収されない。
+        const chain: *const Args = try ctx.create(Args, .{ .value = consumer, .next = null });
+        if (received.asMultipleValues() == null) {
+            const args = try ctx.create(Args, .{ .value = received, .next = chain });
+            return self.apply(kont, dyn, args, 1, .limit);
+        }
+        kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = chain, .count = 0, .rest = received, .index = 0 } });
+        return .{ .value = .unspecified_value };
     }
 
     /// The condition `(error message obj ...)` makes: the message, and the
@@ -1385,6 +1423,98 @@ test "slow: a million tail calls through apply keep the continuation at the same
     defer f.deinit();
     const depths = try applyLoopDepths(&f, 10, 1_000_000);
     try std.testing.expectEqual(depths[0], depths[1]);
+}
+
+/// 生きているデータは収まり、1周ごとのごみを周回の回数ぶんためると収まらない上限。
+/// `(nest n l)` のリストは、1段ごとにペア2個を持つ。`(apply apply l)` は1周ごとに引数の
+/// 鎖のノードを3個(`apply` と、リストの2要素)確保する。
+fn applyNestLimit(n: usize) usize {
+    const live = 2 * n * heap_mod.cellBytes(value_mod.Pair);
+    return live + live / 4;
+}
+
+test "a collection runs between the rounds of an apply nested as deep as the data, so the rounds fit in the live data" {
+    const n = 4000;
+    const nest = "(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l))))";
+    // 上限は、生きている量が収まる大きさにして、周回のごみ(3n 個の引数のノード)は
+    // 収まらない大きさにしてある。
+    try std.testing.expect(3 * n * heap_mod.cellBytes(Args) > applyNestLimit(n) - 2 * n * heap_mod.cellBytes(value_mod.Pair));
+    // 対照: 同じデータは、ゆとりのある上限なら通る。周回が境目を通っても、同じ値になる。
+    {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        _ = try f.eval(nest);
+        _ = try f.eval(std.fmt.comptimePrint("(define l (nest {d} (list + '(1 2))))", .{n}));
+        try f.expectInt(3, "(apply apply l)");
+    }
+    for ([_]bool{ false, true }) |stress| {
+        var f: Fixture = undefined;
+        try f.initWith(.{ .limit = applyNestLimit(n), .min_threshold = 16 * 1024, .stress = stress });
+        defer f.deinit();
+        _ = try f.eval(nest);
+        _ = try f.eval(std.fmt.comptimePrint("(define l (nest {d} (list + '(1 2))))", .{n}));
+        const before = f.ctx.heap.collections;
+        // 周回のごみは、周回の間の境目で回収される。
+        try f.expectInt(3, "(apply apply l)");
+        try std.testing.expect(f.ctx.heap.collections > before);
+    }
+}
+
+test "a collection runs while a call-with-values lines up the values it received" {
+    const n = 4000;
+    const cell = heap_mod.cellBytes;
+    // 受け手を呼ぶ時点で、ヒープには、リスト `xs` と、`(apply values xs)` が並べた引数の鎖
+    // (もうごみである)と、複数値のオブジェクトがある。受け手に渡す引数の鎖は、その上に
+    // さらに `n` 個のノードを足す。上限は、鎖を1ステップで並べ切ると収まらず、塊ごとに
+    // 境目で GC が走れば収まる大きさにする。生きているのは、鎖の分を除いて、`xs` と
+    // オブジェクトだけである。
+    const before = n * (cell(value_mod.Pair) + cell(Args) + @sizeOf(Value));
+    const limit = before + n * cell(Args) - 1;
+    try std.testing.expect(limit - limit / 16 > before);
+    var f: Fixture = undefined;
+    // 最初の GC を、上限の手前まで遅らせる。
+    try f.initWith(.{ .limit = limit, .min_threshold = limit });
+    defer f.deinit();
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    _ = try f.eval(std.fmt.comptimePrint("(define xs (build {d} '()))", .{n}));
+    const sum: i64 = n * (n + 1) / 2;
+    try f.expectInt(sum, "(call-with-values (lambda () (apply values xs)) +)");
+}
+
+test "apply lines up a list in chunks and keeps the order around the size of a chunk" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    const c = Machine.spread_chunk;
+    // 一つの塊に収まる長さ、ちょうど収まる長さ、はみ出す長さ、複数の塊になる長さ。
+    for ([_]usize{ 0, 1, c - 1, c, c + 1, 2 * c, 2 * c + 1, 5 * c + 3 }) |n| {
+        var src: [160]u8 = undefined;
+        _ = try f.eval(try std.fmt.bufPrint(&src, "(define xs (build {d} '()))", .{n}));
+        // リストの前の引数も、書いた順に並ぶ。
+        const same = try f.eval("(equal? (apply list xs) xs)");
+        try std.testing.expect(same.isTrue());
+        const lead = try f.eval("(equal? (apply list 'a 'b xs) (cons 'a (cons 'b xs)))");
+        try std.testing.expect(lead.isTrue());
+        const sum = try f.eval("(apply + xs)");
+        try std.testing.expectEqual(@as(i64, @intCast(n * (n + 1) / 2)), sum.asFixnum().?);
+    }
+}
+
+test "apply lines up a long list in few steps, not one step for each element" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .stress = true });
+    defer f.deinit();
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    const n = 1280;
+    _ = try f.eval(std.fmt.comptimePrint("(define xs (build {d} '()))", .{n}));
+    // 強制 GC のモードでは、ステップごとに `total_steps` が増える。塊で並べるなら、
+    // ステップ数は要素数の数分の1に収まる。1要素ごとに1ステップなら、n を超える。
+    const before = f.ctx.heap.total_steps;
+    const sum = try f.eval("(apply + xs)");
+    try std.testing.expectEqual(@as(i64, n * (n + 1) / 2), sum.asFixnum().?);
+    try std.testing.expect(f.ctx.heap.total_steps - before <= n / 8);
 }
 
 test "apply reports a last argument that is not a list before it allocates anything" {

@@ -42,7 +42,7 @@ export class Sucheme {
       env: {
         host_write_stderr(ptr, len) {
           const memory = instance.exports.memory;
-          onStderr(decoder.decode(new Uint8Array(memory.buffer, ptr, len)));
+          onStderr(decoder.decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0)));
         },
       },
     };
@@ -52,7 +52,9 @@ export class Sucheme {
   }
 
   #bytes(ptr, len) {
-    return new Uint8Array(this.#exports.memory.buffer, ptr, len);
+    // Why: wasm32 の i32 は JS に符号つきで届く。2 GiB 以上のアドレスは負の数になるので、
+    // 符号なしに直してから使う(直さないと、ヒープが大きいときに不正な範囲として落ちる)。
+    return new Uint8Array(this.#exports.memory.buffer, ptr >>> 0, len >>> 0);
   }
 
   #takeOutput() {

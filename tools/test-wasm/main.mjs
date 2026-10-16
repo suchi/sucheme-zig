@@ -42,7 +42,7 @@ function instantiate() {
   const instance = new WebAssembly.Instance(compiled, {
     env: {
       host_write_stderr(ptr, len) {
-        stderr.push(decoder.decode(new Uint8Array(memory.buffer, ptr, len)));
+        stderr.push(decoder.decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0)));
       },
     },
   });
@@ -55,7 +55,8 @@ function instantiate() {
     stderr,
     /** Views the instance memory. メモリは grow で付け替わるので、使うたびに buffer を取り直す。 */
     bytes(ptr, len) {
-      return new Uint8Array(memory.buffer, ptr, len);
+      // Why: wasm32 の i32 は JS に符号つきで届く。2 GiB 以上のアドレスは符号なしに直す。
+      return new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0);
     },
     /** Reads the output buffer as a string without clearing it. */
     output() {

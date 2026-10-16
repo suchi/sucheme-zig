@@ -1,0 +1,57 @@
+# スライス 3b: 循環したデータの `equal?`(R7RS 6.1)。循環は `set-cdr!` と `set-car!` で作る。
+# `equal?` は循環したデータでも必ず止まる。構造が同じなら真で、違えば偽になる。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+# 循環したデータは表示しない(プリンタはデータラベルを持たない)。
+
+# 同じ形の2つの輪。
+(define a (list 1 2)) (set-cdr! (cdr a) a) (define b (list 1 2)) (set-cdr! (cdr b) b) (equal? a b)
+#t
+
+# 1つのペアが自分を指す輪。
+(define a (list 1)) (set-cdr! a a) (define b (list 1)) (set-cdr! b b) (equal? a b)
+#t
+
+# 要素が違う輪は等しくない。
+(define a (list 1 2)) (set-cdr! (cdr a) a) (define b (list 1 3)) (set-cdr! (cdr b) b) (equal? a b)
+#f
+
+# 長さが違っても、同じ無限のリストを表す輪は等しい。
+(define a (list 1 2)) (set-cdr! (cdr a) a) (define b (list 1 2 1 2)) (set-cdr! (cdr (cdr (cdr b))) b) (equal? a b)
+#t
+
+# 同じ無限のリストでなければ、長さの倍数でも等しくない。
+(define a (list 1 2)) (set-cdr! (cdr a) a) (define b (list 1 2 1 3)) (set-cdr! (cdr (cdr (cdr b))) b) (equal? a b)
+#f
+
+# 終わりのある同じ長さのリストと輪は、輪の先が続く分だけ違う。
+(define a (list 1 2)) (set-cdr! (cdr a) a) (equal? a (list 1 2 1 2 1 2))
+#f
+
+(define a (list 1 2)) (set-cdr! (cdr a) a) (equal? (list 1 2 1 2 1 2) a)
+#f
+
+# car が自分を指すペア。
+(define a (list 1)) (set-car! a a) (define b (list 1)) (set-car! b b) (equal? a b)
+#t
+
+# car の側の輪と、cdr の側の輪が混ざったデータ。
+(define a (list 1 (list 2))) (set-cdr! (car (cdr a)) a) (define b (list 1 (list 2))) (set-cdr! (car (cdr b)) b) (equal? a b)
+#t
+
+(define a (list 1 (list 2))) (set-cdr! (car (cdr a)) a) (define b (list 1 (list 3))) (set-cdr! (car (cdr b)) b) (equal? a b)
+#f
+
+# 輪の一部だけを共有する2つのデータ。
+(define tail (list 3 4)) (set-cdr! (cdr tail) tail) (equal? (cons 1 tail) (cons 1 (list 3 4 3 4)))
+#f
+
+(define tail (list 3 4)) (set-cdr! (cdr tail) tail) (define other (list 3 4)) (set-cdr! (cdr other) other) (equal? (cons 1 tail) (cons 1 other))
+#t
+
+# 輪が、記録を始める回数(256回の降下)をまたぐ長さのとき。
+(define (extend! last k n head) (if (= k n) (set-cdr! last head) (begin (set-cdr! last (list 1)) (extend! (cdr last) (+ k 1) n head)))) (define (ring n) ((lambda (head) (extend! head 1 n head) head) (list 1))) (list (equal? (ring 300) (ring 300)) (equal? (ring 300) (ring 299)) (equal? (ring 300) (ring 150)))
+(#t #t #t)
+
+# `equal?` が止まったあとも、輪は壊れていない。
+(define a (list 1 2)) (set-cdr! (cdr a) a) (define b (list 1 2)) (set-cdr! (cdr b) b) (list (equal? a b) (car a) (car (cdr a)) (car (cdr (cdr a))) (eq? a (cdr (cdr a))))
+(#t 1 2 1 #t)

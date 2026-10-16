@@ -1,0 +1,23 @@
+# スライス 3b: `set-car!` と `set-cdr!` で作った、自分を指すデータを `apply` に渡す。
+# 並べ直しは、引数のリストを書き換えず、並べ終えるまでリストの形を変えない。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+# 循環したデータは表示しない(プリンタはデータラベルを持たない)。
+
+# 要素が引数のリスト自身を指していても、並べられる。
+(define l (list 1 2)) (set-car! l l) (define r (apply list l)) (list (eq? (car r) l) (car (cdr r)))
+(#t 2)
+
+# 並べた引数は新しい鎖で、元のリストを書き換えても影響しない。
+(define l (list 1 2 3)) (define r (apply list l)) (set-car! r 99) (set-cdr! (cdr l) '()) (list r l)
+((99 2 3) (1 2))
+
+# 輪になったリストは、正しいリストではないので、型の誤りとして捕まえられる。長くても同じである。
+(define l (list 1 2)) (set-cdr! (cdr l) l) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'rejected)) (lambda () (apply + l)))))
+rejected
+
+(define l (list 1)) (set-cdr! l l) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'rejected)) (lambda () (apply list l)))))
+rejected
+
+# 手続きの前の引数が輪を指していても、リストの部分が正しければ並べられる。
+(define l (list 1 2)) (set-cdr! (cdr l) l) (eq? (car (apply list l '(3))) l)
+#t

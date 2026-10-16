@@ -1,0 +1,28 @@
+# スライス 3b: 共有構造(同じ部分を何度も指すデータ)の `equal?`(R7RS 6.1)。
+# 各段が次の段を2回指すデータは、段数の指数の数のペアを辿る木として比べると終わらない。
+# `equal?` は訪問済みの対を覚えるので、段数に比例する時間で終わる。段数を、指数の
+# 比べ方では終わらない大きさにしてある。再現入力は docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md の注にある。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。1ケースは1行である。
+
+(define (dup x) (list x x)) (define (d n) (if (= n 0) 'a (dup (d (- n 1))))) (equal? (d 100) (d 100))
+#t
+
+# 底が違えば偽になる。
+(define (dup x) (list x x)) (define (d n b) (if (= n 0) b (dup (d (- n 1) b)))) (equal? (d 100 'a) (d 100 'b))
+#f
+
+# 片方だけが共有しているときも、同じ形なら等しい。共有していない木は段数の指数の大きさなので、小さくする。
+(define (dup x) (list x x)) (define (d n) (if (= n 0) 'a (dup (d (- n 1))))) (define (c n) (if (= n 0) 'a (list (c (- n 1)) (c (- n 1))))) (list (equal? (d 14) (c 14)) (equal? (c 14) (d 14)))
+(#t #t)
+
+# 差が、先に比べる側ではなく、後に比べる側にあるとき。
+(define (dup x) (list x x)) (define (d n b) (if (= n 0) b (dup (d (- n 1) b)))) (equal? (list (d 100 'a) (d 100 'a)) (list (d 100 'a) (d 100 'b)))
+#f
+
+# 同じ共有構造を、いくつもの引数に渡す。
+(define (dup x) (list x x)) (define (d n) (if (= n 0) 'a (dup (d (- n 1))))) (define x (d 100)) (equal? (list x x x) (list x (d 100) (d 100)))
+#t
+
+# 共有構造と、循環の両方を含むデータ。
+(define (dup x) (list x x)) (define (d n) (if (= n 0) 'a (dup (d (- n 1))))) (define a (d 100)) (set-cdr! (cdr a) a) (define b (d 100)) (set-cdr! (cdr b) b) (equal? a b)
+#t

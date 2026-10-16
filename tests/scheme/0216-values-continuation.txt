@@ -1,0 +1,31 @@
+# スライス 3b: 継続を個数の多い引数で起動する。継続は、1個以外の引数を複数値のオブジェクトにして
+# 受け取る。引数は `apply` が境目を挟んで並べ、並べ終えてから継続を起動する。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 個数が塊の前後でも、継続は、値を書いた順に受け取る。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (through n) ((lambda (xs) (equal? (call-with-values (lambda () (call/cc (lambda (k) (apply k xs)))) list) xs)) (build n '()))) (list (through 0) (through 1) (through 2) (through 64) (through 65) (through 130))
+(#t #t #t #t #t #t)
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (call-with-values (lambda () (call/cc (lambda (k) (apply k (build 80 '()))))) +)
+3240
+
+# 継続に渡す値の前の引数と、リストの要素が、書いた順に並ぶ。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (call-with-values (lambda () (call/cc (lambda (k) (apply k 'a 'b (build 3 '()))))) list)
+(a b 1 2 3)
+
+# 0個と1個。1個は複数値のオブジェクトにならない。
+(call-with-values (lambda () (call/cc (lambda (k) (apply k '())))) list)
+()
+
+(+ 1 (call/cc (lambda (k) (apply k '(41)))))
+42
+
+# 値を1個要求する継続に、複数の値を渡すと誤りになる。
+(+ 1 (call/cc (lambda (k) (apply k '(1 2)))))
+error: wrong number of values: expected 1, got 2
+
+# 最上位は、複数値を1行に1つずつ出す。
+(apply values '(1 2 3))
+1
+2
+3

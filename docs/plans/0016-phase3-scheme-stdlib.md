@@ -331,11 +331,12 @@ flowchart TD
 
 | スライス | 状態 | PR |
 | --- | --- | --- |
-| 3a | 実装済み(作業ツリー、PR なし)。埋め込み、`(sucheme derived)` の `when` と `unless`、ネイティブと WASM のテストは済み。ライブラリ名の索引は、名前が要るライブラリが現れるまで足さない | - |
-| 3b から 3r | 未着手 | - |
+| 3a | 実装済み。埋め込み、`(sucheme derived)` の `when` と `unless`、ネイティブと WASM のテストは済み。ライブラリ名の索引は、名前が要るライブラリが現れるまで足さない。マージ済み | [#108](https://github.com/suchi/sucheme-zig/pull/108) |
+| 3b | 着手(作業ツリー、PR なし)。`set-car!` と `set-cdr!` は済み。`equal?` の訪問済みの集合は済み(番地の union-find、計上あり、テストあり)。`apply` の周回は済み(`Kont.Step.spread`、テストあり)。複数値のうち、`call-with-values` の受け手の鎖は済み。`Machine.valuesOf` の複数値のオブジェクトの本体は、1回の確保が残り、ユーザーの判断を待つ(ADR-0031 の 2026-10-15 の追記(3)) | - |
+| 3c から 3r | 未着手 | - |
 
 ## 次にやること
 
-1. 3a と 3b を、別の作業ツリーで並行に始める。3a は `build.zig` と `src/resolve.zig`、3b は `src/prim/pair.zig` と `src/prim/equiv.zig` と `src/machine.zig` を触るので、ファイルは重ならない。
+1. 3a はマージ済み。3b は PR を作り、ミューテーションのレビューを受ける。3b のマージのあとに、3c から 3f と 3g を始める。3g は 3a と 3b に依存し、3h は 3g のあとである(上の依存の図)。
 2. 3c から 3f は、3b が `src/value.zig` と `src/prim/table.zig` に入れた変更を取り込んでから始める。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。

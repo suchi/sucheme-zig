@@ -1,0 +1,18 @@
+# tests/scheme-slow/0019-apply-values-scale.txt の縮小版。同じ論理を、毎回の門で走る
+# 大きさで通す。`apply` の入れ子の周回と、数千個の複数値の引数の並べ直しが、GC が何度も
+# 走る間(実行器は1ステップごとに GC するモードでも走らせる)も保たれる。
+
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (apply apply (nest 3000 (list + '(1 2))))
+3
+
+(define (nest n l) (if (= n 0) l (nest (- n 1) (list apply l)))) (define l (nest 2000 (list + '(1 2)))) (list (apply apply l) (apply apply l))
+(3 3)
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 2000 '())) (call-with-values (lambda () (apply values xs)) +)
+2001000
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 1000 '())) (define (rep k) (if (= k 0) 'done (begin (call-with-values (lambda () (apply values xs)) +) (rep (- k 1))))) (rep 20)
+done
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 2000 '())) (call-with-values (lambda () (call/cc (lambda (k) (apply k xs)))) +)
+2001000

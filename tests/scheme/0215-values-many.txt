@@ -1,0 +1,37 @@
+# スライス 3b: 個数の多い複数値。`call-with-values` の受け手の引数の鎖は、複数値の
+# オブジェクトが届いたとき、継続のフレームに持たせて、境目を挟む複数のステップで並べる。
+# 1ステップで並べる個数(src/machine.zig の `spread_chunk`)の前後の個数で、値と順序が
+# 保たれることを確かめる。各ケースは新しいインタプリタで走るので、定義は使う式と
+# 同じ行に置く。規模を試す双子は tests/scheme/0217-apply-values-scale-small.txt と
+# tests/scheme-slow/0019-apply-values-scale.txt にある。
+
+# 個数が塊の前後でも、受け手は、値を書いた順に受け取る。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (through n) ((lambda (xs) (equal? (call-with-values (lambda () (apply values xs)) list) xs)) (build n '()))) (list (through 0) (through 1) (through 2) (through 63) (through 64) (through 65) (through 128) (through 129) (through 1000))
+(#t #t #t #t #t #t #t #t #t)
+
+# 余りを受ける受け手と、個数を決めた受け手。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 200 '())) (call-with-values (lambda () (apply values xs)) (lambda (a b . r) (list a b (length r))))
+(1 2 198)
+
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define xs (build 65 '())) (call-with-values (lambda () (apply values xs)) +)
+2145
+
+# 受け手の個数が合わなければ、ふつうの手続き呼び出しと同じ誤りになる。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (call-with-values (lambda () (apply values (build 100 '()))) (lambda (a b) a))
+error: wrong number of arguments: expected 2, got 100
+
+# 受け手は末尾呼び出しで、受け手の戻りが call-with-values の値になる。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (+ 1 (call-with-values (lambda () (apply values (build 100 '()))) +))
+5051
+
+# 生産者が `values` 自身なら、複数値が複数値のまま、もう一度受け手に渡る。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (call-with-values (lambda () (call-with-values (lambda () (apply values (build 70 '()))) values)) +)
+2485
+
+# 受け手がまた `call-with-values` を呼ぶ入れ子でも、同じである。
+(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define (rest-sum . xs) (apply + xs)) (call-with-values (lambda () (apply values (build 90 '()))) (lambda args (call-with-values (lambda () (apply values args)) rest-sum)))
+4095
+
+# 1個の値の受け手は、複数値のオブジェクトを作らずに呼ばれる。
+(call-with-values (lambda () 7) (lambda (x) (* x 6)))
+42

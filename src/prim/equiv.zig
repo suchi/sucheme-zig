@@ -2,9 +2,12 @@
 //!
 //! `eq?` と `eqv?` の実体は `Value` の関数である(値の表現を隠す、ADR-0002)。`equal?`
 //! は構造を比べるのでここに置く。
+//!
+//! 訪問済みの集合の実装は、番地の union-find である(選んだ理由は `isEqual` の doc コメント)。
 
 const std = @import("std");
 const value = @import("../value.zig");
+const heap_mod = @import("../heap.zig");
 const Value = value.Value;
 const Primitive = value.Primitive;
 const Services = value.Services;
@@ -30,7 +33,24 @@ fn eqv(_: *const Services, args: []const Value) Error!Value {
 
 /// `(equal? obj1 obj2)` (R7RS 6.1).
 fn equal(services: *const Services, args: []const Value) Error!Value {
-    return .fromBool(try isEqual(services.scratch, args[0], args[1]));
+    const heap = services.heap;
+    // Why: 訪問済みの集合は、比べるデータの大きさとともに伸びる作業領域なので、ヒープの
+    // 上限に計上する(`heap.Charged`。docs/design/runtime.md の計上の対象)。計上は、
+    // ふつうは数えるだけで、上限の検査は展開の間だけ効く(`external_enforced`)ので、
+    // この間も検査を入れる。確保を断られたことは、`external_refused` で見分ける。
+    // 比較は機械のステップの外で走らず、展開と重ならないので、前の値を戻せば足りる。
+    const was_enforced = heap.external_enforced;
+    const was_refused = heap.external_refused;
+    heap.external_enforced = true;
+    heap.external_refused = false;
+    defer {
+        heap.external_enforced = was_enforced;
+        heap.external_refused = was_refused;
+    }
+    var charged: heap_mod.Charged = .{ .heap = heap, .backing = heap.backing };
+    const result = isEqual(services.scratch, charged.allocator(), args[0], args[1]) catch
+        return if (heap.external_refused) error.HeapLimit else error.OutOfMemory;
+    return .fromBool(result);
 }
 
 /// What is left to compare once the pair or vector being compared is descended
@@ -91,20 +111,76 @@ const Stack = struct {
     }
 };
 
+/// The number of descents into pairs and vectors that are not recorded.
+/// 短いデータの比較で、訪問済みの集合の確保を避けるための数である。これを超えて降りる
+/// 比較だけが、集合を引き始める。
+const unrecorded_steps = 256;
+
+/// The pairs and vectors, by address, that `isEqual` has taken to be equal, as a
+/// union-find: the ones that fall in one class are taken to be equal.
+///
+/// 木の根を持つ表だけを持ち、親のない節点は表に載せない(自分が根である)。
+const Visited = struct {
+    parent: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    alloc: std.mem.Allocator,
+
+    fn deinit(self: *Visited) void {
+        self.parent.deinit(self.alloc);
+    }
+
+    /// The root of the class of `node`. 道の半分を縮める(path halving)。
+    fn find(self: *Visited, node: usize) usize {
+        var n = node;
+        while (self.parent.getPtr(n)) |parent| {
+            if (self.parent.get(parent.*)) |grand| parent.* = grand;
+            n = parent.*;
+        }
+        return n;
+    }
+
+    /// Whether `x` and `y` are in one class already. If not, puts them in one.
+    /// 併合のたびに根が1つ減るので、表の項目の数は、比べた節点の数を超えない。
+    fn seen(self: *Visited, x: usize, y: usize) error{OutOfMemory}!bool {
+        const rx = self.find(x);
+        const ry = self.find(y);
+        if (rx == ry) return true;
+        try self.parent.put(self.alloc, rx, ry);
+        return false;
+    }
+};
+
 /// Whether `a` and `b` are `equal?`: pairs and vectors compared by their parts,
 /// strings by their characters, everything else by `eqv?` (R7RS 6.1).
 ///
 /// Zig の再帰を使わず、`Stack` に未比較の組を積んで進める。ペアは car を先に降り、
 /// cdr を積む。長いリストは cdr を積んでは取り出すので、積みは深くならない。ベクタは、
-/// 次の要素の位置を積む。データの変更が無いので循環は作れず、止まらなくなることはない。
-/// 訪問済みの集合は持たない。そのため、同じ部分を何度も指すデータ(共有構造)では、
-/// 比較の回数が深さに対して指数に増える。循環の停止と合わせて、データの変更が入る
-/// 段階3の最初のスライスで入れる(docs/roadmap.md の段階3。経緯は docs/plans/0010-slices-1k-1l-primitives-and-repl-continuation.md)。
+/// 次の要素の位置を積む。
+///
+/// 循環したデータと、同じ部分を何度も指すデータ(共有構造)のために、訪問済みの集合
+/// (`Visited`、番地の union-find)を持つ。比べる2つのペア(ベクタ)を併合し、同じ類に
+/// 再び出会ったら、等しいとして打ち切る。等しいという仮定の下で比べて矛盾が無ければ
+/// 等しい、という扱いで、循環したデータでも止まり、共有構造の比較は節点の数に比例する
+/// 時間で終わる。先頭の `unrecorded_steps` 回の降下は記録しないので、短いデータの比較は
+/// 集合を確保しない。
+///
+/// 選んだ理由は、集合の大きさの増え方である。組を鍵にしたハッシュ表では、長さの互いに
+/// 素な2つの輪の比較が、長さの積だけの項目を持つ。union-find は和に収まる。再現の手順は、
+/// テスト `equal? of two rings of coprime lengths keeps the visited set in proportion to
+/// their total length` で、集合の確保の総量が、輪の長さの和に比例する上限に収まることを
+/// 確かめる。組を鍵にした実装に替えると、このテストが落ちる。2つの実装を、長い非循環
+/// リスト・共有構造・互いに素な輪で比べた計測は、コミット 7d169b7 の
+/// `BENCH visited structures`(`-Dslow=true`)にある。
+///
+/// `visited` は集合の確保元で、呼び出し側が計上に通す(`equal` は `heap.Charged` を通す)。
+/// `scratch` は作業スタックだけに使う。
 ///
 /// 同じペアやベクタの比較は、中を見ずに真とする。`eqv?` が真なら `equal?` も真だからである。
-pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
+pub fn isEqual(scratch: std.mem.Allocator, visited_alloc: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory}!bool {
     var stack: Stack = .{ .scratch = scratch };
     defer stack.deinit();
+    var visited: Visited = .{ .alloc = visited_alloc };
+    defer visited.deinit();
+    var steps: usize = 0;
     var left = a;
     var right = b;
     while (true) {
@@ -113,10 +189,13 @@ pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory
                 const x = left.asPair().?;
                 const y = right.asPair() orelse return false;
                 if (x != y) {
-                    try stack.push(.{ .values = .{ .a = x.cdr, .b = y.cdr } });
-                    left = x.car;
-                    right = y.car;
-                    continue;
+                    steps +|= 1;
+                    if (steps <= unrecorded_steps or !try visited.seen(@intFromPtr(x), @intFromPtr(y))) {
+                        try stack.push(.{ .values = .{ .a = x.cdr, .b = y.cdr } });
+                        left = x.car;
+                        right = y.car;
+                        continue;
+                    }
                 }
             },
             .vector => {
@@ -124,10 +203,13 @@ pub fn isEqual(scratch: std.mem.Allocator, a: Value, b: Value) error{OutOfMemory
                 const y = right.asVector() orelse return false;
                 if (x.items.len != y.items.len) return false;
                 if (x != y and x.items.len > 0) {
-                    if (x.items.len > 1) try stack.push(.{ .elements = .{ .a = x.items, .b = y.items, .next = 1 } });
-                    left = x.items[0];
-                    right = y.items[0];
-                    continue;
+                    steps +|= 1;
+                    if (steps <= unrecorded_steps or !try visited.seen(@intFromPtr(x), @intFromPtr(y))) {
+                        if (x.items.len > 1) try stack.push(.{ .elements = .{ .a = x.items, .b = y.items, .next = 1 } });
+                        left = x.items[0];
+                        right = y.items[0];
+                        continue;
+                    }
                 }
             },
             .string => {
@@ -327,6 +409,158 @@ test "equal? holds eqv? things equal" {
     try std.testing.expect(!try callWith(&f, "equal?", .fromBool(false), .empty_list_value));
     try std.testing.expect(try callWith(&f, "equal?", .fromPrimitive(&primitives[0]), .fromPrimitive(&primitives[0])));
     try std.testing.expect(!try callWith(&f, "equal?", .fromPrimitive(&primitives[0]), .fromPrimitive(&primitives[1])));
+}
+
+/// A circular list holding `items` in turn, from the first pair on.
+fn ringOf(f: *test_support.Fixture, items: []const Value) !Value {
+    const head = try cons(f, items[0], .empty_list_value);
+    var last = head;
+    for (items[1..]) |item| {
+        const next = try cons(f, item, .empty_list_value);
+        last.asPair().?.cdr = next;
+        last = next;
+    }
+    last.asPair().?.cdr = head;
+    return head;
+}
+
+/// A circular list of `length` pairs that all hold `item`.
+fn ring(f: *test_support.Fixture, length: usize, item: Value) !Value {
+    const items = try std.testing.allocator.alloc(Value, length);
+    defer std.testing.allocator.free(items);
+    @memset(items, item);
+    return ringOf(f, items);
+}
+
+test "equal? stops on circular lists, and tells the ones that differ from the ones that do not" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // 長さを変える。比べる降下の数が、記録を始める数(`unrecorded_steps`)の前後に渡る。
+    for ([_]usize{ 1, 2, 3, unrecorded_steps - 1, unrecorded_steps, unrecorded_steps + 1, 1000 }) |n| {
+        try std.testing.expect(try callWith(&f, "equal?", try ring(&f, n, int(1)), try ring(&f, n, int(1))));
+        try std.testing.expect(!try callWith(&f, "equal?", try ring(&f, n, int(1)), try ring(&f, n, int(2))));
+    }
+    // 長さが違っても、同じ無限のリストを表すなら等しい。
+    try std.testing.expect(try callWith(&f, "equal?", try ring(&f, 2, int(1)), try ring(&f, 3, int(1))));
+    try std.testing.expect(try callWith(&f, "equal?", try ringOf(&f, &.{ int(1), int(2) }), try ringOf(&f, &.{ int(1), int(2), int(1), int(2) })));
+    try std.testing.expect(!try callWith(&f, "equal?", try ringOf(&f, &.{ int(1), int(2) }), try ringOf(&f, &.{ int(1), int(2), int(1), int(3) })));
+    // 終わりのあるリストと輪は、輪の先が続く分だけ違う。
+    const finite = try nest(&f, .cdr, 1000, .empty_list_value);
+    try std.testing.expect(!try callWith(&f, "equal?", finite, try ring(&f, 3, int(1))));
+    try std.testing.expect(!try callWith(&f, "equal?", try ring(&f, 3, int(1)), finite));
+}
+
+test "equal? stops on a pair or a vector that holds itself" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try cons(&f, int(1), .empty_list_value);
+    p.asPair().?.car = p;
+    const q = try cons(&f, int(1), .empty_list_value);
+    q.asPair().?.car = q;
+    try std.testing.expect(try callWith(&f, "equal?", p, q));
+    const v = try vec(&f, &.{ int(1), int(2) });
+    v.asVector().?.items[0] = v;
+    const w = try vec(&f, &.{ int(1), int(2) });
+    w.asVector().?.items[0] = w;
+    try std.testing.expect(try callWith(&f, "equal?", v, w));
+    // 自分を含むものと、含まないものは、別のものである。
+    w.asVector().?.items[1] = int(3);
+    try std.testing.expect(!try callWith(&f, "equal?", v, w));
+}
+
+test "equal? compares data that shares its parts in time that follows the depth" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // 各段が、次の段を2回指す。記録が無ければ、比べる回数は2の段数乗になる。
+    for ([_]bool{ false, true }) |as_vector| {
+        var x: Value = int(1);
+        var y: Value = int(1);
+        var z: Value = int(2);
+        for (0..3000) |_| {
+            x = if (as_vector) try vec(&f, &.{ x, x }) else try cons(&f, x, x);
+            y = if (as_vector) try vec(&f, &.{ y, y }) else try cons(&f, y, y);
+            z = if (as_vector) try vec(&f, &.{ z, z }) else try cons(&f, z, z);
+        }
+        try std.testing.expect(try callWith(&f, "equal?", x, y));
+        try std.testing.expect(!try callWith(&f, "equal?", x, z));
+    }
+}
+
+test "equal? of two rings of coprime lengths keeps the visited set in proportion to their total length" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const n = 1000;
+    const m = 999;
+    const a = try ring(&f, n, int(1));
+    const b = try ring(&f, m, int(1));
+    var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    try std.testing.expect(try isEqual(std.testing.allocator, counting.allocator(), a, b));
+    // 組を鍵にすると、n と m の積の項目を持つので、この上限を大きく超える。
+    // 表は倍々に伸びるので、確保の総量は最後の大きさの2倍に収まり、1項目は鍵と値で
+    // 16 バイトである。上限は、それに十分な余裕を見た値である。
+    try std.testing.expect(counting.allocated_bytes <= 128 * (n + m));
+    try std.testing.expectEqual(counting.allocated_bytes, counting.freed_bytes);
+}
+
+/// The bytes of `f`'s heap that the objects hold, plus `spare`, as its limit.
+fn limitAbove(f: *test_support.Fixture, spare: usize) void {
+    f.heap.options.limit = f.heap.accounted + spare;
+}
+
+test "equal? counts its visited set against the limit of the heap, and gives it back" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const a = try nest(&f, .cdr, 5000, .empty_list_value);
+    const b = try nest(&f, .cdr, 5000, .empty_list_value);
+    // 数千のペアを比べる表は、数百バイトの余裕には収まらない。
+    limitAbove(&f, 256);
+    try std.testing.expectError(error.HeapLimit, callWith(&f, "equal?", a, b));
+    try std.testing.expectEqual(0, f.heap.external);
+    try std.testing.expect(!f.heap.external_enforced);
+    try std.testing.expect(!f.heap.external_refused);
+    // 余裕があれば通り、通ったあとに数えたものは戻る。
+    limitAbove(&f, 1024 * 1024);
+    try std.testing.expect(try callWith(&f, "equal?", a, b));
+    try std.testing.expectEqual(0, f.heap.external);
+    try std.testing.expect(!f.heap.external_enforced);
+    // 短いデータの比較は、表を確保しないので、余裕が無くても通る。
+    const c = try nest(&f, .cdr, unrecorded_steps - 1, .empty_list_value);
+    const d = try nest(&f, .cdr, unrecorded_steps - 1, .empty_list_value);
+    limitAbove(&f, 0);
+    try std.testing.expect(try callWith(&f, "equal?", c, d));
+}
+
+test "equal? starts to record exactly after unrecorded_steps descents" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // ちょうど `unrecorded_steps` 回降りる比較は、表を確保しない。1回多いと確保する。
+    const exact_a = try nest(&f, .cdr, unrecorded_steps, .empty_list_value);
+    const exact_b = try nest(&f, .cdr, unrecorded_steps, .empty_list_value);
+    const over_a = try nest(&f, .cdr, unrecorded_steps + 1, .empty_list_value);
+    const over_b = try nest(&f, .cdr, unrecorded_steps + 1, .empty_list_value);
+    limitAbove(&f, 0);
+    try std.testing.expect(try callWith(&f, "equal?", exact_a, exact_b));
+    try std.testing.expectError(error.HeapLimit, callWith(&f, "equal?", over_a, over_b));
+}
+
+test "equal? leaves the flags of the account as it found them" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const a = try nest(&f, .cdr, 5000, .empty_list_value);
+    const b = try nest(&f, .cdr, 5000, .empty_list_value);
+    f.heap.external_enforced = true;
+    f.heap.external_refused = true;
+    try std.testing.expect(try callWith(&f, "equal?", a, b));
+    try std.testing.expect(f.heap.external_enforced);
+    try std.testing.expect(f.heap.external_refused);
+    try std.testing.expectEqual(0, f.heap.external);
 }
 
 /// The kinds of nesting the tests below build.
