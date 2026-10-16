@@ -137,7 +137,7 @@ pub const Interpreter = struct {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
         const written = if (self.ctx.raised) |v|
-            describeRaised(&w.writer, scratch, &self.ctx.symbols, v)
+            describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v)
         else
             w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
@@ -151,7 +151,7 @@ pub const Interpreter = struct {
     /// ではない。答えは REPL の最上位の束縛の表から出す(src/env.zig)。特殊形式は
     /// 最上位の構文の束縛で、変数はセルに値があるときだけ束縛済みである。
     pub fn isBound(self: *const Interpreter, identifier: []const u8) bool {
-        const id = self.ctx.symbols.index.get(identifier) orelse return false;
+        const id = self.ctx.heap.symbols.lookup(identifier) orelse return false;
         return self.ctx.globals.isBound(id);
     }
 
@@ -162,7 +162,7 @@ pub const Interpreter = struct {
         if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
         var r: reader.Reader = .init(source);
         // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
-        const sink: reader.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        const sink: reader.Sink = .{ .heap = &self.ctx.heap };
         while (true) {
             // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
             // このためここもセーフポイントである。エラーで終わった行のゴミも、
@@ -195,7 +195,7 @@ pub const Interpreter = struct {
     /// して同じく表示しない。
     fn printResult(self: *const Interpreter, out: *std.Io.Writer, arena: std.mem.Allocator, v: value.Value) Error!void {
         if (v.kind() == .unspecified) return;
-        try printer.write(out, arena, &self.ctx.symbols, v);
+        try printer.write(out, arena, &self.ctx.heap.symbols, v);
         try out.writeByte('\n');
     }
 };
@@ -621,6 +621,117 @@ test "include-library-declarations reads the declarations of a library from file
         defer interp.deinit();
         try expectLinePrints(&interp, "(import (t lib)) (g)", "42\n");
     }
+}
+
+test "a name that only a pending export of an included declaration file holds survives the body of the library" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\") (begin (define (f) 1)) (include \"body.scm\"))");
+        // 外部名 `exported-name` は、この宣言のファイルのデータと、保留の一覧にしか無い。
+        try tree.write("t/decls.scm", "(export (rename f exported-name)) (import (sucheme core))");
+        // 本体のファイルが、新しい名前を作る。名前が回収されていれば、その ID を使う。
+        try tree.write("t/body.scm", "(define y1 1) (define y2 2) (define y3 3) (define y4 4)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t lib)) (exported-name)", "1\n");
+    }
+}
+
+test "the internal name of an export that nothing defines is still the name when the body ends" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\") (begin (define (f) 1)) (include \"body.scm\"))");
+        try tree.write("t/decls.scm", "(export f (rename undefined-internal other-external)) (import (sucheme core))");
+        try tree.write("t/body.scm", "(define y1 1) (define y2 2) (define y3 3) (define y4 4)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLineFails(&interp, "(import (t lib))", "unbound identifier in library (t lib): undefined-internal");
+    }
+}
+
+/// Collects, and then makes names that nothing refers to, so that the ids the
+/// collection freed are taken by other names.
+/// Why: 回収した ID は次に作る名前が使う。印の漏れで ID を誤って回収しても、別の名前が作られ
+/// なければ、元の名前が残って見えるので、漏れが検出されない。
+fn churnSymbols(interp: *Interpreter) !void {
+    interp.ctx.collectIdle();
+    var buf: [24]u8 = undefined;
+    for (0..64) |i| _ = try interp.ctx.heap.intern(std.fmt.bufPrint(&buf, "churn-{d}", .{i}) catch unreachable);
+}
+
+test "the symbols a program holds survive the collections, whatever holds them" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            // 名前を持つものが、それぞれ1つずつ、別の名前を持つ。
+            //   foo: 大域変数のセルの名前。
+            //   m: マクロの束縛のキー。マクロ自身は名前を持たない。
+            //   abc: コードの定数のシンボル。
+            //   b: 局所変数を読む節点の名前。未初期化のメッセージが使う。
+            //   point: レコード型の名前。
+            try expectLinePrints(&interp, "(define foo 1) (define-syntax m (syntax-rules () ((_) 42))) (define (f) 'abc) (define (h) (define a b) (define b 1) a) (define t (%make-record-type 'point 2))", "");
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "foo (m) (f) t", "1\n42\nabc\n#<record-type point>\n");
+            try expectLineFails(&interp, "(h)", "variable used before its definition: b");
+            try churnSymbols(&interp);
+            try churnSymbols(&interp);
+            // 起動時に登録した名前は、`Core` の表のキーでしかない。使われる前でも回収されない。
+            try expectLinePrints(&interp, "(vector-ref (vector 5 6) 1)", "6\n");
+            try expectLinePrints(&interp, "foo (m) (f) t", "1\n42\nabc\n#<record-type point>\n");
+            try expectLineFails(&interp, "(h)", "variable used before its definition: b");
+            // 名前はどれも、元の ID のまま引ける。
+            for ([_][]const u8{ "foo", "m", "abc", "b", "point", "vector-ref" }) |spelling| {
+                const id = interp.ctx.heap.symbols.lookup(spelling) orelse return error.TestUnexpectedResult;
+                try std.testing.expectEqualStrings(spelling, interp.ctx.heap.symbols.nameOf(id));
+            }
+        }
+    }
+}
+
+test "a symbol made from a string stays the symbol of its name at every work list capacity" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 1, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\"))", "#t\n");
+            // 名前から作ったシンボルだけが持つ名前は、値が持つ間は残る。
+            try expectLinePrints(&interp, "(define z (string->symbol \"only-by-string\")) (define v (vector z))", "");
+            try churnSymbols(&interp);
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\")) (symbol->string z) (eq? z (vector-ref v 0))", "#t\n\"only-by-string\"\n#t\n");
+            try expectLinePrints(&interp, "(eq? z (string->symbol \"only-by-string\")) (eq? z 'only-by-string)", "#t\n#t\n");
+            // 値を手放しても、コードの定数 `'only-by-string` が名前を持つので、残る。
+            try expectLinePrints(&interp, "(set! z #f) (set! v #f)", "");
+            interp.ctx.collectIdle();
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("only-by-string") != null);
+        }
+    }
+}
+
+test "a symbol that is not held is reclaimed, with the memory its name took" {
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    const before = interp.ctx.heap.held();
+    try expectLinePrints(&interp, "(quote some-name-nothing-keeps)", "some-name-nothing-keeps\n");
+    try std.testing.expect(interp.ctx.heap.held() > before);
+    // 定数は、コードを作った行のあとも、コンテキストが持つ(`code_roots`)。
+    interp.ctx.collectIdle();
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("some-name-nothing-keeps") != null);
+    // 読まれただけで、何にも使われない名前は、回収される。展開に失敗した形式の名前が、その例である。
+    try expectLineFails(&interp, "(if read-only-name)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("read-only-name") != null);
+    interp.ctx.collectIdle();
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("read-only-name") == null);
 }
 
 test "a file that includes itself, or is included by a file it includes, is refused" {

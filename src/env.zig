@@ -244,12 +244,22 @@ pub const Global = struct {
 
     /// Tells the collector of every cell and macro: those the table binds, the
     /// cells of its own that it has since replaced, and what the expansion in
-    /// progress has replaced.
+    /// progress has replaced; and of every name the table is keyed by.
+    /// Why: 名前は、束縛の表のキーとして持つ生のシンボル ID である。マクロの束縛の名前は
+    /// マクロ自身が持たないので、キーを知らせなければ、名前が回収されて ID が別の名前に
+    /// 再利用され、表が別のシンボルの束縛を持つ。`replaced` の名前は、展開が失敗したときに
+    /// 表を戻すキーで、表にもう無いことがある。
     pub fn mark(self: *const Global, marker: *Marker) void {
-        var it = self.bindings.valueIterator();
-        while (it.next()) |b| markDenotation(marker, b.denotation);
+        var it = self.bindings.iterator();
+        while (it.next()) |entry| {
+            marker.symbol(entry.key_ptr.*);
+            markDenotation(marker, entry.value_ptr.denotation);
+        }
         for (self.displaced_cells.items) |cell| marker.object(Cell, cell);
-        for (self.replaced.items) |r| if (r.previous) |b| markDenotation(marker, b.denotation);
+        for (self.replaced.items) |r| {
+            marker.symbol(r.id);
+            if (r.previous) |b| markDenotation(marker, b.denotation);
+        }
     }
 
     /// The binding of `id`, made when there is none yet: what `base` exports under
@@ -627,4 +637,27 @@ test "an import replaces a binding, keeps the variable it replaced for the code 
     f.global.undoShadows();
     try std.testing.expectEqual(imported, (try f.resolve(x)).global);
     try std.testing.expectEqual(null, f.global.lookup(z));
+}
+
+test "the names a table is keyed by survive a collection, though nothing else holds them" {
+    for ([_]usize{ 4096, 0 }) |capacity| {
+        var f: Fixture = undefined;
+        f.init();
+        f.heap.options.work_capacity = capacity;
+        defer f.deinit();
+        const arena = f.arena.allocator();
+        // 束縛が生きたオブジェクトを持たない名前は、キーだけが ID の持ち主である。
+        const imported = try f.heap.intern("imported-key");
+        try f.global.importBinding(arena, imported, .{ .special = .@"if" });
+        // 展開が置き換えた名前は、表を戻すためのキーで、表にもう無いことがある。
+        const replaced = try f.heap.intern("replaced-key");
+        try f.global.replaced.append(arena, .{ .id = replaced, .previous = null });
+        const unrelated = try f.heap.intern("unrelated");
+        f.heap.collect(Roots{ .global = &f.global, .core = &f.core });
+        for (0..16) |i| _ = try f.heap.intern(&[_]u8{ 'a' + @as(u8, @intCast(i)), 'z' });
+        try std.testing.expectEqualStrings("imported-key", f.heap.symbols.nameOf(imported));
+        try std.testing.expectEqualStrings("replaced-key", f.heap.symbols.nameOf(replaced));
+        try std.testing.expect(f.heap.symbols.lookup("unrelated") == null);
+        _ = unrelated;
+    }
 }

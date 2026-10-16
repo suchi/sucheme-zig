@@ -1,0 +1,139 @@
+# Slice 3c: 文字の比較 `char=?` `char<?` `char>?` `char<=?` `char>=?`(R7RS 6.6)。
+# 順序は、`char->integer` の結果の順序である。引数は何個でも取り、隣り合う引数のすべての組が
+# 成り立つときに真である。
+#
+# 仕様の記述は、記憶から起こした。原文は取得できていない。
+
+(char=? #\a #\a)
+#t
+
+(char=? #\a #\b)
+#f
+
+(char<? #\a #\b)
+#t
+
+(char<? #\b #\a)
+#f
+
+(char<? #\a #\a)
+#f
+
+(char>? #\b #\a)
+#t
+
+(char>? #\a #\b)
+#f
+
+(char>? #\a #\a)
+#f
+
+(char<=? #\a #\b)
+#t
+
+(char<=? #\a #\a)
+#t
+
+(char<=? #\b #\a)
+#f
+
+(char>=? #\b #\a)
+#t
+
+(char>=? #\a #\a)
+#t
+
+(char>=? #\a #\b)
+#f
+
+# 大文字小文字は区別される。大文字は小文字より前にある。
+(char=? #\a #\A)
+#f
+
+(char<? #\Z #\a)
+#t
+
+# コードポイントの順である。
+(char<? #\z #\λ)
+#t
+
+(char<? #\λ #\あ)
+#t
+
+(char<? #\x7FF #\x800)
+#t
+
+(char<? #\xD7FF #\xE000)
+#t
+
+(char>? #\x10FFFF #\xFFFF)
+#t
+
+(char<? #\null #\x1)
+#t
+
+# 引数は何個でも取る。
+(char=? #\a #\a #\a #\a)
+#t
+
+(char=? #\a #\a #\b)
+#f
+
+(char<? #\a #\b #\c #\d)
+#t
+
+(char<? #\a #\b #\b)
+#f
+
+(char<? #\a #\c #\b)
+#f
+
+(char>? #\d #\c #\b)
+#t
+
+(char>? #\d #\b #\c)
+#f
+
+(char<=? #\a #\a #\b #\b)
+#t
+
+(char<=? #\a #\b #\a)
+#f
+
+(char>=? #\c #\c #\b #\a)
+#t
+
+(char>=? #\c #\b #\c)
+#f
+
+# 1つの引数は、比べる相手が無いので真である。
+(char=? #\a)
+#t
+
+(char<? #\a)
+#t
+
+# 型は、最初に成り立たない組が見つかったあとの引数も検査される。エラーは値に左右されない。
+(char=? #\a 97)
+error: wrong type of argument to char=? #\a 97
+
+(char<? 97 #\a)
+error: wrong type of argument to char<? 97 #\a
+
+(char>? #\b #\a 1)
+error: wrong type of argument to char>? #\b #\a 1
+
+(char<? #\b #\a #\a "x")
+error: wrong type of argument to char<? #\b #\a #\a "x"
+
+(char<=? "a")
+error: wrong type of argument to char<=? "a"
+
+(char>=? 'a 'b)
+error: wrong type of argument to char>=? a b
+
+(char=?)
+error: wrong number of arguments to char=?
+
+(char>=?)
+error: wrong number of arguments to char>=?
