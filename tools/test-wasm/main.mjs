@@ -276,6 +276,21 @@ test("the end-of-file object and promises work in wasm", () => {
   );
 });
 
+// 派生構文(`cond` と `quasiquote` など)も、WASM で `import` できて動く(スライス 3h)。
+// リーダの略記(`` ` `` `,` `,@`)は、WASM の入口から渡した文字列でも読める。
+test("the derived syntax in (sucheme derived) runs in wasm", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(import (sucheme derived)) (list (cond (#f 1) (else 2)) (cond ((list 1 2) => car)) (case 3 ((1 2) 'low) (else 'high)) (let loop ((i 0)) (if (< i 3) (loop (+ i 1)) i)))"),
+    [OK, "(2 1 high 3)\n"],
+  );
+  assert.deepEqual(h.run("`(1 ,(+ 1 1) ,@(list 3 4) #(5 ,(+ 3 3)))"), [OK, "(1 2 3 4 #(5 6))\n"]);
+  assert.deepEqual(h.run("(do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 1000) s))"), [OK, "499500\n"]);
+  assert.deepEqual(h.run("'`(a ,b ,@c)"), [OK, "(quasiquote (a (unquote b) (unquote-splicing c)))\n"]);
+  assert.deepEqual(h.run("`"), [SCHEME_ERROR, "error: unexpected end of input\n"]);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {

@@ -1,0 +1,87 @@
+# スライス 3h: `and` と `or`(R7RS 4.2.1)。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(import (sucheme derived)) (and)
+#t
+
+(import (sucheme derived)) (and 1)
+1
+
+(import (sucheme derived)) (and 1 2 'c '(f g))
+(f g)
+
+(import (sucheme derived)) (and (= 2 2) (> 2 1))
+#t
+
+(import (sucheme derived)) (and (= 2 2) (< 2 1))
+#f
+
+(import (sucheme derived)) (and 1 #f 3)
+#f
+
+# 偽の式の後ろは評価されない。
+(import (sucheme derived)) (and #f (car '()))
+#f
+
+(import (sucheme derived)) (let ((n 0)) (and #f (set! n 1)) n)
+0
+
+(import (sucheme derived)) (or)
+#f
+
+(import (sucheme derived)) (or 1)
+1
+
+(import (sucheme derived)) (or (= 2 2) (> 2 1))
+#t
+
+(import (sucheme derived)) (or (= 2 2) (< 2 1))
+#t
+
+(import (sucheme derived)) (or #f #f #f)
+#f
+
+# 最初の真の値が返る。
+(import (sucheme derived)) (or #f 2 3)
+2
+
+(import (sucheme derived) (only (sucheme procedures) memq)) (or (memq 'b '(a b c)) (car '()))
+(b c)
+
+# 真の式の後ろは評価されない。
+(import (sucheme derived)) (let ((n 0)) (or 1 (set! n 1)) n)
+0
+
+# 式は、書かれた順に評価される。
+(import (sucheme derived)) (let ((n 1)) (or (begin (set! n (+ n 1)) #f) (begin (set! n (* n 10)) #f) n))
+20
+
+# 最後の式は、末尾の位置にある。
+(import (sucheme derived)) (define (f n) (or (= n 0) (f (- n 1)))) (f 10000)
+#t
+
+(import (sucheme derived)) (define (g n) (and (> n -1) (or (= n 0) (g (- n 1))))) (g 10000)
+#t
+
+(import (sucheme derived)) (call-with-values (lambda () (and 1 (values 1 2))) list)
+(1 2)
+
+(import (sucheme derived)) (call-with-values (lambda () (or #f (values 1 2))) list)
+(1 2)
+
+# 衛生性: `or` が展開で使う `x` は、利用側の `x` と衝突しない。
+(import (sucheme derived)) (let ((x 5)) (or #f x))
+5
+
+(import (sucheme derived)) (let ((x 5) (y 6)) (or #f #f x y))
+5
+
+(import (sucheme derived)) (let ((if list)) (list (and 1 2) (or #f 3)))
+(2 3)
+
+(import (sucheme derived)) (let ((let 5)) (or #f let))
+5
+
+# `and` と `or` という名前の変数。
+(import (sucheme derived)) (let ((and 1) (or 2)) (+ and or))
+3
