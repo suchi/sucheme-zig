@@ -24,6 +24,16 @@ c
 (import (sucheme derived)) (case 7 ((1 2 3) => (lambda (x) (* x x))) ((7) => (lambda (x) (list x))) (else 0))
 (7)
 
+# 最後の節が `=>` の節でもよい(節が1つだけの場合を含む)。当たらなければ値は不定である。
+(import (sucheme derived)) (case 3 ((1 2 3) => (lambda (x) (* x x))))
+9
+
+(import (sucheme derived)) (case 5 ((1 2 3) => (lambda (x) (* x x))))
+<no output>
+
+(import (sucheme derived)) (case 2 ((1) 'a) ((2 3) => (lambda (x) (list x))))
+(2)
+
 # 式が複数あれば、順に評価し、最後の値を返す。
 (import (sucheme derived)) (case 'b ((a) 1) ((b c) 2 3))
 3
