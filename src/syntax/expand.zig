@@ -411,7 +411,7 @@ const Expander = struct {
 
     /// `(cond-expand <clause> ...)` (R7RS 4.2.1): the body of the clause that applies,
     /// expanded as the forms of a `begin` in the same position.
-    /// どの節も当てはまらず `else` も無いときの結果は、R7RS が定めていない(原文は未確認)。
+    /// どの節も当てはまらず `else` も無いときの結果は、R7RS 4.2.1 が unspecified としている(原文で確認した)。
     /// 最上位では何もしない(`(begin)` と同じ)。式の位置では、値を作れないので、誤りにする。
     fn condExpand(self: *Expander, task: Task, items: []const Value) Error!void {
         const chosen = try cond_expand.select(self.ctx, self.scratch, items[1..]) orelse {

@@ -1,6 +1,7 @@
 ;; R7RS 6.4 のリストの手続きと、6.1 の `boolean=?`。`(sucheme core)` の特殊形式と
 ;; プリミティブの上に、`define` と `lambda` と `if` だけで書く(派生構文は 3h が足す)。
-;; 原文はこの環境から取得できないので、定義は記憶に基づく(未確認)。
+;; 定義は、R7RS 6.1 と 6.4 と 6.10 の原文(docs/spec/)で確かめた。`member` と `assoc` の第3引数は、
+;; 原文が呼び出しの引数の順を定めていないので、慣例に倣って `(compare x elem)` の順にした。
 ;;
 ;; `map` と `for-each` を Scheme で書くのは、末尾呼び出しと継続の再入が、機械の
 ;; 規則からそのまま正しくなるためである(docs/adr/0006-library-system-and-scheme-level-stdlib.md)。

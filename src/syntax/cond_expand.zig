@@ -25,8 +25,8 @@ pub const max_depth = 64;
 /// The body of the first clause of `clauses` that applies, which is the clause
 /// without its requirement, or null when none applies.
 /// 節は `(<feature requirement> <body>...)` と、最後の `(else <body>...)` である。どの節も
-/// 当てはまらず `else` も無いときの結果は、R7RS が定めていない(原文は未確認)。ここでは
-/// 呼び出し側が決められるよう、null を返す。
+/// 当てはまらず `else` も無いときの結果は、R7RS 4.2.1 が unspecified としている(原文で
+/// 確認した)。ここでは呼び出し側が決められるよう、null を返す。
 pub fn select(ctx: *Context, scratch: std.mem.Allocator, clauses: []const Value) Error!?Value {
     for (clauses, 0..) |clause, i| {
         const pair = clause.asPair() orelse

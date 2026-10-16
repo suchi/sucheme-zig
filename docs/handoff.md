@@ -41,6 +41,7 @@
 
 ## 環境の癖
 
+- R7RS の原文(errata 訂正版)は、[docs/spec/](spec/README.md) の PDF にある(2026-10-16 から)。`pdftotext -layout docs/spec/errata-corrected-r7rs.pdf <出力先>` でテキストにして、`grep` で引く。仕様を書くときは、記憶でなく原文で確かめる。段階3の 3a と 3b と 3g は、原文を取得できない間に、記憶で書いた(3g の手続きの定義は、原文で確かめた。`member` と `assoc` の比較の呼び方の順は、原文が定めていない)。
 - GitHub の操作は MCP のツール(`mcp__github__*`)で行う。`gh` の CLI は使えない。ツールは、セッションの途中で切れ、また現れる。切れたら `ToolSearch` で `select:<ツール名>` を打って読み直す。
 - タグの push は、この環境からは HTTP 403 で拒否された(2026-10-15)。ブランチの push は通る。タグはユーザーが手元で打つ。承認を得たコマンド(`git tag -a vX.Y.Z <コミット> -m "sucheme vX.Y.Z"` と `git push origin vX.Y.Z`)を示して頼む。
 - この環境の git の作者は `Claude` である。コミットの末尾に、システムが指定する `Co-Authored-By` と `Claude-Session` の行を付ける。
@@ -63,7 +64,7 @@
 
 ユーザーの判断で、ADR や計画書に書いていないものを残す。文面は私の言葉で書き直してある。
 
-- 2026-10-15: 当てはまる節も `else` も無い `cond-expand` は、最上位とライブラリ宣言では何もせず、式の位置では誤りにする([design/frontend.md](design/frontend.md))。R7RS の原文は未確認のまま。
+- 2026-10-15: 当てはまる節も `else` も無い `cond-expand` は、最上位とライブラリ宣言では何もせず、式の位置では誤りにする([design/frontend.md](design/frontend.md))。R7RS の原文で、この場合が unspecified であることを、2026-10-16 に確かめた。
 - 2026-10-15: `ruff` の規則を AGENTS.md に足す。設定ファイルは置く。既存の警告は、触れるときに直す。CI には入れない(既存の警告が残る間は赤になるため)。
 - 2026-10-15: マクロが導入した最上位の `define` と `define-syntax` が衛生的でないことを、既知の制限として v0.2.0 に入れる。roadmap の段階3に項目がある。
 - 2026-10-15: v0.2.0 は、タグを `183a63b` に打ち、20:08 JST に公開した。
