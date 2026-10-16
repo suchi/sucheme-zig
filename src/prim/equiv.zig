@@ -535,6 +535,20 @@ test "equal? counts its visited set against the limit of the heap, and gives it 
     try std.testing.expect(try callWith(&f, "equal?", c, d));
 }
 
+test "equal? starts to record exactly after unrecorded_steps descents" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // ちょうど `unrecorded_steps` 回降りる比較は、表を確保しない。1回多いと確保する。
+    const exact_a = try nest(&f, .cdr, unrecorded_steps, .empty_list_value);
+    const exact_b = try nest(&f, .cdr, unrecorded_steps, .empty_list_value);
+    const over_a = try nest(&f, .cdr, unrecorded_steps + 1, .empty_list_value);
+    const over_b = try nest(&f, .cdr, unrecorded_steps + 1, .empty_list_value);
+    limitAbove(&f, 0);
+    try std.testing.expect(try callWith(&f, "equal?", exact_a, exact_b));
+    try std.testing.expectError(error.HeapLimit, callWith(&f, "equal?", over_a, over_b));
+}
+
 test "equal? leaves the flags of the account as it found them" {
     var f: test_support.Fixture = undefined;
     f.init();

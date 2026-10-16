@@ -1502,6 +1502,21 @@ test "apply lines up a list in chunks and keeps the order around the size of a c
     }
 }
 
+test "apply lines up a long list in few steps, not one step for each element" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .stress = true });
+    defer f.deinit();
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    const n = 1280;
+    _ = try f.eval(std.fmt.comptimePrint("(define xs (build {d} '()))", .{n}));
+    // 強制 GC のモードでは、ステップごとに `total_steps` が増える。塊で並べるなら、
+    // ステップ数は要素数の数分の1に収まる。1要素ごとに1ステップなら、n を超える。
+    const before = f.ctx.heap.total_steps;
+    const sum = try f.eval("(apply + xs)");
+    try std.testing.expectEqual(@as(i64, n * (n + 1) / 2), sum.asFixnum().?);
+    try std.testing.expect(f.ctx.heap.total_steps - before <= n / 8);
+}
+
 test "apply reports a last argument that is not a list before it allocates anything" {
     var f: Fixture = undefined;
     // 上限は、`n` 要素のリストの全部と、それを並べた引数の鎖の半分が入る大きさである。
