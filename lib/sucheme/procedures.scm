@@ -180,14 +180,21 @@
       (%all-same? a rest)
       #f))
 
-;; リストの並び `lists` の先頭の要素と、残りを取り出す。どれかが空(ペアでない)なら、
-;; `map` と `for-each` は終わる。
-(define (%all-pairs? lists)
+;; 複数のリスト `lists` を取る `map` と `for-each` は、どれかが空になったところで終わる
+;; (R7RS 6.10)。空のものが無いのに、ペアでないものがあれば、不正なリストとして誤りにする。
+(define (%any-null? lists)
+  (if (null? lists)
+      #f
+      (if (null? (car lists))
+          #t
+          (%any-null? (cdr lists)))))
+
+(define (%check-pairs lists name)
   (if (null? lists)
       #t
       (if (pair? (car lists))
-          (%all-pairs? (cdr lists))
-          #f)))
+          (%check-pairs (cdr lists) name)
+          (error name (car lists)))))
 
 (define (%cars lists)
   (if (null? lists)
@@ -207,9 +214,11 @@
           (error "wrong type of argument to map" whole))))
 
 (define (%mapn f lists acc)
-  (if (%all-pairs? lists)
-      (%mapn f (%cdrs lists) (cons (apply f (%cars lists)) acc))
-      (reverse acc)))
+  (if (%any-null? lists)
+      (reverse acc)
+      (begin
+        (%check-pairs lists "wrong type of argument to map")
+        (%mapn f (%cdrs lists) (cons (apply f (%cars lists)) acc)))))
 
 (define (map f l . more)
   (if (null? more)
@@ -226,11 +235,12 @@
           (error "wrong type of argument to for-each" whole))))
 
 (define (%for-eachn f lists)
-  (if (%all-pairs? lists)
+  (if (%any-null? lists)
+      (if #f #f)
       (begin
+        (%check-pairs lists "wrong type of argument to for-each")
         (apply f (%cars lists))
-        (%for-eachn f (%cdrs lists)))
-      (if #f #f)))
+        (%for-eachn f (%cdrs lists)))))
 
 (define (for-each f l . more)
   (if (null? more)

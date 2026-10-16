@@ -1,0 +1,57 @@
+# スライス 3g の敵対的レビューで、ミューテーションが生き残った箇所を固定するテスト。
+# 各ケースは新しいインタプリタで走るので、`import` は使う式と同じ行に置く。
+
+# memv / member / assv / assoc の、末尾がリストでない場合の誤り(memq は 0230 にある)。
+(import (sucheme procedures)) (memv 1 '(2 . 3))
+error: wrong type of argument to memv 3
+
+(import (sucheme procedures)) (member 1 '(2 . 3))
+error: wrong type of argument to member 3
+
+(import (sucheme procedures)) (assv 1 '((2 . a) . 3))
+error: wrong type of argument to assv 3
+
+(import (sucheme procedures)) (assoc 1 '((2 . a) . 3))
+error: wrong type of argument to assoc 3
+
+# assv / assoc の、要素がペアでない場合の誤り(assq は 0230 にある)。見つかる要素が後ろにあっても、先に誤りになる。
+(import (sucheme procedures)) (assv 1 '(5 (1 . a)))
+error: wrong type of argument to assv 5
+
+(import (sucheme procedures)) (assoc 1 '(5 (1 . a)))
+error: wrong type of argument to assoc 5
+
+# boolean=? は、3個目以降の引数も真偽値でなければ誤りにする。
+(import (sucheme procedures)) (boolean=? #t #t 1)
+error: wrong type of argument to boolean=? 1
+
+(import (sucheme procedures)) (boolean=? #f #f #t 'a)
+error: wrong type of argument to boolean=? a
+
+# make-list の省略した充填値は、この実装では未規定値になる(R7RS は未規定とする)。
+(import (sucheme procedures)) (make-list 2)
+(#<unspecified> #<unspecified>)
+
+# 複数のリストの for-each の戻り値も、1個のときと同じ未規定値である。
+(import (sucheme procedures)) (list (for-each + '(1) '(2)))
+(#<unspecified>)
+
+# 複数のリストの map と for-each は、どれかが空になったところで終わる。終わる前に、ペアでも
+# 空でもないものに当たれば、1個のときと同じく、不正なリストとして誤りにする。
+(import (sucheme procedures)) (map + '(1 2) '(1 2 . 3))
+(2 4)
+
+(import (sucheme procedures)) (map + '(1 . 2) '(1 2))
+error: wrong type of argument to map 2
+
+(import (sucheme procedures)) (map car 5 '(1))
+error: wrong type of argument to map 5
+
+(import (sucheme procedures)) (for-each + '(1 . 2) '(1 2))
+error: wrong type of argument to for-each 2
+
+(import (sucheme procedures)) (for-each car 5 '(1))
+error: wrong type of argument to for-each 5
+
+(import (sucheme procedures)) (list (for-each + '(1 2) '(1 2 . 3)))
+(#<unspecified>)
