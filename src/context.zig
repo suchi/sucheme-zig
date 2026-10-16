@@ -58,6 +58,9 @@ pub const Context = struct {
     /// WASM は実ファイルシステムを持たないので、空のままである。このとき、ライブラリの
     /// ファイルを引く経路は、見つからないことになる。
     files: ?resolve.Files = null,
+    /// The source files the executable carries (src/resolve.zig). They are searched
+    /// before the files of `files`, and WASM searches only these.
+    embedded: ?resolve.Embedded = null,
     /// The files being read, the innermost last: the file of a library being loaded,
     /// and each file an `include` reads (src/syntax/source.zig).
     /// 含むファイルのディレクトリが `include` の基準になり、含んでいる最中のファイルを

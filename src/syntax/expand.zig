@@ -467,7 +467,7 @@ const Expander = struct {
         // ファイルを読む時点から、作業領域と節点をヒープの上限に数える(`Heap.external_enforced`)。
         self.ctx.heap.external_enforced = true;
         const subject = try std.fmt.allocPrint(self.scratch, "{s} {s}", .{ what, name });
-        const data = try source.readData(self.ctx, self.scratch, self.ctx.files.?, opened.file, subject, task.fold_case);
+        const data = try source.readData(self.ctx, self.scratch, self.ctx.files, opened.source, subject, task.fold_case);
         if (data.len == 0) return self.constant(task, .unspecified_value);
         try self.ctx.sources.append(self.ctx.persist, opened.origin);
         // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。

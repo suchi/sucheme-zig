@@ -29,9 +29,22 @@ pub const max_file_bytes = 1024 * 1024;
 /// another, and the files that include one another.
 pub const max_open_files = 64;
 
-/// The text of `file`, which the caller frees with the allocator of the heap.
+/// The text of `source`, which the caller frees with the allocator of the heap.
 /// `subject` は、エラーの文面の「cannot ...」に続く、していたことである。
-pub fn readText(ctx: *Context, files: resolve.Files, file: std.Io.File, subject: []const u8) Error![]u8 {
+/// 埋め込みのファイルは、ビルド時に検証してあるが、実ファイルと同じ上限と検査を通す。
+pub fn readText(ctx: *Context, files: ?resolve.Files, source: resolve.Source, subject: []const u8) Error![]u8 {
+    switch (source) {
+        .bytes => |bytes| {
+            if (bytes.len > max_file_bytes) return ctx.raise("cannot {s}: its file is larger than {d} bytes", .{ subject, max_file_bytes });
+            if (!std.unicode.utf8ValidateSlice(bytes)) return ctx.raise("cannot {s}: its file is not valid UTF-8", .{subject});
+            return ctx.heap.backing.dupe(u8, bytes);
+        },
+        .file => |file| return readFileText(ctx, files.?, file, subject),
+    }
+}
+
+/// The text of `file`, which the caller frees with the allocator of the heap.
+fn readFileText(ctx: *Context, files: resolve.Files, file: std.Io.File, subject: []const u8) Error![]u8 {
     var buffer: [4096]u8 = undefined;
     var file_reader: std.Io.File.Reader = .init(file, files.io, &buffer);
     const source = file_reader.interface.allocRemaining(ctx.heap.backing, .limited(max_file_bytes)) catch |e| switch (e) {
@@ -57,37 +70,49 @@ pub fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, s
     };
 }
 
-/// Every datum of `file`, in order, and the file closed.
+/// Every datum of `source`, in order, and its file closed.
 /// ファイルの内容は、データを読み終えた時点で手放す。データは内容を指さない。
 /// `fold_case` が真なら、リーダは識別子と文字名を畳み込む(`include-ci`)。
-pub fn readData(ctx: *Context, scratch: std.mem.Allocator, files: resolve.Files, file: std.Io.File, subject: []const u8, fold_case: bool) Error![]const Value {
-    defer file.close(files.io);
-    const source = try readText(ctx, files, file, subject);
-    defer ctx.heap.backing.free(source);
-    var r: reader.Reader = .init(source);
+pub fn readData(ctx: *Context, scratch: std.mem.Allocator, files: ?resolve.Files, source: resolve.Source, subject: []const u8, fold_case: bool) Error![]const Value {
+    defer closeSource(files, source);
+    const text = try readText(ctx, files, source, subject);
+    defer ctx.heap.backing.free(text);
+    var r: reader.Reader = .init(text);
     r.fold_case = fold_case;
     var data: std.ArrayList(Value) = .empty;
     while (try readDatum(ctx, &r, scratch, subject)) |datum| try data.append(scratch, datum);
     return data.items;
 }
 
-/// What a file a name means is opened as: the file, and where it came from.
-pub const Included = struct { file: std.Io.File, origin: resolve.Origin };
+/// Closes the file of `source`, if it has one.
+pub fn closeSource(files: ?resolve.Files, source: resolve.Source) void {
+    switch (source) {
+        .file => |file| file.close(files.?.io),
+        .bytes => {},
+    }
+}
+
+/// What a file a name means is opened as: the source, and where it came from.
+pub const Included = struct { source: resolve.Source, origin: resolve.Origin };
 
 /// Where the file that is being read came from, which a file name of an `include`
 /// is relative to: the innermost file being read, or the working directory at the
 /// REPL, whose first root it is.
-pub fn currentOrigin(ctx: *const Context, files: resolve.Files) resolve.Origin {
+pub fn currentOrigin(ctx: *const Context, files: ?resolve.Files) resolve.Origin {
     if (ctx.sources.items.len > 0) return ctx.sources.items[ctx.sources.items.len - 1];
-    return .{ .root = if (files.roots.len > 0) files.roots[0] else ".", .path = &.{} };
+    const roots = if (files) |f| f.roots else &[_][]const u8{};
+    return .{ .root = if (roots.len > 0) roots[0] else ".", .path = &.{} };
 }
 
 /// Opens the file that `name`, a file name an `include` gives, means, and checks
 /// that it is not a file that is being read already.
 /// `what` は、`include` と `include-ci` と `include-library-declarations` のいずれかである。
 pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8, what: []const u8) Error!Included {
-    const files = ctx.files orelse return ctx.raise("bad {s}: this interpreter has no files to read: {s}", .{ what, name });
-    const base = currentOrigin(ctx, files);
+    const base = currentOrigin(ctx, ctx.files);
+    // 実ファイルを読むには、ファイルを開く手段が要る。埋め込みのファイルの中の `include` は、
+    // 手段が無くても(WASM)、同じ埋め込みの中から引ける。
+    if (ctx.files == null and !resolve.isEmbeddedRoot(base.root))
+        return ctx.raise("bad {s}: this interpreter has no files to read: {s}", .{ what, name });
     const path = resolve.includePath(scratch, base.directory(), name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => |refused| return ctx.raise("bad {s}: {s}: {s}", .{ what, name, resolve.describeIncludeNameError(refused) }),
@@ -98,14 +123,14 @@ pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8,
     }
     if (ctx.sources.items.len >= max_open_files)
         return ctx.raise("implementation restriction: files include one another more than {d} deep, at {s}", .{ max_open_files, name });
-    const file = resolve.openIncluded(files, base.root, path) catch |e| switch (e) {
+    const source = resolve.openIncluded(ctx.files, ctx.embedded, base.root, path) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NotFound => return ctx.raise("bad {s}: {s}: no such file", .{ what, name }),
         error.LinkRefused => return ctx.raise("bad {s}: {s}: the file, or a directory on the way to it, is a link", .{ what, name }),
         error.NotRegularFile => return ctx.raise("bad {s}: {s}: not a regular file", .{ what, name }),
         error.Unreadable => return ctx.raise("bad {s}: {s}: the system refused to open the file", .{ what, name }),
     };
-    return .{ .file = file, .origin = origin };
+    return .{ .source = source, .origin = origin };
 }
 
 test {
