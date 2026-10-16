@@ -1,0 +1,79 @@
+# スライス 3h: リーダの略記。`'x` が `(quote x)` になるのと同じ形で、`` `x `` が
+# `(quasiquote x)`、`,x` が `(unquote x)`、`,@x` が `(unquote-splicing x)` になる
+# (R7RS 2.4)。ここでは、準引用そのものでなく、リーダが作るデータを、`quote` で取り出して
+# 確かめる。リストの印字は、略記でなく、`(quasiquote x)` の綴りで出る。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+'`a
+(quasiquote a)
+
+',a
+(unquote a)
+
+',@a
+(unquote-splicing a)
+
+'`(1 ,x ,@y)
+(quasiquote (1 (unquote x) (unquote-splicing y)))
+
+# 略記は入れ子にできる。
+'``,,a
+(quasiquote (quasiquote (unquote (unquote a))))
+
+'`,',@a
+(quasiquote (unquote (quote (unquote-splicing a))))
+
+# 略記が作るデータは、同じ綴りを手で書いたものと `equal?` である。
+(equal? '`(1 ,x ,@y) '(quasiquote (1 (unquote x) (unquote-splicing y))))
+#t
+
+(equal? '(a . ,b) '(a unquote b))
+#t
+
+(equal? '(a . ,@b) '(a unquote-splicing b))
+#t
+
+# ベクタの中でも、同じ形になる。
+'#(`a ,b ,@c)
+#((quasiquote a) (unquote b) (unquote-splicing c))
+
+'`#(1 ,x)
+(quasiquote #(1 (unquote x)))
+
+# ドットの後ろの略記は、リストの残り全体になる。
+'(1 . `x)
+(1 quasiquote x)
+
+# `,` に空白を挟んで `@x` が続く形は、識別子 `@x` が読めないので誤りである。
+', @x
+error: unreadable token
+
+# データが続かない。
+`)
+error: quote needs a datum
+
+(list 1 ,)
+error: quote needs a datum
+
+(list 1 ,@)
+error: quote needs a datum
+
+`
+error: unexpected end of input
+
+,@
+error: unexpected end of input
+
+# ドットは略記の直後に置けない。
+`.
+error: unexpected .
+
+(1 ,@ . 2)
+error: unexpected .
+
+# 略記は、直前の記号と区切らずに並べられない。
+a,b
+error: unreadable token
+
+a`b
+error: unreadable token

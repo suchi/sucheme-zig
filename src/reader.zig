@@ -1,7 +1,7 @@
 //! Reads the external representation of data (R7RS 7.1.2).
 //!
-//! 読むのは、10 進整数、真偽値、識別子、文字、文字列、丸括弧のリスト、ベクタ、`'` の略記
-//! である。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と文字名を小文字にする。
+//! 読むのは、10 進整数、真偽値、識別子、文字、文字列、丸括弧のリスト、ベクタ、`'` と
+//! `` ` `` と `,` と `,@` の略記である。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と文字名を小文字にする。
 //! 読めない記法は `InvalidToken` などの誤りにする。
 //! `Value` を直接作る。ペアは渡された GC ヒープに確保し、識別子は渡されたシンボル表に
 //! インターンする。読み取りの途中でヒープは GC しないので、`next` が返した時点で
@@ -23,12 +23,12 @@ const string_syntax = @import("string_syntax.zig");
 
 /// What the reader cannot read: the input is not a datum.
 pub const SyntaxError = error{
-    /// The input ended inside a list or after a `'`.
+    /// The input ended inside a list or after a `'`, `` ` ``, `,` or `,@`.
     /// REPL はこれを見て、続きの 1 行を求められる(ADR-0014)。そのため、ほかの構文
     /// エラーとは分けてある。
     Incomplete,
     UnexpectedCloseParen,
-    /// A `'` followed by `)`: there is nothing to quote.
+    /// A `'`, `` ` ``, `,` or `,@` followed by `)`: there is nothing to abbreviate.
     MissingDatum,
     /// A `.` that does not stand between the last element of a list and the
     /// one datum that ends it: at the top level, first in a list, after a `'`,
@@ -85,14 +85,32 @@ pub const Sink = struct {
     symbols: *symbol.Table,
 };
 
+/// A prefix that abbreviates a form (R7RS 2.4).
+const Abbreviation = enum {
+    quote,
+    quasiquote,
+    unquote,
+    unquote_splicing,
+
+    /// The symbol that heads the form.
+    fn symbolName(self: Abbreviation) []const u8 {
+        return switch (self) {
+            .quote => "quote",
+            .quasiquote => "quasiquote",
+            .unquote => "unquote",
+            .unquote_splicing => "unquote-splicing",
+        };
+    }
+};
+
 /// What is open at this point of the input.
 const Frame = union(enum) {
     list: List,
     /// A `#(` whose elements so far are these.
     /// ドットはベクタの中では意味を持たないので、持っておくのは要素だけでよい。
     vector: std.ArrayList(Value),
-    /// A `'` waiting for its datum.
-    quote,
+    /// A `'`, `` ` ``, `,` or `,@` waiting for its datum.
+    abbreviation: Abbreviation,
 
     const List = struct {
         /// The elements so far.
@@ -151,7 +169,7 @@ pub const Reader = struct {
                     switch (open.items[open.items.len - 1]) {
                         // Why: R7RS 7.1.2 の <vector> は `#(` <datum>* `)` で、
                         // ドットを置く場所がない。
-                        .quote, .vector => return error.UnexpectedDot,
+                        .abbreviation, .vector => return error.UnexpectedDot,
                         .list => |*l| {
                             if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
                             l.dot = true;
@@ -165,16 +183,22 @@ pub const Reader = struct {
                     try open.append(scratch, .{ .vector = .empty });
                     continue;
                 } else try self.atom(scratch, sink),
-                '\'' => {
-                    self.pos += 1;
-                    try open.append(scratch, .quote);
+                '\'', '`', ',' => |c| {
+                    const abbreviation: Abbreviation = switch (c) {
+                        '\'' => .quote,
+                        '`' => .quasiquote,
+                        else => if (self.pos + 1 < self.src.len and self.src[self.pos + 1] == '@') .unquote_splicing else .unquote,
+                    };
+                    // Why: `,@` は 2 文字で 1 つの記号である(R7RS 2.4)。
+                    self.pos += if (abbreviation == .unquote_splicing) 2 else 1;
+                    try open.append(scratch, .{ .abbreviation = abbreviation });
                     continue;
                 },
                 ')' => blk: {
                     self.pos += 1;
                     if (open.items.len == 0) return error.UnexpectedCloseParen;
                     switch (open.pop().?) {
-                        .quote => return error.MissingDatum,
+                        .abbreviation => return error.MissingDatum,
                         .list => |l| {
                             if (l.dot and l.tail == null) return error.UnexpectedDot;
                             break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
@@ -184,16 +208,15 @@ pub const Reader = struct {
                 },
                 else => try self.atom(scratch, sink),
             };
-            // 完成したデータは、それを待っているすべての `'` を閉じる。
-            while (open.items.len != 0 and open.items[open.items.len - 1] == .quote) {
-                _ = open.pop();
-                datum = try quoted(sink, datum);
+            // 完成したデータは、それを待っているすべての略記を閉じる。
+            while (open.items.len != 0 and open.items[open.items.len - 1] == .abbreviation) {
+                datum = try abbreviated(sink, open.pop().?.abbreviation, datum);
             }
             if (open.items.len == 0) return datum;
             switch (open.items[open.items.len - 1]) {
                 .list => |*l| try l.add(scratch, datum),
                 .vector => |*items| try items.append(scratch, datum),
-                .quote => unreachable,
+                .abbreviation => unreachable,
             }
         }
     }
@@ -323,6 +346,13 @@ test "isIncomplete asks for more input only for an unfinished datum" {
         .{ "'", true },
         .{ "(a '", true },
         .{ "''", true },
+        // `` ` `` と `,` と `,@` も同じである。
+        .{ "`", true },
+        .{ ",", true },
+        .{ ",@", true },
+        .{ "(a ,@", true },
+        .{ "`,", true },
+        .{ "(a) `b ,", true },
         // 文字列が閉じていない。エスケープの途中も含む。
         .{ "\"abc", true },
         // 単独の `isIncomplete` の判定である。REPL は保留に `\n` を足すので、次の2行の
@@ -386,6 +416,10 @@ test "isIncomplete asks for more input only for an unfinished datum" {
         .{ "#z", false },
         .{ "')", false },
         .{ "(a ')", false },
+        .{ "`)", false },
+        .{ "(a ,@)", false },
+        .{ ",.", false },
+        .{ ", @x", false },
         .{ "#(1 . 2)", false },
         .{ "#\\spa", false },
         .{ "\"\\q\"", false },
@@ -457,11 +491,12 @@ fn listOf(sink: Sink, items: []const Value, tail: Value) Error!Value {
     return result;
 }
 
-/// `(quote datum)`, which `'datum` abbreviates (R7RS 2.4).
-fn quoted(sink: Sink, datum: Value) Error!Value {
-    const quote_symbol: Value = .fromSymbol(try sink.symbols.intern(sink.alloc, "quote"));
+/// `(quote datum)` for `'datum`, and likewise `quasiquote`, `unquote` and
+/// `unquote-splicing` for `` `datum ``, `,datum` and `,@datum` (R7RS 2.4).
+fn abbreviated(sink: Sink, abbreviation: Abbreviation, datum: Value) Error!Value {
+    const head: Value = .fromSymbol(try sink.symbols.intern(sink.alloc, abbreviation.symbolName()));
     const tail = try sink.heap.cons(datum, Value.empty_list_value);
-    return sink.heap.cons(quote_symbol, tail);
+    return sink.heap.cons(head, tail);
 }
 
 // Why: R7RS 7.1.1 の <boolean> は `#t`、`#f`、`#true`、`#false` である。
@@ -672,6 +707,74 @@ test "next reads ' as a quote form, and nests it" {
     try std.testing.expectEqualStrings("(quote ())", try f.roundTrip("'()", &buf));
     // `'a` と `(quote a)` は同じデータである。
     try std.testing.expectEqualStrings(try f.roundTrip("(quote a)", &buf), "(quote a)");
+}
+
+test "next reads ` , and ,@ as the forms they abbreviate, and nests them" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("(quasiquote a)", try f.roundTrip("`a", &buf));
+    try std.testing.expectEqualStrings("(unquote a)", try f.roundTrip(",a", &buf));
+    try std.testing.expectEqualStrings("(unquote-splicing a)", try f.roundTrip(",@a", &buf));
+    try std.testing.expectEqualStrings("(quasiquote (1 (unquote x) (unquote-splicing y)))", try f.roundTrip("`(1 ,x ,@y)", &buf));
+    try std.testing.expectEqualStrings("(quasiquote (quasiquote (unquote (unquote a))))", try f.roundTrip("``,,a", &buf));
+    try std.testing.expectEqualStrings("(quote (unquote (quasiquote (unquote-splicing a))))", try f.roundTrip("',`,@a", &buf));
+    try std.testing.expectEqualStrings("(a (unquote b) (unquote-splicing c) d)", try f.roundTrip("(a ,b ,@c d)", &buf));
+    // `,@` は 2 文字で 1 つの記号である。間に空白があれば、`,` に識別子 `@x` が続く形になるが、
+    // `@x` は識別子の綴りではないので読めない。
+    try std.testing.expectError(error.InvalidToken, f.readOne(", @x"));
+    // `,` の直後が `@` 以外なら `,@` ではない。
+    try std.testing.expectEqualStrings("(unquote a@)", try f.roundTrip(",a@", &buf));
+    // 略記は、`'` と同じように、直前のデータと区切らずに並べられるわけではない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("a,b"));
+    try std.testing.expectError(error.InvalidToken, f.readOne("a`b"));
+    // `'` が `quote` を作るのと同じ形で、`quasiquote` などの記号は、
+    // `(quasiquote a)` と書いた入力と同じデータになる。
+    try std.testing.expectEqualStrings(try f.roundTrip("(quasiquote a)", &buf), "(quasiquote a)");
+    const q = (try f.readOne("`a")).asPair().?;
+    try std.testing.expectEqualStrings("quasiquote", f.symbols.nameOf(q.car.asSymbol().?));
+    try std.testing.expectEqual(.empty_list, q.cdr.asPair().?.cdr.kind());
+}
+
+test "next reads ` , and ,@ before and inside a vector and after a dot" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("(quasiquote #(1 (unquote x) (unquote-splicing y)))", try f.roundTrip("`#(1 ,x ,@y)", &buf));
+    try std.testing.expectEqualStrings("#((quasiquote a) (unquote b) (unquote-splicing #(c)))", try f.roundTrip("#(`a ,b ,@#(c))", &buf));
+    try std.testing.expectEqualStrings("(a unquote b)", try f.roundTrip("(a . ,b)", &buf));
+    try std.testing.expectEqualStrings("(a unquote-splicing b)", try f.roundTrip("(a . ,@b)", &buf));
+    try std.testing.expectEqualStrings("(a quasiquote b)", try f.roundTrip("(a . `b)", &buf));
+    // 略記の直後のコメントは読み飛ばされる。
+    try std.testing.expectEqualStrings("(unquote a)", try f.roundTrip(",; c\na", &buf));
+    try std.testing.expectEqualStrings("(unquote-splicing a)", try f.roundTrip(",@; c\na", &buf));
+}
+
+test "next reports ` , and ,@ with nothing after them, as it does for '" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "`)", "(a `)", "(a ,)", "(a ,@)", "(a `, )", "#(,@)", "(a ,@ ,)" }) |src| {
+        try std.testing.expectError(error.MissingDatum, f.readOne(src));
+    }
+    const a = f.arena.allocator();
+    for ([_][]const u8{ "`", ",", ",@", "(a `", "(a ,@", "#(,", "`,@" }) |src| {
+        var r: Reader = .init(src);
+        try std.testing.expectError(error.Incomplete, r.next(a, f.sink()));
+    }
+}
+
+test "next rejects a dot right after ` , and ,@, and a dot cannot hide inside them" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "`.", ",.", ",@.", "(a ,@ . b)", "(a . ,@ . b)", "(a . ,)", "#(, . a)" }) |src| {
+        if (f.readOne(src)) |_| {
+            std.debug.print("accepted {s}\n", .{src});
+            return error.TestUnexpectedResult;
+        } else |_| {}
+    }
+    try std.testing.expectError(error.UnexpectedDot, f.readOne("`."));
+    try std.testing.expectError(error.UnexpectedDot, f.readOne(",@."));
+    try std.testing.expectError(error.UnexpectedDot, f.readOne("(a . ,b c)"));
 }
 
 test "next reads a dotted pair and a dotted tail" {
@@ -908,6 +1011,25 @@ test "next reads a long chain of quotes and a long list" {
     var count: usize = 0;
     while (l.asPair()) |p| : (count += 1) l = p.cdr;
     try std.testing.expectEqual(n, count);
+}
+
+test "next reads a long chain of ` , and ,@" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const n = 100_000;
+    const chain = try f.arena.allocator().alloc(u8, 2 * n + 1);
+    for (0..n) |k| {
+        chain[2 * k] = ',';
+        chain[2 * k + 1] = '@';
+    }
+    chain[2 * n] = '1';
+    var d = try f.readOne(chain);
+    var depth: usize = 0;
+    while (d.asPair()) |p| : (depth += 1) {
+        try std.testing.expectEqualStrings("unquote-splicing", f.symbols.nameOf(p.car.asSymbol().?));
+        d = p.cdr.asPair().?.car;
+    }
+    try std.testing.expectEqual(n, depth);
 }
 
 test "next reads a vector of data, the empty vector and nesting" {
