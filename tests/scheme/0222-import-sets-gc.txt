@@ -1,0 +1,10 @@
+# 3c のレビューの疑い: `import` が複数の集合を順に評価する間に、2つ目のライブラリの本体が走り、
+# 1つ目の集合の名前(この行にしか現れない綴り)が回収されないこと。
+(import (rename (sucheme core) (car zz-first-only-here)) (sucheme procedures)) (zz-first-only-here '(1 2))
+1
+
+(import (prefix (sucheme core) zzp-) (sucheme procedures)) (zzp-car '(7 8))
+7
+
+(import (only (sucheme core) car cdr) (rename (sucheme procedures) (reverse zz-rev-only-here))) (zz-rev-only-here (list (car '(1)) 2))
+(2 1)

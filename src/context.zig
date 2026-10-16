@@ -1,5 +1,5 @@
 //! What the expander and the machine share between the lines of a session: the
-//! GC heap and the arena beside it, the symbols, the bindings of the top level,
+//! GC heap (which holds the symbols) and the arena beside it, the bindings of the top level,
 //! the constants of the code, and the value the most recent error raised.
 
 const std = @import("std");
@@ -28,19 +28,18 @@ pub const Error = error{ OutOfMemory, Raised, ReserveExhausted };
 pub const heap_limit_message = "heap limit exceeded";
 
 /// What the interpreter carries between lines: the heap and the arena, the
-/// symbols and global bindings, the constants of the code, and the value the
-/// most recent error raised.
+/// global bindings, the constants of the code, and the value the most recent error
+/// raised.
 pub const Context = struct {
     /// Where what the reader and the machine make is allocated, and collected:
     /// the pairs, the closures, the frames of calls, the continuations, the
     /// argument lists, the strings, the vectors and the conditions.
     heap: Heap,
-    /// Where what the heap does not hold is allocated: the symbols, the table of
-    /// the bindings of the top level and the core IR the expander builds.
+    /// Where what the heap does not hold is allocated: the table of the bindings of
+    /// the top level and the core IR the expander builds.
     /// 大域変数のセルそのものは GC ヒープにある。
     /// この中のものは、インタプリタが解放されるまで解放されない。
     persist: std.mem.Allocator,
-    symbols: symbol.Table = .{},
     /// The bindings of the REPL's top level: what it imports from `core`, and the
     /// variables and macros it defines (src/env.zig).
     /// 特殊形式の名前は予約語ではなく、REPL の最上位の構文の束縛である。
@@ -96,15 +95,15 @@ pub const Context = struct {
         var ctx: Context = .{ .heap = .init(gpa, options), .persist = persist, .core = core };
         errdefer ctx.heap.deinit();
         for (&table.all) |*p| {
-            const id = try ctx.symbols.intern(persist, p.name);
+            const id = try ctx.heap.internFixed(p.name);
             try core.addPrimitive(persist, id, p);
         }
         for (std.enums.values(value_mod.Special)) |special| {
-            const id = try ctx.symbols.intern(persist, @tagName(special));
+            const id = try ctx.heap.internFixed(@tagName(special));
             try core.addSyntax(persist, id, .{ .special = special });
         }
         for (std.enums.values(value_mod.Auxiliary)) |auxiliary| {
-            const id = try ctx.symbols.intern(persist, auxiliary.spelling());
+            const id = try ctx.heap.internFixed(auxiliary.spelling());
             try core.addSyntax(persist, id, .{ .auxiliary = auxiliary });
         }
         ctx.globals.base = core;
@@ -140,8 +139,23 @@ pub const Context = struct {
     }
 
     /// Keeps `v`, a constant of some code, alive for as long as the context is.
+    /// シンボルの定数も、ヒープを指す定数と同じく、コードの外から見えないので、ここに挙げる。
+    /// 挙げないと、シンボルが回収され、ID が別の名前に再利用される。
     pub fn keepConstant(self: *Context, v: Value) error{OutOfMemory}!void {
-        if (v.pointsIntoHeap()) try self.code_roots.append(self.persist, v);
+        if (v.pointsIntoHeap() or v.kind() == .symbol) try self.code_roots.append(self.persist, v);
+    }
+
+    /// Keeps the symbol `name`, which a node of some code holds, alive for as long as
+    /// the context is.
+    /// 局所変数の節点は、名前を、未初期化の変数を読んだときのメッセージのために持つ。
+    pub fn keepName(self: *Context, name: symbol.SymbolId) error{OutOfMemory}!void {
+        try self.code_roots.append(self.persist, .fromSymbol(name));
+    }
+
+    /// The symbol named `name`, interned first if it is new; a name the limit
+    /// has no room for is the error "heap limit exceeded".
+    pub fn intern(self: *Context, name: []const u8) Error!symbol.SymbolId {
+        return self.heap.intern(name) catch |e| return self.heapFailure(e);
     }
 
     /// Collects between two lines, where the only roots are the context's own.
@@ -303,7 +317,7 @@ test "a context binds each primitive to its name" {
     defer arena.deinit();
     var ctx = try Context.init(arena.allocator(), std.testing.allocator);
     defer ctx.deinit();
-    const id = try ctx.symbols.intern(arena.allocator(), "+");
+    const id = try ctx.heap.intern("+");
     try std.testing.expect(ctx.globals.isBound(id));
     // 初期化はヒープに何も作らない。プリミティブのセルは、名前を解決したときに作る。
     try std.testing.expectEqual(0, ctx.heap.count);

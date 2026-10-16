@@ -237,7 +237,7 @@ const Fixture = struct {
     }
 
     fn id(self: *Fixture, name: []const u8) !Value {
-        return .fromSymbol(try self.ctx.symbols.intern(self.arena.allocator(), name));
+        return .fromSymbol(try self.ctx.intern(name));
     }
 };
 

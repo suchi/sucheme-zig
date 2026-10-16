@@ -245,7 +245,7 @@ const Expander = struct {
 
     /// The name of the identifier `id`, for a message.
     fn nameOf(self: *Expander, id: Value) []const u8 {
-        return self.ctx.symbols.nameOf(syntax_env.baseSymbol(id));
+        return self.ctx.heap.symbols.nameOf(syntax_env.baseSymbol(id));
     }
 
     /// Makes the node of `task` the constant `v`.
@@ -368,9 +368,12 @@ const Expander = struct {
             // 式にならない。
             .special, .macro, .auxiliary => return self.ctx.raise(
                 "{s} is a syntactic keyword and cannot be used as a variable",
-                .{self.ctx.symbols.nameOf(id)},
+                .{self.ctx.heap.symbols.nameOf(id)},
             ),
-            .local => |local| .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } },
+            .local => |local| blk: {
+                try self.ctx.keepName(id);
+                break :blk .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } };
+            },
             .global => |cell| .{ .global_ref = cell },
         };
     }
@@ -546,10 +549,11 @@ const Expander = struct {
         switch (resolution.denotation) {
             .special, .macro, .auxiliary => return self.ctx.raise(
                 "bad set!: {s} is a syntactic keyword and cannot be assigned",
-                .{self.ctx.symbols.nameOf(id)},
+                .{self.ctx.heap.symbols.nameOf(id)},
             ),
             .local => |local| {
                 const where = try self.address(task.env, local);
+                try self.ctx.keepName(id);
                 const value = try self.child(items[2], task.env, .expression);
                 task.dest.* = .{ .local_set = .{ .address = where, .name = id, .value = value } };
             },
@@ -567,7 +571,7 @@ const Expander = struct {
                     // その変数のセルに代入する。インポートした束縛への代入は誤りである。
                     if (table.lookup(resolution.symbol).?.imported) return self.ctx.raise(
                         "bad set!: {s} is an imported binding and cannot be assigned",
-                        .{self.ctx.symbols.nameOf(id)},
+                        .{self.ctx.heap.symbols.nameOf(id)},
                     );
                     break :blk resolved;
                 };
@@ -624,6 +628,7 @@ const Expander = struct {
                 // 局所変数である。
                 const local = syntax_env.lookupRib(env, target).?.denotation.local;
                 const value = try self.definedValue(task, items, shorthand);
+                try self.ctx.keepName(id);
                 task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = local.index }, .name = id, .value = value } };
             },
             .expression => unreachable,
@@ -973,7 +978,7 @@ const Expander = struct {
         if (self.top.lookup(name)) |b| {
             if (b.imported) return self.ctx.raise(
                 "bad " ++ form_name ++ ": {s} is an imported binding and cannot be redefined",
-                .{self.ctx.symbols.nameOf(name)},
+                .{self.ctx.heap.symbols.nameOf(name)},
             );
         }
     }
@@ -1035,7 +1040,7 @@ const Fixture = struct {
     /// The first datum of `src`.
     fn read(self: *Fixture, src: []const u8) !Value {
         var r: @import("../reader.zig").Reader = .init(src);
-        const sink: @import("../reader.zig").Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        const sink: @import("../reader.zig").Sink = .{ .heap = &self.ctx.heap };
         return (try r.next(self.arena.allocator(), sink)).?;
     }
 
@@ -1043,7 +1048,7 @@ const Fixture = struct {
         const form = try self.read(src);
         const node = try expandWith(&self.ctx, self.arena.allocator(), form, limits);
         var out: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try core.write(&out.writer, self.arena.allocator(), &self.ctx.symbols, node);
+        try core.write(&out.writer, self.arena.allocator(), &self.ctx.heap.symbols, node);
         return out.written();
     }
 
@@ -1389,7 +1394,7 @@ test "a form that is not a proper list is refused" {
     const a = f.arena.allocator();
     // リーダはドット付きリストを書けないので、(+ 1 . 2) は手で組み立てる。
     const tail = try f.ctx.heap.cons(.fromFixnum(1), .fromFixnum(2));
-    const plus: Value = .fromSymbol(try f.ctx.symbols.intern(a, "+"));
+    const plus: Value = .fromSymbol(try f.ctx.intern("+"));
     const form = try f.ctx.heap.cons(plus, tail);
     try std.testing.expectError(error.Raised, expand(&f.ctx, a, form));
     try std.testing.expectEqualStrings("bad syntax: a form must be a proper list", f.ctx.diagnostic());
@@ -1405,21 +1410,25 @@ test "quote gives the very datum it was read with, not a copy" {
     try std.testing.expectEqual(form.asPair().?.cdr.asPair().?.car.asPair().?, node.constant.asPair().?);
 }
 
-test "a constant that refers to the heap is kept for the collector, and nothing else is" {
+test "a constant that refers to the heap or is a symbol is kept for the collector, and nothing else is" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // ヒープオブジェクトを持たない定数には、ルートは要らない。
-    for ([_][]const u8{ "5", "#t", "(quote foo)", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
+    // ヒープオブジェクトでもシンボルでもない定数には、ルートは要らない。
+    for ([_][]const u8{ "5", "#t", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
     try std.testing.expectEqual(0, f.ctx.code_roots.items.len);
+    // シンボルの定数は、ID がコードの外から見えないので、ルートに挙げる。
+    const named = try expand(&f.ctx, a, try f.read("(quote foo)"));
+    try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(named.constant.asSymbol().?, f.ctx.code_roots.items[0].asSymbol().?);
     f.ctx.collectIdle();
     // 残るのは、名前 `x` を解決したときに REPL の表に作った、未束縛のセル1つだけである。
     // セルは定数ではなく、表がルートとして持つ。
     try std.testing.expectEqual(1, f.ctx.heap.count);
     // クォートしたリストがその例である。対象はデータそのもので、周りの `quote` 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
-    try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
     // セルと、読んだ4つのペア。
     try std.testing.expectEqual(5, f.ctx.heap.count);
     f.ctx.collectIdle();
@@ -1430,10 +1439,30 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     const closure = try f.ctx.heap.create(value_mod.Closure, .{ .lambda = undefined, .env = null });
     const itself = try expand(&f.ctx, a, .fromClosure(closure));
     try std.testing.expectEqual(closure, itself.constant.asClosure().?);
-    try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(3, f.ctx.code_roots.items.len);
     f.ctx.collectIdle();
     // セル、データの2つのペア、クロージャ。
     try std.testing.expectEqual(4, f.ctx.heap.count);
+}
+
+test "the name a local variable node holds stays the name after a collection that frees every other symbol" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // 節点はアリーナにあり、GC はたどらない。仮引数の名前は、読んだデータ以外のどこにも無い。
+    const read_node = try expand(&f.ctx, a, try f.read("(lambda (zr) zr)"));
+    const set_node = try expand(&f.ctx, a, try f.read("(lambda (zs) (set! zs 1))"));
+    f.ctx.collectIdle();
+    // 回収した ID を別の名前が使う。
+    var buf: [16]u8 = undefined;
+    for (0..32) |i| _ = try f.ctx.intern(std.fmt.bufPrint(&buf, "other-{d}", .{i}) catch unreachable);
+    var out: std.Io.Writer.Allocating = .init(a);
+    try core.write(&out.writer, a, &f.ctx.heap.symbols, read_node);
+    try std.testing.expectEqualStrings("(lambda 1 1 (local zr 0 0))", out.written());
+    out.clearRetainingCapacity();
+    try core.write(&out.writer, a, &f.ctx.heap.symbols, set_node);
+    try std.testing.expectEqualStrings("(lambda 1 1 (set-local zs 0 0 (const 1)))", out.written());
 }
 
 test "a form whose expansion fails keeps none of the constants it made" {
@@ -1549,13 +1578,13 @@ test "a name a macro defines at the top level is the name it was written as" {
 
 /// The alias of `name` that a macro defined at the top level would make.
 fn testAlias(f: *Fixture, name: []const u8) !Value {
-    const inner: Value = .fromSymbol(try f.ctx.symbols.intern(f.arena.allocator(), name));
+    const inner: Value = .fromSymbol(try f.ctx.intern(name));
     return .fromAlias(try f.ctx.heap.create(value_mod.Alias, .{ .inner = inner, .env = null, .mark = 0 }));
 }
 
 /// The node of `(quote datum)`, the form built by hand.
 fn quoted(f: *Fixture, datum: Value) !*const Node {
-    const quote: Value = .fromSymbol(try f.ctx.symbols.intern(f.arena.allocator(), "quote"));
+    const quote: Value = .fromSymbol(try f.ctx.intern("quote"));
     const form = try f.ctx.heap.cons(quote, try f.ctx.heap.cons(datum, .empty_list_value));
     return expand(&f.ctx, f.arena.allocator(), form);
 }
@@ -1570,7 +1599,7 @@ test "quote gives an alias back as its symbol, and keeps the shared structure sh
     const datum = try h.cons(shared, try h.cons(shared, try h.cons(try testAlias(&f, "tmp"), .empty_list_value)));
     const c = (try quoted(&f, datum)).constant;
     var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
-    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.symbols, c);
+    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.heap.symbols, c);
     try std.testing.expectEqualStrings("((1 tmp) (1 tmp) tmp)", out.written());
     const first = c.asPair().?.car.asPair().?;
     const second = c.asPair().?.cdr.asPair().?.car.asPair().?;
@@ -1582,7 +1611,7 @@ test "quote gives an alias back as its symbol, and keeps the shared structure sh
 }
 
 fn tmpSymbol(f: *Fixture) @import("../symbol.zig").SymbolId {
-    return f.ctx.symbols.index.get("tmp").?;
+    return f.ctx.heap.symbols.lookup("tmp").?;
 }
 
 test "quote strips the aliases of a cycle, and the copy is the same cycle" {

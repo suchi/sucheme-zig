@@ -851,7 +851,7 @@ pub const Machine = struct {
         var i = features.names.len;
         while (i > 0) {
             i -= 1;
-            const id = try ctx.symbols.intern(ctx.persist, features.names[i]);
+            const id = try ctx.intern(features.names[i]);
             list = ctx.heap.cons(.fromSymbol(id), list) catch |e| return ctx.heapFailure(e);
         }
         return list;
@@ -1048,11 +1048,11 @@ pub const Machine = struct {
     };
 
     fn uninitialized(self: *Machine, name: SymbolId) Error {
-        return self.ctx.raise("variable used before its definition: {s}", .{self.ctx.symbols.nameOf(name)});
+        return self.ctx.raise("variable used before its definition: {s}", .{self.ctx.heap.symbols.nameOf(name)});
     }
 
     fn unbound(self: *Machine, name: SymbolId) Error {
-        return self.ctx.raise("unbound variable: {s}", .{self.ctx.symbols.nameOf(name)});
+        return self.ctx.raise("unbound variable: {s}", .{self.ctx.heap.symbols.nameOf(name)});
     }
 };
 
@@ -1113,7 +1113,7 @@ const Fixture = struct {
     /// The value of the last form of `src`; the forms before it run first.
     fn eval(self: *Fixture, src: []const u8) !Value {
         var r: reader_mod.Reader = .init(src);
-        const sink: reader_mod.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        const sink: reader_mod.Sink = .{ .heap = &self.ctx.heap };
         var last: Value = .unspecified_value;
         while (true) {
             // 2つの形式の間で持っているものは、コンテキストが持つものと、いま走り終えた
@@ -1231,7 +1231,7 @@ test "a global's cell holds what the definition gives it, across forms" {
     _ = try f.eval("(define (pong n) (ping n))");
     _ = try f.eval("(define (ping n) 'fixed)");
     const fixed = try f.eval("(pong 2)");
-    try std.testing.expectEqualStrings("fixed", f.ctx.symbols.nameOf(fixed.asSymbol().?));
+    try std.testing.expectEqualStrings("fixed", f.ctx.heap.symbols.nameOf(fixed.asSymbol().?));
     // プリミティブの再定義は、先に定義した手続きに見えない。
     _ = try f.eval("(define (first xs) (car xs))");
     _ = try f.eval("(define (car xs) 99)");
@@ -1396,7 +1396,7 @@ fn applyLoopDepths(f: *Fixture, short: usize, long: usize) ![2]usize {
         var src: [64]u8 = undefined;
         f.machine.peak_depth = 0;
         const done = try f.eval(try std.fmt.bufPrint(&src, "(loop {d}) (loop2 {d})", .{ n, n }));
-        try std.testing.expectEqualStrings("done", f.ctx.symbols.nameOf(done.asSymbol().?));
+        try std.testing.expectEqualStrings("done", f.ctx.heap.symbols.nameOf(done.asSymbol().?));
         depths[i] = f.machine.peak_depth;
     }
     return depths;
@@ -1617,7 +1617,7 @@ const Probe = struct {
 
     fn bind(f: *Fixture) !void {
         for ([_]*const value_mod.Primitive{ &primitive, &variadic, &nullary, &greedy }) |p| {
-            const id = try f.ctx.symbols.intern(f.ctx.persist, p.name);
+            const id = try f.ctx.heap.internFixed(p.name);
             try f.ctx.core.addPrimitive(f.ctx.persist, id, p);
         }
     }
@@ -1802,7 +1802,7 @@ test "a condition is made in the heap, not in the arena that lasts the session" 
     try f.init();
     defer f.deinit();
     var r: reader_mod.Reader = .init("(car 5)");
-    const sink: reader_mod.Sink = .{ .alloc = f.ctx.persist, .heap = &f.ctx.heap, .symbols = &f.ctx.symbols };
+    const sink: reader_mod.Sink = .{ .heap = &f.ctx.heap };
     const node = try expand.expand(&f.ctx, f.arena.allocator(), (try r.next(f.arena.allocator(), sink)).?);
     // 展開を済ませてから数え始める。数えるのは、機械が走って送出する間の確保だけである。
     var counting: std.testing.FailingAllocator = .init(f.arena.allocator(), .{});
@@ -2118,7 +2118,7 @@ test "a raise with no handler leaves the machine with what was raised, and the n
     defer f.deinit();
     // 事例7と事例11: 列が空の状態の送出は、条件オブジェクトでない値でも未処理として返る。
     try std.testing.expectError(error.Raised, f.eval("(raise 'oops)"));
-    try std.testing.expectEqualStrings("oops", f.ctx.symbols.nameOf(f.ctx.raised.?.asSymbol().?));
+    try std.testing.expectEqualStrings("oops", f.ctx.heap.symbols.nameOf(f.ctx.raised.?.asSymbol().?));
     try std.testing.expectError(error.Raised, f.eval("(raise 42)"));
     try std.testing.expectEqual(42, f.ctx.raised.?.asFixnum().?);
     try std.testing.expectError(error.Raised, f.eval("(raise-continuable 43)"));
@@ -2133,7 +2133,7 @@ test "a handler that returns from a raise raises a secondary exception, in the d
     try f.expectFails("handler returned from non-continuable raise", "(with-exception-handler (lambda (c) 42) (lambda () (raise 'oops)))");
     // 二次例外の irritant は、送出された値である。
     const irritants = f.ctx.raised.?.asCondition().?.irritants.asPair().?;
-    try std.testing.expectEqualStrings("oops", f.ctx.symbols.nameOf(irritants.car.asSymbol().?));
+    try std.testing.expectEqualStrings("oops", f.ctx.heap.symbols.nameOf(irritants.car.asSymbol().?));
     try std.testing.expectEqual(value_mod.Kind.empty_list, irritants.cdr.kind());
     // 二次例外は外側のハンドラに届き、戻ったハンドラ自身には届かない。
     _ = try f.eval("(define got #f)");
@@ -2148,7 +2148,7 @@ test "a handler that returns from a raise raises a secondary exception, in the d
         \\  (lambda () (with-exception-handler (lambda (c) (raise 'again)) (lambda () (raise 'first)))))
     );
     const again = f.ctx.raised.?.asCondition().?.irritants.asPair().?.car;
-    try std.testing.expectEqualStrings("again", f.ctx.symbols.nameOf(again.asSymbol().?));
+    try std.testing.expectEqualStrings("again", f.ctx.heap.symbols.nameOf(again.asSymbol().?));
 }
 
 test "the errors the machine finds reach the handler as conditions" {
@@ -2214,7 +2214,7 @@ test "error raises a condition with the message and the irritants it is given" {
     const first = c.irritants.asPair().?;
     try std.testing.expectEqual(1, first.car.asFixnum().?);
     const second = first.cdr.asPair().?;
-    try std.testing.expectEqualStrings("two", f.ctx.symbols.nameOf(second.car.asSymbol().?));
+    try std.testing.expectEqualStrings("two", f.ctx.heap.symbols.nameOf(second.car.asSymbol().?));
     try std.testing.expectEqual(value_mod.Kind.empty_list, second.cdr.kind());
     // irritant が無ければ空リストである。ハンドラにも同じ条件が届き、`raise` と同じく、
     // ハンドラが戻ると二次例外になる。
@@ -2270,7 +2270,7 @@ fn irritantsText(f: *Fixture, buf: []u8) ![]const u8 {
     var it = f.ctx.raised.?.asCondition().?.irritants;
     while (it.asPair()) |p| : (it = p.cdr) {
         if (w.end != 0) try w.writeByte(' ');
-        try @import("printer.zig").write(&w, std.testing.allocator, &f.ctx.symbols, p.car);
+        try @import("printer.zig").write(&w, std.testing.allocator, &f.ctx.heap.symbols, p.car);
     }
     return w.buffered();
 }
@@ -2383,7 +2383,7 @@ test "every allocation to call a handler is made from the reserve" {
     try std.testing.expectEqual(5, call.value.asFixnum().?);
     try std.testing.expect(dyn.?.kind == .handler_shift);
     try std.testing.expect(kont.?.step == .handler_return);
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
     // ハンドラのフレームも予約から作る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
         .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
@@ -2409,7 +2409,7 @@ test "a handler that takes its arguments as a list gets the list from the reserv
         },
         .value => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "raise-continuable calls the handler from the reserve, though it is applied as an ordinary call" {
@@ -2432,7 +2432,7 @@ test "raise-continuable calls the handler from the reserve, though it is applied
     }
     try std.testing.expect(kont.?.step.handler_return.continuable);
     try std.testing.expect(dyn.?.kind == .handler_shift);
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "the secondary exception of a handler that returned is made from the reserve" {
@@ -2447,7 +2447,7 @@ test "the secondary exception of a handler that returned is made from the reserv
     const irritants = c.irritants.asPair().?;
     try std.testing.expectEqual(5, irritants.car.asFixnum().?);
     try std.testing.expectEqual(value_mod.Kind.empty_list, irritants.cdr.kind());
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 // 以下は継続と `dynamic-wind` のテストである(スライス 2e)。
@@ -2611,7 +2611,7 @@ test "every allocation of a rewind is made from the reserve" {
     kont = frame.next;
     try std.testing.expectEqual(6, (try f.machine.rewind(&kont, &dyn, frame.step.rewind)).value.asFixnum().?);
     try std.testing.expectEqual(h, dyn.?);
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "a continuation invoked with no wind point on the way arrives at once, without allocating" {
@@ -2746,7 +2746,7 @@ test "a continuation invoked with no values from the reserve makes its multiple 
         .value => |v| try std.testing.expect(v.kind() == .multiple_values),
         .body => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "the consumer of call-with-values runs in tail position, and the producer does not" {

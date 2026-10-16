@@ -1,0 +1,133 @@
+# Slice 3c: `string->symbol` と `symbol->string` と `symbol=?`(R7RS 6.5)。シンボル表は
+# 弱い表で、使われないシンボルは GC が回収する。このファイルは、GC が走る機械(ランナーの
+# 「collect at every step」)でも、名前から作ったシンボルが、リーダが読んだシンボルと同じで
+# あり続けることを見る。作業リストの容量が0の場合は、src/sucheme.zig の単体テストが見る
+# (このランナーに、容量を変える走り方は無い)。
+#
+# 仕様の例のうち、記憶から起こしたものがある。原文は取得できていない。
+
+# 名前から作ったシンボルは、同じ名前のリーダのシンボルと同じものである。
+(eq? 'abc (string->symbol "abc"))
+#t
+
+(eq? (string->symbol "abc") (string->symbol "abc"))
+#t
+
+(eq? 'abc (string->symbol "abd"))
+#f
+
+(string->symbol "abc")
+abc
+
+# 大文字小文字は区別される。
+(eq? 'ABC (string->symbol "ABC"))
+#t
+
+(eq? 'ABC 'abc)
+#f
+
+# 同じシンボルの名前は、定義した手続きの中でも変わらない。
+(define (name-of) (string->symbol "abc")) (define (const-of) 'abc) (list (eq? (name-of) (const-of)) (eq? (name-of) 'abc))
+(#t #t)
+
+# 空の名前も、ASCII の外の名前も、シンボルになる。
+(eq? (string->symbol "") (string->symbol ""))
+#t
+
+(symbol->string (string->symbol ""))
+""
+
+(symbol->string (string->symbol "あいう"))
+"あいう"
+
+# リーダは、ASCII の外の綴りを識別子として読まない。名前から作ったシンボルは、同じ名前から
+# 作った別のシンボルと同じものである。
+(eq? (string->symbol "あいう") (string->symbol "あいう"))
+#t
+
+# `symbol->string` は名前の文字列を返す。
+(symbol->string 'abc)
+"abc"
+
+(string-length (symbol->string 'abc))
+3
+
+(string->symbol (symbol->string 'round-trip))
+round-trip
+
+(eq? 'round-trip (string->symbol (symbol->string 'round-trip)))
+#t
+
+# 結果は新しい文字列で、呼ぶたびに別のオブジェクトである。
+(eq? (symbol->string 'abc) (symbol->string 'abc))
+#f
+
+(equal? (symbol->string 'abc) (symbol->string 'abc))
+#t
+
+# 型の誤り。
+(symbol->string "abc")
+error: wrong type of argument to symbol->string "abc"
+
+(symbol->string 1)
+error: wrong type of argument to symbol->string 1
+
+(string->symbol 'abc)
+error: wrong type of argument to string->symbol abc
+
+(string->symbol #\a)
+error: wrong type of argument to string->symbol #\a
+
+# 個数の誤り。
+(symbol->string)
+error: wrong number of arguments to symbol->string
+
+(symbol->string 'a 'b)
+error: wrong number of arguments to symbol->string a b
+
+(string->symbol)
+error: wrong number of arguments to string->symbol
+
+(string->symbol "a" "b")
+error: wrong number of arguments to string->symbol "a" "b"
+
+# `symbol=?` は、すべての引数が同じシンボルなら真である。
+(symbol=? 'a 'a)
+#t
+
+(symbol=? 'a 'b)
+#f
+
+(symbol=? 'a 'a 'a)
+#t
+
+(symbol=? 'a 'a 'b)
+#f
+
+(symbol=? 'b 'a 'a)
+#f
+
+(symbol=? 'a 'b 'a)
+#f
+
+(symbol=? 'a)
+#t
+
+(symbol=? (string->symbol "x") 'x)
+#t
+
+# 型は、最初に違いが見つかったあとの引数も検査される。エラーは値に左右されない。
+(symbol=? 'a 1)
+error: wrong type of argument to symbol=? a 1
+
+(symbol=? 'a 'b 1)
+error: wrong type of argument to symbol=? a b 1
+
+(symbol=? 1)
+error: wrong type of argument to symbol=? 1
+
+(symbol=? "a" "a")
+error: wrong type of argument to symbol=? "a" "a"
+
+(symbol=?)
+error: wrong number of arguments to symbol=?

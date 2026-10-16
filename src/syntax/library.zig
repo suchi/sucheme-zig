@@ -124,7 +124,7 @@ pub const TopLevelForm = enum { define_library, import };
 /// 最上位の形式として、先頭の綴りで見分ける。
 pub fn topLevelForm(ctx: *const Context, form: Value) ?TopLevelForm {
     const head = (form.asPair() orelse return null).car.asSymbol() orelse return null;
-    const name = ctx.symbols.nameOf(head);
+    const name = ctx.heap.symbols.nameOf(head);
     if (std.mem.eql(u8, name, "import")) return .import;
     if (std.mem.eql(u8, name, "define-library")) return .define_library;
     return null;
@@ -143,7 +143,7 @@ fn itemsOf(ctx: *Context, scratch: std.mem.Allocator, form: Value, comptime what
 /// The text of the library name `name`, as `write` shows it.
 fn nameText(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error![]const u8 {
     var out: std.Io.Writer.Allocating = .init(scratch);
-    printer.write(&out.writer, scratch, &ctx.symbols, name) catch return error.OutOfMemory;
+    printer.write(&out.writer, scratch, &ctx.heap.symbols, name) catch return error.OutOfMemory;
     return out.written();
 }
 
@@ -167,7 +167,7 @@ pub fn isCoreName(ctx: *const Context, name: Value) bool {
     for ([_][]const u8{ "sucheme", "core" }) |expected| {
         const p = rest.asPair() orelse return false;
         const sym = p.car.asSymbol() orelse return false;
-        if (!std.mem.eql(u8, ctx.symbols.nameOf(sym), expected)) return false;
+        if (!std.mem.eql(u8, ctx.heap.symbols.nameOf(sym), expected)) return false;
         rest = p.cdr;
     }
     return rest.kind() == .empty_list;
@@ -183,7 +183,7 @@ pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Err
     var current = spec;
     while (current.asPair()) |p| {
         const head = p.car.asSymbol() orelse break;
-        const kind = std.meta.stringToEnum(Modifier, ctx.symbols.nameOf(head)) orelse break;
+        const kind = std.meta.stringToEnum(Modifier, ctx.heap.symbols.nameOf(head)) orelse break;
         const inner = p.cdr.asPair() orelse
             return ctx.raise("bad import: {s} needs an import set", .{@tagName(kind)});
         try pending.append(scratch, .{ .kind = kind, .arguments = inner.cdr });
@@ -202,7 +202,7 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
         var it = ctx.core.entries.keyIterator();
         while (it.next()) |id| {
             const d = (ctx.core.get(&ctx.heap, id.*) catch |e| return ctx.heapFailure(e)).?;
-            try names.put(scratch, ctx.symbols.nameOf(id.*), d);
+            try names.put(scratch, ctx.heap.symbols.nameOf(id.*), d);
         }
         return names;
     }
@@ -223,11 +223,11 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
 /// ファイルシステムが無いときも検査する。
 fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Library {
     const text = try nameText(ctx, scratch, name);
-    _ = resolve.libraryParts(scratch, &ctx.symbols, name) catch |e| return nameFailure(ctx, text, e);
+    _ = resolve.libraryParts(scratch, &ctx.heap.symbols, name) catch |e| return nameFailure(ctx, text, e);
     if (ctx.files == null and ctx.embedded == null) return ctx.raise("unknown library: {s}", .{text});
     if (ctx.libraries.loading.items.len >= max_load_depth)
         return ctx.raise("implementation restriction: libraries import one another more than {d} deep, at {s}", .{ max_load_depth, text });
-    const opened = resolve.openLibrary(ctx.files, ctx.embedded, scratch, &ctx.symbols, name) catch |e| switch (e) {
+    const opened = resolve.openLibrary(ctx.files, ctx.embedded, scratch, &ctx.heap.symbols, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NotFound => return ctx.raise("unknown library: {s}", .{text}),
         error.LinkRefused => return ctx.raise("cannot load the library {s}: its file, or a directory on the way to it, is a link", .{text}),
@@ -291,7 +291,7 @@ fn nameFailure(ctx: *Context, text: []const u8, e: NameFailure) Error {
 fn identifierName(ctx: *Context, id: Value, comptime what: []const u8) Error![]const u8 {
     const symbol = id.asSymbol() orelse
         return ctx.raise("bad import: " ++ what ++ " expects identifiers", .{});
-    return ctx.symbols.nameOf(symbol);
+    return ctx.heap.symbols.nameOf(symbol);
 }
 
 /// Applies one modifier of an import set to what it modifies.
@@ -356,7 +356,7 @@ pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: ex
     var it = names.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
-        const id = try ctx.symbols.intern(ctx.persist, name);
+        const id = try ctx.intern(name);
         if (mode == .library) if (table.lookup(id)) |existing| {
             if (existing.imported) {
                 if (syntax_env.sameDenotation(existing.denotation, entry.value_ptr.*)) continue;
@@ -426,10 +426,19 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
     if (declaration.asPair() == null) return ctx.raise(bad, .{});
     const parts = try itemsOf(ctx, scratch, declaration, "define-library");
     const head = parts[0].asSymbol() orelse return ctx.raise(bad, .{});
-    const keyword = ctx.symbols.nameOf(head);
+    const keyword = ctx.heap.symbols.nameOf(head);
     const table = ctx.libraries.tableOf(lib);
     if (std.mem.eql(u8, keyword, "export")) {
-        for (parts[1..]) |spec| try pending.append(scratch, try exportSpec(ctx, scratch, spec));
+        for (parts[1..]) |spec| {
+            const export_spec = try exportSpec(ctx, scratch, spec);
+            // Why: 保留の名前は、本体の各形式の間を Zig の一覧で持ち越す。その間に GC が走る。
+            // `include-library-declarations` が読んだ宣言は、読み終えると登録表の `loading` から
+            // 外れ、名前を指すものが無くなる。名前を挙げておかないと、ID が回収され、別の名前に
+            // 再利用される。
+            try ctx.keepName(export_spec.internal);
+            try ctx.keepName(export_spec.external);
+            try pending.append(scratch, export_spec);
+        }
     } else if (std.mem.eql(u8, keyword, "import")) {
         // 集合を先にすべて評価してから束縛する。
         const sets = try scratch.alloc(Names, parts.len - 1);
@@ -510,7 +519,7 @@ fn exportSpec(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Error!Pend
     const parts = itemsOf(ctx, scratch, spec, "export") catch return ctx.raise(bad, .{});
     if (parts.len != 3) return ctx.raise(bad, .{});
     const keyword = parts[0].asSymbol() orelse return ctx.raise(bad, .{});
-    if (!std.mem.eql(u8, ctx.symbols.nameOf(keyword), "rename")) return ctx.raise(bad, .{});
+    if (!std.mem.eql(u8, ctx.heap.symbols.nameOf(keyword), "rename")) return ctx.raise(bad, .{});
     return .{
         .internal = parts[1].asSymbol() orelse return ctx.raise(bad, .{}),
         .external = parts[2].asSymbol() orelse return ctx.raise(bad, .{}),
@@ -524,7 +533,7 @@ fn finish(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, pending: []c
     const table = ctx.libraries.tableOf(lib);
     for (pending) |p| {
         const denotation = try syntax_env.resolve(ctx, lib.root, .fromSymbol(p.internal));
-        const external = ctx.symbols.nameOf(p.external);
+        const external = ctx.heap.symbols.nameOf(p.external);
         var existing = lib.exports;
         while (existing) |e| : (existing = e.next) {
             if (!std.mem.eql(u8, e.name.bytes, external)) continue;
@@ -565,12 +574,12 @@ fn unboundNames(ctx: *Context, scratch: std.mem.Allocator, table: *const env_mod
     while (it.next()) |b| {
         if (b.imported) continue;
         switch (b.denotation) {
-            .global => |cell| if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.symbols.nameOf(cell.name)),
+            .global => |cell| if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.heap.symbols.nameOf(cell.name)),
             else => {},
         }
     }
     for (table.displaced_cells.items) |cell| {
-        if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.symbols.nameOf(cell.name));
+        if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.heap.symbols.nameOf(cell.name));
     }
     std.mem.sort([]const u8, names.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -632,7 +641,7 @@ const Fixture = struct {
 
     fn read(self: *Fixture, src: []const u8) !Value {
         var r: reader.Reader = .init(src);
-        const sink: reader.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        const sink: reader.Sink = .{ .heap = &self.ctx.heap };
         return (try r.next(self.arena.allocator(), sink)).?;
     }
 
@@ -641,7 +650,7 @@ const Fixture = struct {
         const lib = try self.ctx.libraries.begin(&self.ctx, try self.read(name));
         const table = self.ctx.libraries.tableOf(lib);
         for (names) |n| {
-            const id = try self.ctx.symbols.intern(self.ctx.persist, n);
+            const id = try self.ctx.intern(n);
             const d = (try self.ctx.core.get(&self.ctx.heap, id)).?;
             try table.importBinding(self.ctx.persist, id, d);
         }
@@ -661,7 +670,7 @@ const Fixture = struct {
 
     fn text(self: *Fixture, node: *const value_mod.Node) ![]const u8 {
         var out: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try core.write(&out.writer, self.arena.allocator(), &self.ctx.symbols, node);
+        try core.write(&out.writer, self.arena.allocator(), &self.ctx.heap.symbols, node);
         return out.written();
     }
 
@@ -734,7 +743,7 @@ test "the forms being processed and the bindings of a library survive a collecti
     const lib = try f.library("(t a)", &.{ "define", "quote" });
     _ = try f.expandIn(lib, "(define x '(1 2))");
     const table = f.ctx.libraries.tableOf(lib);
-    const x = f.ctx.symbols.index.get("x").?;
+    const x = f.ctx.heap.symbols.lookup("x").?;
     table.lookup(x).?.denotation.global.value = try f.ctx.heap.cons(.fromFixnum(1), .empty_list_value);
     const form = try f.read("(define-library (t a) (export))");
     try f.ctx.libraries.loading.append(f.ctx.persist, form);
@@ -742,7 +751,7 @@ test "the forms being processed and the bindings of a library survive a collecti
     f.ctx.collectIdle();
     // 作業中の形式は、読んだペアのまま残る。セルの値も残る。
     var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
-    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.symbols, form);
+    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.heap.symbols, form);
     try std.testing.expectEqualStrings("(define-library (t a) (export))", out.written());
     try std.testing.expectEqual(1, table.lookup(x).?.denotation.global.value.asPair().?.car.asFixnum().?);
     // 作業中の形式を手放すと、それは回収される。
@@ -759,10 +768,10 @@ test "a form of a library body is expanded for the library's own top level, not 
     const lib = try f.library("(t a)", &.{ "define", "lambda", "quote" });
     try std.testing.expectEqualStrings("(define-global x (const 1))", try f.expandIn(lib, "(define x 1)"));
     // REPL の最上位は、その名前を束縛していない。
-    try std.testing.expect(!f.ctx.globals.isBound(f.ctx.symbols.index.get("x").?));
+    try std.testing.expect(!f.ctx.globals.isBound(f.ctx.heap.symbols.lookup("x").?));
     try std.testing.expectEqualStrings("(global x)", try f.expandRepl("x"));
-    try std.testing.expect(f.ctx.globals.lookup(f.ctx.symbols.index.get("x").?).?.denotation.global !=
-        f.ctx.libraries.tableOf(lib).lookup(f.ctx.symbols.index.get("x").?).?.denotation.global);
+    try std.testing.expect(f.ctx.globals.lookup(f.ctx.heap.symbols.lookup("x").?).?.denotation.global !=
+        f.ctx.libraries.tableOf(lib).lookup(f.ctx.heap.symbols.lookup("x").?).?.denotation.global);
     // ライブラリの本体は、インポートしたものだけを見る。`if` はインポートしていない。
     try std.testing.expectEqualStrings("(call (global if) (const 1) (const 2))", try f.expandIn(lib, "(if 1 2)"));
     // 局所の束縛は、最上位の下で、ふつうに働く。
@@ -781,7 +790,7 @@ test "a definition or an assignment of an imported binding is a syntax error in 
     try f.expectFailsIn(lib, "(define if 1)", "bad define: if is an imported binding and cannot be redefined");
     try f.expectFailsIn(lib, "(set! if 1)", "bad set!: if is a syntactic keyword and cannot be assigned");
     // 失敗した展開は、何も束縛しない。
-    try std.testing.expect(f.ctx.libraries.tableOf(lib).lookup(f.ctx.symbols.index.get("car").?).?.imported);
+    try std.testing.expect(f.ctx.libraries.tableOf(lib).lookup(f.ctx.heap.symbols.lookup("car").?).?.imported);
     // ライブラリ自身の変数は、定義し直しても代入してもよい。
     try std.testing.expectEqualStrings("(define-global x (if (const #t) (const #t)))", try f.expandIn(lib, "(define x (if #t #t))"));
     try std.testing.expectEqualStrings("(set-global x (const 2))", try f.expandIn(lib, "(set! x 2)"));
@@ -796,13 +805,13 @@ test "a macro defined in a library reads its ellipsis and underscore by the libr
     // REPL が同じ綴りを変数にしても、ライブラリのマクロの読み方は変わらない。
     _ = try f.expandRepl("(define ... 1)");
     _ = try f.expandRepl("(define _ 2)");
-    const m = f.ctx.libraries.tableOf(lib).lookup(f.ctx.symbols.index.get("m").?).?.denotation;
+    const m = f.ctx.libraries.tableOf(lib).lookup(f.ctx.heap.symbols.lookup("m").?).?.denotation;
     const use = try f.read("(m 0 1 2)");
     var work: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer work.deinit();
     const output = try @import("rules.zig").transform(&f.ctx, &work, m.macro, use, null);
     var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
-    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.symbols, output);
+    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.heap.symbols, output);
     // テンプレートの `quote` は別名なので、`(quote (1 2))` の形で出る。
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "(1 2)") != null);
 }
@@ -816,13 +825,13 @@ test "a macro of a library refers to the library's own variable, where the REPL 
     _ = try f.expandIn(lib, "(define-syntax use-helper (syntax-rules () ((_) helper)))");
     _ = try f.expandRepl("(define helper 2)");
     // REPL へ持ち出したマクロの適用は、ライブラリのセルを指す(参照透明性)。
-    const macro = f.ctx.libraries.tableOf(lib).lookup(f.ctx.symbols.index.get("use-helper").?).?.denotation.macro;
-    const helper = f.ctx.symbols.index.get("helper").?;
+    const macro = f.ctx.libraries.tableOf(lib).lookup(f.ctx.heap.symbols.lookup("use-helper").?).?.denotation.macro;
+    const helper = f.ctx.heap.symbols.lookup("helper").?;
     const own = f.ctx.libraries.tableOf(lib).lookup(helper).?.denotation.global;
     const repl = f.ctx.globals.lookup(helper).?.denotation.global;
     try std.testing.expect(own != repl);
     // マクロを REPL の最上位に束縛して、使う。
-    try f.ctx.globals.defineSyntax(f.ctx.persist, f.ctx.symbols.index.get("use-helper").?, macro);
+    try f.ctx.globals.defineSyntax(f.ctx.persist, f.ctx.heap.symbols.lookup("use-helper").?, macro);
     f.ctx.globals.commitShadows();
     const node = try expand.expand(&f.ctx, f.arena.allocator(), try f.read("(use-helper)"));
     try std.testing.expectEqual(own, node.global_ref);
@@ -842,7 +851,7 @@ test "set! through a macro of another library assigns that library's variable an
     const table = f.ctx.libraries.tableOf(lib);
     const id = struct {
         fn of(fx: *Fixture, name: []const u8) @import("../symbol.zig").SymbolId {
-            return fx.ctx.symbols.index.get(name).?;
+            return fx.ctx.heap.symbols.lookup(name).?;
         }
     }.of;
     try f.ctx.globals.defineSyntax(f.ctx.persist, id(&f, "bump!"), table.lookup(id(&f, "bump!")).?.denotation.macro);

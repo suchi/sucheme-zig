@@ -106,7 +106,7 @@ pub fn transform(ctx: *Context, work: *std.heap.ArenaAllocator, macro: *const Ma
         }
     }
     return ctx.raise("bad syntax: no rule of {s} matches the form", .{
-        ctx.symbols.nameOf(syntax_env.baseSymbol(form.asPair().?.car)),
+        ctx.heap.symbols.nameOf(syntax_env.baseSymbol(form.asPair().?.car)),
     });
 }
 
@@ -226,7 +226,7 @@ const Spec = struct {
     /// それぞれに、REPL の未束縛のセルを作ることになる。綴りが同じなら、意味を引いた
     /// 識別子として `consulted` に足す。
     fn means(self: Spec, id: Value, comptime name: []const u8) Error!bool {
-        const symbol = self.ctx.symbols.index.get(name) orelse return false;
+        const symbol = self.ctx.heap.symbols.lookup(name) orelse return false;
         if (syntax_env.baseSymbol(id) != symbol) return false;
         if (self.consulted) |list| {
             for (list.items) |seen| {
@@ -299,7 +299,7 @@ const Spec = struct {
                     for (vars.items) |v| {
                         if (syntax_env.boundIdentifierEq(v.id, item.form)) return self.ctx.raise(
                             "bad syntax-rules: duplicate pattern variable: {s}",
-                            .{self.ctx.symbols.nameOf(syntax_env.baseSymbol(item.form))},
+                            .{self.ctx.heap.symbols.nameOf(syntax_env.baseSymbol(item.form))},
                         );
                     }
                     try vars.append(self.scratch, .{ .id = item.form, .depth = item.depth });
@@ -576,8 +576,8 @@ const Spec = struct {
                     if (list.len != lists[0].len) return self.ctx.raise(
                         "bad syntax: {s} and {s} matched different numbers of forms but an ellipsis repeats them together",
                         .{
-                            self.ctx.symbols.nameOf(syntax_env.baseSymbol(vars[driving[0]].id)),
-                            self.ctx.symbols.nameOf(syntax_env.baseSymbol(vars[v].id)),
+                            self.ctx.heap.symbols.nameOf(syntax_env.baseSymbol(vars[driving[0]].id)),
+                            self.ctx.heap.symbols.nameOf(syntax_env.baseSymbol(vars[v].id)),
                         },
                     );
                 }
@@ -599,7 +599,7 @@ const Spec = struct {
                     const b = lookup(vars, matches, t.pass, v);
                     if (b.remaining != 0) return self.ctx.raise(
                         "bad syntax-rules: {s} needs as many ellipses in the template as in its pattern",
-                        .{self.ctx.symbols.nameOf(syntax_env.baseSymbol(t.form))},
+                        .{self.ctx.heap.symbols.nameOf(syntax_env.baseSymbol(t.form))},
                     );
                     try results.append(self.scratch, b.match.one);
                 } else if (!t.escaped and try self.isEllipsis(t.form)) {
@@ -699,7 +699,7 @@ const Fixture = struct {
 
     fn read(self: *Fixture, src: []const u8) !Value {
         var r: @import("../reader.zig").Reader = .init(src);
-        const sink: @import("../reader.zig").Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        const sink: @import("../reader.zig").Sink = .{ .heap = &self.ctx.heap };
         return (try r.next(self.arena.allocator(), sink)).?;
     }
 
@@ -712,7 +712,7 @@ const Fixture = struct {
     fn transcribed(self: *Fixture, m: *const Macro, use: []const u8) ![]const u8 {
         const out = try transform(&self.ctx, &self.work, m, try self.read(use), null);
         var w: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try @import("../printer.zig").write(&w.writer, self.arena.allocator(), &self.ctx.symbols, out);
+        try @import("../printer.zig").write(&w.writer, self.arena.allocator(), &self.ctx.heap.symbols, out);
         return w.written();
     }
 
@@ -721,7 +721,7 @@ const Fixture = struct {
     }
 
     fn sym(self: *Fixture, name: []const u8) !Value {
-        return .fromSymbol(try self.ctx.symbols.intern(self.arena.allocator(), name));
+        return .fromSymbol(try self.ctx.intern(name));
     }
 };
 

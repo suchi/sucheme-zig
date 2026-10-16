@@ -59,7 +59,7 @@ fn readFileText(ctx: *Context, files: resolve.Files, file: std.Io.File, subject:
 
 /// The sink the reader makes the data of a file in.
 pub fn sink(ctx: *Context) reader.Sink {
-    return .{ .alloc = ctx.persist, .heap = &ctx.heap, .symbols = &ctx.symbols };
+    return .{ .heap = &ctx.heap };
 }
 
 /// The next datum of the file `r` reads, or null at its end.

@@ -161,7 +161,6 @@ test {
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
     heap: Heap,
-    symbols: symbol.Table = .{},
 
     fn init() Fixture {
         return .{ .arena = .init(std.testing.allocator), .heap = .init(std.heap.smp_allocator, .{}) };
@@ -173,7 +172,7 @@ const Fixture = struct {
     }
 
     fn sym(self: *Fixture, name: []const u8) !Value {
-        return .fromSymbol(try self.symbols.intern(self.arena.allocator(), name));
+        return .fromSymbol(try self.heap.intern(name));
     }
 
     fn cons(self: *Fixture, car: Value, cdr: Value) !Value {
@@ -201,13 +200,13 @@ const Fixture = struct {
 
     fn written(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
         var w: std.Io.Writer = .fixed(buf);
-        try write(&w, std.testing.allocator, &self.symbols, v);
+        try write(&w, std.testing.allocator, &self.heap.symbols, v);
         return w.buffered();
     }
 
     fn displayed(self: *Fixture, buf: []u8, v: Value) ![]const u8 {
         var w: std.Io.Writer = .fixed(buf);
-        try display(&w, std.testing.allocator, &self.symbols, v);
+        try display(&w, std.testing.allocator, &self.heap.symbols, v);
         return w.buffered();
     }
 };
@@ -394,10 +393,10 @@ test "write does not recurse on the depth of the data" {
     for (0..depth) |_| long = try f.cons(.fromFixnum(1), long);
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try write(&out.writer, std.testing.allocator, &f.symbols, deep);
+    try write(&out.writer, std.testing.allocator, &f.heap.symbols, deep);
     try std.testing.expectEqual(depth * 2 + 2, out.written().len);
     out.clearRetainingCapacity();
-    try write(&out.writer, std.testing.allocator, &f.symbols, long);
+    try write(&out.writer, std.testing.allocator, &f.heap.symbols, long);
     try std.testing.expectEqual(depth * 2 + 1, out.written().len);
 }
 
@@ -450,11 +449,11 @@ test "write does not recurse on the depth of a vector" {
     const long = try f.vector(items);
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try write(&out.writer, std.testing.allocator, &f.symbols, deep);
+    try write(&out.writer, std.testing.allocator, &f.heap.symbols, deep);
     // 各段は `#(` と `)` で、一番内側は `#()` である。
     try std.testing.expectEqual((depth + 1) * 3, out.written().len);
     out.clearRetainingCapacity();
-    try write(&out.writer, std.testing.allocator, &f.symbols, long);
+    try write(&out.writer, std.testing.allocator, &f.heap.symbols, long);
     try std.testing.expectEqual(depth * 2 + 2, out.written().len);
 }
 

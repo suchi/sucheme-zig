@@ -45,7 +45,7 @@ pub fn select(ctx: *Context, scratch: std.mem.Allocator, clauses: []const Value)
 /// `not` は結合子である。部分の要求は、短絡せずにすべて調べる。後ろの部分の誤りを、前の部分
 /// が真偽を決めたからといって見逃さないためである。
 fn evaluate(ctx: *Context, scratch: std.mem.Allocator, requirement: Value, depth: usize) Error!bool {
-    if (syntax_env.isIdentifier(requirement)) return features.has(ctx.symbols.nameOf(syntax_env.baseSymbol(requirement)));
+    if (syntax_env.isIdentifier(requirement)) return features.has(ctx.heap.symbols.nameOf(syntax_env.baseSymbol(requirement)));
     const pair = requirement.asPair() orelse
         return ctx.raise("bad cond-expand: a feature requirement is an identifier or a list that starts with library, and, or or not", .{});
     if (depth >= max_depth)
@@ -79,7 +79,7 @@ fn evaluate(ctx: *Context, scratch: std.mem.Allocator, requirement: Value, depth
 /// 束縛ではない。綴りで見分ける。マクロのテンプレートが導入した別名は、元の綴りで見る。
 fn isKeyword(ctx: *const Context, id: Value, spelling: []const u8) bool {
     if (!syntax_env.isIdentifier(id)) return false;
-    return std.mem.eql(u8, ctx.symbols.nameOf(syntax_env.baseSymbol(id)), spelling);
+    return std.mem.eql(u8, ctx.heap.symbols.nameOf(syntax_env.baseSymbol(id)), spelling);
 }
 
 /// Whether the library `name` can be imported: `(sucheme core)`, a library that is
@@ -89,7 +89,7 @@ fn isKeyword(ctx: *const Context, id: Value, spelling: []const u8) bool {
 fn libraryAvailable(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!bool {
     try library.checkName(ctx, name);
     if (library.isCoreName(ctx, name) or ctx.libraries.find(name) != null) return true;
-    const opened = resolve.openLibrary(ctx.files, ctx.embedded, scratch, &ctx.symbols, name) catch |e| switch (e) {
+    const opened = resolve.openLibrary(ctx.files, ctx.embedded, scratch, &ctx.heap.symbols, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return false,
     };
