@@ -244,12 +244,22 @@ pub const Global = struct {
 
     /// Tells the collector of every cell and macro: those the table binds, the
     /// cells of its own that it has since replaced, and what the expansion in
-    /// progress has replaced.
+    /// progress has replaced; and of every name the table is keyed by.
+    /// Why: 名前は、束縛の表のキーとして持つ生のシンボル ID である。マクロの束縛の名前は
+    /// マクロ自身が持たないので、キーを知らせなければ、名前が回収されて ID が別の名前に
+    /// 再利用され、表が別のシンボルの束縛を持つ。`replaced` の名前は、展開が失敗したときに
+    /// 表を戻すキーで、表にもう無いことがある。
     pub fn mark(self: *const Global, marker: *Marker) void {
-        var it = self.bindings.valueIterator();
-        while (it.next()) |b| markDenotation(marker, b.denotation);
+        var it = self.bindings.iterator();
+        while (it.next()) |entry| {
+            marker.symbol(entry.key_ptr.*);
+            markDenotation(marker, entry.value_ptr.denotation);
+        }
         for (self.displaced_cells.items) |cell| marker.object(Cell, cell);
-        for (self.replaced.items) |r| if (r.previous) |b| markDenotation(marker, b.denotation);
+        for (self.replaced.items) |r| {
+            marker.symbol(r.id);
+            if (r.previous) |b| markDenotation(marker, b.denotation);
+        }
     }
 
     /// The binding of `id`, made when there is none yet: what `base` exports under

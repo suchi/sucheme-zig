@@ -273,11 +273,15 @@ test("the wasm feature is true in this build, and the names of an operating syst
 
 // 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
 // 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
-// メッセージが上限と予約の和より長くなる未束縛の名前を使う。
+// 名前が上限の4分の3の未束縛の名前を使う。名前のシンボルが上限に計上されるので、名前は上限
+// を超えられない。計上した残りに、同じ長さのメッセージは、予約を足しても収まらない。一方で、
+// ヒープが満杯の報告(上限と余裕の差の内側まで生きているもの)には当たらない長さである。
+// 名前が上限を超えるなら、シンボルを作れず、回復できるエラーになる。
 test("a raise that uses up the reserve is unrecoverable until a reset", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_init(small_limit), OK);
-  const [status, text] = h.run("x".repeat(small_limit + 8192));
+  assert.deepEqual(h.run("x".repeat(small_limit + 8192)), [SCHEME_ERROR, "error: heap limit exceeded\n"]);
+  const [status, text] = h.run("x".repeat((small_limit * 3) / 4));
   assert.equal(status, UNRECOVERABLE);
   assert.equal(text, "error: heap limit exceeded\n");
   // リセットの前の評価は、何も変えずに呼び出し順序の誤りを返す。

@@ -429,7 +429,16 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
     const keyword = ctx.heap.symbols.nameOf(head);
     const table = ctx.libraries.tableOf(lib);
     if (std.mem.eql(u8, keyword, "export")) {
-        for (parts[1..]) |spec| try pending.append(scratch, try exportSpec(ctx, scratch, spec));
+        for (parts[1..]) |spec| {
+            const export_spec = try exportSpec(ctx, scratch, spec);
+            // Why: 保留の名前は、本体の各形式の間を Zig の一覧で持ち越す。その間に GC が走る。
+            // `include-library-declarations` が読んだ宣言は、読み終えると登録表の `loading` から
+            // 外れ、名前を指すものが無くなる。名前を挙げておかないと、ID が回収され、別の名前に
+            // 再利用される。
+            try ctx.keepName(export_spec.internal);
+            try ctx.keepName(export_spec.external);
+            try pending.append(scratch, export_spec);
+        }
     } else if (std.mem.eql(u8, keyword, "import")) {
         // 集合を先にすべて評価してから束縛する。
         const sets = try scratch.alloc(Names, parts.len - 1);

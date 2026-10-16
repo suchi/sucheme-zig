@@ -1617,7 +1617,7 @@ const Probe = struct {
 
     fn bind(f: *Fixture) !void {
         for ([_]*const value_mod.Primitive{ &primitive, &variadic, &nullary, &greedy }) |p| {
-            const id = try f.ctx.intern(p.name);
+            const id = try f.ctx.heap.internFixed(p.name);
             try f.ctx.core.addPrimitive(f.ctx.persist, id, p);
         }
     }
@@ -2383,7 +2383,7 @@ test "every allocation to call a handler is made from the reserve" {
     try std.testing.expectEqual(5, call.value.asFixnum().?);
     try std.testing.expect(dyn.?.kind == .handler_shift);
     try std.testing.expect(kont.?.step == .handler_return);
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
     // ハンドラのフレームも予約から作る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
         .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
@@ -2409,7 +2409,7 @@ test "a handler that takes its arguments as a list gets the list from the reserv
         },
         .value => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "raise-continuable calls the handler from the reserve, though it is applied as an ordinary call" {
@@ -2432,7 +2432,7 @@ test "raise-continuable calls the handler from the reserve, though it is applied
     }
     try std.testing.expect(kont.?.step.handler_return.continuable);
     try std.testing.expect(dyn.?.kind == .handler_shift);
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "the secondary exception of a handler that returned is made from the reserve" {
@@ -2447,7 +2447,7 @@ test "the secondary exception of a handler that returned is made from the reserv
     const irritants = c.irritants.asPair().?;
     try std.testing.expectEqual(5, irritants.car.asFixnum().?);
     try std.testing.expectEqual(value_mod.Kind.empty_list, irritants.cdr.kind());
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 // 以下は継続と `dynamic-wind` のテストである(スライス 2e)。
@@ -2611,7 +2611,7 @@ test "every allocation of a rewind is made from the reserve" {
     kont = frame.next;
     try std.testing.expectEqual(6, (try f.machine.rewind(&kont, &dyn, frame.step.rewind)).value.asFixnum().?);
     try std.testing.expectEqual(h, dyn.?);
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "a continuation invoked with no wind point on the way arrives at once, without allocating" {
@@ -2746,7 +2746,7 @@ test "a continuation invoked with no values from the reserve makes its multiple 
         .value => |v| try std.testing.expect(v.kind() == .multiple_values),
         .body => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(f.ctx.heap.accounted > f.ctx.heap.options.limit);
+    try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
 }
 
 test "the consumer of call-with-values runs in tail position, and the producer does not" {

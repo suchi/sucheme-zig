@@ -5,7 +5,8 @@
 //! ヘッダは1本のリストにつながれていて、スイープはこのリストをたどる。ヒープは、
 //! セルと、セルが所有するペイロードのバイト数を計上し、計上量が上限を超える確保を
 //! 拒否する。ただし送出のための確保(`Budget.raise_reserve`)は、上限を予約の分だけ
-//! 超えてよい(ADR-0035)。コードとシンボルを置くインタプリタのアリーナは、計上の外にある。
+//! 超えてよい(ADR-0035)。シンボルの名前も、このヒープが持ち、計上する(`Heap.intern`)。
+//! コードを置くインタプリタのアリーナは、計上の外にある。
 //!
 //! ヒープは確保の内部では GC を実行しない。GC は `shouldCollect` で要求され、
 //! `collect` で実行される。どちらも、機械が2つのステップの間、つまり作りかけの値が
@@ -27,6 +28,7 @@ const MultipleValues = value_mod.MultipleValues;
 const symbol = @import("symbol.zig");
 const SymbolId = symbol.SymbolId;
 const trace = @import("trace.zig");
+const tier = @import("tier.zig");
 
 /// The types that live in the heap; the index of a type here is the `kind` its
 /// header records.
@@ -423,14 +425,21 @@ pub const Heap = struct {
     }
 
     /// The symbol named `name`, interned first if it is new.
+    ///
+    /// 新しい名前は、名前の長さに比例する量を上限に計上する。上限に収まらなければ
+    /// `HeapLimit` を返し、表は変わらない。すでにある名前は、何も確保しないので、上限に
+    /// 達していても返せる。ID を保持するものは、GC の間、`Marker.symbol` で知らせなければ
+    /// ならない。
     pub fn intern(self: *Heap, name: []const u8) Error!SymbolId {
+        if (self.symbols.lookup(name)) |id| return id;
+        try self.reserve(.limit, symbol.charge(name.len) catch return error.HeapLimit);
         return self.symbols.intern(self.backing, name);
     }
 
     /// The symbol named `name` that no collection reclaims, interned first if it is new.
     /// Zig のコードが ID を定数として持つ名前のためにある。上限に数えない。
     pub fn internFixed(self: *Heap, name: []const u8) error{OutOfMemory}!SymbolId {
-        return self.symbols.intern(self.backing, name);
+        return self.symbols.internFixed(self.backing, name);
     }
 
     /// A new object holding `value`.
@@ -581,7 +590,13 @@ pub const Heap = struct {
             );
             if (self.steps >= gap) return true;
         }
-        return self.accounted >= self.threshold;
+        return self.held() >= self.threshold;
+    }
+
+    /// The bytes the heap accounts for: the objects, and the symbols a collection
+    /// may reclaim. The limit and the threshold are held to this.
+    pub fn held(self: *const Heap) usize {
+        return self.accounted +| self.symbols.charged;
     }
 
     /// Frees every object that cannot be reached from `roots`.
@@ -591,13 +606,15 @@ pub const Heap = struct {
     /// 機械の2つのステップの間でだけ呼ぶこと(ADR-0031)。
     pub fn collect(self: *Heap, roots: anytype) void {
         self.ensureWork();
+        self.symbols.clearMarks();
         var marker: Marker = .{ .heap = self, .work = self.work };
         roots.mark(&marker);
         marker.finish();
         self.sweep();
+        self.symbols.sweep(self.backing);
         self.collections += 1;
         self.steps = 0;
-        const live = self.accounted;
+        const live = self.held();
         const soft = softLimit(self.options.limit);
         self.threshold = @min(soft, @max(self.options.min_threshold, live *| 2));
         self.exhausted = live +| (self.options.limit / reserve_divisor) > soft;
@@ -646,8 +663,8 @@ pub const Heap = struct {
 
     /// Fails with `HeapLimit` when `bytes` more would pass what `budget` allows.
     fn reserve(self: *const Heap, budget: Budget, bytes: usize) error{HeapLimit}!void {
-        const held = std.math.add(usize, self.accounted, if (self.external_enforced) self.external else 0) catch return error.HeapLimit;
-        const total = std.math.add(usize, held, bytes) catch return error.HeapLimit;
+        const total_held = std.math.add(usize, self.held(), if (self.external_enforced) self.external else 0) catch return error.HeapLimit;
+        const total = std.math.add(usize, total_held, bytes) catch return error.HeapLimit;
         const ceiling = switch (budget) {
             .limit => self.options.limit,
             .raise_reserve => self.options.limit +| self.options.raise_reserve,
@@ -755,8 +772,11 @@ pub const Marker = struct {
     }
 
     /// What `trace.walk` calls for a symbol id.
-    /// シンボル表はまだ弱参照ではないので、記録するものはない。
-    pub fn symbol(_: *Marker, _: SymbolId) void {}
+    /// 作業リストを通る経路と、再走査の経路の両方が、オブジェクトの走査を通るので、
+    /// どちらでマークしたオブジェクトのシンボルも、ここで記録される。
+    pub fn symbol(self: *Marker, id: SymbolId) void {
+        self.heap.symbols.mark(id);
+    }
 
     fn finish(self: *Marker) void {
         self.drain();
@@ -1436,4 +1456,166 @@ test "a collection keeps multiple values and what they hold, and frees them once
         try std.testing.expectEqual(0, heap.countOf(MultipleValues));
         try std.testing.expectEqual(0, heap.accounted);
     }
+}
+
+/// Roots for a symbol test: values, and the cells and record types whose names are
+/// raw symbol ids.
+const SymbolRoots = struct {
+    values: []const Value = &.{},
+    cells: []const *value_mod.Cell = &.{},
+
+    pub fn mark(self: SymbolRoots, marker: *Marker) void {
+        for (self.values) |v| marker.value(v);
+        for (self.cells) |c| marker.object(value_mod.Cell, c);
+    }
+};
+
+/// Interns `count` names that nothing refers to, so that the ids a collection freed
+/// are used by other names.
+/// Why: 回収した ID は、次に作る名前が使う。印の漏れで ID を誤って回収しても、別の名前が
+/// 作られなければ、元の名前が残って見えるので、漏れが検出されない。
+fn churn(heap: *Heap, count: usize) !void {
+    var buf: [24]u8 = undefined;
+    for (0..count) |i| _ = try heap.intern(std.fmt.bufPrint(&buf, "churn-{d}", .{i}) catch unreachable);
+}
+
+test "a collection reclaims the symbols no root reaches and keeps every kind of holder" {
+    for ([_]usize{ 4096, 1, 0 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const by_value = try heap.intern("by-value");
+        const in_pair = try heap.intern("in-pair");
+        const in_record_type = try heap.intern("in-record-type");
+        const in_cell = try heap.intern("in-cell");
+        const dropped = try heap.intern("dropped");
+        const pair = try heap.cons(.fromSymbol(in_pair), .empty_list_value);
+        const record_type = try heap.create(RecordType, .{ .name = in_record_type, .field_count = 0 });
+        const cell = try heap.create(value_mod.Cell, .{ .name = in_cell, .value = .fromFixnum(1) });
+        heap.collect(SymbolRoots{ .values = &.{ .fromSymbol(by_value), pair, .fromRecordType(record_type) }, .cells = &.{cell} });
+        try churn(&heap, 16);
+        // 残るものは、元の ID で、元の名前のままである。
+        try std.testing.expectEqualStrings("by-value", heap.symbols.nameOf(by_value));
+        try std.testing.expectEqualStrings("in-pair", heap.symbols.nameOf(pair.asPair().?.car.asSymbol().?));
+        try std.testing.expectEqualStrings("in-record-type", heap.symbols.nameOf(record_type.name));
+        try std.testing.expectEqualStrings("in-cell", heap.symbols.nameOf(cell.name));
+        try std.testing.expectEqual(in_cell, heap.symbols.lookup("in-cell").?);
+        // 参照されないものは回収され、ID は別の名前になった。
+        try std.testing.expect(heap.symbols.lookup("dropped") == null);
+        try std.testing.expect(!std.mem.eql(u8, "dropped", heap.symbols.nameOf(dropped)));
+    }
+}
+
+test "the symbols of an object marked by a rescan are recorded too" {
+    // 作業リストが空だと、すべてのオブジェクトが再走査でマークされる。深い鎖の最後のペアの
+    // シンボルも、印を立てる。
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 0 });
+    defer heap.deinit();
+    var list: Value = .empty_list_value;
+    var buf: [16]u8 = undefined;
+    for (0..50) |i| {
+        const id = try heap.intern(std.fmt.bufPrint(&buf, "s{d}", .{i}) catch unreachable);
+        list = try heap.cons(.fromSymbol(id), list);
+    }
+    heap.collect(TestRoots{ .values = &.{list} });
+    try churn(&heap, 64);
+    var it = list;
+    var i: usize = 50;
+    while (it.asPair()) |p| : (it = p.cdr) {
+        i -= 1;
+        try std.testing.expectEqualStrings(std.fmt.bufPrint(&buf, "s{d}", .{i}) catch unreachable, heap.symbols.nameOf(p.car.asSymbol().?));
+    }
+    try std.testing.expectEqual(0, i);
+}
+
+test "a symbol that the last collection kept is reclaimed by the next one that does not reach it" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const id = try heap.intern("sticky");
+    heap.collect(TestRoots{ .values = &.{.fromSymbol(id)} });
+    try std.testing.expect(heap.symbols.lookup("sticky") != null);
+    heap.collect(TestRoots{});
+    try std.testing.expect(heap.symbols.lookup("sticky") == null);
+    try std.testing.expectEqual(0, heap.held());
+}
+
+test "the names of symbols are held to the limit, and a collection gives them back" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    const name: [100]u8 = @splat('n');
+    const id = try heap.intern(&name);
+    try std.testing.expectEqual(symbol.charge(100) catch unreachable, heap.held());
+    try std.testing.expectEqual(0, heap.accounted);
+    // 上限を超える名前は、断られ、表も計上も変わらない。
+    const huge: [1000]u8 = @splat('h');
+    try std.testing.expectError(error.HeapLimit, heap.intern(&huge));
+    try std.testing.expect(heap.symbols.lookup(&huge) == null);
+    try std.testing.expectEqual(symbol.charge(100) catch unreachable, heap.held());
+    // 名前が占める分だけ、オブジェクトに使える量が減る。
+    var pairs: usize = 0;
+    while (heap.cons(.empty_list_value, .empty_list_value)) |_| pairs += 1 else |_| {}
+    try std.testing.expectEqual((1024 - (symbol.charge(100) catch unreachable)) / cellBytes(Pair), pairs);
+    // すでにある名前は、何も確保しないので、満杯でも引ける。
+    try std.testing.expectEqual(id, try heap.intern(&name));
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.held());
+    _ = try heap.intern(&huge[0..800].*);
+}
+
+test "a name for Zig's own constants is not held to the limit, and no collection reclaims it" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 });
+    defer heap.deinit();
+    const id = try heap.internFixed("quote");
+    try std.testing.expectEqual(0, heap.held());
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(id, heap.symbols.lookup("quote").?);
+    try std.testing.expectEqualStrings("quote", heap.symbols.nameOf(id));
+    // 同じ名前を、通常の intern で引いても、固定のまま同じ ID である。
+    try std.testing.expectEqual(id, try heap.intern("quote"));
+}
+
+test "the names of symbols alone make a collection due" {
+    var heap: Heap = .init(std.testing.allocator, .{ .min_threshold = 2048 });
+    defer heap.deinit();
+    var buf: [24]u8 = undefined;
+    var i: usize = 0;
+    while (!heap.shouldCollect()) : (i += 1) {
+        _ = try heap.intern(std.fmt.bufPrint(&buf, "name-{d}", .{i}) catch unreachable);
+        try std.testing.expect(i < 1000);
+    }
+    try std.testing.expectEqual(0, heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expect(!heap.shouldCollect());
+}
+
+test "slow: a flood of distinct names ends at the limit, and a collection gives the room back" {
+    try tier.slow();
+    // 1 MiB の名前を、GC を挟まずに作り続ける。名前の計上が無ければ、上限の外でメモリが
+    // 増え続ける(docs/design/runtime.md の「インターン表を弱い表にする」)。
+    var heap: Heap = .init(std.heap.smp_allocator, .{ .limit = 64 * 1024 * 1024 });
+    defer heap.deinit();
+    const name = try std.heap.smp_allocator.alloc(u8, 1024 * 1024);
+    defer std.heap.smp_allocator.free(name);
+    @memset(name, 'a');
+    var made: usize = 0;
+    while (true) : (made += 1) {
+        std.mem.writeInt(u32, name[0..4], @intCast(made), .little);
+        _ = heap.intern(name) catch |e| {
+            try std.testing.expectEqual(error.HeapLimit, e);
+            break;
+        };
+        try std.testing.expect(made < 1000);
+    }
+    try std.testing.expectEqual(heap.options.limit / (try symbol.charge(name.len)), made);
+    try std.testing.expect(heap.held() <= heap.options.limit);
+    // 参照されない名前は、GC がすべて回収し、上限の余裕が戻る。
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.held());
+    // GC を挟みながら作り続けると、回収した ID が再利用され、表は伸びない。
+    const length = heap.symbols.entries.items.len;
+    for (0..300) |i| {
+        std.mem.writeInt(u32, name[0..4], @intCast(i), .little);
+        _ = try heap.intern(name);
+        if (heap.shouldCollect()) heap.collect(TestRoots{});
+    }
+    try std.testing.expectEqual(length, heap.symbols.entries.items.len);
 }

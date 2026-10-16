@@ -623,6 +623,81 @@ test "include-library-declarations reads the declarations of a library from file
     }
 }
 
+test "a name that only a pending export of an included declaration file holds survives the body of the library" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\") (begin (define (f) 1)) (include \"body.scm\"))");
+        // 外部名 `exported-name` は、この宣言のファイルのデータと、保留の一覧にしか無い。
+        try tree.write("t/decls.scm", "(export (rename f exported-name)) (import (sucheme core))");
+        // 本体のファイルが、新しい名前を作る。名前が回収されていれば、その ID を使う。
+        try tree.write("t/body.scm", "(define y1 1) (define y2 2) (define y3 3) (define y4 4)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t lib)) (exported-name)", "1\n");
+    }
+}
+
+/// Collects, and then makes names that nothing refers to, so that the ids the
+/// collection freed are taken by other names.
+/// Why: 回収した ID は次に作る名前が使う。印の漏れで ID を誤って回収しても、別の名前が作られ
+/// なければ、元の名前が残って見えるので、漏れが検出されない。
+fn churnSymbols(interp: *Interpreter) !void {
+    interp.ctx.collectIdle();
+    var buf: [24]u8 = undefined;
+    for (0..64) |i| _ = try interp.ctx.heap.intern(std.fmt.bufPrint(&buf, "churn-{d}", .{i}) catch unreachable);
+}
+
+test "the symbols a program holds survive the collections, whatever holds them" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            // 名前を持つものが、それぞれ1つずつ、別の名前を持つ。
+            //   foo: 大域変数のセルの名前。
+            //   m: マクロの束縛のキー。マクロ自身は名前を持たない。
+            //   abc: コードの定数のシンボル。
+            //   b: 局所変数を読む節点の名前。未初期化のメッセージが使う。
+            //   point: レコード型の名前。
+            try expectLinePrints(&interp, "(define foo 1) (define-syntax m (syntax-rules () ((_) 42))) (define (f) 'abc) (define (h) (define a b) (define b 1) a) (define t (%make-record-type 'point 2))", "");
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "foo (m) (f) t", "1\n42\nabc\n#<record-type point>\n");
+            try expectLineFails(&interp, "(h)", "variable used before its definition: b");
+            try churnSymbols(&interp);
+            try churnSymbols(&interp);
+            // 起動時に登録した名前は、`Core` の表のキーでしかない。使われる前でも回収されない。
+            try expectLinePrints(&interp, "(vector-ref (vector 5 6) 1)", "6\n");
+            try expectLinePrints(&interp, "foo (m) (f) t", "1\n42\nabc\n#<record-type point>\n");
+            try expectLineFails(&interp, "(h)", "variable used before its definition: b");
+            // 名前はどれも、元の ID のまま引ける。
+            for ([_][]const u8{ "foo", "m", "abc", "b", "point", "vector-ref" }) |spelling| {
+                const id = interp.ctx.heap.symbols.lookup(spelling) orelse return error.TestUnexpectedResult;
+                try std.testing.expectEqualStrings(spelling, interp.ctx.heap.symbols.nameOf(id));
+            }
+        }
+    }
+}
+
+test "a symbol that is not held is reclaimed, with the memory its name took" {
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    const before = interp.ctx.heap.held();
+    try expectLinePrints(&interp, "(quote some-name-nothing-keeps)", "some-name-nothing-keeps\n");
+    try std.testing.expect(interp.ctx.heap.held() > before);
+    // 定数は、コードを作った行のあとも、コンテキストが持つ(`code_roots`)。
+    interp.ctx.collectIdle();
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("some-name-nothing-keeps") != null);
+    // 読まれただけで、何にも使われない名前は、回収される。展開に失敗した形式の名前が、その例である。
+    try expectLineFails(&interp, "(if read-only-name)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("read-only-name") != null);
+    interp.ctx.collectIdle();
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("read-only-name") == null);
+}
+
 test "a file that includes itself, or is included by a file it includes, is refused" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);

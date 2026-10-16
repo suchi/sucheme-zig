@@ -370,7 +370,10 @@ const Expander = struct {
                 "{s} is a syntactic keyword and cannot be used as a variable",
                 .{self.ctx.heap.symbols.nameOf(id)},
             ),
-            .local => |local| .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } },
+            .local => |local| blk: {
+                try self.ctx.keepName(id);
+                break :blk .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } };
+            },
             .global => |cell| .{ .global_ref = cell },
         };
     }
@@ -550,6 +553,7 @@ const Expander = struct {
             ),
             .local => |local| {
                 const where = try self.address(task.env, local);
+                try self.ctx.keepName(id);
                 const value = try self.child(items[2], task.env, .expression);
                 task.dest.* = .{ .local_set = .{ .address = where, .name = id, .value = value } };
             },
@@ -624,6 +628,7 @@ const Expander = struct {
                 // 局所変数である。
                 const local = syntax_env.lookupRib(env, target).?.denotation.local;
                 const value = try self.definedValue(task, items, shorthand);
+                try self.ctx.keepName(id);
                 task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = local.index }, .name = id, .value = value } };
             },
             .expression => unreachable,
@@ -1405,21 +1410,25 @@ test "quote gives the very datum it was read with, not a copy" {
     try std.testing.expectEqual(form.asPair().?.cdr.asPair().?.car.asPair().?, node.constant.asPair().?);
 }
 
-test "a constant that refers to the heap is kept for the collector, and nothing else is" {
+test "a constant that refers to the heap or is a symbol is kept for the collector, and nothing else is" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // ヒープオブジェクトを持たない定数には、ルートは要らない。
-    for ([_][]const u8{ "5", "#t", "(quote foo)", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
+    // ヒープオブジェクトでもシンボルでもない定数には、ルートは要らない。
+    for ([_][]const u8{ "5", "#t", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
     try std.testing.expectEqual(0, f.ctx.code_roots.items.len);
+    // シンボルの定数は、ID がコードの外から見えないので、ルートに挙げる。
+    const named = try expand(&f.ctx, a, try f.read("(quote foo)"));
+    try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(named.constant.asSymbol().?, f.ctx.code_roots.items[0].asSymbol().?);
     f.ctx.collectIdle();
     // 残るのは、名前 `x` を解決したときに REPL の表に作った、未束縛のセル1つだけである。
     // セルは定数ではなく、表がルートとして持つ。
     try std.testing.expectEqual(1, f.ctx.heap.count);
     // クォートしたリストがその例である。対象はデータそのもので、周りの `quote` 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
-    try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
     // セルと、読んだ4つのペア。
     try std.testing.expectEqual(5, f.ctx.heap.count);
     f.ctx.collectIdle();
@@ -1430,7 +1439,7 @@ test "a constant that refers to the heap is kept for the collector, and nothing 
     const closure = try f.ctx.heap.create(value_mod.Closure, .{ .lambda = undefined, .env = null });
     const itself = try expand(&f.ctx, a, .fromClosure(closure));
     try std.testing.expectEqual(closure, itself.constant.asClosure().?);
-    try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
+    try std.testing.expectEqual(3, f.ctx.code_roots.items.len);
     f.ctx.collectIdle();
     // セル、データの2つのペア、クロージャ。
     try std.testing.expectEqual(4, f.ctx.heap.count);

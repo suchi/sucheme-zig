@@ -139,8 +139,17 @@ pub const Context = struct {
     }
 
     /// Keeps `v`, a constant of some code, alive for as long as the context is.
+    /// シンボルの定数も、ヒープを指す定数と同じく、コードの外から見えないので、ここに挙げる。
+    /// 挙げないと、シンボルが回収され、ID が別の名前に再利用される。
     pub fn keepConstant(self: *Context, v: Value) error{OutOfMemory}!void {
-        if (v.pointsIntoHeap()) try self.code_roots.append(self.persist, v);
+        if (v.pointsIntoHeap() or v.kind() == .symbol) try self.code_roots.append(self.persist, v);
+    }
+
+    /// Keeps the symbol `name`, which a node of some code holds, alive for as long as
+    /// the context is.
+    /// 局所変数の節点は、名前を、未初期化の変数を読んだときのメッセージのために持つ。
+    pub fn keepName(self: *Context, name: symbol.SymbolId) error{OutOfMemory}!void {
+        try self.code_roots.append(self.persist, .fromSymbol(name));
     }
 
     /// The symbol named `name`, interned first if it is new; a name the limit
