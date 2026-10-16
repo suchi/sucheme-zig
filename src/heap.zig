@@ -1505,6 +1505,32 @@ test "a collection reclaims the symbols no root reaches and keeps every kind of 
     }
 }
 
+test "a bare symbol that identifies a syntactic binding is kept, and the alias that identifies another is followed" {
+    for ([_]usize{ 4096, 0 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const bare = try heap.intern("bare-identifier");
+        const inner = try heap.intern("inner-of-alias");
+        const dropped = try heap.intern("dropped-identifier");
+        const alias = try heap.create(value_mod.Alias, .{ .inner = .fromSymbol(inner), .env = null, .mark = 1 });
+        const local = try heap.create(value_mod.LocalBinding, .{ .rib_depth = 0, .index = 0 });
+        const second = try heap.create(value_mod.SyntacticBinding, .{ .id = .{ .alias = alias }, .denotation = .{ .local = local }, .next = null });
+        const first = try heap.create(value_mod.SyntacticBinding, .{ .id = .fromSymbol(bare), .denotation = .{ .local = local }, .next = second });
+        const env = try heap.create(value_mod.SyntacticEnv, .{ .parent = null, .rib_depth = 0, .bindings = first, .library = null });
+        const Roots = struct {
+            env: *value_mod.SyntacticEnv,
+            pub fn mark(self: @This(), marker: *Marker) void {
+                marker.object(value_mod.SyntacticEnv, self.env);
+            }
+        };
+        heap.collect(Roots{ .env = env });
+        try churn(&heap, 16);
+        try std.testing.expectEqualStrings("bare-identifier", heap.symbols.nameOf(first.id.asSymbol().?));
+        try std.testing.expectEqualStrings("inner-of-alias", heap.symbols.nameOf(second.id.asAlias().?.inner.asSymbol().?));
+        try std.testing.expect(!std.mem.eql(u8, "dropped-identifier", heap.symbols.nameOf(dropped)));
+    }
+}
+
 test "the symbols of an object marked by a rescan are recorded too" {
     // 作業リストが空だと、すべてのオブジェクトが再走査でマークされる。深い鎖の最後のペアの
     // シンボルも、印を立てる。
