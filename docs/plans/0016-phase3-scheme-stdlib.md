@@ -134,6 +134,10 @@ roadmap の段階3の項目と、スライス(下の「スライス」の表)の
 - 新しいヒープの型(バイトベクタ、約束、EOF の値)は、`src/value.zig` の `heap_types` と `Kind`、`src/trace.zig` の分類、`src/printer.zig` に、走査の検査とともに足す。
 - 入力の大きさに比例して確保するプリミティブ(`make-string` `make-vector` `make-bytevector` `string-append` `vector-append` など)は、確保を GC の計上に通し、上限を超えたときに `heap limit exceeded` の条件を作ることを、縮小版の単体テストと、規模を試すテスト(`tier.slow()` か `tests/scheme-slow/`)で確かめる。段階2で、入力に比例する確保の計上漏れが、後のスライスのレビューで見つかった([0012](0012-schedule-estimates-and-actuals.md))。この点検を、各スライスの設計の時点で行う。
 
+- リテラルの不変性の基盤は、3d の範囲である。ユーザーが 2026-10-16 に、3d が基盤を入れ、3e がベクタとバイトベクタに適用する案を選んだ。3d が入れるもの: ヘッダの不変の印(`heap.isImmutable` と `heap.makeImmutable`)、リテラルを定数にする1か所(`Expander.constant`)での印の付与(`freeze.freezeGraph`)、`symbol->string` の印、共通の検査(`prim/immutable.zig` の `requireMutable`)、検査の適用先のうち、ペアと文字列の手続き。3e は、`vector-set!` `vector-fill!` `vector-copy!` `bytevector-u8-set!` `bytevector-copy!` から `requireMutable` を呼び、バイトベクタの型を `heap.isImmutable` と `heap.makeImmutable` と `freezeGraph` に足す(ベクタの印は、`freezeGraph` がすでに立てる)。誤りの文言は `cannot modify a constant in <手続き名>` で、引数が irritant になる。検査の順序は、型、不変、範囲の順で、範囲が空でも断る。
+- 3d の `string->vector` と `vector->string` は、ベクタの型が既にあるので、3e を待たずに `src/prim/string.zig` へ足した。3e は、ベクタの手続きだけを足す。
+- ベクタを一定の長さで作る確保は、`Heap.createVectorFilled`(要素の領域へ直接書く。3d が `string->vector` のために足した)を、`make-vector` が使える。文字列の `Heap.createStringFilled` と同じ形である。
+
 ### 3g から 3j の中身
 
 - 手続きは `lib/sucheme/procedures.scm`(まとめて1ファイル)に、派生構文は `lib/sucheme/derived.scm` に書く。名前の決め方は、小さく戻せる選択なので、PR に書くだけにする。
@@ -225,6 +229,7 @@ flowchart TD
 - `src/prim/table.zig`: 3b から 3f が、族の行を1行ずつ足す。
 - `src/prim/char.zig`、`string.zig`、`vector.zig`、`symbol.zig`: それぞれ 3c、3d、3e が触る。3c の中でも、文字の比較は `char.zig`、シンボルは `symbol.zig` で、ファイルが分かれる。
 - `docs/status/conformance.md`: 束縛を増やすスライスが、`zig build report` で生成し直す。並行した PR が両方とも生成し直したときは、後からマージするほうが main を取り込んでから生成し直す。手で合わせない。
+- `src/heap.zig`、`src/prim/immutable.zig`(新規)、`src/freeze.zig`(新規): 3d が不変の印と検査の関数を足し、3e が使う。3e は、`heap.isImmutable` と `heap.makeImmutable` の `switch` にバイトベクタの行を足す。
 - `tests/scheme/` の番号: 段階2は 0190 まで使った。3a は 0200 から 0209、3b は 0210 から、のように、スライスの並び順に 10 ずつ進める。
 - `lib/sucheme/derived.scm` と `lib/sucheme/procedures.scm`: 3g、3h、3i、3j が追記する。直列に進めるので衝突しない。
 - `src/syntax/expand.zig`: 3h(略記は `src/reader.zig`)、3o、3p、3q が触る。3o と 3p と 3q は直列に進める。
@@ -335,10 +340,11 @@ flowchart TD
 | 3b | マージ済み | [#110](https://github.com/suchi/sucheme-zig/pull/110) |
 | 3c | 実装済み(レビュー中)。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの持ち主と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
 | 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
-| 3d から 3f、3h から 3r | 未着手 | - |
+| 3d | 実装済み(PR 前)。文字列のプリミティブ(`make-string` `string` `string-set!` `string-copy` `string-copy!` `string-fill!` `substring` `string-append` `string=?` などの比較5個、`string->list` `list->string` `string->vector` `vector->string`)。リテラルの不変性の基盤: ヘッダの不変の印、リテラルと `symbol->string` への印、共通の検査 `requireMutable`、`set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!`(と `list-set!`)への適用 | - |
+| 3e から 3f、3h から 3r | 未着手 | - |
 
 ## 次にやること
 
 1. 3a、3b、3g はマージ済み。3c は PR のレビュー中である。3h は、3g のマージを受けて始められる。3h は 3g のマージのあとに始める(上の依存の図)。
-2. 3d から 3f は、3c のマージのあとに始める(`src/value.zig` と `src/prim/table.zig` を共有する)。
+2. 3d は実装済みで、PR の作成とレビューが残っている。3e は、3d のマージのあとに始める(3d が入れた不変の検査の関数 `requireMutable` と印の関数を使う)。3f は、`src/value.zig` と `src/prim/table.zig` を共有するので、3e と並行にできる。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
