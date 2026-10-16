@@ -25,6 +25,11 @@ const heap = @import("heap.zig");
 /// 上限に計上する。展開の途中では GC が走らない(ADR-0031)ので、見つけたオブジェクトを
 /// ルートにする必要はない。
 pub fn freezeGraph(allocator: std.mem.Allocator, root: Value) error{OutOfMemory}!void {
+    // 数や真偽値やシンボルのリテラルと、すでに印のあるデータは、作業領域を確保しない。
+    switch (root.kind()) {
+        .pair, .vector, .string => if (heap.isImmutable(root)) return,
+        else => return,
+    }
     var found: std.AutoArrayHashMapUnmanaged(usize, Value) = .empty;
     defer found.deinit(allocator);
     var stack: std.ArrayList(Value) = .empty;
@@ -74,6 +79,23 @@ test "a literal list is a constant in every pair, and so is a string and a vecto
     const list = try f.heap.cons(fix(1), tail);
     try freezeGraph(std.testing.allocator, list);
     for ([_]Value{ list, tail, vector, string }) |v| try std.testing.expect(heap.isImmutable(v));
+}
+
+test "a root that has nothing to mark, or is marked already, takes no work area" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    const marked = try f.heap.cons(fix(1), .empty_list_value);
+    heap.makeImmutable(marked);
+    for ([_]Value{ fix(1), .fromBool(true), .empty_list_value, .fromCharacter('a'), .unspecified_value, marked }) |v| {
+        try freezeGraph(failing.allocator(), v);
+    }
+    try std.testing.expectEqual(0, failing.allocations);
+    // 対照: 印のないペアは、作業領域を要る。
+    const fresh = try f.heap.cons(fix(1), .empty_list_value);
+    try std.testing.expectError(error.OutOfMemory, freezeGraph(failing.allocator(), fresh));
+    try std.testing.expect(!heap.isImmutable(fresh));
 }
 
 test "what a literal does not reach is left alone" {

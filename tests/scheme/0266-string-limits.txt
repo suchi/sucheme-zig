@@ -46,14 +46,21 @@ error: heap limit exceeded
 error: heap limit exceeded
 
 # 上限に近い文字列に、幅の広い文字を書き込むと、バイト列が増えて上限を超える。確保を断られた
-# 書き込みが文字列を変えないことは、src/prim/string.zig の単体テストが見る(上限の誤りは、
-# ハンドラに届かず、その行を終える)。
+# 書き込みが文字列を変えないことは、src/prim/string.zig の単体テストが見る。
 (define s (make-string 40000000 #\a)) (define t (string-copy s)) (string-fill! t #\λ)
 error: heap limit exceeded
 
 # 2つ目の確保が、1つ目と合わせて上限を超える。
 (define s (make-string 40000000 #\a)) (define t (make-string 40000000 #\a)) 0
 error: heap limit exceeded
+
+# 上限の誤りは、ほかの誤りと同じように、ハンドラが捕まえられる(生きているデータが上限に
+# 近いと、ハンドラ自身が確保できず、捕まえられない)。
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'caught)) (lambda () (make-string 100000000 #\a)))))
+caught
+
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k (error-object-message e))) (lambda () (make-string 100000000 #\a)))))
+"heap limit exceeded"
 
 # 上限に届かない範囲では、ASCII の文字列への ASCII の書き込みは、確保しない。
 (define s (make-string 1000000 #\a)) (define (fill! i) (if (= i 1000000) 'done (begin (string-set! s i #\b) (fill! (+ i 1))))) (fill! 0) (list (string-ref s 0) (string-ref s 999999))
