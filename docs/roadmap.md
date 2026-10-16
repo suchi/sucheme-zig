@@ -112,7 +112,7 @@
 ### 段階3: Schemeによる標準ライブラリ
 
 - [ ] リーダに `` ` `` `,` `,@` の略記を追加(`quasiquote` の定義に必要。文字リテラルはスライス 1h から読める)
-- [ ] EOF の値、バイトベクタと約束の値(文字の値はスライス 1h で入った)
+- [ ] EOF の値、バイトベクタと約束の値(文字の値はスライス 1h で入った。EOF の値と約束の値はスライス 3f で入り、バイトベクタはスライス 3e が残っている)
 - [ ] 派生構文を `lib/sucheme/derived.scm` に `syntax-rules` で定義
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`

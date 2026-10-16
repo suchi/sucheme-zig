@@ -335,10 +335,11 @@ flowchart TD
 | 3b | マージ済み | [#110](https://github.com/suchi/sucheme-zig/pull/110) |
 | 3c | 実装済み(レビュー中)。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの持ち主と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
 | 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
-| 3d から 3f、3h から 3r | 未着手 | - |
+| 3f | 実装済み(レビュー前)。EOF の値(`Value` の即値)、約束(ヒープの型 `Promise`)、`eof-object` `eof-object?` `make-promise` `promise?` `force`、内部用の `%make-promise`。設計は [runtime.md](../design/runtime.md) の「EOF の値と約束」に書いた。`delay` と `delay-force` の構文は 3j が足す | - |
+| 3d、3e、3h から 3r | 未着手 | - |
 
 ## 次にやること
 
 1. 3a、3b、3g はマージ済み。3c は PR のレビュー中である。3h は、3g のマージを受けて始められる。3h は 3g のマージのあとに始める(上の依存の図)。
-2. 3d から 3f は、3c のマージのあとに始める(`src/value.zig` と `src/prim/table.zig` を共有する)。
+2. 3d と 3e は、`src/value.zig` と `src/prim/table.zig` を共有するので、3f のマージのあとか、3f の差分を取り込んでから始める。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
