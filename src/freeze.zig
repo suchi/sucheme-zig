@@ -133,6 +133,24 @@ test "a pair shared by two places is marked, and marking the data again changes 
     try freezeGraph(std.testing.allocator, wrapper);
 }
 
+test "an object that is already marked is not walked, so what lies below it is left as it is" {
+    // 印のあるオブジェクトから到達できるものは、すべて印がある(`freezeGraph` の不変条件)。
+    // この関数は、その不変条件を前提にして降りない。ここでは、不変条件を破る形を手で作り、
+    // 降りないことを確かめる。降りるなら、`below` にも印が立つ。
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const below = try f.heap.cons(fix(1), .empty_list_value);
+    const marked = try f.heap.cons(below, .empty_list_value);
+    heap.makeImmutable(marked);
+    try freezeGraph(std.testing.allocator, marked);
+    try std.testing.expect(!heap.isImmutable(below));
+    const wrapper = try f.heap.cons(marked, .empty_list_value);
+    try freezeGraph(std.testing.allocator, wrapper);
+    try std.testing.expect(heap.isImmutable(wrapper));
+    try std.testing.expect(!heap.isImmutable(below));
+}
+
 test "the marking of deep data and of long data does not use the stack of the program" {
     var f: test_support.Fixture = undefined;
     f.init();
