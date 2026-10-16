@@ -1,0 +1,33 @@
+# スライス 3h の敵対的レビューで、ミューテーションが生き残った箇所を固定するテスト。
+# 各ケースは新しいインタプリタで走るので、`import` は使う式と同じ行に置く。
+
+# `cond` の `=>` の節の後ろに別の節があるとき、test は1回だけ評価される。
+# 規則を、再帰の呼び出しで test の式をもう一度評価する形に変えると、値と回数がずれる。
+(import (sucheme derived)) (let ((n 0)) (list (cond ((begin (set! n (+ n 1)) n) => (lambda (v) (* v 10))) (#f 1)) n))
+(10 1)
+
+# `and` の偽の枝は、test1 を評価し直さずに `#f` を返す。2回目の評価の副作用が見える。
+(import (sucheme derived)) (let ((n 0)) (list (and (begin (set! n (+ n 1)) #f) 'x) n))
+(#f 1)
+
+# `case` は `eqv?` で比べる。文字列とリストは、中身が等しくても別のオブジェクトなので当たらない。
+# 照合を `equal?` にする(`member`)と、次の2つが当たる。
+(import (sucheme derived)) (case "a" (("a") 'matched) (else 'no))
+no
+
+(import (sucheme derived)) (case (list 1) (((1)) 'matched) (else 'no))
+no
+
+# `letrec` の初期値の式は、どの変数にも代入が起きる前に評価される。
+# このとき、変数は不定の値を持つ。`letrec*` の順序(代入しながら評価する)にすると、`#t` になる。
+# 変数を初期値の式の中で参照するのは R7RS 4.2.2 では誤りだが、この実装の振る舞いとして固定する。
+(import (sucheme derived)) (letrec ((a 1) (b (eq? a 1))) b)
+#f
+
+(import (sucheme derived)) (letrec* ((a 1) (b (eq? a 1))) b)
+#t
+
+# 入れ子の準引用の中で、リストの要素の位置にない `,@` は、深さを1つ引く。
+# その中の `,` は最も外側の深さに戻るので評価される。
+(import (sucheme derived)) `(1 `,@,(+ 1 2))
+(1 (quasiquote (unquote-splicing 3)))
