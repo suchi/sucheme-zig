@@ -305,8 +305,8 @@ flowchart TD
 
 確かめられなかったこと。
 
-- R7RS の原文は、この環境から取得できない。`max` と `min` の不正確さの伝播、整数の手続きの定義、`case` の定義が `memv` を使うこと、`delay-force` の末尾での反復は、記憶による。該当するスライスの着手時に、確かめる。
-- `quasiquote` を、現在の `syntax-rules` の展開器で書けるか。入れ子の準引用とベクタの準引用が通るかは、書いてみないと分からない。3h の設計で最初に試す。
+- R7RS の原文は、この環境から取得できない。`max` と `min` の不正確さの伝播、整数の手続きの定義、`delay-force` の末尾での反復は、記憶による(`case` の定義が `memv` を使うことは、3h で原文 docs/spec/errata-corrected-r7rs.pdf の 7.3 と照らして確かめた)。該当するスライスの着手時に、確かめる。
+- `quasiquote` を、現在の `syntax-rules` の展開器で書けるか。入れ子の準引用とベクタの準引用が通るかは、書いてみないと分からない。3h の設計で最初に試す。(3h で試し、書けた。入れ子もベクタも通る。ベクタは `list->vector` が無いので `(apply vector リスト)` で作る。)
 - 起動時に、埋め込んだ Scheme を展開する時間と、WASM のサイズへの影響。ADR-0006 が受け入れたトレードオフだが、測っていない。3k で測り、結果を roadmap か計画書に日付つきで書く(測定値は散文に複製しない)。
 - 3o の大きさ。構文環境と節点を GC ヒープに移す変更が、`src/syntax/` と `src/machine.zig` のどこまで及ぶかは、読んだだけでは見積れない。
 
@@ -334,11 +334,12 @@ flowchart TD
 | 3a | 実装済み。埋め込み、`(sucheme derived)` の `when` と `unless`、ネイティブと WASM のテストは済み。ライブラリ名の索引は、名前が要るライブラリが現れるまで足さない。マージ済み | [#108](https://github.com/suchi/sucheme-zig/pull/108) |
 | 3b | マージ済み | [#110](https://github.com/suchi/sucheme-zig/pull/110) |
 | 3c | 着手(別のエージェントの作業ツリー、PR なし) | - |
-| 3g | 実装済み(作業ツリー、PR なし)。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | - |
-| 3d から 3f、3h から 3r | 未着手 | - |
+| 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
+| 3h | 実装済み(作業ツリー、PR 前)。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | - |
+| 3d から 3f、3i から 3r | 未着手 | - |
 
 ## 次にやること
 
-1. 3a と 3b はマージ済み。3c(別のエージェント)と 3g(PR 前)が並行している。3h は 3g のマージのあとに始める(上の依存の図)。
+1. 3a、3b、3g はマージ済み。3c は別のエージェントが進めている。3h は実装済みで PR 前である。3i は 3h のマージのあとに始める(上の依存の図)。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
 2. 3d から 3f は、3c のマージのあとに始める(`src/value.zig` と `src/prim/table.zig` を共有する)。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。

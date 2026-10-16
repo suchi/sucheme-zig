@@ -111,9 +111,9 @@
 
 ### 段階3: Schemeによる標準ライブラリ
 
-- [ ] リーダに `` ` `` `,` `,@` の略記を追加(`quasiquote` の定義に必要。文字リテラルはスライス 1h から読める)
+- [x] リーダに `` ` `` `,` `,@` の略記を追加(`quasiquote` の定義に必要。文字リテラルはスライス 1h から読める)。スライス 3h。`'` と同じ形で `quasiquote` `unquote` `unquote-splicing` の形になり、データが続かないときの誤りは `'` と同じである。テストは `src/reader.zig` の単体テストと `tests/scheme/0240-reader-abbreviations.txt`
 - [ ] EOF の値、バイトベクタと約束の値(文字の値はスライス 1h で入った)
-- [ ] 派生構文を `lib/sucheme/derived.scm` に `syntax-rules` で定義
+- [ ] 派生構文を `lib/sucheme/derived.scm` に `syntax-rules` で定義。仕組みと `when` `unless` はスライス 3a、`cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` はスライス 3h で入れた(テストは `tests/scheme/0241-derived-cond.txt` から `0248-derived-scale-small.txt` と `tests/scheme-slow/0021-derived-scale.txt`)。残りの `define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda` `delay` などは 3i と 3j。3i が終わるまで、チェックは入れない
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
 - [ ] Web UI にサンプルと共有リンク
