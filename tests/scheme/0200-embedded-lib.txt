@@ -1,0 +1,26 @@
+# Slice 3a: the files under `lib/` are embedded in the executable, and `import` finds
+# them before it looks at the files beneath the roots.
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(import (sucheme derived)) (list (when #t 1 2) (unless #f 3 4))
+(2 4)
+
+# 条件が成り立たない `when` と、成り立つ `unless` は、何も返さない。
+(import (sucheme derived)) (list (when #f 1) (unless #t 2))
+(#<unspecified> #<unspecified>)
+
+# 埋め込みのライブラリは、`(sucheme derived)` という名前の1つだけである。
+(import (sucheme nope))
+error: unknown library: (sucheme nope)
+
+# 埋め込みのファイルの `include` が相対で引くのは、埋め込みの中である。
+(import (only (sucheme derived) when)) (when #t 5)
+5
+
+# `cond-expand` の `(library ...)` は、埋め込みのライブラリを見つける。
+(cond-expand ((library (sucheme derived)) 1) (else 2))
+1
+
+(cond-expand ((library (sucheme nope)) 1) (else 2))
+2

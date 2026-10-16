@@ -12,6 +12,7 @@ const Context = context.Context;
 const features = @import("../features.zig");
 const resolve = @import("../resolve.zig");
 const library = @import("library.zig");
+const source = @import("source.zig");
 const syntax_env = @import("env.zig");
 
 pub const Error = context.Error;
@@ -88,12 +89,11 @@ fn isKeyword(ctx: *const Context, id: Value, spelling: []const u8) bool {
 fn libraryAvailable(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!bool {
     try library.checkName(ctx, name);
     if (library.isCoreName(ctx, name) or ctx.libraries.find(name) != null) return true;
-    const files = ctx.files orelse return false;
-    const opened = resolve.openLibrary(files, scratch, &ctx.symbols, name) catch |e| switch (e) {
+    const opened = resolve.openLibrary(ctx.files, ctx.embedded, scratch, &ctx.symbols, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return false,
     };
-    opened.file.close(files.io);
+    source.closeSource(ctx.files, opened.source);
     return true;
 }
 

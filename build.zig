@@ -141,6 +141,107 @@ fn sourcePath(b: *std.Build, mod: *std.Build.Module) []const u8 {
     }
 }
 
+/// The most bytes of a file under `lib/`.
+/// `src/syntax/source.zig` の `max_file_bytes` と同じ値で、実行時にも同じ上限を検査する。
+const embedded_max_bytes = 1024 * 1024;
+
+/// The module that carries the files under `lib/` (docs/design/frontend.md, 埋め込み).
+///
+/// `lib/` を走査してパス名順に並べ、`@embedFile` で取り込んだファイルの一覧を持つ Zig の
+/// ソースを作る。ネイティブも WASM も同じ一覧を使う。内容はビルド時に検証し、不正なものが
+/// あればビルドを失敗させる(docs/design/platform-and-web.md の入力の検証の表)。
+/// 一覧は `lib/` の実態から作るので、手で保守する記録ではない。ファイルを足すと、
+/// 次の `zig build` が走査し直す。
+///
+/// 一覧が持つのはパスの索引だけである。`define-library` の名前の索引は、パスに対応付け
+/// られない名前のライブラリが `lib/` に現れたときに足す(docs/plans/0016-phase3-scheme-stdlib.md)。
+fn embeddedLib(b: *std.Build) *std.Build.Module {
+    const io = b.graph.io;
+    const a = b.allocator;
+    var paths: std.ArrayList([]const u8) = .empty;
+    // Why: Zig 0.17 は、build.zig が読んだものを宣言しないと、構成の結果を使い回す。
+    // 走査したディレクトリとファイルを宣言して、`lib/` の変更(足す、消す、書き換える)で
+    // 構成をやり直させる。宣言しないと、ファイルを足しても次の `zig build` が気づかない。
+    b.dependOnDirectoryContents(b.path("lib"));
+    if (b.root.openDir(io, "lib", .{ .iterate = true })) |opened| {
+        var dir = opened;
+        defer dir.close(io);
+        var walker = dir.walk(a) catch @panic("OOM");
+        defer walker.deinit();
+        while (walker.next(io) catch |e| embeddedFail("cannot walk lib/: {s}", .{@errorName(e)})) |entry| {
+            switch (entry.kind) {
+                .directory => {
+                    const path = a.dupe(u8, entry.path) catch @panic("OOM");
+                    std.mem.replaceScalar(u8, path, std.fs.path.sep, '/');
+                    b.dependOnDirectoryContents(b.path(b.fmt("lib/{s}", .{path})));
+                },
+                .file => {
+                    const path = a.dupe(u8, entry.path) catch @panic("OOM");
+                    std.mem.replaceScalar(u8, path, std.fs.path.sep, '/');
+                    checkEmbeddedPath(path);
+                    b.dependOnFileContents(b.path(b.fmt("lib/{s}", .{path})));
+                    const data = dir.readFileAlloc(io, entry.path, a, .limited(embedded_max_bytes)) catch |e|
+                        embeddedFail("cannot read lib/{s}: {s}", .{ path, @errorName(e) });
+                    if (!std.unicode.utf8ValidateSlice(data)) embeddedFail("lib/{s} is not valid UTF-8", .{path});
+                    paths.append(a, path) catch @panic("OOM");
+                },
+                // リンクなどは、埋め込みの対象にしない。
+                else => embeddedFail("lib/{s} is neither a file nor a directory", .{entry.path}),
+            }
+        }
+    } else |e| switch (e) {
+        error.FileNotFound => {},
+        else => embeddedFail("cannot open lib/: {s}", .{@errorName(e)}),
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lessThan(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lessThan);
+
+    var text: std.ArrayList(u8) = .empty;
+    text.appendSlice(a, "pub const File = struct { path: []const u8, data: []const u8 };\n\npub const files = [_]File{\n") catch @panic("OOM");
+    for (paths.items) |p| {
+        text.appendSlice(a, b.fmt("    .{{ .path = \"{s}\", .data = @embedFile(\"lib/{s}\") }},\n", .{ p, p })) catch @panic("OOM");
+    }
+    text.appendSlice(a, "};\n") catch @panic("OOM");
+
+    const write = b.addWriteFiles();
+    const mod = b.createModule(.{ .root_source_file = write.add("embedded_lib.zig", text.items) });
+    // 各ファイルは、`lib/` のパスを名前にした import として足す。`@embedFile` は
+    // import の名前でファイルを指せる。
+    for (paths.items) |p| {
+        const name = b.fmt("lib/{s}", .{p});
+        mod.addAnonymousImport(name, .{ .root_source_file = b.path(name) });
+    }
+    return mod;
+}
+
+/// Fails the configure step for a file under `lib/` that must not be embedded.
+///
+/// 名前の成分は、ライブラリ名からファイル名への対応(src/resolve.zig の `checkComponent`)
+/// が通す文字だけにする。拡張子は、ライブラリの定義(`.sld`)と、`include` が読む
+/// ソース(`.scm`)だけである。
+fn checkEmbeddedPath(path: []const u8) void {
+    const extension = std.fs.path.extension(path);
+    if (!std.mem.eql(u8, extension, ".sld") and !std.mem.eql(u8, extension, ".scm"))
+        embeddedFail("lib/{s} is neither a .sld nor a .scm file", .{path});
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |component| {
+        if (component.len == 0 or component[0] == '.' or component[component.len - 1] == '.')
+            embeddedFail("lib/{s} has a component that is empty or starts or ends with a dot", .{path});
+        for (component) |c| {
+            const ok = std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.';
+            if (!ok) embeddedFail("lib/{s} has a character other than A-Z a-z 0-9 - _ .", .{path});
+        }
+    }
+}
+
+fn embeddedFail(comptime format: []const u8, args: anytype) noreturn {
+    std.debug.print("[sucheme] " ++ format ++ "\n", args);
+    std.process.exit(1);
+}
+
 pub fn build(b: *std.Build) void {
     enforcePinnedZigVersion();
 
@@ -169,6 +270,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     sucheme.addOptions("build_options", options);
+    // `lib/` の埋め込み。`sucheme` のモジュールを作るたびに足す(下の host、wasm、dist)。
+    const embedded = embeddedLib(b);
+    sucheme.addImport("embedded_lib", embedded);
 
     const exe = b.addExecutable(.{
         .name = @tagName(manifest.name),
@@ -205,6 +309,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
     });
     sucheme_host.addOptions("build_options", options);
+    sucheme_host.addImport("embedded_lib", embedded);
     test_scheme.root_module.addImport("sucheme", sucheme_host);
     // ランナーは、規模を試す層が求められたときは tests/scheme-slow/ も読む。
     const tier_options = b.addOptions();
@@ -263,6 +368,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
     });
     sucheme_wasm.addOptions("build_options", options);
+    sucheme_wasm.addImport("embedded_lib", embedded);
     const wasm_exe = b.addExecutable(.{
         .name = "sucheme",
         .root_module = b.createModule(.{
@@ -294,6 +400,7 @@ pub fn build(b: *std.Build) void {
             .optimize = dist_optimize,
         });
         sucheme_dist.addOptions("build_options", options);
+        sucheme_dist.addImport("embedded_lib", embedded);
         const dist_exe = b.addExecutable(.{
             .name = @tagName(manifest.name),
             .root_module = b.createModule(.{

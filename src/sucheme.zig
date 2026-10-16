@@ -36,6 +36,20 @@ const context = @import("context.zig");
 const printer = @import("printer.zig");
 const value = @import("value.zig");
 const tier = @import("tier.zig");
+const embedded_lib = @import("embedded_lib");
+
+/// The files under `lib/`, which every interpreter searches before the files beneath
+/// its roots (src/resolve.zig).
+/// `build.zig` が作る `embedded_lib` の一覧を、リゾルバの型に写す。内容は実行ファイルの
+/// 読み取り専用の領域にあり、インタプリタは複製しない。
+const embedded_files = blk: {
+    var out: [embedded_lib.files.len]resolve.EmbeddedFile = undefined;
+    for (embedded_lib.files, 0..) |f, i| out[i] = .{ .path = f.path, .data = f.data };
+    break :blk out;
+};
+
+/// The embedded files as the resolver takes them.
+const embedded: resolve.Embedded = .{ .files = &embedded_files };
 
 /// Every way `evalPrint` can fail.
 ///
@@ -78,6 +92,7 @@ pub const Interpreter = struct {
         errdefer self.arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
         self.ctx.files = files;
+        self.ctx.embedded = embedded;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
     }
