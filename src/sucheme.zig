@@ -681,6 +681,27 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     }
 }
 
+test "a symbol made from a string stays the symbol of its name at every work list capacity" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 1, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\"))", "#t\n");
+            // 名前から作ったシンボルだけが持つ名前は、値が持つ間は残る。
+            try expectLinePrints(&interp, "(define z (string->symbol \"only-by-string\")) (define v (vector z))", "");
+            try churnSymbols(&interp);
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\")) (symbol->string z) (eq? z (vector-ref v 0))", "#t\n\"only-by-string\"\n#t\n");
+            try expectLinePrints(&interp, "(eq? z (string->symbol \"only-by-string\")) (eq? z 'only-by-string)", "#t\n#t\n");
+            // 値を手放しても、コードの定数 `'only-by-string` が名前を持つので、残る。
+            try expectLinePrints(&interp, "(set! z #f) (set! v #f)", "");
+            interp.ctx.collectIdle();
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("only-by-string") != null);
+        }
+    }
+}
+
 test "a symbol that is not held is reclaimed, with the memory its name took" {
     var interp: Interpreter = undefined;
     try interp.initWithOptions(std.testing.allocator, .{});
