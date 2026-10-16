@@ -1,0 +1,18 @@
+# スライス 3g を規模で試す。`(sucheme procedures)` のリストの手続きが、長いリストを、
+# 継続を伸ばさずに(末尾呼び出し)、生きているデータだけの量で処理すること。実行に時間が
+# かかるので `zig build test-scheme -Dslow=true` のときだけ走り、全コミットでは走らない
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0230-list-procedures.txt の「長いリスト」のケースにある。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# 30万個のリストを、`map` と `append` と `list-copy` と `reverse` で処理する。
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define l (iota 300000 '())) (list (length (map (lambda (x) x) l)) (length (append l l)) (length (list-copy l)) (car (reverse l)) (list-ref l 299999) (length (list-tail l 100000)))
+(300000 600000 300000 300000 300000 200000)
+
+# 複数のリストの `map` は、1回ごとに `apply` を通る。
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define l (iota 200000 '())) (apply + (map + l l))
+40000200000
+
+# `for-each` は、継続を伸ばさずに回る。
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define count 0) (for-each (lambda (x) (set! count (+ count 1))) (iota 300000 '())) count
+300000
