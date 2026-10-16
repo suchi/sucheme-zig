@@ -1,0 +1,70 @@
+# スライス 3f: `force`(R7RS 4.2.5)。値を一度だけ計算して覚えること、`delay-force` の連鎖を
+# 反復で解くこと、再入に対して正しいこと、強制するときの動的環境で手続きが走ること。
+# `lazy` と `lazy-force` は、R7RS 7.3 の `delay` と `delay-force` の展開を、構文は 3j が足すので、
+# ここで手で書いたものである。各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# R7RS 4.2.5 の例: 無限の流れ。
+(define-syntax lazy-force (syntax-rules () ((_ e) (%make-promise #f (lambda () e))))) (define-syntax lazy (syntax-rules () ((_ e) (lazy-force (%make-promise #t e))))) (define (next n) (lazy (cons n (next (+ n 1))))) (define integers (next 0)) (define (head s) (car (force s))) (define (tail s) (cdr (force s))) (head (tail (tail integers)))
+2
+
+# R7RS 4.2.5 の例: `delay-force` で書いた、流れの絞り込み。
+(define-syntax lazy-force (syntax-rules () ((_ e) (%make-promise #f (lambda () e))))) (define-syntax lazy (syntax-rules () ((_ e) (lazy-force (%make-promise #t e))))) (define (next n) (lazy (cons n (next (+ n 1))))) (define integers (next 0)) (define (head s) (car (force s))) (define (tail s) (cdr (force s))) (define (odd-number? x) (= 1 (remainder x 2))) (define (stream-filter p? s) (lazy-force (if (null? (force s)) (lazy '()) ((lambda (h t) (if (p? h) (lazy (cons h (stream-filter p? t))) (stream-filter p? t))) (car (force s)) (cdr (force s)))))) (head (tail (tail (stream-filter odd-number? integers))))
+5
+
+# R7RS 4.2.5 の例: 値は一度だけ計算される。再入しても、最初に終えた計算の値が残る。
+(define-syntax lazy-force (syntax-rules () ((_ e) (%make-promise #f (lambda () e))))) (define-syntax lazy (syntax-rules () ((_ e) (lazy-force (%make-promise #t e))))) (define count 0) (define p (lazy (begin (set! count (+ count 1)) (if (> count x) count (force p))))) (define x 5) (list (promise? p) (force p) (begin (set! x 10) (force p)))
+(#t 6 6)
+
+# 強制する途中で、同じ約束を強制する。内側が先に終わり、その値が約束の値になる。外側は、
+# 終えたときにもう約束の値があるので、書き込まない。
+(define n 0) (define p (%make-promise #f (lambda () (set! n (+ n 1)) (if (= n 1) (%make-promise #t (list 'outer (force p))) (%make-promise #t 'inner))))) (list (force p) (force p) n)
+(inner inner 2)
+
+# 同じことを、返される約束を通して行う。強制した約束を `q` として返した約束 `p` を強制し、
+# 途中で `q` を強制する。`q` は `p` の状態を共有しているので、内側の強制が `p` を終える。
+(define n 0) (define q (%make-promise #f (lambda () (set! n (+ n 1)) (if (= n 1) (%make-promise #t (list 'outer (force q))) (%make-promise #t 'inner))))) (define p (%make-promise #f (lambda () q))) (list (force p) (force q) n)
+(inner inner 2)
+
+# 手続きが自分自身を返す間は、強制が続き、手続きが毎回呼ばれる。自分自身を返し続けると終わらない
+# (R7RS の参考実装も同じである)ので、3回目に終わる約束で見る。
+(define n 0) (define p (%make-promise #f (lambda () (set! n (+ n 1)) (if (< n 3) p (%make-promise #t n))))) (list (force p) n)
+(3 3)
+
+# 継続を捕捉した手続きへの再入。約束が終わったあとに入り直しても、約束の値は変わらず、手続きは
+# 走り直さない。再入のあとは、リーダが読み終えた式の続きから進む(REPL の入力は巻き戻らない)。
+(define k #f) (define n 0) (define runs 0) (define p (%make-promise #f (lambda () (set! runs (+ runs 1)) (%make-promise #t (call/cc (lambda (c) (set! k c) 1)))))) (define r (force p)) (set! n (+ n 1)) (if (= n 1) (k 2)) (list r (force p) runs n)
+(1 1 1 1)
+
+# 手続きが誤りで終わった約束は、強制していないままである。次の強制は手続きを呼び直す。
+(define n 0) (define p (%make-promise #f (lambda () (set! n (+ n 1)) (if (< n 2) (error "boom") (%make-promise #t n))))) (define (try) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'failed)) (lambda () (force p)))))) (list (try) (try) (try) n)
+(failed 2 2 2)
+
+# 手続きは、最初に強制した呼び出しのパラメータの値で走り、その値が覚えられる(R7RS 4.2.5)。
+(define param (make-parameter 1)) (define p (%make-promise #f (lambda () (%make-promise #t (param))))) (list (parameterize ((param 2)) (force p)) (force p) (param))
+(2 2 1)
+
+# 例外ハンドラも、強制した呼び出しのものである。
+(with-exception-handler (lambda (e) 40) (lambda () (force (%make-promise #f (lambda () (%make-promise #t (+ 2 (raise-continuable 'oops))))))))
+42
+
+(define p (%make-promise #f (lambda () (%make-promise #t (raise 'oops))))) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k (list 'caught e))) (lambda () (force p)))))
+(caught oops)
+
+# `dynamic-wind` の中で強制した手続きは、その動的範囲の中で走る。
+(define log '()) (define p (%make-promise #f (lambda () (set! log (cons 'thunk log)) (%make-promise #t 'v)))) (list (dynamic-wind (lambda () (set! log (cons 'in log))) (lambda () (force p)) (lambda () (set! log (cons 'out log)))) log)
+(v (out thunk in))
+
+# 手続きが返したのが約束でないとき。
+(force (%make-promise #f (lambda () 5)))
+error: delay-force: the expression did not return a promise
+
+(force (%make-promise #f (lambda () (%make-promise #f (lambda () 'v)))))
+error: delay-force: the expression did not return a promise
+
+# 手続きが引数を取るとき、呼び出しの誤りである。
+(force (%make-promise #f (lambda (x) x)))
+error: wrong number of arguments: expected 1, got 0
+
+# 手続きが約束でない値を返した誤りは、ハンドラで受けられる。
+(define p (%make-promise #f (lambda () 5))) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'bad)) (lambda () (force p)))))
+bad

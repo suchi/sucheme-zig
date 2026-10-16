@@ -688,6 +688,51 @@ test "the classes of the types of parameters" {
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.ParameterBinding).?);
 }
 
+test "a promise is followed through its value, which is the result or the procedure that computes it" {
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    var c: Closure = .{ .lambda = undefined, .env = null };
+    const done: value_mod.Promise = .{ .done = true, .value = .{ .pair = &p }, .forward = null };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Promise, &done);
+    try r.expect(&.{addr(&p)});
+    const pending: value_mod.Promise = .{ .done = false, .value = .{ .closure = &c }, .forward = null };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Promise, &pending);
+    try q.expect(&.{addr(&c)});
+    // ヒープのものでない値なら、何も報告しない。
+    const flat: value_mod.Promise = .{ .done = true, .value = .fromFixnum(1), .forward = null };
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.Promise, &flat);
+    try s.expect(&.{});
+}
+
+test "a promise that shares the state of another is followed to it, as well as through its value" {
+    var root: value_mod.Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
+    var p: Pair = .{ .car = .empty_list_value, .cdr = .empty_list_value };
+    const alias: value_mod.Promise = .{ .done = false, .value = .{ .pair = &p }, .forward = &root };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Promise, &alias);
+    try r.expect(&.{ addr(&p), addr(&root) });
+    const bare: value_mod.Promise = .{ .done = false, .value = .unspecified_value, .forward = &root };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Promise, &bare);
+    try q.expect(&.{addr(&root)});
+}
+
+test "the frame of a forced promise is followed to the promise" {
+    var promise: value_mod.Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
+    const forcing: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .force_thunk = &promise } };
+    var r: Recorder = .{};
+    interpreter.children(&r, Kont, &forcing);
+    try r.expect(&.{addr(&promise)});
+}
+
+test "the classes of the types of promises" {
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Promise).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Promise).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(?*value_mod.Promise).?);
+}
+
 test "a type the walk cannot sort has no class" {
     // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
     // テストが答えられる形で行う。

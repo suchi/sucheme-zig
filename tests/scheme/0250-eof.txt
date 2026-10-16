@@ -1,0 +1,49 @@
+# スライス 3f: EOF の値(R7RS 6.13.2)。`eof-object` が返す値は、`eof-object?` だけが真と答える。
+# `read` が読める値ではないので、リーダの入力にはならない。
+
+(eof-object? (eof-object))
+#t
+
+# EOF の値以外は、何でも偽である。
+(list (eof-object? 1) (eof-object? #f) (eof-object? '()) (eof-object? "") (eof-object? 'eof) (eof-object? #\a) (eof-object? (list (eof-object))) (eof-object? (vector)))
+(#f #f #f #f #f #f #f #f)
+
+# 外部表現。R7RS は決めていないので、`read` が受け付けない表記で書く。
+(eof-object)
+#<eof>
+
+(list 1 (eof-object) "a")
+(1 #<eof> "a")
+
+(vector (eof-object))
+#(#<eof>)
+
+# R7RS は、EOF の値が一意であることを求めない。ここでは、どの EOF の値も同じものである。
+(list (eq? (eof-object) (eof-object)) (eqv? (eof-object) (eof-object)) (equal? (eof-object) (eof-object)))
+(#t #t #t)
+
+# ほかの値とは区別できる。
+(list (eqv? (eof-object) '()) (eqv? (eof-object) #f) (eqv? (eof-object) (if #f #f)) (equal? (eof-object) "") (eqv? (eof-object) 0))
+(#f #f #f #f #f)
+
+# 手続きではなく、真として扱われる。
+(list (procedure? (eof-object)) (if (eof-object) 'true 'false))
+(#f true)
+
+# データの中に入れても、取り出して判定できる。
+(define e (eof-object)) (define v (vector 1 e 3)) (list (eof-object? (vector-ref v 1)) (eof-object? (vector-ref v 0)) (eof-object? (car (list e))))
+(#t #f #t)
+
+# 大域変数に持たせて、GC を挟んでも変わらない。
+(define e (eof-object)) (define (churn n) (if (> n 0) (begin (list 1 2 3 4 5 6 7 8 9 10) (churn (- n 1))))) (churn 2000) (eof-object? e)
+#t
+
+# 引数の個数。
+(eof-object 1)
+error: wrong number of arguments to eof-object 1
+
+(eof-object?)
+error: wrong number of arguments to eof-object?
+
+(eof-object? 1 2)
+error: wrong number of arguments to eof-object? 1 2

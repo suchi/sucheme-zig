@@ -12,6 +12,7 @@
 //! ある)を加える。スライス 2h は、レコードとレコード型を加える。スライス 2k は、
 //! マクロのテンプレートが導入した識別子である別名と、マクロを加える。別名は値の変種
 //! だが、展開器の中だけにあり、機械には届かない。スライス 2g は、パラメータを加える。
+//! スライス 3f は、EOF の値(即値)と約束を加える。
 //! GC がたどるものすべてのレイアウトをここで定義するので、それらをすべて知って
 //! いなければならない場所は、このファイル1つである(docs/design/architecture.md)。
 //!
@@ -81,6 +82,14 @@ pub const Value = union(enum) {
     /// GC ヒープにある。1個を要求しない継続(受け手など)だけが受け取り、それ以外の継続に
     /// 届くと誤りになるので、変数やデータに入ることはない(docs/design/runtime.md の複数値)。
     multiple_values: *MultipleValues,
+    /// The end-of-file object that `eof-object` returns (R7RS 6.13.2): what the
+    /// input procedures return when they have no more to read.
+    /// 値そのものがすべてなので、どの EOF の値も同じである。
+    eof,
+    /// A promise that `make-promise` or `delay` made (R7RS 4.2.5): a computation
+    /// that `force` runs once and remembers.
+    /// GC ヒープにある。
+    promise: *Promise,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -93,6 +102,10 @@ pub const Value = union(enum) {
     /// The marker of a variable that is not defined yet.
     /// 同じ理由で、バリアントとは別の名前にしてある。
     pub const uninitialized_value: Value = .uninitialized;
+
+    /// The end-of-file object.
+    /// 同じ理由で、バリアントとは別の名前にしてある。
+    pub const eof_value: Value = .eof;
 
     pub fn fromFixnum(n: i64) Value {
         return .{ .fixnum = n };
@@ -156,12 +169,16 @@ pub const Value = union(enum) {
         return .{ .multiple_values = m };
     }
 
+    pub fn fromPromise(p: *Promise) Value {
+        return .{ .promise = p };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter => true,
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character => false,
+            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise => true,
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character, .eof => false,
         };
     }
 
@@ -186,6 +203,8 @@ pub const Value = union(enum) {
             .continuation => .continuation,
             .parameter => .parameter,
             .multiple_values => .multiple_values,
+            .eof => .eof,
+            .promise => .promise,
         };
     }
 
@@ -309,6 +328,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The promise, or null when the value is not one.
+    pub fn asPromise(self: Value) ?*Promise {
+        return switch (self) {
+            .promise => |p| p,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -349,6 +376,8 @@ pub const Value = union(enum) {
             .continuation => |x| b.asContinuation() == x,
             .parameter => |x| b.asParameter() == x,
             .multiple_values => |x| b.asMultipleValues() == x,
+            .eof => b.kind() == .eof,
+            .promise => |x| b.asPromise() == x,
         };
     }
 
@@ -584,6 +613,8 @@ pub const MachineOp = enum {
     values,
     /// `(call-with-values producer consumer)` (R7RS 6.10).
     call_with_values,
+    /// `(force promise)` (R7RS 4.2.5).
+    force,
     /// `(features)` (R7RS 6.14): the feature identifiers of the build, as a new list of
     /// symbols.
     features,
@@ -785,6 +816,10 @@ pub const Kont = struct {
         /// arguments of this procedure, the consumer, which is called in the
         /// continuation of the `call-with-values`.
         values_receiver: Value,
+        /// The value is what the procedure of this promise returned, which `force`
+        /// called: a promise, whose state goes into this one's, and then `force`
+        /// goes on with this promise (R7RS 7.3, `force`).
+        force_thunk: *Promise,
         /// The value is dropped, and the operands of a call go on being lined up:
         /// a chunk of the operands that are left come from `rest`, and the call is
         /// applied once none is left.
@@ -828,6 +863,7 @@ pub const Kont = struct {
                 .dynamic_exit, .handler_return, .wind_body => false,
                 .values_receiver => false,
                 .wind_after, .rewind => false,
+                .force_thunk => true,
             };
         }
     };
@@ -1026,6 +1062,38 @@ pub const Parameter = struct {
     converter: ?Value,
 };
 
+/// A promise: what `force` computes once, or the value it has already computed
+/// (R7RS 4.2.5).
+/// R7RS 7.3 の参考実装では、約束は(強制済みかの印、値か手続き)の組を指す箱で、強制の途中で
+/// 返ってきた約束と元の約束が同じ箱を共有する。ここでは、箱を別のオブジェクトにせず、共有を
+/// `forward` で表す。`forward` を持つ約束は、その先の約束と同じ状態を指す別名で、自分の
+/// `done` と `value` は使わない。状態を持つ約束(根)は `forward` が null である。
+pub const Promise = struct {
+    /// Whether `value` is the result, and not a procedure that computes it.
+    done: bool,
+    /// The result when `done`, and otherwise the procedure of no arguments that
+    /// `force` calls, which returns a promise (`delay-force`).
+    /// 別名のときは使わず、未規定値を持つ。持ち続けると、強制済みの手続きが回収できない。
+    value: Value,
+    /// The promise whose state this one shares, or null when this one holds it.
+    forward: ?*Promise = null,
+
+    /// The promise that holds the state `self` shares: `self` itself, or where
+    /// the `forward` links lead.
+    /// たどった別名は、根を直接指すようにつなぎ直す(経路の圧縮)。つなぎ直さないと、状態を
+    /// 持つ約束を次々に別の約束へ併合したあとの1回の参照が、併合の数に比例する。
+    pub fn root(self: *Promise) *Promise {
+        var r = self;
+        while (r.forward) |next| r = next;
+        var it = self;
+        while (it.forward) |next| {
+            it.forward = r;
+            it = next;
+        }
+        return r;
+    }
+};
+
 /// What `call/cc` captures: the continuation and the dynamic state of the
 /// call (docs/design/runtime.md, the full continuation).
 /// 継続のフレームと動的点はどちらも不変なので、捕捉は2つのポインタを写すだけで、何度でも
@@ -1092,7 +1160,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -1101,7 +1169,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -1533,6 +1601,50 @@ test "multiple values are a heap object of their own kind" {
     try std.testing.expect(Value.fromFixnum(1).asMultipleValues() == null);
 }
 
+test "the end-of-file object is an immediate of its own kind" {
+    const v: Value = .eof_value;
+    try std.testing.expectEqual(Kind.eof, v.kind());
+    try std.testing.expect(!v.pointsIntoHeap());
+    try std.testing.expect(v.isTrue());
+    try std.testing.expect(v.isEqv(.eof_value));
+    try std.testing.expect(v.asFixnum() == null);
+    try std.testing.expect(v.asPromise() == null);
+    try std.testing.expect(Value.fromFixnum(0).kind() != Kind.eof);
+}
+
+test "a promise is a heap object of its own kind" {
+    var p: Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
+    const v: Value = .fromPromise(&p);
+    try std.testing.expectEqual(Kind.promise, v.kind());
+    try std.testing.expectEqual(&p, v.asPromise().?);
+    try std.testing.expect(v.pointsIntoHeap());
+    try std.testing.expect(v.asClosure() == null);
+    try std.testing.expect(v.asParameter() == null);
+    try std.testing.expect(Value.fromFixnum(1).asPromise() == null);
+    try std.testing.expect(v.isTrue());
+}
+
+test "a promise that holds its state is its own root, and one that shares the state of another leads to it" {
+    var a: Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
+    var b: Promise = .{ .done = false, .value = .unspecified_value, .forward = &a };
+    var c: Promise = .{ .done = false, .value = .unspecified_value, .forward = &b };
+    try std.testing.expectEqual(&a, a.root());
+    try std.testing.expectEqual(&a, b.root());
+    try std.testing.expectEqual(&a, c.root());
+}
+
+test "finding the root links the promises it passes straight to the root" {
+    var a: Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
+    var b: Promise = .{ .done = false, .value = .unspecified_value, .forward = &a };
+    var c: Promise = .{ .done = false, .value = .unspecified_value, .forward = &b };
+    var d: Promise = .{ .done = false, .value = .unspecified_value, .forward = &c };
+    try std.testing.expectEqual(&a, d.root());
+    try std.testing.expectEqual(&a, d.forward.?);
+    try std.testing.expectEqual(&a, c.forward.?);
+    try std.testing.expectEqual(&a, b.forward.?);
+    try std.testing.expect(a.forward == null);
+}
+
 test "only the frames that take one value ask for exactly one" {
     const node: Node = .{ .constant = .unspecified_value };
     const if_node: If = .{ .condition = &node, .consequent = &node, .alternative = null };
@@ -1542,6 +1654,7 @@ test "only the frames that take one value ask for exactly one" {
     const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
     const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
     var parameter: Parameter = .{ .value = .unspecified_value, .converter = null };
+    var promise: Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
     const spread_args: Args = .{ .value = .unspecified_value, .next = null };
     const asks_one = [_]Kont.Step{
         .{ .branch = &if_node },
@@ -1554,6 +1667,7 @@ test "only the frames that take one value ask for exactly one" {
         .{ .parameterize_param = .{ .node = undefined, .index = 0, .pending = null } },
         .{ .parameterize_value = .{ .node = undefined, .index = 0, .pending = null, .param = &parameter } },
         .{ .parameterize_convert = .{ .node = undefined, .index = 0, .pending = null, .param = &parameter } },
+        .{ .force_thunk = &promise },
     };
     for (asks_one) |step| try std.testing.expect(step.requiresOneValue());
     const takes_any = [_]Kont.Step{
@@ -1749,6 +1863,9 @@ const Samples = struct {
     values_items_b: [2]Value = .{ .{ .fixnum = 1 }, .{ .fixnum = 2 } },
     multiple_values_a: MultipleValues = undefined,
     multiple_values_b: MultipleValues = undefined,
+    // 状態が同じ2つの約束。
+    promise_a: Promise = .{ .done = true, .value = .{ .fixnum = 1 }, .forward = null },
+    promise_b: Promise = .{ .done = true, .value = .{ .fixnum = 1 }, .forward = null },
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -1776,7 +1893,7 @@ const Samples = struct {
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [36]Value {
+    fn all(self: *Samples) [39]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -1814,6 +1931,9 @@ const Samples = struct {
             .fromParameter(&self.parameter_b),
             .fromMultipleValues(&self.multiple_values_a),
             .fromMultipleValues(&self.multiple_values_b),
+            .eof_value,
+            .fromPromise(&self.promise_a),
+            .fromPromise(&self.promise_b),
         };
     }
 };

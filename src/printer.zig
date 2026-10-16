@@ -89,6 +89,12 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             .continuation => try out.writeAll("#<continuation>"),
             // パラメータも手続きである(R7RS 4.2.6)。同じく読めない表記で、種類を書く。
             .parameter => try out.writeAll("#<parameter>"),
+            // Why: R7RS 6.13.2 は EOF の値の外部表現を決めておらず、`read` が読める値でも
+            // ないと定めている。手続きと同じく、読めない表記で書く。
+            .eof => try out.writeAll("#<eof>"),
+            // 約束も、R7RS 4.2.5 は外部表現を決めていない。強制済みかは書かない(書くと、`write` が
+            // 約束の状態を読む表記を作ってしまう)。
+            .promise => try out.writeAll("#<promise>"),
             // 複数値のオブジェクトは、1個を要求する継続に届くと誤りになるので、データの中には
             // 入らない。最上位の値は `Interpreter` が1つずつ書く。漏れたときに分かるよう、
             // それでも書く。

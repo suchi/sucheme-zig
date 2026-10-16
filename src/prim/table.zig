@@ -16,6 +16,8 @@ const string = @import("string.zig");
 const vector = @import("vector.zig");
 const condition = @import("condition.zig");
 const record = @import("record.zig");
+const eof = @import("eof.zig");
+const promise = @import("promise.zig");
 
 /// The primitives of each family, in the order they are bound.
 const families = [_][]const Primitive{
@@ -30,6 +32,8 @@ const families = [_][]const Primitive{
     &vector.primitives,
     &condition.primitives,
     &record.primitives,
+    &eof.primitives,
+    &promise.primitives,
 };
 
 const total = blk: {

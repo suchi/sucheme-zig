@@ -371,6 +371,17 @@ pub const Machine = struct {
                     .values_receiver => |consumer| {
                         take(try self.receive(&kont, &dyn, consumer, value), &env, &control, &value);
                     },
+                    // 約束の手続きが戻った。戻した約束の状態を、強制している約束に移し、強制を続ける。
+                    // このフレームはすでに外れているので、続きの手続きの呼び出しは、継続を伸ばさない。
+                    .force_thunk => |promise| {
+                        const returned = value.asPromise() orelse
+                            return ctx.raise("delay-force: the expression did not return a promise", .{});
+                        mergePromise(promise, returned);
+                        switch (try self.forceNext(&kont, promise)) {
+                            .value => |v| value = v,
+                            .call => |call| take(try self.apply(&kont, &dyn, call, 0, .limit), &env, &control, &value),
+                        }
+                    },
                     // 引数の並べ直しの続きである。1ステップで並べるのは、一定の個数までにする。
                     // 残りが無くなったら、このフレームは外れているので、末尾呼び出しとして適用する。
                     .spread => |s| {
@@ -637,6 +648,18 @@ pub const Machine = struct {
                         count = 1;
                         budget = .limit;
                     },
+                    // 約束でない値は、そのまま返す(R7RS 4.2.5 が許している)。
+                    .force => {
+                        const promise = args.value.asPromise() orelse return .{ .value = args.value };
+                        switch (try self.forceNext(kont, promise)) {
+                            .value => |v| return .{ .value = v },
+                            .call => |call| {
+                                args = call;
+                                count = 0;
+                                budget = .limit;
+                            },
+                        }
+                    },
                     .values => return .{ .value = try self.valuesOf(args, count, budget) },
                     .features => return .{ .value = try self.featureList() },
                     .call_with_values => {
@@ -841,6 +864,44 @@ pub const Machine = struct {
         const call = try ctx.create(Args, .{ .value = args.next.?.value, .next = procedure });
         kont.* = try self.push(kont.*, null, .{ .make_parameter = converter });
         return call;
+    }
+
+    /// What `force` goes on with: the value of a promise that is done, or the call of
+    /// the procedure of one that is not.
+    const Forced = union(enum) { value: Value, call: *const Args };
+
+    /// Starts, or goes on with, forcing `promise` (R7RS 4.2.5): the value of the
+    /// promise when its state holds one, and otherwise the call of its procedure,
+    /// with the frame that takes what the procedure returns.
+    /// 状態は、別名をたどった先の約束にある。強制の途中で、同じ状態が別の約束に併合されること
+    /// があるので、フレームには強制を始めた約束を持たせ、そのたびに根をたどり直す。手続きは
+    /// 末尾位置で呼ばない。戻りを受けるフレームが残るからである。確保を済ませてから継続を
+    /// 書き換える。
+    fn forceNext(self: *Machine, kont: *?*const Kont, promise: *value_mod.Promise) Error!Forced {
+        const root = promise.root();
+        if (root.done) return .{ .value = root.value };
+        const call = try self.ctx.create(Args, .{ .value = root.value, .next = null });
+        kont.* = try self.push(kont.*, null, .{ .force_thunk = promise });
+        return .{ .call = call };
+    }
+
+    /// Puts the state of `returned`, the promise that the procedure of `promise` gave
+    /// back, into `promise`, and makes the two share it (R7RS 7.3, `promise-update!`).
+    /// 手続きが戻るまでの間に、`promise` がすでに値を持っていたなら、何もしない。最初に終えた
+    /// 計算の値が残る(R7RS 4.2.5 の「一度だけ計算される」)。戻した約束が値を持つときは、状態を
+    /// 写すだけでよい。値は変わらないので、共有は見分けられない。共有するのは、まだ手続きを
+    /// 持つ約束だけで、そうすると、あとからその約束を強制しても、手続きが走り直さない。
+    fn mergePromise(promise: *value_mod.Promise, returned: *value_mod.Promise) void {
+        const target = promise.root();
+        if (target.done) return;
+        const source = returned.root();
+        if (source == target) return;
+        target.done = source.done;
+        target.value = source.value;
+        if (!source.done) {
+            source.value = .unspecified_value;
+            source.forward = target;
+        }
     }
 
     /// A new list of the feature identifiers of the build, as symbols.
@@ -2778,4 +2839,204 @@ test "multiple values survive a collection at every step, and are collected once
     try f.expectInt(10, "(k (list 3) (list 4))");
     f.ctx.heap.collect(Machine.Roots{ .ctx = &f.ctx, .env = null, .kont = null, .value = .unspecified_value, .dyn = null });
     try std.testing.expectEqual(0, f.ctx.heap.countOf(value_mod.MultipleValues));
+}
+
+/// The promise a test makes in a heap, not yet done, with `thunk` as its procedure.
+fn lazyPromise(f: *Fixture, thunk: Value) !*value_mod.Promise {
+    return f.ctx.heap.create(value_mod.Promise, .{ .done = false, .value = thunk, .forward = null });
+}
+
+test "forcing a promise that is done gives its value, and puts nothing on the continuation" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    const p = try f.ctx.heap.create(value_mod.Promise, .{ .done = true, .value = .fromFixnum(7), .forward = null });
+    var kont: ?*const Kont = null;
+    const accounted = f.ctx.heap.accounted;
+    switch (try f.machine.forceNext(&kont, p)) {
+        .value => |v| try std.testing.expectEqual(7, v.asFixnum().?),
+        .call => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(kont == null);
+    try std.testing.expectEqual(accounted, f.ctx.heap.accounted);
+}
+
+test "forcing a promise that is not done calls its procedure, with a frame for the promise below" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    const thunk = try f.eval("(lambda () 1)");
+    const p = try lazyPromise(&f, thunk);
+    var kont: ?*const Kont = null;
+    switch (try f.machine.forceNext(&kont, p)) {
+        .value => return error.TestUnexpectedResult,
+        .call => |call| {
+            // 呼び出しは、引数なしの手続き1つである。
+            try std.testing.expect(call.value.isEqv(thunk));
+            try std.testing.expect(call.next == null);
+        },
+    }
+    try std.testing.expectEqual(1, kont.?.depth);
+    try std.testing.expectEqual(p, kont.?.step.force_thunk);
+}
+
+test "forcing a promise that shares the state of another reads the state where it is" {
+    var f: Fixture = undefined;
+    try f.initWith(no_collection);
+    defer f.deinit();
+    const thunk = try f.eval("(lambda () 1)");
+    const root = try lazyPromise(&f, thunk);
+    const alias = try f.ctx.heap.create(value_mod.Promise, .{ .done = false, .value = .unspecified_value, .forward = root });
+    var kont: ?*const Kont = null;
+    // 別名の値は使わない。強制するのは、根の手続きである。
+    switch (try f.machine.forceNext(&kont, alias)) {
+        .value => return error.TestUnexpectedResult,
+        .call => |call| try std.testing.expect(call.value.isEqv(thunk)),
+    }
+    // フレームは、強制を始めた約束を持つ。戻ったあとに、根を引き直すためである。
+    try std.testing.expectEqual(alias, kont.?.step.force_thunk);
+    // 根が値を持っていれば、別名からその値が返る。
+    root.done = true;
+    root.value = .fromFixnum(9);
+    switch (try f.machine.forceNext(&kont, alias)) {
+        .value => |v| try std.testing.expectEqual(9, v.asFixnum().?),
+        .call => return error.TestUnexpectedResult,
+    }
+}
+
+test "the state of the promise a procedure returned goes into the promise being forced" {
+    const Promise = value_mod.Promise;
+    // 返した約束が手続きを持つとき、手続きが移り、2つはその状態を共有する。
+    var target: Promise = .{ .done = false, .value = .fromFixnum(1), .forward = null };
+    var source: Promise = .{ .done = false, .value = .fromFixnum(2), .forward = null };
+    Machine.mergePromise(&target, &source);
+    try std.testing.expect(!target.done);
+    try std.testing.expectEqual(2, target.value.asFixnum().?);
+    try std.testing.expect(target.forward == null);
+    try std.testing.expectEqual(&target, source.forward.?);
+    try std.testing.expectEqual(&target, source.root());
+    // 手放した約束は、手続きを持ち続けない。
+    try std.testing.expectEqual(Value.unspecified, source.value);
+    // 返した約束が値を持つとき、値が移る。持つものは変えないので、共有しない。
+    var other: Promise = .{ .done = false, .value = .fromFixnum(1), .forward = null };
+    var finished: Promise = .{ .done = true, .value = .fromFixnum(3), .forward = null };
+    Machine.mergePromise(&other, &finished);
+    try std.testing.expect(other.done);
+    try std.testing.expectEqual(3, other.value.asFixnum().?);
+    try std.testing.expect(finished.forward == null);
+    try std.testing.expect(finished.done);
+    try std.testing.expectEqual(3, finished.value.asFixnum().?);
+}
+
+test "a promise that already has its value keeps it when a procedure returns another" {
+    const Promise = value_mod.Promise;
+    var done: Promise = .{ .done = true, .value = .fromFixnum(1), .forward = null };
+    var returned: Promise = .{ .done = true, .value = .fromFixnum(2), .forward = null };
+    Machine.mergePromise(&done, &returned);
+    try std.testing.expectEqual(1, done.value.asFixnum().?);
+    var pending: Promise = .{ .done = false, .value = .fromFixnum(3), .forward = null };
+    Machine.mergePromise(&done, &pending);
+    try std.testing.expect(done.done);
+    try std.testing.expectEqual(1, done.value.asFixnum().?);
+    // 返された約束は、そのままである。
+    try std.testing.expect(returned.forward == null);
+    try std.testing.expect(pending.forward == null);
+    try std.testing.expectEqual(3, pending.value.asFixnum().?);
+}
+
+test "a procedure that returns the promise being forced, or one that shares its state, changes nothing" {
+    const Promise = value_mod.Promise;
+    var target: Promise = .{ .done = false, .value = .fromFixnum(1), .forward = null };
+    Machine.mergePromise(&target, &target);
+    try std.testing.expect(!target.done);
+    try std.testing.expectEqual(1, target.value.asFixnum().?);
+    try std.testing.expect(target.forward == null);
+    var alias: Promise = .{ .done = false, .value = .unspecified_value, .forward = &target };
+    Machine.mergePromise(&target, &alias);
+    try std.testing.expectEqual(1, target.value.asFixnum().?);
+    try std.testing.expectEqual(&target, alias.forward.?);
+    try std.testing.expectEqual(Value.unspecified, alias.value);
+}
+
+test "the state goes into the root when the promise being forced has come to share another's" {
+    const Promise = value_mod.Promise;
+    // 強制の途中で、強制している約束が別の約束の別名になっていたら、根が受け取る。
+    var root: Promise = .{ .done = false, .value = .fromFixnum(1), .forward = null };
+    var alias: Promise = .{ .done = false, .value = .unspecified_value, .forward = &root };
+    var source: Promise = .{ .done = false, .value = .fromFixnum(2), .forward = null };
+    Machine.mergePromise(&alias, &source);
+    try std.testing.expectEqual(2, root.value.asFixnum().?);
+    try std.testing.expectEqual(&root, source.forward.?);
+    try std.testing.expectEqual(Value.unspecified, alias.value);
+    // 返した約束が、根の別名の別名でも、同じ状態なので変わらない。
+    var far: Promise = .{ .done = false, .value = .unspecified_value, .forward = &alias };
+    Machine.mergePromise(&alias, &far);
+    try std.testing.expectEqual(2, root.value.asFixnum().?);
+}
+
+test "a chain of forced promises does not grow the continuation" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    _ = try f.eval("(define (chain n) (if (= n 0) (%make-promise #t 'done) (%make-promise #f (lambda () (chain (- n 1))))))");
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(force (chain 10))");
+    const small = f.machine.peak_depth;
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(force (chain 5000))");
+    try std.testing.expectEqual(small, f.machine.peak_depth);
+    // 対照: 手続きの中で強制する(`delay` の中の `force`)連鎖は、末尾位置でないので、深くなる。
+    // 上の比較が、深さを測れていることを確かめる。
+    _ = try f.eval("(define (nest n) (if (= n 0) (%make-promise #t 0) (%make-promise #f (lambda () (%make-promise #t (+ 1 (force (nest (- n 1)))))))))");
+    f.machine.peak_depth = 0;
+    try f.expectInt(1000, "(force (nest 1000))");
+    try std.testing.expect(f.machine.peak_depth >= 1000);
+}
+
+test "slow: a million promises in a chain are forced at the same depth" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    _ = try f.eval("(define (chain n) (if (= n 0) (%make-promise #t 'done) (%make-promise #f (lambda () (chain (- n 1))))))");
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(force (chain 10))");
+    const small = f.machine.peak_depth;
+    f.machine.peak_depth = 0;
+    _ = try f.eval("(force (chain 1000000))");
+    try std.testing.expectEqual(small, f.machine.peak_depth);
+}
+
+test "a collection runs between the steps of a chain of promises, so the chain fits in the live data" {
+    const n = 20000;
+    const limit = 512 * 1024;
+    // 連鎖が1つ進むごとに、約束が1つできる。全部を合わせると上限を超えるので、途中で回収
+    // されなければ、上限を超える。
+    try std.testing.expect(n * heap_mod.cellBytes(value_mod.Promise) > limit);
+    for ([_]bool{ false, true }) |stress| {
+        var f: Fixture = undefined;
+        try f.initWith(.{ .limit = limit, .min_threshold = 16 * 1024, .stress = stress });
+        defer f.deinit();
+        _ = try f.eval("(define (chain n) (if (= n 0) (%make-promise #t 'done) (%make-promise #f (lambda () (chain (- n 1))))))");
+        const before = f.ctx.heap.collections;
+        const done = try f.eval(std.fmt.comptimePrint("(force (chain {d}))", .{n}));
+        try std.testing.expectEqualStrings("done", f.ctx.heap.symbols.nameOf(done.asSymbol().?));
+        try std.testing.expect(f.ctx.heap.collections > before);
+    }
+}
+
+test "promises survive a collection at every step, and are collected once nothing reaches them" {
+    var f: Fixture = undefined;
+    try f.initWith(.{ .stress = true });
+    defer f.deinit();
+    // 約束が持つ値と、強制していない約束が持つ手続きの環境が、ステップごとの GC を越えて読める。
+    try f.expectInt(6, "(+ (car (force (make-promise (list 1 2)))) (car (force (%make-promise #f (lambda () (%make-promise #t (list 5 6)))))))");
+    // 連鎖で併合された約束(別名)も、強制のあとに回収を越えて同じ値を返す。
+    _ = try f.eval("(define q (%make-promise #f (lambda () (%make-promise #t (list 8)))))");
+    _ = try f.eval("(define p (%make-promise #f (lambda () q)))");
+    try std.testing.expectEqual(8, (try f.eval("(car (force p))")).asFixnum().?);
+    try std.testing.expectEqual(8, (try f.eval("(car (force q))")).asFixnum().?);
+    _ = try f.eval("(define q 0) (define p 0)");
+    f.ctx.heap.collect(Machine.Roots{ .ctx = &f.ctx, .env = null, .kont = null, .value = .unspecified_value, .dyn = null });
+    try std.testing.expectEqual(0, f.ctx.heap.countOf(value_mod.Promise));
 }
