@@ -498,6 +498,10 @@ pub const PrimitiveError = error{
     /// An argument is of the right type but outside what the primitive takes,
     /// such as an index past the end of a vector.
     OutOfRange,
+    /// The object to write to is a constant: the data of a literal, or the string
+    /// `symbol->string` returned (R7RS 3.4). R7RS 4.1.2 makes it an error to alter one.
+    /// `prim/immutable.zig` の `requireMutable` が返す。
+    Immutable,
     /// The allocation would take the heap past its limit.
     /// `Heap` のエラーと同じ名前である。そのまま返してよい。
     HeapLimit,

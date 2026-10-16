@@ -12,6 +12,7 @@ const Value = value.Value;
 const Primitive = value.Primitive;
 const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
+const heap_mod = @import("../heap.zig");
 
 pub const Error = PrimitiveError;
 
@@ -46,11 +47,14 @@ fn symbolEquals(_: *const Services, args: []const Value) Error!Value {
 ///
 /// Why: 名前は表のものを共有せず、複製を返す。共有すると、文字列を変更する手続きが、表の
 /// 名前を壊して、`(eq? 'abc (string->symbol "abc"))` が成り立たなくなる(docs/design/runtime.md)。
-/// R7RS 3.4 は、この文字列を不変としている。不変の印は、それを検査する文字列の変更の手続き
-/// と同じスライスで足す(段階3の 3d)。複製の確保は、ヒープの上限に計上される。
+/// R7RS 3.4 は、この文字列を不変としている。複製に不変の印を立てるので、文字列を変更する
+/// 手続きは、これを書き換えようとすると断る(`prim/immutable.zig`)。複製の確保は、ヒープの
+/// 上限に計上される。
 fn symbolToString(services: *const Services, args: []const Value) Error!Value {
     const id = args[0].asSymbol() orelse return error.WrongType;
-    return .fromString(try services.heap.createString(services.heap.symbols.nameOf(id)));
+    const name: Value = .fromString(try services.heap.createString(services.heap.symbols.nameOf(id)));
+    heap_mod.makeImmutable(name);
+    return name;
 }
 
 /// `(string->symbol string)`: the symbol whose name is the string (R7RS 6.5).
@@ -68,7 +72,6 @@ test {
 }
 
 const test_support = @import("test_support.zig");
-const heap_mod = @import("../heap.zig");
 
 fn callWith(arg: Value) !bool {
     var f: test_support.Fixture = undefined;
@@ -169,6 +172,21 @@ test "symbol->string gives a new string of the name, and changing it does not ch
     try std.testing.expectEqual(sym.asSymbol().?, (try f.call(&primitives, "string->symbol", &.{try stringOf(&f, "abc")})).asSymbol().?);
     const empty = try f.call(&primitives, "symbol->string", &.{try symbolOf(&f, "")});
     try std.testing.expectEqual(0, empty.asString().?.bytes.len);
+}
+
+test "symbol->string gives a string that is a constant, each time" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const sym = try symbolOf(&f, "abc");
+    const first = try f.call(&primitives, "symbol->string", &.{sym});
+    const second = try f.call(&primitives, "symbol->string", &.{sym});
+    const empty = try f.call(&primitives, "symbol->string", &.{try symbolOf(&f, "")});
+    for ([_]Value{ first, second, empty }) |v| try std.testing.expect(heap_mod.isImmutable(v));
+    // 名前を作る文字列は、定数にならない。`string->symbol` に渡した文字列は、そのままである。
+    const made = try stringOf(&f, "abc");
+    _ = try f.call(&primitives, "string->symbol", &.{made});
+    try std.testing.expect(!heap_mod.isImmutable(made));
 }
 
 test "symbol->string reports an argument that is not a symbol" {

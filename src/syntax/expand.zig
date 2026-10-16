@@ -30,6 +30,7 @@ const rules = @import("rules.zig");
 const heap_mod = @import("../heap.zig");
 const source = @import("source.zig");
 const cond_expand = @import("cond_expand.zig");
+const freeze = @import("../freeze.zig");
 
 pub const Error = context.Error;
 
@@ -254,6 +255,9 @@ const Expander = struct {
     /// マクロのテンプレートが導入した別名は、ここで元のシンボルに戻す(`stripAliases`)。
     fn constant(self: *Expander, task: Task, v: Value) Error!void {
         const datum = try self.stripAliases(v);
+        // R7RS 3.4 と 4.1.2: リテラルは定数である。到達できるデータのすべてに不変の印を立て、
+        // 書き込む手続きが断る。`quote` と自己評価するリテラルは、どちらもここを通る。
+        try freeze.freezeGraph(self.scratch, datum);
         try self.ctx.keepConstant(datum);
         task.dest.* = .{ .constant = datum };
     }

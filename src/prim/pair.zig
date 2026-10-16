@@ -1,7 +1,8 @@
 //! Pairs and lists (R7RS 6.4).
 //!
 //! ペアとリストの手続きである。段階1が作る手続きと取り出す手続きを入れ、段階3の
-//! スライス 3b が、ペアを書き換える `set-car!` と `set-cdr!` を足した。
+//! スライス 3b が、ペアを書き換える `set-car!` と `set-cdr!` を足した。3d が、リテラルの
+//! 定数(不変の印のあるペア)への書き込みを断る検査を足した。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -9,6 +10,7 @@ const Value = value.Value;
 const Primitive = value.Primitive;
 const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
+const immutable = @import("immutable.zig");
 
 pub const Error = PrimitiveError;
 
@@ -98,10 +100,10 @@ fn cdr(_: *const Services, args: []const Value) Error!Value {
 /// 戻り値は未規定である(R7RS 6.4)。確保しない。GC は世代別でも増分でもなく、
 /// `Heap.collect` が1回の呼び出しの中でマークとスイープを終えるので、書き込みバリアは
 /// 要らない。書き込んだ値は、次の GC でペアの子として走査される。
-/// リテラル定数の変更を禁じる R7RS 3.4 の扱いは、ここにない。ヘッダに不変の印が
-/// 無いので、`quote` したデータも書き換えられる(docs/design/runtime.md のリテラルの不変性)。
+/// リテラル定数のペアは、書き換えない(R7RS 3.4。`requireMutable`)。
 fn setCar(_: *const Services, args: []const Value) Error!Value {
     const p = args[0].asPair() orelse return error.WrongType;
+    try immutable.requireMutable(args[0]);
     p.car = args[1];
     return .unspecified_value;
 }
@@ -110,6 +112,7 @@ fn setCar(_: *const Services, args: []const Value) Error!Value {
 /// 書き込みバリアと不変の印については `setCar` と同じである。
 fn setCdr(_: *const Services, args: []const Value) Error!Value {
     const p = args[0].asPair() orelse return error.WrongType;
+    try immutable.requireMutable(args[0]);
     p.cdr = args[1];
     return .unspecified_value;
 }
@@ -145,7 +148,8 @@ test {
 }
 
 const test_support = @import("test_support.zig");
-const Heap = @import("../heap.zig").Heap;
+const heap_mod = @import("../heap.zig");
+const Heap = heap_mod.Heap;
 
 fn fix(n: i64) Value {
     return .fromFixnum(n);
@@ -542,6 +546,37 @@ test "set-car! and set-cdr! of what is not a pair is a wrong type, the empty lis
         try std.testing.expectError(error.WrongType, f.call(&primitives, "set-car!", &.{ v, fix(1) }));
         try std.testing.expectError(error.WrongType, f.call(&primitives, "set-cdr!", &.{ v, fix(1) }));
     }
+}
+
+test "set-car! and set-cdr! refuse a pair that is a constant, and leave it as it was" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const constant = try f.heap.cons(fix(1), fix(2));
+    const mutable = try f.heap.cons(fix(1), fix(2));
+    heap_mod.makeImmutable(constant);
+    for ([_][]const u8{ "set-car!", "set-cdr!" }) |name| {
+        try std.testing.expectError(error.Immutable, f.call(&primitives, name, &.{ constant, fix(9) }));
+        // 印は、そのペアのものである。同じ形の別のペアは書き換えられる。
+        _ = try f.call(&primitives, name, &.{ mutable, fix(9) });
+    }
+    try std.testing.expectEqual(1, constant.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(2, constant.asPair().?.cdr.asFixnum().?);
+    try std.testing.expectEqual(9, mutable.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(9, mutable.asPair().?.cdr.asFixnum().?);
+}
+
+test "set-car! and set-cdr! report the type of the first argument before they report a constant" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const constant = try f.heap.cons(fix(1), fix(2));
+    heap_mod.makeImmutable(constant);
+    // 定数のペアでない定数(文字列)は、型の誤りである。
+    const string: Value = .fromString(try f.heap.createString("abc"));
+    heap_mod.makeImmutable(string);
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "set-car!", &.{ string, fix(1) }));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "set-cdr!", &.{ string, fix(1) }));
 }
 
 test "a list that the program made loop back is no longer a list" {
