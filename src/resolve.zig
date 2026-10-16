@@ -408,7 +408,7 @@ fn buildName(ctx: *context.Context, parts: []const Part) !Value {
     while (i > 0) {
         i -= 1;
         const car: Value = switch (parts[i]) {
-            .id => |text| .fromSymbol(try ctx.symbols.intern(ctx.persist, text)),
+            .id => |text| .fromSymbol(try ctx.intern(text)),
             .int => |n| .fromFixnum(n),
         };
         list = try ctx.heap.cons(car, list);
@@ -422,7 +422,7 @@ fn expectParts(parts: []const Part, expected: []const []const u8) !void {
     var ctx = try context.Context.init(arena.allocator(), testing.allocator);
     defer ctx.deinit();
     const name = try buildName(&ctx, parts);
-    const got = try libraryParts(arena.allocator(), &ctx.symbols, name);
+    const got = try libraryParts(arena.allocator(), &ctx.heap.symbols, name);
     try testing.expectEqual(expected.len, got.len);
     for (expected, got) |want, have| try testing.expectEqualStrings(want, have);
 }
@@ -433,7 +433,7 @@ fn expectRefused(parts: []const Part, expected: NameError) !void {
     var ctx = try context.Context.init(arena.allocator(), testing.allocator);
     defer ctx.deinit();
     const name = try buildName(&ctx, parts);
-    try testing.expectError(expected, libraryParts(arena.allocator(), &ctx.symbols, name));
+    try testing.expectError(expected, libraryParts(arena.allocator(), &ctx.heap.symbols, name));
 }
 
 test "a name of identifiers and integers is the parts of a path" {
@@ -537,7 +537,7 @@ fn readLibrary(allocator: std.mem.Allocator, roots: []const []const u8, names: [
     var parts: std.ArrayList(Part) = .empty;
     for (names) |n| try parts.append(allocator, .{ .id = n });
     const name = try buildName(&ctx, parts.items);
-    const opened = try openLibrary(.{ .io = testing.io, .roots = roots }, null, allocator, &ctx.symbols, name);
+    const opened = try openLibrary(.{ .io = testing.io, .roots = roots }, null, allocator, &ctx.heap.symbols, name);
     const file = opened.source.file;
     defer file.close(testing.io);
     var buf: [256]u8 = undefined;
@@ -606,18 +606,18 @@ test "an embedded library is found before a root, and its includes stay among th
     const files: Files = .{ .io = testing.io, .roots = &.{tree.path} };
 
     // 埋め込みが先である。実ファイルシステムの同じ名前のファイルは見えない。
-    const found = try openLibrary(files, embedded, allocator, &ctx.symbols, name);
+    const found = try openLibrary(files, embedded, allocator, &ctx.heap.symbols, name);
     try testing.expectEqualStrings("embedded", found.source.bytes);
     try testing.expect(isEmbeddedRoot(found.origin.root));
     try testing.expectEqualStrings("bar.sld", found.origin.path[1]);
     // ファイルシステムが無くても見つかる(WASM)。
-    const without_files = try openLibrary(null, embedded, allocator, &ctx.symbols, name);
+    const without_files = try openLibrary(null, embedded, allocator, &ctx.heap.symbols, name);
     try testing.expectEqualStrings("embedded", without_files.source.bytes);
     // 埋め込みに無い名前は、実ファイルを引く。どちらにも無ければ NotFound である。
     const other = try buildName(&ctx, &.{ .{ .id = "foo" }, .{ .id = "baz" } });
-    try testing.expectError(error.NotFound, openLibrary(files, embedded, allocator, &ctx.symbols, other));
-    try testing.expectError(error.NotFound, openLibrary(null, null, allocator, &ctx.symbols, name));
-    const on_disk = try openLibrary(files, null, allocator, &ctx.symbols, name);
+    try testing.expectError(error.NotFound, openLibrary(files, embedded, allocator, &ctx.heap.symbols, other));
+    try testing.expectError(error.NotFound, openLibrary(null, null, allocator, &ctx.heap.symbols, name));
+    const on_disk = try openLibrary(files, null, allocator, &ctx.heap.symbols, name);
     defer on_disk.source.file.close(testing.io);
 
     // 埋め込みのルートからの `include` は、埋め込みの中を引く。

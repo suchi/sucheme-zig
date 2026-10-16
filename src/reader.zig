@@ -16,7 +16,6 @@
 
 const std = @import("std");
 const Value = @import("value.zig").Value;
-const symbol = @import("symbol.zig");
 const Heap = @import("heap.zig").Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
@@ -76,13 +75,10 @@ pub fn describe(e: SyntaxError) []const u8 {
 /// Where what the reader builds goes.
 /// これらは呼び出しより長く生きる。
 pub const Sink = struct {
-    /// Where the names of new symbols are kept.
-    alloc: std.mem.Allocator,
-    /// Where the pairs go.
+    /// Where the pairs go, and where the names of new symbols are kept.
     /// 読み取りの途中でヒープは GC しないので、呼び出し側が受け取る時点でデータは
     /// 完全な形をしている。
     heap: *Heap,
-    symbols: *symbol.Table,
 };
 
 /// What is open at this point of the input.
@@ -250,7 +246,7 @@ pub const Reader = struct {
             return .fromFixnum(n);
         }
         if (isUnsupportedNumber(token)) return error.InvalidToken;
-        if (isIdentifier(token)) return .fromSymbol(try sink.symbols.intern(sink.alloc, try self.folded(scratch, token)));
+        if (isIdentifier(token)) return .fromSymbol(try sink.heap.intern(try self.folded(scratch, token)));
         return error.InvalidToken;
     }
 
@@ -292,8 +288,7 @@ pub fn isIncomplete(gpa: std.mem.Allocator, source: []const u8) error{OutOfMemor
     defer arena.deinit();
     var heap: Heap = .init(gpa, .{});
     defer heap.deinit();
-    var symbols: symbol.Table = .{};
-    const sink: Sink = .{ .alloc = arena.allocator(), .heap = &heap, .symbols = &symbols };
+    const sink: Sink = .{ .heap = &heap };
     var r: Reader = .init(source);
     while (true) {
         const datum = r.next(arena.allocator(), sink) catch |e| switch (e) {
@@ -459,7 +454,7 @@ fn listOf(sink: Sink, items: []const Value, tail: Value) Error!Value {
 
 /// `(quote datum)`, which `'datum` abbreviates (R7RS 2.4).
 fn quoted(sink: Sink, datum: Value) Error!Value {
-    const quote_symbol: Value = .fromSymbol(try sink.symbols.intern(sink.alloc, "quote"));
+    const quote_symbol: Value = .fromSymbol(try sink.heap.intern("quote"));
     const tail = try sink.heap.cons(datum, Value.empty_list_value);
     return sink.heap.cons(quote_symbol, tail);
 }
@@ -548,7 +543,6 @@ const printer = @import("printer.zig");
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
     heap: Heap,
-    symbols: symbol.Table = .{},
     fold_case: bool = false,
 
     fn init() Fixture {
@@ -561,7 +555,7 @@ const Fixture = struct {
     }
 
     fn sink(self: *Fixture) Sink {
-        return .{ .alloc = self.arena.allocator(), .heap = &self.heap, .symbols = &self.symbols };
+        return .{ .heap = &self.heap };
     }
 
     /// Reads the only datum of `src`; any other count is an error.
@@ -577,7 +571,7 @@ const Fixture = struct {
     fn roundTrip(self: *Fixture, src: []const u8, buf: []u8) ![]const u8 {
         const d = try self.readOne(src);
         var w: std.Io.Writer = .fixed(buf);
-        try printer.write(&w, std.testing.allocator, &self.symbols, d);
+        try printer.write(&w, std.testing.allocator, &self.heap.symbols, d);
         return w.buffered();
     }
 };
@@ -615,7 +609,7 @@ test "next reads an identifier as the one symbol of its name" {
     try std.testing.expect(a != (try f.readOne("abd")).asSymbol().?);
     // 識別子は大文字と小文字を区別する(R7RS 2.1)。
     try std.testing.expect(a != (try f.readOne("ABC")).asSymbol().?);
-    try std.testing.expectEqualStrings("abc", f.symbols.nameOf(a));
+    try std.testing.expectEqualStrings("abc", f.heap.symbols.nameOf(a));
 }
 
 test "a reader that folds case reads identifiers and character names in lower case, and not strings or one-character literals" {
@@ -628,8 +622,8 @@ test "a reader that folds case reads identifiers and character names in lower ca
         try f.roundTrip("(DEFINE Foo-Bar #\\NEWLINE #\\A \"MiXed\" X1 +SOON ...)", &buf),
     );
     // 大文字は、端の A も Z も畳み込む。
-    try std.testing.expectEqualStrings("abcdefghijklmnopqrstuvwxyz", f.symbols.nameOf((try f.readOne("ABCDEFGHIJKLMNOPQRSTUVWXYZ")).asSymbol().?));
-    try std.testing.expectEqualStrings("z", f.symbols.nameOf((try f.readOne("Z")).asSymbol().?));
+    try std.testing.expectEqualStrings("abcdefghijklmnopqrstuvwxyz", f.heap.symbols.nameOf((try f.readOne("ABCDEFGHIJKLMNOPQRSTUVWXYZ")).asSymbol().?));
+    try std.testing.expectEqualStrings("z", f.heap.symbols.nameOf((try f.readOne("Z")).asSymbol().?));
     // 読み手が畳み込まないときは、どれも変わらない。
     f.fold_case = false;
     try std.testing.expectEqualStrings("(DEFINE Foo-Bar #\\A)", try f.roundTrip("(DEFINE Foo-Bar #\\A)", &buf));
@@ -783,12 +777,12 @@ test "next ends an identifier, a number and a boolean at a semicolon" {
     defer f.deinit();
     const a = f.arena.allocator();
     // `;` は区切り文字なので、トークンはそこで終わり、残りはコメントである。
-    try std.testing.expectEqualStrings("abc", f.symbols.nameOf((try f.readOne("abc;コメント")).asSymbol().?));
+    try std.testing.expectEqualStrings("abc", f.heap.symbols.nameOf((try f.readOne("abc;コメント")).asSymbol().?));
     try std.testing.expectEqual(12, (try f.readOne("12;コメント")).asFixnum().?);
     try std.testing.expect((try f.readOne("#t;コメント")).isTrue());
     var r: Reader = .init("a;b\nc");
-    try std.testing.expectEqualStrings("a", f.symbols.nameOf((try r.next(a, f.sink())).?.asSymbol().?));
-    try std.testing.expectEqualStrings("c", f.symbols.nameOf((try r.next(a, f.sink())).?.asSymbol().?));
+    try std.testing.expectEqualStrings("a", f.heap.symbols.nameOf((try r.next(a, f.sink())).?.asSymbol().?));
+    try std.testing.expectEqualStrings("c", f.heap.symbols.nameOf((try r.next(a, f.sink())).?.asSymbol().?));
     try std.testing.expect(try r.next(a, f.sink()) == null);
 }
 
@@ -1099,8 +1093,7 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
     defer arena.deinit();
     var heap: Heap = .init(gpa, .{});
     defer heap.deinit();
-    var symbols: symbol.Table = .{};
-    const sink: Sink = .{ .alloc = arena.allocator(), .heap = &heap, .symbols = &symbols };
+    const sink: Sink = .{ .heap = &heap };
     var r: Reader = .init(src);
     // 畳み込む読み手の経路も通すため、入力の長さの偶奇で切り替える。
     r.fold_case = src.len % 2 == 1;
@@ -1131,7 +1124,7 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
         // ReleaseFast では消えるので、その最適化でもこの性質を見る。
         try std.testing.expect(stringsAreUtf8(datum));
         var sunk: std.Io.Writer.Discarding = .init(&.{});
-        printer.write(&sunk.writer, gpa, &symbols, datum) catch |err| switch (err) {
+        printer.write(&sunk.writer, gpa, &heap.symbols, datum) catch |err| switch (err) {
             error.OutOfMemory => return,
             error.WriteFailed => return error.TestUnexpectedResult,
         };

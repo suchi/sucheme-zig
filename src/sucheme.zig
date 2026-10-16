@@ -137,7 +137,7 @@ pub const Interpreter = struct {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
         const written = if (self.ctx.raised) |v|
-            describeRaised(&w.writer, scratch, &self.ctx.symbols, v)
+            describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v)
         else
             w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
@@ -151,7 +151,7 @@ pub const Interpreter = struct {
     /// ではない。答えは REPL の最上位の束縛の表から出す(src/env.zig)。特殊形式は
     /// 最上位の構文の束縛で、変数はセルに値があるときだけ束縛済みである。
     pub fn isBound(self: *const Interpreter, identifier: []const u8) bool {
-        const id = self.ctx.symbols.index.get(identifier) orelse return false;
+        const id = self.ctx.heap.symbols.lookup(identifier) orelse return false;
         return self.ctx.globals.isBound(id);
     }
 
@@ -162,7 +162,7 @@ pub const Interpreter = struct {
         if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
         var r: reader.Reader = .init(source);
         // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
-        const sink: reader.Sink = .{ .alloc = self.ctx.persist, .heap = &self.ctx.heap, .symbols = &self.ctx.symbols };
+        const sink: reader.Sink = .{ .heap = &self.ctx.heap };
         while (true) {
             // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
             // このためここもセーフポイントである。エラーで終わった行のゴミも、
@@ -195,7 +195,7 @@ pub const Interpreter = struct {
     /// して同じく表示しない。
     fn printResult(self: *const Interpreter, out: *std.Io.Writer, arena: std.mem.Allocator, v: value.Value) Error!void {
         if (v.kind() == .unspecified) return;
-        try printer.write(out, arena, &self.ctx.symbols, v);
+        try printer.write(out, arena, &self.ctx.heap.symbols, v);
         try out.writeByte('\n');
     }
 };

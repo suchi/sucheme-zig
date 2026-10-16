@@ -24,7 +24,8 @@ const Vector = value_mod.Vector;
 const Record = value_mod.Record;
 const RecordType = value_mod.RecordType;
 const MultipleValues = value_mod.MultipleValues;
-const SymbolId = @import("symbol.zig").SymbolId;
+const symbol = @import("symbol.zig");
+const SymbolId = symbol.SymbolId;
 const trace = @import("trace.zig");
 
 /// The types that live in the heap; the index of a type here is the `kind` its
@@ -395,6 +396,8 @@ pub const Heap = struct {
     /// Whether a charge was refused for want of room under the limit, since
     /// whoever started the expansion last cleared it.
     external_refused: bool = false,
+    /// The symbols: each name is interned once, and named by a `SymbolId`.
+    symbols: symbol.Table = .{},
 
     pub fn init(backing: std.mem.Allocator, options: Options) Heap {
         return .{
@@ -416,6 +419,18 @@ pub const Heap = struct {
         self.count = 0;
         if (self.work.len != 0) self.backing.free(self.work);
         self.work = &no_work;
+        self.symbols.deinit(self.backing);
+    }
+
+    /// The symbol named `name`, interned first if it is new.
+    pub fn intern(self: *Heap, name: []const u8) Error!SymbolId {
+        return self.symbols.intern(self.backing, name);
+    }
+
+    /// The symbol named `name` that no collection reclaims, interned first if it is new.
+    /// Zig のコードが ID を定数として持つ名前のためにある。上限に数えない。
+    pub fn internFixed(self: *Heap, name: []const u8) error{OutOfMemory}!SymbolId {
+        return self.symbols.intern(self.backing, name);
     }
 
     /// A new object holding `value`.

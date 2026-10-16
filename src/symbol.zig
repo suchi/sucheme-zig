@@ -28,8 +28,10 @@ pub const Table = struct {
     pub fn intern(self: *Table, alloc: std.mem.Allocator, name: []const u8) error{OutOfMemory}!SymbolId {
         if (self.index.get(name)) |id| return id;
         const owned = try alloc.dupe(u8, name);
+        errdefer alloc.free(owned);
         const id: SymbolId = @fromBackingInt(@intCast(self.names.items.len));
         try self.names.append(alloc, owned);
+        errdefer _ = self.names.pop();
         // キーはテーブル自前のコピーであり、テーブルが育っても有効なままである。
         try self.index.put(alloc, owned, id);
         return id;
@@ -37,6 +39,20 @@ pub const Table = struct {
 
     pub fn nameOf(self: *const Table, id: SymbolId) []const u8 {
         return self.names.items[@backingInt(id)];
+    }
+
+    /// The id of `name` if it has been interned, without interning it.
+    pub fn lookup(self: *const Table, name: []const u8) ?SymbolId {
+        return self.index.get(name);
+    }
+
+    /// Gives back every name and the table's own storage; `alloc` is the one
+    /// `intern` took.
+    pub fn deinit(self: *Table, alloc: std.mem.Allocator) void {
+        for (self.names.items) |name| alloc.free(name);
+        self.names.deinit(alloc);
+        self.index.deinit(alloc);
+        self.* = .{};
     }
 };
 
