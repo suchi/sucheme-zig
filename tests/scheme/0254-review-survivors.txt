@@ -1,0 +1,28 @@
+# スライス 3f の敵対的レビューで、ミューテーションが生き残った箇所を固定するテスト。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 強制している約束の手続きが、値を1個でない個数返す。手続きの戻りを受けるフレームは1個の値を
+# 求めるので、誤りになる(0個も2個も)。
+(force (%make-promise #f (lambda () (values))))
+error: wrong number of values: expected 1, got 0
+
+(force (%make-promise #f (lambda () (values (make-promise 1) (make-promise 2)))))
+error: wrong number of values: expected 1, got 2
+
+# `%make-promise` が強制していない約束の手続きとして受け付ける種別。手続きは、クロージャのほかに、
+# パラメータ、組み込みの手続き、継続でもよい(`procedure?` と同じ集合)。
+(force (%make-promise #f (make-parameter (make-promise 7))))
+7
+
+(promise? (%make-promise #f car))
+#t
+
+(promise? (call/cc (lambda (k) (%make-promise #f k))))
+#t
+
+# 状態を共有する約束は、別のオブジェクトである。強制のあとも、`eqv?` と `equal?` は区別する。
+(define q (%make-promise #f (lambda () (%make-promise #t 'v)))) (define p (%make-promise #f (lambda () q))) (begin (force p) (list (eqv? p q) (eq? p q) (equal? p q) (eqv? q q) (eqv? p p)))
+(#f #f #f #t #t)
+
+(define q (%make-promise #f (lambda () (%make-promise #t 'v)))) (define p (%make-promise #f (lambda () q))) (begin (force q) (list (eqv? p q) (force p) (force q)))
+(#f v v)

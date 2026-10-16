@@ -162,7 +162,7 @@
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
 - [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。スライス未割り当て。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
-- [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値
+- [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 
 完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。[design/runtime.md](design/runtime.md) の例外の節の事例12(`exit` と `dynamic-wind`)が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
