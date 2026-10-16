@@ -119,7 +119,7 @@ flowchart TB
 | ディレクトリ | 役割 |
 | --- | --- |
 | `src/` | Zig で書くインタプリタ本体 |
-| `lib/` | Scheme で書く標準ライブラリ。ビルド時に実行ファイルへ埋め込む(`build.zig` の `embeddedLib`)。段階3で育てていて、今あるのは `(sucheme derived)` の種(`when` と `unless`)だけである |
+| `lib/` | Scheme で書く標準ライブラリ。ビルド時に実行ファイルへ埋め込む(`build.zig` の `embeddedLib`)。段階3で育てていて、今あるのは `(sucheme derived)` の種(`when` と `unless`)と、リストの手続きの `(sucheme procedures)` である |
 | `web/` | Web UI サブプロジェクト。依存パッケージを持たない素の HTML/CSS/JS |
 | `tests/` | Scheme レベルのテストと、外部から持ち込んだ準拠テストスイート |
 | `tools/` | Unicode テーブルの生成器、ドキュメントの検査など補助プログラム |

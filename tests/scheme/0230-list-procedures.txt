@@ -1,0 +1,146 @@
+# スライス 3g: リストの手続き(R7RS 6.4)。`(sucheme procedures)` が Scheme で定義する。
+# 各ケースは新しいインタプリタで走るので、`import` は使う式と同じ行に置く。
+
+(import (sucheme procedures)) (list (append) (append '(1)) (append '(1 2) '(3) '()) (append '() '() '(1)) (append '(1) 2) (append '() 3))
+(() (1) (1 2 3) (1) (1 . 2) 3)
+
+# `append` は最後以外の引数のペアを複製し、最後の引数はそのまま共有する。
+(import (sucheme procedures)) (define a (list 1 2)) (define b (list 3)) (define c (append a b)) (list (eq? (cdr (cdr c)) b) (eq? c a))
+(#t #f)
+
+(import (sucheme procedures)) (append '(1 . 2) '(3))
+error: wrong type of argument to reverse (1 . 2)
+
+(import (sucheme procedures)) (append 1 '(2))
+error: wrong type of argument to reverse 1
+
+(import (sucheme procedures)) (list (reverse '()) (reverse '(1)) (reverse '(1 2 3)))
+(() (1) (3 2 1))
+
+(import (sucheme procedures)) (reverse '(1 2 . 3))
+error: wrong type of argument to reverse (1 2 . 3)
+
+(import (sucheme procedures)) (list (list-tail '(1 2 3) 0) (list-tail '(1 2 3) 2) (list-tail '(1 2 3) 3) (list-tail '(1 . 2) 1))
+((1 2 3) (3) () 2)
+
+(import (sucheme procedures)) (list-tail '(1 2) 3)
+error: argument out of range in list-tail (1 2) 3
+
+(import (sucheme procedures)) (list-tail '(1 2) -1)
+error: argument out of range in list-tail (1 2) -1
+
+(import (sucheme procedures)) (list (list-ref '(a b c) 0) (list-ref '(a b c) 2))
+(a c)
+
+(import (sucheme procedures)) (list-ref '(a b c) 3)
+error: argument out of range in list-ref (a b c) 3
+
+(import (sucheme procedures)) (list-ref '(a b c) -1)
+error: argument out of range in list-ref (a b c) -1
+
+(import (sucheme procedures)) (define l (list 1 2 3)) (list-set! l 1 'x) l
+(1 x 3)
+
+(import (sucheme procedures)) (list-set! (list 1 2) 2 'x)
+error: argument out of range in list-set! (1 2) 2
+
+(import (sucheme procedures)) (list (list-copy '()) (list-copy '(1 2 3)) (list-copy '(1 2 . 3)) (list-copy 5))
+(() (1 2 3) (1 2 . 3) 5)
+
+# `list-copy` は、ペアを複製し、中身は共有する。
+(import (sucheme procedures)) (define inner (list 1)) (define a (list inner 2)) (define b (list-copy a)) (list (eq? a b) (eq? (car a) (car b)) (equal? a b))
+(#f #t #t)
+
+(import (sucheme procedures)) (list (make-list 0 'x) (make-list 3 'x) (length (make-list 4)))
+(() (x x x) 4)
+
+(import (sucheme procedures)) (make-list -1 'x)
+error: argument out of range in make-list -1
+
+(import (sucheme procedures)) (make-list 1 2 3)
+error: too many arguments to make-list
+
+(import (sucheme procedures)) (list (memq 'c '(a b c d)) (memq 'z '(a b c)) (memq 'a '()) (memv 2 '(1 2 3)) (memv 5 '(1 2)))
+((c d) #f #f (2 3) #f)
+
+(import (sucheme procedures)) (list (member '(1) '((0) (1) (2))) (member "b" '("a" "b")) (memq '(1) '((1))))
+(((1) (2)) ("b") #f)
+
+# `member` の第3引数は、比較の手続きで、`(compare x elem)` の順で呼ばれる。
+(import (sucheme procedures)) (member 2 '(1 2 3) (lambda (a b) (< a b)))
+(3)
+
+(import (sucheme procedures)) (member 1 '(1 2) eq? 3)
+error: too many arguments to member
+
+(import (sucheme procedures)) (memq 'a 'b)
+error: wrong type of argument to memq b
+
+(import (sucheme procedures)) (list (assq 'b '((a 1) (b 2))) (assq 'z '((a 1))) (assv 2 '((1 . a) (2 . b))) (assoc '(1) '(((0) . x) ((1) . y))) (assoc 1 '((2 . a) (3 . b)) <))
+((b 2) #f (2 . b) ((1) . y) (2 . a))
+
+(import (sucheme procedures)) (assq 'a '(5))
+error: wrong type of argument to assq 5
+
+(import (sucheme procedures)) (assoc 1 '((1 . a)) eq? 3)
+error: too many arguments to assoc
+
+(import (sucheme procedures)) (list (caar '((1) 2)) (cadr '(1 2)) (cdar '((1 . 2) 3)) (cddr '(1 2 . 3)))
+(1 2 2 3)
+
+(import (sucheme procedures)) (list (boolean=? #t #t) (boolean=? #f #t) (boolean=? #f #f #f) (boolean=? #t #t #f))
+(#t #f #t #f)
+
+(import (sucheme procedures)) (boolean=? #t 1)
+error: wrong type of argument to boolean=? 1
+
+(import (sucheme procedures)) (boolean=? #t)
+error: wrong number of arguments: expected at least 2, got 1
+
+# `map` と `for-each`。
+(import (sucheme procedures)) (list (map (lambda (x) (* x x)) '(1 2 3)) (map + '(1 2 3) '(10 20 30)) (map list '(1 2) '(a b) '(x y)) (map car '()))
+((1 4 9) (11 22 33) ((1 a x) (2 b y)) ())
+
+# 長さの違うリストでは、短いほうで終わる。
+(import (sucheme procedures)) (list (map + '(1 2 3) '(10 20)) (map + '() '(1 2)))
+((11 22) ())
+
+(import (sucheme procedures)) (map car 5)
+error: wrong type of argument to map 5
+
+# 手続きを呼ぶ順序は、リストの先頭から末尾である。
+(import (sucheme procedures)) (define log '()) (define r (map (lambda (x) (set! log (cons x log)) x) '(1 2 3))) (reverse log)
+(1 2 3)
+
+(import (sucheme procedures)) (define log '()) (for-each (lambda (x y) (set! log (cons (+ x y) log))) '(1 2 3) '(10 20 30)) (reverse log)
+(11 22 33)
+
+(import (sucheme procedures)) (for-each car '())
+<no output>
+
+(import (sucheme procedures)) (list (for-each car '()))
+(#<unspecified>)
+
+(import (sucheme procedures)) (for-each car 5)
+error: wrong type of argument to for-each 5
+
+# `map` は、継続の再入に対して正しい(R7RS 6.10)。再入しても、前に返した結果のリスト(`first`)が
+# 書き換わらない。最上位のフォームで捕えた継続は、そのフォームの中でしか再入できないので、
+# 手続きの中で行う。
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define r '()) (define first '()) (set! r (map (lambda (x) (call/cc (lambda (c) (if (= x 2) (set! k c)) x))) '(1 2 3))) (set! n (+ n 1)) (if (= n 1) (set! first r)) (if (< n 3) (k (* 10 n)) (list first r n))) (test)
+((1 2 3) (1 20 3) 3)
+
+# `for-each` も、継続の再入で、同じ位置から続きが走る。
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define log '()) (for-each (lambda (x) (call/cc (lambda (c) (if (= x 2) (set! k c)))) (set! log (cons x log))) '(1 2 3)) (set! n (+ n 1)) (if (< n 2) (k 0) (reverse log))) (test)
+(1 2 3 2 3)
+
+# 長いリストでも、継続は大きくならない(末尾呼び出し)。
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (length (map (lambda (x) x) (iota 100000 '())))
+100000
+
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (length (append (iota 50000 '()) (iota 50000 '())))
+100000
+
+# `apply` の周回を通る多数の引数。
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (apply + (map (lambda (x) 1) (iota 1000 '())))
+1000

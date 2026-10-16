@@ -247,6 +247,16 @@ test("an embedded library is imported without a file system", () => {
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// Scheme で書いたリストの手続きも、WASM で `import` できて、`map` が `apply` を通る(スライス 3g)。
+test("the list procedures in (sucheme procedures) run in wasm", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(import (sucheme procedures)) (list (append '(1 2) '(3)) (map + '(1 2) '(10 20)) (reverse '(1 2 3)) (list-tail '(a b c) 1))"),
+    [OK, "((1 2 3) (11 22) (3 2 1) (b c))\n"],
+  );
+  assert.deepEqual(h.run("(list-ref '(a b) 2)"), [SCHEME_ERROR, "error: argument out of range in list-ref (a b) 2\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {
