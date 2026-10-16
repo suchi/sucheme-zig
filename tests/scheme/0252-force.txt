@@ -68,3 +68,14 @@ error: wrong number of arguments: expected 1, got 0
 # 手続きが約束でない値を返した誤りは、ハンドラで受けられる。
 (define p (%make-promise #f (lambda () 5))) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'bad)) (lambda () (force p)))))
 bad
+
+# `force` は、ほかの手続きに渡して、間接に呼べる。`apply` と `map` と `call-with-values` を通しても、
+# 同じように強制する。
+(apply force (list (%make-promise #f (lambda () (%make-promise #t 4)))))
+4
+
+(import (sucheme procedures)) (map force (list (make-promise 1) (%make-promise #f (lambda () (%make-promise #t 2))) 3))
+(1 2 3)
+
+(call-with-values (lambda () (values (%make-promise #f (lambda () (%make-promise #t 5))))) force)
+5
