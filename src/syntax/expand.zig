@@ -1445,6 +1445,26 @@ test "a constant that refers to the heap or is a symbol is kept for the collecto
     try std.testing.expectEqual(4, f.ctx.heap.count);
 }
 
+test "the name a local variable node holds stays the name after a collection that frees every other symbol" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    // 節点はアリーナにあり、GC はたどらない。仮引数の名前は、読んだデータ以外のどこにも無い。
+    const read_node = try expand(&f.ctx, a, try f.read("(lambda (zr) zr)"));
+    const set_node = try expand(&f.ctx, a, try f.read("(lambda (zs) (set! zs 1))"));
+    f.ctx.collectIdle();
+    // 回収した ID を別の名前が使う。
+    var buf: [16]u8 = undefined;
+    for (0..32) |i| _ = try f.ctx.intern(std.fmt.bufPrint(&buf, "other-{d}", .{i}) catch unreachable);
+    var out: std.Io.Writer.Allocating = .init(a);
+    try core.write(&out.writer, a, &f.ctx.heap.symbols, read_node);
+    try std.testing.expectEqualStrings("(lambda 1 1 (local zr 0 0))", out.written());
+    out.clearRetainingCapacity();
+    try core.write(&out.writer, a, &f.ctx.heap.symbols, set_node);
+    try std.testing.expectEqualStrings("(lambda 1 1 (set-local zs 0 0 (const 1)))", out.written());
+}
+
 test "a form whose expansion fails keeps none of the constants it made" {
     var f: Fixture = undefined;
     try f.init();

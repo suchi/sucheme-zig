@@ -640,6 +640,21 @@ test "a name that only a pending export of an included declaration file holds su
     }
 }
 
+test "the internal name of an export that nothing defines is still the name when the body ends" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\") (begin (define (f) 1)) (include \"body.scm\"))");
+        try tree.write("t/decls.scm", "(export f (rename undefined-internal other-external)) (import (sucheme core))");
+        try tree.write("t/body.scm", "(define y1 1) (define y2 2) (define y3 3) (define y4 4)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLineFails(&interp, "(import (t lib))", "unbound identifier in library (t lib): undefined-internal");
+    }
+}
+
 /// Collects, and then makes names that nothing refers to, so that the ids the
 /// collection freed are taken by other names.
 /// Why: 回収した ID は次に作る名前が使う。印の漏れで ID を誤って回収しても、別の名前が作られ

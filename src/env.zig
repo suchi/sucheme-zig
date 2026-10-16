@@ -638,3 +638,26 @@ test "an import replaces a binding, keeps the variable it replaced for the code 
     try std.testing.expectEqual(imported, (try f.resolve(x)).global);
     try std.testing.expectEqual(null, f.global.lookup(z));
 }
+
+test "the names a table is keyed by survive a collection, though nothing else holds them" {
+    for ([_]usize{ 4096, 0 }) |capacity| {
+        var f: Fixture = undefined;
+        f.init();
+        f.heap.options.work_capacity = capacity;
+        defer f.deinit();
+        const arena = f.arena.allocator();
+        // 束縛が生きたオブジェクトを持たない名前は、キーだけが ID の持ち主である。
+        const imported = try f.heap.intern("imported-key");
+        try f.global.importBinding(arena, imported, .{ .special = .@"if" });
+        // 展開が置き換えた名前は、表を戻すためのキーで、表にもう無いことがある。
+        const replaced = try f.heap.intern("replaced-key");
+        try f.global.replaced.append(arena, .{ .id = replaced, .previous = null });
+        const unrelated = try f.heap.intern("unrelated");
+        f.heap.collect(Roots{ .global = &f.global, .core = &f.core });
+        for (0..16) |i| _ = try f.heap.intern(&[_]u8{ 'a' + @as(u8, @intCast(i)), 'z' });
+        try std.testing.expectEqualStrings("imported-key", f.heap.symbols.nameOf(imported));
+        try std.testing.expectEqualStrings("replaced-key", f.heap.symbols.nameOf(replaced));
+        try std.testing.expect(f.heap.symbols.lookup("unrelated") == null);
+        _ = unrelated;
+    }
+}
