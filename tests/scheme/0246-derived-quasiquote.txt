@@ -1,0 +1,161 @@
+# スライス 3h: `quasiquote`(R7RS 4.2.8)。リーダの略記(`` ` `` `,` `,@`)と、
+# `(quasiquote ...)` の綴りの両方を使う。リストの印字は、略記でなく、綴りで出る。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+# 完了条件のケース。
+(import (sucheme derived)) `(1 ,(+ 1 1) ,@(list 3 4))
+(1 2 3 4)
+
+# R7RS 4.2.8 の例。
+(import (sucheme derived)) `(list ,(+ 1 2) 4)
+(list 3 4)
+
+(import (sucheme derived)) (let ((name 'a)) `(list ,name ',name))
+(list a (quote a))
+
+(import (sucheme derived) (only (sucheme procedures) map)) `(a ,(+ 1 2) ,@(map (lambda (x) (* x x)) '(4 -5 6)) b)
+(a 3 16 25 36 b)
+
+(import (sucheme derived)) `((foo ,(- 10 3)) ,@(cdr '(c)) . ,(car '(cons)))
+((foo 7) . cons)
+
+(import (sucheme derived) (only (sucheme procedures) map)) `#(10 5 ,(+ 1 1) ,@(map (lambda (x) (* x x)) '(4 3)) 8)
+#(10 5 2 16 9 8)
+
+(import (sucheme derived)) (quasiquote (list (unquote (+ 1 2)) 4))
+(list 3 4)
+
+(import (sucheme derived)) '(quasiquote (list (unquote (+ 1 2)) 4))
+(quasiquote (list (unquote (+ 1 2)) 4))
+
+# 入れ子の準引用。置き換えられるのは、最も外側の準引用と同じ深さの unquote だけである。
+(import (sucheme derived)) `(a `(b ,(+ 1 2) ,(foo ,(+ 1 3) d) e) f)
+(a (quasiquote (b (unquote (+ 1 2)) (unquote (foo 4 d)) e)) f)
+
+(import (sucheme derived)) (let ((name1 'x) (name2 'y)) `(a `(b ,,name1 ,',name2 d) e))
+(a (quasiquote (b (unquote x) (unquote (quote y)) d)) e)
+
+(import (sucheme derived)) `(1 `(2 `(3 ,,,(+ 1 1))))
+(1 (quasiquote (2 (quasiquote (3 (unquote (unquote 2)))))))
+
+# 入れ子の中の `,@` は、残り、深さを1つ引く。
+(import (sucheme derived)) `(1 `(,@(list ,(+ 1 2))))
+(1 (quasiquote ((unquote-splicing (list 3)))))
+
+(import (sucheme derived)) `(1 `(,@(list ,@(list 1 2))))
+(1 (quasiquote ((unquote-splicing (list 1 2)))))
+
+# ベクタの中の入れ子。
+(import (sucheme derived)) `#(1 `#(2 ,(+ 1 ,(+ 1 1))))
+#(1 (quasiquote #(2 (unquote (+ 1 2)))))
+
+# 全体が unquote、または定数。
+(import (sucheme derived)) `,(+ 1 2)
+3
+
+(import (sucheme derived)) (list `5 `a `() `"s" `#t `#\a)
+(5 a () "s" #t #\a)
+
+(import (sucheme derived)) (list `(1 2) `#(1 2) `#() `(1 . 2) `(a (b c) #(d)))
+((1 2) #(1 2) #() (1 . 2) (a (b c) #(d)))
+
+# `unquote` が複数。
+(import (sucheme derived)) `(,(+ 1 1) ,(+ 2 2))
+(2 4)
+
+(import (sucheme derived)) `(1 ,(list 'a) ,'b)
+(1 (a) b)
+
+(import (sucheme derived)) `(a 'b ,(+ 1 1))
+(a (quote b) 2)
+
+# `,@` は、リストの先頭、途中、末尾、複数、空のリスト、ドットの前にある。
+(import (sucheme derived)) `(,@'(1 2) 3)
+(1 2 3)
+
+(import (sucheme derived)) `(1 ,@'(2 3) 4)
+(1 2 3 4)
+
+(import (sucheme derived)) `(1 ,@'(2 3))
+(1 2 3)
+
+(import (sucheme derived)) `(,@'(1) ,@'(2) ,@'(3))
+(1 2 3)
+
+(import (sucheme derived)) (list `(,@'()) `(,@'() 1) `(1 ,@'() 2))
+(() (1) (1 2))
+
+(import (sucheme derived)) `(,@'(1 2) . 3)
+(1 2 . 3)
+
+(import (sucheme derived)) `(,@(list 1 2) . ,(+ 1 2))
+(1 2 . 3)
+
+# ドットの後ろの `unquote` は、リストの残り全体である。
+(import (sucheme derived)) `(a . ,(+ 1 2))
+(a . 3)
+
+(import (sucheme derived)) `(1 2 . ,(list 3 4))
+(1 2 3 4)
+
+# ベクタの中の `,@`。
+(import (sucheme derived)) `#(,@'(1 2) 3 ,@'())
+#(1 2 3)
+
+(import (sucheme derived)) `#(1 (2 ,(+ 1 2)) #(,(+ 2 2)))
+#(1 (2 3) #(4))
+
+# 評価の対象は、`unquote` の中だけである。
+(import (sucheme derived)) `(car '(1))
+(car (quote (1)))
+
+# 準引用は、評価のたびに新しいリストを作る。
+(import (sucheme derived)) (define (f x) `(a ,x)) (eq? (f 1) (f 1))
+#f
+
+# 末尾の位置で評価する。
+(import (sucheme derived)) (define (count n) (if (= n 0) `(done ,n) (count (- n 1)))) (count 10000)
+(done 0)
+
+# 衛生性: 展開が使う `list` `cons` `append` `vector` `apply` は、利用側の束縛と衝突しない。
+(import (sucheme derived)) (let ((list car) (cons cdr) (append +) (vector -) (apply *)) `(1 ,(+ 1 1) ,@'(3) #(4 ,5)))
+(1 2 3 #(4 5))
+
+(import (sucheme derived)) (let ((if list) (quote list)) `(1 ,(+ 1 1)))
+(1 2)
+
+# 衛生性: 利用側が `unquote` を束縛していれば、それは補助構文として働かず、ただのデータである。
+(import (sucheme derived)) (let ((unquote list)) `(1 ,2))
+(1 (unquote 2))
+
+(import (sucheme derived)) (let ((unquote-splicing list)) `(1 ,@(list 2)))
+(1 (unquote-splicing (list 2)))
+
+# `(import (only ...))` で `quasiquote` だけを取り込んでも、`unquote` はコアのものを指す。
+(import (only (sucheme derived) quasiquote)) `(1 ,(+ 1 1))
+(1 2)
+
+# 長い準引用。
+(import (sucheme derived)) (length `(0 ,(+ 0 1) 2 ,(+ 1 2) 4 ,@(list 5 6) 7 8 9 10 ,@(list 11) 12 13 14 15 16 17 18 19 20))
+21
+
+# 構文の誤り。
+(import (sucheme derived)) (quasiquote)
+error: bad syntax: no rule of quasiquote matches the form
+
+(import (sucheme derived)) (quasiquote 1 2)
+error: bad syntax: no rule of quasiquote matches the form
+
+(import (sucheme derived)) `,@(list 1)
+error: unquote-splicing outside a list or a vector
+
+(import (sucheme derived)) `(1 . ,@(list 2))
+error: unquote-splicing outside a list or a vector
+
+# `,@` の引数がリストでなければ誤りである。
+(import (sucheme derived)) `(,@1 2)
+error: wrong type of argument to reverse 1
+
+# `quasiquote` という名前の変数。
+(import (sucheme derived)) (let ((quasiquote 5)) (+ quasiquote 1))
+6

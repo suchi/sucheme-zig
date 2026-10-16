@@ -1,0 +1,137 @@
+# スライス 3h: `cond`(R7RS 4.2.1)。`(sucheme derived)` が `syntax-rules` で定義する。
+# 手続きの `assv` と `map` は `(sucheme procedures)` から取る。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(import (sucheme derived)) (cond (#t 1))
+1
+
+# 偽の節は飛ばされ、最初に真の節の式が返る。残りの節の test は評価されない。
+(import (sucheme derived)) (cond (#f 1) (#t 2) (#t 3))
+2
+
+(import (sucheme derived)) (cond (#t 1) ((car '()) 2))
+1
+
+(import (sucheme derived)) (cond (#f 1) (else 2))
+2
+
+# 式が複数あれば、順に評価し、最後の値を返す。
+(import (sucheme derived)) (cond (#t 1 2 3 4))
+4
+
+(import (sucheme derived)) (cond (else 1 2 3))
+3
+
+# `(test)` の節は、test の値を返す。
+(import (sucheme derived)) (cond ((+ 1 1)))
+2
+
+(import (sucheme derived)) (cond (#f) (3))
+3
+
+(import (sucheme derived)) (cond (#f) (else 4))
+4
+
+# どの節にも当たらず、`else` も無いときの値は不定である。
+(import (sucheme derived)) (cond (#f 1) (#f 2))
+<no output>
+
+# test は、書かれた順に評価される。
+(import (sucheme derived)) (let ((n 0)) (cond ((begin (set! n (+ n 1)) #f) 1) ((begin (set! n (* n 10)) #f) 2) (else n)))
+10
+
+# `=>` の節は、test の値を手続きに渡す。
+(import (sucheme derived) (only (sucheme procedures) assv)) (cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none))
+b
+
+(import (sucheme derived) (only (sucheme procedures) assv)) (cond ((assv 3 '((1 . a) (2 . b))) => cdr) (else 'none))
+none
+
+(import (sucheme derived)) (cond (#f 1) (7 => (lambda (x) (* x 2))) (else 0))
+14
+
+# `=>` の節が当たらず、`else` も無ければ、値は不定である。
+(import (sucheme derived)) (cond (#f => car))
+<no output>
+
+# test は一度しか評価されない。
+(import (sucheme derived)) (let ((n 0)) (cond ((begin (set! n (+ n 1)) n) => (lambda (x) (list x n)))))
+(1 1)
+
+(import (sucheme derived)) (let ((n 0)) (cond ((begin (set! n (+ n 1)) n)) (else 'no)))
+1
+
+# `=>` の右は手続きでなければならない。
+(import (sucheme derived)) (cond (1 => 6))
+error: not a procedure
+
+# 節の式は、末尾の位置にある(複数の値も返せる)。
+(import (sucheme derived)) (call-with-values (lambda () (cond (#t (values 1 2)))) list)
+(1 2)
+
+(import (sucheme derived)) (define (count n) (cond ((= n 0) 'done) (else (count (- n 1))))) (count 10000)
+done
+
+# `else` は最後の節にしか置けない。そこ以外では、`else` は式として評価される。
+(import (sucheme derived)) (cond (else 1) (#t 2))
+error: else is a syntactic keyword and cannot be used as a variable
+
+# 構文の誤り。
+(import (sucheme derived)) (cond)
+error: bad syntax: no rule of cond matches the form
+
+(import (sucheme derived)) (cond 1)
+error: bad syntax: no rule of cond matches the form
+
+(import (sucheme derived)) (cond (else))
+error: else is a syntactic keyword and cannot be used as a variable
+
+# 衛生性: `cond` が展開で使う `temp` と `if` は、利用側の同名の束縛と衝突しない。
+(import (sucheme derived)) (let ((temp 5)) (cond ((+ 1 1) => (lambda (x) (+ x temp)))))
+7
+
+(import (sucheme derived)) (let ((temp 5)) (cond (#f 1) (temp)))
+5
+
+(import (sucheme derived)) (let ((if (lambda (a b c) 'user-if))) (cond (#t 'real)))
+real
+
+(import (sucheme derived)) (let ((if list) (begin list)) (cond (#f 1) (else 2 3)))
+3
+
+# 衛生性: 利用側が `else` を束縛すれば、`cond` の `else` は照合せず、式になる。
+(import (sucheme derived)) (let ((else #f)) (cond (else 'x) (#t 'y)))
+y
+
+(import (sucheme derived)) (let ((else #t)) (cond (#f 1) (else 'x)))
+x
+
+(import (sucheme derived)) (let ((else #f)) (cond (#f 1) (else 'x)))
+<no output>
+
+# 最上位の `define` が `else` に新しい場所を与えたときも、同じである。
+(import (sucheme derived)) (define else #f) (cond (#f 1) (else 2) (#t 3))
+3
+
+# `=>` も、束縛すれば、式になる。
+(import (sucheme derived)) (let ((=> 5)) (cond (#t => 6)))
+6
+
+# 内側の同名の束縛が `else` を隠しても、外側の `else` は別である。
+(import (sucheme derived)) (let ((x 1)) (cond (#f 1) (else (let ((else #f)) (cond (else 'inner) (#t 'fallthrough))))))
+fallthrough
+
+# `(import (only ...))` で `cond` だけを取り込んでも、`else` はコアのものを指す。
+(import (only (sucheme derived) cond)) (cond (#f 1) (else 2))
+2
+
+# ほかのライブラリが、`cond` を使う手続きを定義し、利用側が `else` を束縛していても影響されない。
+(define-library (t cond-user) (import (sucheme core) (sucheme derived)) (export pick) (begin (define (pick x) (cond ((= x 1) 'one) (else 'other))))) (import (t cond-user)) (define else #f) (list (pick 1) (pick 2))
+(one other)
+
+# `cond` という名前の変数が、手続きの仮引数であってもよい。
+(import (sucheme derived)) (define (f cond) (cond 1)) (f (lambda (x) (+ x 1)))
+2
+
+(import (sucheme derived)) (let ((cond 5)) (+ cond 1))
+6

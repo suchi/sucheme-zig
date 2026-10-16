@@ -1,0 +1,86 @@
+# スライス 3h: `do`(R7RS 4.2.4)。本体の継続、長いループ、衛生性。
+# 規模を試す版は tests/scheme-slow/0021-derived-scale.txt にある。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(import (sucheme derived)) (let ((x '(1 3 5 7 9))) (do ((x x (cdr x)) (sum 0 (+ sum (car x)))) ((null? x) sum)))
+25
+
+(import (sucheme derived)) (do ((i 0 (+ i 1))) ((= i 3) 'done))
+done
+
+# 結果の式が無いときの値は不定である。
+(import (sucheme derived)) (do ((i 0 (+ i 1))) ((= i 3)))
+<no output>
+
+# step が無い変数は、そのまま持ち越される。
+(import (sucheme derived)) (do ((i 0 (+ i 1)) (j 'k)) ((= i 2) j))
+k
+
+# 変数が無くてもよい。
+(import (sucheme derived)) (let ((n 0)) (do () ((= n 3) n) (set! n (+ n 1))))
+3
+
+# 本体の式は順に評価される。結果の式は、最後の値を返す。
+(import (sucheme derived)) (let ((n 0)) (do ((i 0 (+ i 1))) ((= i 4) n) (set! n (+ n i)) (set! n (+ n 100))))
+406
+
+(import (sucheme derived)) (do ((i 0 (+ i 1))) ((= i 1) 'a 'b))
+b
+
+# 条件が最初から真なら、本体は一度も評価されない。
+(import (sucheme derived)) (let ((n 0)) (do ((i 0 (+ i 1))) (#t n) (set! n 1)))
+0
+
+# step は、すべて古い値で評価されてから、まとめて束縛される。
+(import (sucheme derived)) (do ((a 1 b) (b 2 a) (n 0 (+ n 1))) ((= n 3) (list a b)))
+(2 1)
+
+# 反復ごとに新しい場所が束縛される。
+(import (sucheme derived) (only (sucheme procedures) map)) (do ((i 0 (+ i 1)) (fs '() (cons (lambda () i) fs))) ((= i 3) (map (lambda (f) (f)) fs)))
+(2 1 0)
+
+# 入れ子の `do`。
+(import (sucheme derived)) (do ((i 0 (+ i 1)) (acc '() (cons (do ((j 0 (+ j 1)) (s 0 (+ s j))) ((= j i) s)) acc))) ((= i 5) acc))
+(6 3 1 0 0)
+
+# 本体の継続を取り出して、ループの終わったあとから、本体の途中に入り直す。
+(import (sucheme derived)) (let ((k #f) (n 0)) (do ((i 0 (+ i 1))) ((= i 3)) (call/cc (lambda (c) (if (= i 1) (set! k c)))) (set! n (+ n 1))) (if (< n 5) (k #f)) n)
+5
+
+# 本体から、ループを抜ける。
+(import (sucheme derived)) (call/cc (lambda (k) (do ((i 0 (+ i 1))) ((= i 10) 'end) (if (= i 3) (k i)))))
+3
+
+# 本体の中の `dynamic-wind` の後始末は、抜けるときに走る。
+(import (sucheme derived)) (let ((log '())) (call/cc (lambda (k) (do ((i 0 (+ i 1))) ((= i 3)) (dynamic-wind (lambda () (set! log (cons 'in log))) (lambda () (if (= i 1) (k #f))) (lambda () (set! log (cons 'out log))))))) log)
+(out in out in)
+
+# 長いループ。
+(import (sucheme derived)) (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 1000) s))
+499500
+
+(import (sucheme derived)) (do ((i 0 (+ i 1))) ((= i 20000) i))
+20000
+
+# 構文の誤り。
+(import (sucheme derived)) (do)
+error: bad syntax: no rule of do matches the form
+
+(import (sucheme derived)) (do ((i 0 1 2)) (#t))
+error: bad syntax: no rule of do matches the form
+
+(import (sucheme derived)) (do ((i 0)) ())
+error: bad syntax: no rule of do matches the form
+
+(import (sucheme derived)) (do ((i 0)))
+error: bad syntax: no rule of do matches the form
+
+# 衛生性: 展開が使う `loop` は、利用側の `loop` と衝突しない。
+(import (sucheme derived)) (let ((loop 'mine)) (do ((i 0 (+ i 1))) ((= i 2) loop)))
+mine
+
+(import (sucheme derived)) (do ((loop 0 (+ loop 1))) ((= loop 3) loop))
+3
+
+(import (sucheme derived)) (let ((if list) (begin list)) (do ((i 0 (+ i 1))) ((= i 3) i)))
+3

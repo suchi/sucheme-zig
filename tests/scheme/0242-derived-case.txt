@@ -1,0 +1,84 @@
+# スライス 3h: `case`(R7RS 4.2.1)。`memv` を使うので、datum の比較は `eqv?` である。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(import (sucheme derived)) (case (* 2 3) ((2 3 5 7) 'prime) ((1 4 6 8 9) 'composite))
+composite
+
+(import (sucheme derived)) (case 2 ((1) 'a) ((2) 'b) ((3) 'c))
+b
+
+# どの節にも当たらず `else` も無いときの値は不定である。
+(import (sucheme derived)) (case (car '(c d)) ((a) 'a) ((b) 'b))
+<no output>
+
+(import (sucheme derived)) (case 5 ((1) 'a) (else 'z))
+z
+
+# `else` の節の `=>` は、key の値を手続きに渡す。
+(import (sucheme derived)) (case (car '(c d)) ((a e i o u) 'vowel) ((w y) 'semivowel) (else => (lambda (x) x)))
+c
+
+(import (sucheme derived)) (case 3 ((1 2 3) => (lambda (x) (* x x))) (else 0))
+9
+
+(import (sucheme derived)) (case 7 ((1 2 3) => (lambda (x) (* x x))) ((7) => (lambda (x) (list x))) (else 0))
+(7)
+
+# 式が複数あれば、順に評価し、最後の値を返す。
+(import (sucheme derived)) (case 'b ((a) 1) ((b c) 2 3))
+3
+
+(import (sucheme derived)) (case 1 (else 1 2 3))
+3
+
+# datum は `eqv?` で比べる。数、シンボル、文字、真偽値、空リスト。
+(import (sucheme derived)) (list (case 'x ((x) 1) (else 0)) (case #\a ((#\a) 1) (else 0)) (case #t ((#t) 1) (else 0)) (case '() ((()) 1) (else 0)) (case -3 ((-3) 1) (else 0)))
+(1 1 1 1 1)
+
+# key の式は、一度しか評価されない。
+(import (sucheme derived)) (let ((n 0)) (case (begin (set! n (+ n 1)) 7) ((1) 'a) ((2) 'b) ((3) 'c) (else 'd)) n)
+1
+
+# key が変数や定数のときも動く。
+(import (sucheme derived)) (let ((k 3)) (case k ((3) 'three) (else 'other)))
+three
+
+(import (sucheme derived)) (case 3 ((3) 'three) (else 'other))
+three
+
+# 節の式は、末尾の位置にある。
+(import (sucheme derived)) (define (count n) (case n ((0) 'done) (else (count (- n 1))))) (count 10000)
+done
+
+# 構文の誤り。R7RS 7.3 の定義は、節が0個の `case` を受け付けない。
+(import (sucheme derived)) (case)
+error: bad syntax: no rule of case matches the form
+
+(import (sucheme derived)) (case 1)
+error: bad syntax: no rule of case matches the form
+
+(import (sucheme derived)) (case 1 (1 2))
+error: bad syntax: no rule of case matches the form
+
+# 衛生性: 展開が使う `atom-key` と `memv` と `if` は、利用側の同名の束縛と衝突しない。
+(import (sucheme derived)) (let ((atom-key 5)) (case (+ 1 1) ((2) atom-key) (else 0)))
+5
+
+(import (sucheme derived)) (let ((memv (lambda args #f))) (case 1 ((1) 'one) (else 'other)))
+one
+
+(import (sucheme derived)) (let ((if list) (begin list)) (case 2 ((1) 'a) ((2) 'b) (else 'c)))
+b
+
+# 利用側が `else` を束縛すれば、`else` はリテラルとして照合しない。datum の並びでもないので、
+# どの規則にも当たらない。
+(import (sucheme derived)) (let ((else #f)) (case 1 (else 'x)))
+error: bad syntax: no rule of case matches the form
+
+# `=>` も、束縛すれば、式になる。
+(import (sucheme derived)) (let ((=> 1)) (case 1 ((1) => 'x)))
+x
+
+# `case` という名前の変数。
+(import (sucheme derived)) (let ((case 5)) (+ case 1))
+6
