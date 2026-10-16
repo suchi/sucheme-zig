@@ -616,6 +616,22 @@ pub const Heap = struct {
         return &cell.value;
     }
 
+    /// A new vector of `len` elements that `filler` writes.
+    /// `filler.fill(items)` が、確保した要素の領域に値を書く。`createStringFilled` と同じ
+    /// 形で、入力の大きさに比例するベクタ(`string->vector` など)を、一時の領域を経ずに作る。
+    /// 領域は、書き終えるまでヒープにつながれていないので、GC が未初期化の要素を見ることはない
+    /// (GC は機械のステップの境目でしか走らない)。
+    pub fn createVectorFilled(self: *Heap, len: usize, filler: anytype) Error!*Vector {
+        const total = try self.reserveWithPayload(.limit, Vector, len, @sizeOf(Value));
+        const items = try self.backing.alloc(Value, len);
+        errdefer self.backing.free(items);
+        filler.fill(items);
+        const cell = try self.backing.create(Cell(Vector));
+        cell.value = .{ .items = items };
+        self.link(Vector, cell, total);
+        return &cell.value;
+    }
+
     /// A new record of `record_type` whose fields are a copy of `fields`, which
     /// must be as many as the type has.
     /// コピーがペイロードで、ベクタの要素と同じ扱いである。
@@ -1831,4 +1847,27 @@ test "createStringFilled reserves the bytes before it fills them, and flags what
     try std.testing.expectEqualStrings("abé", s.bytes);
     try std.testing.expect(!s.is_ascii);
     try std.testing.expectEqual(cellBytes(String) + 4, heap.accounted);
+}
+
+test "createVectorFilled reserves the elements before it fills them, and accounts for them" {
+    const Filler = struct {
+        calls: *usize,
+        fn fill(self: @This(), items: []Value) void {
+            self.calls.* += 1;
+            for (items, 0..) |*slot, i| slot.* = .fromFixnum(@intCast(i));
+        }
+    };
+    var calls: usize = 0;
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Vector) + 2 * @sizeOf(Value) });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createVectorFilled(3, Filler{ .calls = &calls }));
+    try std.testing.expectError(error.HeapLimit, heap.createVectorFilled(std.math.maxInt(usize), Filler{ .calls = &calls }));
+    try std.testing.expectEqual(0, calls);
+    try std.testing.expectEqual(0, heap.accounted);
+    const v = try heap.createVectorFilled(2, Filler{ .calls = &calls });
+    try std.testing.expectEqual(1, calls);
+    try std.testing.expectEqual(1, v.items[1].asFixnum().?);
+    try std.testing.expectEqual(cellBytes(Vector) + 2 * @sizeOf(Value), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.accounted);
 }
