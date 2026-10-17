@@ -8,7 +8,7 @@
 
 | ライブラリ | 束縛済み | 全体 |
 | --- | ---: | ---: |
-| `(scheme base)` | 102 | 238 |
+| `(scheme base)` | 104 | 238 |
 | `(scheme case-lambda)` | 0 | 1 |
 | `(scheme char)` | 0 | 22 |
 | `(scheme complex)` | 0 | 6 |
@@ -16,12 +16,12 @@
 | `(scheme eval)` | 0 | 2 |
 | `(scheme file)` | 0 | 10 |
 | `(scheme inexact)` | 0 | 12 |
-| `(scheme lazy)` | 0 | 5 |
+| `(scheme lazy)` | 3 | 5 |
 | `(scheme load)` | 0 | 1 |
 | `(scheme process-context)` | 0 | 5 |
-| `(scheme r5rs)` | 79 | 222 |
+| `(scheme r5rs)` | 81 | 222 |
 | `(scheme read)` | 0 | 1 |
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 102 | 339 |
+| 一意の識別子の合計 | 107 | 339 |

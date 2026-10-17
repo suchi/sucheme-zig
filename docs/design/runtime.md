@@ -120,6 +120,16 @@ GC ヒープに置くオブジェクトは次の2群である。種別タグは�
 
 コアIRの節点はヒープの外にあり、走査関数が辿らない。そのため、節点が持つ名前は、節点をヒープに移すスライス(3o)まで、`Context.code_roots` が持つ。`code_roots` はセッションの終わりまで増える(節点の確保と同じ性質である)。`Table.nameOf` は、ID が名前を持っていることを検査する。挙げ漏れた ID が、まだ別の名前に再利用されていなければ、Debug と ReleaseSafe のビルドは、名前を引いた時点で止まる。再利用された後は、別の名前を返し、検出できない。テストは、回収の直後に別の名前を作って、再利用を起こしてから確かめる。
 
+## EOF の値と約束
+
+EOF の値は即値で、`Value` の変種 `eof` である。持つ状態が無く、値そのものがすべてなので、どの EOF の値も同じである(R7RS 6.13.2 は一意であることを求めない)。`eof-object` が返し、`eof-object?` だけが真と答える。`read` が読める値ではないので、リーダは作らない。プリンタは `#<eof>` と書く。ポートを読む手続きは段階5で入る。
+
+約束は GC ヒープの型 `Promise` である(段階3のスライス 3f)。R7RS 7.3 の参考実装では、約束は(強制済みかの印、値か手続き)の組を指す箱で、`force` が、手続きから返った約束と元の約束に同じ箱を持たせる(`promise-update!`)。これで、`delay-force` の連鎖を、元の約束の上で反復して解け、返った約束をあとから強制しても手続きは走り直さない。ここでは箱を別のオブジェクトにせず、共有を `forward` で表す。`forward` が null の約束が状態(`done` と、結果か、結果の約束を返す引数なしの手続き)を持ち、`forward` を持つ約束は、その先と同じ状態を指す別名である。別名の `value` は使わず、手続きを手放す。`Promise.root` が状態を持つ約束を返し、たどった別名を根に直接つなぎ直す。
+
+`force` は機械操作プリミティブで、継続のフレーム `force_thunk`(強制を始めた約束を持つ)を積んで、強制していない約束の手続きを引数なしで呼ぶ。手続きが約束を返すと、その状態を強制している約束に移し(`Machine.mergePromise`)、強制を続ける。続きは、フレームが外れてから行うので、連鎖の長さによらず継続は伸びず、1ステップが確保するのは一定の量である。強制の途中で同じ約束がすでに値を持っていたら、移さない。最初に終えた計算の値が残る(R7RS 4.2.5 の「一度だけ計算される」)。状態を共有させるのは、返った約束がまだ手続きを持つときだけである。値を持つ約束は、値を写すだけでよい(値は変わらないので、共有は見分けられない)。手続きが誤りで終わったら、フレームが外れるだけで、約束は強制していないままである。手続きは、強制を呼んだ側の動的環境で走る(R7RS 4.2.5)。
+
+約束でない値を `force` に渡すと、その値をそのまま返す(R7RS 4.2.5 が許している)。手続きが約束でない値を返したときは、`delay-force` の式が約束を返さなかった誤りにする。`make-promise` は、すでに約束ならそのまま返す。`delay` と `delay-force` の構文は 3j が足す。R7RS 7.3 の展開が使う内部の作り方は、強制済みかの印と値か手続きを取る `%make-promise` で、`(scheme lazy)` に入れない。
+
 ## リテラルの不変性
 
 R7RS 4.1.2 は「As noted in section 3.4, it is an error to attempt to alter a constant (i.e. the value of a literal expression) using a mutation procedure like set-car! or string-set!」と規定している。
@@ -410,6 +420,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 | 動的範囲の通常終了 | 本体の評価後 | 2 |
 | 継続起動時の巻き戻し | 各 `after` の後、各 `before` の後 | 2 |
 | `make-parameter` | 変換手続きの呼び出し後 | 2 |
+| `force` | 約束の手続きが戻った後 | 3(3f) |
 | `parameterize` | 各 ⟨param⟩ 式の評価後、各 ⟨value⟩ 式の評価後、各変換手続きの呼び出し後 | 2 |
 | `exit` の巻き戻し | 各 `after` の後 | 5 |
 
@@ -427,11 +438,11 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 
 ### 機械操作プリミティブと末尾呼び出し
 
-プリミティブは2種に分かれる。純粋プリミティブは引数から値を計算して返すだけである。機械操作プリミティブは機械の状態を直接書き換える。後者は `apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `eval` `exit` である。
+プリミティブは2種に分かれる。純粋プリミティブは引数から値を計算して返すだけである。機械操作プリミティブは機械の状態を直接書き換える。後者は `apply` `call/cc` `call-with-values` `values` `dynamic-wind` `with-exception-handler` `raise` `raise-continuable` `make-parameter` `force` `eval` `exit` である。
 
 プリミティブの呼び出し規約は次のとおりである(コードが正で、`src/value.zig` の `Primitive` と `MachineOp` と `Services`、`src/machine.zig` の `apply` にある)。`Primitive` は引数の個数の範囲(`min_args` と `max_args`)を省略できない形で持ち、機械が呼び出しの前に1か所で検査する。範囲外の個数ではプリミティブの本体を呼ばない。本体 `body` は、純粋プリミティブなら `.pure` の関数、機械操作プリミティブなら `.machine` の操作の名前(`MachineOp`)である。`.pure` の関数は `Services`(ヒープと、呼び出しの間だけ使える一時領域)と引数を受け取り、確保は `Services.heap` の API だけで行う。失敗は Zig の `error`(`PrimitiveError`)で返し、機械が条件に写して、機械の中で送出する。段階2もこの形のままにした(上の「上限超過と確保の失敗」の 2d の段落)。
 
-このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。2d が `with-exception-handler` `raise` `raise-continuable` を足した。2d は `error` も機械操作プリミティブにした。上の一覧に無いが、条件を作ったあとに `raise` と同じく送出するので、レジスタを書き換える。残る `call/cc`、`dynamic-wind`、`make-parameter`、`values`、`call-with-values` も、段階2のほかのスライスが `MachineOp` に変種を足して入れた。`(features)`(2p)も、上の一覧に無い機械操作プリミティブである。操作は `src/machine.zig` の `apply` が行う。
+このうち `eval` と `exit` は段階5で実装する。`eval` は R7RS 6.12 が環境指定子を第2引数に取ると定めており、環境を表す値が上の表で段階5だからである。`exit` は `(scheme process-context)` が段階5だからである。`force` を除く残る9個は段階2である。機械操作プリミティブの形(`.machine` と `MachineOp`)は段階2のスライス 2c で入り、そのときの操作は `apply` だけである。2d が `with-exception-handler` `raise` `raise-continuable` を足した。2d は `error` も機械操作プリミティブにした。上の一覧に無いが、条件を作ったあとに `raise` と同じく送出するので、レジスタを書き換える。残る `call/cc`、`dynamic-wind`、`make-parameter`、`values`、`call-with-values` も、段階2のほかのスライスが `MachineOp` に変種を足して入れた。`(features)`(2p)も、上の一覧に無い機械操作プリミティブである。`force` は段階3のスライス 3f が足した(上の「EOF の値と約束」)。操作は `src/machine.zig` の `apply` が行う。
 
 `exit` が機械操作プリミティブなのは、R7RS 6.14 が「Runs all outstanding dynamic-wind after procedures, terminates the running program, and communicates an exit value to the operating system」と規定しているためである。同項の Note は「Because of the requirement to run handlers, this procedure is not just the operating system's exit procedure」と明示している。`after` は Scheme 手続きなので、純粋プリミティブの中からは呼べない。`exit` は未処理例外と同じ巻き戻しの経路を使って最外まで戻り、その途中で各 `after` を呼ぶ。`emergency-exit` は同節が「Terminates the program without running any outstanding dynamic-wind after procedures」とするので純粋プリミティブでよい。
 
