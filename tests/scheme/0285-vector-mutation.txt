@@ -1,0 +1,288 @@
+# スライス 3e: ベクタの生成と変更(R7RS 6.8)。`make-vector` `vector-set!` `vector-fill!` と、
+# リストとの変換 `vector->list` `list->vector`。検査の順序は、引数の個数、型、定数かどうか、
+# 値の範囲である。範囲は、始まりを含み、終わりを含まない。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# `make-vector`: 原文の説明どおり、k 個の要素を持つ。`fill` がなければ、#f で埋める。
+(make-vector 3 0)
+#(0 0 0)
+
+(make-vector 2 'a)
+#(a a)
+
+(make-vector 0)
+#()
+
+(make-vector 0 'a)
+#()
+
+(make-vector 2)
+#(#f #f)
+
+(vector-length (make-vector 1000 0))
+1000
+
+# 要素は同じオブジェクトである(写しを作らない)。
+(define v (make-vector 2 (vector 1))) (eq? (vector-ref v 0) (vector-ref v 1))
+#t
+
+# 呼ぶたびに新しいベクタである。
+(eq? (make-vector 1 0) (make-vector 1 0))
+#f
+
+(make-vector -1)
+error: argument out of range in make-vector -1
+
+(make-vector -1 0)
+error: argument out of range in make-vector -1 0
+
+(make-vector #\a)
+error: wrong type of argument to make-vector #\a
+
+(make-vector "3" 0)
+error: wrong type of argument to make-vector "3" 0
+
+(make-vector '() 0)
+error: wrong type of argument to make-vector () 0
+
+(make-vector)
+error: wrong number of arguments to make-vector
+
+(make-vector 1 2 3)
+error: wrong number of arguments to make-vector 1 2 3
+
+# `vector-set!`: 原文の例。
+(define vec (vector 0 '(2 2 2 2) "Anna")) (vector-set! vec 1 '("Sue" "Sue")) vec
+#(0 ("Sue" "Sue") "Anna")
+
+# 値は返さない。
+(vector-set! (vector 1 2) 0 9)
+<no output>
+
+(define v (make-vector 3 0)) (vector-set! v 0 1) (vector-set! v 2 'x) v
+#(1 0 x)
+
+# どんな値も入れられる。ベクタ自身も入れられる。
+(define v (vector 1 2)) (vector-set! v 0 v) (eq? v (vector-ref v 0))
+#t
+
+(define v (vector 1 2)) (vector-set! v 1 '()) v
+#(1 ())
+
+# 書き込みは同じオブジェクトに見える。
+(define v (vector 1 2 3)) (define w v) (vector-set! w 0 9) v
+#(9 2 3)
+
+(vector-set! (vector 1 2 3) 3 0)
+error: argument out of range in vector-set! #(1 2 3) 3 0
+
+(vector-set! (vector 1 2 3) -1 0)
+error: argument out of range in vector-set! #(1 2 3) -1 0
+
+(vector-set! (vector) 0 0)
+error: argument out of range in vector-set! #() 0 0
+
+(vector-set! (vector 1 2 3) 4294967296 0)
+error: argument out of range in vector-set! #(1 2 3) 4294967296 0
+
+(vector-set! (vector 1 2 3) 9223372036854775807 0)
+error: argument out of range in vector-set! #(1 2 3) 9223372036854775807 0
+
+(vector-set! (vector 1 2 3) #\a 0)
+error: wrong type of argument to vector-set! #(1 2 3) #\a 0
+
+(vector-set! "abc" 0 #\x)
+error: wrong type of argument to vector-set! "abc" 0 #\x
+
+(vector-set! '(1 2) 0 0)
+error: wrong type of argument to vector-set! (1 2) 0 0
+
+(vector-set! #u8(1 2) 0 0)
+error: wrong type of argument to vector-set! #u8(1 2) 0 0
+
+# 型の誤りが、範囲の誤りより先に報告される。
+(vector-set! '(1 2) 99 0)
+error: wrong type of argument to vector-set! (1 2) 99 0
+
+# `vector->list`: 原文の例。
+(vector->list '#(dah dah didah))
+(dah dah didah)
+
+(vector->list '#(dah dah didah) 1 2)
+(dah)
+
+(vector->list '#(dah dah didah) 1)
+(dah didah)
+
+(vector->list #())
+()
+
+(vector->list #(1 2 3) 3)
+()
+
+(vector->list #(1 2 3) 1 1)
+()
+
+(vector->list #(1 2 3) 0 3)
+(1 2 3)
+
+# 要素はそのまま入る。結果は新しいリストで、定数ではない。
+(define l (vector->list '#(1 2))) (set-car! l 9) l
+(9 2)
+
+(define v (vector (vector 1))) (eq? (car (vector->list v)) (vector-ref v 0))
+#t
+
+(vector->list #(1 2 3) 4)
+error: argument out of range in vector->list #(1 2 3) 4
+
+(vector->list #(1 2 3) 0 4)
+error: argument out of range in vector->list #(1 2 3) 0 4
+
+(vector->list #(1 2 3) 2 1)
+error: argument out of range in vector->list #(1 2 3) 2 1
+
+(vector->list #(1 2 3) -1)
+error: argument out of range in vector->list #(1 2 3) -1
+
+(vector->list #(1 2 3) 0 -1)
+error: argument out of range in vector->list #(1 2 3) 0 -1
+
+(vector->list #(1 2 3) 0 9223372036854775807)
+error: argument out of range in vector->list #(1 2 3) 0 9223372036854775807
+
+(vector->list #(1 2 3) 4294967296)
+error: argument out of range in vector->list #(1 2 3) 4294967296
+
+(vector->list '(1 2 3))
+error: wrong type of argument to vector->list (1 2 3)
+
+(vector->list "abc")
+error: wrong type of argument to vector->list "abc"
+
+(vector->list #(1 2 3) #\a)
+error: wrong type of argument to vector->list #(1 2 3) #\a
+
+(vector->list #(1 2 3) 9 #\a)
+error: wrong type of argument to vector->list #(1 2 3) 9 #\a
+
+# `list->vector`: 原文の例。
+(list->vector '(dididit dah))
+#(dididit dah)
+
+(list->vector '())
+#()
+
+(list->vector '(1))
+#(1)
+
+(list->vector (list 1 2 3))
+#(1 2 3)
+
+(list->vector '((1 2) #(3) "x"))
+#((1 2) #(3) "x")
+
+# 往復する。
+(vector->list (list->vector '(1 2 3)))
+(1 2 3)
+
+(list->vector (vector->list #(1 2 3)))
+#(1 2 3)
+
+# 結果は新しいベクタで、定数ではない。リテラルのリストから作っても書き換えられる。
+(define v (list->vector '(1 2 3))) (vector-set! v 0 9) v
+#(9 2 3)
+
+# 先頭の部分だけが同じベクタを2つ作ったときも、別のオブジェクトである。
+(eq? (list->vector '(1)) (list->vector '(1)))
+#f
+
+(list->vector '(1 2 . 3))
+error: wrong type of argument to list->vector (1 2 . 3)
+
+(list->vector 5)
+error: wrong type of argument to list->vector 5
+
+(list->vector #(1 2))
+error: wrong type of argument to list->vector #(1 2)
+
+(list->vector "ab")
+error: wrong type of argument to list->vector "ab"
+
+# 輪になったリストは、リストではない。誤りを捕まえれば、止まる。
+(define l (list 1 2 3)) (set-cdr! (cdr (cdr l)) l) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k 'rejected)) (lambda () (list->vector l)))))
+rejected
+
+# `vector-fill!`: 原文の例。
+(define a (vector 1 2 3 4 5)) (vector-fill! a 'smash 2 4) a
+#(1 2 smash smash 5)
+
+(define a (vector 1 2 3)) (vector-fill! a 0) a
+#(0 0 0)
+
+(define a (vector 1 2 3)) (vector-fill! a 0 1) a
+#(1 0 0)
+
+(define a (vector 1 2 3)) (vector-fill! a 0 3) a
+#(1 2 3)
+
+(define a (vector 1 2 3)) (vector-fill! a 0 1 1) a
+#(1 2 3)
+
+(define a (vector 1 2 3)) (vector-fill! a 0 0 3) a
+#(0 0 0)
+
+(vector-fill! (vector) 0)
+<no output>
+
+(vector-fill! (vector 1 2) 0)
+<no output>
+
+# どんな値でも詰められ、詰めた要素は同じオブジェクトである。
+(define a (vector 1 2)) (define x (vector 9)) (vector-fill! a x) (eq? (vector-ref a 0) (vector-ref a 1))
+#t
+
+(vector-fill! (vector 1 2 3) 0 4)
+error: argument out of range in vector-fill! #(1 2 3) 0 4
+
+(vector-fill! (vector 1 2 3) 0 0 4)
+error: argument out of range in vector-fill! #(1 2 3) 0 0 4
+
+(vector-fill! (vector 1 2 3) 0 2 1)
+error: argument out of range in vector-fill! #(1 2 3) 0 2 1
+
+(vector-fill! (vector 1 2 3) 0 -1)
+error: argument out of range in vector-fill! #(1 2 3) 0 -1
+
+(vector-fill! (vector 1 2 3) 0 0 -1)
+error: argument out of range in vector-fill! #(1 2 3) 0 0 -1
+
+(vector-fill! (vector 1 2 3) 0 0 9223372036854775807)
+error: argument out of range in vector-fill! #(1 2 3) 0 0 9223372036854775807
+
+(vector-fill! (vector 1 2 3) 0 4294967296 4294967296)
+error: argument out of range in vector-fill! #(1 2 3) 0 4294967296 4294967296
+
+# 範囲の誤りで断ったとき、ベクタは元のままである。
+(define a (vector 1 2 3)) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k a)) (lambda () (vector-fill! a 0 1 4)))))
+#(1 2 3)
+
+(vector-fill! "abc" 0)
+error: wrong type of argument to vector-fill! "abc" 0
+
+(vector-fill! '(1 2) 0)
+error: wrong type of argument to vector-fill! (1 2) 0
+
+(vector-fill! (vector 1 2 3) 0 #\a)
+error: wrong type of argument to vector-fill! #(1 2 3) 0 #\a
+
+(vector-fill! (vector 1 2 3) 0 0 #\a)
+error: wrong type of argument to vector-fill! #(1 2 3) 0 0 #\a
+
+# 型の誤りが、範囲の誤りより先に報告される。
+(vector-fill! (vector 1 2 3) 0 9 #\a)
+error: wrong type of argument to vector-fill! #(1 2 3) 0 9 #\a
+
+# 完了条件: `(vector-fill! (make-vector 3 0) 7)` が動く。
+(define v (make-vector 3 0)) (vector-fill! v 7) v
+#(7 7 7)

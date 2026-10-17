@@ -1,0 +1,220 @@
+# スライス 3e: `vector-copy` `vector-copy!` `vector-append`(R7RS 6.8)。範囲は、始まりを含み、
+# 終わりを含まない。検査の順序は、型、定数かどうか、範囲である。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# `vector-copy`: 原文の例。`a` が定数でも、`b` は書き換えられる。
+(define a #(1 8 2 8)) (define b (vector-copy a)) (vector-set! b 0 3) b
+#(3 8 2 8)
+
+(define a #(1 8 2 8)) (define b (vector-copy a)) (vector-set! b 0 3) (define c (vector-copy b 1 3)) c
+#(8 2)
+
+(define a #(1 8 2 8)) (define b (vector-copy a)) (vector-set! b 0 3) a
+#(1 8 2 8)
+
+(vector-copy #(1 2 3))
+#(1 2 3)
+
+(vector-copy #(1 2 3) 1)
+#(2 3)
+
+(vector-copy #(1 2 3) 3)
+#()
+
+(vector-copy #(1 2 3) 1 1)
+#()
+
+(vector-copy #(1 2 3) 0 3)
+#(1 2 3)
+
+(vector-copy #())
+#()
+
+(define a (vector 1 2 3)) (eq? a (vector-copy a))
+#f
+
+# 要素は写さない(`eqv?` で同じ)。
+(define a (vector (vector 1))) (eq? (vector-ref a 0) (vector-ref (vector-copy a) 0))
+#t
+
+# 写しのあとの書き込みは、元に届かない。
+(define a (vector 1 2 3)) (define b (vector-copy a 1)) (vector-set! a 1 9) b
+#(2 3)
+
+(vector-copy #(1 2 3) 4)
+error: argument out of range in vector-copy #(1 2 3) 4
+
+(vector-copy #(1 2 3) 0 4)
+error: argument out of range in vector-copy #(1 2 3) 0 4
+
+(vector-copy #(1 2 3) 2 1)
+error: argument out of range in vector-copy #(1 2 3) 2 1
+
+(vector-copy #(1 2 3) -1)
+error: argument out of range in vector-copy #(1 2 3) -1
+
+(vector-copy #(1 2 3) 0 -1)
+error: argument out of range in vector-copy #(1 2 3) 0 -1
+
+(vector-copy #(1 2 3) 0 9223372036854775807)
+error: argument out of range in vector-copy #(1 2 3) 0 9223372036854775807
+
+(vector-copy #(1 2 3) 4294967296 4294967296)
+error: argument out of range in vector-copy #(1 2 3) 4294967296 4294967296
+
+(vector-copy "abc")
+error: wrong type of argument to vector-copy "abc"
+
+(vector-copy '(1 2 3))
+error: wrong type of argument to vector-copy (1 2 3)
+
+(vector-copy #(1 2 3) #\a)
+error: wrong type of argument to vector-copy #(1 2 3) #\a
+
+(vector-copy #(1 2 3) 0 #\a)
+error: wrong type of argument to vector-copy #(1 2 3) 0 #\a
+
+# 型の誤りが、範囲の誤りより先に報告される。
+(vector-copy #(1 2 3) 9 #\a)
+error: wrong type of argument to vector-copy #(1 2 3) 9 #\a
+
+# `vector-copy!`: 原文の例。
+(define a (vector 1 2 3 4 5)) (define b (vector 10 20 30 40 50)) (vector-copy! b 1 a 0 2) b
+#(10 1 2 40 50)
+
+# 値は返さない。
+(vector-copy! (vector 1 2) 0 #(3))
+<no output>
+
+# 範囲の省略。
+(define b (vector 0 0 0 0 0)) (vector-copy! b 0 #(1 2 3 4 5)) b
+#(1 2 3 4 5)
+
+(define b (vector 0 0 0 0 0)) (vector-copy! b 2 #(1 2 3 4 5) 3) b
+#(0 0 4 5 0)
+
+(define b (vector 0 0 0 0 0)) (vector-copy! b 1 #(1 2 3 4 5) 1 3) b
+#(0 2 3 0 0)
+
+# 何も写さない呼び出しは、末尾の位置からでもよい。
+(define b (vector 1 2 3)) (vector-copy! b 3 #(9 9) 1 1) b
+#(1 2 3)
+
+(define b (vector 1 2 3)) (vector-copy! b 0 #()) b
+#(1 2 3)
+
+# 残りにちょうど収まる。
+(define b (vector 1 2 3)) (vector-copy! b 1 #(8 9)) b
+#(1 8 9)
+
+# 元が定数でもよい。要素そのものを写す。
+(define b (make-vector 2 0)) (vector-copy! b 0 '#((1) (2))) (eq? (vector-ref b 0) (vector-ref b 0))
+#t
+
+(define b (make-vector 2 0)) (vector-copy! b 0 '#((1) (2))) b
+#((1) (2))
+
+# 元と先が同じで範囲が重なるときは、元を一時の領域に写してから書いたように振る舞う。
+(define a (vector 1 2 3 4 5)) (vector-copy! a 1 a 0 4) a
+#(1 1 2 3 4)
+
+(define a (vector 1 2 3 4 5)) (vector-copy! a 0 a 1 5) a
+#(2 3 4 5 5)
+
+(define a (vector 1 2 3 4 5)) (vector-copy! a 2 a 0 3) a
+#(1 2 1 2 3)
+
+(define a (vector 1 2 3 4 5)) (vector-copy! a 0 a 2 5) a
+#(3 4 5 4 5)
+
+(define a (vector 1 2 3)) (vector-copy! a 1 a 1) a
+#(1 2 3)
+
+# 断られたあとの先は、元のままである。
+(vector-copy! (vector 1 2 3) 2 #(7 8))
+error: argument out of range in vector-copy! #(1 2 3) 2 #(7 8)
+
+(vector-copy! (vector 1 2 3) 4 #())
+error: argument out of range in vector-copy! #(1 2 3) 4 #()
+
+(vector-copy! (vector 1 2 3) -1 #())
+error: argument out of range in vector-copy! #(1 2 3) -1 #()
+
+(vector-copy! (vector 1 2 3) 0 #(7 8) 0 3)
+error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 0 3
+
+(vector-copy! (vector 1 2 3) 0 #(7 8) 2 1)
+error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 2 1
+
+(vector-copy! (vector 1 2 3) 0 #(7 8) -1)
+error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) -1
+
+(vector-copy! (vector 1 2 3) 0 #(1 2 3 4))
+error: argument out of range in vector-copy! #(1 2 3) 0 #(1 2 3 4)
+
+(vector-copy! (vector 1 2 3) 4294967296 #())
+error: argument out of range in vector-copy! #(1 2 3) 4294967296 #()
+
+(vector-copy! (vector 1 2 3) 0 #(7 8) 4294967296)
+error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 4294967296
+
+(define b (vector 1 2 3)) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k b)) (lambda () (vector-copy! b 2 #(7 8))))))
+#(1 2 3)
+
+(vector-copy! "abc" 0 #(1))
+error: wrong type of argument to vector-copy! "abc" 0 #(1)
+
+(vector-copy! (vector 1) #\a #(1))
+error: wrong type of argument to vector-copy! #(1) #\a #(1)
+
+(vector-copy! (vector 1) 0 "a")
+error: wrong type of argument to vector-copy! #(1) 0 "a"
+
+(vector-copy! (vector 1) 0 #(1) #\a)
+error: wrong type of argument to vector-copy! #(1) 0 #(1) #\a
+
+(vector-copy! (vector 1) 0 #(1) 0 #\a)
+error: wrong type of argument to vector-copy! #(1) 0 #(1) 0 #\a
+
+# 型の誤りが、範囲の誤りより先に報告される。
+(vector-copy! (vector 1) 99 "a")
+error: wrong type of argument to vector-copy! #(1) 99 "a"
+
+# `vector-append`: 原文の例。
+(vector-append #(a b c) #(d e f))
+#(a b c d e f)
+
+(vector-append)
+#()
+
+(vector-append #())
+#()
+
+(vector-append #() #())
+#()
+
+(vector-append #(1) #() #(2 3) #())
+#(1 2 3)
+
+# 引数が1つでも、結果は新しいベクタである。リテラルの写しも書き換えられる。
+(define a #(1 2)) (define c (vector-append a)) (vector-set! c 0 9) (list a c)
+(#(1 2) #(9 2))
+
+(define a (vector 1 2)) (eq? a (vector-append a))
+#f
+
+(define a (vector 1 2)) (vector-append a a a)
+#(1 2 1 2 1 2)
+
+# 要素は写さない。
+(define a (vector (vector 1))) (eq? (vector-ref a 0) (vector-ref (vector-append a) 0))
+#t
+
+(vector-append #(1) "a")
+error: wrong type of argument to vector-append #(1) "a"
+
+(vector-append '() #(1))
+error: wrong type of argument to vector-append () #(1)
+
+(vector-append #(1) #u8(1))
+error: wrong type of argument to vector-append #(1) #u8(1)
