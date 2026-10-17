@@ -4,5 +4,6 @@
 ;; 使うので、それを取り込む。`(sucheme procedures)` は派生構文を使わずに書く。
 (define-library (sucheme derived)
   (import (sucheme core) (sucheme procedures))
-  (export cond case and or when unless let let* letrec letrec* do quasiquote)
+  (export cond case and or when unless let let* letrec letrec* do quasiquote
+          define-record-type let-values let*-values define-values guard case-lambda)
   (include "derived.scm"))

@@ -1,0 +1,99 @@
+# スライス 3i: `define-values`(R7RS 5.3.3)。最上位の定義で試す。本体の中の定義は
+# 0276-derived-body-definitions.txt にある。
+# R7RS の例の `exact-integer-sqrt` は、まだ無いので、`values` で同じ形にしている。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 5.3.3 の例。
+(import (sucheme derived)) (define-values (x y) (values 4 1)) (list x y)
+(4 1)
+
+# 変数の数ごとの形。
+(import (sucheme derived)) (define-values (x) (values 1)) x
+1
+
+(import (sucheme derived)) (define-values (x y z) (values 1 2 3)) (list x y z)
+(1 2 3)
+
+(import (sucheme derived)) (define-values (a b c d e f) (values 1 2 3 4 5 6)) (list a b c d e f)
+(1 2 3 4 5 6)
+
+(import (sucheme derived)) (define-values (x . rest) (values 1 2 3)) (list x rest)
+(1 (2 3))
+
+(import (sucheme derived)) (define-values (x y . rest) (values 1 2 3 4)) (list x y rest)
+(1 2 (3 4))
+
+(import (sucheme derived)) (define-values (x y . rest) (values 1 2)) (list x y rest)
+(1 2 ())
+
+(import (sucheme derived)) (define-values all (values 1 2 3)) all
+(1 2 3)
+
+(import (sucheme derived)) (define-values all (values)) all
+()
+
+(import (sucheme derived)) (define-values () (values)) 'ok
+ok
+
+# 変数が1つのとき、式は1つの値を返す。
+(import (sucheme derived)) (define-values (x) 5) x
+5
+
+# 式は1回だけ評価する。
+(import (sucheme derived)) (define n 0) (define-values (a b c) (begin (set! n (+ n 1)) (values 1 2 3))) (list n a b c)
+(1 1 2 3)
+
+(import (sucheme derived)) (define n 0) (define-values (a . rest) (begin (set! n (+ n 1)) (values 1 2 3))) (list n a rest)
+(1 1 (2 3))
+
+# 式の中の同じ名前は、定義の前の束縛を指す。
+(import (sucheme derived)) (define a 1) (define-values (a b) (values a 20)) (list a b)
+(1 20)
+
+(import (sucheme derived)) (define a 1) (define-values (a b) (values 10 20)) (list a b)
+(10 20)
+
+# 定義した変数は、書き換えられ、手続きに閉じ込められる。
+(import (sucheme derived)) (define-values (x y) (values 1 2)) (set! x 10) (define (get) (list x y)) (get)
+(10 2)
+
+# 変数は、値のリストの内部の表現を見せない。値が、リストであっても同じである。
+(import (sucheme derived)) (define-values (x y) (values '(1 2) '(3 4))) (list x y)
+((1 2) (3 4))
+
+(import (sucheme derived)) (define-values (x y z) (values 1 2 3)) (define-values (p q) (values z y)) (list x y z p q)
+(1 2 3 3 2)
+
+# 誤り: 値の個数が合わない。
+(import (sucheme derived)) (define-values (x y) (values 1 2 3))
+error: wrong number of arguments: expected 2, got 3
+
+(import (sucheme derived)) (define-values (x y) (values 1))
+error: wrong number of arguments: expected 2, got 1
+
+(import (sucheme derived)) (define-values (x y z) (values 1 2))
+error: wrong number of arguments: expected 3, got 2
+
+(import (sucheme derived)) (define-values (x y . z) (values 1))
+error: wrong number of arguments: expected at least 2, got 1
+
+(import (sucheme derived)) (define-values () (values 1))
+error: wrong number of arguments: expected 0, got 1
+
+# 展開が使う手続きと変数の名前を、利用者が最上位で再定義しても、`define-values` は影響されない。
+(import (sucheme derived)) (define (cadr x) 'user-cadr) (define (cddr x) 'user-cddr) (define (car x) 'user-car) (define (cdr x) 'user-cdr) (define (list . x) 'user-list) (define (apply . x) 'user-apply) (define-values (p q r) (values 1 2 3)) (define-values (s . t) (values 4 5)) (define-values (u v) (values 6 7)) (vector p q r s t u v)
+#(1 2 3 4 (5) 6 7)
+
+# 展開が使う変数の名前 `v` を、利用者が定義の変数に使っても、衝突しない。
+(import (sucheme derived)) (define-values (v w) (values 1 2)) (list v w)
+(1 2)
+
+(import (sucheme derived)) (define-values (w v) (values 1 2)) (list w v)
+(1 2)
+
+(import (sucheme derived)) (define-values (v w x) (values 1 2 3)) (list v w x)
+(1 2 3)
+
+# 変数が0個のときの補助の定義は、利用者の `dummy` を書き換えない。
+(import (sucheme derived)) (define dummy 7) (define-values () (values)) dummy
+7

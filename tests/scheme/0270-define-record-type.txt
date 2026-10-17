@@ -1,0 +1,122 @@
+# スライス 3i: `define-record-type`(R7RS 5.5)。最上位の定義で試す。本体の中の定義は
+# 0276-derived-body-definitions.txt にある。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 5.5 の例。
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (list (pare? (kons 1 2)) (pare? (cons 1 2)) (kar (kons 1 2)) (kdr (kons 1 2)))
+(#t #f 1 2)
+
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (let ((k (kons 1 2))) (set-kar! k 3) (kar k))
+3
+
+# 型の名前は、型そのものに束縛される。レコードと型は、印字で見分けられる。
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (list (kons 1 2) pare)
+(#<record pare> #<record-type pare>)
+
+# R7RS 5.5 の名前は `<pare>` の形で書く。
+(import (sucheme derived)) (define-record-type <pare> (kons x y) pare? (x kar) (y kdr)) (list (kar (kons 'a 'b)) (kdr (kons 'a 'b)))
+(a b)
+
+# 述語は、レコードでないものに #f を返す。
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (list (pare? 1) (pare? '()) (pare? "pare") (pare? kons) (pare? pare) (pare? #f))
+(#f #f #f #f #f #f)
+
+# 生成的: 同じ名前、同じ構造の型を2回作っても、別の型である。
+(import (sucheme derived)) (define-record-type point (make-a x) a? (x a-x)) (define-record-type point (make-b x) b? (x b-x)) (list (a? (make-a 1)) (a? (make-b 1)) (b? (make-a 1)) (b? (make-b 1)))
+(#t #f #f #t)
+
+(import (sucheme derived)) (define-record-type point (make-a x) a? (x a-x)) (define-record-type point (make-b x) b? (x b-x)) (a-x (make-b 1))
+error: wrong type of argument to a record accessor a-x #<record point>
+
+# コンストラクタは、毎回新しいレコードを返す。
+(import (sucheme derived)) (define-record-type box (make-box v) box? (v unbox set-box!)) (let ((a (make-box 1)) (b (make-box 1))) (list (eqv? a a) (eqv? a b) (equal? a b)))
+(#t #f #f)
+
+(import (sucheme derived)) (define-record-type box (make-box v) box? (v unbox set-box!)) (let* ((a (make-box 1)) (b a)) (set-box! b 7) (list (unbox a) (unbox b)))
+(7 7)
+
+# フィールドの値は、型のないレコードの別のフィールドと混ざらない。
+(import (sucheme derived)) (define-record-type triple (make-triple a b c) triple? (a first set-first!) (b second set-second!) (c third set-third!)) (let ((t (make-triple 1 2 3))) (set-second! t 20) (list (first t) (second t) (third t)))
+(1 20 3)
+
+# 修飾子は、不定の値を返す。式の値は印字されない。
+(import (sucheme derived)) (define-record-type box (make-box v) box? (v unbox set-box!)) (set-box! (make-box 1) 2)
+<no output>
+
+# コンストラクタが受けるフィールドの並びは、フィールドの並びと違ってよい。
+(import (sucheme derived)) (define-record-type triple (make-triple c a) triple? (a first) (b second) (c third)) (let ((t (make-triple 3 1))) (list (first t) (third t)))
+(1 3)
+
+(import (sucheme derived)) (define-record-type triple (make-triple c b a) triple? (a first) (b second) (c third)) (let ((t (make-triple 3 2 1))) (list (first t) (second t) (third t)))
+(1 2 3)
+
+# コンストラクタが受けないフィールドは、不定の値で、あとで書ける。
+(import (sucheme derived)) (define-record-type p (make-p x) p? (x px) (y py set-py!)) (let ((r (make-p 1))) (set-py! r 5) (list (px r) (py r)))
+(1 5)
+
+(import (sucheme derived)) (define-record-type p (make-p x) p? (x px) (y py set-py!)) (py (make-p 1))
+<no output>
+
+# コンストラクタが引数を取らず、全部のフィールドが不定の値でもよい。
+(import (sucheme derived)) (define-record-type p (make-p) p? (x px set-px!) (y py set-py!)) (let ((r (make-p))) (set-px! r 1) (set-py! r 2) (list (px r) (py r)))
+(1 2)
+
+# フィールドが0個の型。
+(import (sucheme derived)) (define-record-type unit (make-unit) unit?) (list (unit? (make-unit)) (unit? 1) (eqv? (make-unit) (make-unit)))
+(#t #f #f)
+
+# コンストラクタが受けないフィールドは、読んでも誤りにならず、不定の値を返す。
+(import (sucheme derived)) (define-record-type p (make-p) p? (x px)) (list (p? (make-p)) (px (make-p)))
+(#t #<unspecified>)
+
+# 値はなんでもよい。手続きも、レコードも、自分自身も。
+(import (sucheme derived)) (define-record-type node (make-node v next) node? (v node-v) (next node-next set-node-next!)) (let ((n (make-node 'a #f))) (set-node-next! n n) (list (node-v n) (eq? n (node-next n)) (node-v (node-next (node-next n)))))
+(a #t a)
+
+(import (sucheme derived)) (define-record-type fn (make-fn f) fn? (f fn-f)) ((fn-f (make-fn (lambda (x) (* x 2)))) 21)
+42
+
+# 誤り: アクセサとモディファイアに、別の型のレコードや、レコードでないものを渡す。
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (kar 5)
+error: wrong type of argument to a record accessor kar 5
+
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (kar (cons 1 2))
+error: wrong type of argument to a record accessor kar (1 . 2)
+
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (set-kar! 5 1)
+error: wrong type of argument to a record modifier set-kar! 5
+
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (define-record-type other (make-other x) other? (x other-x)) (kar (make-other 1))
+error: wrong type of argument to a record accessor kar #<record other>
+
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (define-record-type other (make-other x) other? (x other-x set-other-x!)) (set-kar! (make-other 1) 1)
+error: wrong type of argument to a record modifier set-kar! #<record other>
+
+# 誤り: コンストラクタの引数の個数。
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (kons 1)
+error: wrong number of arguments to a record constructor 1
+
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (kons 1 2 3)
+error: wrong number of arguments to a record constructor 3
+
+(import (sucheme derived)) (define-record-type pare (kons y) pare? (x kar) (y kdr)) (kons)
+error: wrong number of arguments to a record constructor 0
+
+(import (sucheme derived)) (define-record-type pare (kons y) pare? (x kar) (y kdr)) (kons 1 2)
+error: wrong number of arguments to a record constructor 2
+
+# 誤り: コンストラクタの引数に、フィールドに無い名前がある。
+(import (sucheme derived)) (define-record-type pare (kons x z) pare? (x kar) (y kdr))
+error: define-record-type: not a field of the record type z
+
+# 誤り: フィールドの指定が、(名前 アクセサ) か (名前 アクセサ モディファイア) の形でない。
+(import (sucheme derived)) (define-record-type pare (kons x) pare? (x))
+error: define-record-type: a field is (name accessor) or (name accessor modifier) (x)
+
+# `define-record-type` が定義するのは、利用者が書いた名前だけである。
+(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (pare? (kons 1 2))
+#t
+
+# 型の名前と同じ綴りの変数は、型を書き換える。同じ名前を2回定義するのと同じである。
+(import (sucheme derived)) (define-record-type pare (kons x) pare? (x kar)) (define pare 5) (list pare (kar (kons 1)))
+(5 1)
