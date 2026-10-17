@@ -20,6 +20,28 @@
 (import (sucheme derived)) (let*-values () 5)
 5
 
+# 束縛なしでも、本体の先頭の定義は置ける。
+(import (sucheme derived)) (let-values () (define x 1) (+ x 1))
+2
+
+(import (sucheme derived)) (let*-values () (define x 1) (+ x 1))
+2
+
+# 式の位置でも、本体の定義は、その `let-values` の中に閉じる(`begin` の定義ではなく、最上位の定義にならない)。
+(import (sucheme derived)) ((lambda () (let-values () (define x 1) (+ x 1))))
+2
+
+(import (sucheme derived)) ((lambda () (let*-values () (define x 1) (+ x 1))))
+2
+
+(import (sucheme derived)) (let*-values () (define leaked 1) leaked) leaked
+1
+error: unbound variable: leaked
+
+(import (sucheme derived)) (let-values () (define leaked 1) leaked) leaked
+1
+error: unbound variable: leaked
+
 # 仮引数の形は、`lambda` と同じ3つ。
 (import (sucheme derived)) (let-values (((a b) (values 1 2))) (list a b))
 (1 2)

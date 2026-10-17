@@ -41,6 +41,33 @@ none
 (import (sucheme derived)) (guard (e (#t 1 2 3)) (raise 'x))
 3
 
+# `=>` の前の test は1回だけ評価され、その値が受け手に渡る。
+(import (sucheme derived)) (let ((n 0)) (guard (e ((begin (set! n (+ n 1)) (and (symbol? e) e)) => (lambda (v) (list v n)))) (raise 'a)))
+(a 1)
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((assv e '((1 . a))) => cdr) ((symbol? e) 'sym)) (raise 'z))
+sym
+
+# test だけの節は、test の値が `guard` の値になり、test は1回だけ評価される。
+(import (sucheme derived)) (let ((n 0)) (list (guard (e ((begin (set! n (+ n 1)) (symbol? e)))) (raise 'a)) n))
+(#t 1)
+
+(import (sucheme derived)) (guard (e ((symbol? e)) ((string? e) 'str)) (raise 'x))
+#t
+
+(import (sucheme derived)) (guard (e ((string? e)) ((symbol? e) 'sym)) (raise 'x))
+sym
+
+(import (sucheme derived)) (guard (e ((string? e))) (raise 'x))
+error: x
+
+(import (sucheme derived)) (guard (e ((string? e)) ((number? e))) (raise 'x))
+error: x
+
+# `else` の本体は複数の式で、最後の値が返る。
+(import (sucheme derived)) (let ((n 0)) (list (guard (e (else (set! n (+ n 1)) (set! n (+ n 10)) n)) (raise 'x)) n))
+(11 11)
+
 # 節の test が偽の値で、どの節も当てはまらず、`else` も無いとき、`raise-continuable` で再送出する。
 (import (sucheme derived)) (guard (e ((string? e) 'string)) (raise 'sym))
 error: sym
