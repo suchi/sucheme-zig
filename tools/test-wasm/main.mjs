@@ -510,6 +510,30 @@ test("pairs, lists, strings and vectors work in wasm32", () => {
   );
 });
 
+// 文字列を作る、書き換える、比べる手続きと、定数への書き込みの拒否が、wasm32 でも動く(スライス 3d)。
+// 大きさと位置は 64 ビットの整数で、wasm32 の usize は 32 ビットなので、2^32 を超える大きさが、
+// 小さな大きさに化けて成功しないことも固定する。
+test("strings are made, written and compared in wasm32, and a constant is refused", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run('(string-append "ab" "cd") (make-string 3 #\\λ) (substring "aλあ𐀀z" 1 4)'), [OK, '"abcd"\n"λλλ"\n"λあ𐀀"\n']);
+  assert.deepEqual(
+    h.run('(define s (make-string 3 #\\a)) (string-set! s 1 #\\λ) (string-copy! s 0 "あ") (list s (string-length s) (string=? s "あλa") (string<? "a" s))'),
+    [OK, '("あλa" 3 #t #t)\n'],
+  );
+  assert.deepEqual(h.run('(list->string (string->list "aλあ")) (vector->string (string->vector "xy"))'), [OK, '"aλあ"\n"xy"\n']);
+  assert.deepEqual(h.run('(string-set! "abc" 0 #\\x)'), [SCHEME_ERROR, 'error: cannot modify a constant in string-set! "abc" 0 #\\x\n']);
+  assert.deepEqual(h.run("(set-car! '(1 2) 0)"), [SCHEME_ERROR, "error: cannot modify a constant in set-car! (1 2) 0\n"]);
+  assert.deepEqual(h.run("(string-set! (symbol->string 'abc) 0 #\\x)"), [SCHEME_ERROR, 'error: cannot modify a constant in string-set! "abc" 0 #\\x\n']);
+  assert.deepEqual(h.run("(define l (list 1 2)) (set-car! l 0) l"), [OK, "(0 2)\n"]);
+  // 2^32 を切り捨てると 0 になる大きさと位置。
+  assert.deepEqual(h.run("(make-string 4294967296 #\\a)"), [SCHEME_ERROR, "error: heap limit exceeded\n"]);
+  assert.deepEqual(h.run('(string-copy "abc" 4294967296)'), [SCHEME_ERROR, 'error: argument out of range in string-copy "abc" 4294967296\n']);
+  assert.deepEqual(h.run('(string-set! (make-string 3 #\\a) 4294967296 #\\b)'), [SCHEME_ERROR, 'error: argument out of range in string-set! "aaa" 4294967296 #\\b\n']);
+  assert.deepEqual(h.run('(string-copy! (make-string 3 #\\a) 4294967296 "x")'), [SCHEME_ERROR, 'error: argument out of range in string-copy! "aaa" 4294967296 "x"\n']);
+  // エラーのあとも、同じインスタンスが使える。
+  assert.deepEqual(h.run('(string-append "a" "b")'), [OK, '"ab"\n']);
+});
+
 // 添字は 64 ビットの整数で、wasm32 の usize は 32 ビットである。検査の前に usize へ
 // 切り捨てて変えると、2^32 の倍数に近い添字が有効な添字に化ける。ネイティブ(usize が
 // 64 ビット)のテストでは見えないので、ここで固定する。ネイティブの側の対応する

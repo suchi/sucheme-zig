@@ -1,0 +1,68 @@
+# スライス 3d: 入力の大きさに比例して確保する文字列の手続きは、確保を GC の計上に通し、
+# 上限を超えるとき `heap limit exceeded` の誤りにする(docs/design/runtime.md の計上の対象)。
+# このランナーの上限は 64 MiB である。バイト列は、一時の領域でなく、確保する前に上限に
+# 照らして検査される。ホストのメモリは尽きない。規模を試す版は
+# tests/scheme-slow/0021-string-scale.txt、縮小した上限での版は src/prim/string.zig の
+# 単体テストにある。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 上限に収まる大きさは作れる。
+(string-length (make-string 1000000 #\a))
+1000000
+
+(string-length (make-string 1000000 #\λ))
+1000000
+
+(string-length (string-append (make-string 1000000 #\a) (make-string 1000000 #\b)))
+2000000
+
+# 上限を超える大きさは、確保の前に断る。
+(make-string 100000000 #\a)
+error: heap limit exceeded
+
+(make-string 100000000)
+error: heap limit exceeded
+
+# 文字の幅を掛けたバイトの数で数える。3000万文字は90MBのバイト列である。
+(make-string 30000000 #\あ)
+error: heap limit exceeded
+
+# 桁あふれする大きさも、回り込まない。
+(make-string 4611686018427387904 #\a)
+error: heap limit exceeded
+
+(make-string 9223372036854775807 #\𐀀)
+error: heap limit exceeded
+
+(make-string 9223372036854775807)
+error: heap limit exceeded
+
+# 2つの引数は収まるが、結果が収まらない。
+(define s (make-string 40000000 #\a)) (string-append s s)
+error: heap limit exceeded
+
+# 倍々に伸ばし続けると、いつか上限に当たる。
+(define (grow s n) (if (= n 0) s (grow (string-append s s) (- n 1)))) (string-length (grow "abcdefgh" 30))
+error: heap limit exceeded
+
+# 上限に近い文字列に、幅の広い文字を書き込むと、バイト列が増えて上限を超える。確保を断られた
+# 書き込みが文字列を変えないことは、src/prim/string.zig の単体テストが見る。
+(define s (make-string 40000000 #\a)) (define t (string-copy s)) (string-fill! t #\λ)
+error: heap limit exceeded
+
+# 2つ目の確保が、1つ目と合わせて上限を超える。
+(define s (make-string 40000000 #\a)) (define t (make-string 40000000 #\a)) 0
+error: heap limit exceeded
+
+# 上限の誤りは、ほかの誤りと同じように、ハンドラが捕まえられる(生きているデータが上限に
+# 近いと、ハンドラ自身が確保できず、捕まえられない)。
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'caught)) (lambda () (make-string 100000000 #\a)))))
+caught
+
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k (error-object-message e))) (lambda () (make-string 100000000 #\a)))))
+"heap limit exceeded"
+
+# 上限に届かない範囲では、ASCII の文字列への ASCII の書き込みは、確保しない。
+(define s (make-string 1000000 #\a)) (define (fill! i) (if (= i 1000000) 'done (begin (string-set! s i #\b) (fill! (+ i 1))))) (fill! 0) (list (string-ref s 0) (string-ref s 999999))
+done
+(#\b #\b)

@@ -1,0 +1,164 @@
+# スライス 3d: 文字列の比較(R7RS 6.7)。`string=?` `string<?` `string>?` `string<=?`
+# `string>=?`。引数を何個でも取り、隣り合う組がすべて成り立つときに真である。順序は、
+# 文字の列の辞書式順序で、文字はコードポイントの順である。短い文字列は、同じ接頭辞を持つ
+# 長い文字列より小さい。大文字小文字を区別しない `string-ci=?` などは、段階4が足す。
+
+(string=? "abc" "abc")
+#t
+
+(string=? "abc" "abd")
+#f
+
+(string=? "abc" "abcd")
+#f
+
+(string=? "" "")
+#t
+
+(string=? "abc" "ABC")
+#f
+
+(string<? "abc" "abd")
+#t
+
+(string<? "abc" "abc")
+#f
+
+(string<? "abd" "abc")
+#f
+
+(string<? "abc" "abcd")
+#t
+
+(string<? "" "a")
+#t
+
+(string<? "Z" "a")
+#t
+
+(string>? "abd" "abc")
+#t
+
+(string>? "abcd" "abc")
+#t
+
+(string>? "abc" "abc")
+#f
+
+(string<=? "abc" "abc")
+#t
+
+(string<=? "abc" "abd")
+#t
+
+(string<=? "abd" "abc")
+#f
+
+(string>=? "abc" "abc")
+#t
+
+(string>=? "abd" "abc")
+#t
+
+(string>=? "abc" "abd")
+#f
+
+# ASCII の外は、コードポイントの順である。
+(string<? "z" "λ")
+#t
+
+(string<? "λ" "あ")
+#t
+
+(string<? "\xffff;" "\x10000;")
+#t
+
+(string<? "\xd7ff;" "\xe000;")
+#t
+
+(string<? "aλ" "aあ")
+#t
+
+(string=? "aλあ" "aλあ")
+#t
+
+(string=? "aλ" (string #\a #\λ))
+#t
+
+# 引数は何個でも取る。
+(string=? "a" "a" "a" "a")
+#t
+
+(string=? "a" "a" "b")
+#f
+
+(string=? "b" "a" "a")
+#f
+
+(string<? "a" "b" "c" "d")
+#t
+
+(string<? "a" "b" "b")
+#f
+
+(string<? "a" "c" "b")
+#f
+
+(string>? "d" "c" "b")
+#t
+
+(string>? "d" "b" "c")
+#f
+
+(string<=? "a" "a" "b" "b")
+#t
+
+(string<=? "a" "b" "a")
+#f
+
+(string>=? "c" "c" "b" "a")
+#t
+
+(string>=? "c" "b" "c")
+#f
+
+# 引数が1つなら、比べる相手が無いので真である。
+(string=? "a")
+#t
+
+(string<? "a")
+#t
+
+# 引数が無いのは、個数の誤りである。
+(string=?)
+error: wrong number of arguments to string=?
+
+# 文字列でない引数は、どの位置でも、成り立たない組があっても、型の誤りである。
+(string=? "a" #\a)
+error: wrong type of argument to string=? "a" #\a
+
+(string<? #\a "a")
+error: wrong type of argument to string<? #\a "a"
+
+(string>? 'a)
+error: wrong type of argument to string>? a
+
+(string<? "b" "a" "a" 1)
+error: wrong type of argument to string<? "b" "a" "a" 1
+
+(string<=? "a" "b" '())
+error: wrong type of argument to string<=? "a" "b" ()
+
+(string>=? "a" 1 "b")
+error: wrong type of argument to string>=? "a" 1 "b"
+
+# 比べても、文字列は変わらず、結果は真偽値である。
+(define s (make-string 2 #\a)) (list (string=? s s) (string<? s s) (string<=? s s) s)
+(#t #f #t "aa")
+
+# 変更した文字列を比べる。
+(define s (make-string 2 #\a)) (string-set! s 1 #\b) (list (string=? s "ab") (string<? "aa" s) (string>? s "aa"))
+(#t #t #t)
+
+(define s (make-string 2 #\a)) (string-set! s 1 #\λ) (list (string=? s "aλ") (string<? "ab" s))
+(#t #t)

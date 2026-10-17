@@ -1,0 +1,223 @@
+# スライス 3d: 文字列を書き換える手続き(R7RS 6.7)。`string-set!` `string-copy!`
+# `string-fill!`。位置と長さは文字で数える。文字の UTF-8 の幅が変わる書き込みでも、
+# 長さは文字の数のままで、中身が正しい。重なる範囲の `string-copy!` は、元の中身を一時の
+# 文字列に写してから書いたように振る舞う。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+#
+# 原文(R7RS 6.7)の例:
+#   (define a "12345")
+#   (define b (string-copy "abcde"))
+#   (string-copy! b 1 a 0 2)
+#   b   => "a12de"
+
+# `string-set!`。
+(define s (make-string 3 #\a)) (string-set! s 1 #\b) s
+"aba"
+
+(define s (string-copy "abc")) (string-set! s 0 #\x) (string-set! s 2 #\z) s
+"xbz"
+
+(define s (make-string 3 #\a)) (string-set! s 1 #\b)
+<no output>
+
+# 同じ文字列を指すものすべてから見える。
+(define s (make-string 3 #\a)) (define t s) (string-set! t 0 #\x) s
+"xaa"
+
+# 幅の違う文字を書く。長さは変わらず、読める。
+(define s (make-string 3 #\a)) (string-set! s 1 #\λ) (list s (string-length s) (string-ref s 1) (string-ref s 2))
+("aλa" 3 #\λ #\a)
+
+(define s (make-string 3 #\a)) (string-set! s 0 #\𐀀) (list s (string-length s) (string-ref s 0) (string-ref s 1))
+("𐀀aa" 3 #\𐀀 #\a)
+
+(define s (make-string 2 #\λ)) (string-set! s 0 #\a) (string-set! s 1 #\a) (list s (string-length s))
+("aa" 2)
+
+(define s (make-string 3 #\あ)) (string-set! s 1 #\あ) (string-set! s 2 #\𐀀) s
+"ああ𐀀"
+
+# 書き込み続けても、GC のあとも、中身は保たれる。
+(define s (make-string 4 #\a)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (string-set! s 1 #\λ) (spin 20000) (string-set! s 2 #\あ) (spin 20000) (string-set! s 3 #\𐀀) s
+ok
+ok
+"aλあ𐀀"
+
+# 範囲の誤りと型の誤り。型の誤りが先に報告される。
+(define s (make-string 3 #\a)) (string-set! s 3 #\x)
+error: argument out of range in string-set! "aaa" 3 #\x
+
+(define s (make-string 3 #\a)) (string-set! s -1 #\x)
+error: argument out of range in string-set! "aaa" -1 #\x
+
+(string-set! (make-string 0) 0 #\x)
+error: argument out of range in string-set! "" 0 #\x
+
+(define s (make-string 3 #\a)) (string-set! s 4294967296 #\x)
+error: argument out of range in string-set! "aaa" 4294967296 #\x
+
+(define s (make-string 3 #\a)) (string-set! s 0 "x")
+error: wrong type of argument to string-set! "aaa" 0 "x"
+
+(define s (make-string 3 #\a)) (string-set! s #\a #\x)
+error: wrong type of argument to string-set! "aaa" #\a #\x
+
+(string-set! 'abc 0 #\x)
+error: wrong type of argument to string-set! abc 0 #\x
+
+(define s (make-string 3 #\a)) (string-set! s 100 1)
+error: wrong type of argument to string-set! "aaa" 100 1
+
+# 断られた書き込みは、文字列を変えない。
+(define s (make-string 3 #\a)) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (string-set! s 3 #\x))))) s
+refused
+"aaa"
+
+# `string-copy!`。原文の例。
+(define a "12345") (define b (string-copy "abcde")) (string-copy! b 1 a 0 2) b
+"a12de"
+
+(define b (string-copy "abcde")) (string-copy! b 2 "XYZ") b
+"abXYZ"
+
+(define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 1) b
+"YZcde"
+
+(define b (string-copy "abcde")) (string-copy! b 1 "XYZ" 1 2) b
+"aYcde"
+
+(define b (string-copy "abcde")) (string-copy! b 1 "XYZ" 1 2)
+<no output>
+
+# 書く文字が無ければ、何も変わらない。位置は、長さまで置ける。
+(define b (string-copy "abc")) (string-copy! b 3 "") (string-copy! b 0 "xyz" 3) (string-copy! b 1 "xyz" 1 1) b
+"abc"
+
+# 全部を置き換える。
+(define b (string-copy "abc")) (string-copy! b 0 "xyz") b
+"xyz"
+
+# 重なる範囲は、元を先に写したように振る舞う。
+(define s (string-copy "abcde")) (string-copy! s 1 s 0 3) s
+"aabce"
+
+(define s (string-copy "abcde")) (string-copy! s 0 s 1 4) s
+"bcdde"
+
+(define s (string-copy "abcde")) (string-copy! s 1 s 1 4) s
+"abcde"
+
+(define s (string-copy "abcde")) (string-copy! s 2 s 0 3) s
+"ababc"
+
+(define s (string-copy "abcde")) (string-copy! s 0 s 2 5) s
+"cdede"
+
+# 幅の違う文字の範囲も、同じである。
+(define s (string-copy "aλbあc")) (string-copy! s 1 s 0 4) (list s (string-length s))
+("aaλbあ" 5)
+
+(define s (string-copy "aλbあc")) (string-copy! s 0 s 1 5) (list s (string-length s))
+("λbあcc" 5)
+
+(define s (string-copy "abcde")) (string-copy! s 1 "λあ") (list s (string-length s) (string-ref s 2) (string-ref s 3))
+("aλあde" 5 #\あ #\d)
+
+(define s (string-copy "aλあde")) (string-copy! s 1 "xy") (list s (string-length s))
+("axyde" 5)
+
+# 範囲の誤り。
+(define b (string-copy "abcde")) (string-copy! b 6 "x")
+error: argument out of range in string-copy! "abcde" 6 "x"
+
+(define b (string-copy "abcde")) (string-copy! b -1 "x")
+error: argument out of range in string-copy! "abcde" -1 "x"
+
+(define b (string-copy "abcde")) (string-copy! b 3 "XYZ")
+error: argument out of range in string-copy! "abcde" 3 "XYZ"
+
+(define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 4)
+error: argument out of range in string-copy! "abcde" 0 "XYZ" 4
+
+(define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 2 1)
+error: argument out of range in string-copy! "abcde" 0 "XYZ" 2 1
+
+(define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 0 4)
+error: argument out of range in string-copy! "abcde" 0 "XYZ" 0 4
+
+(define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 0 -1)
+error: argument out of range in string-copy! "abcde" 0 "XYZ" 0 -1
+
+# 型の誤り。
+(define b (string-copy "abcde")) (string-copy! b 0 'x)
+error: wrong type of argument to string-copy! "abcde" 0 x
+
+(define b (string-copy "abcde")) (string-copy! b #\a "x")
+error: wrong type of argument to string-copy! "abcde" #\a "x"
+
+(string-copy! 'b 0 "x")
+error: wrong type of argument to string-copy! b 0 "x"
+
+(define b (string-copy "abcde")) (string-copy! b 100 1)
+error: wrong type of argument to string-copy! "abcde" 100 1
+
+# 断られた `string-copy!` は、書き込み先を変えない。
+(define b (string-copy "abcde")) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (string-copy! b 3 "XYZ"))))) b
+refused
+"abcde"
+
+# `string-fill!`。
+(define s (string-copy "abcde")) (string-fill! s #\x) s
+"xxxxx"
+
+(define s (string-copy "abcde")) (string-fill! s #\x 2) s
+"abxxx"
+
+(define s (string-copy "abcde")) (string-fill! s #\x 1 3) s
+"axxde"
+
+(define s (string-copy "abcde")) (string-fill! s #\x)
+<no output>
+
+(define s (string-copy "abcde")) (string-fill! s #\z 2 2) (string-fill! s #\z 5) s
+"abcde"
+
+(string-fill! (make-string 0) #\x)
+<no output>
+
+(define s (string-copy "abcde")) (string-fill! s #\λ 1 3) (list s (string-length s))
+("aλλde" 5)
+
+(define s (string-copy "abcde")) (string-fill! s #\𐀀) (list s (string-length s))
+("𐀀𐀀𐀀𐀀𐀀" 5)
+
+(define s (string-copy "あいうえお")) (string-fill! s #\a 1 4) (list s (string-length s))
+("あaaaお" 5)
+
+(define s (string-copy "aλλb")) (string-fill! s #\é 1 3) (list s (string-length s))
+("aééb" 4)
+
+# 範囲の誤りと型の誤り。
+(define s (string-copy "abc")) (string-fill! s #\x 4)
+error: argument out of range in string-fill! "abc" #\x 4
+
+(define s (string-copy "abc")) (string-fill! s #\x 2 1)
+error: argument out of range in string-fill! "abc" #\x 2 1
+
+(define s (string-copy "abc")) (string-fill! s #\x 0 4)
+error: argument out of range in string-fill! "abc" #\x 0 4
+
+(define s (string-copy "abc")) (string-fill! s #\x -1)
+error: argument out of range in string-fill! "abc" #\x -1
+
+(define s (string-copy "abc")) (string-fill! s "x")
+error: wrong type of argument to string-fill! "abc" "x"
+
+(define s (string-copy "abc")) (string-fill! s #\x #\a)
+error: wrong type of argument to string-fill! "abc" #\x #\a
+
+(string-fill! 'abc #\x)
+error: wrong type of argument to string-fill! abc #\x
+
+(define s (string-copy "abc")) (string-fill! s 1 100)
+error: wrong type of argument to string-fill! "abc" 1 100

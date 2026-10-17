@@ -1007,6 +1007,7 @@ pub const Machine = struct {
             error.WrongArgumentCount => raiseWith(ctx, irritants, "wrong number of arguments to {s}", .{prim.name}),
             error.DivisionByZero => raiseWith(ctx, irritants, "division by zero in {s}", .{prim.name}),
             error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
+            error.Immutable => raiseWith(ctx, irritants, "cannot modify a constant in {s}", .{prim.name}),
             error.HeapLimit, error.OutOfMemory => unreachable,
         };
     }
@@ -1758,6 +1759,7 @@ test "the failures of a primitive become the conditions with their messages" {
         .{ .failure = error.IntegerOverflow, .message = "integer overflow in probe" },
         .{ .failure = error.DivisionByZero, .message = "division by zero in probe" },
         .{ .failure = error.OutOfRange, .message = "argument out of range in probe" },
+        .{ .failure = error.Immutable, .message = "cannot modify a constant in probe" },
         .{ .failure = error.HeapLimit, .message = "heap limit exceeded" },
     };
     for (cases) |c| {

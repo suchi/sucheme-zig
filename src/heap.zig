@@ -300,6 +300,15 @@ const Header = struct {
     kind: u8,
     /// Set by the marking, cleared by the sweep.
     marked: bool,
+    /// Whether the object is a constant: the data of a literal, or the string
+    /// `symbol->string` returned (R7RS 3.4). The procedures that write to an object
+    /// refuse it (`isImmutable`). Set by `makeImmutable`, never cleared; the sweep
+    /// clears `marked` and leaves this.
+    ///
+    /// Why: ヘッダに置くのは、設計(docs/design/runtime.md)の指定であり、オブジェクト
+    /// 本体に足すより小さい。`next` の後ろの `kind` と `marked` の余白に収まるので、
+    /// セルの大きさは変わらない(単体テストが固定している)。
+    immutable: bool,
 };
 
 fn Cell(comptime T: type) type {
@@ -314,6 +323,39 @@ fn kindOf(comptime T: type) u8 {
         if (U == T) return i;
     }
     @compileError("not a heap object type: " ++ @typeName(T));
+}
+
+/// The header of the cell that holds `object`.
+/// 指す先は必ずセルの中なので、整列を表明してよい(`Marker.object` と同じ)。
+fn headerOf(comptime T: type, object: *const T) *Header {
+    const cell: *Cell(T) = @alignCast(@constCast(@fieldParentPtr("value", object)));
+    return &cell.header;
+}
+
+/// Whether `v` is a constant: a pair, string or vector that `makeImmutable` marked.
+/// 場所を持たない値(数、シンボル、手続きなど)は、変更できないが、「不変の印」を持つ対象では
+/// ないので、偽である。変更の手続きは、型の検査が済んだ引数にこれを問い合わせる
+/// (`prim/immutable.zig`)。
+pub fn isImmutable(v: Value) bool {
+    return switch (v.kind()) {
+        .pair => headerOf(Pair, v.asPair().?).immutable,
+        .string => headerOf(String, v.asString().?).immutable,
+        .vector => headerOf(Vector, v.asVector().?).immutable,
+        else => false,
+    };
+}
+
+/// Marks the pair, string or vector `v` as a constant. Another kind of value has no
+/// locations to mark, and is left as it is.
+/// この関数は `v` そのものだけを印づける。到達できるオブジェクトの全体に印を立てるのは
+/// `freeze.zig` である。
+pub fn makeImmutable(v: Value) void {
+    switch (v.kind()) {
+        .pair => headerOf(Pair, v.asPair().?).immutable = true,
+        .string => headerOf(String, v.asString().?).immutable = true,
+        .vector => headerOf(Vector, v.asVector().?).immutable = true,
+        else => {},
+    }
 }
 
 /// The bytes a cell of `T` accounts for, without its payload.
@@ -512,11 +554,51 @@ pub const Heap = struct {
         return self.linkString(bytes, total);
     }
 
+    /// A new string of `len` bytes that `filler` writes, which must be valid UTF-8 (ADR-0008).
+    /// `filler.fill(bytes)` が、確保したペイロードに内容を書く。ペイロードの大きさは、先に
+    /// 上限に照らして検査するので、入力の大きさに比例する文字列(`make-string` や
+    /// `string-append`)は、一時の領域に作ってから写すことなく、直接作れる。書いている間は
+    /// 何も確保しない。コピーがペイロードで、先に確保し、セルを確保できなければ返す
+    /// (`createString` と同じ)。
+    pub fn createStringFilled(self: *Heap, len: usize, filler: anytype) Error!*String {
+        const total = try self.reserveWithPayload(.limit, String, len, 1);
+        const bytes = try self.backing.alloc(u8, len);
+        errdefer self.backing.free(bytes);
+        filler.fill(bytes);
+        return self.linkString(bytes, total);
+    }
+
+    /// New bytes of `len` bytes for `s` to take in place of its own, which the caller
+    /// fills from the old ones and gives to `replaceStringBytes`.
+    ///
+    /// Why: 文字を置き換えて UTF-8 の幅が変わる手続き(`string-set!` など)は、バイト列の
+    /// 長さが変わる。古いバイト列を書き換えながら伸び縮みさせると、確保の失敗が文字列を
+    /// 壊す。新しいバイト列を先に確保し、すべてを書いてから差し替えれば、失敗はここだけで、
+    /// 文字列は元のままである。確保の検査は、差し替えのあとの計上が上限に収まるかで行う
+    /// (増える分だけを見る)。
+    pub fn stringBytesFor(self: *Heap, s: *const String, len: usize) Error![]u8 {
+        if (len > s.bytes.len) try self.reserve(.limit, len - s.bytes.len);
+        return self.backing.alloc(u8, len);
+    }
+
+    /// Makes `new`, from `stringBytesFor`, the bytes of `s`, and gives the old ones back.
+    /// 計上は新しい長さに合わせ、`is_ascii` は新しいバイト列から計算し直す。
+    pub fn replaceStringBytes(self: *Heap, s: *String, new: []u8) void {
+        std.debug.assert(std.unicode.utf8ValidateSlice(new));
+        self.accounted = self.accounted - s.bytes.len + new.len;
+        if (self.accounted > self.peak) self.peak = self.accounted;
+        self.backing.free(s.bytes);
+        s.bytes = new;
+        s.is_ascii = value_mod.allAscii(new);
+    }
+
     /// Puts `bytes`, which the string will own, in a new cell.
     /// セルを確保できなければ、呼び出し側の `errdefer` がペイロードを返す。
     fn linkString(self: *Heap, bytes: []u8, total: usize) Error!*String {
+        std.debug.assert(std.unicode.utf8ValidateSlice(bytes));
         const cell = try self.backing.create(Cell(String));
         // 文字列を作る経路はすべてここを通るので、フラグの計算はここだけにある。
+        // 作ったあとに内容が変わる経路は `replaceStringBytes` で、そこでも計算し直す。
         cell.value = .{ .bytes = bytes, .is_ascii = value_mod.allAscii(bytes) };
         self.link(String, cell, total);
         return &cell.value;
@@ -530,6 +612,22 @@ pub const Heap = struct {
         errdefer self.backing.free(copy);
         const cell = try self.backing.create(Cell(Vector));
         cell.value = .{ .items = copy };
+        self.link(Vector, cell, total);
+        return &cell.value;
+    }
+
+    /// A new vector of `len` elements that `filler` writes.
+    /// `filler.fill(items)` が、確保した要素の領域に値を書く。`createStringFilled` と同じ
+    /// 形で、入力の大きさに比例するベクタ(`string->vector` など)を、一時の領域を経ずに作る。
+    /// 領域は、書き終えるまでヒープにつながれていないので、GC が未初期化の要素を見ることはない
+    /// (GC は機械のステップの境目でしか走らない)。
+    pub fn createVectorFilled(self: *Heap, len: usize, filler: anytype) Error!*Vector {
+        const total = try self.reserveWithPayload(.limit, Vector, len, @sizeOf(Value));
+        const items = try self.backing.alloc(Value, len);
+        errdefer self.backing.free(items);
+        filler.fill(items);
+        const cell = try self.backing.create(Cell(Vector));
+        cell.value = .{ .items = items };
         self.link(Vector, cell, total);
         return &cell.value;
     }
@@ -685,7 +783,7 @@ pub const Heap = struct {
     }
 
     fn link(self: *Heap, comptime T: type, cell: *Cell(T), bytes: usize) void {
-        cell.header = .{ .next = self.objects, .kind = kindOf(T), .marked = false };
+        cell.header = .{ .next = self.objects, .kind = kindOf(T), .marked = false, .immutable = false };
         self.objects = &cell.header;
         self.accounted += bytes;
         self.count += 1;
@@ -1644,4 +1742,132 @@ test "slow: a flood of distinct names ends at the limit, and a collection gives 
         if (heap.shouldCollect()) heap.collect(TestRoots{});
     }
     try std.testing.expectEqual(length, heap.symbols.entries.items.len);
+}
+
+test "the header with the mark for a constant is no larger than the one without" {
+    // `kind` と `marked` と `immutable` は `next` の後ろの余白に収まる。大きさが増えると、
+    // すべてのセルが増える。
+    try std.testing.expectEqual(2 * @sizeOf(usize), @sizeOf(Header));
+}
+
+test "an object is not a constant until it is marked, and then stays one through collections" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const pair = try heap.cons(.fromFixnum(1), .empty_list_value);
+    const string: Value = .fromString(try heap.createString("abc"));
+    const vector: Value = .fromVector(try heap.createVector(&.{.fromFixnum(1)}));
+    const other = try heap.cons(.fromFixnum(2), .empty_list_value);
+    for ([_]Value{ pair, string, vector, other }) |v| try std.testing.expect(!isImmutable(v));
+    makeImmutable(pair);
+    makeImmutable(string);
+    makeImmutable(vector);
+    try std.testing.expect(isImmutable(pair));
+    try std.testing.expect(isImmutable(string));
+    try std.testing.expect(isImmutable(vector));
+    // 印は1つのオブジェクトだけにある。
+    try std.testing.expect(!isImmutable(other));
+    // マークとスイープは `marked` だけを動かす。生き残ったものの印は残り、印のないものは
+    // 印のないままである。
+    const roots = TestRoots{ .values = &.{ pair, string, vector, other } };
+    heap.collect(roots);
+    heap.collect(roots);
+    try std.testing.expect(isImmutable(pair));
+    try std.testing.expect(isImmutable(string));
+    try std.testing.expect(isImmutable(vector));
+    try std.testing.expect(!isImmutable(other));
+}
+
+test "a value that is not a pair, a string or a vector is not a constant, and marking it changes nothing" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const record_type = try heap.create(RecordType, .{ .name = try heap.internFixed("t"), .field_count = 0 });
+    const others = [_]Value{ .fromFixnum(1), .fromBool(true), .empty_list_value, .fromCharacter('a'), .unspecified_value, .fromRecordType(record_type) };
+    for (others) |v| {
+        makeImmutable(v);
+        try std.testing.expect(!isImmutable(v));
+    }
+}
+
+test "replacing the bytes of a string keeps the account exact, and works out the flag again" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const s = try heap.createString("abc");
+    try std.testing.expect(s.is_ascii);
+    // 伸ばす。
+    const longer = try heap.stringBytesFor(s, 4);
+    @memcpy(longer, "ab\u{3bb}");
+    heap.replaceStringBytes(s, longer);
+    try std.testing.expectEqualStrings("abλ", s.bytes);
+    try std.testing.expect(!s.is_ascii);
+    try std.testing.expectEqual(cellBytes(String) + 4, heap.accounted);
+    // 縮める。
+    const shorter = try heap.stringBytesFor(s, 1);
+    shorter[0] = 'z';
+    heap.replaceStringBytes(s, shorter);
+    try std.testing.expect(s.is_ascii);
+    try std.testing.expectEqual(cellBytes(String) + 1, heap.accounted);
+    try std.testing.expectEqual(cellBytes(String) + 4, heap.peak);
+    // 回収は、いまの長さを外す。
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "the bytes for a longer string are held to the limit by what they add" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(String) + 4 });
+    defer heap.deinit();
+    const s = try heap.createString("abcd");
+    // 同じ長さと短い長さは、上限に収まる。長くなる分は収まらない。
+    const same = try heap.stringBytesFor(s, 4);
+    @memcpy(same, "wxyz");
+    heap.replaceStringBytes(s, same);
+    try std.testing.expectEqualStrings("wxyz", s.bytes);
+    try std.testing.expectError(error.HeapLimit, heap.stringBytesFor(s, 5));
+    try std.testing.expectEqual(4, s.bytes.len);
+    try std.testing.expectEqual(cellBytes(String) + 4, heap.accounted);
+}
+
+test "createStringFilled reserves the bytes before it fills them, and flags what it was filled with" {
+    const Filler = struct {
+        text: []const u8,
+        calls: *usize,
+        fn fill(self: @This(), bytes: []u8) void {
+            self.calls.* += 1;
+            @memcpy(bytes, self.text);
+        }
+    };
+    var calls: usize = 0;
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(String) + 4 });
+    defer heap.deinit();
+    // 上限に収まらなければ、書く前に断る。
+    try std.testing.expectError(error.HeapLimit, heap.createStringFilled(5, Filler{ .text = "abcde", .calls = &calls }));
+    try std.testing.expectEqual(0, calls);
+    try std.testing.expectEqual(0, heap.accounted);
+    const s = try heap.createStringFilled(4, Filler{ .text = "ab\u{e9}", .calls = &calls });
+    try std.testing.expectEqual(1, calls);
+    try std.testing.expectEqualStrings("abé", s.bytes);
+    try std.testing.expect(!s.is_ascii);
+    try std.testing.expectEqual(cellBytes(String) + 4, heap.accounted);
+}
+
+test "createVectorFilled reserves the elements before it fills them, and accounts for them" {
+    const Filler = struct {
+        calls: *usize,
+        fn fill(self: @This(), items: []Value) void {
+            self.calls.* += 1;
+            for (items, 0..) |*slot, i| slot.* = .fromFixnum(@intCast(i));
+        }
+    };
+    var calls: usize = 0;
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Vector) + 2 * @sizeOf(Value) });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createVectorFilled(3, Filler{ .calls = &calls }));
+    try std.testing.expectError(error.HeapLimit, heap.createVectorFilled(std.math.maxInt(usize), Filler{ .calls = &calls }));
+    try std.testing.expectEqual(0, calls);
+    try std.testing.expectEqual(0, heap.accounted);
+    const v = try heap.createVectorFilled(2, Filler{ .calls = &calls });
+    try std.testing.expectEqual(1, calls);
+    try std.testing.expectEqual(1, v.items[1].asFixnum().?);
+    try std.testing.expectEqual(cellBytes(Vector) + 2 * @sizeOf(Value), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.accounted);
 }

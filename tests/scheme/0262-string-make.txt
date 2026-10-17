@@ -1,0 +1,158 @@
+# スライス 3d: 文字列を作る手続き(R7RS 6.7)。`make-string` `string` `string-append`
+# `string-copy` `substring`。位置と長さは文字で数える。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+# 原文の取得元: docs/spec/errata-corrected-r7rs.pdf(6.7)。
+
+# `make-string` は、k 個の文字からなる新しい文字列を返す。文字を省くと、中身は未規定である
+# (この処理系は空白で埋める)ので、長さだけを見る。
+(make-string 3 #\*)
+"***"
+
+(make-string 0 #\*)
+""
+
+(string-length (make-string 5))
+5
+
+(make-string 2 #\λ)
+"λλ"
+
+(string-length (make-string 3 #\あ))
+3
+
+# 呼ぶたびに別の文字列である。
+(eq? (make-string 1 #\a) (make-string 1 #\a))
+#f
+
+# `string` は、引数の文字からなる文字列を返す。`list` に似る。
+(string)
+""
+
+(string #\a)
+"a"
+
+(string #\a #\b #\c)
+"abc"
+
+(string #\a #\λ #\あ)
+"aλあ"
+
+(string-length (string #\a #\λ #\あ))
+3
+
+# `string-append`。
+(string-append)
+""
+
+(string-append "ab" "cd")
+"abcd"
+
+(string-append "ab")
+"ab"
+
+(string-append "" "abc" "")
+"abc"
+
+(string-append "a" "λ" "あ")
+"aλあ"
+
+(string-length (string-append "aλ" "あ"))
+3
+
+(string-append (make-string 2 #\a) (make-string 2 #\b) "c")
+"aabbc"
+
+# `string-copy` と `substring`。位置は文字で数える。
+(string-copy "abcde")
+"abcde"
+
+(string-copy "abcde" 2)
+"cde"
+
+(string-copy "abcde" 1 3)
+"bc"
+
+(substring "abcde" 1 3)
+"bc"
+
+(substring "abcde" 0 5)
+"abcde"
+
+(substring "abcde" 2 2)
+""
+
+(string-copy "abcde" 5)
+""
+
+(substring "aλあ𐀀z" 1 3)
+"λあ"
+
+(string-copy "aλあ𐀀z" 3)
+"𐀀z"
+
+(string-length (string-copy "aλあ𐀀z" 1 4))
+3
+
+# 写しは元と別のオブジェクトで、元と等しい。
+(define s "abc") (define t (string-copy s)) (list (eq? s t) (equal? s t) (string=? s t))
+(#f #t #t)
+
+# `string-copy` は元の文字列を変えない。写しを書き換えても、元は変わらない。
+(define s (make-string 3 #\a)) (define t (string-copy s)) (string-set! t 0 #\b) (list s t)
+("aaa" "baa")
+
+# 範囲の誤り。
+(string-copy "abc" 4)
+error: argument out of range in string-copy "abc" 4
+
+(string-copy "abc" 2 1)
+error: argument out of range in string-copy "abc" 2 1
+
+(string-copy "abc" 0 4)
+error: argument out of range in string-copy "abc" 0 4
+
+(string-copy "abc" -1)
+error: argument out of range in string-copy "abc" -1
+
+(substring "abc" 2 4)
+error: argument out of range in substring "abc" 2 4
+
+(substring "abc" 3 2)
+error: argument out of range in substring "abc" 3 2
+
+(make-string -1 #\a)
+error: argument out of range in make-string -1 #\a
+
+# 型の誤りは、範囲の誤りより先に報告される。
+(string-copy 'abc)
+error: wrong type of argument to string-copy abc
+
+(string-copy "abc" #\a)
+error: wrong type of argument to string-copy "abc" #\a
+
+(string-copy "abc" 10 #\a)
+error: wrong type of argument to string-copy "abc" 10 #\a
+
+(substring "abc" 0)
+error: wrong number of arguments to substring "abc" 0
+
+(make-string "3")
+error: wrong type of argument to make-string "3"
+
+(make-string 3 "a")
+error: wrong type of argument to make-string 3 "a"
+
+(make-string)
+error: wrong number of arguments to make-string
+
+(string 1)
+error: wrong type of argument to string 1
+
+(string #\a "b")
+error: wrong type of argument to string #\a "b"
+
+(string-append "a" 'b)
+error: wrong type of argument to string-append "a" b
+
+(string-append 1)
+error: wrong type of argument to string-append 1

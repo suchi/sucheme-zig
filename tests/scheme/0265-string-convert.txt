@@ -1,0 +1,184 @@
+# スライス 3d: 文字列とリストとベクタの変換(R7RS 6.7 と 6.8)。`string->list` `list->string`
+# `string->vector` `vector->string`。`start` と `end` は省ける。位置は文字で数える。
+# `string->vector` と `vector->string` は、ベクタの手続きを足す 3e より先に、ベクタの型が
+# 既にあるので、ここで足した。
+#
+# 原文(R7RS 6.8)の例:
+#   (string->vector "ABC")        => #(#\A #\B #\C)
+#   (vector->string #(#\1 #\2 #\3)) => "123"
+
+(string->list "abc")
+(#\a #\b #\c)
+
+(string->list "")
+()
+
+(string->list "abcde" 2)
+(#\c #\d #\e)
+
+(string->list "abcde" 1 3)
+(#\b #\c)
+
+(string->list "abcde" 5)
+()
+
+(string->list "abcde" 2 2)
+()
+
+(string->list "aλあ𐀀z")
+(#\a #\λ #\あ #\𐀀 #\z)
+
+(string->list "aλあ𐀀z" 1 4)
+(#\λ #\あ #\𐀀)
+
+(list->string '(#\a #\b #\c))
+"abc"
+
+(list->string '())
+""
+
+(list->string (list #\a #\λ #\あ #\𐀀))
+"aλあ𐀀"
+
+(string-length (list->string (list #\a #\λ #\あ #\𐀀)))
+4
+
+# `string->list` と `list->string` は、`equal?` について逆である。
+(equal? "aλあ𐀀z" (list->string (string->list "aλあ𐀀z")))
+#t
+
+(equal? '(#\a #\b) (string->list (list->string '(#\a #\b))))
+#t
+
+# 結果は新しく、書き換えられる。元が定数でも、そうである。
+(define l (string->list "abc")) (set-car! l #\x) l
+(#\x #\b #\c)
+
+(define s (list->string '(#\a #\b))) (string-set! s 0 #\x) s
+"xb"
+
+(define l '(#\a #\b)) (define s (list->string l)) (string-set! s 0 #\x) (list l s)
+((#\a #\b) "xb")
+
+# `string->vector` と `vector->string`。原文の例。
+(string->vector "ABC")
+#(#\A #\B #\C)
+
+(vector->string #(#\1 #\2 #\3))
+"123"
+
+(string->vector "")
+#()
+
+(string->vector "abcde" 2)
+#(#\c #\d #\e)
+
+(string->vector "abcde" 1 3)
+#(#\b #\c)
+
+(string->vector "aλあ𐀀z")
+#(#\a #\λ #\あ #\𐀀 #\z)
+
+(vector->string #())
+""
+
+(vector->string #(#\a #\b #\c #\d) 1)
+"bcd"
+
+(vector->string #(#\a #\b #\c #\d) 1 3)
+"bc"
+
+(vector->string #(#\a #\λ #\あ #\𐀀))
+"aλあ𐀀"
+
+(vector->string #(#\a #\b) 2)
+""
+
+(equal? "aλあ𐀀z" (vector->string (string->vector "aλあ𐀀z")))
+#t
+
+# 結果は新しく、書き換えられる。
+(define v (string->vector "abc")) (vector-ref v 0)
+#\a
+
+(define s (vector->string #(#\a #\b))) (string-set! s 0 #\x) s
+"xb"
+
+# 範囲の外の要素は、文字でなくてもよい。範囲の中に文字でないものがあると、型の誤りである。
+(vector->string (vector #\a 1 #\c) 0 1)
+"a"
+
+(vector->string (vector #\a 1 #\c) 2)
+"c"
+
+(vector->string (vector #\a 1 #\c))
+error: wrong type of argument to vector->string #(#\a 1 #\c)
+
+(vector->string (vector #\a 1 #\c) 1 2)
+error: wrong type of argument to vector->string #(#\a 1 #\c) 1 2
+
+# 範囲の誤りと型の誤り。型の誤りが先に報告される。
+(string->list "abc" 4)
+error: argument out of range in string->list "abc" 4
+
+(string->list "abc" 2 1)
+error: argument out of range in string->list "abc" 2 1
+
+(string->list "abc" 0 4)
+error: argument out of range in string->list "abc" 0 4
+
+(string->list "abc" -1)
+error: argument out of range in string->list "abc" -1
+
+(string->list "abc" #\a)
+error: wrong type of argument to string->list "abc" #\a
+
+(string->list 'abc)
+error: wrong type of argument to string->list abc
+
+(string->list '(#\a))
+error: wrong type of argument to string->list (#\a)
+
+(string->vector "abc" 4)
+error: argument out of range in string->vector "abc" 4
+
+(string->vector "abc" 100 #\a)
+error: wrong type of argument to string->vector "abc" 100 #\a
+
+(string->vector '(#\a))
+error: wrong type of argument to string->vector (#\a)
+
+(vector->string #(#\a #\b) 3)
+error: argument out of range in vector->string #(#\a #\b) 3
+
+(vector->string #(#\a #\b) 1 0)
+error: argument out of range in vector->string #(#\a #\b) 1 0
+
+(vector->string "ab")
+error: wrong type of argument to vector->string "ab"
+
+(vector->string #(#\a) 'x)
+error: wrong type of argument to vector->string #(#\a) x
+
+# `list->string` は、リストでないものと、文字でない要素を、型の誤りとする。
+(list->string '(#\a 1))
+error: wrong type of argument to list->string (#\a 1)
+
+(list->string '(1 #\a))
+error: wrong type of argument to list->string (1 #\a)
+
+(list->string "abc")
+error: wrong type of argument to list->string "abc"
+
+(list->string '(#\a . #\b))
+error: wrong type of argument to list->string (#\a . #\b)
+
+(list->string #\a)
+error: wrong type of argument to list->string #\a
+
+# 輪になったリストは、止まって、型の誤りになる。
+(define l (list #\a #\b)) (set-cdr! (cdr l) l) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (list->string l)))))
+refused
+
+(define l (list #\a)) (set-cdr! l l) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (list->string l)))))
+refused
