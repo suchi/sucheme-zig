@@ -70,7 +70,7 @@ GC ヒープに置くオブジェクトは次の2群である。種別タグは�
 | 不変の印 | リテラル由来のオブジェクトへの破壊的操作を拒否する |
 | 確保済みリストの次へのリンク | スイープで全オブジェクトを辿る |
 
-段階2までの実装の `Header` は、種別、マーク、次へのリンクの3つだけを持ち、不変の印はまだ無い。不変の印は、リテラルに対する破壊的操作の手続き(`set-car!` など)が入る段階3の最初のスライスで足す([plans/0010-slices-1k-1l-primitives-and-repl-continuation.md](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の送り先の表)。
+段階3のスライス 3d の実装の `Header` は、種別、マーク、不変の印、次へのリンクを持つ(`src/heap.zig`)。不変の印は `bool` 1つで、種別とマークと同じ余白に収まり、セルの大きさは変わらない(単体テストが固定している)。スイープはマークだけを消し、不変の印は残す。印を読み書きする関数は `heap.isImmutable` と `heap.makeImmutable` で、ペアと文字列とベクタだけが印を持つ。
 
 「先頭に持つ」とは書かない。Zig の通常の `struct` は配置順を保証せず、宣言の位置も実際の位置も根拠にできない。実機で確認したところ、ヘッダを2番目に宣言した構造体で `@offsetOf` が0になる例と16になる例の両方が再現した。
 
@@ -142,7 +142,14 @@ R7RS 4.1.2 は「As noted in section 3.4, it is an error to attempt to alter a c
 
 `bytevector-copy!` `bytevector-u8-set!` `list-set!` `read-bytevector!` `set-car!` `set-cdr!` `string-copy!` `string-fill!` `string-set!` `vector-copy!` `vector-fill!` `vector-set!`
 
-`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。この一覧が原文からの抽出と一致することを検査にかける。検査は、一覧の手続きが入る段階3で足す。段階2までは、この一覧の手続きも、一覧を検査する仕組みも、不変の印も無い。
+`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。この一覧が原文からの抽出と一致することの検査は、まだ無い。散文の一覧を検査にかけるより、束縛済みの `!` 付き手続きのすべてが定数への書き込みを断ることを、コードの事実として検査にかけるほうが、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md) の線引きに合う。その検査は、一覧の手続きがそろう段階まで入れられないので、roadmap の項目に残した。
+
+スライス 3d の実装は、次の形である(詳細は `src/freeze.zig` と `src/prim/immutable.zig` の doc コメントにある)。
+
+- 印を立てる場所は、展開器がリテラルを定数の節点にする1か所(`Expander.constant`)である。`quote` と自己評価するリテラルのどちらも通る。マクロの出力に含まれるリテラルも同じである。別名を元のシンボルに戻したあとの写しに印を立てる。`symbol->string` は、複製した文字列に印を立てる。
+- `freeze.freezeGraph` は、到達できるペアとベクタと文字列のすべてに印を立てる。明示的なスタックで進め、再帰しない。訪問済みの集合を持つので、循環と共有で止まる。印のあるオブジェクトには降りない(印のあるオブジェクトから到達できるものは、すべて印がある。印のあるオブジェクトは書き換えられず、あとから印のないものを指すこともない)。見つける作業と印を立てる作業を分けるので、作業領域の確保が失敗しても、どれにも印を立てない。作業領域は、展開の作業領域としてヒープの上限に計上する(`Expander.scratch`)。
+- 検査は `prim/immutable.zig` の `requireMutable` である。引数は、型の検査のあと、範囲の検査の前に検査する。範囲が空の書き込み(`(string-fill! "" #\a)` など)も、定数なら断る。誤りは `PrimitiveError.Immutable` で、機械が `cannot modify a constant in <手続き名>` の条件にし、引数を irritant とする。
+- この段階で検査を持つのは、`set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!` である。`list-set!` は、Scheme の実装(`lib/sucheme/procedures.scm`)が `set-car!` を呼ぶので、誤りが `set-car!` の名前で、書き込もうとしたペア以降のリストを irritant として報告される。ベクタとバイトベクタの手続き(`vector-set!` `vector-fill!` `vector-copy!` `bytevector-u8-set!` `bytevector-copy!` と、段階5の `read-bytevector!`)は、手続きを足すスライスが、同じ `requireMutable` を呼ぶ。ベクタとバイトベクタのリテラルの印は、`freezeGraph` がすでに立てる(ベクタ)か、バイトベクタの型を足すスライス(3e)が、`heap.isImmutable` と `heap.makeImmutable` の対象に足す。
 
 ## ガベージコレクション
 

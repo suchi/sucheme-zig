@@ -1,0 +1,53 @@
+# スライス 3d を規模で試す。入力の大きさに比例して確保する文字列の手続きが、確保を GC の
+# 計上に通すこと、長い文字列と長いリストを扱えること、ゴミになった文字列のバイト列が、GC で
+# 計上から外れること。実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ走る
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0266-string-limits.txt と src/prim/string.zig の単体テストにある。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。ランナーの上限は 64 MiB である。
+
+# 200万文字の文字列を、リストにする。ペア1つが数十バイトなので、上限を超える。
+(length (string->list (make-string 2000000 #\a)))
+error: heap limit exceeded
+
+# 上限に収まる長さのリストと往復する。
+(string-length (list->string (string->list (make-string 500000 #\a))))
+500000
+
+(define l (string->list (make-string 300000 #\あ))) (list (length l) (car l) (string-length (list->string l)))
+(300000 #\あ 300000)
+
+# 長い文字列から、ベクタへ、ベクタから文字列へ。
+(vector-length (string->vector (make-string 2000000 #\a)))
+2000000
+
+(string-length (vector->string (string->vector (make-string 1000000 #\λ))))
+1000000
+
+# 長い文字列を作り直しながら伸ばす。古い文字列がゴミになり、GC が計上から外す。2万回の
+# 追記が確保する量の合計は、上限を超える。
+(define (grow s n) (if (= n 0) s (grow (string-append s "ab") (- n 1)))) (string-length (grow "" 20000))
+40000
+
+(define (grow s n) (if (= n 0) s (grow (string-append s "λ") (- n 1)))) (string-length (grow "" 20000))
+20000
+
+# `string-copy` を繰り返す。
+(define (copy s n) (if (= n 0) (string-length s) (copy (string-copy s) (- n 1)))) (copy (make-string 1000000 #\a) 200)
+1000000
+
+# 長い文字列を1文字ずつ書き換える。ASCII の文字列への ASCII の書き込みは、確保しない。
+(define s (make-string 100000 #\a)) (define (fill! i) (if (= i 100000) 'done (begin (string-set! s i #\b) (fill! (+ i 1))))) (fill! 0) (list (string=? s (make-string 100000 #\b)) (string<? (make-string 100000 #\a) s))
+done
+(#t #t)
+
+# 幅の広い文字で書き換えると、そのたびにバイト列を作り直す。あふれず、中身が合う。
+(define s (make-string 3000 #\a)) (define (fill! i) (if (= i 3000) 'done (begin (string-set! s i #\λ) (fill! (+ i 1))))) (fill! 0) (list (string=? s (make-string 3000 #\λ)) (string-length s))
+done
+(#t 3000)
+
+# 長い文字列の比較と、範囲の書き込み。
+(define a (make-string 5000000 #\a)) (define b (make-string 5000000 #\a)) (string-set! b 4999999 #\b) (list (string=? a b) (string<? a b) (string>? b a))
+(#f #t #t)
+
+(define s (make-string 4000000 #\a)) (string-copy! s 1 s 0 3999999) (string-fill! s #\z 1000000 3000000) (list (string-ref s 0) (string-ref s 999999) (string-ref s 1000000) (string-ref s 2999999) (string-ref s 3000000) (string-length s))
+(#\a #\a #\z #\z #\a 4000000)

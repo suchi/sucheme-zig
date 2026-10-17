@@ -1,0 +1,114 @@
+# スライス 3d: リテラルの不変性(R7RS 3.4 と 4.1.2)。`quote` したデータと、自己評価する
+# リテラルは定数で、そこから到達できるペアのすべてが定数である。定数に書き込む手続きは、
+# 誤りとして断る。ここは、すでに束縛されている `set-car!` `set-cdr!` と `list-set!` を見る。
+# 文字列は 0261、ベクタとバイトベクタは 3e が足す。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+#
+# 原文(R7RS 6.4)の例: `(list-set! '(0 1 2) 1 "oops")` は、定数のリストへの書き込みで誤りである。
+
+# `quote` したリストは定数である。
+(set-car! '(1 2) 0)
+error: cannot modify a constant in set-car! (1 2) 0
+
+(set-cdr! '(1 2) 0)
+error: cannot modify a constant in set-cdr! (1 2) 0
+
+# 変数が定数を指していても、定数である。
+(define x '(1 2)) (set-car! x 0)
+error: cannot modify a constant in set-car! (1 2) 0
+
+# 手続きの本体の `quote` は、呼ぶたびに同じ定数を返す。
+(define (g) '(1 2)) (set-car! (g) 0)
+error: cannot modify a constant in set-car! (1 2) 0
+
+(define (g) '(1 2)) (eq? (g) (g))
+#t
+
+# リストの途中のペアも、入れ子のペアも定数である。
+(set-car! (cdr '(1 2 3)) 0)
+error: cannot modify a constant in set-car! (2 3) 0
+
+(set-cdr! (cdr '(1 2 3)) 0)
+error: cannot modify a constant in set-cdr! (2 3) 0
+
+(set-car! (car '((1) 2)) 0)
+error: cannot modify a constant in set-car! (1) 0
+
+(set-cdr! (car (cdr '(0 (1 2) 3))) 0)
+error: cannot modify a constant in set-cdr! (1 2) 0
+
+# ドット対も、`quasiquote` を使わずに書いたデータも定数である。
+(set-cdr! '(1 . 2) 0)
+error: cannot modify a constant in set-cdr! (1 . 2) 0
+
+# 自己評価するベクタの中のリストも定数である。ベクタから取り出しても同じである。
+(set-car! (vector-ref #(1 (2 3)) 1) 0)
+error: cannot modify a constant in set-car! (2 3) 0
+
+# マクロが出力する `quote` も、リテラルである。
+(define-syntax m (syntax-rules () ((_) '(1 2)))) (set-car! (m) 0)
+error: cannot modify a constant in set-car! (1 2) 0
+
+# 引数にした誤りは、型の誤りが先に報告される。
+(set-car! 1 0)
+error: wrong type of argument to set-car! 1 0
+
+(set-car! '() 0)
+error: wrong type of argument to set-car! () 0
+
+# 手続きが作るデータは定数ではない。`list` と `cons` の結果は書き換えられる。
+(define l (list 1 2)) (set-car! l 0) (set-cdr! (cdr l) '(3)) l
+(0 2 3)
+
+(define p (cons 1 2)) (set-car! p 0) (set-cdr! p 3) p
+(0 . 3)
+
+# 同じ形の2つのデータのうち、定数のほうだけが断られる。
+(define c '(1 2)) (define l (list 1 2)) (set-car! l 0) (list c l (equal? c (list 1 2)))
+((1 2) (0 2) #t)
+
+# 定数を部分に持つ、手続きが作ったペアは、ペアそのものが書き換えられる。部分は定数のままである。
+(define p (cons '(1 2) 3)) (set-car! p 9) p
+(9 . 3)
+
+(define p (cons '(1 2) 3)) (set-car! (car p) 9)
+error: cannot modify a constant in set-car! (1 2) 9
+
+# 定数への書き込みは、断られたあとで、何も変えない。
+(define c '(1 2)) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (set-car! c 0))))) c
+refused
+(1 2)
+
+# 断られた誤りは、`guard` の代わりの `with-exception-handler` で捕まえられ、`error-object?` である。
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k (error-object-message e))) (lambda () (set-cdr! '(1) 2)))))
+"cannot modify a constant in set-cdr!"
+
+# 印は、GC のあとも残る。GC が何度も走る間に、定数は定数のままである。
+(define c '(1 2)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (set-car! c 0)
+ok
+error: cannot modify a constant in set-car! (1 2) 0
+
+# 空リスト、数、真偽値、文字、シンボルは場所を持たない。リテラルにしても、何も起きない。
+(list '() 1 #t #\a 'x)
+(() 1 #t #\a x)
+
+# `list-set!` は `set-car!` に書き込むので、定数のリストへの書き込みを、`set-car!` の誤りとして断る。
+# 誤りの手続き名が `set-car!` で、引数が、書き込もうとしたペア以降のリストである。
+(import (sucheme procedures)) (list-set! '(0 1 2) 1 "oops")
+error: cannot modify a constant in set-car! (1 2) "oops"
+
+(import (sucheme procedures)) (list-set! '(0 1 2) 0 "oops")
+error: cannot modify a constant in set-car! (0 1 2) "oops"
+
+# 対照: 手続きが作ったリストには書き込める。
+(import (sucheme procedures)) (define l (list 0 1 2)) (list-set! l 1 'x) l
+(0 x 2)
+
+(import (sucheme procedures)) (define l (list-copy '(0 1 2))) (list-set! l 1 'x) l
+(0 x 2)
+
+(import (sucheme procedures)) (define l (map (lambda (x) x) '(0 1 2))) (list-set! l 2 'x) l
+(0 1 x)
+
+(import (sucheme procedures)) (define l (append '(0 1) '(2))) (list-set! l 0 'x) l
+(x 1 2)

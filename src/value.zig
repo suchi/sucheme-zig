@@ -423,8 +423,11 @@ pub const Pair = struct {
 pub const String = struct {
     bytes: []u8,
     /// Whether every character is ASCII, so that character `n` is byte `n`.
-    /// 文字列を作る `Heap.createString` の1か所だけが計算する。ここで既定値を持たない
-    /// のは、計算し忘れた作り方が、黙って誤った答えを返すのを避けるためである。
+    /// 計算するのは、`Heap` の文字列を作る経路の末尾(`linkString`)と、内容を差し替える
+    /// `replaceStringBytes` の2か所だけである。ここで既定値を持たないのは、計算し忘れた
+    /// 作り方が、黙って誤った答えを返すのを避けるためである。同じ幅の文字に置き換える書き込み
+    /// (ASCII を ASCII へ、同じ幅の非 ASCII へ)は、この印を変えない。印が変わるのは、文字の
+    /// 幅が変わる書き込みで、それは必ず `replaceStringBytes` を通る。
     /// GC の走査にも、ヒープの計上にも関わらない(計上するのはバイト列の長さである)。
     is_ascii: bool,
 
@@ -439,6 +442,30 @@ pub const String = struct {
             if (b & 0xC0 != 0x80) count += 1;
         }
         return count;
+    }
+
+    /// Where the characters `start` up to `end` are in `bytes`: the offset of the first
+    /// byte of character `start`, and the offset after character `end - 1`. `start` must
+    /// not be more than `end`, and `end` not more than `length`.
+    /// ASCII だけなら位置がそのままバイトの位置で、そうでなければ先頭から走査する。
+    /// `start` が `end` に等しければ、同じ位置を2つ返す。`end` が `length` に等しければ、
+    /// 終わりは `bytes.len` である。
+    pub fn byteSpan(self: *const String, start: usize, end: usize) struct { from: usize, to: usize } {
+        std.debug.assert(start <= end);
+        if (self.is_ascii) {
+            std.debug.assert(end <= self.bytes.len);
+            return .{ .from = start, .to = end };
+        }
+        var from: usize = 0;
+        var offset: usize = 0;
+        var index: usize = 0;
+        while (true) {
+            if (index == start) from = offset;
+            if (index == end) return .{ .from = from, .to = offset };
+            // バイト列は妥当な UTF-8 なので、先頭バイトが幅を決める。
+            offset += std.unicode.utf8ByteSequenceLength(self.bytes[offset]) catch unreachable;
+            index += 1;
+        }
     }
 
     /// The character at `index`, counted in characters, or null when `index` is
@@ -527,6 +554,10 @@ pub const PrimitiveError = error{
     /// An argument is of the right type but outside what the primitive takes,
     /// such as an index past the end of a vector.
     OutOfRange,
+    /// The object to write to is a constant: the data of a literal, or the string
+    /// `symbol->string` returned (R7RS 3.4). R7RS 4.1.2 makes it an error to alter one.
+    /// `prim/immutable.zig` の `requireMutable` が返す。
+    Immutable,
     /// The allocation would take the heap past its limit.
     /// `Heap` のエラーと同じ名前である。そのまま返してよい。
     HeapLimit,
