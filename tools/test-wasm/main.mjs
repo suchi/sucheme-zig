@@ -513,6 +513,31 @@ test("strings are made, written and compared in wasm32, and a constant is refuse
   assert.deepEqual(h.run('(string-append "a" "b")'), [OK, '"ab"\n']);
 });
 
+// バイトベクタ(スライス 3e)。大きさと位置は 64 ビットの整数で、wasm32 の usize は 32 ビットなので、
+// 2^32 を超える値が、小さな値に化けて成功しないことを固定する。
+test("bytevectors are made, written and converted in wasm32, and a constant is refused", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("#u8(1 2 3) (bytevector-u8-ref (bytevector 1 2 3) 1) (make-bytevector 2 12)"), [OK, "#u8(1 2 3)\n2\n#u8(12 12)\n"]);
+  assert.deepEqual(
+    h.run('(define b (bytevector 10 20 30 40 50)) (bytevector-copy! b 1 (bytevector 1 2 3 4 5) 0 2) (list b (bytevector-append b #u8(9)) (bytevector-copy b 3))'),
+    [OK, "(#u8(10 1 2 40 50) #u8(10 1 2 40 50 9) #u8(40 50))\n"],
+  );
+  assert.deepEqual(h.run('(string->utf8 "aλあ𐀀") (utf8->string (string->utf8 "aλあ𐀀")) (utf8->string #u8(97 206 187) 1)'), [OK, '#u8(97 206 187 227 129 130 240 144 128 128)\n"aλあ𐀀"\n"λ"\n']);
+  assert.deepEqual(h.run("(equal? #u8(1 2) (bytevector 1 2)) (equal? #u8(1 2) #u8(1 3))"), [OK, "#t\n#f\n"]);
+  assert.deepEqual(h.run("(bytevector-u8-set! #u8(1 2 3) 0 9)"), [SCHEME_ERROR, "error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9\n"]);
+  assert.deepEqual(h.run("(bytevector-copy! '#u8(1 2 3) 0 #u8())"), [SCHEME_ERROR, "error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8()\n"]);
+  assert.deepEqual(h.run("(utf8->string #u8(237 160 128))"), [SCHEME_ERROR, "error: argument out of range in utf8->string #u8(237 160 128)\n"]);
+  // 2^32 を切り捨てると 0 になる大きさと位置。
+  assert.deepEqual(h.run("(make-bytevector 4294967296 1)"), [SCHEME_ERROR, "error: heap limit exceeded\n"]);
+  assert.deepEqual(h.run("(bytevector-u8-ref #u8(1 2 3) 4294967296)"), [SCHEME_ERROR, "error: argument out of range in bytevector-u8-ref #u8(1 2 3) 4294967296\n"]);
+  assert.deepEqual(h.run("(bytevector-u8-set! (bytevector 1 2 3) 4294967296 0)"), [SCHEME_ERROR, "error: argument out of range in bytevector-u8-set! #u8(1 2 3) 4294967296 0\n"]);
+  assert.deepEqual(h.run("(bytevector-copy #u8(1 2 3) 4294967296)"), [SCHEME_ERROR, "error: argument out of range in bytevector-copy #u8(1 2 3) 4294967296\n"]);
+  assert.deepEqual(h.run("(bytevector-copy! (bytevector 1 2 3) 4294967296 #u8())"), [SCHEME_ERROR, "error: argument out of range in bytevector-copy! #u8(1 2 3) 4294967296 #u8()\n"]);
+  assert.deepEqual(h.run('(string->utf8 "abc" 4294967296)'), [SCHEME_ERROR, 'error: argument out of range in string->utf8 "abc" 4294967296\n']);
+  // エラーのあとも、同じインスタンスが使える。
+  assert.deepEqual(h.run("(bytevector-append #u8(1) #u8(2))"), [OK, "#u8(1 2)\n"]);
+});
+
 // 添字は 64 ビットの整数で、wasm32 の usize は 32 ビットである。検査の前に usize へ
 // 切り捨てて変えると、2^32 の倍数に近い添字が有効な添字に化ける。ネイティブ(usize が
 // 64 ビット)のテストでは見えないので、ここで固定する。ネイティブの側の対応する
