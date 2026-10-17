@@ -343,7 +343,9 @@ flowchart TD
 | 3h | マージ済み。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | [#115](https://github.com/suchi/sucheme-zig/pull/115) |
 | 3f | マージ済み。EOF の値(`Value` の即値)、約束(ヒープの型 `Promise`)、`eof-object` `eof-object?` `make-promise` `promise?` `force`、内部用の `%make-promise`。設計は [runtime.md](../design/runtime.md) の「EOF の値と約束」に書いた。`delay` と `delay-force` の構文は 3j が足す | [#116](https://github.com/suchi/sucheme-zig/pull/116) |
 | 3d | 実装済み(レビュー中)。文字列のプリミティブ(`make-string` `string` `string-set!` `string-copy` `string-copy!` `string-fill!` `substring` `string-append` `string=?` などの比較5個、`string->list` `list->string` `string->vector` `vector->string`)。リテラルの不変性の基盤: ヘッダの不変の印、リテラルと `symbol->string` への印、共通の検査 `requireMutable`、`set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!`(と `list-set!`)への適用 | [#117](https://github.com/suchi/sucheme-zig/pull/117) |
-| 3e、3i から 3r | 未着手 | - |
+| 3e | 実装済み(PR 作成前)。ヒープの型 `Bytevector`(`#u8(...)` のリーダと印字)、バイトベクタの手続きと `utf8->string` `string->utf8`、ベクタの `make-vector` `vector-set!` `vector-fill!` `vector-copy` `vector-copy!` `vector-append` `vector->list` `list->vector`。ベクタとバイトベクタの書き込みが `requireMutable` を呼ぶ | - |
+| 3i | 実装済み(レビュー中)。`define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda`。本体先頭の `begin` を `Expander.scanBody` が展開する(3p から前倒し) | [#118](https://github.com/suchi/sucheme-zig/pull/118) |
+| 3j から 3r | 未着手 | - |
 
 ## 次にやること
 
