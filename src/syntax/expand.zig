@@ -739,6 +739,14 @@ const Expander = struct {
     /// 定義でも、定義に展開されるマクロの適用でもない最初の形式で、定義の並びが終わる。
     /// 適用の結果は返す形式の中に置くので、同じ形式を2回展開しない。
     ///
+    /// 先頭の意味が `begin` なら、その中の形式を、残りの前に置いて、同じ並びとして走査する
+    /// (R7RS 5.3.2 は、定義を置ける場所では、`begin` を、その中の定義の並びと同じとする)。
+    /// 空の `(begin)` は、空の並びである。`include` と `cond-expand` が持つ定義は、まだ
+    /// 展開しない(スライス 3p)。
+    /// Why: スライス 3i の `define-record-type` と `define-values` は、マクロの適用が複数の
+    /// 定義を作るので、`(begin (define ...) ...)` に展開する。本体の中でも使えるように、
+    /// `begin` だけをここで展開する。
+    ///
     /// 形式の先頭の意味は、仮引数と、それより前の定義を束縛した `rib` で判定する。本体の
     /// 定義の領域は本体の全体である(R7RS 5.3.2)。そのため、仮引数と同じ名前の定義は、
     /// 仮引数を隠す新しい変数になる。同じ名前を2回定義することは誤りである(同節)。
@@ -756,8 +764,17 @@ const Expander = struct {
         // 変換子が読むのに使った識別子と、そのときの意味。
         var depended: std.ArrayList(Decided) = .empty;
         var consulted: std.ArrayList(Value) = .empty;
-        for (body, 0..) |original, i| {
-            var form = original;
+        // まだ見ていない形式の並びの積み。`begin` を展開すると、その中の形式を、残りの前に積む。
+        var pending: std.ArrayList([]const Value) = .empty;
+        try pending.append(self.scratch, body);
+        while (pending.items.len > 0) {
+            const next = &pending.items[pending.items.len - 1];
+            if (next.len == 0) {
+                _ = pending.pop();
+                continue;
+            }
+            var form = next.*[0];
+            next.* = next.*[1..];
             const definition = while (true) {
                 const pair = form.asPair() orelse break false;
                 const head = try self.headOf(rib, pair.car) orelse break false;
@@ -770,6 +787,7 @@ const Expander = struct {
                             try self.checkDepended(rib, depended.items, target, "define");
                             try forms.append(self.scratch, form);
                         },
+                        .begin => try pending.append(self.scratch, (try self.itemsOf(form))[1..]),
                         .@"define-syntax" => {
                             consulted.clearRetainingCapacity();
                             const syntax = try self.syntaxDefinition(rib, try self.itemsOf(form), &consulted);
@@ -796,7 +814,8 @@ const Expander = struct {
             if (!definition) {
                 const defines = forms.items.len;
                 try forms.append(self.scratch, form);
-                try forms.appendSlice(self.scratch, body[i + 1 ..]);
+                var i = pending.items.len;
+                while (i > 0) : (i -= 1) try forms.appendSlice(self.scratch, pending.items[i - 1]);
                 return self.checkDecided(.{ .forms = forms.items, .defines = defines }, rib, decided.items);
             }
         }
@@ -1105,9 +1124,10 @@ test "begin with nothing in it is allowed at the top level only" {
     try f.expectExpands("(begin (begin) 1)", "(seq (const #<unspecified>) (const 1))");
     // 式の位置の `begin` は、式を 1 つ以上要る。
     try f.expectFails("(f (begin))", "bad begin: expected (begin expression ...)");
-    try f.expectFails("(lambda () (begin))", "bad begin: expected (begin expression ...)");
-    // 本体の先頭の `(begin)` は、R7RS では合法な空の定義の並びである。本体の中の
-    // `begin` の展開(スプライス)が無いため、今は拒否される。その挙動は固定しない。
+    // 本体の先頭の `(begin)` は、R7RS では合法な空の定義の並びである。本体の走査が
+    // 展開するので、あとに式があれば本体は成り立つ。式が無ければ、本体が式を要る。
+    try f.expectFails("(lambda () (begin))", "bad lambda: a body needs an expression after its definitions");
+    try f.expectExpands("(lambda () (begin) 1)", "(lambda 0 0 (const 1))");
 }
 
 test "a literal is a constant, and a name is a global variable when nothing binds it" {
@@ -1309,7 +1329,53 @@ test "the shapes a body refuses" {
     // 同じ名前を本体で2回定義することは誤りである(R7RS 5.3.2)。間に別の定義があっても同じである。
     try f.expectFails("(lambda () (define x 1) (define x 2) x)", "bad define: x is already defined earlier in this body");
     try f.expectFails("(lambda (x) (define x 1) (define y 2) (define x 3) x)", "bad define: x is already defined earlier in this body");
-    try f.expectFails("(lambda () (begin (define x 1)) x)", "bad define: a definition is only allowed at the top level or at the start of a body");
+}
+
+test "the scan of a body splices a begin at the start of the body into the definitions" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(lambda () (begin (define x 1)) x)", "(lambda 0 1 (seq (define-local x 0 0 (const 1)) (local x 0 0)))");
+    // 入れ子の `begin` も、定義のあとの `begin` も、定義の並びである。
+    try f.expectExpands(
+        "(lambda () (begin (define a 1) (begin (define b 2))) (define c 3) (begin (define d 4)) (list a b c d))",
+        "(lambda 0 4 (seq (define-local a 0 0 (const 1)) (define-local b 0 1 (const 2)) (define-local c 0 2 (const 3)) (define-local d 0 3 (const 4)) (call (global list) (local a 0 0) (local b 0 1) (local c 0 2) (local d 0 3))))",
+    );
+    // `begin` の中の式は、そこで定義の並びを終える。それ以後の式も同じ並びの式である。
+    try f.expectExpands("(lambda () (begin (define a 1) a) 2)", "(lambda 0 1 (seq (define-local a 0 0 (const 1)) (local a 0 0) (const 2)))");
+    try f.expectExpands("(lambda () (begin 1 2) 3)", "(lambda 0 0 (seq (const 1) (const 2) (const 3)))");
+    // 定義が1つも残らなければ、式を要る。
+    try f.expectFails("(lambda () (begin (define x 1)))", "bad lambda: a body needs an expression after its definitions");
+    // 式のあとの定義は、`begin` の中でも拒否される。
+    try f.expectFails("(lambda () (begin (+ 1 2) (define a 1)) a)", "bad define: a definition is only allowed at the top level or at the start of a body");
+    try f.expectFails("(lambda () (+ 1 2) (begin (define a 1)) a)", "bad define: a definition is only allowed at the top level or at the start of a body");
+    // 同じ名前の定義は、`begin` の境を越えても重複である。
+    try f.expectFails("(lambda () (define x 1) (begin (define x 2)) x)", "bad define: x is already defined earlier in this body");
+    // `begin` が、本体の定義で別の意味になれば、定義の判定が変わるので拒否する(R7RS 5.4)。
+    try f.expectFails("(lambda () (begin (define x 1)) (define begin 3) x)", "bad define: begin is defined in a body whose definitions it begins");
+    // 内側の `begin` が仮引数なら、`begin` ではなく呼び出しである。
+    try f.expectFails("(lambda (begin) (begin (define x 1)) x)", "bad define: a definition is only allowed at the top level or at the start of a body");
+    // `begin` の中の `define-syntax` は、あとの形式の判定から見える。
+    try f.expectExpands("(lambda () (begin (define-syntax m (syntax-rules () ((_) 1)))) (m))", "(lambda 0 0 (const 1))");
+    // 形が悪い `begin` は、リストでないものを拒否する。
+    try f.expectFails("(lambda () (begin . 1) 2)", "bad syntax: a form must be a proper list");
+}
+
+test "a macro that expands to a begin of definitions defines in a body" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.expectExpands("(define-syntax two (syntax-rules () ((_ a b) (begin (define a 1) (define b 2)))))", "(const #<unspecified>)");
+    try f.expectExpands(
+        "(lambda () (two p q) (list p q))",
+        "(lambda 0 2 (seq (define-local p 0 0 (const 1)) (define-local q 0 1 (const 2)) (call (global list) (local p 0 0) (local q 0 1))))",
+    );
+    // 入れ子のマクロの適用も、定義の並びである。
+    try f.expectExpands("(define-syntax three (syntax-rules () ((_ a b c) (begin (two a b) (define c 3)))))", "(const #<unspecified>)");
+    try f.expectExpands(
+        "(lambda () (three p q r) (list p q r))",
+        "(lambda 0 3 (seq (define-local p 0 0 (const 1)) (define-local q 0 1 (const 2)) (define-local r 0 2 (const 3)) (call (global list) (local p 0 0) (local q 0 1) (local r 0 2))))",
+    );
 }
 
 test "an address that does not fit the width is reported, and one that just fits is not" {

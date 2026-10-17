@@ -221,3 +221,330 @@
      (apply vector (%quasiquote (element ...) levels)))
     ((_ datum levels)
      'datum)))
+
+;; ここから下は、スライス 3i が足した派生構文である。R7RS 7.3 の定義を写し、
+;; 変えた箇所は、それぞれの定義の注に書く。
+
+;; `let-values` は、原文の定義をほぼそのまま写した。変えた箇所は1つで、本体を `begin` で
+;; 包まず、式の並びのまま `"bind"` の規則に運んで、最後に `(let tmps body ...)` へ渡す。
+;; 原文は `(begin body0 body1 ...)` で包むので、本体の先頭の定義(R7RS 4.2.2 が許す)が、
+;; 本体の先頭でなくなる。
+;; 初期値の式は外側の環境で評価し、束縛は一時変数 `x` に受けてから、まとめて `let` で
+;; 利用者の名前に束縛する。`x` は規則ごとに展開が別の名前にするので、互いにも
+;; 利用者の名前とも衝突しない。
+(define-syntax let-values
+  (syntax-rules ()
+    ((let-values (binding ...) body0 body1 ...)
+     (let-values "bind"
+       (binding ...) () (body0 body1 ...)))
+    ((let-values "bind" () tmps (body ...))
+     (let tmps body ...))
+    ((let-values "bind" ((b0 e0)
+                         binding ...) tmps body)
+     (let-values "mktmp" b0 e0 ()
+       (binding ...) tmps body))
+    ((let-values "mktmp" () e0 args
+       bindings tmps body)
+     (call-with-values
+         (lambda () e0)
+       (lambda args
+         (let-values "bind"
+           bindings tmps body))))
+    ((let-values "mktmp" (a . b) e0 (arg ...)
+       bindings (tmp ...) body)
+     (let-values "mktmp" b e0 (arg ... x)
+       bindings (tmp ... (a x)) body))
+    ((let-values "mktmp" a e0 (arg ...)
+       bindings (tmp ...) body)
+     (call-with-values
+         (lambda () e0)
+       (lambda (arg ... . x)
+         (let-values "bind"
+           bindings (tmp ... (a x)) body))))))
+
+(define-syntax let*-values
+  (syntax-rules ()
+    ((let*-values () body0 body1 ...)
+     (let () body0 body1 ...))
+    ((let*-values (binding0 binding1 ...)
+       body0 body1 ...)
+     (let-values (binding0)
+       (let*-values (binding1 ...)
+         body0 body1 ...)))))
+
+;; `define-values` は、原文の定義の骨組み(最初の変数が、値のリストを一時的に持つ)を
+;; 写した。原文との違いは2つある。
+;; - 原文は、2個以上の変数のとき、値を `list` で受ける。個数が変数と合わなくても、
+;;   余りは黙って捨てられ、不足は `cadr` の誤りになる。R7RS 5.3.3 は、仮引数と実引数の対応を
+;;   `lambda` と同じにするので、値を受ける手続きの仮引数を利用者の変数にして、個数の
+;;   検査を `lambda` の呼び出しに任せる。その手続きの中の変数は、`expr` を包む
+;;   別の `lambda` の外にあるので、`expr` の評価には影響しない。
+;; - 原文は、変数が0個のとき `dummy` を定義する。`dummy` は利用者の名前と衝突しうるので、
+;;   `%` で始まる名前にした。ただし、マクロが導入した最上位の `define` は、別名を元の綴りに戻して
+;;   表に束縛する(docs/design/frontend.md の解決規則の節。仮決めで、3q が直す)ので、最上位では
+;;   `%define-values-dummy` が利用者の表に定義される。本体の中では別名のままで、衝突しない。
+;; 本体の定義の位置で使えるのは、展開が `begin` に包んだ定義の並びで、本体の走査が
+;; `begin` の中の定義を、本体の定義として扱うからである(src/syntax/expand.zig の `scanBody`)。
+(define-syntax define-values
+  (syntax-rules ()
+    ((define-values () expr)
+     (define %define-values-dummy
+       (call-with-values (lambda () expr)
+         (lambda () #f))))
+    ((define-values (var) expr)
+     (define var expr))
+    ((define-values (var0 var1 ... varn) expr)
+     (begin
+       (define var0
+         (call-with-values (lambda () expr)
+           (lambda (var0 var1 ... varn)
+             (list var0 var1 ... varn))))
+       (define var1
+         (let ((v (cadr var0)))
+           (set-cdr! var0 (cddr var0))
+           v))
+       ...
+       (define varn
+         (let ((v (cadr var0)))
+           (set! var0 (car var0))
+           v))))
+    ((define-values (var0 var1 ... . varn) expr)
+     (begin
+       (define var0
+         (call-with-values (lambda () expr)
+           (lambda (var0 var1 ... . varn)
+             (apply list var0 var1 ... varn))))
+       (define var1
+         (let ((v (cadr var0)))
+           (set-cdr! var0 (cddr var0))
+           v))
+       ...
+       (define varn
+         (let ((v (cdr var0)))
+           (set! var0 (car var0))
+           v))))
+    ((define-values var expr)
+     (define var
+       (call-with-values (lambda () expr)
+         list)))))
+
+;; `case-lambda` は、原文の定義を写した。変えた箇所は、どの節にも合わないときの誤りに、
+;; 渡された引数を添えたことだけである。原文は `(letrec-syntax ((cl (syntax-rules :::
+;; ...)))` で、`...` を使う節の書き方と衝突しないよう、省略記号を `:::` にしている。
+(define-syntax case-lambda
+  (syntax-rules ()
+    ((case-lambda (params body0 ...) ...)
+     (lambda args
+       (let ((len (length args)))
+         (letrec-syntax
+             ((cl (syntax-rules ::: ()
+                    ((cl)
+                     (error "no matching case-lambda clause for the arguments" args))
+                    ((cl ((p :::) . body) . rest)
+                     (if (= len (length '(p :::)))
+                         (apply (lambda (p :::)
+                                  . body)
+                                args)
+                         (cl . rest)))
+                    ((cl ((p ::: . tail) . body)
+                         . rest)
+                     (if (>= len (length '(p :::)))
+                         (apply
+                          (lambda (p ::: . tail)
+                            . body)
+                          args)
+                         (cl . rest))))))
+           (cl (params body0 ...) ...)))))))
+
+;; `guard` は、原文の定義を写した。補助のマクロの名前を `%guard-aux` にしたことと、
+;; 節が0個の `(guard (e) body ...)` を受けることが、原文との違いである。節が0個のとき、
+;; どの節の test も真にならないのと同じで、捕まえた値を `raise-continuable` で再送出する。
+;; R7RS 4.2.7 の構文は `<cond clause>*` で、0個を許す。7.3 の定義は、この形に規則を持たない。
+(define-syntax guard
+  (syntax-rules ()
+    ((guard (var clause ...) e1 e2 ...)
+     ((call/cc
+       (lambda (guard-k)
+         (with-exception-handler
+          (lambda (condition)
+            ((call/cc
+              (lambda (handler-k)
+                (guard-k
+                 (lambda ()
+                   (let ((var condition))
+                     (%guard-aux
+                      (handler-k
+                       (lambda ()
+                         (raise-continuable condition)))
+                      clause ...))))))))
+          (lambda ()
+            (call-with-values
+                (lambda () e1 e2 ...)
+              (lambda args
+                (guard-k
+                 (lambda ()
+                   (apply values args)))))))))))))
+
+(define-syntax %guard-aux
+  (syntax-rules (else =>)
+    ((_ reraise)
+     reraise)
+    ((_ reraise (else result1 result2 ...))
+     (begin result1 result2 ...))
+    ((_ reraise (test => result))
+     (let ((temp test))
+       (if temp
+           (result temp)
+           reraise)))
+    ((_ reraise (test => result)
+        clause1 clause2 ...)
+     (let ((temp test))
+       (if temp
+           (result temp)
+           (%guard-aux reraise clause1 clause2 ...))))
+    ((_ reraise (test))
+     (or test reraise))
+    ((_ reraise (test) clause1 clause2 ...)
+     (let ((temp test))
+       (if temp
+           temp
+           (%guard-aux reraise clause1 clause2 ...))))
+    ((_ reraise (test result1 result2 ...))
+     (if test
+         (begin result1 result2 ...)
+         reraise))
+    ((_ reraise
+        (test result1 result2 ...)
+        clause1 clause2 ...)
+     (if test
+         (begin result1 result2 ...)
+         (%guard-aux reraise clause1 clause2 ...)))))
+
+;; `define-record-type`(R7RS 5.5)。7.3 は定義を与えないので、ここで書く。
+;; 型は `%make-record-type`(src/prim/record.zig)で作って、利用者の `<name>` に束縛する。
+;; 展開は、利用者の名前だけを定義し、補助の最上位の名前を導入しない
+;; (マクロが導入した最上位の定義は、利用者の同じ綴りの変数を書き換えうるため。上の
+;; `define-values` の注を参照)。
+;;
+;; フィールドの添字は、展開の時点ではなく、定義を評価するときに、フィールド名のシンボルの
+;; リスト(`'(fname ...)`)から求める。`syntax-rules` は2つの識別子が同じ綴りかを比べられない
+;; ので、構文の上で添字を求めると、コンストラクタの引数とフィールドの対応が書けない。
+;; クォートは、識別子を元のシンボルに戻す。生成する手続きは、添字を閉じ込めるので、
+;; 呼び出しのたびに探索しない。コンストラクタだけは、フィールドの並びと引数の並びが
+;; 違うとき、呼び出しのたびに並べ替える。
+;;
+;; コンストラクタが受けないフィールドの初期値は、不定の値(`(if #f #f)`)である(R7RS 5.5)。
+(define-syntax define-record-type
+  (syntax-rules ()
+    ((define-record-type type
+       (constructor constructor-field ...)
+       predicate
+       (field-name field-spec ...)
+       ...)
+     (begin
+       (define type
+         (%make-record-type 'type (length '(field-name ...))))
+       (define constructor
+         (%record-constructor type '(field-name ...) '(constructor-field ...)))
+       (define predicate
+         (%record-predicate type))
+       (%define-record-fields type (field-name ...)
+         ((field-name field-spec ...) ...))))))
+
+;; 全フィールド名のリスト `fields` を、1つのパターン変数で受ける。`syntax-rules` は、
+;; 省略記号の中で、同じ変数をもう一度省略記号つきで使えない。
+(define-syntax %define-record-fields
+  (syntax-rules ()
+    ((_ type fields (spec ...))
+     (begin
+       (%define-record-field type 'fields spec)
+       ...))))
+
+(define-syntax %define-record-field
+  (syntax-rules ()
+    ((_ type fields (field-name accessor))
+     (define accessor
+       (%record-accessor type fields 'field-name 'accessor)))
+    ((_ type fields (field-name accessor modifier))
+     (begin
+       (define accessor
+         (%record-accessor type fields 'field-name 'accessor))
+       (define modifier
+         (%record-modifier type fields 'field-name 'modifier))))
+    ((_ type fields bad)
+     (syntax-error "define-record-type: a field is (name accessor) or (name accessor modifier)" bad))))
+
+;; 述語は、型の値を閉じ込める。式の中で `type` の名前を引くと、利用者が後でその名前を
+;; 書き換えたときに、判定が変わる。
+(define (%record-predicate type)
+  (lambda (object)
+    (%record? object type)))
+
+;; `name` の `fields` での添字。`k` は、`fields` の先頭の添字。
+(define (%field-index name fields k)
+  (if (null? fields)
+      (error "define-record-type: not a field of the record type" name)
+      (if (eq? name (car fields))
+          k
+          (%field-index name (cdr fields) (+ k 1)))))
+
+(define (%record-accessor type fields name accessor)
+  (let ((index (%field-index name fields 0)))
+    (lambda (record)
+      (if (%record? record type)
+          (%record-ref record type index)
+          (error "wrong type of argument to a record accessor" accessor record)))))
+
+(define (%record-modifier type fields name modifier)
+  (let ((index (%field-index name fields 0)))
+    (lambda (record value)
+      (if (%record? record type)
+          (%record-set! record type index value)
+          (error "wrong type of argument to a record modifier" modifier record)))))
+
+;; `fields` の各フィールドが、コンストラクタの引数の何番目か(無ければ `#f`)のリスト。
+;; コンストラクタの引数に、`fields` に無い名前があれば、誤りにする。
+(define (%constructor-positions fields constructor-fields)
+  (%check-constructor-fields fields constructor-fields)
+  (%positions fields constructor-fields))
+
+(define (%check-constructor-fields fields constructor-fields)
+  (if (pair? constructor-fields)
+      (begin
+        (%field-index (car constructor-fields) fields 0)
+        (%check-constructor-fields fields (cdr constructor-fields)))))
+
+(define (%positions fields constructor-fields)
+  (if (null? fields)
+      '()
+      (cons (%position (car fields) constructor-fields 0)
+            (%positions (cdr fields) constructor-fields))))
+
+(define (%position name names k)
+  (if (null? names)
+      #f
+      (if (eq? name (car names))
+          k
+          (%position name (cdr names) (+ k 1)))))
+
+;; 引数のリスト `args` から、`positions` の順に、レコードのフィールドの値を並べる。
+(define (%arrange positions args)
+  (if (null? positions)
+      '()
+      (cons (if (car positions)
+                (list-ref args (car positions))
+                (if #f #f))
+            (%arrange (cdr positions) args))))
+
+(define (%record-constructor type fields constructor-fields)
+  (let ((positions (%constructor-positions fields constructor-fields))
+        (count (length constructor-fields)))
+    (if (equal? fields constructor-fields)
+        (lambda args
+          (if (= (length args) count)
+              (apply %make-record type args)
+              (error "wrong number of arguments to a record constructor" (length args))))
+        (lambda args
+          (if (= (length args) count)
+              (apply %make-record type (%arrange positions args))
+              (error "wrong number of arguments to a record constructor" (length args)))))))

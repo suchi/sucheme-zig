@@ -1,0 +1,98 @@
+# スライス 3i: `case-lambda`(R7RS 4.2.9)。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 4.2.9 の例。
+(import (sucheme derived)) (define range (case-lambda ((e) (range 0 e)) ((b e) (do ((r '() (cons e r)) (e (- e 1) (- e 1))) ((< e b) r))))) (range 3)
+(0 1 2)
+
+(import (sucheme derived)) (define range (case-lambda ((e) (range 0 e)) ((b e) (do ((r '() (cons e r)) (e (- e 1) (- e 1))) ((< e b) r))))) (range 3 5)
+(3 4)
+
+# 手続きである。
+(import (sucheme derived)) (procedure? (case-lambda ((x) x)))
+#t
+
+# 仮引数の形は、`lambda` と同じ。固定個、余りを受ける形、全部を受ける形。
+(import (sucheme derived)) (define f (case-lambda (() 'zero) ((a) (list 'one a)) ((a b) (list 'two a b)))) (list (f) (f 1) (f 1 2))
+(zero (one 1) (two 1 2))
+
+(import (sucheme derived)) (define f (case-lambda ((a) (list 'one a)) ((a . rest) (list 'many a rest)))) (list (f 1) (f 1 2) (f 1 2 3))
+((one 1) (many 1 (2)) (many 1 (2 3)))
+
+(import (sucheme derived)) (define f (case-lambda ((a b) (list 'two a b)) ((a b . rest) (list 'more a b rest)))) (list (f 1 2) (f 1 2 3))
+((two 1 2) (more 1 2 (3)))
+
+(import (sucheme derived)) (define f (case-lambda ((a) (list 'one a)) (args (list 'any args)))) (list (f 1) (f) (f 1 2))
+((one 1) (any ()) (any (1 2)))
+
+# 最初に合う節が選ばれる。
+(import (sucheme derived)) (define f (case-lambda ((a . rest) 'first) ((a) 'second) (args 'third))) (list (f 1) (f 1 2) (f))
+(first first third)
+
+(import (sucheme derived)) (define f (case-lambda ((a b) 'two) ((a . rest) 'rest))) (list (f 1 2) (f 1) (f 1 2 3))
+(two rest rest)
+
+# 節は上から探す。合わない節の本体は評価されない。
+(import (sucheme derived)) (define f (case-lambda ((a) (car 5)) ((a b) (+ a b)))) (f 1 2)
+3
+
+# どの節にも合わなければ誤りである。
+(import (sucheme derived)) (define f (case-lambda ((a) 1) ((a b) 2))) (f 1 2 3)
+error: no matching case-lambda clause for the arguments (1 2 3)
+
+(import (sucheme derived)) (define f (case-lambda ((a) 1) ((a b) 2))) (f)
+error: no matching case-lambda clause for the arguments ()
+
+(import (sucheme derived)) (define f (case-lambda ((a b . rest) 1))) (f 1)
+error: no matching case-lambda clause for the arguments (1)
+
+# 節が0個の `case-lambda` は、どの呼び出しも誤りにする。
+(import (sucheme derived)) ((case-lambda))
+error: no matching case-lambda clause for the arguments ()
+
+(import (sucheme derived)) ((case-lambda) 1 2)
+error: no matching case-lambda clause for the arguments (1 2)
+
+# 本体は複数の式で、定義を置ける。値は複数でもよい。
+(import (sucheme derived)) ((case-lambda ((a) (define b 10) (+ a b)) ((a b) a)) 1)
+11
+
+(import (sucheme derived)) (call-with-values (lambda () ((case-lambda ((a b) (values b a)) ((a) a)) 1 2)) list)
+(2 1)
+
+# 字句的に閉じる。節ごとに別の束縛を見る。
+(import (sucheme derived)) (define (make-counter) (let ((n 0)) (case-lambda (() (set! n (+ n 1)) n) ((m) (set! n m) n)))) (let ((c (make-counter)) (d (make-counter))) (c) (c) (c 10) (list (c) (d)))
+(11 1)
+
+# 末尾呼び出し。
+(import (sucheme derived)) (define loop (case-lambda ((n) (loop n 0)) ((n acc) (if (= n 0) acc (loop (- n 1) (+ acc 1)))))) (loop 100000)
+100000
+
+# `apply` で呼ぶ。
+(import (sucheme derived)) (define f (case-lambda ((a) (list 'one a)) ((a b) (list 'two a b)) ((a b c) (list 'three a b c)))) (list (apply f '(1)) (apply f '(1 2)) (apply f 1 '(2 3)))
+((one 1) (two 1 2) (three 1 2 3))
+
+# 継続の再入。
+(import (sucheme derived)) (let ((k #f) (n 0)) (let ((r ((case-lambda ((a) (call/cc (lambda (c) (set! k c) a))) ((a b) 'two)) 5))) (set! n (+ n 1)) (if (< n 3) (k (* n 100))) (list r n)))
+(200 3)
+
+# 入れ子の `case-lambda`。内側の節の仮引数が、外側の同じ名前を隠す。
+(import (sucheme derived)) (define f (case-lambda ((a) (case-lambda ((a) (list 'inner a)) ((a b) (list 'inner a b)))) ((a b) (list 'outer a b)))) (list ((f 1) 2) ((f 1) 2 3) (f 1 2))
+((inner 2) (inner 2 3) (outer 1 2))
+
+# 展開が使う名前と同じ綴りの変数を、仮引数に使っても衝突しない。
+(import (sucheme derived)) (define f (case-lambda ((len) (list 'one len)) ((len args) (list 'two len args)) ((cl p tail . rest) (list 'many cl p tail rest)))) (list (f 1) (f 1 2) (f 1 2 3) (f 1 2 3 4))
+((one 1) (two 1 2) (many 1 2 3 ()) (many 1 2 3 (4)))
+
+(import (sucheme derived)) (define f (case-lambda (args (list 'args args)))) (f 1 2)
+(args (1 2))
+
+(import (sucheme derived)) (define f (case-lambda ((body) (list 'body body)) ((rest . tail) (list rest tail)))) (list (f 1) (f 1 2))
+((body 1) (1 (2)))
+
+# 展開が使う手続きの名前を、利用者が局所的に隠しても、`case-lambda` は影響されない。
+(import (sucheme derived)) ((lambda (length apply = >= error if) ((case-lambda ((a) (list 'one a)) ((a b) (list 'two a b)) ((a . r) (list 'many a r))) 1 2 3)) 0 0 0 0 0 0)
+(many 1 (2 3))
+
+(import (sucheme derived)) (define (length x) 'user) (define (apply . x) 'user) (define (error . x) 'user) (define f (case-lambda ((a) (list 'one a)) ((a b) (list 'two a b)))) (list (f 1) (f 1 2))
+((one 1) (two 1 2))

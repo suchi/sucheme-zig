@@ -1,0 +1,109 @@
+# スライス 3i: 派生構文(`define-record-type` `let-values` `let*-values` `define-values` `guard`
+# `case-lambda`)と、利用側の束縛との衛生性(docs/design/frontend.md の衛生性の検証項目の
+# 1、3、5)。0247 の続きである。本体の中の定義は 0276 にある。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# 項目5: `guard` の `else` は、利用側が `else` を変数として束縛していれば、リテラルとして照合しない。
+(import (sucheme derived)) (let ((else #f)) (guard (e (else 'x) (#t 'y)) (raise 1)))
+y
+
+(import (sucheme derived)) (guard (e (else 'x)) (raise 1))
+x
+
+(import (sucheme derived)) (let ((else #f)) (guard (e (else 'x)) (raise 1)))
+error: 1
+
+# 利用側のマクロが書いた `else` は、`guard` のリテラルとして照合する。
+(import (sucheme derived)) (define-syntax catch (syntax-rules () ((_ body) (guard (e ((string? e) 'string) (else 'other)) body)))) (list (catch (raise "s")) (catch (raise 1)))
+(string other)
+
+(import (sucheme derived)) (define-syntax catch (syntax-rules () ((_ body) (guard (e ((string? e) 'string) (else 'other)) body)))) (let ((else #f)) (list (catch (raise "s")) (catch (raise 1))))
+(string other)
+
+# `=>` は、利用側が変数として束縛していれば、リテラルとして照合しない(`cond` と同じ)。
+(import (sucheme derived)) (let ((=> #f)) (guard (e ((symbol? e) => 5)) (raise 'x)))
+5
+
+# 項目1: `guard` が導入する名前(`condition` `guard-k` `handler-k` `args` `temp`)は、利用側と衝突しない。
+(import (sucheme derived)) (let ((condition 'user)) (guard (e (#t (list e condition))) (raise 'x)))
+(x user)
+
+(import (sucheme derived)) (let ((args 'user-args) (temp 'user-temp)) (guard (e (#t (list e args temp))) (values 1 2) (raise 'x)))
+(x user-args user-temp)
+
+(import (sucheme derived)) (guard (condition ((symbol? condition) condition)) (raise 'x))
+x
+
+(import (sucheme derived)) (guard (temp ((begin temp) => (lambda (v) (list v temp)))) (raise 5))
+(5 5)
+
+(import (sucheme derived)) (guard (args ((symbol? args) (list 'sym args))) (raise 'x))
+(sym x)
+
+(import (sucheme derived)) (define guard-k 1) (define handler-k 2) (guard (e (#t (list e guard-k handler-k))) (raise 'x))
+(x 1 2)
+
+# 項目3: 利用側が、展開が使う手続きと特殊形式の名前を局所的に束縛しても、`guard` は影響されない。
+(import (sucheme derived)) ((lambda (call/cc with-exception-handler raise-continuable apply values call-with-values) (guard (e ((symbol? e) (list 'caught e))) (raise 'x))) 0 0 0 0 0 0)
+(caught x)
+
+(import (sucheme derived)) ((lambda (call/cc with-exception-handler raise-continuable apply values call-with-values) (guard (o (#t (list 'outer o))) (guard (e ((string? e) 1)) (raise 'x)))) 0 0 0 0 0 0)
+(outer x)
+
+(import (sucheme derived)) ((lambda (lambda if let begin or) (guard (e ((symbol? e) 'c) ((string? e)) (else 'z)) (raise 'x))) 0 0 0 0 0)
+c
+
+(import (sucheme derived)) ((lambda (lambda if let begin or) (guard (e ((symbol? e) 'c) ((string? e)) (else 'z)) (raise "s"))) 0 0 0 0 0)
+#t
+
+(import (sucheme derived)) ((lambda (lambda if let begin or) (guard (e ((symbol? e) 'c) ((string? e)) (else 'z)) (raise 5))) 0 0 0 0 0)
+z
+
+(import (sucheme derived)) (define (call/cc . x) 'user) (define (with-exception-handler . x) 'user) (define (raise-continuable . x) 'user) (define (apply . x) 'user) (define (values . x) 'user) (guard (e (#t (list 'caught e))) (raise 'x))
+(caught x)
+
+# `let-values` `let*-values` が導入する名前(`x` `args` `tmps` `body`)は、利用側と衝突しない。
+(import (sucheme derived)) (let-values (((x) (values 1)) ((y) (values 2))) (list x y))
+(1 2)
+
+(import (sucheme derived)) (let-values (((args) (values 1)) ((tmps) (values 2)) ((body) (values 3))) (list args tmps body))
+(1 2 3)
+
+(import (sucheme derived)) (let ((x 10)) (let-values (((a) (values x)) ((x) (values 20))) (list a x)))
+(10 20)
+
+(import (sucheme derived)) (let ((x 10)) (let*-values (((a) (values x)) ((x) (values (+ a 1)))) (list a x)))
+(10 11)
+
+(import (sucheme derived)) ((lambda (call-with-values lambda let if) (let-values (((a) (values 1)) ((b c) (values 2 3)) (d (values 4 5))) (list a b c d))) 0 0 0 0)
+(1 2 3 (4 5))
+
+(import (sucheme derived)) ((lambda (call-with-values lambda let if) (let*-values (((a) (values 1)) ((b c) (values 2 3))) (list a b c))) 0 0 0 0)
+(1 2 3)
+
+(import (sucheme derived)) (define (call-with-values . x) 'user) (let-values (((a b) (values 1 2))) (list a b))
+(1 2)
+
+# `define-values` の導入する名前 `v` は、利用側と衝突しない。展開が使う手続きを再定義しても、影響されない。
+(import (sucheme derived)) (define v 'user) (define-values (a b c) (values 1 2 3)) (list v a b c)
+(user 1 2 3)
+
+(import (sucheme derived)) (define-values (a b) (values 1 2)) (define (cadr x) 'user) (define (set-cdr! . x) 'user) (define-values (c d) (values 3 4)) (list a b c d)
+(1 2 3 4)
+
+# `define-record-type` が使う名前と同じ綴りの、型・フィールド・アクセサ・コンストラクタを使っても、衝突しない。
+(import (sucheme derived)) (define-record-type type (make fields type record) predicate? (fields get-fields) (type get-type set-type!) (record get-record)) (let ((r (make 1 2 3))) (set-type! r 20) (list (get-fields r) (get-type r) (get-record r) (predicate? r)))
+(1 20 3 #t)
+
+(import (sucheme derived)) (define-record-type object (make-object x) object? (x object-x)) (list (object? (make-object 1)) (object-x (make-object 1)))
+(#t 1)
+
+(import (sucheme derived)) (define-record-type index (make-index count positions) index? (count index-count) (positions index-positions)) (index-positions (make-index 1 2))
+2
+
+# 展開が使う手続きを、利用側が最上位で再定義しても、`define-record-type` は影響されない。
+(import (sucheme derived)) (define (length . x) 'user) (define (list-ref . x) 'user) (define (eq? . x) #f) (define (equal? . x) #f) (define (apply . x) 'user) (define (cons . x) 'user) (define (error . x) 'user) (define (null? . x) #t) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (define-record-type pare2 (kons2 y) pare2? (x kar2) (y kdr2)) (let ((k (kons 1 2))) (set-kar! k 3) (vector (kar k) (kdr k) (pare? k) (kdr2 (kons2 5))))
+#(3 2 #t 5)
+
+(import (sucheme derived)) (define (%arrange . x) 'user) (define (%field-index . x) 'user) (define (%positions . x) 'user) (define-record-type pare (kons y) pare? (x kar) (y kdr)) (kdr (kons 2))
+2

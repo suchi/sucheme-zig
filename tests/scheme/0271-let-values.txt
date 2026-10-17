@@ -1,0 +1,122 @@
+# スライス 3i: `let-values` と `let*-values`(R7RS 4.2.2)。
+# R7RS の例の `exact-integer-sqrt` は、まだ無いので、`values` で同じ形にしている。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 4.2.2 の例(root と rem を `(values 5 7)` から受ける)。
+(import (sucheme derived)) (let-values (((root rem) (values 5 7))) (* root rem))
+35
+
+(import (sucheme derived)) (let ((a 'a) (b 'b) (x 'x) (y 'y)) (let*-values (((a b) (values x y)) ((x y) (values a b))) (list a b x y)))
+(x y x y)
+
+# `let-values` の初期値は外側の環境で評価する。2つ目の束縛から、1つ目の束縛は見えない。
+(import (sucheme derived)) (let ((a 'a) (b 'b) (x 'x) (y 'y)) (let-values (((a b) (values x y)) ((x y) (values a b))) (list a b x y)))
+(x y a b)
+
+# 束縛なし。
+(import (sucheme derived)) (let-values () 5)
+5
+
+(import (sucheme derived)) (let*-values () 5)
+5
+
+# 束縛なしでも、本体の先頭の定義は置ける。
+(import (sucheme derived)) (let-values () (define x 1) (+ x 1))
+2
+
+(import (sucheme derived)) (let*-values () (define x 1) (+ x 1))
+2
+
+# 式の位置でも、本体の定義は、その `let-values` の中に閉じる(`begin` の定義ではなく、最上位の定義にならない)。
+(import (sucheme derived)) ((lambda () (let-values () (define x 1) (+ x 1))))
+2
+
+(import (sucheme derived)) ((lambda () (let*-values () (define x 1) (+ x 1))))
+2
+
+(import (sucheme derived)) (let*-values () (define leaked 1) leaked) leaked
+1
+error: unbound variable: leaked
+
+(import (sucheme derived)) (let-values () (define leaked 1) leaked) leaked
+1
+error: unbound variable: leaked
+
+# 仮引数の形は、`lambda` と同じ3つ。
+(import (sucheme derived)) (let-values (((a b) (values 1 2))) (list a b))
+(1 2)
+
+(import (sucheme derived)) (let-values ((args (values 1 2 3))) args)
+(1 2 3)
+
+(import (sucheme derived)) (let-values (((a . rest) (values 1 2 3))) (list a rest))
+(1 (2 3))
+
+(import (sucheme derived)) (let-values (((a b . rest) (values 1 2))) (list a b rest))
+(1 2 ())
+
+(import (sucheme derived)) (let-values ((() (values))) 'ok)
+ok
+
+(import (sucheme derived)) (let-values ((all (values))) all)
+()
+
+(import (sucheme derived)) (let-values (((a) 1)) a)
+1
+
+# 複数の束縛が、それぞれの形で混ざる。
+(import (sucheme derived)) (let-values (((a . rest) (values 1 2 3)) (all (values 4 5)) ((e) (values 6)) ((f g) (values 7 8)) (() (values))) (list a rest all e f g))
+(1 (2 3) (4 5) 6 7 8)
+
+(import (sucheme derived)) (let*-values (((a . rest) (values 1 2 3)) ((b c) (values (car rest) a)) (all (values a b c))) (list a rest b c all))
+(1 (2 3) 2 1 (1 2 1))
+
+# 本体には、定義が置ける。式は複数でもよく、最後の値が返る。
+(import (sucheme derived)) (let-values (((a b) (values 1 2))) (define c 3) (+ a b c))
+6
+
+(import (sucheme derived)) (let*-values (((a b) (values 1 2))) (define c 3) (define d 4) (list a b c d))
+(1 2 3 4)
+
+(import (sucheme derived)) (let-values (((a) (values 1))) (set! a 5) (* a 2))
+10
+
+# 本体は、`let-values` の束縛の領域である。束縛は新しい場所である。
+(import (sucheme derived)) (define (counter) (let-values (((n) (values 0))) (lambda () (set! n (+ n 1)) n))) (let ((c1 (counter)) (c2 (counter))) (c1) (c1) (c1) (list (c1) (c2)))
+(4 1)
+
+# 初期値が返す値の個数は、仮引数と合わなければ誤りである。
+(import (sucheme derived)) (let-values (((a b) (values 1 2 3))) a)
+error: wrong number of arguments: expected 2, got 3
+
+(import (sucheme derived)) (let-values (((a b) (values 1))) a)
+error: wrong number of arguments: expected 2, got 1
+
+(import (sucheme derived)) (let-values (((a b . c) (values 1))) a)
+error: wrong number of arguments: expected at least 2, got 1
+
+(import (sucheme derived)) (let*-values (((a) (values 1)) ((b) (values 2 3))) a)
+error: wrong number of arguments: expected 1, got 2
+
+# 継続を再入すると、束縛し直される。
+(import (sucheme derived)) (let ((k #f) (n 0)) (let-values (((a b) (call/cc (lambda (c) (set! k c) (values 1 2))))) (set! n (+ n 1)) (if (< n 3) (k 10 20)) (list a b n)))
+(10 20 3)
+
+# 初期値の継続が、複数の値を受ける。
+(import (sucheme derived)) (let-values (((a b) (call/cc (lambda (k) (k 1 2))))) (list a b))
+(1 2)
+
+# 入れ子。内側の束縛が、外側の同じ名前を隠す。
+(import (sucheme derived)) (let-values (((x y) (values 1 2))) (let-values (((x) (values y)) ((y) (values x))) (list x y)))
+(2 1)
+
+(import (sucheme derived)) (let*-values (((x y) (values 1 2))) (let*-values (((x) (values y)) ((y) (values x))) (list x y)))
+(2 2)
+
+# 初期値の中に、別の `let-values` がある。
+(import (sucheme derived)) (let-values (((a b) (let-values (((c d) (values 1 2))) (values d c))) ((e) (values 3))) (list a b e))
+(2 1 3)
+
+# 初期値に `call-with-values` を使い、本体が末尾呼び出しになる。
+(import (sucheme derived)) (define (loop n) (if (= n 0) 'done (let-values (((m) (values (- n 1)))) (loop m)))) (loop 100000)
+done
