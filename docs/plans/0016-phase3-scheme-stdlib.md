@@ -337,10 +337,11 @@ flowchart TD
 | 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
 | 3h | マージ済み。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | [#115](https://github.com/suchi/sucheme-zig/pull/115) |
 | 3f | レビュー済み。EOF の値(`Value` の即値)、約束(ヒープの型 `Promise`)、`eof-object` `eof-object?` `make-promise` `promise?` `force`、内部用の `%make-promise`。設計は [runtime.md](../design/runtime.md) の「EOF の値と約束」に書いた。`delay` と `delay-force` の構文は 3j が足す | [#116](https://github.com/suchi/sucheme-zig/pull/116) |
-| 3d、3e、3i から 3r | 未着手 | - |
+| 3i | 実装済み。`(sucheme derived)` に `define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda` がある。どれも `syntax-rules` で書いた(特殊形式とプリミティブは足していない)。`define-record-type` は、2h の `%` で始まるプリミティブを呼ぶ補助手続きに展開する。マクロの適用が複数の定義になる `define-record-type` と `define-values` を本体で使うため、本体の先頭の `begin` の展開(3p の項目の一部)を `scanBody` に入れた。3p に残るのは `include` と `cond-expand` が持つ定義である。設計と測定は [frontend.md](../design/frontend.md) の「現状(スライス 3i)」に書いた | - |
+| 3d、3e、3j から 3r | 未着手 | - |
 
 ## 次にやること
 
-1. 3a、3b、3c、3g はマージ済み。3d と 3f は別のエージェントが進めている。3h は PR を出して、レビューを受ける。3i は 3h のマージのあとに始める(上の依存の図)。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
+1. 3a、3b、3c、3g はマージ済み。3d と 3f は別のエージェントが進めている。3h は PR を出して、レビューを受ける。3i は実装を終えた(PR とレビューはこれから)。3i が本体の先頭の `begin` を展開するようにしたので、3p の説明(上の「3p の中身」と表)は、3i のマージのあとに、`include` と `cond-expand` だけに狭める。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
 2. 3e は、3d が不変の印の基盤を入れてから始める(ユーザーが 2026-10-16 に、基盤を 3d が入れると決めた)。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
