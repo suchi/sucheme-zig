@@ -111,6 +111,13 @@ error: wrong type of argument to bytevector-copy! #u8(1 2 3) #\a #u8(9)
 (define b #u8(1 2 3)) (eq? b b)
 #t
 
+# 先が定数でも、start と end の型が合わなければ、型の誤りが先に出る(型、不変、範囲の順)。
+(bytevector-copy! #u8(1 2 3) 0 (bytevector 1) 'a)
+error: wrong type of argument to bytevector-copy! #u8(1 2 3) 0 #u8(1) a
+
+(bytevector-copy! #u8(1 2 3) 0 (bytevector 1) 0 'a)
+error: wrong type of argument to bytevector-copy! #u8(1 2 3) 0 #u8(1) 0 a
+
 # 書き込みを断られても、定数はそのままである。
 (define b #u8(1 2 3)) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k b)) (lambda () (bytevector-u8-set! b 0 9)))))
 #u8(1 2 3)
