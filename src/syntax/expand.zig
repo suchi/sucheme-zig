@@ -182,7 +182,7 @@ const Expander = struct {
         }
         switch (task.form.kind()) {
             // 自己評価式(R7RS 4.1.2)。
-            .fixnum, .boolean, .character, .string, .vector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise => try self.constant(task, task.form),
+            .fixnum, .boolean, .character, .string, .vector, .bytevector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),

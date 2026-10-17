@@ -281,6 +281,7 @@ fn describe(e: Error) []const u8 {
         error.InvalidUtf8,
         error.InvalidToken,
         error.IntegerOutOfRange,
+        error.InvalidByte,
         => |syntax| reader.describe(syntax),
         error.OutOfMemory => "out of memory",
         // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。

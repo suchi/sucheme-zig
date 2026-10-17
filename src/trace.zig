@@ -733,6 +733,20 @@ test "the classes of the types of promises" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(?*value_mod.Promise).?);
 }
 
+test "a bytevector holds bytes only, so the walk follows nothing from it, and a value that points to one is followed" {
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Bytevector).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Bytevector).?);
+    var octets = [_]u8{ 1, 2 };
+    const b: value_mod.Bytevector = .{ .bytes = &octets };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Bytevector, &b);
+    try r.expect(&.{});
+    var held: value_mod.Bytevector = .{ .bytes = &octets };
+    var t: Recorder = .{};
+    interpreter.walk(&t, Value, .fromBytevector(&held));
+    try t.expect(&.{addr(&held)});
+}
+
 test "a type the walk cannot sort has no class" {
     // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
     // テストが答えられる形で行う。

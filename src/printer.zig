@@ -82,6 +82,16 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
                 try out.writeAll("#(");
                 try stack.append(scratch, .{ .elements = .{ .items = x.asVector().?.items, .next = 0 } });
             },
+            // Why: R7RS 6.9 は `#u8(` バイト ... `)` と書く。バイトは 10 進の整数で、`read` が
+            // 同じバイトベクタを読み返せる。中身がバイトだけなので、スタックに積まず、その場で書く。
+            .bytevector => {
+                try out.writeAll("#u8(");
+                for (x.asBytevector().?.bytes, 0..) |byte, i| {
+                    if (i != 0) try out.writeByte(' ');
+                    try out.print("{d}", .{byte});
+                }
+                try out.writeByte(')');
+            },
             // Why: R7RS は手続きの外部表現を決めていない。多くの処理系は `read` が
             // 受け付けない表記で書き、ここでもそうする。
             .closure => try out.writeAll("#<procedure>"),
@@ -404,6 +414,22 @@ test "write does not recurse on the depth of the data" {
     out.clearRetainingCapacity();
     try write(&out.writer, std.testing.allocator, &f.heap.symbols, long);
     try std.testing.expectEqual(depth * 2 + 1, out.written().len);
+}
+
+test "write prints a bytevector as #u8 and the bytes in decimal" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    const empty: Value = .fromBytevector(try f.heap.createBytevector(&.{}));
+    try std.testing.expectEqualStrings("#u8()", try f.written(&buf, empty));
+    try std.testing.expectEqualStrings("#u8(0)", try f.written(&buf, .fromBytevector(try f.heap.createBytevector(&.{0}))));
+    const some: Value = .fromBytevector(try f.heap.createBytevector(&.{ 0, 10, 5, 255 }));
+    try std.testing.expectEqualStrings("#u8(0 10 5 255)", try f.written(&buf, some));
+    try std.testing.expectEqualStrings("#u8(0 10 5 255)", try f.displayed(&buf, some));
+    // リストやベクタの中でも、前後の区切りは保たれる。
+    const v = try f.vector(&.{ some, empty, .fromFixnum(1) });
+    try std.testing.expectEqualStrings("#(#u8(0 10 5 255) #u8() 1)", try f.written(&buf, v));
+    try std.testing.expectEqualStrings("(#u8() . #u8(0))", try f.written(&buf, try f.cons(empty, .fromBytevector(try f.heap.createBytevector(&.{0})))));
 }
 
 test "write prints a vector as # and a parenthesised list of its elements" {

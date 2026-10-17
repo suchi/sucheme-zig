@@ -216,8 +216,12 @@ pub fn isEqual(scratch: std.mem.Allocator, visited_alloc: std.mem.Allocator, a: 
                 const y = right.asString() orelse return false;
                 if (!std.mem.eql(u8, left.asString().?.bytes, y.bytes)) return false;
             },
+            .bytevector => {
+                const y = right.asBytevector() orelse return false;
+                if (!std.mem.eql(u8, left.asBytevector().?.bytes, y.bytes)) return false;
+            },
             // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
-            // `equal?` が中身を比べるべき種別(バイトベクタなど)を見落とさないようにする。
+            // `equal?` が中身を比べるべき種別を見落とさないようにする。
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise => {
                 if (!left.isEqv(right)) return false;
             },
@@ -355,6 +359,38 @@ test "equal? compares the length and the elements of vectors" {
     try std.testing.expect(!try callWith(&f, "equal?", try vec(&f, &.{int(1)}), try vec(&f, &.{})));
     try std.testing.expect(try callWith(&f, "equal?", try vec(&f, &.{}), try vec(&f, &.{})));
     try std.testing.expect(!try callWith(&f, "equal?", base, .empty_list_value));
+}
+
+fn bvec(f: *test_support.Fixture, octets: []const u8) !Value {
+    return .fromBytevector(try f.heap.createBytevector(octets));
+}
+
+test "equal? compares the bytes of bytevectors, and eqv? and eq? the objects" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const base = try bvec(&f, &.{ 1, 2, 3 });
+    try std.testing.expect(try callWith(&f, "equal?", base, try bvec(&f, &.{ 1, 2, 3 })));
+    try std.testing.expect(try callWith(&f, "equal?", base, base));
+    try std.testing.expect(try callWith(&f, "equal?", try bvec(&f, &.{}), try bvec(&f, &.{})));
+    try std.testing.expect(!try callWith(&f, "equal?", base, try bvec(&f, &.{ 0, 2, 3 })));
+    try std.testing.expect(!try callWith(&f, "equal?", base, try bvec(&f, &.{ 1, 2, 0 })));
+    // 一方が他方の先頭部分のとき、どちらが長くても偽になる。
+    try std.testing.expect(!try callWith(&f, "equal?", base, try bvec(&f, &.{ 1, 2 })));
+    try std.testing.expect(!try callWith(&f, "equal?", try bvec(&f, &.{ 1, 2 }), base));
+    try std.testing.expect(!try callWith(&f, "equal?", try bvec(&f, &.{}), try bvec(&f, &.{0})));
+    // 同じ中身のベクタや文字列とは等しくない。
+    try std.testing.expect(!try callWith(&f, "equal?", try bvec(&f, &.{1}), try vec(&f, &.{int(1)})));
+    try std.testing.expect(!try callWith(&f, "equal?", try vec(&f, &.{int(1)}), try bvec(&f, &.{1})));
+    try std.testing.expect(!try callWith(&f, "equal?", try bvec(&f, "a"), .fromString(try f.heap.createString("a"))));
+    try std.testing.expect(!try callWith(&f, "equal?", base, .empty_list_value));
+    // `eqv?` と `eq?` は同一性である。
+    try std.testing.expect(try callWith(&f, "eqv?", base, base));
+    try std.testing.expect(!try callWith(&f, "eqv?", base, try bvec(&f, &.{ 1, 2, 3 })));
+    try std.testing.expect(!try callWith(&f, "eq?", base, try bvec(&f, &.{ 1, 2, 3 })));
+    // ベクタの中のバイトベクタも中身で比べる。
+    try std.testing.expect(try callWith(&f, "equal?", try vec(&f, &.{try bvec(&f, &.{ 1, 2 })}), try vec(&f, &.{try bvec(&f, &.{ 1, 2 })})));
+    try std.testing.expect(!try callWith(&f, "equal?", try vec(&f, &.{try bvec(&f, &.{ 1, 2 })}), try vec(&f, &.{try bvec(&f, &.{ 1, 3 })})));
 }
 
 test "equal? looks inside the vectors that are inside vectors and pairs, and past them" {

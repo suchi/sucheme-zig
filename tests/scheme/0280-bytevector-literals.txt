@@ -1,0 +1,127 @@
+# スライス 3e: バイトベクタのリテラル(R7RS 6.9 と 7.1.2)。`#u8(` ... `)` は自己評価する。
+# バイトは 0 から 255 までの 10 進整数である。基数の接頭辞(`#x41`)は段階4で入る。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 原文(R7RS 6.9)の書き方の例。
+#u8(0 10 5)
+#u8(0 10 5)
+
+#u8()
+#u8()
+
+# 自己評価するので、引用符は要らない。引用しても同じである。
+'#u8(1 2 3)
+#u8(1 2 3)
+
+(quote #u8(1 2 3))
+#u8(1 2 3)
+
+# 境界のバイト。
+#u8(0 255)
+#u8(0 255)
+
+# 空白の幅は問わない。
+#u8(  1   2     3 )
+#u8(1 2 3)
+
+# リストやベクタの中にも置ける。ベクタは、バイトベクタを要素にできる。
+(list #u8(1) #u8())
+(#u8(1) #u8())
+
+'(#u8(1) . #u8(2))
+(#u8(1) . #u8(2))
+
+#(#u8(1 2) #u8())
+#(#u8(1 2) #u8())
+
+# 型の述語は、バイトベクタをベクタ・リスト・文字列とは別の種類として扱う。
+(vector? #u8(1 2))
+#f
+
+(pair? #u8(1 2))
+#f
+
+(procedure? #u8(1 2))
+#f
+
+(string? #u8(1 2))
+#f
+
+(list? #u8())
+#f
+
+# `equal?` は中身を比べる。`eqv?` と `eq?` は同じオブジェクトかを見る。
+(equal? #u8(1 2 3) #u8(1 2 3))
+#t
+
+(equal? #u8() #u8())
+#t
+
+(equal? #u8(1 2 3) #u8(1 2 4))
+#f
+
+(equal? #u8(1 2) #u8(1 2 3))
+#f
+
+(equal? #u8(1 2 3) #u8(1 2))
+#f
+
+(equal? #u8(1) #(1))
+#f
+
+(equal? #(1) #u8(1))
+#f
+
+(equal? #u8(97) "a")
+#f
+
+(equal? '(#u8(1) #(#u8(2))) '(#u8(1) #(#u8(2))))
+#t
+
+(equal? '(#u8(1) #(#u8(2))) '(#u8(1) #(#u8(3))))
+#f
+
+(eqv? #u8(1 2) #u8(1 2))
+#f
+
+(define (g) #u8(1 2)) (eqv? (g) (g))
+#t
+
+(define (g) #u8(1 2)) (eq? (g) (g))
+#t
+
+# 読めないバイトは、リーダが断る。
+#u8(256)
+error: invalid byte in bytevector
+
+#u8(-1)
+error: invalid byte in bytevector
+
+#u8(a)
+error: invalid byte in bytevector
+
+#u8("a")
+error: invalid byte in bytevector
+
+#u8(#\a)
+error: invalid byte in bytevector
+
+#u8((1))
+error: invalid byte in bytevector
+
+#u8(1 2 300)
+error: invalid byte in bytevector
+
+(list #u8(1 256))
+error: invalid byte in bytevector
+
+# ドットは置けない。
+#u8(1 . 2)
+error: unexpected .
+
+# `#u8` の後が `(` でなければ、読めない記法である。
+#u8
+error: unreadable token
+
+#u8 (1)
+error: unreadable token

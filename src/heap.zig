@@ -22,6 +22,7 @@ const Kont = value_mod.Kont;
 const Args = value_mod.Args;
 const String = value_mod.String;
 const Vector = value_mod.Vector;
+const Bytevector = value_mod.Bytevector;
 const Record = value_mod.Record;
 const RecordType = value_mod.RecordType;
 const MultipleValues = value_mod.MultipleValues;
@@ -332,7 +333,7 @@ fn headerOf(comptime T: type, object: *const T) *Header {
     return &cell.header;
 }
 
-/// Whether `v` is a constant: a pair, string or vector that `makeImmutable` marked.
+/// Whether `v` is a constant: a pair, string, vector or bytevector that `makeImmutable` marked.
 /// 場所を持たない値(数、シンボル、手続きなど)は、変更できないが、「不変の印」を持つ対象では
 /// ないので、偽である。変更の手続きは、型の検査が済んだ引数にこれを問い合わせる
 /// (`prim/immutable.zig`)。
@@ -341,11 +342,12 @@ pub fn isImmutable(v: Value) bool {
         .pair => headerOf(Pair, v.asPair().?).immutable,
         .string => headerOf(String, v.asString().?).immutable,
         .vector => headerOf(Vector, v.asVector().?).immutable,
+        .bytevector => headerOf(Bytevector, v.asBytevector().?).immutable,
         else => false,
     };
 }
 
-/// Marks the pair, string or vector `v` as a constant. Another kind of value has no
+/// Marks the pair, string, vector or bytevector `v` as a constant. Another kind of value has no
 /// locations to mark, and is left as it is.
 /// この関数は `v` そのものだけを印づける。到達できるオブジェクトの全体に印を立てるのは
 /// `freeze.zig` である。
@@ -354,6 +356,7 @@ pub fn makeImmutable(v: Value) void {
         .pair => headerOf(Pair, v.asPair().?).immutable = true,
         .string => headerOf(String, v.asString().?).immutable = true,
         .vector => headerOf(Vector, v.asVector().?).immutable = true,
+        .bytevector => headerOf(Bytevector, v.asBytevector().?).immutable = true,
         else => {},
     }
 }
@@ -372,6 +375,7 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Frame => object.values.len * @sizeOf(Value),
         String => object.bytes.len,
         Vector => object.items.len * @sizeOf(Value),
+        Bytevector => object.bytes.len,
         Record => object.fields.len * @sizeOf(Value),
         MultipleValues => object.items.len * @sizeOf(Value),
         else => 0,
@@ -494,7 +498,7 @@ pub const Heap = struct {
 
     /// A new object holding `value`, held to `budget`.
     pub fn createIn(self: *Heap, budget: Budget, comptime T: type, value: T) Error!*T {
-        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Record and T != MultipleValues);
+        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Bytevector and T != Record and T != MultipleValues);
         try self.reserve(budget, cellBytes(T));
         const cell = try self.backing.create(Cell(T));
         cell.value = value;
@@ -629,6 +633,36 @@ pub const Heap = struct {
         const cell = try self.backing.create(Cell(Vector));
         cell.value = .{ .items = items };
         self.link(Vector, cell, total);
+        return &cell.value;
+    }
+
+    /// A new bytevector of a copy of `bytes`.
+    /// コピーがペイロードで、文字列のバイト列と同じ扱いである。
+    pub fn createBytevector(self: *Heap, bytes: []const u8) Error!*Bytevector {
+        const total = try self.reserveWithPayload(.limit, Bytevector, bytes.len, 1);
+        const copy = try self.backing.dupe(u8, bytes);
+        errdefer self.backing.free(copy);
+        return self.linkBytevector(copy, total);
+    }
+
+    /// A new bytevector of `len` bytes that `filler` writes.
+    /// `filler.fill(bytes)` が、確保したペイロードに内容を書く。`createStringFilled` と同じ形で、
+    /// 入力の大きさに比例するバイトベクタ(`make-bytevector` や `bytevector-append`)を、一時の領域を
+    /// 経ずに作る。領域の大きさは、確保する前に上限に照らして検査する。
+    pub fn createBytevectorFilled(self: *Heap, len: usize, filler: anytype) Error!*Bytevector {
+        const total = try self.reserveWithPayload(.limit, Bytevector, len, 1);
+        const bytes = try self.backing.alloc(u8, len);
+        errdefer self.backing.free(bytes);
+        filler.fill(bytes);
+        return self.linkBytevector(bytes, total);
+    }
+
+    /// Puts `bytes`, which the bytevector will own, in a new cell.
+    /// セルを確保できなければ、呼び出し側の `errdefer` がペイロードを返す。
+    fn linkBytevector(self: *Heap, bytes: []u8, total: usize) Error!*Bytevector {
+        const cell = try self.backing.create(Cell(Bytevector));
+        cell.value = .{ .bytes = bytes };
+        self.link(Bytevector, cell, total);
         return &cell.value;
     }
 
@@ -803,6 +837,7 @@ pub const Heap = struct {
                     Frame => self.backing.free(cell.value.values),
                     String => self.backing.free(cell.value.bytes),
                     Vector => self.backing.free(cell.value.items),
+                    Bytevector => self.backing.free(cell.value.bytes),
                     Record => self.backing.free(cell.value.fields),
                     MultipleValues => self.backing.free(cell.value.items),
                     else => {},
@@ -1756,28 +1791,35 @@ test "an object is not a constant until it is marked, and then stays one through
     const pair = try heap.cons(.fromFixnum(1), .empty_list_value);
     const string: Value = .fromString(try heap.createString("abc"));
     const vector: Value = .fromVector(try heap.createVector(&.{.fromFixnum(1)}));
+    const bytes: Value = .fromBytevector(try heap.createBytevector(&.{1}));
     const other = try heap.cons(.fromFixnum(2), .empty_list_value);
-    for ([_]Value{ pair, string, vector, other }) |v| try std.testing.expect(!isImmutable(v));
+    const other_bytes: Value = .fromBytevector(try heap.createBytevector(&.{2}));
+    for ([_]Value{ pair, string, vector, bytes, other, other_bytes }) |v| try std.testing.expect(!isImmutable(v));
     makeImmutable(pair);
     makeImmutable(string);
     makeImmutable(vector);
+    makeImmutable(bytes);
     try std.testing.expect(isImmutable(pair));
     try std.testing.expect(isImmutable(string));
     try std.testing.expect(isImmutable(vector));
+    try std.testing.expect(isImmutable(bytes));
     // 印は1つのオブジェクトだけにある。
     try std.testing.expect(!isImmutable(other));
+    try std.testing.expect(!isImmutable(other_bytes));
     // マークとスイープは `marked` だけを動かす。生き残ったものの印は残り、印のないものは
     // 印のないままである。
-    const roots = TestRoots{ .values = &.{ pair, string, vector, other } };
+    const roots = TestRoots{ .values = &.{ pair, string, vector, bytes, other, other_bytes } };
     heap.collect(roots);
     heap.collect(roots);
     try std.testing.expect(isImmutable(pair));
     try std.testing.expect(isImmutable(string));
     try std.testing.expect(isImmutable(vector));
+    try std.testing.expect(isImmutable(bytes));
     try std.testing.expect(!isImmutable(other));
+    try std.testing.expect(!isImmutable(other_bytes));
 }
 
-test "a value that is not a pair, a string or a vector is not a constant, and marking it changes nothing" {
+test "a value that is not a pair, a string, a vector or a bytevector is not a constant, and marking it changes nothing" {
     var heap: Heap = .init(std.testing.allocator, .{});
     defer heap.deinit();
     const record_type = try heap.create(RecordType, .{ .name = try heap.internFixed("t"), .field_count = 0 });
@@ -1868,6 +1910,59 @@ test "createVectorFilled reserves the elements before it fills them, and account
     try std.testing.expectEqual(1, calls);
     try std.testing.expectEqual(1, v.items[1].asFixnum().?);
     try std.testing.expectEqual(cellBytes(Vector) + 2 * @sizeOf(Value), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a bytevector accounts for its bytes as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]u8{ 1, 2, 255 };
+    const b = try heap.createBytevector(&source);
+    source[0] = 9;
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 255 }, b.bytes);
+    try std.testing.expectEqual(cellBytes(Bytevector) + 3, heap.accounted);
+    const empty = try heap.createBytevector(&.{});
+    try std.testing.expectEqual(0, empty.bytes.len);
+    try std.testing.expectEqual(cellBytes(Bytevector) * 2 + 3, heap.accounted);
+    // 回収は、ペイロードごと計上から外す。残したものは中身を保つ。
+    heap.collect(TestRoots{ .values = &.{.fromBytevector(b)} });
+    try std.testing.expectEqual(1, heap.count);
+    try std.testing.expectEqual(cellBytes(Bytevector) + 3, heap.accounted);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 255 }, b.bytes);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a bytevector is held to the limit by its payload, and a failure leaves the account as it was" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Bytevector) + 4 });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createBytevector("hello"));
+    try std.testing.expectEqual(0, heap.accounted);
+    _ = try heap.createBytevector("four");
+    try std.testing.expectError(error.HeapLimit, heap.createBytevector(&.{}));
+    try std.testing.expectEqual(cellBytes(Bytevector) + 4, heap.accounted);
+}
+
+test "createBytevectorFilled reserves the bytes before it fills them, and accounts for them" {
+    const Filler = struct {
+        calls: *usize,
+        fn fill(self: @This(), bytes: []u8) void {
+            self.calls.* += 1;
+            for (bytes, 0..) |*slot, i| slot.* = @intCast(i + 10);
+        }
+    };
+    var calls: usize = 0;
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Bytevector) + 2 });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createBytevectorFilled(3, Filler{ .calls = &calls }));
+    try std.testing.expectError(error.HeapLimit, heap.createBytevectorFilled(std.math.maxInt(usize), Filler{ .calls = &calls }));
+    try std.testing.expectEqual(0, calls);
+    try std.testing.expectEqual(0, heap.accounted);
+    const b = try heap.createBytevectorFilled(2, Filler{ .calls = &calls });
+    try std.testing.expectEqual(1, calls);
+    try std.testing.expectEqualSlices(u8, &.{ 10, 11 }, b.bytes);
+    try std.testing.expectEqual(cellBytes(Bytevector) + 2, heap.accounted);
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.accounted);
 }

@@ -9,7 +9,9 @@
 //! `quote` が、参照を持つ定義にデータを渡すことはある。
 //!
 //! ベクタ `#(` ... `)` はリストと同じように集め、閉じたときにヒープに作る。
-//! ベクタの中のドットはエラーである。
+//! ベクタの中のドットはエラーである。バイトベクタ `#u8(` ... `)` も同じ形で集める。要素は
+//! 0 から 255 までの 10 進整数でなければならず、読んだ時点で検査する(R7RS 7.1.2 の
+//! <bytevector> は <byte> を並べる)。
 //!
 //! ネストは Zig の再帰でなく、明示的なスタックで処理する。どこまで深く進めるかは
 //! 入力の深さで決まる(docs/design/runtime.md)。
@@ -48,6 +50,8 @@ pub const SyntaxError = error{
     /// R7RS 6.2.3 は、段階4で多倍長整数(bignum)を入れるまで、これを実装上の制限として
     /// 報告してよいとしている。
     IntegerOutOfRange,
+    /// An element of a `#u8(` that is not an integer from 0 to 255 (R7RS 7.1.2, <byte>).
+    InvalidByte,
 };
 
 pub const Error = error{
@@ -69,6 +73,7 @@ pub fn describe(e: SyntaxError) []const u8 {
         error.InvalidUtf8 => "invalid UTF-8 input",
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
+        error.InvalidByte => "invalid byte in bytevector",
     };
 }
 
@@ -105,6 +110,8 @@ const Frame = union(enum) {
     /// A `#(` whose elements so far are these.
     /// ドットはベクタの中では意味を持たないので、持っておくのは要素だけでよい。
     vector: std.ArrayList(Value),
+    /// A `#u8(` whose bytes so far are these.
+    bytevector: std.ArrayList(u8),
     /// A `'`, `` ` ``, `,` or `,@` waiting for its datum.
     abbreviation: Abbreviation,
 
@@ -165,7 +172,7 @@ pub const Reader = struct {
                     switch (open.items[open.items.len - 1]) {
                         // Why: R7RS 7.1.2 の <vector> は `#(` <datum>* `)` で、
                         // ドットを置く場所がない。
-                        .abbreviation, .vector => return error.UnexpectedDot,
+                        .abbreviation, .vector, .bytevector => return error.UnexpectedDot,
                         .list => |*l| {
                             if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
                             l.dot = true;
@@ -177,6 +184,10 @@ pub const Reader = struct {
                 '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos, self.fold_case)) else if (self.atVectorOpen()) {
                     self.pos += 2;
                     try open.append(scratch, .{ .vector = .empty });
+                    continue;
+                } else if (self.atBytevectorOpen()) {
+                    self.pos += 4;
+                    try open.append(scratch, .{ .bytevector = .empty });
                     continue;
                 } else try self.atom(scratch, sink),
                 '\'', '`', ',' => |c| {
@@ -200,6 +211,7 @@ pub const Reader = struct {
                             break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
                         },
                         .vector => |items| break :blk .fromVector(try sink.heap.createVector(items.items)),
+                        .bytevector => |bytes| break :blk .fromBytevector(try sink.heap.createBytevector(bytes.items)),
                     }
                 },
                 else => try self.atom(scratch, sink),
@@ -212,6 +224,10 @@ pub const Reader = struct {
             switch (open.items[open.items.len - 1]) {
                 .list => |*l| try l.add(scratch, datum),
                 .vector => |*items| try items.append(scratch, datum),
+                .bytevector => |*bytes| {
+                    const byte = std.math.cast(u8, datum.asFixnum() orelse return error.InvalidByte) orelse return error.InvalidByte;
+                    try bytes.append(scratch, byte);
+                },
                 .abbreviation => unreachable,
             }
         }
@@ -220,6 +236,11 @@ pub const Reader = struct {
     /// Whether the input is at the `#(` that begins a vector.
     fn atVectorOpen(self: *const Reader) bool {
         return self.pos + 1 < self.src.len and self.src[self.pos + 1] == '(';
+    }
+
+    /// Whether the input is at the `#u8(` that begins a bytevector.
+    fn atBytevectorOpen(self: *const Reader) bool {
+        return std.mem.startsWith(u8, self.src[self.pos..], "#u8(");
     }
 
     /// Whether the input is at a `.` that stands alone: the next character is a
@@ -1083,7 +1104,61 @@ test "next tells an unclosed vector from a stray close paren" {
     // `#(` でも `#\` でもない `#` は、やはりデータではない。
     try std.testing.expectError(error.InvalidToken, f.readOne("#"));
     try std.testing.expectError(error.InvalidToken, f.readOne("#)"));
-    try std.testing.expectError(error.InvalidToken, f.readOne("#u8(1)"));
+    // `#u8` は、`(` が続かなければバイトベクタの開きではない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("#u8"));
+    try std.testing.expectError(error.InvalidToken, f.readOne("#u8 (1)"));
+    try std.testing.expectError(error.InvalidToken, f.readOne("#u8[1]"));
+}
+
+test "next reads a bytevector of bytes, the empty one and nesting" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("#u8(0 10 5)", try f.roundTrip(" #u8(0\t10\r\n5) ", &buf));
+    try std.testing.expectEqualStrings("#u8()", try f.roundTrip("#u8()", &buf));
+    try std.testing.expectEqualStrings("#u8()", try f.roundTrip("#u8( )", &buf));
+    try std.testing.expectEqualStrings("#u8(0 255)", try f.roundTrip("#u8(0 255)", &buf));
+    try std.testing.expectEqualStrings("#u8(1 2)", try f.roundTrip("#u8(+1 002)", &buf));
+    try std.testing.expectEqualStrings("(#u8(1) #(#u8(2) #u8()))", try f.roundTrip("(#u8(1) #(#u8(2) #u8()))", &buf));
+    try std.testing.expectEqualStrings("(a . #u8(1))", try f.roundTrip("(a . #u8(1))", &buf));
+    // `(` は区切り文字なので、別のデータのすぐ後に続けてよい。
+    try std.testing.expectEqualStrings("(#u8(1) #u8(2))", try f.roundTrip("(#u8(1)#u8(2))", &buf));
+    try std.testing.expectEqualStrings("(quote #u8(1 2))", try f.roundTrip("'#u8(1 2)", &buf));
+    const v = try f.readOne("#u8(7 8)");
+    try std.testing.expectEqual(.bytevector, v.kind());
+    try std.testing.expectEqualSlices(u8, &.{ 7, 8 }, v.asBytevector().?.bytes);
+}
+
+test "next refuses what is not a byte in a bytevector, and reports a dot or an unclosed one" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "#u8(256)", "#u8(-1)", "#u8(1000)", "#u8(a)", "#u8(\"a\")", "#u8(#\\a)", "#u8(#t)", "#u8(())", "#u8((1))", "#u8(#(1))", "#u8(1 'a)", "#u8(#u8())", "#u8(1 256)", "(#u8(256))" }) |src| {
+        try std.testing.expectError(error.InvalidByte, f.readOne(src));
+    }
+    try std.testing.expectEqualStrings("invalid byte in bytevector", describe(error.InvalidByte));
+    for ([_][]const u8{ "#u8(1 . 2)", "#u8(. 1)", "#u8(1 .)", "#u8(.)", "'#u8(1 . 2)" }) |src| {
+        try std.testing.expectError(error.UnexpectedDot, f.readOne(src));
+    }
+    const a = f.arena.allocator();
+    for ([_][]const u8{ "#u8(", "#u8(1 2", "(#u8(1)", "#u8(1 '" }) |src| {
+        var r: Reader = .init(src);
+        try std.testing.expectError(error.Incomplete, r.next(a, f.sink()));
+    }
+    try std.testing.expectError(error.UnexpectedCloseParen, f.readOne("#u8(1 2))"));
+    try std.testing.expectError(error.MissingDatum, f.readOne("#u8(')"));
+}
+
+test "next makes a long bytevector in one allocation of its own" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const n = 5000;
+    const src = try f.arena.allocator().alloc(u8, 4 + n * 4 + 1);
+    @memcpy(src[0..4], "#u8(");
+    for (0..n) |k| @memcpy(src[4 + 4 * k ..][0..4], "255 ");
+    src[src.len - 1] = ')';
+    const v = try f.readOne(src);
+    try std.testing.expectEqual(n, v.asBytevector().?.bytes.len);
+    for (v.asBytevector().?.bytes) |b| try std.testing.expectEqual(255, b);
 }
 
 test "next reads vectors nested far deeper than a recursive reader could" {
@@ -1235,6 +1310,7 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             error.InvalidCharacter,
             error.InvalidUtf8,
             error.IntegerOutOfRange,
+            error.InvalidByte,
             => return,
         } orelse {
             try std.testing.expectEqual(src.len, r.pos);
