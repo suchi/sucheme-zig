@@ -112,7 +112,7 @@
 ### 段階3: Schemeによる標準ライブラリ
 
 - [x] リーダに `` ` `` `,` `,@` の略記を追加(`quasiquote` の定義に必要。文字リテラルはスライス 1h から読める)。スライス 3h。`'` と同じ形で `quasiquote` `unquote` `unquote-splicing` の形になり、データが続かないときの誤りは `'` と同じである。テストは `src/reader.zig` の単体テストと `tests/scheme/0240-reader-abbreviations.txt`
-- [ ] EOF の値、バイトベクタと約束の値(文字の値はスライス 1h で入った)
+- [ ] EOF の値、バイトベクタと約束の値(文字の値はスライス 1h で入った。EOF の値と約束の値はスライス 3f で入り、バイトベクタはスライス 3e が残っている)
 - [ ] 派生構文を `lib/sucheme/derived.scm` に `syntax-rules` で定義。仕組みと `when` `unless` はスライス 3a、`cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` はスライス 3h で入れた(テストは `tests/scheme/0241-derived-cond.txt` から `0248-derived-scale-small.txt` と `tests/scheme-slow/0021-derived-scale.txt`)。残りの `define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda` `delay` などは 3i と 3j。3i が終わるまで、チェックは入れない
 - [ ] リストと文字列とベクタの高階手続きを Scheme で実装
 - [ ] `(scheme base)` の骨格、`(scheme case-lambda)`、`(scheme cxr)`、`(scheme lazy)`
@@ -162,7 +162,7 @@
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
 - [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。スライス未割り当て。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
-- [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値
+- [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 
 完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` 指令が入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。[design/runtime.md](design/runtime.md) の例外の節の事例12(`exit` と `dynamic-wind`)が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。

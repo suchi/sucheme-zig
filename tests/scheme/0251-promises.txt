@@ -1,0 +1,136 @@
+# スライス 3f: 約束の値(R7RS 4.2.5)。`make-promise` `promise?` `force`。`delay` と `delay-force` の
+# 構文は 3j が足す。ここでは、R7RS 7.3 の参考実装と同じ形の内部の作り方 `%make-promise`
+# (強制済みかの印と、値か、強制するときに呼ぶ手続き)で、それらの展開を手で書く。
+# 名前は % で始め、(scheme lazy) に入れない(R7RS 5.6.1)。
+
+(promise? (make-promise 1))
+#t
+
+# 約束でないものは、手続きでも、データでも、偽である。
+(list (promise? 1) (promise? #f) (promise? '()) (promise? (lambda () 1)) (promise? (list 1)) (promise? "p") (promise? 'p) (promise? (vector 1)) (promise? (eof-object)))
+(#f #f #f #f #f #f #f #f #f)
+
+(force (make-promise 5))
+5
+
+(force (make-promise (list 1 2)))
+(1 2)
+
+# 偽の値を持つ約束も、強制済みである。
+(force (make-promise #f))
+#f
+
+# 約束はすでに約束なら、そのまま返す(R7RS 4.2.5)。
+(define p (make-promise 1)) (eq? (make-promise p) p)
+#t
+
+(define p (make-promise 1)) (list (force (make-promise p)) (force (make-promise (make-promise p))))
+(1 1)
+
+# 約束は別々に作れば別のもので、手続きではない。
+(list (eqv? (make-promise 1) (make-promise 1)) (equal? (make-promise 1) (make-promise 1)) (procedure? (make-promise 1)))
+(#f #f #f)
+
+(define p (make-promise 1)) (list (eqv? p p) (eq? p p) (equal? p p))
+(#t #t #t)
+
+# 外部表現。
+(make-promise 1)
+#<promise>
+
+(list (make-promise 1) 2)
+(#<promise> 2)
+
+# 約束でない値の `force` は、その値をそのまま返してよい(R7RS 4.2.5)。
+(list (force 5) (force '(1 2)) (force #f) (force "s") (force 'a))
+(5 (1 2) #f "s" a)
+
+(define l (list 1 2)) (eq? (force l) l)
+#t
+
+# 約束の中の値は、同じオブジェクトである。強制するたびに新しく作らない。
+(define l (list 1 2)) (define p (make-promise l)) (list (eq? (force p) l) (eq? (force p) (force p)))
+(#t #t)
+
+# 強制済みの約束を作る。
+(force (%make-promise #t 7))
+7
+
+(force (%make-promise #t #f))
+#f
+
+# 強制していない約束は、約束である。強制するまで、手続きは呼ばれない。
+(define n 0) (define p (%make-promise #f (lambda () (set! n (+ n 1)) (%make-promise #t 'v)))) (list (promise? p) n)
+(#t 0)
+
+# 手続きは、強制したときに呼ばれ、戻した約束の値が約束の値になる。
+(force (%make-promise #f (lambda () (%make-promise #t 3))))
+3
+
+# 値は一度だけ計算され、覚えられる(R7RS 4.2.5)。
+(define n 0) (define p (%make-promise #f (lambda () (set! n (+ n 1)) (%make-promise #t n)))) (list (force p) (force p) (force p) n)
+(1 1 1 1)
+
+# 強制したあとも、約束は約束である。
+(define p (%make-promise #f (lambda () (%make-promise #t 1)))) (begin (force p) (list (promise? p) (force p)))
+(#t 1)
+
+# 強制を連鎖させる。手続きが強制していない約束を返すと、その約束を続けて強制する。
+(force (%make-promise #f (lambda () (%make-promise #f (lambda () (%make-promise #f (lambda () (%make-promise #t 'deep))))))))
+deep
+
+# 手続きが返した約束が、すでに強制済みのとき。
+(define q (make-promise 'ready)) (force (%make-promise #f (lambda () q)))
+ready
+
+# 手続きが返した約束と元の約束は、状態を共有する。元の約束を強制すると、返した約束の手続きは
+# 1度だけ走り、あとで返した約束を強制しても走り直さない。
+(define n 0) (define q (%make-promise #f (lambda () (set! n (+ n 1)) (%make-promise #t 'v)))) (define p (%make-promise #f (lambda () q))) (list (force p) (force q) n)
+(v v 1)
+
+# 先に、返される約束を強制しても、同じである。
+(define n 0) (define q (%make-promise #f (lambda () (set! n (+ n 1)) (%make-promise #t 'v)))) (define p (%make-promise #f (lambda () q))) (list (force q) (force p) n)
+(v v 1)
+
+# 強制を終えたあとの約束の値は、約束の手続きを持たない。強制済みの約束の再強制は、手続きを呼ばない。
+(define n 0) (define q (%make-promise #f (lambda () (set! n (+ n 1)) (%make-promise #t 'v)))) (define p (%make-promise #f (lambda () q))) (begin (force p) (force p) (force q) (force q) n)
+1
+
+# 偽の値を覚える。覚えた偽は、未強制と取り違えない。
+(define n 0) (define p (%make-promise #f (lambda () (set! n (+ n 1)) (%make-promise #t #f)))) (list (force p) (force p) n)
+(#f #f 1)
+
+# 引数の個数。
+(make-promise)
+error: wrong number of arguments to make-promise
+
+(make-promise 1 2)
+error: wrong number of arguments to make-promise 1 2
+
+(promise?)
+error: wrong number of arguments to promise?
+
+(promise? 1 2)
+error: wrong number of arguments to promise? 1 2
+
+(force)
+error: wrong number of arguments to force
+
+(force 1 2)
+error: wrong number of arguments to force 1 2
+
+(%make-promise #t)
+error: wrong number of arguments to %make-promise #t
+
+(%make-promise #t 1 2)
+error: wrong number of arguments to %make-promise #t 1 2
+
+# `%make-promise` の型。印は真偽値で、強制していない約束の手続きは手続きである。
+(%make-promise 1 2)
+error: wrong type of argument to %make-promise 1 2
+
+(%make-promise #f 5)
+error: wrong type of argument to %make-promise #f 5
+
+(%make-promise #f (list 1))
+error: wrong type of argument to %make-promise #f (1)

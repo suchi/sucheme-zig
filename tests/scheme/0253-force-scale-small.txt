@@ -1,0 +1,40 @@
+# スライス 3f: `force` の連鎖と GC。tests/scheme-slow/0021-force-scale.txt の縮小版で、同じ論理を
+# 毎回の門で走る大きさで通す(実行器は1ステップごとに GC するモードでも走らせる)。
+# 約束の連鎖を反復で解くこと(継続も、約束の状態の共有も、連鎖の長さに比例して伸びないこと)と、
+# 約束が持つ値と手続きが、GC を挟んでも保たれることを見る。各ケースは新しいインタプリタで走る
+# ので、定義は使う式と同じ行に置く。
+
+# 強制していない約束が、強制していない約束を返す連鎖。
+(define (loop n) (if (= n 0) (%make-promise #t 'done) (%make-promise #f (lambda () (loop (- n 1)))))) (force (loop 3000))
+done
+
+# R7RS 4.2.5 の `delay-force` の使い方: 反復する遅延評価が、連鎖の長さによらず一定の空間で終わる。
+(define-syntax lazy-force (syntax-rules () ((_ e) (%make-promise #f (lambda () e))))) (define-syntax lazy (syntax-rules () ((_ e) (lazy-force (%make-promise #t e))))) (define (count-to n acc) (lazy-force (if (= n 0) (lazy acc) (count-to (- n 1) (+ acc 1))))) (force (count-to 3000 0))
+3000
+
+# 約束が約束を返す入れ子を先に作り、一番外を強制する。内側の約束は、すべて外の約束と状態を共有する。
+(define (chain n p) (if (= n 0) p (chain (- n 1) (%make-promise #f (lambda () p))))) (define q (%make-promise #f (lambda () (%make-promise #t 'end)))) (define top (chain 2000 q)) (list (force top) (force q))
+(end end)
+
+# 内側から順に強制する。強制済みの約束を返す約束が、連なる。
+(define (chain n p) (if (= n 0) p (chain (- n 1) (%make-promise #f (lambda () p))))) (define q (%make-promise #t 'end)) (define top (chain 2000 q)) (list (force top) (force q))
+(end end)
+
+# 強制の連鎖の途中の約束を、あとから強制しても、値は同じである。
+(define (chain n p acc) (if (= n 0) (cons p acc) (chain (- n 1) (%make-promise #f (lambda () p)) (cons p acc)))) (define ps (chain 300 (%make-promise #f (lambda () (%make-promise #t 'end))) '())) (define (all-end? l) (if (null? l) #t (if (eq? (force (car l)) 'end) (all-end? (cdr l)) #f))) (list (force (car ps)) (all-end? (cdr ps)))
+(end #t)
+
+# 値を持つ約束と、手続きの環境が持つ値が、GC を挟んで保たれる。
+(define (churn n) (if (> n 0) (begin (list 1 2 3 4 5 6 7 8 9 10) (churn (- n 1))))) (define p (make-promise (list 1 2 3))) (churn 3000) (force p)
+(1 2 3)
+
+(define (churn n) (if (> n 0) (begin (list 1 2 3 4 5 6 7 8 9 10) (churn (- n 1))))) (define p ((lambda (x) (%make-promise #f (lambda () (%make-promise #t x)))) (list 4 5 6))) (churn 3000) (force p)
+(4 5 6)
+
+# 強制した途中で GC が走っても、強制している約束と、手続きが返す約束が保たれる。
+(define (churn n) (if (> n 0) (begin (list 1 2 3 4 5 6 7 8 9 10) (churn (- n 1))))) (define p (%make-promise #f (lambda () (churn 2000) (%make-promise #f (lambda () (churn 2000) (%make-promise #t (list 'a 'b))))))) (list (force p) (force p))
+((a b) (a b))
+
+# 強制済みの約束は、手続きを手放す。値だけを持つ。
+(define (churn n) (if (> n 0) (begin (list 1 2 3 4 5 6 7 8 9 10) (churn (- n 1))))) (define p (%make-promise #f (lambda () (%make-promise #t (list 7 8))))) (begin (force p) (churn 3000) (force p))
+(7 8)

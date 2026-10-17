@@ -335,8 +335,9 @@ flowchart TD
 | 3b | マージ済み | [#110](https://github.com/suchi/sucheme-zig/pull/110) |
 | 3c | マージ済み。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの持ち主と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
 | 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
-| 3h | 実装済み(作業ツリー、PR 前)。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | - |
-| 3d、3e、3f、3i から 3r | 未着手 | - |
+| 3h | マージ済み。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | [#115](https://github.com/suchi/sucheme-zig/pull/115) |
+| 3f | レビュー済み。EOF の値(`Value` の即値)、約束(ヒープの型 `Promise`)、`eof-object` `eof-object?` `make-promise` `promise?` `force`、内部用の `%make-promise`。設計は [runtime.md](../design/runtime.md) の「EOF の値と約束」に書いた。`delay` と `delay-force` の構文は 3j が足す | [#116](https://github.com/suchi/sucheme-zig/pull/116) |
+| 3d、3e、3i から 3r | 未着手 | - |
 
 ## 次にやること
 

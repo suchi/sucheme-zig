@@ -257,6 +257,25 @@ test("the list procedures in (sucheme procedures) run in wasm", () => {
   assert.deepEqual(h.run("(list-ref '(a b) 2)"), [SCHEME_ERROR, "error: argument out of range in list-ref (a b) 2\n"]);
 });
 
+// EOF の値と約束が WASM でも動く(スライス 3f)。`force` は継続のフレームを経由する機械操作で、
+// 強制していない約束の連鎖を反復で解き、約束の値は一度だけ計算される。
+test("the end-of-file object and promises work in wasm", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(list (eof-object? (eof-object)) (eof-object? 1) (eof-object))"), [OK, "(#t #f #<eof>)\n"]);
+  assert.deepEqual(h.run("(list (promise? (make-promise 1)) (promise? 1) (force (make-promise 5)) (force 6))"), [OK, "(#t #f 5 6)\n"]);
+  assert.deepEqual(
+    h.run(
+      "(define n 0) (define (chain k) (if (= k 0) (%make-promise #t 'done) (%make-promise #f (lambda () (set! n (+ n 1)) (chain (- k 1)))))) " +
+        "(define p (chain 3000)) (list (force p) (force p) n)",
+    ),
+    [OK, "(done done 3000)\n"],
+  );
+  assert.deepEqual(
+    h.run("(force (%make-promise #f (lambda () 5)))"),
+    [SCHEME_ERROR, "error: delay-force: the expression did not return a promise\n"],
+  );
+});
+
 // 派生構文(`cond` と `quasiquote` など)も、WASM で `import` できて動く(スライス 3h)。
 // リーダの略記(`` ` `` `,` `,@`)は、WASM の入口から渡した文字列でも読める。
 test("the derived syntax in (sucheme derived) runs in wasm", () => {

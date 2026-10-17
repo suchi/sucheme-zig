@@ -1,0 +1,27 @@
+# スライス 3f を規模で試す。強制していない約束の連鎖を、`force` が反復で解くことと、連鎖の途中の
+# ごみが回収されることである。実行に時間がかかるので `zig build test-scheme -Dslow=true` のとき
+# だけ走り、全コミットでは走らない(docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す
+# 双子が tests/scheme/0253-force-scale-small.txt にある。継続の深さが連鎖の長さによらず一定で
+# あることは、ここでは確かめられない(既定のヒープの上限は、100万段ぶんのフレームが収まる
+# 大きさである)。src/machine.zig の単体テストが `peak_depth` を比べて確かめる。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+
+# 100万個の約束の連鎖。
+(define (loop n) (if (= n 0) (%make-promise #t 'done) (%make-promise #f (lambda () (loop (- n 1)))))) (force (loop 1000000))
+done
+
+# R7RS 4.2.5 の `delay-force` の使い方で、100万回反復する。
+(define-syntax lazy-force (syntax-rules () ((_ e) (%make-promise #f (lambda () e))))) (define-syntax lazy (syntax-rules () ((_ e) (lazy-force (%make-promise #t e))))) (define (count-to n acc) (lazy-force (if (= n 0) (lazy acc) (count-to (- n 1) (+ acc 1))))) (force (count-to 1000000 0))
+1000000
+
+# 約束が約束を返す入れ子を先に作ってから、一番外を強制する。10万個が作られて、すべてが生きている。
+(define (chain n p) (if (= n 0) p (chain (- n 1) (%make-promise #f (lambda () p))))) (define q (%make-promise #f (lambda () (%make-promise #t 'end)))) (define top (chain 100000 q)) (list (force top) (force q))
+(end end)
+
+# 強制済みの約束を、100万回強制する。
+(define p (make-promise 'v)) (define (loop n) (if (= n 0) (force p) (begin (force p) (loop (- n 1))))) (loop 1000000)
+v
+
+# 1つの約束を使い続けながら、ごみを作り続ける。約束の値が GC を越えて保たれる。
+(define (churn n) (if (> n 0) (begin (list 1 2 3 4 5 6 7 8 9 10) (churn (- n 1))))) (define p (%make-promise #f (lambda () (churn 200000) (%make-promise #t (list 'kept))))) (list (force p) (begin (churn 200000) (force p)))
+((kept) (kept))
