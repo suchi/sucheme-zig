@@ -1,0 +1,220 @@
+# スライス 3i: `guard`(R7RS 4.2.7)と、`raise` `raise-continuable` `with-exception-handler`
+# `dynamic-wind` との相互作用(R7RS 6.11、6.10)。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 4.2.7 の例。
+(import (sucheme derived) (sucheme procedures)) (guard (condition ((assq 'a condition) => cdr) ((assq 'b condition))) (raise (list (cons 'a 42))))
+42
+
+(import (sucheme derived) (sucheme procedures)) (guard (condition ((assq 'a condition) => cdr) ((assq 'b condition))) (raise (list (cons 'b 23))))
+(b . 23)
+
+# 本体が正常に終わるとき、値は変わらず、節は評価されない。
+(import (sucheme derived)) (guard (e (#t 'caught)) 1 2 3)
+3
+
+(import (sucheme derived)) (guard (e ((begin (display "tested") #t) 'caught)) 'fine)
+fine
+
+# 節は cond の節である。test と本体、`=>`、test だけ、`else`。
+(import (sucheme derived)) (guard (e ((symbol? e) (list 'symbol e)) ((string? e) (list 'string e))) (raise "s"))
+(string "s")
+
+(import (sucheme derived)) (guard (e ((symbol? e) 'sym) (else (list 'other e))) (raise 5))
+(other 5)
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((memv e '(1 2 3)) => length)) (raise 2))
+2
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((memv e '(1 2 3)))) (raise 2))
+(2 3)
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((assv e '((1 . one) (2 . two))) => cdr) (else 'none)) (raise 2))
+two
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((assv e '((1 . one) (2 . two))) => cdr) (else 'none)) (raise 3))
+none
+
+(import (sucheme derived)) (guard (e (#f 1) (#f 2) (else 3)) (raise 'x))
+3
+
+(import (sucheme derived)) (guard (e (#t 1 2 3)) (raise 'x))
+3
+
+# `=>` の前の test は1回だけ評価され、その値が受け手に渡る。
+(import (sucheme derived)) (let ((n 0)) (guard (e ((begin (set! n (+ n 1)) (and (symbol? e) e)) => (lambda (v) (list v n)))) (raise 'a)))
+(a 1)
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((assv e '((1 . a))) => cdr) ((symbol? e) 'sym)) (raise 'z))
+sym
+
+# test だけの節は、test の値が `guard` の値になり、test は1回だけ評価される。
+(import (sucheme derived)) (let ((n 0)) (list (guard (e ((begin (set! n (+ n 1)) (symbol? e)))) (raise 'a)) n))
+(#t 1)
+
+(import (sucheme derived)) (guard (e ((symbol? e)) ((string? e) 'str)) (raise 'x))
+#t
+
+(import (sucheme derived)) (guard (e ((string? e)) ((symbol? e) 'sym)) (raise 'x))
+sym
+
+(import (sucheme derived)) (guard (e ((string? e))) (raise 'x))
+error: x
+
+(import (sucheme derived)) (guard (e ((string? e)) ((number? e))) (raise 'x))
+error: x
+
+# `else` の本体は複数の式で、最後の値が返る。
+(import (sucheme derived)) (let ((n 0)) (list (guard (e (else (set! n (+ n 1)) (set! n (+ n 10)) n)) (raise 'x)) n))
+(11 11)
+
+# 節の test が偽の値で、どの節も当てはまらず、`else` も無いとき、`raise-continuable` で再送出する。
+(import (sucheme derived)) (guard (e ((string? e) 'string)) (raise 'sym))
+error: sym
+
+# 節が0個でも、同じである。
+(import (sucheme derived)) (guard (e) (raise 'sym))
+error: sym
+
+(import (sucheme derived)) (guard (outer (#t (list 'outer outer))) (guard (e) (raise 'sym)))
+(outer sym)
+
+# 例外の値はなんでもよい。
+(import (sucheme derived)) (guard (e (#t e)) (raise '(1 2 3)))
+(1 2 3)
+
+(import (sucheme derived)) (guard (e (#t e)) (raise #f))
+#f
+
+(import (sucheme derived)) (guard (e (#t (list e))) (raise '()))
+(())
+
+# `raise-continuable` も捕まえる。節が値を返すと、そこが `guard` の値で、`raise-continuable` へは戻らない。
+(import (sucheme derived)) (+ 1 (guard (e (#t 10)) (raise-continuable 5)))
+11
+
+# `error` と、処理系が上げる誤り。
+(import (sucheme derived)) (guard (e ((error-object? e) (list (error-object-message e) (error-object-irritants e)))) (error "boom" 1 2))
+("boom" (1 2))
+
+(import (sucheme derived)) (guard (e ((error-object? e) (error-object-message e))) (car 1))
+"wrong type of argument to car"
+
+(import (sucheme derived)) (guard (e ((error-object? e) (error-object-message e))) (undefined-variable))
+"unbound variable: undefined-variable"
+
+(import (sucheme derived)) (guard (e ((error-object? e) 'error) (else 'other)) (raise 'x))
+other
+
+# 本体の複数の式と、定義。
+(import (sucheme derived)) (guard (e (#t 'caught)) (define x 5) (+ x 1))
+6
+
+(import (sucheme derived)) (guard (e (#t 'caught)) (define x 5) (raise x) 'unreachable)
+caught
+
+# 本体が複数の値を返す。節も。
+(import (sucheme derived)) (call-with-values (lambda () (guard (e (#t 0)) (values 1 2 3))) list)
+(1 2 3)
+
+(import (sucheme derived)) (call-with-values (lambda () (guard (e (#t (values 1 2))) (raise 'x))) list)
+(1 2)
+
+(import (sucheme derived)) (call-with-values (lambda () (guard (e (#t 0)) (values))) list)
+()
+
+# 変数の領域は節である。外側の同じ名前は、`guard` の外で保たれる。
+(import (sucheme derived)) (let ((e 'outer)) (list (guard (e (#t e)) (raise 'inner)) e))
+(inner outer)
+
+(import (sucheme derived)) (let ((e 'outer)) (guard (c (#t e)) (raise 'inner)))
+outer
+
+# 入れ子。内側の節が当てはまらなければ、外側が受ける。
+(import (sucheme derived)) (guard (e ((string? e) (list 'outer e))) (guard (e ((number? e) (list 'inner e))) (raise "s")))
+(outer "s")
+
+(import (sucheme derived)) (guard (e ((string? e) (list 'outer e))) (guard (e ((number? e) (list 'inner e))) (raise 1)))
+(inner 1)
+
+# 節の本体は、`guard` の外の例外ハンドラの下で評価される。節の中の `raise` は、外側が受ける。
+(import (sucheme derived)) (guard (e (#t (list 'outer e))) (guard (e ((number? e) (raise (* e 2)))) (raise 21)))
+(outer 42)
+
+# `guard` を出たあとの `raise` は、その `guard` に捕まらない。
+(import (sucheme derived)) (guard (e (#t 'outer)) (guard (e2 (#t 'inner)) 1) (raise 'x))
+outer
+
+(import (sucheme derived)) (guard (e (#t (list 'outer e))) (guard (e2 ((string? e2) 'inner)) (+ 1 2)) (raise 'x))
+(outer x)
+
+# `with-exception-handler` との組み合わせ。内側のハンドラが先に受ける。
+(import (sucheme derived)) (guard (e (#t 'guard)) (with-exception-handler (lambda (c) 5) (lambda () (+ 1 (raise-continuable 'x)))))
+6
+
+(import (sucheme derived)) (with-exception-handler (lambda (e) 'outer-handler) (lambda () (guard (e (#t 'inner)) (raise 'x))))
+inner
+
+# 再送出は `raise-continuable` なので、外側のハンドラの値が、元の `raise-continuable` の値になる。
+(import (sucheme derived)) (with-exception-handler (lambda (c) 42) (lambda () (+ 1 (guard (e (#f 'no)) (raise-continuable 'oops)))))
+43
+
+(import (sucheme derived)) (with-exception-handler (lambda (c) (* c 2)) (lambda () (+ 1 (guard (e ((string? e) 'no)) (guard (e2 ((symbol? e2) 'no)) (raise-continuable 10))))))
+21
+
+# 非継続の `raise` を再送出して、外側のハンドラが戻ると、`raise` の誤りになる。
+(import (sucheme derived)) (with-exception-handler (lambda (c) 42) (lambda () (guard (e (#f 'no)) (raise 'oops))))
+error: handler returned from non-continuable raise #<condition "handler returned from non-continuable raise" oops>
+
+# 再送出は、外側の `guard` が受ける。
+(import (sucheme derived)) (guard (o ((symbol? o) (list 'outer o))) (guard (i ((string? i) 'inner)) (raise 'sym)))
+(outer sym)
+
+# `dynamic-wind`: 本体を出るとき after が走り、節はそのあとに評価される(節は `guard` の環境で評価される)。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (guard (e (#t (set! log (cons 'handler log)))) (dynamic-wind (lambda () (set! log (cons 'in log))) (lambda () (raise 'x)) (lambda () (set! log (cons 'out log))))) (reverse log))
+(in out handler)
+
+# 本体が正常に終われば、before と after が1回ずつである。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (guard (e (#t (set! log (cons 'handler log)))) (dynamic-wind (lambda () (set! log (cons 'in log))) (lambda () 'ok) (lambda () (set! log (cons 'out log))))) (reverse log))
+(in out)
+
+# どの節も当てはまらないときの再送出は、`raise` のときの動的環境に戻る。after のあと、もう一度 before が走り、
+# 外側の `guard` が受けるとき、再び after が走る。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (define (note x) (set! log (cons x log))) (guard (o (#t (note 'outer))) (guard (i ((string? i) (note 'inner))) (dynamic-wind (lambda () (note 'in)) (lambda () (raise 'x)) (lambda () (note 'out))))) (reverse log))
+(in out in out outer)
+
+# 入れ子の `dynamic-wind`。内側から順に after が走る。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (define (note x) (set! log (cons x log))) (guard (e (#t (note 'handler))) (dynamic-wind (lambda () (note 'in1)) (lambda () (dynamic-wind (lambda () (note 'in2)) (lambda () (raise 'x)) (lambda () (note 'out2)))) (lambda () (note 'out1)))) (reverse log))
+(in1 in2 out2 out1 handler)
+
+# 外側の `dynamic-wind` の外で捕まえるとき、`guard` の内側の after だけが走る。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (define (note x) (set! log (cons x log))) (dynamic-wind (lambda () (note 'in-outer)) (lambda () (guard (e (#t (note 'handler))) (dynamic-wind (lambda () (note 'in)) (lambda () (raise 'x)) (lambda () (note 'out))))) (lambda () (note 'out-outer))) (reverse log))
+(in-outer in out handler out-outer)
+
+# 再送出が `raise-continuable` で、外側のハンドラが値を返すと、`raise-continuable` の位置へ戻る。
+# 戻る途中で、before が走り、そのあと本体が続く。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (define (note x) (set! log (cons x log))) (list (with-exception-handler (lambda (c) (note 'handler) 100) (lambda () (guard (e (#f 'no)) (dynamic-wind (lambda () (note 'in)) (lambda () (+ 1 (raise-continuable 'x))) (lambda () (note 'out)))))) (reverse log)))
+(101 (in out in handler out))
+
+# `guard` の節の評価中に誤りが起きると、外側が受ける。
+(import (sucheme derived)) (guard (e (#t (list 'outer (error-object-message e)))) (guard (e ((symbol? e) (car 5))) (raise 'x)))
+(outer "wrong type of argument to car")
+
+# 継続の再入。`guard` の本体の中で取った継続を、`guard` を出たあとで呼ぶと、本体が再開し、ハンドラも元に戻る。
+(import (sucheme derived) (sucheme procedures)) (let ((k #f) (count 0) (results '())) (let ((v (guard (e (#t (list 'caught e))) (call/cc (lambda (c) (set! k c))) (set! count (+ count 1)) (raise count)))) (set! results (cons v results)) (if (< count 3) (k #f)) (reverse results)))
+((caught 1) (caught 2) (caught 3))
+
+# `guard` を継続で出ると、ハンドラが外れる。
+(import (sucheme derived)) (let ((r (call/cc (lambda (k) (guard (e (#t 'caught)) (k 'escaped)))))) (guard (e2 (#t (list r e2))) (raise 'later)))
+(escaped later)
+
+(import (sucheme derived)) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k (list 'handled e))) (lambda () (call/cc (lambda (j) (guard (e (#t 'wrong)) (j 'escaped)))) (raise 'later)))))
+(handled later)
+
+# `guard` の中の `call/cc` の脱出は、`dynamic-wind` の after を走らせる。
+(import (sucheme derived) (sucheme procedures)) (let ((log '())) (define (note x) (set! log (cons x log))) (call/cc (lambda (k) (guard (e (#t (note 'handler))) (dynamic-wind (lambda () (note 'in)) (lambda () (k 'escape)) (lambda () (note 'out)))))) (reverse log))
+(in out)
+
+# 本体が末尾の位置にならなくても、`guard` を何度も連続して使える。
+(import (sucheme derived)) (let loop ((i 0) (n 0)) (if (= i 1000) n (loop (+ i 1) (+ n (guard (e (#t 1)) (raise i))))))
+1000

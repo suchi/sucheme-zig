@@ -1,0 +1,34 @@
+# スライス 3i のレビューで、ミューテーション(コードを機械的に壊す実験)の生き残りを殺すために足したケース。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# `define-values` の変数が1個のとき、値の個数が1でなければ誤りである(R7RS 5.3.3 は、
+# 値を受ける仮引数と実引数の対応を `lambda` と同じにする)。余りを黙って捨てる展開を落とす。
+(import (sucheme derived)) (define-values (x) (values 1 2)) x
+error: wrong number of values: expected 1, got 2
+
+(import (sucheme derived)) (define-values (x) (values)) x
+error: wrong number of values: expected 1, got 0
+
+(import (sucheme derived)) (let () (define-values (x) (values 1 2)) x)
+error: wrong number of values: expected 1, got 2
+
+(import (sucheme derived)) (let () (define-values (x) (values)) x)
+error: wrong number of values: expected 1, got 0
+
+# 1個の変数に1個の値なら、値がそのまま束縛される。
+(import (sucheme derived)) (define-values (x) (values 7)) x
+7
+
+# `guard` の `(test)` の形の節(結果の式が無い)は、test の値を返す。あとに節が続くときも同じである。
+# あとに節が続く規則が、test の値でなく #t を返す展開を落とす。
+(import (sucheme derived) (sucheme procedures)) (guard (e ((memv e '(1 2 3))) ((symbol? e) 'sym)) (raise 2))
+(2 3)
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((memv e '(1 2 3))) ((symbol? e) 'sym)) (raise 'oops))
+sym
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((memv e '(1 2 3)) => (lambda (tail) (length tail))) ((memv e '(4 5))) (else 'other)) (raise 5))
+(5)
+
+(import (sucheme derived) (sucheme procedures)) (guard (e ((memv e '(1 2 3)) => (lambda (tail) (length tail))) ((memv e '(4 5))) (else 'other)) (raise 'z))
+other

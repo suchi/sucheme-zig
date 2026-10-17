@@ -291,6 +291,27 @@ test("the derived syntax in (sucheme derived) runs in wasm", () => {
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
+// スライス 3i の派生構文(`define-record-type` `let-values` `define-values` `guard` `case-lambda`)も、
+// WASM で動く。`guard` は継続と `dynamic-wind` を使い、再送出は `raise-continuable` である。
+test("the derived syntax of slice 3i runs in wasm", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (let ((k (kons 1 2))) (set-kar! k 3) (list (pare? k) (pare? 1) (kar k) (kdr k)))"),
+    [OK, "(#t #f 3 2)\n"],
+  );
+  assert.deepEqual(h.run("(let-values (((a b) (values 1 2)) ((c . d) (values 3 4 5))) (list a b c d))"), [OK, "(1 2 3 (4 5))\n"]);
+  assert.deepEqual(h.run("(define-values (p q) (values 10 20)) (list p q)"), [OK, "(10 20)\n"]);
+  assert.deepEqual(
+    h.run("(define f (case-lambda ((a) (list 'one a)) ((a . r) (list 'many a r)))) (list (f 1) (f 1 2 3))"),
+    [OK, "((one 1) (many 1 (2 3)))\n"],
+  );
+  assert.deepEqual(
+    h.run("(let ((log '())) (guard (o (#t (set! log (cons 'outer log)))) (guard (i ((string? i) 'inner)) (dynamic-wind (lambda () (set! log (cons 'in log))) (lambda () (raise 'x)) (lambda () (set! log (cons 'out log)))))) log)"),
+    [OK, "(outer out in out in)\n"],
+  );
+  assert.deepEqual(h.run("(guard (e ((string? e) 1)) (raise 'sym))"), [SCHEME_ERROR, "error: sym\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {
