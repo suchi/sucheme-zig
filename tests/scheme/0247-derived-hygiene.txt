@@ -1,0 +1,58 @@
+# スライス 3h: 派生構文と、利用側のマクロや束縛との衛生性(docs/design/frontend.md の
+# 衛生性の検証項目の2、3、5、8)。`cond` と `case` の `else` の照合は、
+# 0241 と 0242 にもある。ここでは、派生構文を、利用側のマクロが使う場合と、
+# ライブラリをまたぐ場合を試す。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+# 項目2: `my-or` が、利用側の `t` を壊さない。
+(import (sucheme derived)) (define-syntax my-or (syntax-rules () ((_) #f) ((_ e) e) ((_ e r ...) (let ((t e)) (if t t (my-or r ...)))))) (let ((t 5)) (my-or #f t))
+5
+
+# 項目1: `swap!` が、利用側の `tmp` を壊さない。展開が、派生構文の `let` を使う。
+(import (sucheme derived)) (define-syntax swap! (syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp))))) (let ((tmp 1) (other 2)) (swap! tmp other) (list tmp other))
+(2 1)
+
+# 項目3: 利用側が `if` を再束縛しても、派生構文の中の `if` は本来の意味を保つ。
+(import (sucheme derived)) (let ((if (lambda (a b c) 'user-if))) (list (cond (#f 1) (else 2)) (and 1 2) (or #f 3) (case 1 ((1) 'one) (else 'other)) (let* ((x 1)) x) (do ((i 0 (+ i 1))) ((= i 2) i))))
+(2 2 3 one 1 2)
+
+# 項目5: 利用側が `else` を束縛している場合、`cond` のリテラル `else` が照合しない。
+(import (sucheme derived)) (define-syntax my-cond (syntax-rules () ((_ c) (cond (#f 1) (c 2))))) (let ((else #f)) (my-cond else))
+<no output>
+
+(import (sucheme derived)) (let ((else #f)) (cond (else 'x) (#t 'y)))
+y
+
+# 項目8: 入れ子の同名束縛が、リテラルに一致しない。
+(import (sucheme derived)) (let ((else #t)) (let ((else #f)) (cond (else 'x) (#t 'y))))
+y
+
+(import (sucheme derived)) (let ((else #f)) (let ((else #t)) (cond (#f 1) (else 'x))))
+x
+
+# 利用側のマクロの展開に含まれる `else` は、利用側の位置のものとして照合する。
+(import (sucheme derived)) (define-syntax pick (syntax-rules () ((_ v) (cond ((eqv? v 1) 'one) (else 'other))))) (list (pick 1) (pick 2))
+(one other)
+
+(import (sucheme derived)) (define-syntax pick (syntax-rules () ((_ v) (cond ((eqv? v 1) 'one) (else 'other))))) (let ((else #f)) (list (pick 1) (pick 2)))
+(one other)
+
+# マクロを定義するマクロの中の派生構文。
+(import (sucheme derived)) (define-syntax def-getter (syntax-rules () ((_ name val) (define-syntax name (syntax-rules () ((_) (let ((v val)) (cond (v v) (else 'none))))))))) (def-getter get 7) (let ((v 1)) (get))
+7
+
+# 派生構文で定義した束縛は、ほかのライブラリが使える。
+(define-library (t loops) (import (sucheme core) (sucheme derived)) (export sum-to) (begin (define (sum-to n) (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((> i n) s))))) (import (t loops)) (sum-to 10)
+55
+
+# ライブラリが再エクスポートした派生構文を、その先で使える。
+(define-library (t reexport) (import (sucheme core) (sucheme derived)) (export cond else)) (import (t reexport)) (cond (#f 1) (else 2))
+2
+
+# `(sucheme derived)` が出す名前の一覧。
+(import (only (sucheme derived) cond case and or when unless let let* letrec letrec* do quasiquote)) (list (cond (#t 1)) (case 1 ((1) 2)) (and 3) (or 4) (when #t 5) (unless #f 6) (let () 7) (let* () 8) (letrec () 9) (letrec* () 10) (do () (#t 11)) `12)
+(1 2 3 4 5 6 7 8 9 10 11 12)
+
+# `%quasiquote` は、エクスポートしない。
+(import (only (sucheme derived) %quasiquote))
+error: bad import: %quasiquote is not exported by the import set

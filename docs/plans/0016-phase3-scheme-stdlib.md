@@ -310,8 +310,8 @@ flowchart TD
 
 確かめられなかったこと。
 
-- R7RS の原文は、[docs/spec/](../spec/README.md) にある(2026-10-16 に置かれた)。`max` と `min` の不正確さの伝播、整数の手続きの定義、`case` の定義が `memv` を使うこと、`delay-force` の末尾での反復は、この計画書を書いた時点では記憶による。該当するスライスの着手時に、原文で確かめる。
-- `quasiquote` を、現在の `syntax-rules` の展開器で書けるか。入れ子の準引用とベクタの準引用が通るかは、書いてみないと分からない。3h の設計で最初に試す。
+- R7RS の原文は、[docs/spec/](../spec/README.md) にある(2026-10-16 に置かれた)。`max` と `min` の不正確さの伝播、整数の手続きの定義、`delay-force` の末尾での反復は、この計画書を書いた時点では記憶による(`case` の定義が `memv` を使うことは、3h で原文の 7.3 と照らして確かめた)。該当するスライスの着手時に、原文で確かめる。
+- `quasiquote` を、現在の `syntax-rules` の展開器で書けるか。入れ子の準引用とベクタの準引用が通るかは、書いてみないと分からない。3h の設計で最初に試す。(3h で試し、書けた。入れ子もベクタも通る。ベクタは `list->vector` が無いので `(apply vector リスト)` で作る。)
 - 起動時に、埋め込んだ Scheme を展開する時間と、WASM のサイズへの影響。ADR-0006 が受け入れたトレードオフだが、測っていない。3k で測り、結果を roadmap か計画書に日付つきで書く(測定値は散文に複製しない)。
 - 3o の大きさ。構文環境と節点を GC ヒープに移す変更が、`src/syntax/` と `src/machine.zig` のどこまで及ぶかは、読んだだけでは見積れない。
 
@@ -338,13 +338,14 @@ flowchart TD
 | --- | --- | --- |
 | 3a | 実装済み。埋め込み、`(sucheme derived)` の `when` と `unless`、ネイティブと WASM のテストは済み。ライブラリ名の索引は、名前が要るライブラリが現れるまで足さない。マージ済み | [#108](https://github.com/suchi/sucheme-zig/pull/108) |
 | 3b | マージ済み | [#110](https://github.com/suchi/sucheme-zig/pull/110) |
-| 3c | 実装済み(レビュー中)。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの持ち主と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
+| 3c | マージ済み。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの持ち主と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
 | 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
-| 3d | 実装済み(PR 前)。文字列のプリミティブ(`make-string` `string` `string-set!` `string-copy` `string-copy!` `string-fill!` `substring` `string-append` `string=?` などの比較5個、`string->list` `list->string` `string->vector` `vector->string`)。リテラルの不変性の基盤: ヘッダの不変の印、リテラルと `symbol->string` への印、共通の検査 `requireMutable`、`set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!`(と `list-set!`)への適用 | - |
-| 3e から 3f、3h から 3r | 未着手 | - |
+| 3h | マージ済み。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | [#115](https://github.com/suchi/sucheme-zig/pull/115) |
+| 3d | 実装済み(レビュー中)。文字列のプリミティブ(`make-string` `string` `string-set!` `string-copy` `string-copy!` `string-fill!` `substring` `string-append` `string=?` などの比較5個、`string->list` `list->string` `string->vector` `vector->string`)。リテラルの不変性の基盤: ヘッダの不変の印、リテラルと `symbol->string` への印、共通の検査 `requireMutable`、`set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!`(と `list-set!`)への適用 | [#117](https://github.com/suchi/sucheme-zig/pull/117) |
+| 3e、3f、3i から 3r | 未着手 | - |
 
 ## 次にやること
 
-1. 3a、3b、3g はマージ済み。3c は PR のレビュー中である。3h は、3g のマージを受けて始められる。3h は 3g のマージのあとに始める(上の依存の図)。
-2. 3d は実装済みで、PR の作成とレビューが残っている。3e は、3d のマージのあとに始める(3d が入れた不変の検査の関数 `requireMutable` と印の関数を使う)。3f は、`src/value.zig` と `src/prim/table.zig` を共有するので、3e と並行にできる。
+1. 3a、3b、3c、3g、3h はマージ済み。3d は PR のレビュー中、3f は PR がマージ待ちである。3i は 3h のマージを受けて始められる。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
+2. 3e は、3d のマージのあとに始める(3d が入れた不変の検査の関数 `requireMutable` と印の関数を使う。ユーザーが 2026-10-16 に、基盤を 3d が入れると決めた)。3f は、`src/value.zig` と `src/prim/table.zig` を共有するので、3e と並行にできる。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。

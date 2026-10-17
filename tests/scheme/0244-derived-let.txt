@@ -1,0 +1,141 @@
+# スライス 3h: `let` `let*` `letrec` `letrec*`(R7RS 4.2.2)と名前つき `let`(4.2.4)。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+(import (sucheme derived)) (let ((x 2) (y 3)) (* x y))
+6
+
+(import (sucheme derived)) (let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x)))
+35
+
+(import (sucheme derived)) (let () 5)
+5
+
+# 初期値は、束縛が入る前の環境で評価される。
+(import (sucheme derived)) (let ((x 1)) (let ((x 2) (y x)) y))
+1
+
+(import (sucheme derived)) (let ((x 1)) (set! x 2) x)
+2
+
+# 本体は、定義で始められる。
+(import (sucheme derived)) (let ((x 1)) (define y 2) (+ x y))
+3
+
+(import (sucheme derived)) (let ((x 1)) (let ((f (lambda () x))) (let ((x 2)) (f))))
+1
+
+# 名前つき `let`。
+(import (sucheme derived) (only (sucheme procedures) reverse)) (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '())) (cond ((null? numbers) (list nonneg neg)) ((>= (car numbers) 0) (loop (cdr numbers) (cons (car numbers) nonneg) neg)) ((< (car numbers) 0) (loop (cdr numbers) nonneg (cons (car numbers) neg)))))
+((6 1 3) (-5 -2))
+
+(import (sucheme derived)) (let loop ((i 0)) (if (< i 3) (loop (+ i 1)) i))
+3
+
+(import (sucheme derived)) (let loop () 5)
+5
+
+# 名前は本体だけに束縛され、初期値の式からは見えない。
+(import (sucheme derived)) (define loop 'outer) (let loop ((x loop)) x)
+outer
+
+# 名前つき `let` の呼び出しは、末尾の位置にある。
+(import (sucheme derived)) (let loop ((i 0)) (if (< i 10000) (loop (+ i 1)) i))
+10000
+
+# `let*`。
+(import (sucheme derived)) (let ((x 2) (y 3)) (let* ((x 7) (z (+ x y))) (* z x)))
+70
+
+(import (sucheme derived)) (let* () 1)
+1
+
+(import (sucheme derived)) (let* ((x 1) (x (+ x 1))) x)
+2
+
+(import (sucheme derived)) (let* ((a 1) (b (+ a 1)) (c (+ b 1))) (list a b c))
+(1 2 3)
+
+(import (sucheme derived)) (let* ((x 1)) (define y 2) (+ x y))
+3
+
+(import (sucheme derived)) (let* () (define z 1) z)
+1
+
+# `letrec`。
+(import (sucheme derived)) (letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1))))) (odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))) (even? 88))
+#t
+
+(import (sucheme derived)) (letrec ((a 1)) a)
+1
+
+(import (sucheme derived)) (letrec () 1)
+1
+
+(import (sucheme derived)) (letrec ((a (lambda () b)) (b 2)) (a))
+2
+
+# 本体は、定義で始められる(R7RS 7.3 の原文の定義は、これを受け付けない)。
+(import (sucheme derived)) (letrec ((a 1)) (define b 2) (+ a b))
+3
+
+# 展開が使う一時変数の名前は、利用側の変数と衝突しない。
+(import (sucheme derived)) (letrec ((x 1) (newtemp 2)) (+ x newtemp))
+3
+
+(import (sucheme derived)) (letrec ((temp1 1) (temp 2) (y 3)) (list temp1 temp y))
+(1 2 3)
+
+# `letrec*`。
+(import (sucheme derived)) (letrec* ((a 1) (b (+ a 1))) (list a b))
+(1 2)
+
+(import (sucheme derived)) (letrec* () 5)
+5
+
+(import (sucheme derived)) (letrec* ((f (lambda () g)) (g 7)) (f))
+7
+
+(import (sucheme derived)) (letrec* ((a 1)) (define b 2) (+ a b))
+3
+
+# 構文の誤り。
+(import (sucheme derived)) (let)
+error: bad syntax: no rule of let matches the form
+
+(import (sucheme derived)) (let ((x 1)))
+error: bad syntax: no rule of let matches the form
+
+(import (sucheme derived)) (let ((x 1 2)) x)
+error: bad syntax: no rule of let matches the form
+
+(import (sucheme derived)) (let ((x)) x)
+error: bad syntax: no rule of let matches the form
+
+(import (sucheme derived)) (let ((1 2)) 3)
+error: bad lambda: a parameter must be an identifier
+
+(import (sucheme derived)) (let* ((x 1)))
+error: bad syntax: no rule of let* matches the form
+
+(import (sucheme derived)) (letrec ((x 1)))
+error: bad syntax: no rule of letrec matches the form
+
+(import (sucheme derived)) (letrec* ((x 1)))
+error: bad syntax: no rule of letrec* matches the form
+
+# 衛生性: 本体の中で `lambda` や `if` を束縛しても、`let` などの展開は壊れない。
+(import (sucheme derived)) (let ((lambda 5)) (let ((x 1)) (+ x lambda)))
+6
+
+(import (sucheme derived)) (let ((if list) (lambda list)) (let* ((a 1) (b 2)) (letrec ((c 3)) (list a b c))))
+(1 2 3)
+
+(import (sucheme derived)) (let ((let 1)) (+ let 1))
+2
+
+(import (sucheme derived)) (let ((set! list) (let list)) (letrec* ((a 1) (b 2)) (+ a b)))
+3
+
+# 衛生性: 展開が使う `loop` は、利用側の変数と衝突しない(名前つき `let` の名前は別)。
+(import (sucheme derived)) (let loop ((loop 1)) loop)
+1

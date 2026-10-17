@@ -1,0 +1,40 @@
+# スライス 3d のレビューで、ミューテーションが生き残った箇所を固定するテスト。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# マクロのテンプレートが導入した別名(`a` `b`)を含むリテラルは、別名を元のシンボルに戻した
+# 写しが定数になる。写しの前のデータに印を立てると、この写しは書き換えられる。
+(define-syntax m (syntax-rules () ((_) (quote (a b))))) (set-car! (m) 0)
+error: cannot modify a constant in set-car! (a b) 0
+
+(define-syntax m (syntax-rules () ((_) (quote (a b))))) (set-cdr! (cdr (m)) 0)
+error: cannot modify a constant in set-cdr! (b) 0
+
+(define-syntax m (syntax-rules () ((_) (quote (a "abc" #(b "d")))))) (string-set! (car (cdr (m))) 0 #\x)
+error: cannot modify a constant in string-set! "abc" 0 #\x
+
+(define-syntax m (syntax-rules () ((_) (quote (a "abc" #(b "d")))))) (string-set! (vector-ref (car (cdr (cdr (m)))) 1) 0 #\x)
+error: cannot modify a constant in string-set! "d" 0 #\x
+
+# 別名を含む自己評価のベクタも同じである。
+(define-syntax m (syntax-rules () ((_) #(a "s")))) (string-set! (vector-ref (m) 1) 0 #\x)
+error: cannot modify a constant in string-set! "s" 0 #\x
+
+# 使用側のデータを `quote` に入れるマクロの出力も定数である。
+(define-syntax m (syntax-rules () ((_ x) (quote (x . x))))) (set-car! (m 1) 0)
+error: cannot modify a constant in set-car! (1 . 1) 0
+
+# 範囲の外を指す書き込みも、型が正しければ、定数であることが先に報告される(型、不変、範囲の順)。
+(string-fill! "abc" #\x 5)
+error: cannot modify a constant in string-fill! "abc" #\x 5
+
+(string-fill! "abc" #\x 2 1)
+error: cannot modify a constant in string-fill! "abc" #\x 2 1
+
+(string-copy! "abc" 5 "x")
+error: cannot modify a constant in string-copy! "abc" 5 "x"
+
+(string-copy! "abc" 0 "xyzw")
+error: cannot modify a constant in string-copy! "abc" 0 "xyzw"
+
+(string-copy! "abc" 0 "xyz" 5)
+error: cannot modify a constant in string-copy! "abc" 0 "xyz" 5
