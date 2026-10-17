@@ -1,0 +1,153 @@
+# スライス 3i: `define-record-type` と `define-values` を、本体の定義の位置で使う
+# (R7RS 5.3.2、5.3.3、5.5)。どちらも複数の定義に展開されるので、本体の走査が、
+# 本体の先頭の `begin` を、その中の定義の並びとして展開することに頼る(src/syntax/expand.zig の
+# `scanBody`)。最上位での使い方は 0270 と 0272 にある。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 5.3.3 の例。
+(import (sucheme derived)) (let () (define-values (x y) (values 1 2)) (+ x y))
+3
+
+# `define-values` の形ごとの、本体での動き。
+(import (sucheme derived)) (let () (define-values (x) (values 1)) x)
+1
+
+(import (sucheme derived)) (let () (define-values (x y z) (values 1 2 3)) (list x y z))
+(1 2 3)
+
+(import (sucheme derived)) (let () (define-values (x . rest) (values 1 2 3)) (list x rest))
+(1 (2 3))
+
+(import (sucheme derived)) (let () (define-values (x y . rest) (values 1 2 3 4)) (list x y rest))
+(1 2 (3 4))
+
+(import (sucheme derived)) (let () (define-values all (values 1 2 3)) all)
+(1 2 3)
+
+(import (sucheme derived)) (let () (define-values () (values)) 'ok)
+ok
+
+# 変数が0個の定義を、同じ本体で続けて使える。
+(import (sucheme derived)) (let () (define-values () (values)) (define-values () (values)) (define-values (a) (values 3)) a)
+3
+
+# ふつうの定義と混ぜる。後ろの定義も、前の定義も、式から見える。
+(import (sucheme derived)) (let () (define a 1) (define-values (b c) (values (+ a 1) (+ a 2))) (define d (+ b c)) (list a b c d))
+(1 2 3 5)
+
+(import (sucheme derived)) (define (f) (define-values (q r) (values 7 3)) (define (sum) (+ q r)) (sum)) (f)
+10
+
+# 定義の式から、同じ本体の、後ろの手続きを呼べる。
+(import (sucheme derived)) (let () (define (twice x) (* 2 x)) (define-values (a b) (values (twice 1) (twice 2))) (list a b))
+(2 4)
+
+# 手続きの本体、`let` 系、`guard`、`case-lambda`、`let-values` の本体でも使える。
+(import (sucheme derived)) ((lambda (n) (define-values (a b) (values n (* n 2))) (+ a b)) 5)
+15
+
+(import (sucheme derived)) (let* ((x 1)) (define-values (a b) (values x 2)) (list a b))
+(1 2)
+
+(import (sucheme derived)) (letrec ((f (lambda () 1))) (define-values (a b) (values (f) 2)) (list a b))
+(1 2)
+
+(import (sucheme derived)) (guard (e (#t 'caught)) (define-values (a b) (values 1 2)) (+ a b))
+3
+
+(import (sucheme derived)) ((case-lambda ((x) (define-values (a b) (values x x)) (list a b))) 4)
+(4 4)
+
+(import (sucheme derived)) (let-values (((x) (values 1))) (define-values (a b) (values x 2)) (list a b))
+(1 2)
+
+# 値の個数が合わなければ誤りである。
+(import (sucheme derived)) (let () (define-values (x y) (values 1 2 3)) x)
+error: wrong number of arguments: expected 2, got 3
+
+# 本体の変数は、本体の中だけにある。
+(import (sucheme derived)) (let () (define-values (qq rr) (values 1 2)) qq) qq
+1
+error: unbound variable: qq
+
+# 展開が導入する名前 `v` と、手続きの名前を、利用側が局所的に束縛しても影響されない。
+(import (sucheme derived)) (let ((v 'outer)) (define-values (a b c) (values 1 2 3)) (list v a b c))
+(outer 1 2 3)
+
+(import (sucheme derived)) (let () (define-values (v w) (values 1 2)) (list v w))
+(1 2)
+
+(import (sucheme derived)) ((lambda (cadr cddr set-cdr! list apply call-with-values) (define-values (a b c) (values 1 2 3)) (vector a b c)) 0 0 0 0 0 0)
+#(1 2 3)
+
+# `define-record-type`: 本体の中で使える。R7RS 5.5 の例。
+(import (sucheme derived)) (let () (define-record-type pare (kons x y) pare? (x kar set-kar!) (y kdr)) (list (pare? (kons 1 2)) (pare? (cons 1 2)) (kar (kons 1 2)) (kdr (kons 1 2)) (let ((k (kons 1 2))) (set-kar! k 3) (kar k))))
+(#t #f 1 2 3)
+
+(import (sucheme derived)) (define (f) (define-record-type box (make-box v) box? (v unbox set-box!)) (let ((b (make-box 1))) (set-box! b 5) (list (box? b) (unbox b)))) (f)
+(#t 5)
+
+# 本体の中の使うたびに、新しい型である。
+(import (sucheme derived)) (define (make-kind) (define-record-type kind (make-it) kind? ) (cons make-it kind?)) (let ((a (make-kind)) (b (make-kind))) (list ((cdr a) ((car a))) ((cdr a) ((car b))) ((cdr b) ((car b)))))
+(#t #f #t)
+
+# 本体の同じ型を、複数のレコードに使える。2つの型を、同じ本体に置ける。
+(import (sucheme derived)) (let () (define-record-type point (make-point x y) point? (x px) (y py)) (define-record-type circle (make-circle c r) circle? (c center) (r radius)) (let ((c (make-circle (make-point 1 2) 3))) (list (circle? c) (point? c) (px (center c)) (py (center c)) (radius c))))
+(#t #f 1 2 3)
+
+# 同じ本体のほかの定義と混ぜる。定義した手続きから、アクセサを呼べる。
+(import (sucheme derived)) (let () (define (sum-point p) (+ (px p) (py p))) (define-record-type point (make-point x y) point? (x px) (y py)) (sum-point (make-point 3 4)))
+7
+
+(import (sucheme derived)) (let () (define-record-type point (make-point x y) point? (x px) (y py)) (define origin (make-point 0 0)) (define (dist p) (+ (- (px p) (px origin)) (- (py p) (py origin)))) (dist (make-point 3 -4)))
+-1
+
+# 手続きの本体、`let` 系、`guard`、`case-lambda`、`let-values` の本体でも使える。
+(import (sucheme derived)) (guard (e (#t 'caught)) (define-record-type box (make-box v) box? (v unbox)) (unbox (make-box 9)))
+9
+
+(import (sucheme derived)) ((case-lambda ((x) (define-record-type box (make-box v) box? (v unbox)) (unbox (make-box x)))) 4)
+4
+
+(import (sucheme derived)) (let-values (((x) (values 1))) (define-record-type box (make-box v) box? (v unbox)) (unbox (make-box x)))
+1
+
+(import (sucheme derived)) (let* ((x 1)) (define-record-type box (make-box v) box? (v unbox)) (unbox (make-box x)))
+1
+
+# 誤りも、本体で報告される。
+(import (sucheme derived)) (let () (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (kar 5))
+error: wrong type of argument to a record accessor kar 5
+
+(import (sucheme derived)) (let () (define-record-type pare (kons x z) pare? (x kar) (y kdr)) 1)
+error: define-record-type: not a field of the record type z
+
+# 本体の中で、同じ名前を2回定義することは誤りである(R7RS 5.3.2)。
+(import (sucheme derived)) (let () (define-record-type pare (kons x y) pare? (x kar) (y kar)) 1)
+error: bad define: kar is already defined earlier in this body
+
+(import (sucheme derived)) (let () (define kar 1) (define-record-type pare (kons x) pare? (x kar)) 1)
+error: bad define: kar is already defined earlier in this body
+
+# 利用側が、展開が使う手続きの名前を局所的に隠しても、`define-record-type` は影響されない。
+(import (sucheme derived)) ((lambda (length list-ref eq? equal? apply cons error null? car cdr) (define-record-type pare (kons y) pare? (x kar) (y kdr)) (kdr (kons 2))) 0 0 0 0 0 0 0 0 0 0)
+2
+
+# 型の名前も、本体の変数である。外側の同じ名前を隠す。
+(import (sucheme derived)) (define pare 'outer) (list (let () (define-record-type pare (kons x) pare? (x kar)) (pare? (kons 1))) pare)
+(#t outer)
+
+# 本体の `define-record-type` の型は、レコードを入れた入れ物が外へ出ても保たれる。
+(import (sucheme derived) (sucheme procedures)) (define (make) (define-record-type cell (make-cell v) cell? (v cell-v cell-set!)) (list make-cell cell? cell-v cell-set!)) (let* ((p (make)) (c ((car p) 1))) ((list-ref p 3) c 7) (list ((cadr p) c) ((list-ref p 2) c)))
+(#t 7)
+
+# 利用側のマクロが、定義を複数作る形に展開しても、本体の定義の並びとして働く。
+(import (sucheme derived)) (define-syntax def2 (syntax-rules () ((_ a b v) (begin (define a v) (define b (+ a 1)))))) (let () (def2 p q 10) (list p q))
+(10 11)
+
+(import (sucheme derived)) (define-syntax def-box (syntax-rules () ((_ type make get) (define-record-type type (make v) pred? (v get))))) (let () (def-box b mk get-b) (get-b (mk 5)))
+5
+
+# ライブラリの本体では、最上位の定義である。ライブラリの外へエクスポートした名前から使える。
+(import (sucheme core) (sucheme derived)) (define-library (test rec) (import (sucheme core) (sucheme derived)) (export make-box box? unbox set-box! a b) (begin (define-record-type box (make-box v) box? (v unbox set-box!)) (define-values (a b) (values 1 2)))) (import (test rec)) (let ((x (make-box 3))) (set-box! x (+ (unbox x) a b)) (list (box? x) (unbox x)))
+(#t 6)
