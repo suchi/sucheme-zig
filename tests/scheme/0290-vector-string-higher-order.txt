@@ -64,6 +64,10 @@
 (import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define r #f) (define first #f) (set! r (vector-map (lambda (x) (call/cc (lambda (c) (if (= x 2) (set! k c)) x))) #(1 2 3))) (set! n (+ n 1)) (if (= n 1) (set! first r)) (if (< n 3) (k (* 10 n)) (list first r n))) (test)
 (#(1 2 3) #(1 20 3) 3)
 
+# 複数のベクタの `vector-map` でも、再入で前に返したベクタが書き換わらない。
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define r #f) (define first #f) (set! r (vector-map (lambda (x y) (call/cc (lambda (c) (if (= x 2) (set! k c)) x))) #(1 2 3) #(10 20 30))) (set! n (+ n 1)) (if (= n 1) (set! first r)) (if (< n 3) (k (* 10 n)) (list first r n))) (test)
+(#(1 2 3) #(1 20 3) 3)
+
 (import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define log '()) (vector-for-each (lambda (x) (call/cc (lambda (c) (if (= x 2) (set! k c)))) (set! log (cons x log))) #(1 2 3)) (set! n (+ n 1)) (if (< n 2) (k 0) (reverse log))) (test)
 (1 2 3 2 3)
 
