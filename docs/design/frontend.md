@@ -589,3 +589,8 @@ Zig で書く範囲は [ADR-0006](../adr/0006-library-system-and-scheme-level-st
 - `define-record-type` の定義の評価は、フィールド数に対して二乗で遅い。アクセサとモディファイアを持つフィールドが 200 個で 0.7 秒、800 個で 13.4 秒、1600 個で 55.9 秒だった。展開だけなら 1600 個でも 1.2 秒で、遅いのは実行時の線形探索(`%field-index` `%check-constructor-fields` `%positions`)である。
 - `define-record-type` は、R7RS 5.5 が誤りとする重複(同じフィールド名、同じコンストラクタの引数、同じアクセサの名前)を黙って受ける。不正なフィールド指定子の診断は不揃いで、`(define-record-type (r) ...)` は内部名 `%make-record-type` を含む文言になり、コンストラクタが未知のフィールドを指す形は、型を束縛した後で失敗して、部分的な定義が残る。
 - `guard` の `(else)` や `(else 1) (#t 2)` は、誤りとして検出されるが、文言は `else is a syntactic keyword and cannot be used as a variable` で、原因が分かりにくい。
+
+現状(スライス 3j)。`derived.sld` の `export` に `delay` と `delay-force` が加わり、`procedures.sld` の `export` に `vector-map` `vector-for-each` `string-map` `string-for-each` が加わった。`delay-force` と `delay` は、R7RS 7.3 の定義どおり、約束の内部の作り方 `%make-promise`(`src/prim/promise.zig`)に展開する。`delay` は、強制済みの約束を返す式を `delay-force` に渡す形になる。連鎖した `delay-force` が一定の空間で終わることは、展開でなく、3f の `force` の機械操作が保つ。特殊形式もプリミティブも足していない。
+
+`vector-map` は、専用のベクタに結果を書き、返すときに複製する。継続を再入すると、前に返した結果が書き換わってはならない(R7RS 6.8)ので、返すのは常に新しい複製である。この複製のため、1回の呼び出しで、長さに比例するベクタを2つ確保する。引数が複数のときは、一番短いベクタの長さで止まる。`vector-for-each` は添字で進み、確保は手続きの側だけである。`string-map` と `string-for-each` は、文字列をリストに直して `map` と `for-each` に渡すので、継続の再入に対して `map` と同じく正しい。リストへの変換は、文字数に比例するペアを確保する(`string->list` と同じ種類の制約で、実行上限は文字数が数十万のあたりである)。`string-map` の手続きが文字を返さなかったときは、`list->string` の型の誤りになる。
+
