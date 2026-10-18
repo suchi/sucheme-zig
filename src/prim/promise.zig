@@ -1,6 +1,6 @@
 //! Promise primitives (R7RS 4.2.5): `make-promise`, `promise?` and `force`.
 //!
-//! `delay` と `delay-force` の構文は段階3のスライス 3j が足す。R7RS 7.3 は、`delay-force` を
+//! `delay` と `delay-force` の構文は段階3のスライス 3j が `(sucheme derived)` に足した。R7RS 7.3 は、`delay-force` を
 //! `(make-promise #f (lambda () expression))`、`delay` を `(delay-force (make-promise #t
 //! expression))` と定義している。この `make-promise` は、強制済みかの印と、値か手続きを取る
 //! 2引数の内部の手続きで、(scheme lazy) の `make-promise`(値を1つ取る)とは別のものである。
