@@ -345,11 +345,11 @@ flowchart TD
 | 3d | マージ済み。文字列のプリミティブ(`make-string` `string` `string-set!` `string-copy` `string-copy!` `string-fill!` `substring` `string-append` `string=?` などの比較5個、`string->list` `list->string` `string->vector` `vector->string`)。リテラルの不変性の基盤: ヘッダの不変の印、リテラルと `symbol->string` への印、共通の検査 `requireMutable`、`set-car!` `set-cdr!` `string-set!` `string-fill!` `string-copy!`(と `list-set!`)への適用 | [#117](https://github.com/suchi/sucheme-zig/pull/117) |
 | 3i | マージ済み。`(sucheme derived)` に `define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda` がある。どれも `syntax-rules` で書いた(特殊形式とプリミティブは足していない)。`define-record-type` は、2h の `%` で始まるプリミティブを呼ぶ補助手続きに展開する。マクロの適用が複数の定義になる `define-record-type` と `define-values` を本体で使うため、本体の先頭の `begin` の展開(3p の項目の一部)を `scanBody` に入れた。3p に残るのは `include` と `cond-expand` が持つ定義である。設計と測定は [frontend.md](../design/frontend.md) の「現状(スライス 3i)」に書いた | [#118](https://github.com/suchi/sucheme-zig/pull/118) |
 | 3e | マージ済み。ヒープの型 `Bytevector`(`#u8(...)` のリーダと印字)、バイトベクタの手続きと `utf8->string` `string->utf8`、ベクタの `make-vector` `vector-set!` `vector-fill!` `vector-copy` `vector-copy!` `vector-append` `vector->list` `list->vector`。ベクタとバイトベクタの書き込みが `requireMutable` を呼ぶ | [#119](https://github.com/suchi/sucheme-zig/pull/119) |
-| 3j | 実装済み(PR 作成前)。`vector-map` `vector-for-each` `string-map` `string-for-each`(`procedures.scm`)と `delay` `delay-force`(`derived.scm`)。`delay-force` は `%make-promise` に展開する | - |
+| 3j | レビュー中(ドラフト)。`vector-map` `vector-for-each` `string-map` `string-for-each`(`procedures.scm`)と `delay` `delay-force`(`derived.scm`)。`delay-force` は `%make-promise` に展開する | [#121](https://github.com/suchi/sucheme-zig/pull/121) |
 | 3k から 3r | 未着手 | - |
 
 ## 次にやること
 
 1. 3a、3b、3c、3d、3e、3f、3g、3h、3i はマージ済み。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
-2. 3j は実装済みである(PR は作成前)。3k は、3j のマージのあとに始める。
+2. 3j は [#121](https://github.com/suchi/sucheme-zig/pull/121) でレビュー中である。3k は、3j のマージのあとに始める。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
