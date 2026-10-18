@@ -5,5 +5,5 @@
 (define-library (sucheme derived)
   (import (sucheme core) (sucheme procedures))
   (export cond case and or when unless let let* letrec letrec* do quasiquote
-          define-record-type let-values let*-values define-values guard case-lambda)
+          define-record-type let-values let*-values define-values guard case-lambda delay delay-force)
   (include "derived.scm"))

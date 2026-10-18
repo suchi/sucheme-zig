@@ -1,0 +1,145 @@
+# スライス 3j: ベクタと文字列の高階手続き(R7RS 6.8、6.7)。`vector-map` `vector-for-each`
+# `string-map` `string-for-each`。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# R7RS 6.8 の例。
+(import (sucheme procedures)) (vector-map cadr '#((a b) (d e) (g h)))
+#(b e h)
+
+(import (sucheme procedures)) (vector-map (lambda (x) (* x x)) #(1 2 3))
+#(1 4 9)
+
+(import (sucheme procedures)) (vector-map + #(1 2) #(10 20))
+#(11 22)
+
+# 引数が複数で長さが違うときは、一番短いもので止まる。
+(import (sucheme procedures)) (vector-map + #(1 2 3) #(10 20))
+#(11 22)
+
+(import (sucheme procedures)) (vector-map + #(1 2) #(10 20 30) #(100 200 300 400))
+#(111 222)
+
+(import (sucheme procedures)) (vector-map (lambda (x) x) #())
+#()
+
+(import (sucheme procedures)) (vector-map list #() #(1 2))
+#()
+
+# 結果は新しいベクタで、定数ではない。元が定数でも、結果は書き換えられる。
+(import (sucheme procedures)) (define v (vector-map (lambda (x) x) #(1 2 3))) (vector-set! v 0 9) v
+#(9 2 3)
+
+(import (sucheme procedures)) (define a (vector 1 2)) (eq? a (vector-map (lambda (x) x) a))
+#f
+
+# 手続きに渡す要素の順は、前から後ろである。
+(import (sucheme procedures)) (define log '()) (define r (vector-map (lambda (x) (set! log (cons x log)) x) #(1 2 3))) (reverse log)
+(1 2 3)
+
+# `vector-for-each` は、前から後ろへ、副作用のために呼ぶ。
+(import (sucheme procedures)) (define acc 0) (vector-for-each (lambda (x) (set! acc (+ acc x))) #(1 2 3)) acc
+6
+
+(import (sucheme procedures)) (define log '()) (vector-for-each (lambda (a b) (set! log (cons (+ a b) log))) #(1 2 3) #(10 20)) (reverse log)
+(11 22)
+
+# 先頭のほうが短いときも、一番短い長さで止まり、引数は左から右の順で渡す。
+(import (sucheme procedures)) (define log '()) (vector-for-each (lambda (a b) (set! log (cons (- a b) log))) #(10 20) #(1 2 3)) (reverse log)
+(9 18)
+
+(import (sucheme procedures)) (vector-map - #(10 20) #(1 2 3))
+#(9 18)
+
+(import (sucheme procedures)) (vector-map list #(1 2) #(a b) #("x" "y"))
+#((1 a "x") (2 b "y"))
+
+(import (sucheme procedures)) (define log '()) (vector-for-each (lambda (x) (set! log (cons x log))) #()) log
+()
+
+# R7RS 6.8 の例。
+(import (sucheme procedures)) (define v (make-vector 5 0)) (vector-for-each (lambda (i) (vector-set! v i (* i i))) #(0 1 2 3 4)) v
+#(0 1 4 9 16)
+
+# 継続の再入で、前に返したベクタが書き換わらない(R7RS 6.8)。
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define r #f) (define first #f) (set! r (vector-map (lambda (x) (call/cc (lambda (c) (if (= x 2) (set! k c)) x))) #(1 2 3))) (set! n (+ n 1)) (if (= n 1) (set! first r)) (if (< n 3) (k (* 10 n)) (list first r n))) (test)
+(#(1 2 3) #(1 20 3) 3)
+
+# 複数のベクタの `vector-map` でも、再入で前に返したベクタが書き換わらない。
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define r #f) (define first #f) (set! r (vector-map (lambda (x y) (call/cc (lambda (c) (if (= x 2) (set! k c)) x))) #(1 2 3) #(10 20 30))) (set! n (+ n 1)) (if (= n 1) (set! first r)) (if (< n 3) (k (* 10 n)) (list first r n))) (test)
+(#(1 2 3) #(1 20 3) 3)
+
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define log '()) (vector-for-each (lambda (x) (call/cc (lambda (c) (if (= x 2) (set! k c)))) (set! log (cons x log))) #(1 2 3)) (set! n (+ n 1)) (if (< n 2) (k 0) (reverse log))) (test)
+(1 2 3 2 3)
+
+# 型の誤り。
+(import (sucheme procedures)) (vector-map (lambda (x) x) 1)
+error: wrong type of argument to vector-map 1
+
+(import (sucheme procedures)) (vector-map + #(1 2) '(1 2))
+error: wrong type of argument to vector-map (1 2)
+
+(import (sucheme procedures)) (vector-for-each (lambda (x) x) "ab")
+error: wrong type of argument to vector-for-each "ab"
+
+(import (sucheme procedures)) (vector-for-each + #(1) 5)
+error: wrong type of argument to vector-for-each 5
+
+(import (sucheme procedures)) (vector-map 1 #(1 2))
+error: not a procedure
+
+# 手続きの誤りは、そのまま伝わる。
+(import (sucheme procedures)) (vector-map car #(1 2))
+error: wrong type of argument to car 1
+
+# 文字列。手続きは文字を返す。
+(import (sucheme procedures)) (string-map (lambda (c) (integer->char (+ (char->integer c) 1))) "HAL")
+"IBM"
+
+(import (sucheme procedures)) (string-map (lambda (a b) (if (char<? a b) a b)) "adc" "bbbz")
+"abb"
+
+(import (sucheme procedures)) (string-map (lambda (c) c) "")
+""
+
+(import (sucheme procedures)) (string-map (lambda (c) c) "aλあ")
+"aλあ"
+
+(import (sucheme procedures)) (string-map (lambda (a b) a) "abc" "")
+""
+
+# 結果は新しい文字列である。
+(import (sucheme procedures)) (define s "abc") (eq? s (string-map (lambda (c) c) s))
+#f
+
+(import (sucheme procedures)) (define log '()) (string-for-each (lambda (c) (set! log (cons c log))) "abc") (reverse log)
+(#\a #\b #\c)
+
+(import (sucheme procedures)) (define log '()) (string-for-each (lambda (a b) (set! log (cons (list a b) log))) "abc" "xy") (reverse log)
+((#\a #\x) (#\b #\y))
+
+(import (sucheme procedures)) (define log '()) (string-for-each (lambda (c) (set! log (cons c log))) "") log
+()
+
+# 継続の再入。`map` が正しいので、文字列も正しい。
+(import (sucheme procedures)) (define (test) (define k #f) (define n 0) (define r #f) (define first #f) (set! r (string-map (lambda (c) (call/cc (lambda (d) (if (char=? c #\b) (set! k d)) c))) "abc")) (set! n (+ n 1)) (if (= n 1) (set! first r)) (if (< n 3) (k #\z) (list first r n))) (test)
+("abc" "azc" 3)
+
+# 型の誤り。
+(import (sucheme procedures)) (string-map (lambda (c) c) 1)
+error: wrong type of argument to string-map 1
+
+(import (sucheme procedures)) (string-map (lambda (a b) a) "ab" 'x)
+error: wrong type of argument to string-map x
+
+(import (sucheme procedures)) (string-for-each (lambda (c) c) #(1))
+error: wrong type of argument to string-for-each #(1)
+
+(import (sucheme procedures)) (string-for-each (lambda (a b) a) "ab" 'x)
+error: wrong type of argument to string-for-each x
+
+# `string-map` の手続きが文字を返さないときは、`string-map` の名前で、最初の不正な値を示して断る。
+(import (sucheme procedures)) (string-map (lambda (c) 1) "ab")
+error: wrong type of argument to string-map 1
+
+(import (sucheme procedures)) (string-map (lambda (c) (if (char=? c #\b) 'x c)) "abc")
+error: wrong type of argument to string-map x

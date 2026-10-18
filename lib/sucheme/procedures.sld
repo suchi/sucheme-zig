@@ -4,5 +4,6 @@
   (import (sucheme core))
   (export append reverse list-tail list-ref list-set! list-copy make-list
           memq memv member assq assv assoc map for-each
-          caar cadr cdar cddr boolean=?)
+          caar cadr cdar cddr boolean=?
+          vector-map vector-for-each string-map string-for-each)
   (include "procedures.scm"))

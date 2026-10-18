@@ -548,3 +548,18 @@
           (if (= (length args) count)
               (apply %make-record type (%arrange positions args))
               (error "wrong number of arguments to a record constructor" (length args)))))))
+
+;; R7RS 7.3 の `delay-force` と `delay`(スライス 3j)。約束の内部の作り方 `%make-promise`
+;; (src/prim/promise.zig)は、強制済みかの印と、値か手続きを取る。`delay` は、7.3 の定義どおり、
+;; `delay-force` に、すでに強制済みの約束を返す式を渡す形に展開する。連鎖した `delay-force` が
+;; 一定の空間で終わることは、`force` の機械操作(docs/design/runtime.md の「EOF の値と約束」)が保つ。
+(define-syntax delay-force
+  (syntax-rules ()
+    ((delay-force expression)
+     (%make-promise #f (lambda () expression)))))
+
+(define-syntax delay
+  (syntax-rules ()
+    ((delay expression)
+     (delay-force (%make-promise #t expression)))))
+

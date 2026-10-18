@@ -1,0 +1,78 @@
+# スライス 3j: `delay` と `delay-force`(R7RS 4.2.5、7.3)。`make-promise` `promise?` `force` は
+# 0251-promises.txt と 0252-force.txt にある。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+(import (sucheme derived)) (force (delay (+ 1 2)))
+3
+
+(import (sucheme derived)) (promise? (delay 1))
+#t
+
+(import (sucheme derived)) (promise? (delay-force (delay 1)))
+#t
+
+# R7RS 4.2.5 の例。
+(import (sucheme derived) (sucheme procedures)) (define integers (letrec ((next (lambda (n) (delay (cons n (next (+ n 1))))))) (next 0))) (define head (lambda (stream) (car (force stream)))) (define tail (lambda (stream) (cdr (force stream)))) (head (tail (tail integers)))
+2
+
+# 一度だけ計算される。
+(import (sucheme derived)) (define n 0) (define p (delay (begin (set! n (+ n 1)) n))) (list (force p) (force p) n)
+(1 1 1)
+
+# 強制するまで計算されない。
+(import (sucheme derived)) (define n 0) (define p (delay (begin (set! n (+ n 1)) n))) (list n (force p) n)
+(0 1 1)
+
+# R7RS 4.2.5 の例。強制の途中で同じ約束が強制されても、最初に終えた計算の値が残る。
+(import (sucheme derived)) (define x 5) (define p (delay (begin (set! x (+ x 1)) x))) (list (force p) x (force p) x)
+(6 6 6 6)
+
+(import (sucheme derived)) (define count 0) (define p (delay (begin (set! count (+ count 1)) (if (> count x) count (force p))))) (define x 5) (list (promise? p) (force p) (begin (set! x 10) (force p)))
+(#t 6 6)
+
+# `delay` の式が約束を返しても、約束が入れ子になるだけで、強制は1段である。
+(import (sucheme derived)) (promise? (force (delay (delay 1))))
+#t
+
+(import (sucheme derived)) (force (force (delay (delay 1))))
+1
+
+# `delay-force` は、式の約束を強制した結果を、自分の結果にする。
+(import (sucheme derived)) (force (delay-force (delay 7)))
+7
+
+(import (sucheme derived)) (force (delay-force (delay-force (delay-force (delay 'deep)))))
+deep
+
+(import (sucheme derived)) (define n 0) (define p (delay-force (begin (set! n (+ n 1)) (delay n)))) (list (force p) (force p) n)
+(1 1 1)
+
+# `delay-force` の式が約束を返さなければ、誤りである。
+(import (sucheme derived)) (force (delay-force 1))
+error: delay-force: the expression did not return a promise
+
+# 式の中の誤りは、強制で現れ、約束は強制していないままである。
+(import (sucheme derived)) (define p (delay (car 1))) (promise? p)
+#t
+
+(import (sucheme derived)) (define n 0) (define p (delay (begin (set! n (+ n 1)) (if (= n 1) (car 1) n)))) (list (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k 'error)) (lambda () (force p))))) (force p))
+(error 2)
+
+# 衛生: 式の中の自由な名前は、使う側の束縛を指す。ローカルの `lambda` に隠されない。
+(import (sucheme derived)) (define (f lambda) (force (delay (+ lambda 1)))) (f 41)
+42
+
+(import (sucheme derived)) (define (f %make-promise) (force (delay %make-promise))) (f 5)
+5
+
+# `delay-force` の連鎖は、継続を伸ばさない。R7RS 4.2.5 の例(`stream-filter` に当たる反復)を、
+# 小さい規模で通す。規模版は tests/scheme-slow/0024-higher-order-and-delay-scale.txt にある。
+(import (sucheme derived)) (define (loop n) (if (= n 0) (delay 'done) (delay-force (loop (- n 1))))) (force (loop 1000))
+done
+
+(import (sucheme derived)) (define (loop n acc) (if (= n 0) (delay acc) (delay-force (loop (- n 1) (+ acc n))))) (force (loop 100 0))
+5050
+
+# 値を持つ約束を `delay-force` に渡す。
+(import (sucheme derived)) (force (delay-force (make-promise 3)))
+3
