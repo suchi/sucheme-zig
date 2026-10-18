@@ -356,11 +356,11 @@ flowchart TD
 | 3i | マージ済み。`(sucheme derived)` に `define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda` がある。どれも `syntax-rules` で書いた(特殊形式とプリミティブは足していない)。`define-record-type` は、2h の `%` で始まるプリミティブを呼ぶ補助手続きに展開する。マクロの適用が複数の定義になる `define-record-type` と `define-values` を本体で使うため、本体の先頭の `begin` の展開(3p の項目の一部)を `scanBody` に入れた。3p に残るのは `include` と `cond-expand` が持つ定義である。設計と測定は [frontend.md](../design/frontend.md) の「現状(スライス 3i)」に書いた | [#118](https://github.com/suchi/sucheme-zig/pull/118) |
 | 3e | マージ済み。ヒープの型 `Bytevector`(`#u8(...)` のリーダと印字)、バイトベクタの手続きと `utf8->string` `string->utf8`、ベクタの `make-vector` `vector-set!` `vector-fill!` `vector-copy` `vector-copy!` `vector-append` `vector->list` `list->vector`。ベクタとバイトベクタの書き込みが `requireMutable` を呼ぶ | [#119](https://github.com/suchi/sucheme-zig/pull/119) |
 | 3j | マージ済み。`vector-map` `vector-for-each` `string-map` `string-for-each`(`procedures.scm`)と `delay` `delay-force`(`derived.scm`)。`delay-force` は `%make-promise` に展開する | [#121](https://github.com/suchi/sucheme-zig/pull/121) |
-| 3k | 実装済み(PR 作成前)。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld`。`(scheme base)` は実装のある必須識別子だけをエクスポートする。起動時の展開時間と WASM のサイズは、下の「確かめられなかったこと」の該当の行に測定を書いた | - |
+| 3k | レビュー中(ドラフト)。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld`。`(scheme base)` は実装のある必須識別子だけをエクスポートする。起動時の展開時間と WASM のサイズは、下の「確かめられなかったこと」の該当の行に測定を書いた | [#122](https://github.com/suchi/sucheme-zig/pull/122) |
 | 3l から 3r | 未着手 | - |
 
 ## 次にやること
 
 1. 3a、3b、3c、3d、3e、3f、3g、3h、3i、3j はマージ済み。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
-2. 3k は実装済みである(PR は作成前)。3l は、3k のマージのあとに始める。3l の前に、`!` で終わる手続きの検査と `(sucheme core)` を隠す変更の担当を、ユーザーに諮る。
+2. 3k は [#122](https://github.com/suchi/sucheme-zig/pull/122) でレビュー中である。3l は、3k のマージのあとに始める。3l の前に、`!` で終わる手続きの検査と `(sucheme core)` を隠す変更の担当を、ユーザーに諮る。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
