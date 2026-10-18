@@ -1,0 +1,78 @@
+# スライス 3k: `(scheme base)` `(scheme case-lambda)` `(scheme cxr)` `(scheme lazy)`(R7RS 付録A)。
+# `(scheme base)` は、実装のある必須識別子だけをエクスポートする。実装の無いもの(数値塔とポート)と、
+# 内部用の `%` で始まる名前と、別のライブラリの名前は、エクスポートしない。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# `(scheme base)` が、実装のある必須識別子のすべてをエクスポートする。
+(import (only (scheme base) * + - ... < <= = => > >= _ and append apply assoc assq assv begin boolean=? boolean? bytevector bytevector-append bytevector-copy bytevector-copy! bytevector-length bytevector-u8-ref bytevector-u8-set! bytevector? caar cadr call-with-current-continuation call-with-values call/cc car case cdar cddr cdr char->integer char<=? char<? char=? char>=? char>? char? cond cond-expand cons define define-record-type define-syntax define-values do dynamic-wind else eof-object eof-object? eq? equal? eqv? error error-object-irritants error-object-message error-object? features file-error? for-each guard if include include-ci integer->char lambda length let let* let*-values let-syntax let-values letrec letrec* letrec-syntax list list->string list->vector list-copy list-ref list-set! list-tail list? make-bytevector make-list make-parameter make-string make-vector map member memq memv modulo not null? number? or pair? parameterize procedure? quasiquote quote quotient raise raise-continuable read-error? remainder reverse set! set-car! set-cdr! string string->list string->symbol string->utf8 string->vector string-append string-copy string-copy! string-fill! string-for-each string-length string-map string-ref string-set! string<=? string<? string=? string>=? string>? string? substring symbol->string symbol=? symbol? syntax-error syntax-rules unless unquote unquote-splicing utf8->string values vector vector->list vector->string vector-append vector-copy vector-copy! vector-fill! vector-for-each vector-length vector-map vector-ref vector-set! vector? when with-exception-handler)) 1
+1
+
+# 使える。
+(import (scheme base)) (cadr (list 1 2 3))
+2
+
+(import (scheme base)) (let loop ((i 0) (acc '())) (if (< i 3) (loop (+ i 1) (cons i acc)) (reverse acc)))
+(0 1 2)
+
+(import (scheme base)) (define-record-type point (make-point x y) point? (x px) (y py)) (px (make-point 3 4))
+3
+
+(import (scheme base)) (vector-map (lambda (x) (* x x)) #(1 2 3))
+#(1 4 9)
+
+(import (prefix (only (scheme base) car cdr) b:)) (b:car (b:cdr '(1 2)))
+2
+
+# 補助構文も `(scheme base)` から来る。
+(import (only (scheme base) cond else =>)) (cond (#f 1) (else 2))
+2
+
+(import (only (scheme base) quasiquote unquote unquote-splicing list)) `(1 ,(+ 1 1) ,@(list 3 4))
+(1 2 3 4)
+
+# 実装の無いもの、内部用の名前、別のライブラリの名前は、エクスポートしない。
+(import (only (scheme base) abs))
+error: bad import: abs is not exported by the import set
+
+(import (only (scheme base) newline))
+error: bad import: newline is not exported by the import set
+
+(import (only (scheme base) %make-promise))
+error: bad import: %make-promise is not exported by the import set
+
+(import (only (scheme base) delay))
+error: bad import: delay is not exported by the import set
+
+(import (only (scheme base) force))
+error: bad import: force is not exported by the import set
+
+(import (only (scheme base) caddr))
+error: bad import: caddr is not exported by the import set
+
+# `(scheme cxr)`: 3回と4回の合成アクセサのすべてが、名前の読み順どおりに辿る(右の文字から先に適用する)。
+(import (scheme cxr)) (define (tree path n) (if (= n 0) (string->symbol path) (cons (tree (string-append path "a") (- n 1)) (tree (string-append path "d") (- n 1))))) (define t3 (tree "" 3)) (define t4 (tree "" 4)) (list (eq? (caaar t3) 'aaa) (eq? (caadr t3) 'daa) (eq? (cadar t3) 'ada) (eq? (caddr t3) 'dda) (eq? (cdaar t3) 'aad) (eq? (cdadr t3) 'dad) (eq? (cddar t3) 'add) (eq? (cdddr t3) 'ddd) (eq? (caaaar t4) 'aaaa) (eq? (caaadr t4) 'daaa) (eq? (caadar t4) 'adaa) (eq? (caaddr t4) 'ddaa) (eq? (cadaar t4) 'aada) (eq? (cadadr t4) 'dada) (eq? (caddar t4) 'adda) (eq? (cadddr t4) 'ddda) (eq? (cdaaar t4) 'aaad) (eq? (cdaadr t4) 'daad) (eq? (cdadar t4) 'adad) (eq? (cdaddr t4) 'ddad) (eq? (cddaar t4) 'aadd) (eq? (cddadr t4) 'dadd) (eq? (cdddar t4) 'addd) (eq? (cddddr t4) 'dddd))
+(#t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t)
+
+# `(scheme cxr)` は2回の合成アクセサを持たない。
+(import (only (scheme cxr) cadr))
+error: bad import: cadr is not exported by the import set
+
+# `(scheme case-lambda)`
+(import (scheme base) (scheme case-lambda)) (define f (case-lambda ((a) (list 'one a)) ((a b) (list 'two a b)) ((a . rest) (list 'many a rest)))) (list (f 1) (f 1 2) (f 1 2 3))
+((one 1) (two 1 2) (many 1 (2 3)))
+
+(import (only (scheme case-lambda) case-lambda delay))
+error: bad import: delay is not exported by the import set
+
+# `(scheme lazy)`
+(import (scheme lazy)) (force (delay (+ 1 2)))
+3
+
+(import (scheme lazy)) (define (loop n) (if (= n 0) (delay-force (make-promise 'done)) (delay-force (loop (- n 1))))) (force (loop 10))
+done
+
+(import (scheme lazy)) (promise? (delay 1))
+#t
+
+(import (only (scheme lazy) cons))
+error: bad import: cons is not exported by the import set
