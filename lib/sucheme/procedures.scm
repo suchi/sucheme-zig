@@ -247,3 +247,103 @@
   (if (null? more)
       (%for-each1 f l l)
       (%for-eachn f (cons l more))))
+
+;; R7RS 6.8 と 6.7 の高階手続き(スライス 3j)。
+;;
+;; `vector-map` は、結果を専用のベクタに書いてから、複製して返す。継続を再入すると、
+;; 前に返した結果が書き換わる(R7RS 6.8 が禁じている)ので、返すのは常に新しい複製である。
+;; 引数が複数のときは、一番短いベクタの長さで止まる。`vector-for-each` は、添字で進む。
+;; 文字列の手続きは、リストに直して `map` と `for-each` に渡す。`map` が再入に対して
+;; 正しいので、文字列の側も正しくなる。`string-map` の手続きは文字を返す(`list->string` が検査する)。
+
+(define (%check-vectors vs name)
+  (if (null? vs)
+      #t
+      (if (vector? (car vs))
+          (%check-vectors (cdr vs) name)
+          (error name (car vs)))))
+
+(define (%check-strings ss name)
+  (if (null? ss)
+      #t
+      (if (string? (car ss))
+          (%check-strings (cdr ss) name)
+          (error name (car ss)))))
+
+;; ベクタの並び `vs` の長さの最小値。
+(define (%min-vector-length vs)
+  (if (null? (cdr vs))
+      (vector-length (car vs))
+      (%min (vector-length (car vs)) (%min-vector-length (cdr vs)))))
+
+(define (%min a b)
+  (if (< a b) a b))
+
+;; ベクタの並び `vs` の `i` 番目の要素のリスト。
+(define (%vector-refs vs i)
+  (if (null? vs)
+      '()
+      (cons (vector-ref (car vs) i) (%vector-refs (cdr vs) i))))
+
+(define (%string-lists ss)
+  (if (null? ss)
+      '()
+      (cons (string->list (car ss)) (%string-lists (cdr ss)))))
+
+(define (%vector-map1 f v result i n)
+  (if (< i n)
+      (begin
+        (vector-set! result i (f (vector-ref v i)))
+        (%vector-map1 f v result (+ i 1) n))
+      (vector-copy result)))
+
+(define (%vector-mapn f vs result i n)
+  (if (< i n)
+      (begin
+        (vector-set! result i (apply f (%vector-refs vs i)))
+        (%vector-mapn f vs result (+ i 1) n))
+      (vector-copy result)))
+
+(define (vector-map f v . more)
+  (if (null? more)
+      (begin
+        (%check-vectors (list v) "wrong type of argument to vector-map")
+        (%vector-map1 f v (make-vector (vector-length v)) 0 (vector-length v)))
+      (begin
+        (%check-vectors (cons v more) "wrong type of argument to vector-map")
+        (%vector-map-all f (cons v more)))))
+
+(define (%vector-map-all f vs)
+  (%vector-mapn f vs (make-vector (%min-vector-length vs)) 0 (%min-vector-length vs)))
+
+(define (%vector-for-each1 f v i)
+  (if (< i (vector-length v))
+      (begin
+        (f (vector-ref v i))
+        (%vector-for-each1 f v (+ i 1)))
+      (if #f #f)))
+
+(define (%vector-for-eachn f vs i n)
+  (if (< i n)
+      (begin
+        (apply f (%vector-refs vs i))
+        (%vector-for-eachn f vs (+ i 1) n))
+      (if #f #f)))
+
+(define (vector-for-each f v . more)
+  (if (null? more)
+      (begin
+        (%check-vectors (list v) "wrong type of argument to vector-for-each")
+        (%vector-for-each1 f v 0))
+      (begin
+        (%check-vectors (cons v more) "wrong type of argument to vector-for-each")
+        (%vector-for-eachn f (cons v more) 0 (%min-vector-length (cons v more))))))
+
+(define (string-map f s . more)
+  (%check-strings (cons s more) "wrong type of argument to string-map")
+  (list->string (apply map f (%string-lists (cons s more)))))
+
+(define (string-for-each f s . more)
+  (%check-strings (cons s more) "wrong type of argument to string-for-each")
+  (apply for-each f (%string-lists (cons s more))))
+
