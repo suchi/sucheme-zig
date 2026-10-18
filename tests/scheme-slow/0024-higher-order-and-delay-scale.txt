@@ -1,0 +1,36 @@
+# スライス 3j を規模で試す。`delay-force` の連鎖が一定の空間で終わること、長いベクタと文字列の
+# 高階手続きが、確保を GC の計上に通して終わること。実行に時間がかかるので
+# `zig build test-scheme -Dslow=true` のときだけ走る(docs/plans/0007-test-tiers.md)。同じ論理を
+# 小さい規模で通す双子が tests/scheme/0290-vector-string-higher-order.txt と
+# 0291-delay.txt にある。1ケースは既定と1ステップごとに GC するモードの2回走る。
+# ランナーの上限は 64 MiB である。
+
+# 構文の `delay-force` を100万回反復する。連鎖の途中の約束はごみになる。
+(import (sucheme derived)) (define (count-to n acc) (delay-force (if (= n 0) (delay acc) (count-to (- n 1) (+ acc 1))))) (force (count-to 1000000 0))
+1000000
+
+# R7RS 4.2.5 の `stream-filter` に当たる反復。ストリームを先へ進めながら、先頭を捨てる。
+(import (sucheme derived)) (define (from n) (delay (cons n (from (+ n 1))))) (define (drop s k) (delay-force (if (= k 0) s (delay-force (drop (cdr (force s)) (- k 1)))))) (car (force (drop (from 0) 200000)))
+200000
+
+# 25万要素のベクタに `vector-map` を使う。結果と複製とで、ベクタが2つ作られる。
+(import (sucheme procedures)) (define v (make-vector 250000 2)) (vector-length (vector-map (lambda (x) (* x x)) v))
+250000
+
+(import (sucheme procedures)) (define v (make-vector 250000 2)) (define w (vector-map (lambda (x y) (+ x y)) v v)) (vector-ref w 249999)
+4
+
+# 25万要素のベクタに `vector-for-each` を使う。確保は手続きの側だけである。
+(import (sucheme procedures)) (define v (make-vector 250000 1)) (define n 0) (vector-for-each (lambda (x) (set! n (+ n x))) v) n
+250000
+
+# 20万文字の文字列に `string-map` と `string-for-each` を使う。
+(import (sucheme procedures)) (define s (make-string 200000 #\a)) (string-length (string-map (lambda (c) c) s))
+200000
+
+(import (sucheme procedures)) (define s (make-string 200000 #\あ)) (define n 0) (string-for-each (lambda (c) (set! n (+ n 1))) s) n
+200000
+
+# 作り直しながら繰り返す。古いベクタがごみになり、GC が計上から外す。
+(import (sucheme procedures)) (define v (make-vector 50000 1)) (define (again k) (if (= k 0) 'done (begin (vector-map (lambda (x) x) v) (again (- k 1))))) (again 20)
+done

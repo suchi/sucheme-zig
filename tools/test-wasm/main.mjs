@@ -312,6 +312,25 @@ test("the derived syntax of slice 3i runs in wasm", () => {
   assert.deepEqual(h.run("(guard (e ((string? e) 1)) (raise 'sym))"), [SCHEME_ERROR, "error: sym\n"]);
 });
 
+// スライス 3j のベクタと文字列の高階手続きと、約束の構文も、WASM で動く。`delay-force` の連鎖は、
+// 継続を伸ばさずに解かれる。ベクタの長さは 64 ビットの整数なので、32 ビットの usize で切り捨てない。
+test("the higher-order procedures and the promise syntax of slice 3j run in wasm", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(import (sucheme derived) (sucheme procedures)) (list (vector-map + #(1 2 3) #(10 20)) (string-map (lambda (c) c) \"aλあ\") (force (delay (+ 1 2))))"),
+    [OK, '(#(11 22) "aλあ" 3)\n'],
+  );
+  assert.deepEqual(
+    h.run("(define n 0) (vector-for-each (lambda (x) (set! n (+ n x))) #(1 2 3)) (string-for-each (lambda (c) (set! n (+ n 1))) \"ab\") n"),
+    [OK, "8\n"],
+  );
+  assert.deepEqual(
+    h.run("(define (loop n) (if (= n 0) (delay 'done) (delay-force (loop (- n 1))))) (force (loop 20000))"),
+    [OK, "done\n"],
+  );
+  assert.deepEqual(h.run("(vector-map car #(1 2))"), [SCHEME_ERROR, "error: wrong type of argument to car 1\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {
