@@ -144,6 +144,10 @@ pub fn main(init: std.process.Init) !void {
             // それを `unreachable` として扱うので、大きなリストを複数リストの `map` に渡すだけで
             // 異常終了した(tests/cli-slow/multi-list-map.scm)。上限はヒープの `Options.limit` が
             // 見るので、ここでは確保の速さと断片化に強い `smp_allocator` を使う。
+            // 代償として、Debug でも二重解放や範囲外の検出と、終了時のリーク検査は失う
+            // (単体テストは `std.testing.allocator` のままなので、リーク検査は残る)。
+            // `smp_allocator` は複数スレッドのターゲットだけで使える。WASI のような単一
+            // スレッドのターゲットは、この実行ファイルの対象ではない(docs/adr/0009)。
             try repl(std.heap.smp_allocator, .{ .io = io, .roots = roots }, &stdin.interface, out, err);
         },
         .not_implemented => {
