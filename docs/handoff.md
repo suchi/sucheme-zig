@@ -68,6 +68,8 @@
 - 2026-10-15: `ruff` の規則を AGENTS.md に足す。設定ファイルは置く。既存の警告は、触れるときに直す。CI には入れない(既存の警告が残る間は赤になるため)。
 - 2026-10-15: マクロが導入した最上位の `define` と `define-syntax` が衛生的でないことを、既知の制限として v0.2.0 に入れる。roadmap の段階3に項目がある。
 - 2026-10-15: v0.2.0 は、タグを `183a63b` に打ち、20:08 JST に公開した。
+- 2026-10-18([suchi/sucheme-zig#118](https://github.com/suchi/sucheme-zig/pull/118) のマージ前): 本体先頭の `begin` の中の定義を `scanBody` が取り込む方式(ケースA)を、そのまま採る。
+- 2026-10-19: 複数リストの `map` が大きなリストで異常終了する不具合は、実行ファイルのアロケータを `smp_allocator` にする案Aで直す([suchi/sucheme-zig#123](https://github.com/suchi/sucheme-zig/pull/123))。ユーザーの回答の前に、案Bとして `SafeAllocator` の設定変更、案Cとしてヒープのセルを自前のスラブに載せる変更を示していた。
 
 ## 決まった進め方
 
