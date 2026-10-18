@@ -331,6 +331,17 @@ test("the higher-order procedures and the promise syntax of slice 3j run in wasm
   assert.deepEqual(h.run("(vector-map car #(1 2))"), [SCHEME_ERROR, "error: wrong type of argument to car 1\n"]);
 });
 
+// スライス 3k の標準ライブラリ(`lib/scheme/`)も、WASM に埋め込まれて引ける。`(scheme base)` は、
+// 実装の無い識別子をエクスポートしない。
+test("the standard libraries of slice 3k can be imported in wasm", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(import (scheme base) (scheme cxr) (scheme lazy) (scheme case-lambda)) (list (cadr '(1 2 3)) (caddr '(1 2 3)) (force (delay 4)) ((case-lambda ((a) a) ((a b) (+ a b))) 1 2))"),
+    [OK, "(2 3 4 3)\n"],
+  );
+  assert.deepEqual(h.run("(import (only (scheme base) abs))"), [SCHEME_ERROR, "error: bad import: abs is not exported by the import set\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {
