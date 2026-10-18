@@ -43,6 +43,16 @@
 (import (sucheme procedures)) (define log '()) (vector-for-each (lambda (a b) (set! log (cons (+ a b) log))) #(1 2 3) #(10 20)) (reverse log)
 (11 22)
 
+# 先頭のほうが短いときも、一番短い長さで止まり、引数は左から右の順で渡す。
+(import (sucheme procedures)) (define log '()) (vector-for-each (lambda (a b) (set! log (cons (- a b) log))) #(10 20) #(1 2 3)) (reverse log)
+(9 18)
+
+(import (sucheme procedures)) (vector-map - #(10 20) #(1 2 3))
+#(9 18)
+
+(import (sucheme procedures)) (vector-map list #(1 2) #(a b) #("x" "y"))
+#((1 a "x") (2 b "y"))
+
 (import (sucheme procedures)) (define log '()) (vector-for-each (lambda (x) (set! log (cons x log))) #()) log
 ()
 
@@ -120,6 +130,12 @@ error: wrong type of argument to string-map x
 (import (sucheme procedures)) (string-for-each (lambda (c) c) #(1))
 error: wrong type of argument to string-for-each #(1)
 
-# `string-map` の手続きが文字を返さないときは、`list->string` が断る。
+(import (sucheme procedures)) (string-for-each (lambda (a b) a) "ab" 'x)
+error: wrong type of argument to string-for-each x
+
+# `string-map` の手続きが文字を返さないときは、`string-map` の名前で、最初の不正な値を示して断る。
 (import (sucheme procedures)) (string-map (lambda (c) 1) "ab")
-error: wrong type of argument to list->string (1 1)
+error: wrong type of argument to string-map 1
+
+(import (sucheme procedures)) (string-map (lambda (c) (if (char=? c #\b) 'x c)) "abc")
+error: wrong type of argument to string-map x

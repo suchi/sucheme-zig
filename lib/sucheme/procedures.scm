@@ -339,9 +339,21 @@
         (%check-vectors (cons v more) "wrong type of argument to vector-for-each")
         (%vector-for-eachn f (cons v more) 0 (%min-vector-length (cons v more))))))
 
+;; `string-map` の手続きが返した値の並び `l` が、すべて文字であることを検査する。
+(define (%check-chars l name)
+  (if (null? l)
+      #t
+      (if (char? (car l))
+          (%check-chars (cdr l) name)
+          (error name (car l)))))
+
+(define (%string-map-result l)
+  (%check-chars l "wrong type of argument to string-map")
+  (list->string l))
+
 (define (string-map f s . more)
   (%check-strings (cons s more) "wrong type of argument to string-map")
-  (list->string (apply map f (%string-lists (cons s more)))))
+  (%string-map-result (apply map f (%string-lists (cons s more)))))
 
 (define (string-for-each f s . more)
   (%check-strings (cons s more) "wrong type of argument to string-for-each")
