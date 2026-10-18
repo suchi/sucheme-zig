@@ -64,7 +64,16 @@ error: bad import: cadr is not exported by the import set
 (import (only (scheme case-lambda) case-lambda delay))
 error: bad import: delay is not exported by the import set
 
-# `(scheme lazy)`
+# `(scheme lazy)`。REPL の初期環境が `force` などを持つので、エクスポートの有無は `only` で確かめる。
+(import (only (scheme lazy) delay delay-force force make-promise promise?)) 1
+1
+
+(import (only (scheme case-lambda) case-lambda)) 1
+1
+
+(import (only (scheme cxr) caaaar caaadr caaar caadar caaddr caadr cadaar cadadr cadar caddar cadddr caddr cdaaar cdaadr cdaar cdadar cdaddr cdadr cddaar cddadr cddar cdddar cddddr cdddr)) 1
+1
+
 (import (scheme lazy)) (force (delay (+ 1 2)))
 3
 
