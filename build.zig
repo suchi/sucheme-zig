@@ -456,6 +456,17 @@ pub fn build(b: *std.Build) void {
         run_check_docs.addArg("--root");
         run_check_docs.addArg(t.path);
     }
+    // 実行ファイルそのものに大きなリストを通す。単体テストと Scheme のテストは、実行ファイルの
+    // `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられない(大きなリストを
+    // 複数リストの `map` に渡すと、`SafeAllocator` の `munmap` が失敗して落ちた)。
+    // 規模を試す層でだけ走らせる。
+    if (slow) {
+        const run_cli_scale = b.addRunArtifact(exe);
+        run_cli_scale.setStdIn(.{ .lazy_path = b.path("tests/cli-slow/multi-list-map.scm") });
+        run_cli_scale.expectExitCode(0);
+        run_cli_scale.expectStdOutMatch("80000");
+        test_step.dependOn(&run_cli_scale.step);
+    }
     for (test_excluded) |path| {
         run_check_docs.addArg("--exclude");
         run_check_docs.addArg(path);

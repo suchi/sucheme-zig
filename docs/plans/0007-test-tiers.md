@@ -118,6 +118,7 @@ CI の置き場所は、2 つの案を比べる。
 
 - 飛ばした件数が出るのは `zig build test --summary all` の概要だけである。素の `zig build test` は成功すると何も出さない。`zig build test-scheme` は飛ばした件数を出さず、走らせた件数だけを出す(`tests/scheme-slow/` は `-Dslow=true` のときに読むので、層1 では飛ばすのでなく読まない)。計画の「概要に件数が出る」は、この範囲に狭めた。
 - スキームの遅いケースは、別の step にせず、`zig build test-scheme -Dslow=true` で同じランナーが `tests/scheme-slow/` も読む形にした。ランナーを 2 つにすると、`build.zig` の「検証が黙って止まる」ための検査(ランナーを 1 つだけ要求する)を広げることになるためである。
+- 実行ファイルそのものに大きな入力を通すテストは、`zig build test -Dslow=true` の中で `build.zig` が走らせる(`tests/cli-slow/`)。単体テストと Scheme のテストは、実行ファイルの `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられないためである。入力は標準入力に渡し、終了コードと標準出力の一部を検査する。
 - 単体テストで層2 に移したのは、`machine.zig` の 2 つ(10 万段の非末尾再帰、20 万回の末尾呼び出しの計上)だけである。リーダ・プリンタ・展開器の深さのテストは、アロケータを速いものにしたあとでは短く、層1 に残した。
 - スキームの `0012-gc.txt` は、縮小版(3 万回のループ、3000 段の再帰、2 万回のループ)を層1 に残し、100 万回のループ、上限までの無限再帰、10 万段の再帰を `tests/scheme-slow/0012-gc-scale.txt` に移した。
 - WebAssembly の往復テストにも層2 がある。ホストが 4 GiB 近い上限を渡したときに、計上が 1 GiB で止まること(時間がかかる)を確かめるテストで、`zig build test-wasm -Dslow=true` のときだけ走る。`build.zig` が環境変数 `SUCHEME_SLOW` を `tools/test-wasm/main.mjs` に渡す。`full.yml` がこの step を走らせる(ユーザーが 2026-10-11 に承認した。[review/stage1-slice-1i-round2.md](../review/stage1-slice-1i-round2.md))。
