@@ -1,0 +1,123 @@
+# スライス 3e: バイトベクタのリテラルは定数で(R7RS 3.4 と 4.1.2)、書き込む手続きは誤りとして断る。
+# 検査の順序は、型、定数かどうか、範囲である。範囲が空の書き込みも、定数なら断る。
+# 手続きが作るバイトベクタは定数ではない。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+(bytevector-u8-set! #u8(1 2 3) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9
+
+(bytevector-u8-set! '#u8(1 2 3) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9
+
+(bytevector-u8-set! (quote #u8(1 2 3)) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9
+
+# 変数が定数を指していても、定数である。
+(define b #u8(1 2 3)) (bytevector-u8-set! b 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9
+
+# 手続きの本体のリテラルは、呼ぶたびに同じ定数である。
+(define (g) #u8(1 2 3)) (bytevector-u8-set! (g) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9
+
+# 空の定数も断る。
+(bytevector-u8-set! #u8() 0 0)
+error: cannot modify a constant in bytevector-u8-set! #u8() 0 0
+
+# 検査の順序は、型、定数、範囲である。
+(bytevector-u8-set! #u8(1 2 3) 99 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 99 9
+
+(bytevector-u8-set! #u8(1 2 3) -1 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) -1 9
+
+(bytevector-u8-set! #u8(1 2 3) 0 256)
+error: wrong type of argument to bytevector-u8-set! #u8(1 2 3) 0 256
+
+(bytevector-u8-set! #u8(1 2 3) #\a 9)
+error: wrong type of argument to bytevector-u8-set! #u8(1 2 3) #\a 9
+
+# 入れ子のリテラルの中のバイトベクタも定数である。
+(bytevector-u8-set! (car '(#u8(1))) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1) 0 9
+
+(bytevector-u8-set! (vector-ref #(#u8(1)) 0) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1) 0 9
+
+(bytevector-u8-set! (cdr '(1 . #u8(1 2))) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2) 0 9
+
+# マクロが出力するリテラルも定数である。
+(define-syntax m (syntax-rules () ((_) #u8(1 2)))) (bytevector-u8-set! (m) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2) 0 9
+
+(define-syntax m (syntax-rules () ((_) '#u8(1 2)))) (bytevector-u8-set! (m) 0 9)
+error: cannot modify a constant in bytevector-u8-set! #u8(1 2) 0 9
+
+# 書き込めるのは、手続きが作ったバイトベクタである。
+(define b (bytevector 1 2 3)) (bytevector-u8-set! b 0 9) b
+#u8(9 2 3)
+
+(define b (make-bytevector 2 0)) (bytevector-u8-set! b 1 5) b
+#u8(0 5)
+
+(define b (bytevector-append #u8(1) #u8(2))) (bytevector-u8-set! b 0 9) b
+#u8(9 2)
+
+# 定数の写しは定数ではない。
+(define b (bytevector-copy #u8(1 2 3))) (bytevector-u8-set! b 0 9) b
+#u8(9 2 3)
+
+(define b (bytevector-append #u8(1 2 3))) (bytevector-u8-set! b 0 9) b
+#u8(9 2 3)
+
+# `bytevector-copy!`: 先が定数なら断る。元が定数なのはかまわない。
+(bytevector-copy! #u8(1 2 3) 0 #u8(9))
+error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8(9)
+
+(bytevector-copy! #u8(1 2 3) 0 (bytevector 9))
+error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8(9)
+
+# 何も写さない呼び出しも断る。
+(bytevector-copy! #u8(1 2 3) 0 #u8())
+error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8()
+
+(bytevector-copy! #u8(1 2 3) 0 #u8(9) 1 1)
+error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8(9) 1 1
+
+(bytevector-copy! #u8() 0 #u8())
+error: cannot modify a constant in bytevector-copy! #u8() 0 #u8()
+
+# 検査の順序は、型、定数、範囲である。
+(bytevector-copy! #u8(1 2 3) 99 #u8(9))
+error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 99 #u8(9)
+
+(bytevector-copy! #u8(1 2 3) 0 #u8(9 9) 0 5)
+error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8(9 9) 0 5
+
+(bytevector-copy! #u8(1 2 3) 0 "a")
+error: wrong type of argument to bytevector-copy! #u8(1 2 3) 0 "a"
+
+(bytevector-copy! #u8(1 2 3) #\a #u8(9))
+error: wrong type of argument to bytevector-copy! #u8(1 2 3) #\a #u8(9)
+
+(define b (make-bytevector 3 0)) (bytevector-copy! b 0 #u8(7 8 9)) b
+#u8(7 8 9)
+
+# 定数を `equal?` や読み出しに使うのはかまわない。
+(define b #u8(1 2 3)) (list (bytevector-u8-ref b 0) (bytevector-length b) (bytevector-copy b 1) (equal? b #u8(1 2 3)))
+(1 3 #u8(2 3) #t)
+
+(define b #u8(1 2 3)) (eq? b b)
+#t
+
+# 先が定数でも、start と end の型が合わなければ、型の誤りが先に出る(型、不変、範囲の順)。
+(bytevector-copy! #u8(1 2 3) 0 (bytevector 1) 'a)
+error: wrong type of argument to bytevector-copy! #u8(1 2 3) 0 #u8(1) a
+
+(bytevector-copy! #u8(1 2 3) 0 (bytevector 1) 0 'a)
+error: wrong type of argument to bytevector-copy! #u8(1 2 3) 0 #u8(1) 0 a
+
+# 書き込みを断られても、定数はそのままである。
+(define b #u8(1 2 3)) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k b)) (lambda () (bytevector-u8-set! b 0 9)))))
+#u8(1 2 3)

@@ -59,7 +59,7 @@ fn isProcedure(v: Value) bool {
     // 手続きの種別を見落とさないようにする。
     return switch (v.kind()) {
         .primitive, .closure, .continuation, .parameter => true,
-        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .alias, .record, .record_type, .multiple_values, .eof, .promise => false,
+        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .bytevector, .alias, .record, .record_type, .multiple_values, .eof, .promise => false,
     };
 }
 

@@ -1,0 +1,53 @@
+# スライス 3e を規模で試す。入力の大きさに比例して確保するバイトベクタとベクタの手続きが、
+# 確保を GC の計上に通すこと、大きな領域を扱えること、ゴミになった領域が計上から外れること。
+# 実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ走る
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0288-vector-limits.txt と src/prim/bytevector.zig、src/prim/vector.zig の
+# 単体テストにある。1ケースは既定と1ステップごとに GC するモードの2回走る。ランナーの
+# 上限は 64 MiB である。
+
+# 上限を超える大きさのバイトベクタとベクタ。
+(make-bytevector 100000000 0)
+error: heap limit exceeded
+
+(make-vector 10000000 0)
+error: heap limit exceeded
+
+# 上限に収まる大きさ。
+(bytevector-length (make-bytevector 30000000 7))
+30000000
+
+(vector-length (make-vector 3000000 0))
+3000000
+
+# 連結は、結果の大きさを先に上限に照らす。3つ分は収まるが、10個分は収まらない。
+(define b (make-bytevector 10000000 1)) (bytevector-length (bytevector-append b b b))
+30000000
+
+(define b (make-bytevector 10000000 1)) (bytevector-length (bytevector-append b b b b b b b b b b))
+error: heap limit exceeded
+
+(define v (make-vector 500000 1)) (vector-length (vector-append v v v))
+1500000
+
+(define v (make-vector 500000 1)) (vector-length (vector-append v v v v v v v v v v))
+error: heap limit exceeded
+
+# UTF-8 との変換。
+(string-length (utf8->string (make-bytevector 20000000 97)))
+20000000
+
+(bytevector-length (string->utf8 (make-string 5000000 #\あ)))
+15000000
+
+# 長いベクタとリストの往復。
+(vector-length (list->vector (vector->list (make-vector 300000 1))))
+300000
+
+# 領域を作り直しながら伸ばす。古い領域がゴミになり、GC が計上から外す。2万回の追記が
+# 確保する量の合計は、上限を超える。
+(define (grow s n) (if (= n 0) s (grow (bytevector-append s #u8(1 2)) (- n 1)))) (bytevector-length (grow #u8() 20000))
+40000
+
+(define (growv s n) (if (= n 0) s (growv (vector-append s #(1 2)) (- n 1)))) (vector-length (growv #() 20000))
+40000

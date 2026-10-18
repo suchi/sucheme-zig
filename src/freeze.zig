@@ -9,7 +9,7 @@ const value = @import("value.zig");
 const Value = value.Value;
 const heap = @import("heap.zig");
 
-/// Marks every pair, string and vector that `root` reaches as a constant
+/// Marks every pair, string, vector and bytevector that `root` reaches as a constant
 /// (`heap.makeImmutable`), and does nothing to anything else.
 ///
 /// グラフは循環と共有を含みうるので、訪問済みの集合を持つ。作業はデータの深さに依らず、
@@ -27,7 +27,7 @@ const heap = @import("heap.zig");
 pub fn freezeGraph(allocator: std.mem.Allocator, root: Value) error{OutOfMemory}!void {
     // 数や真偽値やシンボルのリテラルと、すでに印のあるデータは、作業領域を確保しない。
     switch (root.kind()) {
-        .pair, .vector, .string => if (heap.isImmutable(root)) return,
+        .pair, .vector, .string, .bytevector => if (heap.isImmutable(root)) return,
         else => return,
     }
     var found: std.AutoArrayHashMapUnmanaged(usize, Value) = .empty;
@@ -40,6 +40,7 @@ pub fn freezeGraph(allocator: std.mem.Allocator, root: Value) error{OutOfMemory}
             .pair => @intFromPtr(x.asPair().?),
             .vector => @intFromPtr(x.asVector().?),
             .string => @intFromPtr(x.asString().?),
+            .bytevector => @intFromPtr(x.asBytevector().?),
             else => continue,
         };
         if (heap.isImmutable(x)) continue;
@@ -81,6 +82,29 @@ test "a literal list is a constant in every pair, and so is a string and a vecto
     for ([_]Value{ list, tail, vector, string }) |v| try std.testing.expect(heap.isImmutable(v));
 }
 
+test "a bytevector is a constant as a root and inside a list or a vector, and holds nothing to descend to" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const lone: Value = .fromBytevector(try f.heap.createBytevector(&.{ 1, 2 }));
+    try freezeGraph(std.testing.allocator, lone);
+    try std.testing.expect(heap.isImmutable(lone));
+    const inner: Value = .fromBytevector(try f.heap.createBytevector(&.{3}));
+    const vector: Value = .fromVector(try f.heap.createVector(&.{inner}));
+    const outer: Value = .fromBytevector(try f.heap.createBytevector(&.{}));
+    const list = try f.heap.cons(vector, outer);
+    try freezeGraph(std.testing.allocator, list);
+    for ([_]Value{ list, vector, inner, outer }) |v| try std.testing.expect(heap.isImmutable(v));
+    // 印のあるバイトベクタは作業領域を要らない。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    try freezeGraph(failing.allocator(), lone);
+    try std.testing.expectEqual(0, failing.allocations);
+    // 印のないものは要る。
+    const fresh: Value = .fromBytevector(try f.heap.createBytevector(&.{}));
+    try std.testing.expectError(error.OutOfMemory, freezeGraph(failing.allocator(), fresh));
+    try std.testing.expect(!heap.isImmutable(fresh));
+}
+
 test "a root that has nothing to mark, or is marked already, takes no work area" {
     var f: test_support.Fixture = undefined;
     f.init();
@@ -113,7 +137,7 @@ test "what a literal does not reach is left alone" {
     try std.testing.expect(!heap.isImmutable(outside));
 }
 
-test "the roots that are not pairs, strings or vectors have nothing to mark" {
+test "the roots that are not pairs, strings, vectors or bytevectors have nothing to mark" {
     var f: test_support.Fixture = undefined;
     f.init();
     defer f.deinit();

@@ -1,0 +1,99 @@
+# スライス 3e: 入力の大きさに比例して確保するベクタとバイトベクタの手続きは、確保を GC の計上に
+# 通し、上限を超えるとき `heap limit exceeded` の誤りにする(docs/design/runtime.md の計上の対象)。
+# このランナーの上限は 64 MiB である。領域は、一時の領域でなく、確保する前に上限に照らして検査
+# される。ホストのメモリは尽きない。規模を試す版は tests/scheme-slow/0023-vector-bytevector-scale.txt、
+# 縮小した上限での版は src/prim/vector.zig と src/prim/bytevector.zig の単体テストにある。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 上限に収まる大きさは作れる。ベクタの要素は 1 つが 16 バイトである。
+(vector-length (make-vector 1000000 0))
+1000000
+
+(bytevector-length (make-bytevector 1000000 0))
+1000000
+
+(bytevector-length (bytevector-append (make-bytevector 1000000 1) (make-bytevector 1000000 2)))
+2000000
+
+(vector-length (vector-append (make-vector 1000000 1) (make-vector 1000000 2)))
+2000000
+
+# 上限を超える大きさは、確保の前に断る。
+(make-vector 100000000 0)
+error: heap limit exceeded
+
+(make-vector 100000000)
+error: heap limit exceeded
+
+(make-bytevector 100000000 0)
+error: heap limit exceeded
+
+(make-bytevector 100000000)
+error: heap limit exceeded
+
+# 桁あふれする大きさも、回り込まない。
+(make-vector 4611686018427387904 0)
+error: heap limit exceeded
+
+(make-vector 9223372036854775807)
+error: heap limit exceeded
+
+(make-bytevector 9223372036854775807)
+error: heap limit exceeded
+
+(make-bytevector 9223372036854775807 255)
+error: heap limit exceeded
+
+# 2つの引数は収まるが、結果が収まらない。
+(define v (make-vector 3000000 0)) (vector-append v v)
+error: heap limit exceeded
+
+(define b (make-bytevector 40000000 0)) (bytevector-append b b)
+error: heap limit exceeded
+
+(define b (make-bytevector 40000000 0)) (bytevector-copy b)
+error: heap limit exceeded
+
+(define v (make-vector 3000000 0)) (vector-copy v)
+error: heap limit exceeded
+
+(define b (make-bytevector 40000000 0)) (utf8->string b)
+error: heap limit exceeded
+
+(define s (make-string 40000000 #\a)) (string->utf8 s)
+error: heap limit exceeded
+
+(define l (make-vector 3000000 0)) (vector->list l)
+error: heap limit exceeded
+
+# 倍々に伸ばし続けると、いつか上限に当たる。
+(define (grow v n) (if (= n 0) v (grow (vector-append v v) (- n 1)))) (vector-length (grow (vector 1 2 3 4) 30))
+error: heap limit exceeded
+
+(define (grow b n) (if (= n 0) b (grow (bytevector-append b b) (- n 1)))) (bytevector-length (grow (bytevector 1 2 3 4) 30))
+error: heap limit exceeded
+
+# 2つ目の確保が、1つ目と合わせて上限を超える。
+(define a (make-bytevector 40000000 0)) (define b (make-bytevector 40000000 0)) 0
+error: heap limit exceeded
+
+(define a (make-vector 3000000 0)) (define b (make-vector 3000000 0)) 0
+error: heap limit exceeded
+
+# 上限の誤りは、ほかの誤りと同じように、ハンドラが捕まえられる。
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'caught)) (lambda () (make-vector 100000000 0)))))
+caught
+
+(call/cc (lambda (k) (with-exception-handler (lambda (e) (k (error-object-message e))) (lambda () (make-bytevector 100000000 0)))))
+"heap limit exceeded"
+
+# 上限の誤りのあとも、同じ上限の内側で作り続けられる。
+(define (try-big) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'caught)) (lambda () (make-vector 100000000 0)))))) (try-big) (try-big) (vector-length (make-vector 10 0))
+caught
+caught
+10
+
+# 上限に届かない範囲では、バイトベクタへの書き込みは確保しない。
+(define b (make-bytevector 1000000 0)) (define (fill! i) (if (= i 1000000) 'done (begin (bytevector-u8-set! b i 7) (fill! (+ i 1))))) (fill! 0) (list (bytevector-u8-ref b 0) (bytevector-u8-ref b 999999))
+done
+(7 7)

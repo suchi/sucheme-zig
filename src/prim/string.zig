@@ -29,6 +29,9 @@ const String = value.String;
 const Heap = @import("../heap.zig").Heap;
 const immutable = @import("immutable.zig");
 const pair = @import("pair.zig");
+const range_mod = @import("range.zig");
+const RangeOperands = range_mod.RangeOperands;
+const resolveRange = range_mod.resolveRange;
 
 pub const Error = PrimitiveError;
 
@@ -159,35 +162,6 @@ fn replaceSpan(heap: *Heap, s: *String, from: usize, to: usize, with: Splice) Er
     with.fill(buffer[from..][0..new_len]);
     @memcpy(buffer[from + new_len ..], s.bytes[to..]);
     heap.replaceStringBytes(s, buffer);
-}
-
-/// The `start` and `end` arguments of a procedure, which are optional, as the numbers
-/// they are given as. The types are checked here and the range later (`resolveRange`), so
-/// that a procedure can check all the types before it looks at anything else.
-const RangeOperands = struct {
-    start: ?i64,
-    end: ?i64,
-
-    fn of(args: []const Value, first: usize) Error!RangeOperands {
-        var result: RangeOperands = .{ .start = null, .end = null };
-        if (args.len > first) result.start = args[first].asFixnum() orelse return error.WrongType;
-        if (args.len > first + 1) result.end = args[first + 1].asFixnum() orelse return error.WrongType;
-        return result;
-    }
-};
-
-/// A range of positions: from `start` up to, and not including, `end`.
-const Range = struct { start: usize, end: usize };
-
-/// `start` and `end` as positions in a sequence of `len` elements: `start` defaults to 0
-/// and `end` to `len`, and `0 <= start <= end <= len` must hold (R7RS 6.7, 6.8).
-///
-/// Why: 引数は 64 ビットの整数なので、`usize` に変えられるかを先に調べる(`stringRef` と同じ)。
-fn resolveRange(operands: RangeOperands, len: usize) Error!Range {
-    const start: usize = if (operands.start) |n| std.math.cast(usize, n) orelse return error.OutOfRange else 0;
-    const end: usize = if (operands.end) |n| std.math.cast(usize, n) orelse return error.OutOfRange else len;
-    if (end > len or start > end) return error.OutOfRange;
-    return .{ .start = start, .end = end };
 }
 
 /// `(make-string k)` and `(make-string k char)`: a new string of `k` characters, all `char`
@@ -374,12 +348,10 @@ fn stringCopyInto(services: *const Services, args: []const Value) Error!Value {
     const from = args[2].asString() orelse return error.WrongType;
     const operands = try RangeOperands.of(args, 3);
     try immutable.requireMutable(args[0]);
-    const at = std.math.cast(usize, at_n) orelse return error.OutOfRange;
-    const to_len = to.length();
-    if (at > to_len) return error.OutOfRange;
-    const range = try resolveRange(operands, from.length());
+    const plan = try range_mod.resolveCopy(at_n, to.length(), operands, from.length());
+    const at = plan.at;
+    const range = plan.range;
     const count = range.end - range.start;
-    if (to_len - at < count) return error.OutOfRange;
     const source = from.byteSpan(range.start, range.end);
     const target = to.byteSpan(at, at + count);
     try replaceSpan(services.heap, to, target.from, target.to, .{ .bytes = from.bytes[source.from..source.to] });

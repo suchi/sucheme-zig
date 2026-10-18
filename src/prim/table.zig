@@ -14,6 +14,7 @@ const procedure = @import("procedure.zig");
 const char = @import("char.zig");
 const string = @import("string.zig");
 const vector = @import("vector.zig");
+const bytevector = @import("bytevector.zig");
 const condition = @import("condition.zig");
 const record = @import("record.zig");
 const eof = @import("eof.zig");
@@ -30,6 +31,7 @@ const families = [_][]const Primitive{
     &char.primitives,
     &string.primitives,
     &vector.primitives,
+    &bytevector.primitives,
     &condition.primitives,
     &record.primitives,
     &eof.primitives,

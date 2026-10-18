@@ -38,7 +38,7 @@ pub const primitives = [_]Primitive{
 fn isProcedure(_: *const Services, args: []const Value) Error!Value {
     return .fromBool(switch (args[0].kind()) {
         .primitive, .closure, .continuation, .parameter => true,
-        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .alias, .record, .record_type, .multiple_values, .eof, .promise => false,
+        .fixnum, .boolean, .empty_list, .symbol, .pair, .unspecified, .uninitialized, .condition, .character, .string, .vector, .bytevector, .alias, .record, .record_type, .multiple_values, .eof, .promise => false,
     });
 }
 
@@ -123,5 +123,6 @@ test "procedure? is false of everything that is not a procedure" {
     defer f.deinit();
     try std.testing.expect(!try callWith(.fromString(try f.heap.createString("car"))));
     try std.testing.expect(!try callWith(.fromVector(try f.heap.createVector(&.{}))));
+    try std.testing.expect(!try callWith(.fromBytevector(try f.heap.createBytevector(&.{}))));
     try std.testing.expect(!try callWith(try f.heap.cons(.fromFixnum(1), .fromFixnum(2))));
 }

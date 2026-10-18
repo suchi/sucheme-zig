@@ -35,7 +35,8 @@ test "a constant is refused, and an object that is not a constant is let through
     const pair = try f.heap.cons(.fromFixnum(1), .empty_list_value);
     const string: Value = .fromString(try f.heap.createString("abc"));
     const vector: Value = .fromVector(try f.heap.createVector(&.{}));
-    for ([_]Value{ pair, string, vector }) |v| {
+    const bytevector: Value = .fromBytevector(try f.heap.createBytevector(&.{}));
+    for ([_]Value{ pair, string, vector, bytevector }) |v| {
         try requireMutable(v);
         heap.makeImmutable(v);
         try std.testing.expectError(error.Immutable, requireMutable(v));

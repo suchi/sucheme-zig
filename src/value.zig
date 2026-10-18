@@ -58,6 +58,9 @@ pub const Value = union(enum) {
     /// A vector.
     /// GC ヒープにある。
     vector: *Vector,
+    /// A bytevector: a fixed-length sequence of bytes (R7RS 6.9).
+    /// GC ヒープにある。
+    bytevector: *Bytevector,
     /// An identifier that a macro's template put into its output (ADR-0019).
     /// GC ヒープにある。展開の途中だけに現れる。`quote` の中のものは定数にする時点で
     /// 元のシンボルに戻すので、機械には届かない。
@@ -145,6 +148,10 @@ pub const Value = union(enum) {
         return .{ .vector = v };
     }
 
+    pub fn fromBytevector(b: *Bytevector) Value {
+        return .{ .bytevector = b };
+    }
+
     pub fn fromAlias(a: *Alias) Value {
         return .{ .alias = a };
     }
@@ -177,7 +184,7 @@ pub const Value = union(enum) {
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise => true,
+            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character, .eof => false,
         };
     }
@@ -197,6 +204,7 @@ pub const Value = union(enum) {
             .character => .character,
             .string => .string,
             .vector => .vector,
+            .bytevector => .bytevector,
             .alias => .alias,
             .record => .record,
             .record_type => .record_type,
@@ -276,6 +284,14 @@ pub const Value = union(enum) {
     pub fn asVector(self: Value) ?*Vector {
         return switch (self) {
             .vector => |v| v,
+            else => null,
+        };
+    }
+
+    /// The bytevector, or null when the value is not one.
+    pub fn asBytevector(self: Value) ?*Bytevector {
+        return switch (self) {
+            .bytevector => |b| b,
             else => null,
         };
     }
@@ -367,6 +383,7 @@ pub const Value = union(enum) {
             .pair => |x| b.asPair() == x,
             .string => |x| b.asString() == x,
             .vector => |x| b.asVector() == x,
+            .bytevector => |x| b.asBytevector() == x,
             .primitive => |x| b.asPrimitive() == x,
             .closure => |x| b.asClosure() == x,
             .condition => |x| b.asCondition() == x,
@@ -496,6 +513,13 @@ pub fn allAscii(bytes: []const u8) bool {
 /// 要素は、ヒープが所有し、計上するペイロードで、GC はそれをたどる。
 pub const Vector = struct {
     items: []Value,
+};
+
+/// A bytevector: its bytes in order (R7RS 6.9).
+/// バイト列は、ヒープが所有し、計上するペイロードで、GC はたどらない(ヒープオブジェクトを
+/// 指さない)。文字列と違い、内容に条件がなく、書き込みは長さを変えない。
+pub const Bytevector = struct {
+    bytes: []u8,
 };
 
 /// A record type: its name, and how many fields its records have.
@@ -1191,7 +1215,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector };
 
 /// The types that are not in the GC heap but are pointed to from it: the core
 /// IR, which until a later slice stays where the expander allocated it, and the
@@ -1200,7 +1224,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -1542,6 +1566,23 @@ test "a string and a vector are heap objects, each answering to its own accessor
     try std.testing.expect(vv.isTrue() and sv.isTrue());
 }
 
+test "a bytevector is a heap object of its own kind, and no other value answers to its accessor" {
+    var octets = [_]u8{ 0, 255 };
+    var b: Bytevector = .{ .bytes = &octets };
+    const bv: Value = .fromBytevector(&b);
+    try std.testing.expectEqual(Kind.bytevector, bv.kind());
+    try std.testing.expectEqual(&b, bv.asBytevector().?);
+    try std.testing.expectEqual(255, bv.asBytevector().?.bytes[1]);
+    try std.testing.expect(bv.pointsIntoHeap());
+    try std.testing.expect(bv.isTrue());
+    try std.testing.expect(bv.asVector() == null);
+    try std.testing.expect(bv.asString() == null);
+    try std.testing.expect(Value.fromFixnum(1).asBytevector() == null);
+    var items = [_]Value{.fromFixnum(1)};
+    var v: Vector = .{ .items = &items };
+    try std.testing.expect(Value.fromVector(&v).asBytevector() == null);
+}
+
 test "a record and a record type are heap objects, each answering to its own accessor" {
     var t: RecordType = .{ .name = @fromBackingInt(@intCast(2)), .field_count = 1 };
     const tv: Value = .fromRecordType(&t);
@@ -1867,6 +1908,11 @@ const Samples = struct {
     items_b: [1]Value = .{.{ .fixnum = 1 }},
     vector_a: Vector = undefined,
     vector_b: Vector = undefined,
+    // 中身が同じ2つのバイトベクタ。
+    octets_a: [2]u8 = .{ 1, 2 },
+    octets_b: [2]u8 = .{ 1, 2 },
+    bytevector_a: Bytevector = undefined,
+    bytevector_b: Bytevector = undefined,
     prim_a: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } },
     prim_b: Primitive = .{ .name = "a", .min_args = 0, .max_args = 0, .body = .{ .pure = &nop } },
     body: Node = .{ .constant = .unspecified },
@@ -1909,6 +1955,8 @@ const Samples = struct {
         self.string_b = .{ .bytes = &self.bytes_b, .is_ascii = true };
         self.vector_a = .{ .items = &self.items_a };
         self.vector_b = .{ .items = &self.items_b };
+        self.bytevector_a = .{ .bytes = &self.octets_a };
+        self.bytevector_b = .{ .bytes = &self.octets_b };
         self.lambda = .{ .arity = 0, .frame_size = 0, .body = &self.body };
         self.closure_a = .{ .lambda = &self.lambda, .env = null };
         self.closure_b = .{ .lambda = &self.lambda, .env = null };
@@ -1924,7 +1972,7 @@ const Samples = struct {
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [39]Value {
+    fn all(self: *Samples) [41]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -1946,6 +1994,8 @@ const Samples = struct {
             .fromString(&self.string_b),
             .fromVector(&self.vector_a),
             .fromVector(&self.vector_b),
+            .fromBytevector(&self.bytevector_a),
+            .fromBytevector(&self.bytevector_b),
             .fromPrimitive(&self.prim_a),
             .fromPrimitive(&self.prim_b),
             .fromClosure(&self.closure_a),
@@ -2003,6 +2053,9 @@ test "the same object is eqv? to itself, but an object with the same contents is
     const vector: Value = .fromVector(&s.vector_a);
     try std.testing.expect(vector.isEqv(.fromVector(&s.vector_a)));
     try std.testing.expect(!vector.isEqv(.fromVector(&s.vector_b)));
+    const bytes: Value = .fromBytevector(&s.bytevector_a);
+    try std.testing.expect(bytes.isEqv(.fromBytevector(&s.bytevector_a)));
+    try std.testing.expect(!bytes.isEqv(.fromBytevector(&s.bytevector_b)));
 }
 
 test "eq? agrees with eqv? on every pair of the samples" {
