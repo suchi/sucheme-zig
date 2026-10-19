@@ -2,8 +2,9 @@
 
 - ステータス: 採用
 - 日付: 2026-10-20
+- 一部置き換え: [ADR-0031: gc-at-machine-step-boundaries](0031-gc-at-machine-step-boundaries.md) のルートの「コードの定数」と、[ADR-0035: stage-2-gc-roots-and-raise-reserve](0035-stage-2-gc-roots-and-raise-reserve.md) の境目で持っているルートの一覧(機械のレジスタに制御を加え、`Context` のルートの表からコードの定数を外す)を置き換える。GC を境目でだけ走らせること、境目の一覧、予約領域は変わらない
 
-この ADR は、スライス 3o の設計([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))とともに、ユーザーの承認を求めている下書きである。承認されるまで、決定として扱わない。
+スライス 3o の設計([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))とともに、2026-10-20 にユーザーが承認した。実装は、計画書の 3o-1 から 3o-5 の PR が順に行う。
 
 ## 背景
 
