@@ -359,11 +359,13 @@ flowchart TD
 | 3e | マージ済み。ヒープの型 `Bytevector`(`#u8(...)` のリーダと印字)、バイトベクタの手続きと `utf8->string` `string->utf8`、ベクタの `make-vector` `vector-set!` `vector-fill!` `vector-copy` `vector-copy!` `vector-append` `vector->list` `list->vector`。ベクタとバイトベクタの書き込みが `requireMutable` を呼ぶ | [#119](https://github.com/suchi/sucheme-zig/pull/119) |
 | 3j | マージ済み。`vector-map` `vector-for-each` `string-map` `string-for-each`(`procedures.scm`)と `delay` `delay-force`(`derived.scm`)。`delay-force` は `%make-promise` に展開する | [#121](https://github.com/suchi/sucheme-zig/pull/121) |
 | 3k | マージ済み。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld`。`(scheme base)` は実装のある必須識別子だけをエクスポートする。起動時の展開時間と WASM のサイズは、下の「確かめられなかったこと」の該当の行に測定を書いた | [#122](https://github.com/suchi/sucheme-zig/pull/122) |
-| 3l | 実装済み(PR 作成前)。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。最上位の初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
-| 3m から 3r | 未着手 | - |
+| 3l | マージ済み([#125](https://github.com/suchi/sucheme-zig/pull/125))。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。最上位の初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
+| 3m | 実装済み(PR 作成前)。`sucheme [-I <dir>]... <file>` がプログラムを実行する。式の値は出さず、実行時エラーは 1、読めないファイルは 66、ファイルの後ろの引数は 64。仕様の3点は、ユーザーが 2026-10-19 に承認した。`main` の配線(引数から終了ステータスまで)は単体テストの外で、手で確かめた | - |
+| 3n から 3r | 未着手 | - |
 
 ## 次にやること
 
 1. 3a、3b、3c、3d、3e、3f、3g、3h、3i、3j はマージ済み。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
-2. 3k はマージ済み。3l は実装済みで、PR を作る段階である。`!` で終わる手続きの検査と `(sucheme core)` を隠す変更は、ユーザーが 2026-10-19 に、3l に入れる案を選んだ。3l のあとは 3m と 3n を並行して始められる。
-3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
+2. 3k と 3l はマージ済み。`!` で終わる手続きの検査と `(sucheme core)` を隠す変更は、ユーザーが 2026-10-19 に、3l に入れる案を選んだ。
+3. 3m は実装済みで、PR を作る段階である。3n は 3m と独立に始められる。
+4. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。

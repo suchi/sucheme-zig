@@ -10,8 +10,11 @@
 //! | 未知のオプション(2文字以上で `-` から始まるもの) | stderr にその名前を出す | 64 |
 //! | `-I` が最後の引数で、ディレクトリが続かない | stderr にそのオプションの名前を出す | 64 |
 //! | なし、または `-I <dir>` だけ(繰り返せる) | stdin が尽きるまで REPL を走らせる | 0 |
-//! | `-` だけ | オプションでなく名前として扱う | 69 |
-//! | それ以外 | ファイルの実行は未実装だと伝える | 69 |
+//! | `<file>`(`-I <dir>` が前にあってもよい) | ファイルのプログラムを最後まで実行する | 0 |
+//! | 同上で、実行時エラーが起きた | stderr に `error: ` と説明を出して、そこで止める | 1 |
+//! | 同上で、ファイルを開けない・読めない・大きすぎる | stderr に `cannot read <file>: ` と理由を出す | 66 |
+//! | `<file>` の後ろに引数が続く | stderr に説明を出す(プログラムへの引数は段階5) | 64 |
+//! | `-` だけ | オプションでなく名前として扱う。標準入力のプログラムは未実装と伝える | 69 |
 //!
 //! 要求を決める最初の引数が優先される。このため `--version --bogus` はバージョンを
 //! 出し、`--bogus --version` は未知のオプションとしてその名前を出す。未知の
@@ -24,6 +27,13 @@
 //! ディレクトリの名前である。`-I<dir>` の続けた形は無く、未知のオプションになる。
 //! 開けないルートは、何も持たないものとして読み飛ばす。環境変数は読まない。
 //! ルートの配下のリンクは辿らない。ルートそのものはリンクでもよい。
+//!
+//! ファイルのプログラムは、REPL と同じ初期環境(`(scheme base)`)で、先頭から1つずつ
+//! 評価する。R7RS 5.1 のプログラムは `import` で始まるが、始まらなくてもよい。式の値は
+//! 出力しない。出力の手段(`display`)は段階5で入る。標準ライブラリのファイルは `-I` の
+//! 探索ルートから読まれる(作業ディレクトリが先頭で、プログラムのファイルのあるディレクトリは
+//! 足されない)。ファイルの大きさの上限は 1 MiB(`max_program_bytes`)で、
+//! UTF-8 でなければ実行時エラーである。
 //!
 //! 診断は stderr に出し、この段階で応えられない要求は非ゼロで終了する。
 //! `sucheme prog.scm && echo ok` が、プログラムを実行しないまま ok を出すことを
@@ -77,6 +87,10 @@ pub const Request = union(enum) {
     version,
     help,
     repl,
+    /// Run the program in the file named by the argument at this index.
+    run_file: usize,
+    /// Arguments follow the name of the program, which nothing can read yet.
+    program_arguments,
     /// A valid request this stage cannot serve yet.
     not_implemented,
     /// An option this program does not know.
@@ -125,8 +139,9 @@ pub fn main(init: std.process.Init) !void {
         },
         .help => {
             try out.print(
-                "{s} {s}\n\nUsage: {s} [--version] [--help|-h] [-I <dir>]...\n\n" ++
+                "{s} {s}\n\nUsage: {s} [--version] [--help|-h] [-I <dir>]... [<file>]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
+                    "With a file, runs the program in it and prints nothing but errors.\n" ++
                     "-I <dir> adds a directory to search for the files of libraries; the working\n" ++
                     "directory is searched first.\n" ++
                     "Only the core of the language is bound for now; see docs/roadmap.md.\n",
@@ -150,9 +165,23 @@ pub fn main(init: std.process.Init) !void {
             // スレッドのターゲットは、この実行ファイルの対象ではない(docs/adr/0009)。
             try repl(std.heap.smp_allocator, .{ .io = io, .roots = roots }, &stdin.interface, out, err);
         },
+        .run_file => |index| {
+            const roots = try searchRoots(init.arena.allocator(), rest[0..index]);
+            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], err);
+            if (status != 0) std.process.exit(status);
+        },
+        .program_arguments => {
+            try err.print(
+                "{s}: arguments for the program are not supported yet.\n" ++
+                    "Run with --help for the options available now.\n",
+                .{sucheme.name},
+            );
+            try err.flush();
+            std.process.exit(exit_usage);
+        },
         .not_implemented => {
             try err.print(
-                "{s}: running a file is not implemented yet.\n" ++
+                "{s}: reading a program from stdin is not implemented yet.\n" ++
                     "Run with --help for the options available now.\n",
                 .{sucheme.name},
             );
@@ -177,6 +206,14 @@ pub fn main(init: std.process.Init) !void {
 /// Exit status for a request this stage cannot serve.
 pub const exit_not_implemented: u8 = 69;
 
+/// Exit status for a program that stopped with an error.
+pub const exit_runtime_error: u8 = 1;
+
+/// Exit status for a program file that cannot be read.
+///
+/// 66 は sysexits.h の EX_NOINPUT である。
+pub const exit_no_input: u8 = 66;
+
 /// Exit status for a command line this program cannot parse.
 ///
 /// 64 は sysexits.h の EX_USAGE で、ここで慣習に最も近いものである。
@@ -187,7 +224,6 @@ pub const include_option = "-I";
 
 /// Classifies the arguments after the program name.
 pub fn classify(args: []const []const u8) Request {
-    var named = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -200,17 +236,20 @@ pub fn classify(args: []const []const u8) Request {
             continue;
         }
         // 先頭が `-` で一致しないものは、ファイル名でなく打ち間違いである。
-        // ただし `-` だけは別で、慣習では標準入力を指す。これは名前の側に
-        // 落ち、ファイルの実行が入る段階で意味が与えられる。
         if (arg.len > 1 and arg[0] == '-') return .{ .unknown_option = arg };
-        named = true;
+        // `-` だけは、慣習では標準入力のプログラムを指す。まだ応えられない。
+        if (std.mem.eql(u8, arg, "-")) return .not_implemented;
+        // 最初の名前がプログラムのファイルで、その後ろは、プログラムへの引数である。
+        // 読む手段(`command-line`)が段階5で入るまで、黙って捨てずに断る。
+        if (i + 1 < args.len) return .program_arguments;
+        return .{ .run_file = i };
     }
-    return if (named) .not_implemented else .repl;
+    return .repl;
 }
 
 /// The directories the files of libraries are searched in: the working directory,
 /// then each `-I` of `args`, in order.
-/// `args` は `classify` が REPL と判定したものである。
+/// `args` は、`classify` が REPL と判定したもの、またはファイルの実行と判定したときのファイル名の前までである。
 pub fn searchRoots(arena: std.mem.Allocator, args: []const []const u8) error{OutOfMemory}![]const []const u8 {
     var roots: std.ArrayList([]const u8) = .empty;
     try roots.append(arena, ".");
@@ -303,6 +342,56 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, in: *std.Io.R
     }
 }
 
+/// The size of the largest program file, in bytes.
+///
+/// Why: ライブラリのファイルの上限(`library.max_file_bytes`)と同じ値にする。ファイルは
+/// 全体をメモリに読むので、上限が要る。
+pub const max_program_bytes = 1024 * 1024;
+
+/// The text of the file `path`, which the caller frees.
+///
+/// Why: `readFileAlloc` の上限は、ちょうど上限の大きさのファイルを断った。ライブラリの
+/// ファイルの読み取り(src/syntax/source.zig)と同じ、開いて `allocRemaining` する形にする。
+fn readProgram(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var reader: std.Io.File.Reader = .init(file, io, &buffer);
+    return reader.interface.allocRemaining(gpa, .limited(max_program_bytes)) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.StreamTooLong => return error.StreamTooLong,
+        error.ReadFailed => return reader.err orelse error.ReadFailed,
+    };
+}
+
+/// Runs the program in the file `path`, and returns the exit status.
+///
+/// ファイルの全体を読み、先頭から1つずつ評価する。式の値は出力しない。最初のエラーで
+/// 止め、エラーより前の評価の副作用はそのまま残る。エラーの説明は `err` に書く。
+pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, err: *std.Io.Writer) !u8 {
+    const source = readProgram(gpa, files.io, path) catch |e| {
+        try err.print("error: cannot read {s}: {s}\n", .{ path, if (e == error.StreamTooLong) "the file is larger than 1 MiB" else @errorName(e) });
+        try err.flush();
+        return exit_no_input;
+    };
+    defer gpa.free(source);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var interp: sucheme.Interpreter = undefined;
+    try interp.initWithFiles(gpa, .{}, files);
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
+        error.WriteFailed => return e,
+        else => {
+            try err.print("error: {s}\n", .{interp.diagnostic()});
+            try err.flush();
+            return exit_runtime_error;
+        },
+    };
+    return 0;
+}
+
 test "classify recognises --version" {
     try std.testing.expect(classify(&.{"--version"}) == .version);
 }
@@ -312,13 +401,14 @@ test "classify recognises --help and -h" {
     try std.testing.expect(classify(&.{"-h"}) == .help);
 }
 
-test "classify runs the REPL with no argument and nothing yet for a name" {
+test "classify runs the REPL with no argument and the file for a name" {
     try std.testing.expect(classify(&.{}) == .repl);
-    try std.testing.expect(classify(&.{"foo.scm"}) == .not_implemented);
+    try std.testing.expectEqual(@as(usize, 0), classify(&.{"foo.scm"}).run_file);
 }
 
-test "classify treats a bare dash as a name, not an unknown option" {
+test "classify treats a bare dash as a name that is not served yet, not an unknown option" {
     try std.testing.expect(classify(&.{"-"}) == .not_implemented);
+    try std.testing.expect(classify(&.{ "-", "x" }) == .not_implemented);
     // 1文字増えると、またオプションになる。
     try std.testing.expect(classify(&.{"-x"}) == .unknown_option);
 }
@@ -339,9 +429,12 @@ test "classify takes -I and the directory after it as the search roots, not as a
     // 次の引数は、`-` で始まっていても、ディレクトリの名前である。
     try std.testing.expect(classify(&.{ "-I", "--version" }) == .repl);
     try std.testing.expect(classify(&.{ "-I", "-x" }) == .repl);
-    // 名前が続けば、ファイルの実行を求めている。
-    try std.testing.expect(classify(&.{ "-I", "lib", "prog.scm" }) == .not_implemented);
-    try std.testing.expect(classify(&.{ "prog.scm", "-I", "lib" }) == .not_implemented);
+    // 名前が続けば、ファイルの実行を求めている。名前の位置が、検索ルートの終わりである。
+    try std.testing.expectEqual(@as(usize, 2), classify(&.{ "-I", "lib", "prog.scm" }).run_file);
+    // 名前の後ろは、プログラムへの引数である。`-I` も、その1つになる。
+    try std.testing.expect(classify(&.{ "prog.scm", "-I", "lib" }) == .program_arguments);
+    try std.testing.expect(classify(&.{ "prog.scm", "--version" }) == .program_arguments);
+    try std.testing.expect(classify(&.{ "prog.scm", "x" }) == .program_arguments);
     // 要求を決める最初の引数が優先される。
     try std.testing.expect(classify(&.{ "-I", "lib", "--version" }) == .version);
     try std.testing.expect(classify(&.{ "-I", "lib", "-h" }) == .help);
@@ -721,4 +814,115 @@ test "repl imports a library from a file beneath the roots it is given, and repo
     try repl(std.testing.allocator, .{ .io = std.testing.io, .roots = &tree.roots }, &input, &out, &err);
     try std.testing.expectEqualStrings("> > 7\n> > 7\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: unknown library: (foo baz)\n", err.buffered());
+}
+
+/// Writes `text` to a file in a fresh directory and runs it; returns the status and stderr.
+fn runProgram(text: []const u8, err_buf: []u8) !struct { status: u8, err: []const u8 } {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
+    defer std.testing.allocator.free(path);
+    var err: std.Io.Writer = .fixed(err_buf);
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &err);
+    return .{ .status = status, .err = err.buffered() };
+}
+
+test "runFile runs a program that starts with an import, prints nothing, and exits 0" {
+    var eb: [256]u8 = undefined;
+    const r = try runProgram("(import (scheme base))\n(define x 41)\n(+ x 1)\n", &eb);
+    try std.testing.expectEqual(@as(u8, 0), r.status);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "runFile runs a program that does not start with an import, in the REPL's environment" {
+    var eb: [256]u8 = undefined;
+    const r = try runProgram("(define (f n) (if (= n 0) 0 (+ 1 (f (- n 1)))))\n(f 10)\n", &eb);
+    try std.testing.expectEqual(@as(u8, 0), r.status);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "runFile stops at the first error with status 1, after the effects before it" {
+    var eb: [256]u8 = undefined;
+    const r = try runProgram("(define x 1)\n(car x)\n(undefined-after-the-error)\n", &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\n", r.err);
+}
+
+test "runFile reports an unbound variable and a syntax error with status 1" {
+    var eb: [256]u8 = undefined;
+    const unbound = try runProgram("(foo)\n", &eb);
+    try std.testing.expectEqual(exit_runtime_error, unbound.status);
+    try std.testing.expectEqualStrings("error: unbound variable: foo\n", unbound.err);
+    const unclosed = try runProgram("(define x 1\n", &eb);
+    try std.testing.expectEqual(exit_runtime_error, unclosed.status);
+    try std.testing.expect(std.mem.startsWith(u8, unclosed.err, "error: "));
+}
+
+test "runFile reports a program that is not valid UTF-8 with status 1" {
+    var eb: [256]u8 = undefined;
+    const r = try runProgram("(define x \"\xff\")\n", &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: "));
+}
+
+test "runFile rejects (sucheme core), like the REPL does" {
+    var eb: [256]u8 = undefined;
+    const r = try runProgram("(import (sucheme core))\n", &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expect(std.mem.indexOf(u8, r.err, "(sucheme core)") != null);
+}
+
+test "runFile finds a library under a search root" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "foo");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "foo/bar.sld",
+        .data = "(define-library (foo bar) (export f) (import (scheme base)) (begin (define (f) 7)))",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = "(import (scheme base) (foo bar))\n(car (f))\n" });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
+    defer std.testing.allocator.free(path);
+    var eb: [256]u8 = undefined;
+    var err: std.Io.Writer = .fixed(&eb);
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &err);
+    // `(f)` は 7 を返し、`(car 7)` が誤りになる。ライブラリが読めたことは、その誤りの種類で分かる。
+    try std.testing.expectEqual(exit_runtime_error, status);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 7\n", err.buffered());
+}
+
+test "runFile returns 66 for a file that is missing, and for a directory" {
+    var eb: [256]u8 = undefined;
+    var err: std.Io.Writer = .fixed(&eb);
+    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", &err);
+    try std.testing.expectEqual(exit_no_input, missing);
+    try std.testing.expect(std.mem.startsWith(u8, err.buffered(), "error: cannot read no-such-dir/no-such-file.scm: "));
+    var err2: std.Io.Writer = .fixed(&eb);
+    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", &err2);
+    try std.testing.expectEqual(exit_no_input, directory);
+}
+
+test "runFile returns 66 for a file larger than the limit, and runs one at the limit" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const filler = try std.testing.allocator.alloc(u8, max_program_bytes + 1);
+    defer std.testing.allocator.free(filler);
+    @memset(filler, ' ');
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "over.scm", .data = filler });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fits.scm", .data = filler[0..max_program_bytes] });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    const files: sucheme.resolve.Files = .{ .io = std.testing.io, .roots = &.{dir} };
+    var eb: [256]u8 = undefined;
+    for ([_]struct { name: []const u8, want: u8 }{ .{ .name = "over.scm", .want = exit_no_input }, .{ .name = "fits.scm", .want = 0 } }) |c| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ dir, c.name });
+        defer std.testing.allocator.free(path);
+        var err: std.Io.Writer = .fixed(&eb);
+        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, &err));
+    }
 }
