@@ -138,7 +138,17 @@ pub fn main(init: std.process.Init) !void {
             var in_buf: [max_line]u8 = undefined;
             var stdin = std.Io.File.Reader.initStreaming(.stdin(), io, &in_buf);
             const roots = try searchRoots(init.arena.allocator(), rest);
-            try repl(init.gpa, .{ .io = io, .roots = roots }, &stdin.interface, out, err);
+            // Why: `init.gpa` は Debug と ReleaseSafe で `SafeAllocator` になり、確保ごとに
+            // `mmap` する。ヒープの掃引で解放すると領域が断片化し、`vm.max_map_count`(Linux の
+            // 既定は 65530)を超えて `munmap` が `ENOMEM` を返す。標準ライブラリの `munmap` は
+            // それを `unreachable` として扱うので、大きなリストを複数リストの `map` に渡すだけで
+            // 異常終了した(tests/cli-slow/multi-list-map.scm)。上限はヒープの `Options.limit` が
+            // 見るので、ここでは確保の速さと断片化に強い `smp_allocator` を使う。
+            // 代償として、Debug でも二重解放や範囲外の検出と、終了時のリーク検査は失う
+            // (単体テストは `std.testing.allocator` のままなので、リーク検査は残る)。
+            // `smp_allocator` は複数スレッドのターゲットだけで使える。WASI のような単一
+            // スレッドのターゲットは、この実行ファイルの対象ではない(docs/adr/0009)。
+            try repl(std.heap.smp_allocator, .{ .io = io, .roots = roots }, &stdin.interface, out, err);
         },
         .not_implemented => {
             try err.print(
