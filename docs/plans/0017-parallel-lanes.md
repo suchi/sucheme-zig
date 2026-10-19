@@ -13,7 +13,7 @@
 測った待ちを、日付つきで残す。出典は、`full.yml` の各ランの `created_at` と `updated_at`、および 2026-10-19 のラン(run_number 159)のジョブごとの時刻である。
 
 - 層2のラン全体: 24 分(run_number 156)、39 分(157)、22 分(158)。159 は、2026-10-19 21:23 UTC の時点で 31 分を超えて実行中だった。
-- 159 のジョブ別: `tests (windows-latest)` が約 6 分、`dist` が約 5.5 分、`slow tests` の `zig build test -Dslow=true` が約 5 分。`zig build test-scheme -Dslow=true` は、20:58 UTC に始まり、21:23 UTC の時点でも終わっていなかった。ほかのステップより明らかに長く、層2の長さを決めているように見える。ランが終わったら、このステップの所要を確かめて、ここに追記する。
+- 159 のジョブ別: `tests (windows-latest)` が約 6 分、`dist` が約 5.5 分、`slow tests` の `zig build test -Dslow=true` が約 5 分。`zig build test-scheme -Dslow=true` は、20:58:05 UTC に始まり、21:26:13 UTC に終わった(約 28 分)。続く `zig build test-wasm -Dslow=true` は約 1.5 分で、ランは 21:27 UTC に成功で終わった(約 35 分)。層2の長さを決めているのは、この1ステップである。
 - 層2は、PR を ready にしたときに起動し、ready にするのは、レビューが収束したあとである。そのため、層2の待ちは、レビューの待ちの後ろに直列に並ぶ。
 
 資源の制約も測った。
