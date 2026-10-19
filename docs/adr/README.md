@@ -73,3 +73,4 @@
 | [0037](0037-core-library-exposed-in-stage-2.md) | `(sucheme core)` を段階2の間だけ利用者に公開し、段階3で隠す | 採用 | 2026-10-14 |
 | [0038](0038-wasm-entry-layer-allocations-outside-the-accounting.md) | WASM の入口層が確保する、計上の外のものを、エントリ層の例外として認める | 採用 | 2026-10-15 |
 | [0039](0039-standard-environment-installed-at-init.md) | 最上位の初期環境は初期化で `(scheme base)` を読み込んで作り、読み込みもヒープの上限に計上する | 採用 | 2026-10-19 |
+| [0041](0041-bsd-name-clause-attribution-not-endorsement.md) | 取り込んだ準拠スイートの著者名は出典としてだけ使い、推奨や認定と読める形では使わない | 採用 | 2026-10-20 |
