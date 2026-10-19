@@ -154,7 +154,6 @@ pub const Interpreter = struct {
             // 後者はビルドのテストが見つける。ここでは、作れないインタプリタとして報告する。
             else => return error.OutOfMemory,
         };
-        self.ctx.clearDiagnostic();
     }
 
     pub fn deinit(self: *Interpreter) void {
