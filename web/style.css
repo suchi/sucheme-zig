@@ -164,3 +164,28 @@ pre[data-status="error"] {
 pre[data-status="busy"] {
   color: var(--muted);
 }
+
+/* サンプルの選択と共有リンク */
+.samples,
+.share {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.samples select,
+.share input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.share input {
+  flex: 1 1 14rem;
+  min-width: 0;
+}

@@ -12,6 +12,13 @@
     <h1>sucheme <small id="version" aria-label="バージョン">読み込み中…</small></h1>
 
     <form id="form" autocomplete="off">
+      <div class="samples">
+        <label for="samples">サンプル</label>
+        <select id="samples">
+          <option value="">選んでください</option>
+        </select>
+      </div>
+
       <label for="source">入力(Scheme の式)</label>
       <textarea id="source" name="source" rows="8" spellcheck="false" autocapitalize="off" autocorrect="off">(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
 (fact 10)</textarea>
@@ -21,6 +28,12 @@
         <button type="button" id="stop" class="danger" disabled>停止</button>
         <button type="button" id="reset" disabled>リセット</button>
         <span class="hint">Ctrl+Enter(Mac は Cmd+Enter)でも実行できます</span>
+      </div>
+
+      <div class="share">
+        <button type="button" id="share">共有リンクを作る</button>
+        <input type="text" id="share-url" readonly aria-label="共有リンク" placeholder="ここに共有リンクが出ます">
+        <span id="share-status" class="hint" role="status"></span>
       </div>
     </form>
 

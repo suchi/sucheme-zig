@@ -12,6 +12,8 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { samples } from "../../web/samples.mjs";
+import { encodeFragment, decodeFragment, MAX_FRAGMENT_LENGTH } from "../../web/share.mjs";
 
 const wasmPath = process.argv[2];
 if (wasmPath === undefined) {
@@ -676,6 +678,55 @@ test("a region allocated before reset is still the host's: it can be used and fr
   assert.equal(h.output(), "3\n");
   // free は panic しない。リセットが領域の記録を捨てていると、ここで trap する。
   h.x.sucheme_free(ptr, source.length);
+});
+
+// ページのサンプル(web/samples.mjs)。どれも評価できて、期待する出力になる。期待は、サンプルの
+// 識別子で引く。サンプルを足して期待を足し忘れても、期待だけが残っても、落ちる。
+const sampleOutputs = {
+  factorial: "3628800\n",
+  "tail-loop": "5000050000\n",
+  counter: "1\n2\n1\n3\n",
+  lists: "(9 1 4)\n(3 1 2 4 5)\n(2 1 3)\n(b 2)\n(1 2)\n",
+  record: "3\n10\n#t\n#f\n",
+  escape: '42\n4\n"boom"\n',
+};
+
+test("every sample of the page evaluates to its expected output, and the table matches the samples", () => {
+  const ids = samples.map((sample) => sample.id);
+  assert.equal(new Set(ids).size, ids.length, "sample ids are unique");
+  assert.deepEqual([...ids].sort(), Object.keys(sampleOutputs).sort());
+  for (const sample of samples) {
+    assert.ok(sample.title.length > 0 && sample.source.length > 0, `${sample.id} has a title and a source`);
+    // 「リセット」のあとと同じく、サンプルは何も定義していない状態から走る。
+    const h = instantiate().init();
+    assert.deepEqual(h.run(sample.source), [OK, sampleOutputs[sample.id]], sample.id);
+  }
+});
+
+// 共有リンク(web/share.mjs): `#code=<UTF-8 の base64url>`。
+test("a share fragment round-trips any source, and is a url-safe form", () => {
+  for (const source of ["", "a", "(+ 1 2)", "日本語 ✓ 𝄞\n(define x 1)", "x".repeat(3000), "\u0000\u00ff~?>"]) {
+    const fragment = encodeFragment(source);
+    assert.match(fragment, /^#code=[A-Za-z0-9_-]*$/);
+    assert.equal(decodeFragment(fragment), source);
+  }
+  // 既知の値で、符号化そのものを固定する(往復だけでは、対の誤りが打ち消し合う)。
+  assert.equal(encodeFragment("(+ 1 2)"), "#code=KCsgMSAyKQ");
+  assert.equal(encodeFragment("\u00ff\u00fe"), "#code=w7_Dvg");
+});
+
+test("a fragment that is not a share link is read as null, and so is one that is too long", () => {
+  for (const bad of ["", "#", "#code", "#x=KCsgMSAyKQ", "code=KCsgMSAyKQ", "#code=!!", "#code=a", "#code=KCsgMSAyKQ==", "#code=_w", "#code=KCsgMSAy+Q", undefined, 5]) {
+    assert.equal(decodeFragment(bad), null, String(bad));
+  }
+  // 空のソースは、正しいリンクである。
+  assert.equal(decodeFragment("#code="), "");
+  // 上限は、作るときも読むときも同じである。
+  const longest = "x".repeat(Math.floor(((MAX_FRAGMENT_LENGTH - "#code=".length) * 3) / 4));
+  assert.ok(encodeFragment(longest) !== null);
+  assert.equal(decodeFragment(encodeFragment(longest)), longest);
+  assert.equal(encodeFragment(longest + "xxxx"), null);
+  assert.equal(decodeFragment("#code=" + "A".repeat(MAX_FRAGMENT_LENGTH)), null);
 });
 
 // web/serve.mjs の自己検査(パストラバーサルなど)は、ほかの検証コマンドに結ばれていないので、
