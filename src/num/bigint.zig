@@ -78,11 +78,11 @@ pub fn mul(gpa: Allocator, a: Const, b: Const) Error!Managed {
 /// 同じ符号になる(R7RS 6.2.6 の `floor/` と `truncate/`)。
 pub fn divide(gpa: Allocator, a: Const, b: Const, rounding: Rounding) Error!DivResult {
     std.debug.assert(!b.eqlZero());
-    // std が示す上限(商は a の、剰余は b の限界値数)に1ずつ足す。floor が商を1つ
-    // 進める場合の余裕である。
-    var q = try zeroed(gpa, a.limbs.len + 1);
+    // std が示す上限である。商は a の限界値数、剰余は b の限界値数に収まる(floor で
+    // 商を1つ戻しても、商の大きさは a を超えない)。
+    var q = try zeroed(gpa, a.limbs.len);
     errdefer q.deinit();
-    var r = try zeroed(gpa, b.limbs.len + 1);
+    var r = try zeroed(gpa, b.limbs.len);
     errdefer r.deinit();
     const scratch = try gpa.alloc(Limb, std.math.big.int.calcDivLimbsBufferLen(a.limbs.len, b.limbs.len));
     defer gpa.free(scratch);
@@ -403,6 +403,98 @@ test "divide by a multi-limb divisor rounds as R7RS 6.2.6 describes" {
     defer t.r.deinit();
     try expectValue(-(@as(i128, 1) << 36), t.q);
     try expectValue(-1, t.r);
+}
+
+/// 10進の乱数列から、桁数 digit_count の符号つきの値を作る。
+fn randomValue(rand: std.Random, digit_count: usize) !Managed {
+    const text = try tgpa.alloc(u8, digit_count);
+    defer tgpa.free(text);
+    for (text, 0..) |*ch, i| ch.* = '0' + rand.intRangeAtMost(u8, if (i == 0) 1 else 0, 9);
+    var m = try parseDigits(tgpa, text, 10);
+    if (rand.boolean()) m.negate();
+    return m;
+}
+
+fn expectSignOf(want_positive: bool, m: Managed) !void {
+    if (!m.eqlZero()) try testing.expectEqual(want_positive, m.isPositive());
+}
+
+test "divide of multi-limb values satisfies q * b + r == a with the rounding's remainder sign" {
+    var prng: std.Random.DefaultPrng = .init(0x4c4c_0005);
+    const rand = prng.random();
+    for (0..300) |_| {
+        // Managed の最小の確保は4限界値なので、それを超える桁数も混ぜる。
+        var a = try randomValue(rand, rand.intRangeAtMost(usize, 1, 200));
+        defer a.deinit();
+        var b = try randomValue(rand, rand.intRangeAtMost(usize, 1, 120));
+        defer b.deinit();
+        inline for (.{ Rounding.floor, Rounding.truncate }) |mode| {
+            var d = try divide(tgpa, a.toConst(), b.toConst(), mode);
+            defer d.q.deinit();
+            defer d.r.deinit();
+            try expectNormalized(d.q);
+            try expectNormalized(d.r);
+            var qb = try mul(tgpa, d.q.toConst(), b.toConst());
+            defer qb.deinit();
+            var sum = try add(tgpa, qb.toConst(), d.r.toConst());
+            defer sum.deinit();
+            try testing.expect(sum.toConst().eql(a.toConst()));
+            try testing.expectEqual(std.math.Order.lt, d.r.toConst().orderAbs(b.toConst()));
+            try expectSignOf(if (mode == .floor) b.isPositive() else a.isPositive(), d.r);
+        }
+    }
+}
+
+test "gcd of multi-limb values divides both and is divisible by the common factor" {
+    var prng: std.Random.DefaultPrng = .init(0x4c4c_0006);
+    const rand = prng.random();
+    for (0..100) |_| {
+        var f = try randomValue(rand, rand.intRangeAtMost(usize, 1, 80));
+        defer f.deinit();
+        var x = try randomValue(rand, rand.intRangeAtMost(usize, 1, 80));
+        defer x.deinit();
+        var y = try randomValue(rand, rand.intRangeAtMost(usize, 1, 80));
+        defer y.deinit();
+        var fx = try mul(tgpa, f.toConst(), x.toConst());
+        defer fx.deinit();
+        var fy = try mul(tgpa, f.toConst(), y.toConst());
+        defer fy.deinit();
+        var g = try gcd(tgpa, fx.toConst(), fy.toConst());
+        defer g.deinit();
+        try expectNormalized(g);
+        try testing.expect(g.isPositive());
+        // gcd(f x, f y) は f の倍数で、f x と f y を割り切る。
+        for ([_]Managed{ f, fx, fy }, 0..) |m, i| {
+            var d = try divide(tgpa, if (i == 0) g.toConst() else m.toConst(), if (i == 0) f.toConst() else g.toConst(), .truncate);
+            defer d.q.deinit();
+            defer d.r.deinit();
+            try testing.expect(d.r.eqlZero());
+        }
+        // 0 との gcd は絶対値になる。
+        var zero = try fromInt(0);
+        defer zero.deinit();
+        var g0 = try gcd(tgpa, zero.toConst(), fx.toConst());
+        defer g0.deinit();
+        try testing.expect(g0.toConst().eql(fx.toConst().abs()));
+    }
+}
+
+test "log2_radix_x1024 is the smallest upper bound of log2(radix) * 1024" {
+    // radix^1024 <= 2^table[radix] < 2 * radix^1024 を、整数だけで確かめる。
+    for (2..37) |r| {
+        var base = try fromInt(r);
+        defer base.deinit();
+        var p = try pow(tgpa, base.toConst(), 1024);
+        defer p.deinit();
+        var upper = try fromInt(1);
+        defer upper.deinit();
+        try upper.shiftLeft(&upper, log2_radix_x1024[r]);
+        var lower = try fromInt(1);
+        defer lower.deinit();
+        try lower.shiftLeft(&lower, log2_radix_x1024[r] - 1);
+        try testing.expect(p.toConst().order(upper.toConst()) != .gt);
+        try testing.expectEqual(std.math.Order.gt, p.toConst().order(lower.toConst()));
+    }
 }
 
 test "pow agrees with repeated multiplication in i128" {
