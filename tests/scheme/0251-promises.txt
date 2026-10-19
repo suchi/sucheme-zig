@@ -1,3 +1,4 @@
+# env: core
 # スライス 3f: 約束の値(R7RS 4.2.5)。`make-promise` `promise?` `force`。`delay` と `delay-force` の
 # 構文は 3j が足す。ここでは、R7RS 7.3 の参考実装と同じ形の内部の作り方 `%make-promise`
 # (強制済みかの印と、値か、強制するときに呼ぶ手続き)で、それらの展開を手で書く。

@@ -149,5 +149,5 @@ error: bad define: kar is already defined earlier in this body
 5
 
 # ライブラリの本体では、最上位の定義である。ライブラリの外へエクスポートした名前から使える。
-(import (sucheme core) (sucheme derived)) (define-library (test rec) (import (sucheme core) (sucheme derived)) (export make-box box? unbox set-box! a b) (begin (define-record-type box (make-box v) box? (v unbox set-box!)) (define-values (a b) (values 1 2)))) (import (test rec)) (let ((x (make-box 3))) (set-box! x (+ (unbox x) a b)) (list (box? x) (unbox x)))
+(import (scheme base) (sucheme derived)) (define-library (test rec) (import (scheme base) (sucheme derived)) (export make-box box? unbox set-box! a b) (begin (define-record-type box (make-box v) box? (v unbox set-box!)) (define-values (a b) (values 1 2)))) (import (test rec)) (let ((x (make-box 3))) (set-box! x (+ (unbox x) a b)) (list (box? x) (unbox x)))
 (#t 6)

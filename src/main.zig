@@ -712,7 +712,7 @@ test "repl imports a library from a file beneath the roots it is given, and repo
     var tree: sucheme.resolve.Tree = undefined;
     try tree.init(std.testing.allocator);
     defer tree.deinit(std.testing.allocator);
-    try tree.write("foo/bar.sld", "(define-library (foo bar) (export f) (import (sucheme core)) (begin (define (f) 7)))");
+    try tree.write("foo/bar.sld", "(define-library (foo bar) (export f) (import (scheme base)) (begin (define (f) 7)))");
     var input: std.Io.Reader = .fixed("(import (foo bar))\n(f)\n(import (foo baz))\n(f)\n");
     var ob: [128]u8 = undefined;
     var eb: [128]u8 = undefined;

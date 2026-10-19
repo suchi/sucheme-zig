@@ -26,6 +26,7 @@ const UNRECOVERABLE = -2;
 const INVALID_UTF8 = -3;
 const WRONG_ORDER = -4;
 const NOT_INITIALIZED = -5;
+const NO_MEMORY = -7;
 const BAD_REGION = -8;
 
 const OUTPUT_CAPACITY = 256 * 1024;
@@ -208,11 +209,11 @@ test("a continuation escapes, and an unhandled raise runs the after of a dynamic
 // 出力せず、失敗した定義は登録を残さない。リセットは登録したライブラリも忘れる。
 test("a library is defined, imported and called, and a failed definition leaves nothing", () => {
   const h = instantiate().init();
-  const definition = "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1)))";
+  const definition = "(define-library (t a) (export f) (import (scheme base)) (begin (define (f) 1)))";
   assert.deepEqual(h.run(definition), [OK, ""]);
   assert.deepEqual(h.run("(import (t a)) (f)"), [OK, "1\n"]);
   assert.deepEqual(
-    h.run("(define-library (t b) (export) (import (sucheme core)) (begin (define x (car 5))))"),
+    h.run("(define-library (t b) (export) (import (scheme base)) (begin (define x (car 5))))"),
     [SCHEME_ERROR, "error: wrong type of argument to car 5\n"],
   );
   assert.deepEqual(h.run("(import (t b))"), [SCHEME_ERROR, "error: unknown library: (t b)\n"]);
@@ -262,16 +263,19 @@ test("the list procedures in (sucheme procedures) run in wasm", () => {
 test("the end-of-file object and promises work in wasm", () => {
   const h = instantiate().init();
   assert.deepEqual(h.run("(list (eof-object? (eof-object)) (eof-object? 1) (eof-object))"), [OK, "(#t #f #<eof>)\n"]);
-  assert.deepEqual(h.run("(list (promise? (make-promise 1)) (promise? 1) (force (make-promise 5)) (force 6))"), [OK, "(#t #f 5 6)\n"]);
+  assert.deepEqual(
+    h.run("(import (scheme lazy)) (list (promise? (make-promise 1)) (promise? 1) (force (make-promise 5)) (force 6))"),
+    [OK, "(#t #f 5 6)\n"],
+  );
   assert.deepEqual(
     h.run(
-      "(define n 0) (define (chain k) (if (= k 0) (%make-promise #t 'done) (%make-promise #f (lambda () (set! n (+ n 1)) (chain (- k 1)))))) " +
+      "(define n 0) (define (chain k) (if (= k 0) (delay 'done) (delay-force (begin (set! n (+ n 1)) (chain (- k 1)))))) " +
         "(define p (chain 3000)) (list (force p) (force p) n)",
     ),
     [OK, "(done done 3000)\n"],
   );
   assert.deepEqual(
-    h.run("(force (%make-promise #f (lambda () 5)))"),
+    h.run("(force (delay-force 5))"),
     [SCHEME_ERROR, "error: delay-force: the expression did not return a promise\n"],
   );
 });
@@ -317,7 +321,7 @@ test("the derived syntax of slice 3i runs in wasm", () => {
 test("the higher-order procedures and the promise syntax of slice 3j run in wasm", () => {
   const h = instantiate().init();
   assert.deepEqual(
-    h.run("(import (sucheme derived) (sucheme procedures)) (list (vector-map + #(1 2 3) #(10 20)) (string-map (lambda (c) c) \"aλあ\") (force (delay (+ 1 2))))"),
+    h.run("(import (sucheme derived) (sucheme procedures) (scheme lazy)) (list (vector-map + #(1 2 3) #(10 20)) (string-map (lambda (c) c) \"aλあ\") (force (delay (+ 1 2))))"),
     [OK, '(#(11 22) "aλあ" 3)\n'],
   );
   assert.deepEqual(
@@ -368,15 +372,16 @@ test("the wasm feature is true in this build, and the names of an operating syst
 
 // 送出のための予約も尽きて条件を作れなかったら、回復不能(-2)を返し、リセットまで評価を
 // 受け付けない(docs/design/platform-and-web.md の状態コードの表)。予約を使い切らせるため、
-// 名前が上限の4分の3の未束縛の名前を使う。名前のシンボルが上限に計上されるので、名前は上限
-// を超えられない。計上した残りに、同じ長さのメッセージは、予約を足しても収まらない。一方で、
+// 名前が上限の2分の1の未束縛の名前を使う。名前のシンボルが上限に計上されるので、名前は上限
+// を超えられない。初期化で読み込む標準ライブラリが上限の4分の1ほどを占めるので、名前を足した
+// 計上は上限の4分の3ほどで、同じ長さのメッセージは、予約を足しても収まらない。一方で、
 // ヒープが満杯の報告(上限と余裕の差の内側まで生きているもの)には当たらない長さである。
 // 名前が上限を超えるなら、シンボルを作れず、回復できるエラーになる。
 test("a raise that uses up the reserve is unrecoverable until a reset", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_init(small_limit), OK);
   assert.deepEqual(h.run("x".repeat(small_limit + 8192)), [SCHEME_ERROR, "error: heap limit exceeded\n"]);
-  const [status, text] = h.run("x".repeat((small_limit * 3) / 4));
+  const [status, text] = h.run("x".repeat(small_limit / 2));
   assert.equal(status, UNRECOVERABLE);
   assert.equal(text, "error: heap limit exceeded\n");
   // リセットの前の評価は、何も変えずに呼び出し順序の誤りを返す。
@@ -481,7 +486,7 @@ test("reset forgets definitions", () => {
 
 // 非末尾再帰は、深さに比例してヒープを使う。小さい上限では溢れ、既定の上限では溢れない。
 const deep_recursion = "(define (f n) (if (= n 0) 0 (+ 1 (f (- n 1))))) (f 10000)";
-const small_limit = 65536;
+const small_limit = 1048576;
 
 test("init with a small heap limit makes a deep recursion run out of heap", () => {
   const h = instantiate();
@@ -492,6 +497,14 @@ test("init with a small heap limit makes a deep recursion run out of heap", () =
   // 同じ式は、既定の上限(0)では通る。上限が効いていることの対照である。
   const control = instantiate().init();
   assert.deepEqual(control.run(deep_recursion), [OK, "10000\n"]);
+});
+
+// 初期化は標準ライブラリを読み込み、その分も上限に計上される。入りきらない上限は、-7(この上限では
+// 初期化できない)になり、同じ上限での再試行も同じ結果になる。
+test("init with a limit too small for the standard libraries returns not enough memory", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(65536), NO_MEMORY);
+  assert.equal(h.x.sucheme_init(65536), NO_MEMORY);
 });
 
 test("reset keeps the heap limit that init was given", () => {

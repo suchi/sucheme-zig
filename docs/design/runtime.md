@@ -142,7 +142,7 @@ R7RS 4.1.2 は「As noted in section 3.4, it is an error to attempt to alter a c
 
 `bytevector-copy!` `bytevector-u8-set!` `list-set!` `read-bytevector!` `set-car!` `set-cdr!` `string-copy!` `string-fill!` `string-set!` `vector-copy!` `vector-fill!` `vector-set!`
 
-`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。この一覧が原文からの抽出と一致することの検査は、まだ無い。散文の一覧を検査にかけるより、束縛済みの `!` 付き手続きのすべてが定数への書き込みを断ることを、コードの事実として検査にかけるほうが、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md) の線引きに合う。その検査は、一覧の手続きがそろう段階まで入れられないので、roadmap の項目に残した。
+`list-set!` は R7RS 6.4 が `(list-set! '(0 1 2) 1 "oops")` をエラーの例として明示している。この一覧が原文からの抽出と一致することの検査は、まだ無い。散文の一覧を検査にかけるより、束縛済みの `!` 付き手続きのすべてが定数への書き込みを断ることを、コードの事実として検査にかけるほうが、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md) の線引きに合う。その検査は、スライス 3l が `zig build test-scheme` の中に入れた(`tools/test-scheme/main.zig` の `checkMutators`)。`tests/r7rs-required` の `!` で終わる名前(`set!` を除く)のうち束縛済みのものすべてに、定数へ書き込む呼び出しの表があり、その呼び出しが断られることを見る。
 
 スライス 3d の実装は、次の形である(詳細は `src/freeze.zig` と `src/prim/immutable.zig` の doc コメントにある)。
 

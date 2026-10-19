@@ -65,6 +65,12 @@ pub const Context = struct {
     /// 含むファイルのディレクトリが `include` の基準になり、含んでいる最中のファイルを
     /// もう一度含むことは、ここで見つけて拒否する。REPL の行は、ここに何も載せない。
     sources: std.ArrayList(resolve.Origin) = .empty,
+    /// Whether any program may import `(sucheme core)`, and not only the libraries
+    /// the executable carries (`coreImportable`).
+    /// Why: ライブラリの仕組みを試す単体テストは、`lib/` の標準ライブラリを持たずに、`define`
+    /// や `lambda` をインポートで得る必要がある。製品の経路は、これを立てない
+    /// (docs/adr/0037-core-library-exposed-in-stage-2.md の段階3の取り消し)。
+    core_open: bool = false,
     /// The constants of the code that refer to the heap: a quoted list, say.
     /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
     /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
@@ -112,6 +118,17 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context) void {
         self.heap.deinit();
+    }
+
+    /// Whether the program being processed may import `(sucheme core)`.
+    ///
+    /// 実行ファイルに埋め込んだ標準ライブラリの本体だけが、取り込める。読んでいる最中の
+    /// ファイルの一番内側が埋め込みのものなら、そのライブラリの宣言を処理している。REPL の
+    /// 行と、実ファイルのライブラリは、`sources` の一番内側が埋め込みではないので、拒否される。
+    pub fn coreImportable(self: *const Context) bool {
+        if (self.core_open) return true;
+        const innermost = self.sources.getLastOrNull() orelse return false;
+        return resolve.isEmbeddedRoot(innermost.root);
     }
 
     /// Tells the collector of the roots the context holds: the cells of the
@@ -270,6 +287,27 @@ pub const Context = struct {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "coreImportable is true only inside an embedded library, or when the context is open" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    // REPL の行は、`sources` に何も載せない。
+    try std.testing.expect(!ctx.coreImportable());
+    // 実ファイルのライブラリ。
+    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"a.sld"} });
+    try std.testing.expect(!ctx.coreImportable());
+    // 埋め込みのライブラリ。
+    try ctx.sources.append(ctx.persist, .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
+    try std.testing.expect(ctx.coreImportable());
+    // 一番内側が決める。埋め込みのライブラリが、実ファイルを含むことはないが、判定は内側だけを見る。
+    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"b.sld"} });
+    try std.testing.expect(!ctx.coreImportable());
+    ctx.sources.clearRetainingCapacity();
+    ctx.core_open = true;
+    try std.testing.expect(ctx.coreImportable());
 }
 
 test "raise keeps a condition with the message, and returns Raised" {
