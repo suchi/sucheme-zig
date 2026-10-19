@@ -42,11 +42,11 @@ x
 7
 
 # 派生構文で定義した束縛は、ほかのライブラリが使える。
-(define-library (t loops) (import (sucheme core) (sucheme derived)) (export sum-to) (begin (define (sum-to n) (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((> i n) s))))) (import (t loops)) (sum-to 10)
+(define-library (t loops) (import (scheme base) (sucheme derived)) (export sum-to) (begin (define (sum-to n) (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((> i n) s))))) (import (t loops)) (sum-to 10)
 55
 
 # ライブラリが再エクスポートした派生構文を、その先で使える。
-(define-library (t reexport) (import (sucheme core) (sucheme derived)) (export cond else)) (import (t reexport)) (cond (#f 1) (else 2))
+(define-library (t reexport) (import (scheme base) (sucheme derived)) (export cond else)) (import (t reexport)) (cond (#f 1) (else 2))
 2
 
 # `(sucheme derived)` が出す名前の一覧。

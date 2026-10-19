@@ -1,8 +1,9 @@
 //! Generates docs/status/conformance.md: for each R7RS standard library, how
 //! many of its required identifiers the interpreter binds.
 //!
-//! 入力は `tests/r7rs-required/*.txt` で、各識別子が束縛済みかは
-//! `sucheme.Interpreter.isBound` に尋ねる。エラー文言の分類では答えない。
+//! 入力は `tests/r7rs-required/*.txt` で、各識別子が束縛済みかは、そのライブラリだけを
+//! `import` した空の最上位で `sucheme.Interpreter.isBound` に尋ねる(埋め込みの `lib/` の
+//! 輸出を見る)。エラー文言の分類では答えない。
 //!
 //! 既定の動作は比較である。生成し直した結果を現在のファイルと照らし合わせ、
 //! 差があれば非ゼロで終了して直し方を標準エラーに出す。`zig build
@@ -12,9 +13,8 @@
 //! 比較を既定にしたのは tools/extract-r7rs-required と同じ理由である。逆にすると、
 //! build.zig から引数を1つ消すだけで、検査が書き換えに変わり、失敗しえなくなる。
 //!
-//! 段階1の最小版である。列は「束縛済み」と「全体」だけで、`lib/` のエクスポートも、
-//! 意味論テストや準拠スイートの結果も読まない。これらが入る段階は
-//! docs/design/r7rs-coverage.md にある。
+//! 列は「束縛済み」と「全体」だけで、意味論テストや準拠スイートの結果は読まない。
+//! これらが入る段階は docs/design/r7rs-coverage.md にある。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -110,12 +110,8 @@ pub fn main(init: std.process.Init) !void {
     // ディレクトリの順序はホストごとに違う。ソートして出力を安定させる。
     std.mem.sort(Library, libs.items, {}, libraryLessThan);
 
-    var interp: sucheme.Interpreter = undefined;
-    try interp.init(gpa);
-    defer interp.deinit();
-
     var report: std.Io.Writer.Allocating = .init(gpa);
-    try render(gpa, &report.writer, &interp, libs.items);
+    try render(gpa, &report.writer, libs.items);
     const generated = report.written();
 
     if (mode == .check) {
@@ -164,26 +160,46 @@ fn parseIdentifiers(gpa: std.mem.Allocator, text: []const u8) error{OutOfMemory}
     return ids.toOwnedSlice(gpa);
 }
 
+/// Whether `(scheme <name>)` exports `identifier`, in an interpreter that has imported that
+/// library and nothing else.
+fn exportsFrom(gpa: std.mem.Allocator, name: []const u8, identifiers: []const []const u8, bound: []bool) !void {
+    var interp: sucheme.Interpreter = undefined;
+    try interp.initBare(gpa, .{});
+    defer interp.deinit();
+    const request = try std.fmt.allocPrint(gpa, "(import (scheme {s}))", .{name});
+    defer gpa.free(request);
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    // 埋め込みのライブラリが無いか、読み込めないなら、1つも輸出していない。
+    interp.evalPrint(gpa, request, &discard.writer) catch {
+        @memset(bound, false);
+        return;
+    };
+    for (identifiers, bound) |id, *b| b.* = interp.isBound(id);
+}
+
 /// The text of docs/status/conformance.md.
 ///
 /// 識別子の総数は一意に数える。`(scheme r5rs)` は他のライブラリの識別子を再エクスポート
-/// するので、ライブラリごとの数を足すと同じ識別子を重複して数える。
+/// するので、ライブラリごとの数を足すと同じ識別子を重複して数える。一意の識別子は、どれか
+/// のライブラリが輸出していれば束縛済みと数える。
 fn render(
     gpa: std.mem.Allocator,
     w: *std.Io.Writer,
-    interp: *const sucheme.Interpreter,
     libs: []const Library,
 ) !void {
     try w.writeAll(preamble);
 
-    // 一意の識別子の集合。値は束縛済みかどうか。
+    // 一意の識別子の集合。値は、どれかのライブラリが輸出しているかどうか。
     var unique: std.StringHashMapUnmanaged(bool) = .empty;
     for (libs) |lib| {
+        const flags = try gpa.alloc(bool, lib.ids.len);
+        defer gpa.free(flags);
+        try exportsFrom(gpa, lib.name, lib.ids, flags);
         var bound: usize = 0;
-        for (lib.ids) |id| {
-            const is_bound = interp.isBound(id);
+        for (lib.ids, flags) |id, is_bound| {
             if (is_bound) bound += 1;
-            try unique.put(gpa, id, is_bound);
+            const entry = try unique.getOrPut(gpa, id);
+            entry.value_ptr.* = is_bound or (entry.found_existing and entry.value_ptr.*);
         }
         try w.print("| `(scheme {s})` | {d} | {d} |\n", .{ lib.name, bound, lib.ids.len });
     }
@@ -197,12 +213,12 @@ fn render(
 }
 
 const preamble =
-    \\# R7RS 準拠マトリクス(段階1の最小版)
+    \\# R7RS 準拠マトリクス
     \\
     \\このファイルは生成物である。手で編集しない。`zig build report` で生成し、`zig build check-report` が生成し直した結果との一致を検査する。生成元は [tools/coverage-report/main.zig](../../tools/coverage-report/main.zig) である。
     \\
-    \\- 「束縛済み」は、その識別子がインタプリタの大域環境に束縛されている、または特殊形式であることを指す。準拠を意味しない。たとえば算術は固定長整数だけで、仕様が求める数値塔はない。
-    \\- ここでいう「ライブラリ」は、`tests/r7rs-required/` の分け方、つまり R7RS 付録Aが定める標準ライブラリである。インタプリタの `define-library` が作るライブラリとは別のもので、「束縛済み」は、REPL の最上位から見える束縛を数える。
+    \\- 「束縛済み」は、その標準ライブラリを `import` したとき、その識別子が束縛される(手続き、または特殊形式)ことを指す。標準ライブラリは、実行ファイルに埋め込んだ `lib/` の `.sld` である。埋め込みに無いライブラリは、0 と数える。準拠を意味しない。たとえば算術は固定長整数だけで、仕様が求める数値塔はない。
+    \\- ここでいう「ライブラリ」は、`tests/r7rs-required/` の分け方、つまり R7RS 付録Aが定める標準ライブラリである。ライブラリごとに、何も束縛していない最上位でそのライブラリだけを `import` して数える。ほかのライブラリが束縛している名前は数えない。
     \\- `(scheme r5rs)` は他のライブラリの識別子を再エクスポートする。このため、ライブラリごとの数は同じ識別子を重複して含み、その和は一意の識別子の合計と一致しない。
     \\
     \\| ライブラリ | 束縛済み | 全体 |
@@ -232,43 +248,50 @@ test "parseIdentifiers keeps an identifier that merely contains a semicolon" {
     try std.testing.expectEqualStrings("a;b", ids[0]);
 }
 
-test "render counts bound identifiers per library and counts the shared ones once in the total" {
-    var interp: sucheme.Interpreter = undefined;
-    try interp.init(std.testing.allocator);
-    defer interp.deinit();
-
-    // `+` と `define` は束縛済み、`no-such-procedure` と `no-such-syntax` は未束縛である。
-    // `+` は両方のライブラリにあり、合計では1回だけ数える。
+test "render counts what each library exports, and counts the shared ones once in the total" {
+    // `+` と `define` は `(scheme base)` が輸出し、`no-such-procedure` は輸出しない。
+    // `(scheme no-such-library)` は埋め込みに無いので、何も輸出していない。`+` は両方の
+    // ライブラリにあり、合計では1回だけ数える。
     // Why: 未束縛の例は、どの段階でも束縛されない名前でなければならない。R7RS の名前は
     // いつか束縛される(`car` はスライス 1k で、`call/cc` は段階2で束縛される)ので、
     // 例に使うとそのたびにテストが落ちる。
     const libs = [_]Library{
         .{ .name = "base", .ids = &.{ "+", "define", "no-such-procedure" } },
-        .{ .name = "r5rs", .ids = &.{ "+", "no-such-procedure", "no-such-syntax" } },
+        .{ .name = "no-such-library", .ids = &.{ "+", "no-such-procedure", "no-such-syntax" } },
     };
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    try render(arena.allocator(), &out.writer, &interp, &libs);
+    try render(arena.allocator(), &out.writer, &libs);
 
     const got = out.written();
     try std.testing.expect(std.mem.indexOf(u8, got, "| `(scheme base)` | 2 | 3 |\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, got, "| `(scheme r5rs)` | 1 | 3 |\n") != null);
-    // 一意の識別子は {+, define, no-such-procedure, no-such-syntax} の4個で、束縛済みは {+, define} の2個。
+    try std.testing.expect(std.mem.indexOf(u8, got, "| `(scheme no-such-library)` | 0 | 3 |\n") != null);
+    // 一意の識別子は {+, define, no-such-procedure, no-such-syntax} の4個で、輸出されているのは {+, define} の2個。
     try std.testing.expect(std.mem.endsWith(u8, got, "| 一意の識別子の合計 | 2 | 4 |\n"));
 }
 
+test "a library counts only what it exports, not what another library binds" {
+    // `(scheme lazy)` は `+` を輸出しない。`(scheme base)` が別に輸出していても、数えない。
+    const libs = [_]Library{
+        .{ .name = "lazy", .ids = &.{ "+", "force" } },
+    };
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try render(arena.allocator(), &out.writer, &libs);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "| `(scheme lazy)` | 1 | 2 |\n") != null);
+}
+
 test "render starts with the generated-file notice and ends every line with LF" {
-    var interp: sucheme.Interpreter = undefined;
-    try interp.init(std.testing.allocator);
-    defer interp.deinit();
     const libs = [_]Library{.{ .name = "base", .ids = &.{"+"} }};
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    try render(arena.allocator(), &out.writer, &interp, &libs);
+    try render(arena.allocator(), &out.writer, &libs);
 
     const got = out.written();
     try std.testing.expect(std.mem.startsWith(u8, got, "# R7RS 準拠マトリクス"));

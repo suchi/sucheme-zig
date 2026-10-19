@@ -1,3 +1,4 @@
+# env: core
 # スライス 3f を規模で試す。強制していない約束の連鎖を、`force` が反復で解くことと、連鎖の途中の
 # ごみが回収されることである。実行に時間がかかるので `zig build test-scheme -Dslow=true` のとき
 # だけ走り、全コミットでは走らない(docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す

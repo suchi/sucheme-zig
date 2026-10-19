@@ -1,59 +1,59 @@
-# Slice 2m: `import` at the REPL (R7RS 5.2). The REPL imports `(sucheme core)` to begin
+# Slice 2m: `import` at the REPL (R7RS 5.2). The REPL imports `(scheme base)` to begin
 # with; an import adds bindings, or replaces the binding of the same name. The five
 # forms of an import set: a library name, `only`, `except`, `prefix` and `rename`.
 #
 # 1ケースは1行で、エラーはその行の残りを打ち切る。
 
 # インポートは何も表示しない。
-(import (sucheme core))
+(import (scheme base))
 <no output>
 
-(import (only (sucheme core) car cdr)) (car '(1 2))
+(import (only (scheme base) car cdr)) (car '(1 2))
 1
 
 # `rename` は別の名前で束縛する。元の名前の束縛は、そのまま残る。特殊形式も改名できる。
-(import (rename (sucheme core) (if when-true))) (list (when-true #t 1 2) (if #f 1 2))
+(import (rename (scheme base) (if when-true))) (list (when-true #t 1 2) (if #f 1 2))
 (1 2)
 
-(import (rename (only (sucheme core) car cdr) (car first) (cdr rest))) (list (first '(1 2)) (rest '(1 2)))
+(import (rename (only (scheme base) car cdr) (car first) (cdr rest))) (list (first '(1 2)) (rest '(1 2)))
 (1 (2))
 
 # `rename` は同時に行う。名前の入れ替えができる。
-(import (rename (only (sucheme core) car cdr) (car cdr) (cdr car))) (list (car '(1 2)) (cdr '(1 2)))
+(import (rename (only (scheme base) car cdr) (car cdr) (cdr car))) (list (car '(1 2)) (cdr '(1 2)))
 ((2) 1)
 
-(import (prefix (only (sucheme core) car cdr) c:)) (list (c:car '(1 2)) (c:cdr '(1 2)))
+(import (prefix (only (scheme base) car cdr) c:)) (list (c:car '(1 2)) (c:cdr '(1 2)))
 (1 (2))
 
 # `except` は、列挙した名前を除く。REPL がすでに持つ束縛は、除いても残る。
-(import (rename (except (sucheme core) car) (cdr kdr))) (list (kdr '(1 2)) (car '(3)))
+(import (rename (except (scheme base) car) (cdr kdr))) (list (kdr '(1 2)) (car '(3)))
 ((2) 3)
 
 # 修飾子は入れ子にできる。
-(import (prefix (rename (only (sucheme core) car) (car head)) p-)) (p-head '(1 2))
+(import (prefix (rename (only (scheme base) car) (car head)) p-)) (p-head '(1 2))
 1
 
 # 補助構文もインポートできる。改名した名前は、元の名前と同じ補助構文を意味するので、
 # リテラルとして照合するとき、どちらの綴りも一致する。
-(import (rename (only (sucheme core) else) (else otherwise))) (define-syntax pick (syntax-rules (otherwise) ((_ otherwise) 'yes) ((_ x) 'no))) (list (pick else) (pick otherwise) (pick 1))
+(import (rename (only (scheme base) else) (else otherwise))) (define-syntax pick (syntax-rules (otherwise) ((_ otherwise) 'yes) ((_ x) 'no))) (list (pick else) (pick otherwise) (pick 1))
 (yes yes no)
 
 # REPL の定義で隠した特殊形式とプリミティブは、インポートで取り戻せる。
-(define if 5) (import (only (sucheme core) if)) (if #t 1 2)
+(define if 5) (import (only (scheme base) if)) (if #t 1 2)
 1
 
-(define car 5) (import (only (sucheme core) car)) (car '(7))
+(define car 5) (import (only (scheme base) car)) (car '(7))
 7
 
-(define (car x) 'mine) (define (f) (car '(1))) (import (only (sucheme core) car)) (list (f) (car '(1)))
+(define (car x) 'mine) (define (f) (car '(1))) (import (only (scheme base) car)) (list (f) (car '(1)))
 (mine 1)
 
 # 先に展開した式が指す REPL 自身の変数は、インポートで置き換えられても、そのまま働く。
-(define n 1) (define (get) n) (import (rename (only (sucheme core) car) (car n))) (list (get) (n '(2)))
+(define n 1) (define (get) n) (import (rename (only (scheme base) car) (car n))) (list (get) (n '(2)))
 (1 2)
 
 # 1つの `import` の中の誤りは、その `import` のどの集合も束縛しない。
-(import (rename (only (sucheme core) car) (car kar)) (only (sucheme core) no-such-name))
+(import (rename (only (scheme base) car) (car kar)) (only (scheme base) no-such-name))
 error: bad import: no-such-name is not exported by the import set
 
 # 誤り。
@@ -75,32 +75,32 @@ error: bad library name: a name is a non-empty list of identifiers and non-negat
 (import (foo "bar"))
 error: bad library name: a name is a non-empty list of identifiers and non-negative integers
 
-(import (only (sucheme core) nope))
+(import (only (scheme base) nope))
 error: bad import: nope is not exported by the import set
 
-(import (except (sucheme core) nope))
+(import (except (scheme base) nope))
 error: bad import: nope is not exported by the import set
 
-(import (rename (sucheme core) (nope x)))
+(import (rename (scheme base) (nope x)))
 error: bad import: nope is not exported by the import set
 
-(import (rename (sucheme core) (car cdr)))
+(import (rename (scheme base) (car cdr)))
 error: bad import: cdr is the name of more than one identifier
 
-(import (only (sucheme core) 1))
+(import (only (scheme base) 1))
 error: bad import: only expects identifiers
 
-(import (prefix (sucheme core)))
+(import (prefix (scheme base)))
 error: bad import: prefix expects one identifier
 
-(import (prefix (sucheme core) a b))
+(import (prefix (scheme base) a b))
 error: bad import: prefix expects one identifier
 
-(import (rename (sucheme core) (car)))
+(import (rename (scheme base) (car)))
 error: bad import: rename expects (from to) pairs
 
 (import (only))
 error: bad import: only needs an import set
 
-(import (only (sucheme core) . car))
+(import (only (scheme base) . car))
 error: bad import: expected a proper list

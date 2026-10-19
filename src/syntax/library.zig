@@ -199,6 +199,10 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
     try checkName(ctx, name);
     var names: Names = .empty;
     if (isCoreName(ctx, name)) {
+        // Why: `(sucheme core)` は標準ライブラリの土台で、`%` で始まる内部の名前を含む。利用者の
+        // プログラムには見せない(docs/adr/0037-core-library-exposed-in-stage-2.md)。
+        if (!ctx.coreImportable())
+            return ctx.raise("bad import: the library (sucheme core) is only for the standard libraries the executable carries", .{});
         var it = ctx.core.entries.keyIterator();
         while (it.next()) |id| {
             const d = (ctx.core.get(&ctx.heap, id.*) catch |e| return ctx.heapFailure(e)).?;
@@ -632,6 +636,8 @@ const Fixture = struct {
         self.arena = .init(std.testing.allocator);
         errdefer self.arena.deinit();
         self.ctx = try .init(self.arena.allocator(), std.testing.allocator);
+        // 標準ライブラリを持たないので、`(sucheme core)` を直接取り込めるようにする。
+        self.ctx.core_open = true;
     }
 
     fn deinit(self: *Fixture) void {

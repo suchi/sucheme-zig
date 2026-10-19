@@ -70,6 +70,7 @@
 - 2026-10-15: v0.2.0 は、タグを `183a63b` に打ち、20:08 JST に公開した。
 - 2026-10-18([suchi/sucheme-zig#118](https://github.com/suchi/sucheme-zig/pull/118) のマージ前): 本体先頭の `begin` の中の定義を `scanBody` が取り込む方式(ケースA)を、そのまま採る。
 - 2026-10-19: 複数リストの `map` が大きなリストで異常終了する不具合は、実行ファイルのアロケータを `smp_allocator` にする案Aで直す([suchi/sucheme-zig#123](https://github.com/suchi/sucheme-zig/pull/123))。ユーザーの回答の前に、案Bとして `SafeAllocator` の設定変更、案Cとしてヒープのセルを自前のスラブに載せる変更を示していた。
+- 2026-10-19: スライス 3l の相談で、勧めた2案(`!` で終わる手続きの検査を 3l に入れること、`(sucheme core)` を埋め込みの標準ライブラリだけが `import` できるようにすること)を、ユーザーが採った。具体的な形は [ADR-0039](adr/0039-standard-environment-installed-at-init.md) にある。ADR-0039 の「標準環境の読み込みを上限に計上する」点は、3l の実装中に私が選んだ。PR で確認を求める。
 
 ## 決まった進め方
 

@@ -1,0 +1,57 @@
+# スライス 3l: `(sucheme core)` は、実行ファイルに埋め込んだ標準ライブラリだけが `import` できる。
+# REPL の行と、利用者の `define-library` は、拒否される。`cond-expand` の `(library ...)` も同じ判定である。
+# 最上位の初期環境は `(scheme base)` で、内部の名前(`%` で始まる)は見えない。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# REPL の行からは拒否される。
+(import (sucheme core))
+error: bad import: the library (sucheme core) is only for the standard libraries the executable carries
+
+(import (only (sucheme core) car))
+error: bad import: the library (sucheme core) is only for the standard libraries the executable carries
+
+(import (prefix (sucheme core) c:))
+error: bad import: the library (sucheme core) is only for the standard libraries the executable carries
+
+# 利用者のライブラリの宣言からも拒否される。
+(define-library (u a) (export f) (import (sucheme core)) (begin (define (f) 1)))
+error: bad import: the library (sucheme core) is only for the standard libraries the executable carries
+
+# 失敗した定義は、登録を残さない。
+(define-library (u a) (export f) (import (sucheme core)) (begin (define (f) 1))) (import (u a))
+error: bad import: the library (sucheme core) is only for the standard libraries the executable carries
+
+# `cond-expand` の `(library (sucheme core))` は偽である。
+(cond-expand ((library (sucheme core)) 'yes) (else 'no))
+no
+
+(cond-expand ((library (scheme base)) 'yes) (else 'no))
+yes
+
+# 埋め込みの標準ライブラリは、利用者が `import` できる。
+(import (scheme cxr)) (caddr '(1 2 3))
+3
+
+(import (scheme base)) (define-record-type point (make-point x) point? (x point-x)) (point-x (make-point 4))
+4
+
+# 初期環境が見せるのは `(scheme base)` の輸出である。内部の名前は未束縛である。
+%make-record-type
+error: unbound variable: %make-record-type
+
+%make-promise
+error: unbound variable: %make-promise
+
+# `(scheme base)` の輸出にない名前は、`import` するまで未束縛である。
+delay
+error: unbound variable: delay
+
+(import (scheme lazy)) (force (delay 3))
+3
+
+# 標準ライブラリを `import` しても、内部の名前は手に入らない。
+(import (scheme base)) %make-record-type
+error: unbound variable: %make-record-type
+
+(import (only (scheme base) %make-record-type))
+error: bad import: %make-record-type is not exported by the import set

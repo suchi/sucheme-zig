@@ -84,10 +84,45 @@ pub const Interpreter = struct {
         return self.initWithFiles(gpa, options, null);
     }
 
-    /// Initializes an interpreter that opens the files of libraries with `files`,
-    /// or one that has no file system, when `files` is null.
+    /// Initializes an interpreter whose top level is the standard environment: what
+    /// `(scheme base)` exports (R7RS 5.7), and that opens the files of libraries with
+    /// `files`, or has no file system when `files` is null.
     /// `files` の探索ルートの文字列は、インタプリタが解放されるまで、呼び出し側が持つ。
+    /// ヒープの上限が、標準ライブラリを読み込むのに足りないときは、`OutOfMemory` である。
     pub fn initWithFiles(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options, files: ?resolve.Files) error{OutOfMemory}!void {
+        try self.build(gpa, options, files);
+        errdefer self.deinit();
+        try self.installStandardEnvironment();
+    }
+
+    /// Initializes an interpreter whose top level imports everything `(sucheme core)`
+    /// exports, and that has no library loaded.
+    /// Why: 機械や展開器の単体テストは、標準ライブラリを読み込む費用と、上限の小ささへの制約を
+    /// 受けずに、コアの特殊形式とプリミティブを直接使う。製品の経路は、これを使わない。
+    pub fn initCore(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
+        return self.initCoreWithFiles(gpa, options, null);
+    }
+
+    pub fn initCoreWithOptions(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
+        return self.initCoreWithFiles(gpa, options, null);
+    }
+
+    pub fn initCoreWithFiles(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options, files: ?resolve.Files) error{OutOfMemory}!void {
+        try self.build(gpa, options, files);
+        // 単体テストは、`define-library` の本体と `import` に、コアを直接使う。
+        self.ctx.core_open = true;
+    }
+
+    /// Initializes an interpreter whose top level has no binding at all: what a program
+    /// sees is what it imports.
+    /// Why: 準拠マトリクスは、標準ライブラリごとに、その輸出だけを数える。最上位に標準環境が
+    /// あると、別のライブラリの輸出を、数えようとしているライブラリの分に数えてしまう。
+    pub fn initBare(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
+        try self.build(gpa, options, null);
+        self.ctx.globals.base = null;
+    }
+
+    fn build(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options, files: ?resolve.Files) error{OutOfMemory}!void {
         self.arena = .init(gpa);
         errdefer self.arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
@@ -95,6 +130,30 @@ pub const Interpreter = struct {
         self.ctx.embedded = embedded;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
+    }
+
+    /// Replaces the top level that imports `(sucheme core)` with one that imports
+    /// `(scheme base)` (R7RS 5.7).
+    ///
+    /// Why: REPL の最上位は、標準ライブラリが輸出するものだけを見る。`%` で始まる内部の名前は
+    /// 見えない。標準ライブラリの読み込みは、ストレスモード(1ステップごとの GC)でも通常の
+    /// 進め方で行う。毎回のインタプリタの作成が、ストレスのかかった読み込みで遅くなると、
+    /// ケースごとにインタプリタを作るテストの費用が何倍にもなるからである。読み込んだあとの
+    /// プログラムの実行は、ストレスモードのままである。
+    fn installStandardEnvironment(self: *Interpreter) error{OutOfMemory}!void {
+        const stress = self.ctx.heap.options.stress;
+        self.ctx.heap.options.stress = false;
+        defer self.ctx.heap.options.stress = stress;
+        self.ctx.globals.base = null;
+        var scratch: std.heap.ArenaAllocator = .init(self.arena.child_allocator);
+        defer scratch.deinit();
+        var discard: std.Io.Writer.Discarding = .init(&.{});
+        self.run(scratch.allocator(), "(import (scheme base))", &discard.writer) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // 上限が小さくて読み込めない、または、埋め込みの標準ライブラリが壊れている。
+            // 後者はビルドのテストが見つける。ここでは、作れないインタプリタとして報告する。
+            else => return error.OutOfMemory,
+        };
     }
 
     pub fn deinit(self: *Interpreter) void {
@@ -310,7 +369,7 @@ fn evalPrinted(src: []const u8) ![]const u8 {
 
 test "isBound answers for the primitives, the special forms and nothing else" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     // プリミティブは大域環境の束縛、特殊形式は REPL の最上位の構文の束縛である。
     try std.testing.expect(interp.isBound("+"));
@@ -332,7 +391,7 @@ test "isBound follows definitions, and a name that was only read is not bound" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -351,7 +410,7 @@ test "isBound follows definitions, and a name that was only read is not bound" {
 
 test "a failed import binds nothing, and a successful one is kept for the next line" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     try expectLinePrints(&interp, "(define-syntax kar (syntax-rules () ((_) 'macro)))", "");
     try expectLineFails(&interp, "(import (rename (only (sucheme core) car) (car kar)) (only (sucheme core) nope))", "bad import: nope is not exported by the import set");
@@ -364,7 +423,7 @@ test "a failed import binds nothing, and a successful one is kept for the next l
 test "a library whose definition fails leaves nothing behind, and the same definition can be tried again" {
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
-        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
         defer interp.deinit();
         const definition = "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1) (define x (car 5))))";
         // 実行の誤り、展開の誤り、本体の終わりの未束縛の識別子のどれも、登録を残さない。
@@ -394,7 +453,7 @@ test "a library whose definition fails leaves nothing behind, and the same defin
 test "a closure that a failed library handed to a live library keeps reaching its cells" {
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
-        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
         defer interp.deinit();
         // 生きているライブラリ (t a) が、ほかのライブラリのクロージャを状態に残せる。
         try expectLinePrints(&interp, "(define-library (t a) (export register! run-all) (import (sucheme core)) (begin (define handlers '()) (define (register! f) (set! handlers (cons f handlers))) (define (run-all) (if (null? handlers) 'none ((car handlers))))))", "");
@@ -413,7 +472,7 @@ test "the libraries, their exports and the macros they define survive the collec
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 0 }) |capacity| {
             var interp: Interpreter = undefined;
-            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
             defer interp.deinit();
             try expectLinePrints(&interp, "(define-library (t a) (export bump! get twice) (import (sucheme core)) (begin (define n (list 0)) (define (bump!) (set! n (list (+ (car n) 1)))) (define (get) (car n)) (define-syntax twice (syntax-rules () ((_ e) (begin e e))))))", "");
             try expectLinePrints(&interp, "(import (t a))", "");
@@ -431,7 +490,7 @@ test "the libraries, their exports and the macros they define survive the collec
 
 test "a library that imports another loads from the registry, and a library under a small heap limit ends with the heap's error" {
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
     defer interp.deinit();
     try expectLinePrints(&interp, "(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1)))", "");
     try expectLinePrints(&interp, "(define-library (t b) (export g) (import (sucheme core) (t a)) (begin (define (g) (+ (f) 1))))", "");
@@ -445,7 +504,7 @@ test "a library that imports another loads from the registry, and a library unde
 /// Starts `interp` on the files beneath `tree`, the way the tests of the libraries
 /// that are files do.
 fn initOnTree(interp: *Interpreter, tree: *resolve.Tree, stress: bool) !void {
-    try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &tree.roots });
+    try interp.initCoreWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &tree.roots });
 }
 
 test "a library that is not defined is read from the file of its name beneath a root" {
@@ -670,7 +729,7 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 0 }) |capacity| {
             var interp: Interpreter = undefined;
-            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
             defer interp.deinit();
             // 名前を持つものが、それぞれ1つずつ、別の名前を持つ。
             //   foo: 大域変数のセルの名前。
@@ -701,7 +760,7 @@ test "a symbol made from a string stays the symbol of its name at every work lis
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 1, 0 }) |capacity| {
             var interp: Interpreter = undefined;
-            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
             defer interp.deinit();
             try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\"))", "#t\n");
             // 名前から作ったシンボルだけが持つ名前は、値が持つ間は残る。
@@ -720,7 +779,7 @@ test "a symbol made from a string stays the symbol of its name at every work lis
 
 test "a symbol that is not held is reclaimed, with the memory its name took" {
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{});
+    try interp.initCoreWithOptions(std.testing.allocator, .{});
     defer interp.deinit();
     const before = interp.ctx.heap.held();
     try expectLinePrints(&interp, "(quote some-name-nothing-keeps)", "some-name-nothing-keeps\n");
@@ -840,7 +899,7 @@ test "the search goes through the roots in order, and an include is read beneath
         try tree.write("two/lib/h2.scm", "(define (h2) 'from-the-second-root)");
         const roots = [_][]const u8{ try tree.at(arena.allocator(), "one"), try tree.at(arena.allocator(), "two") };
         var interp: Interpreter = undefined;
-        try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &roots });
+        try interp.initCoreWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &roots });
         defer interp.deinit();
         try expectLinePrints(&interp, "(import (lib x)) (g)", "from-the-second-root\n");
         // REPL の `include` は、第1のルートを基準にする。
@@ -929,7 +988,7 @@ test "an included file that is not valid text or does not read is refused with t
 test "a cond-expand declaration of a library is chosen by the same requirements, and nests" {
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
-        try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, null);
+        try interp.initCoreWithFiles(std.testing.allocator, .{ .stress = stress }, null);
         defer interp.deinit();
         try expectLinePrints(&interp, "(define-library (t a) (export x y z) (import (sucheme core)) " ++
             "(cond-expand ((and r7rs (not no-such-feature)) (begin (define x 1)) " ++
@@ -945,7 +1004,7 @@ test "a cond-expand declaration of a library is chosen by the same requirements,
 
 test "a cond-expand that is malformed is refused, whichever part of the requirement would have decided" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     const clause = "bad cond-expand: a clause is (<feature requirement> <body> ...) or (else <body> ...)";
     const requirement = "bad cond-expand: a feature requirement is an identifier or a list that starts with library, and, or or not";
@@ -977,7 +1036,7 @@ test "a cond-expand that is malformed is refused, whichever part of the requirem
 
 test "the nesting of a feature requirement is bounded, and a chain at the bound is read" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     const max = @import("syntax/cond_expand.zig").max_depth;
     var buffer: [1024]u8 = undefined;
@@ -1036,7 +1095,7 @@ test "asking whether a library is available does not leave its file open" {
 
 test "a macro can expand to a cond-expand, and the names inside it are read as they were written" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     try expectLinePrints(&interp, "(define-syntax pick (syntax-rules () ((_ a b) (cond-expand ((and r7rs (not no-such-feature)) a) (else b)))))", "");
     try expectLinePrints(&interp, "(pick 1 2)", "1\n");
@@ -1161,7 +1220,7 @@ test "the clause of a cond-expand that applies may include a file, in an express
 
 test "features returns the identifiers of the build in the order of its list, as a new list each time" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1177,7 +1236,7 @@ test "the nesting of the cond-expand declarations of a library is bounded, and a
     var buffer: [2048]u8 = undefined;
     for ([_]usize{ max - 1, max }) |depth| {
         var interp: Interpreter = undefined;
-        try interp.init(std.testing.allocator);
+        try interp.initCore(std.testing.allocator, .{});
         defer interp.deinit();
         var w: std.Io.Writer = .fixed(&buffer);
         try w.writeAll("(define-library (t deep) (export) (import (sucheme core)) ");
@@ -1291,7 +1350,7 @@ test "a link where a library file should be is refused, and the libraries of oth
     const root = try tree.at(std.testing.allocator, "root");
     defer std.testing.allocator.free(root);
     var interp: Interpreter = undefined;
-    try interp.initWithFiles(std.testing.allocator, .{}, .{ .io = std.testing.io, .roots = &.{root} });
+    try interp.initCoreWithFiles(std.testing.allocator, .{}, .{ .io = std.testing.io, .roots = &.{root} });
     defer interp.deinit();
     try expectLineFails(&interp, "(import (t evil))", "cannot load the library (t evil): its file, or a directory on the way to it, is a link");
     try expectLineFails(&interp, "(import (t2 evil))", "cannot load the library (t2 evil): its file, or a directory on the way to it, is a link");
@@ -1341,7 +1400,7 @@ test "multiple values that reach a continuation taking one value are reported, a
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1356,7 +1415,7 @@ test "evalPrint stops at the first error and describes it" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1369,7 +1428,7 @@ test "evalPrint describes a reader error, and a later success clears the message
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1383,7 +1442,7 @@ test "a definition survives into the next call, and prints nothing itself" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1397,7 +1456,7 @@ test "a failed line keeps the definitions made before it and not the one that fa
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1425,7 +1484,7 @@ test "two interpreters do not share definitions" {
 
 test "a closure keeps its frame after the line that made it is gone" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1443,7 +1502,7 @@ test "a closure keeps its frame after the line that made it is gone" {
 
 test "a continuation captured on an earlier line runs the rest of the form it was captured in, and no line after it" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1470,7 +1529,7 @@ test "a line that ends at the limit of the heap does not end the session" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1492,7 +1551,7 @@ test "a datum too large for the heap is refused with the same message" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{ .limit = 1024, .min_threshold = 512 });
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 1024, .min_threshold = 512 });
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1507,7 +1566,7 @@ test "the data of a quoted list survives the collections between the lines that 
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = true });
     defer interp.deinit();
     var buf: [128]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1518,7 +1577,7 @@ test "the data of a quoted list survives the collections between the lines that 
 
 test "input that is not valid UTF-8 is refused whole, and the next line is read" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1563,7 +1622,7 @@ test "every primitive reports a wrong argument count, and the next line is read"
     const table = @import("prim/table.zig");
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
-        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
         defer interp.deinit();
         try expectLinePrints(&interp, "(define keep (list 1 \"あ\" #(2)))", "");
         var checked: usize = 0;
@@ -1597,7 +1656,7 @@ test "every primitive reports a wrong argument count, and the next line is read"
 test "an error of each kind leaves the interpreter and its definitions usable" {
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
-        try interp.initWithOptions(std.testing.allocator, .{ .stress = stress });
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
         defer interp.deinit();
         try expectLinePrints(&interp, "(define xs (list 1 2 3)) (define (len l) (if (null? l) 0 (+ 1 (len (cdr l)))))", "");
         const failures = [_]struct { line: []const u8, message: []const u8 }{
@@ -1630,7 +1689,7 @@ test "an error of each kind leaves the interpreter and its definitions usable" {
 
 test "a primitive that runs the heap out of room ends only its line" {
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 256 * 1024, .min_threshold = 16 * 1024 });
     defer interp.deinit();
     try expectLinePrints(&interp, "(define (grow-cons n acc) (grow-cons (+ n 1) (cons n acc))) (define (grow-list acc) (grow-list (list acc acc))) (define (grow-vector acc) (grow-vector (vector acc 1 2))) (define keep 42)", "");
     for ([_][]const u8{ "(grow-cons 0 '())", "(grow-list '())", "(grow-vector '())" }) |line| {
@@ -1641,7 +1700,7 @@ test "a primitive that runs the heap out of room ends only its line" {
 
 test "a reader error is described without making a condition in the heap" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1656,7 +1715,7 @@ test "a reader error is described without making a condition in the heap" {
 
 test "the description outlives the arena of the call and the collections after it" {
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = true });
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1675,7 +1734,7 @@ test "a condition kept as the value raised survives the collections until the ne
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 0 }) |capacity| {
             var interp: Interpreter = undefined;
-            try interp.initWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
             defer interp.deinit();
             try expectLinePrints(&interp, "(define keep (list 1 2))", "");
             // ストレスモードが毎回 GC する範囲(短い実行)に収まるよう、行は短くしてある。
@@ -1697,7 +1756,7 @@ test "a condition kept as the value raised survives the collections until the ne
 
 test "the value raised is described: a condition by its message and irritants, anything else as write shows it" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1749,7 +1808,7 @@ test "when the description cannot be allocated, the diagnostic says out of memor
 
 test "the values a description shows are cut after a bound, and the message is kept whole" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1780,7 +1839,7 @@ test "the values a description shows are cut after a bound, and the message is k
 
 test "a description cut in the middle of a character is cut before the character" {
     var interp: Interpreter = undefined;
-    try interp.init(std.testing.allocator);
+    try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1851,7 +1910,7 @@ fn expectBoundedExpansion(definition: []const u8, use: []const u8, limit: usize)
     var arena: std.heap.ArenaAllocator = .init(scratch_gpa.allocator());
     defer arena.deinit();
     var interp: Interpreter = undefined;
-    try interp.initWithOptions(gpa.allocator(), .{ .limit = limit, .min_threshold = @min(limit / 4, 1024 * 1024) });
+    try interp.initCoreWithOptions(gpa.allocator(), .{ .limit = limit, .min_threshold = @min(limit / 4, 1024 * 1024) });
     defer interp.deinit();
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);

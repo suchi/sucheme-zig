@@ -526,7 +526,7 @@ OS のフィーチャ名は R7RS 付録B の標準名を提供する。付録B�
 
 - どの節も当てはまらず `else` も無いとき: R7RS 4.2.1 は、この場合の挙動を unspecified としている(原文で確認した。原文は [docs/spec/](../spec/README.md) にある)。最上位とライブラリ宣言の位置では何もしない(`(begin)` と同じ)。式の位置では、値を作れないので誤りにする。ユーザーから、この扱いでよいとの回答を受けた。原文は未確認のままなので、確かめて異なれば、ここを直す。
 - 要求の評価: `and` `or` `not` の部分の要求は、短絡せずにすべて調べる。後ろの部分の誤りを、前の部分が真偽を決めたからといって見逃さないためである。当てはまる節より後ろの節は調べない。`else` は最後の節にだけ置ける。`else` `library` `and` `or` `not` は、綴りで見分ける。変数の束縛ではないためである。
-- `(library <name>)`: `(sucheme core)` と定義済みのライブラリは真である。そうでなければ、ファイルが探索ルートの下で開けるときに真で、ファイルは読まない。読むと本体が走り、要求を評価しただけで副作用が起きる。名前がファイルの名前にならないときは、誤りでなく偽である。
+- `(library <name>)`: `(sucheme core)` は、利用者のコードからは偽で、埋め込みの標準ライブラリの中でだけ真である(`import` が通るかと同じ判定である)。定義済みのライブラリは真である。そうでなければ、ファイルが探索ルートの下で開けるときに真で、ファイルは読まない。読むと本体が走り、要求を評価しただけで副作用が起きる。名前がファイルの名前にならないときは、誤りでなく偽である。
 - 入れ子の上限: 要求の入れ子は 64 まで、ライブラリ宣言(`cond-expand` と `include-library-declarations`)の入れ子も 64 までである。評価と処理が再帰するので、入力が決める深さを、実装制限として報告する。
 - 本体の先頭の `begin` は、スライス 3i が展開するようにした。`cond-expand` が持つ定義と `include` が持つ定義を、本体の定義の並びとして展開することは、まだできない(スライス 3p の項目)。
 
@@ -543,7 +543,7 @@ flowchart TB
     baselib --> user["利用者のプログラム"]
 ```
 
-`(sucheme core)` は内部用のライブラリで、コアの特殊形式と Zig で書いたプリミティブのみを公開する。利用者には公開しない。
+`(sucheme core)` は内部用のライブラリで、コアの特殊形式と Zig で書いたプリミティブのみを公開する。利用者には公開しない。`import` できるのは、実行ファイルに埋め込んだ `lib/` のライブラリだけである(スライス 3l。[ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。
 
 Zig で書く範囲は [ADR-0006](../adr/0006-library-system-and-scheme-level-stdlib.md) が族の一覧として定める。Scheme で書くのは派生構文、合成アクセサ、リストと文字列とベクタの高階手続き、`guard`、数値手続きのうち基本演算で書けるものである。`assert` は書かない。R7RS-small に存在しない識別子であり、付録A の `(scheme base)` のエクスポートにも全文のどこにも手続きとしては現れない。R7RS 5.6.1 は「Libraries whose first identifier is scheme are reserved for use by this report」としているので、`(scheme base)` に独自の識別子を入れてはならない。
 
@@ -594,5 +594,7 @@ Zig で書く範囲は [ADR-0006](../adr/0006-library-system-and-scheme-level-st
 
 `vector-map` は、専用のベクタに結果を書き、返すときに複製する。継続を再入すると、前に返した結果が書き換わってはならない(R7RS 6.8)ので、返すのは常に新しい複製である。この複製のため、1回の呼び出しで、長さに比例するベクタを2つ確保する。引数が複数のときは、一番短いベクタの長さで止まる。`vector-for-each` は添字で進み、確保は手続きの側だけである。`string-map` と `string-for-each` は、文字列をリストに直して `map` と `for-each` に渡すので、継続の再入に対して `map` と同じく正しい。リストへの変換は、文字数に比例するペアを確保する(`string->list` と同じ種類の制約で、実行上限は文字数が数十万のあたりである)。`string-map` の手続きが文字を返さなかったときは、`string-map` の名前で、最初の不正な値を示す型の誤りになる。
 
-現状(スライス 3k)。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld` が加わった。`(scheme base)` は、`tests/r7rs-required/base.txt` の識別子のうち、`(sucheme core)` と `(sucheme derived)` と `(sucheme procedures)` に実装があるものだけを、その並びの順にエクスポートする。実装の無いもの(数値塔を要るものとポートの識別子、および 3l が決める整数の手続き)は書かない。どれが無いかは、`import` の誤り(`bad import: ... is not exported by the import set`)と準拠マトリクスで分かる。`%` で始まる名前と、別のライブラリの名前(`delay` `force` `make-promise` `promise?` と、3回以上重ねる合成アクセサ)は入れない。`(scheme cxr)` は `(sucheme core)` の `car` と `cdr` で24個を定義し、`(scheme case-lambda)` と `(scheme lazy)` は、`(sucheme derived)` と `(sucheme core)` のものを再エクスポートする。REPL の初期環境はまだ `(sucheme core)` のままで、`(scheme base)` への切り替えと `(sucheme core)` を隠す変更は 3l が行う。
+現状(スライス 3k)。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld` が加わった。`(scheme base)` は、`tests/r7rs-required/base.txt` の識別子のうち、`(sucheme core)` と `(sucheme derived)` と `(sucheme procedures)` に実装があるものだけを、その並びの順にエクスポートする。実装の無いもの(数値塔を要るものとポートの識別子、および 3l が決める整数の手続き)は書かない。どれが無いかは、`import` の誤り(`bad import: ... is not exported by the import set`)と準拠マトリクスで分かる。`%` で始まる名前と、別のライブラリの名前(`delay` `force` `make-promise` `promise?` と、3回以上重ねる合成アクセサ)は入れない。`(scheme cxr)` は `(sucheme core)` の `car` と `cdr` で24個を定義し、`(scheme case-lambda)` と `(scheme lazy)` は、`(sucheme derived)` と `(sucheme core)` のものを再エクスポートする。
+
+現状(スライス 3l)。REPL と CLI と WASM の最上位の初期環境は、`(scheme base)` が輸出するものになった。初期化が、何も束縛していない最上位に `(import (scheme base))` を評価して作る。`when` や `unless` など、`lib/` が定義する構文と手続きも、この環境で見える。`delay` `force` `make-promise` `promise?` などは `(import (scheme lazy))` が要る。`(sucheme core)` の `import` は、利用者のコード(REPL とファイルとユーザーのライブラリ)からは `bad import: the library (sucheme core) is only for the standard libraries the executable carries` で拒否される。標準環境の読み込みは、ヒープの上限に計上する(入りきらない上限は初期化が失敗する)。判断は [ADR-0039](../adr/0039-standard-environment-installed-at-init.md) にある。内部の名前(`%make-record-type` など)を直接呼ぶ低水準のテストは、Scheme のテストでは `# env: core` の行で、単体テストでは `Interpreter.initCore` 系の入口で、コアを直接見る最上位を使う。
 

@@ -1,5 +1,5 @@
 # Slice 2m: the auxiliary syntax (`...` `_` `else` `=>` `unquote` `unquote-splicing`) is
-# exported by `(sucheme core)`, which the REPL imports. Each is a syntactic keyword with no
+# exported by `(scheme base)`, which the REPL imports. Each is a syntactic keyword with no
 # meaning of its own: not an expression, not a variable to assign. A define at the top level
 # gives the name a new location, as for a special form (R7RS 5.3.1).
 #

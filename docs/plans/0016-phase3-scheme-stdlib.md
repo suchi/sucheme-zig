@@ -323,6 +323,8 @@ flowchart TD
   | `(import (scheme base) (scheme cxr) (scheme lazy) (scheme case-lambda))` | 8〜11 ms |
 
   `(import ...)` を使わない起動に、`lib/` の展開の費用は載らない(展開は、そのライブラリを最初に `import` するときに行う)。`import` する場合の追加は、数 ms の桁である。`zig build wasm` の `sucheme.wasm` は 2,693,379 バイトで、`lib/` の `.sld` と `.scm` の合計は 39,377 バイトである。3k が足した `lib/scheme/` は 4,559 バイトで、3k の前後での `sucheme.wasm` の差は測っていない。実機のブラウザでの起動の時間も測っていない。測定の方法は、この表の入力を `printf` で標準入力に渡して `date +%s%N` の差を取ったものである。
+
+  3l で、初期化が `(scheme base)` を読み込むようにした(測定は 2026-10-19、同じ方法と同じ環境)。空の入力でも、`import` を含む入力と同じ費用がかかる。空の入力は 5 ms 前後で、シェルがプロセスを起こすだけの 2〜3 ms を引くと、読み込みは 3 ms 前後である。`zig build test-scheme` は、ケースごとに新しいインタプリタを2つのモードで作るので、この費用が件数に比例して載る。main(3k まで)で 127 秒、3l で 133 秒から 175 秒だった(同じ環境で、main は1回、3l は3回。環境の負荷でぶれ、ケース数も 3l のほうが多い)。「全コミットで 1 分以内」の目標は 3k までの時点で超えており([plans/0007-test-tiers.md](0007-test-tiers.md))、3l の費用は、読み込んだ標準ライブラリの共有(roadmap のスライス 3o の候補)で減らせる。単体テストは `initCore` 系の入口を使うので、増えない。
 - 3o の大きさ。構文環境と節点を GC ヒープに移す変更が、`src/syntax/` と `src/machine.zig` のどこまで及ぶかは、読んだだけでは見積れない。
 
 ## 見積り
@@ -356,11 +358,12 @@ flowchart TD
 | 3i | マージ済み。`(sucheme derived)` に `define-record-type` `let-values` `let*-values` `define-values` `guard` `case-lambda` がある。どれも `syntax-rules` で書いた(特殊形式とプリミティブは足していない)。`define-record-type` は、2h の `%` で始まるプリミティブを呼ぶ補助手続きに展開する。マクロの適用が複数の定義になる `define-record-type` と `define-values` を本体で使うため、本体の先頭の `begin` の展開(3p の項目の一部)を `scanBody` に入れた。3p に残るのは `include` と `cond-expand` が持つ定義である。設計と測定は [frontend.md](../design/frontend.md) の「現状(スライス 3i)」に書いた | [#118](https://github.com/suchi/sucheme-zig/pull/118) |
 | 3e | マージ済み。ヒープの型 `Bytevector`(`#u8(...)` のリーダと印字)、バイトベクタの手続きと `utf8->string` `string->utf8`、ベクタの `make-vector` `vector-set!` `vector-fill!` `vector-copy` `vector-copy!` `vector-append` `vector->list` `list->vector`。ベクタとバイトベクタの書き込みが `requireMutable` を呼ぶ | [#119](https://github.com/suchi/sucheme-zig/pull/119) |
 | 3j | マージ済み。`vector-map` `vector-for-each` `string-map` `string-for-each`(`procedures.scm`)と `delay` `delay-force`(`derived.scm`)。`delay-force` は `%make-promise` に展開する | [#121](https://github.com/suchi/sucheme-zig/pull/121) |
-| 3k | レビュー中(ドラフト)。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld`。`(scheme base)` は実装のある必須識別子だけをエクスポートする。起動時の展開時間と WASM のサイズは、下の「確かめられなかったこと」の該当の行に測定を書いた | [#122](https://github.com/suchi/sucheme-zig/pull/122) |
-| 3l から 3r | 未着手 | - |
+| 3k | マージ済み。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld`。`(scheme base)` は実装のある必須識別子だけをエクスポートする。起動時の展開時間と WASM のサイズは、下の「確かめられなかったこと」の該当の行に測定を書いた | [#122](https://github.com/suchi/sucheme-zig/pull/122) |
+| 3l | 実装済み(PR 作成前)。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。最上位の初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
+| 3m から 3r | 未着手 | - |
 
 ## 次にやること
 
 1. 3a、3b、3c、3d、3e、3f、3g、3h、3i、3j はマージ済み。`(sucheme derived)` が `(sucheme procedures)` を取り込む向きなので、`procedures.scm` は派生構文を使わずに書く。
-2. 3k は [#122](https://github.com/suchi/sucheme-zig/pull/122) でレビュー中である。3l は、3k のマージのあとに始める。3l の前に、`!` で終わる手続きの検査と `(sucheme core)` を隠す変更の担当を、ユーザーに諮る。
+2. 3k はマージ済み。3l は実装済みで、PR を作る段階である。`!` で終わる手続きの検査と `(sucheme core)` を隠す変更は、ユーザーが 2026-10-19 に、3l に入れる案を選んだ。3l のあとは 3m と 3n を並行して始められる。
 3. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。

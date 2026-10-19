@@ -4,75 +4,75 @@
 #
 # 1ケースは1行で、エラーはその行の残りを打ち切る。
 
-(define-library (t m) (export swap!) (import (sucheme core)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (t m)) ((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)
+(define-library (t m) (export swap!) (import (scheme base)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (t m)) ((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)
 (2 1)
 
 # 省略記号は、インポートした `...` で読む。
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_ x ...) (list x ...)))))) (import (t m)) (m 1 2 3)
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_ x ...) (list x ...)))))) (import (t m)) (m 1 2 3)
 (1 2 3)
 
 # テンプレートの識別子は、ライブラリの束縛を指す。利用側が同じ名前を持っていても、
 # エクスポートされていない手続きを指せる(参照透明性)。
-(define-library (t m) (export twice) (import (sucheme core)) (begin (define (double x) (* x 2)) (define-syntax twice (syntax-rules () ((_ e) (double e)))))) (import (t m)) (twice 4)
+(define-library (t m) (export twice) (import (scheme base)) (begin (define (double x) (* x 2)) (define-syntax twice (syntax-rules () ((_ e) (double e)))))) (import (t m)) (twice 4)
 8
 
-(define-library (t m) (export twice) (import (sucheme core)) (begin (define (double x) (* x 2)) (define-syntax twice (syntax-rules () ((_ e) (double e)))))) (import (t m)) (define (double x) 'repl) (list (twice 4) (double 4))
+(define-library (t m) (export twice) (import (scheme base)) (begin (define (double x) (* x 2)) (define-syntax twice (syntax-rules () ((_ e) (double e)))))) (import (t m)) (define (double x) 'repl) (list (twice 4) (double 4))
 (8 repl)
 
-(define-library (t m) (export twice) (import (sucheme core)) (begin (define (double x) (* x 2)) (define-syntax twice (syntax-rules () ((_ e) (double e)))))) (import (t m)) ((lambda (double) (twice 5)) 'local)
+(define-library (t m) (export twice) (import (scheme base)) (begin (define (double x) (* x 2)) (define-syntax twice (syntax-rules () ((_ e) (double e)))))) (import (t m)) ((lambda (double) (twice 5)) 'local)
 10
 
 # 衛生性の検証項目3: 利用側が `if` を再束縛していても、テンプレートの `if` は本来の意味を保つ。
-(define-library (t m) (export given) (import (sucheme core)) (begin (define-syntax given (syntax-rules () ((_ test body) (if test body #f)))))) (import (t m)) ((lambda (if) (given if (list if))) #t)
+(define-library (t m) (export given) (import (scheme base)) (begin (define-syntax given (syntax-rules () ((_ test body) (if test body #f)))))) (import (t m)) ((lambda (if) (given if (list if))) #t)
 (#t)
 
 # ライブラリが `if` をインポートしていなくても、マクロを定義したライブラリの意味で読む。
-(define-library (t m) (export given) (import (only (sucheme core) define-syntax syntax-rules if)) (begin (define-syntax given (syntax-rules () ((_ test body) (if test body #f)))))) (import (t m)) (define (if a b c) 'repl) (given #t 1)
+(define-library (t m) (export given) (import (only (scheme base) define-syntax syntax-rules if)) (begin (define-syntax given (syntax-rules () ((_ test body) (if test body #f)))))) (import (t m)) (define (if a b c) 'repl) (given #t 1)
 1
 
 # マクロの改名と、接頭辞。
-(define-library (t m) (export swap!) (import (sucheme core)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (rename (t m) (swap! exchange!))) ((lambda (x y) (exchange! x y) (list x y)) 1 2)
+(define-library (t m) (export swap!) (import (scheme base)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (rename (t m) (swap! exchange!))) ((lambda (x y) (exchange! x y) (list x y)) 1 2)
 (2 1)
 
-(define-library (t m) (export swap!) (import (sucheme core)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (prefix (t m) m:)) ((lambda (x y) (m:swap! x y) (list x y)) 1 2)
+(define-library (t m) (export swap!) (import (scheme base)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (prefix (t m) m:)) ((lambda (x y) (m:swap! x y) (list x y)) 1 2)
 (2 1)
 
-(define-library (t m) (export (rename swap! exchange!)) (import (sucheme core)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (t m)) ((lambda (x y) (exchange! x y) (list x y)) 1 2)
+(define-library (t m) (export (rename swap! exchange!)) (import (scheme base)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (import (t m)) ((lambda (x y) (exchange! x y) (list x y)) 1 2)
 (2 1)
 
 # インポートしたマクロを、別のライブラリの本体が使う。
-(define-library (t m) (export swap!) (import (sucheme core)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (define-library (t n) (export flip) (import (sucheme core) (t m)) (begin (define (flip p) ((lambda (a b) (swap! a b) (list a b)) (car p) (cdr p))))) (import (t n)) (flip '(1 . 2))
+(define-library (t m) (export swap!) (import (scheme base)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (define-library (t n) (export flip) (import (scheme base) (t m)) (begin (define (flip p) ((lambda (a b) (swap! a b) (list a b)) (car p) (cdr p))))) (import (t n)) (flip '(1 . 2))
 (2 1)
 
 # マクロを再エクスポートする。
-(define-library (t m) (export swap!) (import (sucheme core)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (define-library (t n) (export swap!) (import (t m))) (import (t n)) ((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)
+(define-library (t m) (export swap!) (import (scheme base)) (begin (define-syntax swap! (syntax-rules () ((_ a b) ((lambda (tmp) (set! a b) (set! b tmp)) a)))))) (define-library (t n) (export swap!) (import (t m))) (import (t n)) ((lambda (tmp x) (swap! tmp x) (list tmp x)) 1 2)
 (2 1)
 
 # マクロが、ライブラリの変数に代入する。
-(define-library (t m) (export bump! count) (import (sucheme core)) (begin (define n 0) (define-syntax bump! (syntax-rules () ((_) (set! n (+ n 1))))) (define (count) n))) (import (t m)) (bump!) (bump!) (count)
+(define-library (t m) (export bump! count) (import (scheme base)) (begin (define n 0) (define-syntax bump! (syntax-rules () ((_) (set! n (+ n 1))))) (define (count) n))) (import (t m)) (bump!) (bump!) (count)
 2
 
 # ライブラリが定義した、マクロを定義するマクロ。
-(define-library (t m) (export def-const) (import (sucheme core)) (begin (define-syntax def-const (syntax-rules () ((_ name v) (define-syntax name (syntax-rules () ((_) v)))))))) (import (t m)) (def-const five 5) (five)
+(define-library (t m) (export def-const) (import (scheme base)) (begin (define-syntax def-const (syntax-rules () ((_ name v) (define-syntax name (syntax-rules () ((_) v)))))))) (import (t m)) (def-const five 5) (five)
 5
 
 # REPL は、インポートしたマクロを `define-syntax` で遮蔽できる。ライブラリの定義は変わらない。
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) 'library))))) (import (t m)) (define-syntax m (syntax-rules () ((_) 'repl))) (m)
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 'library))))) (import (t m)) (define-syntax m (syntax-rules () ((_) 'repl))) (m)
 repl
 
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) 'library))))) (define-library (t n) (export u) (import (sucheme core) (t m)) (begin (define (u) (m)))) (import (t m)) (define-syntax m (syntax-rules () ((_) 'repl))) (import (t n)) (list (m) (u))
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 'library))))) (define-library (t n) (export u) (import (scheme base) (t m)) (begin (define (u) (m)))) (import (t m)) (define-syntax m (syntax-rules () ((_) 'repl))) (import (t n)) (list (m) (u))
 (repl library)
 
 # ライブラリの本体は、インポートしたマクロを `define-syntax` で再定義できない。
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (sucheme core) (t m)) (begin (define-syntax m (syntax-rules () ((_) 2)))))
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (scheme base) (t m)) (begin (define-syntax m (syntax-rules () ((_) 2)))))
 error: bad define-syntax: m is an imported binding and cannot be redefined
 
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (sucheme core) (t m)) (begin (define m 2)))
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (scheme base) (t m)) (begin (define m 2)))
 error: bad define: m is an imported binding and cannot be redefined
 
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (sucheme core) (t m)) (begin (set! m 2)))
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (scheme base) (t m)) (begin (set! m 2)))
 error: bad set!: m is a syntactic keyword and cannot be assigned
 
 # インポートしたマクロは、変数としては使えない。
-(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (import (t m)) m
+(define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (import (t m)) m
 error: m is a syntactic keyword and cannot be used as a variable

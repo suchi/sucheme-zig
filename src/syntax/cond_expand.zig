@@ -82,13 +82,14 @@ fn isKeyword(ctx: *const Context, id: Value, spelling: []const u8) bool {
     return std.mem.eql(u8, ctx.heap.symbols.nameOf(syntax_env.baseSymbol(id)), spelling);
 }
 
-/// Whether the library `name` can be imported: `(sucheme core)`, a library that is
-/// defined, or one whose file is beneath a root.
+/// Whether the library `name` can be imported: `(sucheme core)` where the program may
+/// import it, a library that is defined, or one whose file is beneath a root.
 /// Why: ファイルは、開けることだけを調べ、読まない。読むと本体を走らせてしまい、要求を
 /// 評価しただけで副作用が起きる。
 fn libraryAvailable(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!bool {
     try library.checkName(ctx, name);
-    if (library.isCoreName(ctx, name) or ctx.libraries.find(name) != null) return true;
+    if (library.isCoreName(ctx, name)) return ctx.coreImportable();
+    if (ctx.libraries.find(name) != null) return true;
     const opened = resolve.openLibrary(ctx.files, ctx.embedded, scratch, &ctx.heap.symbols, name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return false,
