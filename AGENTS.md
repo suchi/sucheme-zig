@@ -117,6 +117,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - チャットで PR や Issue に触れるときは、初出でも2回目以降でも、毎回 Markdown のリンクで書く(例: `[suchi/sucheme-zig#123](https://github.com/suchi/sucheme-zig/pull/123)`)。`#123` だけの短い参照は書かない。同じ報告に同じ PR が何度も出ても、省略しない。リポジトリの外に残る文(PR・Issue の本文、コミットメッセージ)は、リンクの代わりに `owner/repo#番号` の形で書いてよい(自動でリンクになるため)。
 - ユーザーのターンの中断を受けたら、ユーザーの発言への応答のあとで、[.agents/skills/watch-subagent/SKILL.md](.agents/skills/watch-subagent/SKILL.md) の「中断を受けたとき」に従う。中断で動いているサブエージェントが止められる、という前提と、手順の本文は、そちらを正とし、ここに複製しない。
 - 10分を超えそうな用事(敵対的レビューなど)は、別セッションに任せる。バックグラウンドのサブエージェントや別セッションに用事を任せたら、[.agents/skills/watch-subagent/SKILL.md](.agents/skills/watch-subagent/SKILL.md) に従って生存確認を予約する。完了通知が来ないことを、実行中の根拠にしない。
+- 複数の作業を並行に進める運用(レーン、軽量・標準・上位の担当階層と上の階層への引き継ぎ、子セッションへの依頼文に書く項目、10分ごとの巡回を1本にすること、同時に読む PR と子セッションの上限、ローカルのビルドの同時数)は、[docs/plans/0017-parallel-lanes.md](docs/plans/0017-parallel-lanes.md) が正である。ここに複製しない。親のセッションは、担当の起動、順序と競合の確認、ユーザーへの報告に徹する。
 - 状況を一覧で知りたいとき、またはユーザーが判断すべきこと(マージ・承認・判断)をまとめて示したいときは、[.agents/skills/briefing/SKILL.md](.agents/skills/briefing/SKILL.md)(`/briefing`)に従う。PR・Issue・別セッション・サブエージェントの進行と、ユーザーがやることを1画面で報告する。
 - 作業ブロックに入る前に、そこで打つ予定のコマンドを列挙して1回でまとめて許可を得る。報告と承認依頼には「全体計画のどの手順の、何件中の何件目か」を書く。
 - 新しいセッションや別のエージェントは、最初に[docs/handoff.md](docs/handoff.md)を読む。作業を続けるのに要る、進め方の実際、環境の癖、判断の履歴、ユーザーに確認したい進め方がある。進捗の正は`docs/roadmap.md`の「現在地」と`docs/plans/`で、`handoff.md`には書かない。
