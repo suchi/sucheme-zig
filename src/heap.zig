@@ -26,6 +26,10 @@ const Bytevector = value_mod.Bytevector;
 const Record = value_mod.Record;
 const RecordType = value_mod.RecordType;
 const MultipleValues = value_mod.MultipleValues;
+const Bignum = value_mod.Bignum;
+const Ratnum = value_mod.Ratnum;
+const Compnum = value_mod.Compnum;
+const Limb = value_mod.Limb;
 const symbol = @import("symbol.zig");
 const SymbolId = symbol.SymbolId;
 const trace = @import("trace.zig");
@@ -368,7 +372,7 @@ pub fn cellBytes(comptime T: type) usize {
 
 /// The bytes the object owns beyond its cell: the slots of a frame, the bytes
 /// of a string, the elements of a vector, the fields of a record, the values of
-/// a multiple-values object.
+/// a multiple-values object, the limbs of a bignum.
 /// ペイロードはセルとは別に確保され、セルと一緒に返される。
 fn payloadBytes(comptime T: type, object: *const T) usize {
     return switch (T) {
@@ -378,6 +382,7 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Bytevector => object.bytes.len,
         Record => object.fields.len * @sizeOf(Value),
         MultipleValues => object.items.len * @sizeOf(Value),
+        Bignum => object.limbs.len * @sizeOf(Limb),
         else => 0,
     };
 }
@@ -657,6 +662,20 @@ pub const Heap = struct {
         return self.linkBytevector(bytes, total);
     }
 
+    /// A new bignum of a copy of the limbs and the sign of `n`.
+    /// 限界値列のコピーがペイロードで、先に確保し、セルを確保できなければ返す。
+    /// `createBytevector` と同じ単位である。`n` が正規化されていること(上位の限界値が
+    /// 0 でないこと、`i64` に収まらないこと)は、呼び出し側の src/num/ が保証する。
+    pub fn createBignum(self: *Heap, n: std.math.big.int.Const) Error!*Bignum {
+        const total = try self.reserveWithPayload(.limit, Bignum, n.limbs.len, @sizeOf(Limb));
+        const copy = try self.backing.dupe(Limb, n.limbs);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(Bignum));
+        cell.value = .{ .limbs = copy, .positive = n.positive };
+        self.link(Bignum, cell, total);
+        return &cell.value;
+    }
+
     /// Puts `bytes`, which the bytevector will own, in a new cell.
     /// セルを確保できなければ、呼び出し側の `errdefer` がペイロードを返す。
     fn linkBytevector(self: *Heap, bytes: []u8, total: usize) Error!*Bytevector {
@@ -840,6 +859,7 @@ pub const Heap = struct {
                     Bytevector => self.backing.free(cell.value.bytes),
                     Record => self.backing.free(cell.value.fields),
                     MultipleValues => self.backing.free(cell.value.items),
+                    Bignum => self.backing.free(cell.value.limbs),
                     else => {},
                 }
                 self.backing.destroy(cell);
@@ -1965,4 +1985,67 @@ test "createBytevectorFilled reserves the bytes before it fills them, and accoun
     try std.testing.expectEqual(cellBytes(Bytevector) + 2, heap.accounted);
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a bignum accounts for its limbs as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]Limb{ 7, 1 };
+    const b = try heap.createBignum(.{ .limbs = &source, .positive = false });
+    source[0] = 9;
+    try std.testing.expectEqualSlices(Limb, &.{ 7, 1 }, b.limbs);
+    try std.testing.expect(!b.positive);
+    try std.testing.expectEqual(cellBytes(Bignum) + 2 * @sizeOf(Limb), heap.accounted);
+}
+
+test "a collection keeps a bignum a ratnum or a compnum reaches, and frees it with its limbs once nothing does" {
+    for ([_]usize{ 0, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const limbs = [_]Limb{ 7, 1 };
+        const b = try heap.createBignum(.{ .limbs = &limbs, .positive = true });
+        const big = cellBytes(Bignum) + 2 * @sizeOf(Limb);
+        const r = try heap.create(Ratnum, .{ .numerator = .fromBignum(b), .denominator = .fromFixnum(3) });
+        heap.collect(TestRoots{ .values = &.{.fromRatnum(r)} });
+        try std.testing.expectEqual(2, heap.count);
+        try std.testing.expectEqual(cellBytes(Ratnum) + big, heap.accounted);
+        try std.testing.expectEqualSlices(Limb, &limbs, b.limbs);
+        // 実部でも虚部でも、たどる。
+        for ([_]bool{ false, true }) |in_imag| {
+            const part: Value = .fromBignum(b);
+            const c = try heap.create(Compnum, if (in_imag)
+                .{ .real = .fromFixnum(0), .imag = part }
+            else
+                .{ .real = part, .imag = .fromFlonum(1.0) });
+            heap.collect(TestRoots{ .values = &.{.fromCompnum(c)} });
+            try std.testing.expectEqual(2, heap.count);
+            try std.testing.expectEqual(cellBytes(Compnum) + big, heap.accounted);
+        }
+        // 何からも届かなければ、限界値列ごと計上から外れる。
+        heap.collect(TestRoots{});
+        try std.testing.expectEqual(0, heap.count);
+        try std.testing.expectEqual(0, heap.accounted);
+    }
+}
+
+test "a bignum is held to the limit by its limbs, and a failure leaves the account as it was" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Bignum) + 2 * @sizeOf(Limb) });
+    defer heap.deinit();
+    const three = [_]Limb{ 1, 2, 3 };
+    try std.testing.expectError(error.HeapLimit, heap.createBignum(.{ .limbs = &three, .positive = true }));
+    try std.testing.expectEqual(0, heap.accounted);
+    _ = try heap.createBignum(.{ .limbs = three[0..2], .positive = true });
+    try std.testing.expectEqual(cellBytes(Bignum) + 2 * @sizeOf(Limb), heap.accounted);
+}
+
+test "when the cell cannot be allocated the limbs of a bignum are given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    // 1回目の確保は限界値列、2回目はセルで、これが失敗する。
+    const limbs = [_]Limb{ 1, 2 };
+    try std.testing.expectError(error.OutOfMemory, heap.createBignum(.{ .limbs = &limbs, .positive = true }));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(1, failing.deallocations);
 }
