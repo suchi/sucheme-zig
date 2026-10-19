@@ -247,6 +247,46 @@ test "a request the backing refuses is not left charged" {
     try std.testing.expect(!heap.external_refused);
 }
 
+test "the resident allocator counts against the limit at all times, and gives back what is freed" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Pair) * 4 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    // 展開の計上と違い、検査を始める印が無くても、上限に入る。
+    try std.testing.expect(!heap.external_enforced);
+    // 伸ばすと差分だけ、縮めると差分を戻す。
+    var block = try a.alloc(u8, cellBytes(Pair) * 3);
+    block = try a.realloc(block, cellBytes(Pair) * 2);
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.resident);
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.held());
+    try std.testing.expectEqual(0, heap.external);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    try std.testing.expectError(error.HeapLimit, heap.cons(.empty_list_value, .empty_list_value));
+    // 上限を超える要求は断り、断ったことを残す。計上は変わらない。
+    try std.testing.expect(!heap.external_refused);
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 1));
+    try std.testing.expect(heap.external_refused);
+    try std.testing.expectError(error.OutOfMemory, a.realloc(block, cellBytes(Pair) * 3));
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.resident);
+    a.free(block);
+    try std.testing.expectEqual(0, heap.resident);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+}
+
+test "a collection keeps the resident account, and counts it as live" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20, .min_threshold = 1 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    const block = try a.alloc(u8, 4096);
+    defer a.free(block);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    heap.collect(TestRoots{});
+    // ペアは回収され、常駐の分は残る。次の GC の閾値は、残った分から決まる。
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(4096, heap.held());
+    try std.testing.expectEqual(4096 * 2, heap.threshold);
+}
+
 test "max_host_limit is 1 GiB" {
     // 値そのものを固定する。大きくすると、wasm32 で 4 GiB に近い上限が通り、
     // 上限に届く前に実メモリが尽きて trap する(`max_host_limit` の説明を参照)。
@@ -443,7 +483,16 @@ pub const Heap = struct {
     external_enforced: bool = false,
     /// Whether a charge was refused for want of room under the limit, since
     /// whoever started the expansion last cleared it.
+    /// 常駐の割り当て器(`residentAllocator`)が断ったときも立てる。どちらの断りも、呼び出し側
+    /// には `error.OutOfMemory` に見えるので、これで上限の超過と見分ける。
     external_refused: bool = false,
+    /// The bytes outside the heap that count against the limit at all times:
+    /// the tables of the bindings of the top levels and the registry of the
+    /// libraries (`residentAllocator`).
+    /// Why: 表は、セッションの間ずっと残り、インポートした名前の数に比例して伸びる。展開の
+    /// 計上(`external`)と違い、1行ごとに戻すと、上限の外で伸び続ける(ADR-0040)。GC が
+    /// 回収しないので、生きている量として `held` に入れる。
+    resident: usize = 0,
     /// The symbols: each name is interned once, and named by a `SymbolId`.
     symbols: symbol.Table = .{},
 
@@ -728,7 +777,67 @@ pub const Heap = struct {
     /// The bytes the heap accounts for: the objects, and the symbols a collection
     /// may reclaim. The limit and the threshold are held to this.
     pub fn held(self: *const Heap) usize {
-        return self.accounted +| self.symbols.charged;
+        return self.accounted +| self.symbols.charged +| self.resident;
+    }
+
+    /// An allocator whose requests count against the limit for as long as they
+    /// are held, on `backing`.
+    /// 上限に収まらない要求は `null` を返して断り、`external_refused` を立てる。下の割り当て器は
+    /// 個別に解放できるものでなければならない(アリーナでは、伸ばした表の古い領域が残り、
+    /// 戻した計上が実際より少なくなる)。ヒープを動かすと、作った割り当て器は使えなくなる。
+    pub fn residentAllocator(self: *Heap) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = residentAlloc,
+            .resize = residentResize,
+            .remap = residentRemap,
+            .free = residentFree,
+        } };
+    }
+
+    /// Counts `bytes` more as resident, or refuses them and notes that it did.
+    fn chargeResident(self: *Heap, bytes: usize) error{HeapLimit}!void {
+        self.reserve(.limit, bytes) catch |e| {
+            self.external_refused = true;
+            return e;
+        };
+        self.resident += bytes;
+    }
+
+    fn residentAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        self.chargeResident(len) catch return null;
+        return self.backing.rawAlloc(len, alignment, ret_addr) orelse {
+            self.resident -= len;
+            return null;
+        };
+    }
+
+    fn residentResize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        if (new_len > memory.len) self.chargeResident(new_len - memory.len) catch return false;
+        if (!self.backing.rawResize(memory, alignment, new_len, ret_addr)) {
+            if (new_len > memory.len) self.resident -= new_len - memory.len;
+            return false;
+        }
+        if (new_len < memory.len) self.resident -= memory.len - new_len;
+        return true;
+    }
+
+    fn residentRemap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        if (new_len > memory.len) self.chargeResident(new_len - memory.len) catch return null;
+        const moved = self.backing.rawRemap(memory, alignment, new_len, ret_addr) orelse {
+            if (new_len > memory.len) self.resident -= new_len - memory.len;
+            return null;
+        };
+        if (new_len < memory.len) self.resident -= memory.len - new_len;
+        return moved;
+    }
+
+    fn residentFree(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        self.backing.rawFree(memory, alignment, ret_addr);
+        self.resident -= memory.len;
     }
 
     /// Frees every object that cannot be reached from `roots`.
