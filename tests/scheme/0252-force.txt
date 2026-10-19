@@ -1,3 +1,4 @@
+# env: core
 # スライス 3f: `force`(R7RS 4.2.5)。値を一度だけ計算して覚えること、`delay-force` の連鎖を
 # 反復で解くこと、再入に対して正しいこと、強制するときの動的環境で手続きが走ること。
 # `lazy` と `lazy-force` は、R7RS 7.3 の `delay` と `delay-force` の展開を、構文は 3j が足すので、

@@ -26,7 +26,7 @@ error: unknown library: (foo bar.): a library with that name cannot be a file, b
 error: unknown library: (foo .bar): a library with that name cannot be a file, because a component starts or ends with a dot
 
 # 定義したライブラリは、ファイルの名前にならない名前でも、ファイルを探さずに見つかる。
-(define-library (CON) (export f) (import (sucheme core)) (begin (define (f) 1))) (import (CON)) (f)
+(define-library (CON) (export f) (import (scheme base)) (begin (define (f) 1))) (import (CON)) (f)
 1
 
 # 名前の形の誤りは、ファイルを探す前に、名前の誤りとして報告される。

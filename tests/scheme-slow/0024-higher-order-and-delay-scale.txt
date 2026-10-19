@@ -6,11 +6,11 @@
 # ランナーの上限は 64 MiB である。
 
 # 構文の `delay-force` を100万回反復する。連鎖の途中の約束はごみになる。
-(import (sucheme derived)) (define (count-to n acc) (delay-force (if (= n 0) (delay acc) (count-to (- n 1) (+ acc 1))))) (force (count-to 1000000 0))
+(import (sucheme derived) (scheme lazy)) (define (count-to n acc) (delay-force (if (= n 0) (delay acc) (count-to (- n 1) (+ acc 1))))) (force (count-to 1000000 0))
 1000000
 
 # R7RS 4.2.5 の `stream-filter` に当たる反復。ストリームを先へ進めながら、先頭を捨てる。
-(import (sucheme derived)) (define (from n) (delay (cons n (from (+ n 1))))) (define (drop s k) (delay-force (if (= k 0) s (delay-force (drop (cdr (force s)) (- k 1)))))) (car (force (drop (from 0) 200000)))
+(import (sucheme derived) (scheme lazy)) (define (from n) (delay (cons n (from (+ n 1))))) (define (drop s k) (delay-force (if (= k 0) s (delay-force (drop (cdr (force s)) (- k 1)))))) (car (force (drop (from 0) 200000)))
 200000
 
 # 25万要素のベクタに `vector-map` を使う。結果と複製とで、ベクタが2つ作られる。

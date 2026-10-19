@@ -9,8 +9,8 @@
 (define-library (t a) (export)) (define-library (t a) (export))
 error: bad define-library: the library (t a) is already defined
 
-(define-library (sucheme core) (export))
-error: bad define-library: the library (sucheme core) is already defined
+(define-library (scheme base) (export))
+error: bad define-library: the library (scheme base) is already defined
 
 # 自分自身を、本体の処理中にインポートすることは、循環である。
 (define-library (t a) (export) (import (t a)))
@@ -75,58 +75,58 @@ error: bad export: expected an identifier or (rename <internal> <external>)
 error: bad define-library: expected a proper list
 
 # 同じ外の名前に、別の束縛をエクスポートすることはできない。同じ束縛なら構わない。
-(define-library (t a) (export (rename a x) (rename b x)) (import (only (sucheme core) define)) (begin (define a 1) (define b 2)))
+(define-library (t a) (export (rename a x) (rename b x)) (import (only (scheme base) define)) (begin (define a 1) (define b 2)))
 error: bad export: x is exported twice with different bindings
 
-(define-library (t a) (export a (rename a a) (rename a a)) (import (only (sucheme core) define)) (begin (define a 1)))
+(define-library (t a) (export a (rename a a) (rename a a)) (import (only (scheme base) define)) (begin (define a 1)))
 <no output>
 
 # R7RS 5.2: ライブラリの本体で、インポートした束縛を再定義することと、それに代入することは誤りである。
-(define-library (t a) (export) (import (sucheme core)) (begin (define car 1)))
+(define-library (t a) (export) (import (scheme base)) (begin (define car 1)))
 error: bad define: car is an imported binding and cannot be redefined
 
-(define-library (t a) (export) (import (sucheme core)) (begin (define (car x) x)))
+(define-library (t a) (export) (import (scheme base)) (begin (define (car x) x)))
 error: bad define: car is an imported binding and cannot be redefined
 
-(define-library (t a) (export) (import (sucheme core)) (begin (set! car 1)))
+(define-library (t a) (export) (import (scheme base)) (begin (set! car 1)))
 error: bad set!: car is an imported binding and cannot be assigned
 
-(define-library (t a) (export) (import (sucheme core)) (begin (define if 1)))
+(define-library (t a) (export) (import (scheme base)) (begin (define if 1)))
 error: bad define: if is an imported binding and cannot be redefined
 
-(define-library (t a) (export) (import (sucheme core)) (begin (set! if 1)))
+(define-library (t a) (export) (import (scheme base)) (begin (set! if 1)))
 error: bad set!: if is a syntactic keyword and cannot be assigned
 
-(define-library (t a) (export) (import (sucheme core)) (begin (define-syntax car (syntax-rules () ((_) 1)))))
+(define-library (t a) (export) (import (scheme base)) (begin (define-syntax car (syntax-rules () ((_) 1)))))
 error: bad define-syntax: car is an imported binding and cannot be redefined
 
-(define-library (t a) (export) (import (sucheme core)) (begin (define else 1)))
+(define-library (t a) (export) (import (scheme base)) (begin (define else 1)))
 error: bad define: else is an imported binding and cannot be redefined
 
 # ほかのライブラリからインポートした変数も同じである。
-(define-library (t a) (export x) (import (sucheme core)) (begin (define x 1))) (define-library (t b) (export) (import (sucheme core) (t a)) (begin (set! x 2)))
+(define-library (t a) (export x) (import (scheme base)) (begin (define x 1))) (define-library (t b) (export) (import (scheme base) (t a)) (begin (set! x 2)))
 error: bad set!: x is an imported binding and cannot be assigned
 
-(define-library (t a) (export x) (import (sucheme core)) (begin (define x 1))) (define-library (t b) (export) (import (sucheme core) (t a)) (begin (define x 2)))
+(define-library (t a) (export x) (import (scheme base)) (begin (define x 1))) (define-library (t b) (export) (import (scheme base) (t a)) (begin (define x 2)))
 error: bad define: x is an imported binding and cannot be redefined
 
 # 同じ識別子を別の束縛で2回インポートすることは誤りである。
-(define-library (t a) (export) (import (sucheme core) (rename (only (sucheme core) cdr) (cdr car))))
+(define-library (t a) (export) (import (scheme base) (rename (only (scheme base) cdr) (cdr car))))
 error: bad import: car is imported twice with different bindings
 
-(define-library (t a) (export f) (import (sucheme core)) (begin (define (f) 1))) (define-library (t b) (export f) (import (sucheme core)) (begin (define (f) 2))) (define-library (t c) (export) (import (t a) (t b)))
+(define-library (t a) (export f) (import (scheme base)) (begin (define (f) 1))) (define-library (t b) (export f) (import (scheme base)) (begin (define (f) 2))) (define-library (t c) (export) (import (t a) (t b)))
 error: bad import: f is imported twice with different bindings
 
 # 本体が先に定義した名前をインポートすることは誤りである。
-(define-library (t a) (export) (import (only (sucheme core) define)) (begin (define car 1)) (import (only (sucheme core) car)))
+(define-library (t a) (export) (import (only (scheme base) define)) (begin (define car 1)) (import (only (scheme base) car)))
 error: bad import: car is defined in this library, and cannot be imported
 
 # 本体のフォームの誤りは、展開の誤りも実行の誤りも、そのまま報告される。
-(define-library (t a) (export) (import (sucheme core)) (begin (define x (car 5))))
+(define-library (t a) (export) (import (scheme base)) (begin (define x (car 5))))
 error: wrong type of argument to car 5
 
-(define-library (t a) (export) (import (sucheme core)) (begin (if)))
+(define-library (t a) (export) (import (scheme base)) (begin (if)))
 error: bad if: expected (if test consequent) or (if test consequent alternative)
 
-(define-library (t a) (export) (import (sucheme core)) (begin (import (t a))))
+(define-library (t a) (export) (import (scheme base)) (begin (import (t a))))
 error: unbound variable: import

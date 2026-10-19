@@ -15,6 +15,11 @@
 //!
 //! 何も出力しないケースは、期待する行として `<no output>` と書く。
 //!
+//! ファイルのどこかに `# env: core` だけの行があると、そのファイルのケースはすべて、
+//! `(sucheme core)` を直接見る最上位で走る。標準ライブラリが輸出しない内部の名前
+//! (`%make-record-type` など)を直接呼ぶ、低水準のプリミティブのテストのためである。
+//! 指示のないファイルは、REPL と同じ標準の環境(`(scheme base)`)で走る。
+//!
 //! エラーは出力の一部である。その行がエラーより前に出力したものの後に、
 //! REPL が出すとおり、`error: ` とインタプリタのメッセージが続く。
 //!
@@ -109,6 +114,9 @@ pub fn main(init: std.process.Init) !void {
                 },
                 error.OutOfMemory => return e,
             };
+            if (hasCoreDirective(body)) for (cases.items) |*c| {
+                c.core = true;
+            };
             // ケースのないファイルは、ファイルが欠けているのと同じくらい疑わしい。
             // コメントだけのファイルや、すべてをコメントとして解析してしまう形式の
             // 変更が考えられる。
@@ -156,7 +164,22 @@ const Case = struct {
     input: []const u8,
     /// The expected lines joined with `\n`, without a trailing newline.
     expected: []const u8,
+    /// Whether the case runs at a top level that sees `(sucheme core)` itself
+    /// (`# env: core` in its file), and not the standard environment.
+    core: bool = false,
 };
+
+/// The line of a test file that asks for the top level that sees `(sucheme core)`.
+const core_directive = "# env: core";
+
+/// Whether `body` has the line `core_directive`.
+fn hasCoreDirective(body: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |l| {
+        if (std.mem.eql(u8, std.mem.trimEnd(u8, l, "\r"), core_directive)) return true;
+    }
+    return false;
+}
 
 /// Splits a test file into its cases.
 ///
@@ -226,6 +249,17 @@ fn runCase(gpa: std.mem.Allocator, c: Case) error{OutOfMemory}!?[]const u8 {
 }
 
 fn runCaseWith(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) error{OutOfMemory}!?[]const u8 {
+    const got = try evaluate(gpa, options, c);
+    if (std.mem.eql(u8, got, c.expected)) {
+        gpa.free(got);
+        return null;
+    }
+    return got;
+}
+
+/// The text a case prints: what the input writes, then the error if it ends with one.
+/// The result is a copy in `gpa`.
+fn evaluate(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) error{OutOfMemory}![]const u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
@@ -235,7 +269,7 @@ fn runCaseWith(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) e
     // アロケータが要る。`gpa` はアリーナであり、返さない。デバッグビルドの
     // 汎用アロケータは確保のたびにスタックトレースを記録し、100万回の呼び出しの
     // ループに数分かかってしまう。
-    try interp.initWithOptions(std.heap.smp_allocator, options);
+    if (c.core) try interp.initCoreWithOptions(std.heap.smp_allocator, options) else try interp.initWithOptions(std.heap.smp_allocator, options);
     defer interp.deinit();
     interp.evalPrint(arena.allocator(), c.input, &out.writer) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -246,10 +280,14 @@ fn runCaseWith(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) e
     };
     // evalPrint はすべての結果を改行で終える。期待するテキストは、最後の行の
     // 後に改行を持たない。
+    return try gpa.dupe(u8, std.mem.trimEnd(u8, out.written(), "\n"));
+}
 
-    const got = std.mem.trimEnd(u8, out.written(), "\n");
-    if (std.mem.eql(u8, got, c.expected)) return null;
-    return try gpa.dupe(u8, got);
+test "a file asks for the top level that sees core with a line of its own" {
+    try std.testing.expect(hasCoreDirective("# comment\n# env: core\n\n(+ 1 2)\n3\n"));
+    try std.testing.expect(hasCoreDirective("# env: core\r\n(+ 1 2)\r\n3\r\n"));
+    try std.testing.expect(!hasCoreDirective("# env: core and more\n(+ 1 2)\n3\n"));
+    try std.testing.expect(!hasCoreDirective("(+ 1 2)\n3\n"));
 }
 
 test "parse reads an input and its expected line" {

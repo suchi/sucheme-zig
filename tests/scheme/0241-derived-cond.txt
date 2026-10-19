@@ -126,7 +126,7 @@ fallthrough
 2
 
 # ほかのライブラリが、`cond` を使う手続きを定義し、利用側が `else` を束縛していても影響されない。
-(define-library (t cond-user) (import (sucheme core) (sucheme derived)) (export pick) (begin (define (pick x) (cond ((= x 1) 'one) (else 'other))))) (import (t cond-user)) (define else #f) (list (pick 1) (pick 2))
+(define-library (t cond-user) (import (scheme base) (sucheme derived)) (export pick) (begin (define (pick x) (cond ((= x 1) 'one) (else 'other))))) (import (t cond-user)) (define else #f) (list (pick 1) (pick 2))
 (one other)
 
 # `cond` という名前の変数が、手続きの仮引数であってもよい。

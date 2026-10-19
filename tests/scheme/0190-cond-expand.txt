@@ -61,8 +61,8 @@ yes
 (cond-expand (r7rs 1 2 3))
 3
 
-# ライブラリ。(sucheme core) は常にインポートできる。定義されていないものは、できない。
-(cond-expand ((library (sucheme core)) 'yes) (else 'no))
+# ライブラリ。(scheme base) は常にインポートできる。定義されていないものは、できない。
+(cond-expand ((library (scheme base)) 'yes) (else 'no))
 yes
 
 (cond-expand ((library (no such library)) 'yes) (else 'no))
@@ -71,7 +71,7 @@ no
 (cond-expand ((not (library (no such library))) 'yes) (else 'no))
 yes
 
-(define-library (t here) (export) (import (sucheme core))) (cond-expand ((library (t here)) 'yes) (else 'no))
+(define-library (t here) (export) (import (scheme base))) (cond-expand ((library (t here)) 'yes) (else 'no))
 yes
 
 # 最上位では、本体の定義は最上位の定義になる。
