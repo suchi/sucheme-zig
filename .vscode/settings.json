@@ -1,6 +1,7 @@
 {
   "cSpell.words": [
     "anytype",
+    "bytevector",
     "Codepoint",
     "compnum",
     "comptime",
@@ -9,15 +10,22 @@
     "fixnum",
     "flonum",
     "foldcase",
+    "frob",
+    "frobnicate",
+    "getrlimit",
     "imag",
     "infnan",
     "interp",
     "kont",
     "letrec",
+    "memset",
     "mlugg",
+    "NOFILE",
     "ratnum",
+    "setrlimit",
     "SRFI",
     "sucheme",
-    "zigversion"
+    "zigversion",
+    "zork"
   ]
 }
