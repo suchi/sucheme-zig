@@ -289,6 +289,27 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+test "coreImportable is true only inside an embedded library, or when the context is open" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    // REPL の行は、`sources` に何も載せない。
+    try std.testing.expect(!ctx.coreImportable());
+    // 実ファイルのライブラリ。
+    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"a.sld"} });
+    try std.testing.expect(!ctx.coreImportable());
+    // 埋め込みのライブラリ。
+    try ctx.sources.append(ctx.persist, .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
+    try std.testing.expect(ctx.coreImportable());
+    // 一番内側が決める。埋め込みのライブラリが、実ファイルを含むことはないが、判定は内側だけを見る。
+    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"b.sld"} });
+    try std.testing.expect(!ctx.coreImportable());
+    ctx.sources.clearRetainingCapacity();
+    ctx.core_open = true;
+    try std.testing.expect(ctx.coreImportable());
+}
+
 test "raise keeps a condition with the message, and returns Raised" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
