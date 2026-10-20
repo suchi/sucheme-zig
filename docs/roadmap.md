@@ -179,7 +179,7 @@
 - [ ] 準拠マトリクスに、準拠スイート(`r7rs-tests.scm`)の結果の列を足す。`(scheme r5rs)` の再エクスポートによる識別子の重複は、この列を足すときに解く
 - [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消
 - [ ] 不合格項目の issue 化と解消
-- [ ] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
+- [x] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
 - [x] BSD 3条項の第3条項(名前の宣伝利用)について、出典として述べることと推奨として用いることの線を引く新ADRの作成([ADR-0022](adr/0022-unlicensed-proprietary.md))。記録形式が2つ併存することを定める件も同じ ADR で扱う。[ADR-0041](adr/0041-bsd-name-clause-attribution-not-endorsement.md) で決めた
 
 完了条件: 準拠マトリクスに `r7rs-tests.scm` の結果の列があり、その不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
