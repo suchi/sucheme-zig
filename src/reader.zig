@@ -323,7 +323,6 @@ pub const Reader = struct {
             }
         }
         // 閉じる前に入力が尽きた。REPL は続きの行を求める。
-        self.pos = self.src.len;
         return error.Incomplete;
     }
 
