@@ -1,7 +1,8 @@
 //! The external representation of a string (R7RS 6.7, 7.1.1): what the reader
 //! reads between double quotes and what `write` writes.
 //!
-//! 読みと書きをここにまとめてあるので、エスケープの表は1つである。
+//! 読みと書きをここにまとめてあるので、エスケープの表は1つである。縦棒で囲んだ識別子
+//! (`|a b|`)も同じエスケープを使うので、その名前を読む関数もここに置く。
 //!
 //! スライス1h(文字列)にあたる。リーダの `"` もプリンタも、このファイルを呼ぶ。
 
@@ -51,7 +52,7 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
         i += 1;
         switch (c) {
             '"' => break,
-            '\\' => try readEscape(src, &i, scratch, &bytes),
+            '\\' => try readEscape(src, &i, scratch, &bytes, .string),
             // Why: R7RS 6.7 は、エスケープでない行の終わりを、綴り(LF、CR LF、CR)に
             // よらず `\n` 1文字と同じにする。
             '\r' => {
@@ -70,11 +71,42 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
     return .fromString(s);
 }
 
+/// Reads the identifier written between vertical lines that starts at
+/// `src[pos.*]`, which is the opening `|`, moves `pos` past the closing one, and
+/// returns the bytes of its name, which `scratch` holds.
+///
+/// R7RS 7.1.1 の `|` <symbol element>* `|` である。`|` と `\` のほかの文字は、生の行の
+/// 終わりも含めて、そのまま名前に入る。エスケープは文字列と同じだが、行継続は無い(R7RS 2.1
+/// は文字列と同じエスケープを許すとし、7.1.1 の <symbol element> は行継続を挙げない)。
+/// エラーのときは `pos` を元の位置のままにする。
+pub fn readIdentifier(src: []const u8, pos: *usize, scratch: std.mem.Allocator) ReadError![]const u8 {
+    std.debug.assert(src[pos.*] == '|');
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(scratch);
+    var i = pos.* + 1;
+    while (true) {
+        if (i >= src.len) return error.Incomplete;
+        const c = src[i];
+        i += 1;
+        switch (c) {
+            '|' => break,
+            '\\' => try readEscape(src, &i, scratch, &bytes, .identifier),
+            else => try bytes.append(scratch, c),
+        }
+    }
+    if (!std.unicode.utf8ValidateSlice(bytes.items)) return error.InvalidUtf8;
+    pos.* = i;
+    return bytes.toOwnedSlice(scratch);
+}
+
+/// What an escape is read inside.
+const Literal = enum { string, identifier };
+
 /// Reads the escape whose backslash has just been read, and appends what it
 /// stands for to `bytes`.
 ///
-/// `i` はバックスラッシュの次の添字である。
-fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *std.ArrayList(u8)) ReadError!void {
+/// `i` はバックスラッシュの次の添字である。行継続は文字列の中でだけ読む。
+fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *std.ArrayList(u8), literal: Literal) ReadError!void {
     if (i.* >= src.len) return error.Incomplete;
     const c = src[i.*];
     i.* += 1;
@@ -86,7 +118,7 @@ fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *st
         'r' => '\r',
         '"', '\\', '|' => c,
         'x' => return readHexEscape(src, i, scratch, bytes),
-        ' ', '\t', '\n', '\r' => return skipLineContinuation(src, i),
+        ' ', '\t', '\n', '\r' => if (literal == .string) return skipLineContinuation(src, i) else return error.InvalidEscape,
         else => return error.InvalidEscape,
     };
     try bytes.append(scratch, byte);

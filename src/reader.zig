@@ -1,6 +1,6 @@
 //! Reads the external representation of data (R7RS 7.1.2).
 //!
-//! 読むのは、10 進整数、真偽値、識別子、文字、文字列、丸括弧のリスト、ベクタ、`'` と
+//! 読むのは、10 進整数、真偽値、識別子(縦棒で囲んだものを含む)、文字、文字列、丸括弧のリスト、ベクタ、`'` と
 //! `` ` `` と `,` と `,@` の略記である。行コメント、入れ子のブロックコメント `#|` `|#`、
 //! データコメント `#;` を読み飛ばす。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と
 //! 文字名を小文字にする。指令 `#!fold-case` と `#!no-fold-case` が、この状態を切り替える。
@@ -44,6 +44,9 @@ pub const SyntaxError = error{
     InvalidToken,
     /// A string with a backslash that begins no escape (src/string_syntax.zig).
     InvalidEscape,
+    /// An identifier between vertical lines with a backslash that begins no
+    /// escape (src/string_syntax.zig).
+    InvalidSymbolEscape,
     /// A `#\` that does not begin a character (src/char_syntax.zig).
     InvalidCharacter,
     /// Input that is not valid UTF-8: the whole input, or, when the reader is used
@@ -75,6 +78,7 @@ pub fn describe(e: SyntaxError) []const u8 {
         error.MissingCommentedDatum => "datum comment needs a datum",
         error.UnexpectedDot => "unexpected .",
         error.InvalidEscape => "invalid escape in string",
+        error.InvalidSymbolEscape => "invalid escape in identifier",
         error.InvalidCharacter => "invalid character",
         error.InvalidUtf8 => "invalid UTF-8 input",
         error.InvalidToken => "unreadable token",
@@ -191,6 +195,15 @@ pub const Reader = struct {
                     continue;
                 } else try self.atom(scratch, sink),
                 '"' => try string_syntax.read(self.src, &self.pos, scratch, sink.heap),
+                // Why: 縦棒の識別子は、書かれたとおりの名前である。畳み込む読み手でも
+                // `folded` を通さない(下の `folded` の doc コメント)。
+                '|' => blk: {
+                    const name = string_syntax.readIdentifier(self.src, &self.pos, scratch) catch |e| switch (e) {
+                        error.InvalidEscape => return error.InvalidSymbolEscape,
+                        else => |other| return other,
+                    };
+                    break :blk .fromSymbol(try sink.heap.intern(name));
+                },
                 '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos, self.fold_case)) else if (self.atVectorOpen()) {
                     self.pos += 2;
                     try open.append(scratch, .{ .vector = .empty });
@@ -348,7 +361,8 @@ pub const Reader = struct {
         const start = self.pos;
         while (self.pos < self.src.len and !isDelimiter(self.src[self.pos])) self.pos += 1;
         if (self.pos == start) {
-            // 今のリーダが読まない区切り文字: `|`。
+            // 区切り文字は、どれも `next` と `skipAtmosphere` が先に扱うので、ここには来ない
+            // はずである。来たら、同じ位置で止まり続けないよう、1文字進めて誤りにする。
             self.pos += 1;
             return error.InvalidToken;
         }
@@ -366,8 +380,9 @@ pub const Reader = struct {
     /// The identifier `token` as this reader reads it: folded to lower case when the
     /// reader folds case.
     /// ASCII の大文字を含まなければ、そのまま返す。確保するのは、含むときだけである。
-    /// Why: このリーダが識別子として読むのは ASCII だけなので、畳み込みは ASCII の小文字化で
-    /// 足りる。ASCII でない文字を識別子に許すときは、畳み込みの表(段階4)が要る。許すだけで
+    /// Why: このリーダが区切り文字までのトークンとして識別子を読むのは ASCII だけなので、
+    /// 畳み込みは ASCII の小文字化で足りる。縦棒の識別子は ASCII でない文字を含みうるが、
+    /// 畳み込まないので、ここを通らない。ASCII でない文字を識別子に許すときは、畳み込みの表(段階4)が要る。許すだけで
     /// 畳み込みを直さないと、畳み込むべき識別子がそのまま通り、原因の分からない未束縛の変数に
     /// なるので、ここで止める。
     fn folded(self: *const Reader, scratch: std.mem.Allocator, token: []const u8) Error![]const u8 {
@@ -527,6 +542,12 @@ test "isIncomplete asks for more input only for an unfinished datum" {
         .{ "#;1", false },
         .{ "#;(a) b", false },
         .{ "(a #;)", false },
+        // 縦棒の識別子が閉じていない。閉じたものと、エスケープの誤りは完結している。
+        .{ "|abc", true },
+        .{ "(a |b c", true },
+        .{ "|a b|", false },
+        .{ "(a |b) c|", true },
+        .{ "|\\q|", false },
         // 指令はコメントと同じく、それだけでは何も開かない。
         .{ "#!fold-case", false },
         .{ "#!fold-case (a", true },
@@ -640,6 +661,7 @@ fn isUnsupportedNumber(token: []const u8) bool {
 }
 
 // Why: R7RS 7.1.1 の <identifier> を、ASCII に限り、`|...|` の形を除いて実装している。
+// `|...|` の形は `next` が `string_syntax.readIdentifier` で読む。
 // <initial> に <subsequent> が続くものか、<peculiar identifier> である。整数は、
 // これを尋ねる前に判別してあり、識別子の形をしたほかの数は `isUnsupportedNumber` が
 // 引き受ける。
@@ -955,7 +977,7 @@ test "next reports a quote with nothing to quote" {
 test "next rejects text that is neither an integer, a boolean nor an identifier" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", "|x|", "+.1", "a'b" }) |src| {
+    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", "+.1", "a'b" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
 }
@@ -1066,8 +1088,88 @@ test "next asks for more input inside a block comment" {
     for ([_][]const u8{ "#|", "#| x", "#| #| x |#", "(1 #| x", "#| x |" }) |src| {
         try std.testing.expectError(error.Incomplete, f.readOne(src));
     }
-    // 閉じる記号だけでは、コメントを始めない。
-    try std.testing.expectError(error.InvalidToken, f.readOne("|# 1"));
+    // 閉じる記号だけでは、コメントを始めない。`|` は縦棒の識別子を始め、閉じていない。
+    try std.testing.expectError(error.Incomplete, f.readOne("|# 1"));
+}
+
+test "next reads an identifier between vertical lines as the symbol of the characters between them" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    const Case = struct { []const u8, []const u8 };
+    // R7RS 2.1 の例と、7.1.1 の <symbol element> のエスケープ。
+    for ([_]Case{
+        .{ "|a b|", "a b" },
+        .{ "||", "" },
+        .{ "|H\\x65;llo|", "Hello" },
+        .{ "|\\x3BB;|", "\u{3bb}" },
+        .{ "|\\t\\t|", "\t\t" },
+        .{ "|\\x9;\\x9;|", "\t\t" },
+        .{ "|a\\|b|", "a|b" },
+        .{ "|\\a\\b\\n\\r|", "\x07\x08\n\r" },
+        // R7RS 2.1 の本文は、文字列と同じエスケープを許すとしている。
+        .{ "|\\\"\\\\|", "\"\\" },
+        // 空白、括弧、引用符、`;`、`#`、数の形も、名前の一部である。
+        .{ "|(a) ; \"#t\" 1|", "(a) ; \"#t\" 1" },
+        .{ "|1|", "1" },
+        .{ "|.|", "." },
+        // 生の文字は、そのまま名前に入る。行の終わりも、綴りのまま入る。
+        .{ "|\u{3bb}|", "\u{3bb}" },
+        .{ "|a\nb|", "a\nb" },
+        .{ "|a\r\nb|", "a\r\nb" },
+    }) |case| {
+        const src, const name = case;
+        const d = try f.readOne(src);
+        std.testing.expectEqualStrings(name, f.heap.symbols.nameOf(d.asSymbol() orelse return error.TestUnexpectedResult)) catch |e| {
+            std.debug.print("reading {f}\n", .{std.zig.fmtString(src)});
+            return e;
+        };
+    }
+    // 同じ名前の識別子は、どちらの書き方でも同じシンボルである。
+    try std.testing.expectEqual((try f.readOne("abc")).asSymbol().?, (try f.readOne("|abc|")).asSymbol().?);
+    try std.testing.expectEqual((try f.readOne("|\\t|")).asSymbol().?, (try f.readOne("|\\x9;|")).asSymbol().?);
+}
+
+test "an identifier between vertical lines ends at the closing vertical line" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(a b c)", try f.roundTrip("(|a| b |c|)", &buf));
+    try std.testing.expectEqualStrings("(quote a)", try f.roundTrip("'|a|", &buf));
+    // 縦線は区切り文字なので、前後のトークンとも別のデータになる。
+    var r: Reader = .init("abc|def|ghi");
+    for ([_][]const u8{ "abc", "def", "ghi" }) |name| {
+        const d = (try r.next(f.arena.allocator(), f.sink())).?;
+        try std.testing.expectEqualStrings(name, f.heap.symbols.nameOf(d.asSymbol().?));
+    }
+    try std.testing.expectEqual(null, try r.next(f.arena.allocator(), f.sink()));
+}
+
+test "a reader that folds case keeps an identifier between vertical lines as it is written" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    f.fold_case = true;
+    try std.testing.expectEqualStrings("(abc ABC)", try f.roundTrip("(ABC |ABC|)", &buf));
+    // ASCII でない文字の名前も、畳み込みに渡らない。
+    try std.testing.expectEqualStrings("\u{39b}", f.heap.symbols.nameOf((try f.readOne("|\u{39b}|")).asSymbol().?));
+    try std.testing.expectEqualStrings("(a B)", try f.roundTrip("#!no-fold-case (#!fold-case A |B|)", &buf));
+}
+
+test "next asks for more input inside an identifier between vertical lines" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "|", "|abc", "(a |b", "|a\\", "|a\\x41", "|a\\x", "|a\nb" }) |src| {
+        try std.testing.expectError(error.Incomplete, f.readOne(src));
+    }
+}
+
+test "next rejects a backslash in an identifier between vertical lines that begins no escape" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 行継続は文字列だけのもので、<symbol element> には無い。
+    for ([_][]const u8{ "|\\q|", "|\\x;|", "|\\xD800;|", "|\\x110000;|", "|\\xg;|", "|a\\\nb|", "|a\\ b|", "|\\X41;|" }) |src| {
+        try std.testing.expectError(error.InvalidSymbolEscape, f.readOne(src));
+    }
 }
 
 test "next reads past the datum after a datum comment" {
@@ -1501,6 +1603,7 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             error.UnexpectedDot,
             error.InvalidToken,
             error.InvalidEscape,
+            error.InvalidSymbolEscape,
             error.InvalidCharacter,
             error.InvalidUtf8,
             error.IntegerOutOfRange,

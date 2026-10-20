@@ -32,6 +32,6 @@ error: unexpected end of input
 #| a #| b |# 閉じない
 error: unexpected end of input
 
-# 閉じる記号だけでは、コメントにならない。
+# 閉じる記号だけでは、コメントにならない。`|` は縦棒の識別子を始め、閉じていない。
 |# 1
-error: unreadable token
+error: unexpected end of input
