@@ -711,6 +711,24 @@ test "a name that only a pending export of an included declaration file holds su
     }
 }
 
+test "a pending export name survives a library that the declarations load on the way" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        // 宣言の途中で、別のライブラリをファイルから読み込む。その定義が終わっても、外側の
+        // ライブラリの保留の名前は残っていなければならない。
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\") (import (t other)) (begin (define (f) (g))) (include \"body.scm\"))");
+        try tree.write("t/decls.scm", "(export (rename f exported-name)) (import (sucheme core))");
+        try tree.write("t/other.sld", "(define-library (t other) (export g) (import (sucheme core)) (begin (define (g) 1)))");
+        try tree.write("t/body.scm", "(define y1 1) (define y2 2) (define y3 3) (define y4 4)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t lib)) (exported-name)", "1\n");
+    }
+}
+
 test "the internal name of an export that nothing defines is still the name when the body ends" {
     for ([_]bool{ false, true }) |stress| {
         var tree: resolve.Tree = undefined;
