@@ -167,7 +167,7 @@ ADR-0031 は、GC を機械のステップの境目と、`Interpreter` がフォ
 ライブラリごとの表と REPL の表は、複製のまま、ヒープの上限に常に数える。2l の `Charged` は、展開の最中だけ数える計上(`Heap.external`)なので、そのままでは使えない。延長として、常に数える計上を足す。
 
 - `Heap` に、常駐の計上 `resident` を足す。`Heap.held` が `accounted` と `symbols.charged` に加えて `resident` を含めるので、上限の検査、GC の閾値、余裕の無さの判定(`exhausted`)のすべてに入る。
-- `Charged` に、どちらの計上に数えるかを持たせる(`.expansion` は今の `external`、`.resident` は新しい `resident`)。常駐の割り当て器は1つで、`Context` が持つ。
+- `Charged` に、どちらの計上に数えるかを持たせる(`.expansion` は今の `external`、`.resident` は新しい `resident`)。常駐の割り当て器は1つで、`Context` が持つ。実装(3o-1)では、`Charged` は変えず、`Heap.residentAllocator` を足した。割り当て器は呼び出しのたびに `Heap` から作り、どこにも保存しない(`Context` は値として動くので、`Heap` を指す割り当て器を保存すると古いアドレスを指す)。
 - 常駐の割り当て器の下は、永続アリーナではなく、ヒープの `backing`(個別に解放できる割り当て器)にする。アリーナの上で数えると、ハッシュ表が伸びたときに、古い領域の分を戻してもメモリは残るので、数えた量が実際より少なくなる。そのため、表を `Context.deinit` で解放する処理を足す(`Global.deinit`、`Registry.deinit`。今はアリーナを捨てて済ませている)。
 - 対象は、ライブラリの表と REPL の表(`env.Global`)、`Registry` の3つのリスト、`displaced_cells` と `replaced`、`sources` である。`env.Core` は、初期化で大きさが決まり、伸びないので、対象にしない。
 - 断られた確保は `error.OutOfMemory` に見える。2l と同じく、断られたことを `Heap` の印で見分け、`define-library` と `import` の入口で `heap limit exceeded` に変える。
@@ -232,7 +232,7 @@ flowchart TD
 
 | PR | 完了条件(1行) | 触るファイル | 担当の階層 | 見積り(ready まで / マージまで、時間) |
 | --- | --- | --- | --- | --- |
-| 3o-1 常駐の計上 | 名前 1000 個のライブラリを 1500 個が `import` する入力と、入れ子の `prefix` の1行が、既定の上限で `heap limit exceeded` で終わる | `src/heap.zig`、`src/context.zig`、`src/env.zig`、`src/syntax/library.zig`、`src/sucheme.zig`(`deinit`)、`tests/scheme/`、`tests/scheme-slow/` | T3 | 2〜4 / 3〜6 |
+| 3o-1 常駐の計上 | 最上位の表と `import` の作業が上限に数えられ、収まらない量は `heap limit exceeded` で終わる(2026-10-20 に、実装に合わせて書き直した。元は「1500 個が `import` する入力が既定の上限でエラーになる」で、計上が実際の量に近づいた結果、その入力は上限に収まる。確かめ方は、上限 512 KiB の単体テストと、既定の上限での実測) | `src/heap.zig`、`src/context.zig`、`src/env.zig`、`src/syntax/library.zig`、`src/syntax/expand.zig`、`src/sucheme.zig`、`src/machine.zig`(テストの2件) | T3 | 2〜4 / 3〜6 |
 | 3o-2 継続が節点を指す | `Kont.Step` が `If` などの部分と部分スライスを指さない。挙動は変わらない | `src/value.zig`(`Kont.Step`)、`src/machine.zig` | T2(機械的な書き換え。レビューは T3) | 1〜2 / 1.5〜3 |
 | 3o-3 節点を GC ヒープへ | `Context.code_roots` が無い。失敗した展開の節点と、到達できなくなったコードの定数が回収される | `src/value.zig`(`heap_types`)、`src/heap.zig`、`src/trace.zig`(テスト)、`src/core.zig`、`src/syntax/expand.zig`、`src/syntax/library.zig`、`src/machine.zig`(`Roots`)、`src/context.zig`、`src/printer.zig`(テスト)、`docs/design/runtime.md` | T3 | 4〜8 / 6〜12 |
 | 3o-4 要らなくなる保持を外す | `displaced_cells` が無い。定義に失敗したライブラリの表が、常駐の計上から戻る | `src/env.zig`、`src/syntax/library.zig`、`src/value.zig`(`Cell` の doc コメント) | T2 | 1〜2 / 1.5〜3 |
@@ -296,8 +296,8 @@ ADR の番号は、並行して計画書を書いている別のレーンと衝�
 
 | PR | 状態 | PR の番号 |
 | --- | --- | --- |
-| 設計(この文書と ADR-0040) | 合意済み(2026-10-20) | [#130](https://github.com/suchi/sucheme-zig/pull/130) |
-| 3o-1 | 未着手 | - |
+| 設計(この文書と ADR-0040) | マージ済み(2026-10-20) | [#130](https://github.com/suchi/sucheme-zig/pull/130) |
+| 3o-1 | レビューの指摘への対応中(ドラフト)。最上位の表、登録表、読んでいる最中のファイルの列を常駐の計上に、1つの `import` の全部の集合の作業(読み込むライブラリの `import` の分を含む)を、束縛し終えるまで展開と同じ計上に入れた。1500 個の入力は上限に収まり(最大常駐サイズ約 161 MiB)、4000 個は `heap limit exceeded` で終わる。入れ子の `prefix` も同じエラーで終わる | [#139](https://github.com/suchi/sucheme-zig/pull/139) |
 | 3o-2 | 未着手 | - |
 | 3o-3 | 未着手 | - |
 | 3o-4 | 未着手 | - |

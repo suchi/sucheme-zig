@@ -35,10 +35,10 @@ pub const Context = struct {
     /// the pairs, the closures, the frames of calls, the continuations, the
     /// argument lists, the strings, the vectors and the conditions.
     heap: Heap,
-    /// Where what the heap does not hold is allocated: the table of the bindings of
-    /// the top level and the core IR the expander builds.
-    /// 大域変数のセルそのものは GC ヒープにある。
-    /// この中のものは、インタプリタが解放されるまで解放されない。
+    /// Where what the heap does not hold, and does not count, is allocated: the
+    /// table of `(sucheme core)` and the core IR the expander builds.
+    /// 大域変数のセルそのものは GC ヒープにある。最上位の束縛の表は、ここでなく `resident`
+    /// にある。この中のものは、インタプリタが解放されるまで解放されない。
     persist: std.mem.Allocator,
     /// The bindings of the REPL's top level: what it imports from `core`, and the
     /// variables and macros it defines (src/env.zig).
@@ -116,8 +116,33 @@ pub const Context = struct {
         return ctx;
     }
 
+    /// Frees the heap, and the tables that count against its limit.
+    /// アリーナにあるもの(`core` と `code_roots`)は、アリーナの持ち主が捨てる。
     pub fn deinit(self: *Context) void {
+        const tables = self.resident();
+        self.globals.deinit(tables);
+        self.libraries.deinit(tables);
+        self.sources.deinit(tables);
         self.heap.deinit();
+    }
+
+    /// Where the tables of the top levels, the registry of the libraries and the
+    /// files being read are allocated: they count against the limit of the heap
+    /// for as long as they are held (ADR-0040).
+    /// Why: 表は、インポートした名前の数に比例して伸び、セッションの間ずっと残る。永続
+    /// アリーナに置くと、上限の外で伸び続ける。断られた確保は `error.OutOfMemory` に見えるので、
+    /// 最上位の入口が `limitFailure` で上限の超過に変える。
+    pub fn resident(self: *Context) std.mem.Allocator {
+        return self.heap.residentAllocator();
+    }
+
+    /// The error `e` is, once a refusal of the limit is told apart from the host's
+    /// memory running out: "heap limit exceeded" when the heap refused a charged
+    /// allocation, which its caller saw as `error.OutOfMemory`.
+    /// 判定に使う印は、入口が処理を始める前に `heap.external_refused` を下ろしておくこと。
+    pub fn limitFailure(self: *Context, e: Error) Error {
+        if (e == error.OutOfMemory and self.heap.external_refused) return self.raise(heap_limit_message, .{});
+        return e;
     }
 
     /// Whether the program being processed may import `(sucheme core)`.
@@ -297,13 +322,13 @@ test "coreImportable is true only inside an embedded library, or when the contex
     // REPL の行は、`sources` に何も載せない。
     try std.testing.expect(!ctx.coreImportable());
     // 実ファイルのライブラリ。
-    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"a.sld"} });
+    try ctx.sources.append(ctx.resident(), .{ .root = "libs", .path = &.{"a.sld"} });
     try std.testing.expect(!ctx.coreImportable());
     // 埋め込みのライブラリ。
-    try ctx.sources.append(ctx.persist, .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
+    try ctx.sources.append(ctx.resident(), .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
     try std.testing.expect(ctx.coreImportable());
     // 一番内側が決める。埋め込みのライブラリが、実ファイルを含むことはないが、判定は内側だけを見る。
-    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"b.sld"} });
+    try ctx.sources.append(ctx.resident(), .{ .root = "libs", .path = &.{"b.sld"} });
     try std.testing.expect(!ctx.coreImportable());
     ctx.sources.clearRetainingCapacity();
     ctx.core_open = true;
@@ -359,7 +384,7 @@ test "a context binds each primitive to its name" {
     try std.testing.expect(ctx.globals.isBound(id));
     // 初期化はヒープに何も作らない。プリミティブのセルは、名前を解決したときに作る。
     try std.testing.expectEqual(0, ctx.heap.count);
-    const cell = (try ctx.globals.resolve(ctx.persist, &ctx.heap, id)).global;
+    const cell = (try ctx.globals.resolve(ctx.resident(), &ctx.heap, id)).global;
     try std.testing.expectEqualStrings("+", cell.value.asPrimitive().?.name);
 }
 

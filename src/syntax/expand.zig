@@ -80,10 +80,16 @@ pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: 
     // それを避けるため、作業領域と節点を、ヒープの上限に対して計上する(`heap.Charged`)。
     // 上限に収まらなければ、他の確保と同じ `heap limit exceeded` で終わる。上限の検査は、最初の
     // マクロの適用から効く(`Heap.external_enforced`)。
+    // 展開は、`import` の評価の中(ライブラリのファイルの本体)でも走る。外側が数えた分は、
+    // この展開の検査にも入る。終わったら、外側の計上と検査の状態に戻す。展開の作業は、
+    // 外側の `import` の作業と違い、外側に残さない(今までどおり、展開ごとに数える)。
     ctx.heap.external_refused = false;
+    const saved_external = ctx.heap.external;
+    const saved_enforced = ctx.heap.external_enforced;
+    ctx.heap.external_enforced = false;
     defer {
-        ctx.heap.external = 0;
-        ctx.heap.external_enforced = false;
+        ctx.heap.external = saved_external;
+        ctx.heap.external_enforced = saved_enforced;
     }
     var scratch_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = scratch };
     var node_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.persist };
@@ -476,7 +482,7 @@ const Expander = struct {
         const subject = try std.fmt.allocPrint(self.scratch, "{s} {s}", .{ what, name });
         const data = try source.readData(self.ctx, self.scratch, self.ctx.files, opened.source, subject, task.fold_case);
         if (data.len == 0) return self.constant(task, .unspecified_value);
-        try self.ctx.sources.append(self.ctx.persist, opened.origin);
+        try self.ctx.sources.append(self.ctx.resident(), opened.origin);
         // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。
         try self.stack.append(self.scratch, .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = task.dest, .op = .leave_file });
         const pos: Position = if (task.pos == .top) .top else .expression;
@@ -568,7 +574,7 @@ const Expander = struct {
                 const table = resolution.table.?;
                 const cell = if (self.mode == .repl and table == self.top)
                     // REPL 自身の変数ならそのセルに、インポートした変数なら遮蔽した新しいセルに代入する。
-                    (table.assignTarget(self.ctx.persist, &self.ctx.heap, resolution.symbol) catch |e|
+                    (table.assignTarget(self.ctx.resident(), &self.ctx.heap, resolution.symbol) catch |e|
                         return self.ctx.heapFailure(e)).?
                 else blk: {
                     // ライブラリの本体と、マクロが持ち込んだ別のライブラリの変数は、遮蔽せずに、
@@ -618,7 +624,7 @@ const Expander = struct {
                 // 束縛する。最上位の束縛の表は名前で引くので、同じ展開の中の同じ別名の参照
                 // も、このセルに解決される。
                 if (self.mode == .library) try self.checkNotImported(id, "define");
-                const cell = self.top.defineTarget(self.ctx.persist, &self.ctx.heap, id) catch |e|
+                const cell = self.top.defineTarget(self.ctx.resident(), &self.ctx.heap, id) catch |e|
                     return self.ctx.heapFailure(e);
                 const value = try self.definedValue(task, items, shorthand);
                 task.dest.* = .{ .global_define = .{ .cell = cell, .value = value } };
@@ -1019,7 +1025,7 @@ const Expander = struct {
         const syntax = try self.syntaxDefinition(task.env, items, null);
         const name = syntax_env.baseSymbol(syntax.name);
         if (self.mode == .library) try self.checkNotImported(name, "define-syntax");
-        try self.top.defineSyntax(self.ctx.persist, name, syntax.macro);
+        try self.top.defineSyntax(self.ctx.resident(), name, syntax.macro);
         try self.constant(task, .unspecified_value);
     }
 
