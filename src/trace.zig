@@ -205,17 +205,17 @@ test "a pair is followed through both of its halves, whatever they hold" {
     try std.testing.expectEqual(@as(SymbolId, @fromBackingInt(@intCast(7))), q.symbols[0]);
 }
 
-test "a closure is followed through its frame and not through its code" {
+test "a closure is followed through its code and its frame" {
     var frame: Frame = .{ .values = &.{}, .parent = null };
     const lambda: value_mod.Lambda = .{ .arity = 0, .frame_size = 0, .body = &.{ .constant = .unspecified_value } };
     const closure: Closure = .{ .lambda = &lambda, .env = &frame };
     var r: Recorder = .{};
     interpreter.children(&r, Closure, &closure);
-    try r.expect(&.{addr(&frame)});
+    try r.expect(&.{ addr(&lambda), addr(&frame) });
     const bare: Closure = .{ .lambda = &lambda, .env = null };
     var q: Recorder = .{};
     interpreter.children(&q, Closure, &bare);
-    try q.expect(&.{});
+    try q.expect(&.{addr(&lambda)});
 }
 
 test "a frame is followed through its slots and its parent" {
@@ -243,17 +243,17 @@ test "a continuation frame is followed through its link, its environment and its
     const waiting: Kont = .{ .next = &rest, .env = &env, .depth = 2, .step = .{ .call = .{ .call = &call, .args = &arg, .received = 1 } } };
     var r: Recorder = .{};
     interpreter.children(&r, Kont, &waiting);
-    try r.expect(&.{ addr(&rest), addr(&env), addr(&arg) });
+    try r.expect(&.{ addr(&rest), addr(&env), addr(&call), addr(&arg) });
 
-    // 他のステップはコードしか持たないので、リンクと環境だけが数えられる。
+    // 他のステップは節点を持つ。節点はヒープにあり、リンクと環境の後に数えられる。
     const branching: Kont = .{ .next = &rest, .env = &env, .depth = 2, .step = .{ .branch = &condition } };
     var q: Recorder = .{};
     interpreter.children(&q, Kont, &branching);
-    try q.expect(&.{ addr(&rest), addr(&env) });
+    try q.expect(&.{ addr(&rest), addr(&env), addr(&condition) });
     const sequencing: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = &sequence, .next = 1 } } };
     var s: Recorder = .{};
     interpreter.children(&s, Kont, &sequencing);
-    try s.expect(&.{});
+    try s.expect(&.{addr(&sequence)});
 }
 
 test "the arguments gathered so far are followed through their value and their link" {
@@ -428,15 +428,18 @@ test "the classes of the real types" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Condition).?);
 }
 
-test "the code and the plain data around it are never followed" {
+test "the code is followed, and the primitives and the plain data are not" {
     // Why: 1つのテスト関数の中のコンパイル時の評価は、分岐の上限を共有する。`Value` の
     // 変種が増えて上のテストに収まらなくなったので、分けてある。
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
+    // 節点はヒープにある(ADR-0040)。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*const value_mod.Node).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*const value_mod.Lambda).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*const value_mod.Parameterize).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify([]const *const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(usize).?);
     // 節点の内部の部分へのポインタは、分類できない。フレームがそれを持つ変更は、
-    // 節点がヒープに移ったときに、黙ってたどられなくなる代わりに、コンパイルエラーになる。
+    // 黙ってたどられなくなる代わりに、コンパイルエラーになる。
     try std.testing.expect(comptime interpreter.classify(*const value_mod.If) == null);
     try std.testing.expect(comptime interpreter.classify(*const value_mod.Call) == null);
     try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(SymbolId).?);
@@ -663,33 +666,33 @@ test "the frames of make-parameter and parameterize are followed through what th
     const node: value_mod.Parameterize = .{ .bindings = &.{}, .body = &lambda };
     var point: value_mod.DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
     var param: value_mod.Parameter = .{ .value = .fromFixnum(1), .converter = null };
-    // 節点はコードで、たどらない。持つのは、作りかけの点の鎖だけである。
+    // 節点はヒープにあり、たどる。その後に、作りかけの点の鎖を持つ。
     const step: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_param = .{ .node = &node, .index = 0, .pending = &point } } };
     var q: Recorder = .{};
     interpreter.children(&q, Kont, &step);
-    try q.expect(&.{addr(&point)});
+    try q.expect(&.{ addr(&node), addr(&point) });
     const first: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_param = .{ .node = &node, .index = 0, .pending = null } } };
     var f: Recorder = .{};
     interpreter.children(&f, Kont, &first);
-    try f.expect(&.{});
+    try f.expect(&.{addr(&node)});
     // 値と変換の局面は、さらに束縛のパラメータを持つ。
     const bound: value_mod.Kont.ParameterizeBound = .{ .node = &node, .index = 1, .pending = &point, .param = &param };
     const valued: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_value = bound } };
     var s: Recorder = .{};
     interpreter.children(&s, Kont, &valued);
-    try s.expect(&.{ addr(&point), addr(&param) });
+    try s.expect(&.{ addr(&node), addr(&point), addr(&param) });
     const converted: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .parameterize_convert = bound } };
     var t: Recorder = .{};
     interpreter.children(&t, Kont, &converted);
-    try t.expect(&.{ addr(&point), addr(&param) });
+    try t.expect(&.{ addr(&node), addr(&point), addr(&param) });
 }
 
 test "the classes of the types of parameters" {
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Parameter).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Parameter).?);
-    // 節点と、その束縛は、コードである。
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Parameterize).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.ParameterBinding).?);
+    // `parameterize` の節点と、その束縛の節点は、ヒープにある。
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*const value_mod.Parameterize).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.ParameterBinding).?);
 }
 
 test "a promise is followed through its value, which is the result or the procedure that computes it" {
@@ -800,28 +803,14 @@ test "a spec of its own sorts pointers by the types it lists" {
     try std.testing.expect(comptime Other.classify(Branch) == null);
 }
 
-test "of the code types only the node holds values, which the context's constants stand in for" {
-    // GC はコードへのポインタをたどらない。これが安全なのは、コードの型がヒープ
-    // オブジェクトを持たない間だけである。持つのは `Node`(定数)で、そのためコンテキスト
-    // がそれらの定数を自分で保持する。他のコード型に値を足すと、何も言わずに見落とされる。
-    // そのことがここで表に出る。
-    inline for (value_mod.code_types) |T| {
-        const class = comptime interpreter.classify(T);
-        if (T == value_mod.Node or T == value_mod.GlobalAssign) {
-            // Why: 節点と大域変数への代入は、大域変数のセルを指す(スライス 2j)。セルは
-            // GC ヒープにあるが、GC が節点をたどらなくても回収されない。作られたセルは
-            // すべて、REPL の束縛の表か、遮蔽されたインポートのセルの表か、`define-syntax`
-            // が表から外したセルの表から到達できる(src/env.zig の `Global.mark`)。この
-            // 不変条件は、tests/scheme/ のステップごとに GC する方式で、遮蔽された
-            // プリミティブのセルや、マクロに置き換えられた変数のセルを、先に定義した
-            // 手続きから読むケースが確かめる。
-            try std.testing.expectEqual(Class.follow, class.?);
-        } else if (T == value_mod.Primitive) {
-            // Zig の関数ポインタ。walk にはその分類がなく、たどることもない。
-            try std.testing.expect(class == null);
-        } else {
-            // シンボル ID は許す。名前はまだ回収されない。ヒープオブジェクトは許さない。
-            try std.testing.expect(class.? != .follow);
-        }
-    }
+test "the only code type is the primitive, and the nodes are heap types that hold values" {
+    // GC はコードの型へのポインタをたどらない。これが安全なのは、コードの型がヒープ
+    // オブジェクトを持たない間だけである。コアIRの節点は、定数とセルを持つので、ヒープの
+    // 型にした(ADR-0040)。残るのは Zig の関数ポインタを持つプリミティブだけである。
+    try std.testing.expectEqual(1, value_mod.code_types.len);
+    try std.testing.expect(value_mod.code_types[0] == value_mod.Primitive);
+    // walk にはその分類がなく、たどることもない。
+    try std.testing.expect(comptime interpreter.classify(value_mod.Primitive) == null);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Node).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Lambda).?);
 }

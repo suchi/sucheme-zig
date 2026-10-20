@@ -779,10 +779,11 @@ test "a symbol made from a string stays the symbol of its name at every work lis
             try churnSymbols(&interp);
             try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\")) (symbol->string z) (eq? z (vector-ref v 0))", "#t\n\"only-by-string\"\n#t\n");
             try expectLinePrints(&interp, "(eq? z (string->symbol \"only-by-string\")) (eq? z 'only-by-string)", "#t\n#t\n");
-            // 値を手放しても、コードの定数 `'only-by-string` が名前を持つので、残る。
+            // 値を手放すと、名前を持つのは、走り終えた行のコードの定数 `'only-by-string` だけになる。
+            // コードは GC ヒープにあり、届くものが無いので、名前ごと回収される(ADR-0040)。
             try expectLinePrints(&interp, "(set! z #f) (set! v #f)", "");
             interp.ctx.collectIdle();
-            try std.testing.expect(interp.ctx.heap.symbols.lookup("only-by-string") != null);
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("only-by-string") == null);
         }
     }
 }
@@ -794,9 +795,10 @@ test "a symbol that is not held is reclaimed, with the memory its name took" {
     const before = interp.ctx.heap.held();
     try expectLinePrints(&interp, "(quote some-name-nothing-keeps)", "some-name-nothing-keeps\n");
     try std.testing.expect(interp.ctx.heap.held() > before);
-    // 定数は、コードを作った行のあとも、コンテキストが持つ(`code_roots`)。
+    // 定数を持つのは、その行のコードだけである。行が終わればコードに届くものは無く、
+    // 定数の名前も回収される(ADR-0040)。
     interp.ctx.collectIdle();
-    try std.testing.expect(interp.ctx.heap.symbols.lookup("some-name-nothing-keeps") != null);
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("some-name-nothing-keeps") == null);
     // 読まれただけで、何にも使われない名前は、回収される。展開に失敗した形式の名前が、その例である。
     try expectLineFails(&interp, "(if read-only-name)", "bad if: expected (if test consequent) or (if test consequent alternative)");
     try std.testing.expect(interp.ctx.heap.symbols.lookup("read-only-name") != null);
@@ -1716,57 +1718,43 @@ test "the imports of libraries that one import loads from their files count toge
     try std.testing.expectEqual(0, interp.ctx.heap.external);
 }
 
-/// How many names the library of `PrefixedImport` exports.
+/// How many names the library of the test of a refused import exports.
 const prefixed_import_names = 500;
-
-/// What happens when a library of `prefixed_import_names` names is defined and
-/// then imported with a prefix, under a heap of `limit` bytes.
-const PrefixedImport = enum { definition_refused, import_refused, imported };
-
-/// Tries the import of `PrefixedImport` under `limit`; when the import is refused,
-/// checks that none of the names it brings is bound at the REPL's top level.
-fn tryPrefixedImport(a: std.mem.Allocator, source: []const u8, limit: usize) !PrefixedImport {
-    var interp: Interpreter = undefined;
-    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = limit });
-    defer interp.deinit();
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    interp.evalPrint(a, source, &discard.writer) catch return .definition_refused;
-    interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
-        try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
-        for (0..prefixed_import_names) |i| {
-            const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
-            const id = interp.ctx.heap.symbols.lookup(prefixed) orelse continue;
-            try std.testing.expectEqual(null, interp.ctx.globals.lookup(id));
-        }
-        return .import_refused;
-    };
-    return .imported;
-}
 
 test "an import the limit refuses part way through binding binds none of its names" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const source = try bigLibrary(a, prefixed_import_names);
-    // 上限を上げながら、定義が通り `import` が断られる回を探す。断られる場所は、集合の評価の
-    // 途中か、束縛の途中(表を伸ばす確保)である。どの回でも、REPL の最上位に新しい名前が1つも
-    // 残ってはならない。GC の閾値の効き方で、定義が通る上限は単調でないので、二分探索は
-    // 使わない。定義が初めて通るまでは粗く、そのあとは細かく進める。
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 8 * 1024 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, prefixed_import_names), &discard.writer);
+    // ライブラリを定義した後で、上限を、生きている量のすぐ上から少しずつ上げて、同じ
+    // `import` を試す。断られる場所は、はじめは集合の評価の途中で、上限が上がると束縛の途中
+    // (表を伸ばす確保)になり、最後に通る。どの回でも、REPL の最上位に新しい名前が1つも
+    // 残ってはならない。
+    // Why: 上限ごとにインタプリタを作り直してライブラリを定義すると、GC の閾値の効き方で
+    // 定義が通る上限が単調でなく、試す回数も多くなる。
     var refused: usize = 0;
-    var limit: usize = 64 * 1024;
-    // 粗い歩みで、定義が通る最初の上限を探し、そこから細かく歩いて、断られる帯を通り抜ける。
-    while (limit < 4 * 1024 * 1024) : (limit += 8 * 1024) {
-        if (try tryPrefixedImport(a, source, limit) != .definition_refused) break;
-    }
-    limit -= 8 * 1024;
-    while (limit < 4 * 1024 * 1024) : (limit += 256) {
-        switch (try tryPrefixedImport(a, source, limit)) {
-            .definition_refused => if (refused != 0) break,
-            .import_refused => refused += 1,
-            .imported => break,
-        }
+    var room: usize = 0;
+    while (room < 1024 * 1024) : (room += 256) {
+        interp.ctx.collectIdle();
+        interp.ctx.heap.options.limit = interp.ctx.heap.held() + room;
+        interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            refused += 1;
+            for (0..prefixed_import_names) |i| {
+                const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
+                const id = interp.ctx.heap.symbols.lookup(prefixed) orelse continue;
+                try std.testing.expectEqual(null, interp.ctx.globals.lookup(id));
+            }
+            continue;
+        };
+        break;
     }
     try std.testing.expect(refused > 0);
+    try std.testing.expect(room < 1024 * 1024);
 }
 
 test "the work of nested modifiers counts against the limit when the library they modify is loaded from its file by the same import" {

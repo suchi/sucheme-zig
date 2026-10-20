@@ -194,7 +194,7 @@ pub const Machine = struct {
             regs.dyn = dyn;
         }
         while (true) {
-            if (ctx.heap.shouldCollect()) try self.collect(.{ .ctx = ctx, .env = env, .kont = kont, .value = value, .dyn = dyn }, &regs.limit_reported);
+            if (ctx.heap.shouldCollect()) try self.collect(.{ .ctx = ctx, .control = control, .env = env, .kont = kont, .value = value, .dyn = dyn }, &regs.limit_reported);
             if (control) |node| {
                 control = null;
                 switch (node.*) {
@@ -1098,14 +1098,18 @@ pub const Machine = struct {
     }
 
     /// What the program holds at a safe point.
+    /// 制御は、次に走らせる節点である。節点は GC ヒープにあり、まだ継続にもクロージャにも
+    /// 載っていない節点(走り始めたばかりの根の節点など)は、ここからしか辿れない(ADR-0040)。
     const Roots = struct {
         ctx: *const Context,
+        control: ?*const Node = null,
         env: ?*Frame,
         kont: ?*const Kont,
         value: Value,
         dyn: ?*const DynPoint,
 
         pub fn mark(self: Roots, marker: *heap_mod.Marker) void {
+            if (self.control) |node| marker.object(Node, node);
             marker.value(self.value);
             marker.frame(self.env);
             marker.kont(self.kont);
@@ -1781,7 +1785,9 @@ test "the failures of a primitive become the conditions with their messages" {
 
 test "a call whose rest list passes the limit ends the line with heap limit exceeded, and the next line runs" {
     var f: Fixture = undefined;
-    try f.initWith(.{ .limit = 128 * 1024, .min_threshold = 16 * 1024 });
+    // 上限は、1500 個のオペランドの節点(ヒープにある。ADR-0040)と読んだペアを収め、
+    // 余りのリストを収めない大きさである。
+    try f.initWith(.{ .limit = 192 * 1024, .min_threshold = 16 * 1024 });
     defer f.deinit();
     _ = try f.eval("(define (f . xs) xs)");
     var call: std.ArrayList(u8) = .empty;
@@ -1810,11 +1816,14 @@ test "a primitive that allocates past the limit ends the line with heap limit ex
     try f.expectInt(3, "(+ 1 2)");
 }
 
-/// Fills the heap of `f` with `n` pairs that the constants of the context keep.
+/// Fills the heap of `f` with `n` pairs that a global variable of the context keeps.
+/// 変数の名前とセルは、ペアより先に作る。ペアを作れなくなった時点で、上限の縁にいる。
 fn fillKept(f: *Fixture, n: usize) !void {
+    const id = try f.ctx.heap.intern("kept");
+    const cell = try f.ctx.globals.defineTarget(f.ctx.resident(), &f.ctx.heap, id);
     var list: Value = .empty_list_value;
     for (0..n) |_| list = try f.ctx.heap.cons(.fromFixnum(0), list);
-    try f.ctx.keepConstant(list);
+    cell.value = list;
 }
 
 test "an error raised at the limit of the heap makes its condition from the reserve, and the condition outlives a collection" {
@@ -2122,8 +2131,9 @@ test "a recursion that never returns reaches the limit with few collections, bec
 
 test "a single allocation the limit refuses is the same error" {
     var f: Fixture = undefined;
-    // リーダのペアと、数個のフレームぶんだけの余裕。
-    try f.initWith(.{ .limit = 2048, .min_threshold = 1024 });
+    // リーダのペアと、定義の節点と、数個のフレームぶんだけの余裕。節点はヒープにあるので、
+    // 上限は節点の分を含む(ADR-0040)。
+    try f.initWith(.{ .limit = 4096, .min_threshold = 2048 });
     defer f.deinit();
     _ = try f.eval("(define (wide a b c d e f g h) h)");
     try f.expectFails("heap limit exceeded", "(define (forever n) (+ 1 (forever n))) (forever 0)");

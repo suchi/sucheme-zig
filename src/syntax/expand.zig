@@ -41,8 +41,10 @@ pub const Limits = struct {
 };
 
 /// Expands `form`, which is at the top level of a program.
-/// 節点と、節点が指すものは `ctx.persist` に確保する。展開の実行中だけ要るものは
-/// `scratch` から取る。構文環境は GC ヒープに確保し、節点からは指さない。
+/// 節点は GC ヒープに確保し、上限に数える(ADR-0040)。展開の実行中だけ要るものは
+/// `scratch` から取る。構文環境も GC ヒープに確保し、節点からは指さない。展開の途中では
+/// GC が走らない(ADR-0031)ので、作りかけの節点はどこにも登録しない。返した根の節点は、
+/// 呼び出し側が、GC の走る点に着く前に、機械の制御のレジスタに置く(`Machine.run`)。
 /// エラーのときは `ctx` がメッセージを持つ。
 pub fn expand(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!*const Node {
     return expandWith(ctx, scratch, form, .{});
@@ -76,8 +78,9 @@ pub const Mode = enum {
 /// Expands `form`, which is at the top level of `target`.
 pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: Target, limits: Limits) Error!*const Node {
     // 展開は機械のステップの外で走り、その間は GC が走らない(ADR-0031)。展開が使う作業領域
-    // と節点はヒープの外にあるので、止まらないマクロの適用が、上限を大きく超えてメモリを使う。
-    // それを避けるため、作業領域と節点を、ヒープの上限に対して計上する(`heap.Charged`)。
+    // はヒープの外にあるので、止まらないマクロの適用が、上限を大きく超えてメモリを使う。
+    // それを避けるため、作業領域を、ヒープの上限に対して計上する(`heap.Charged`)。節点は
+    // ヒープのオブジェクトなので、ほかのオブジェクトと同じく、作った時点から上限に入る。
     // 上限に収まらなければ、他の確保と同じ `heap limit exceeded` で終わる。上限の検査は、最初の
     // マクロの適用から効く(`Heap.external_enforced`)。
     // 展開は、`import` の評価の中(ライブラリのファイルの本体)でも走る。外側が数えた分は、
@@ -92,12 +95,10 @@ pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: 
         ctx.heap.external_enforced = saved_enforced;
     }
     var scratch_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = scratch };
-    var node_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.persist };
     var work_charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = ctx.heap.backing };
     var e: Expander = .{
         .ctx = ctx,
         .scratch = scratch_charge.allocator(),
-        .nodes = node_charge.allocator(),
         .work = .init(work_charge.allocator()),
         .limits = limits,
         .top = target.table,
@@ -108,11 +109,8 @@ pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: 
     // 展開が失敗したら、この形式が遮蔽した特殊形式を戻す。失敗した形式は実行されない
     // ので、遮蔽だけが残ると、特殊形式を理由なく失う。
     errdefer target.table.undoShadows();
-    // 失敗した形式の定数も、同じ理由で手放す。失敗した形式の節点は実行されず、どこからも
-    // 指されないので、この展開が登録した定数を生かしておく理由が無い。残すと、ヒープの
-    // 上限を、セッションの終わりまで理由なく使い続ける。
-    const roots = ctx.code_roots.items.len;
-    errdefer ctx.code_roots.shrinkRetainingCapacity(roots);
+    // 失敗した形式の節点と、節点が持つ定数は、どこからも指されないごみになり、次の GC が
+    // 回収する。ここで手放すものは無い。
     // 失敗した展開が、読んでいる最中のファイルとして載せたものも、手放す。
     const reading = ctx.sources.items.len;
     errdefer ctx.sources.shrinkRetainingCapacity(reading);
@@ -156,8 +154,6 @@ const Expander = struct {
     ctx: *Context,
     /// Where the work of the expansion goes, counted against the limit of the heap.
     scratch: std.mem.Allocator,
-    /// Where the nodes go, which stay after the expansion, counted while it runs.
-    nodes: std.mem.Allocator,
     /// The work area of one application of a macro, emptied after each one.
     work: std.heap.ArenaAllocator,
     limits: Limits,
@@ -169,9 +165,36 @@ const Expander = struct {
     mode: Mode,
     stack: std.ArrayList(Task) = .empty,
 
+    /// A new node in the heap, for a task to fill.
+    /// 子が決まる前に作るので、無害な値(未規定値の定数)で始める。展開が失敗して、作りかけの
+    /// まま回収されても、`Heap.free` は変種を読めば足りる。
+    fn newNode(self: *Expander) Error!*Node {
+        return self.ctx.create(Node, .{ .constant = .unspecified_value });
+    }
+
+    /// A list of `len` nodes for `owner`, each a new node, held by `owner` before
+    /// anything else is allocated (`Heap.allocAttached`).
+    /// `attach` が、列を `owner` に持たせる。持たせてから要素の節点を作るので、要素を作る
+    /// 途中で失敗しても、列は `owner` と一緒に回収される。
+    fn newNodes(self: *Expander, len: usize, owner: *Node, comptime attach: fn (*Node, []*const Node) void) Error![]*const Node {
+        const list = self.ctx.heap.allocAttached(*const Node, len) catch |e| return self.ctx.heapFailure(e);
+        attach(owner, list);
+        for (list) |*n| n.* = try self.newNode();
+        return list;
+    }
+
+    fn attachSequence(owner: *Node, list: []*const Node) void {
+        owner.* = .{ .sequence = list };
+    }
+
+    /// 演算子は、決まるまで持ち主自身を指しておく(未設定のポインタを持たない)。
+    fn attachOperands(owner: *Node, list: []*const Node) void {
+        owner.* = .{ .call = .{ .operator = owner, .operands = list } };
+    }
+
     /// Expands `form`, which is at the top level, and returns its node.
     fn run(self: *Expander, form: Value) Error!*const Node {
-        const root = try self.nodes.create(Node);
+        const root = try self.newNode();
         try self.stack.append(self.scratch, .{ .form = form, .env = self.root, .pos = .top, .dest = root });
         while (self.stack.pop()) |task| try self.step(task);
         return root;
@@ -256,15 +279,13 @@ const Expander = struct {
     }
 
     /// Makes the node of `task` the constant `v`.
-    /// コードはまだ GC ヒープの中にない。そのため、ヒープを指す定数はコンテキストに
-    /// 知らせ、コンテキストが生かしておく。
+    /// 節点は GC ヒープにあり、定数は節点から辿られる。
     /// マクロのテンプレートが導入した別名は、ここで元のシンボルに戻す(`stripAliases`)。
     fn constant(self: *Expander, task: Task, v: Value) Error!void {
         const datum = try self.stripAliases(v);
         // R7RS 3.4 と 4.1.2: リテラルは定数である。到達できるデータのすべてに不変の印を立て、
         // 書き込む手続きが断る。`quote` と自己評価するリテラルは、どちらもここを通る。
         try freeze.freezeGraph(self.scratch, datum);
-        try self.ctx.keepConstant(datum);
         task.dest.* = .{ .constant = datum };
     }
 
@@ -343,7 +364,7 @@ const Expander = struct {
 
     /// Queues `form` to fill a new node, and returns the node.
     fn child(self: *Expander, form: Value, env: ?*SyntacticEnv, pos: Position) Error!*Node {
-        const node = try self.nodes.create(Node);
+        const node = try self.newNode();
         try self.stack.append(self.scratch, .{ .form = form, .env = env, .pos = pos, .dest = node });
         return node;
     }
@@ -380,10 +401,7 @@ const Expander = struct {
                 "{s} is a syntactic keyword and cannot be used as a variable",
                 .{self.ctx.heap.symbols.nameOf(id)},
             ),
-            .local => |local| blk: {
-                try self.ctx.keepName(id);
-                break :blk .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } };
-            },
+            .local => |local| .{ .local_ref = .{ .address = try self.address(task.env, local), .name = id } },
             .global => |cell| .{ .global_ref = cell },
         };
     }
@@ -459,14 +477,12 @@ const Expander = struct {
             try self.stack.append(self.scratch, .{ .form = names[0], .env = task.env, .pos = task.pos, .dest = task.dest, .op = .include_file, .fold_case = fold_case });
             return;
         }
-        const nodes = try self.nodes.alloc(*const Node, names.len);
-        for (nodes) |*n| n.* = try self.nodes.create(Node);
+        const nodes = try self.newNodes(names.len, task.dest, attachSequence);
         var i = names.len;
         while (i > 0) {
             i -= 1;
             try self.stack.append(self.scratch, .{ .form = names[i], .env = task.env, .pos = task.pos, .dest = @constCast(nodes[i]), .op = .include_file, .fold_case = fold_case });
         }
-        task.dest.* = .{ .sequence = nodes };
     }
 
     /// Reads the file that the name `task.form` means and queues its data to fill
@@ -498,9 +514,8 @@ const Expander = struct {
             try self.stack.append(self.scratch, .{ .form = forms[0], .env = env, .pos = pos, .dest = dest });
             return;
         }
-        const nodes = try self.nodes.alloc(*const Node, forms.len);
         // 節点は順に作り、後ろのものから先にスタックに積む。
-        for (nodes) |*n| n.* = try self.nodes.create(Node);
+        const nodes = try self.newNodes(forms.len, dest, attachSequence);
         var i = forms.len;
         while (i > 0) {
             i -= 1;
@@ -511,7 +526,6 @@ const Expander = struct {
                 .dest = @constCast(nodes[i]),
             });
         }
-        dest.* = .{ .sequence = nodes };
     }
 
     /// `(parameterize ((param value) ...) body ...)` (R7RS 4.2.6).
@@ -533,16 +547,22 @@ const Expander = struct {
         }
         if (rest.kind() != .empty_list)
             return self.ctx.raise("bad parameterize: the bindings must be a list", .{});
-        const bindings = try self.nodes.alloc(value_mod.ParameterBinding, forms.items.len / 2);
+        // 束縛の列は、`Parameterize` を作る時点で持たせ、その後で埋める(`Heap.allocAttached`)。
+        // 本体の `lambda` は最後に決まり、それまでは未設定である。途中で失敗したら、
+        // `Parameterize` はごみになり、`Heap.free` は列の長さしか読まない。
+        const body = try self.newNode();
+        const bindings = self.ctx.heap.allocAttached(value_mod.ParameterBinding, forms.items.len / 2) catch |e| return self.ctx.heapFailure(e);
+        const parameterize = self.ctx.create(value_mod.Parameterize, .{ .bindings = bindings, .body = undefined }) catch |e| {
+            self.ctx.heap.freeDetached(value_mod.ParameterBinding, bindings);
+            return e;
+        };
+        task.dest.* = .{ .parameterize = parameterize };
         for (bindings, 0..) |*b, i| b.* = .{
             .param = try self.child(forms.items[2 * i], task.env, .expression),
             .value = try self.child(forms.items[2 * i + 1], task.env, .expression),
         };
-        const body = try self.nodes.create(Node);
         try self.lambdaNode(body, .empty_list_value, items[2..], task.env, "parameterize");
-        const parameterize = try self.nodes.create(value_mod.Parameterize);
-        parameterize.* = .{ .bindings = bindings, .body = body.lambda };
-        task.dest.* = .{ .parameterize = parameterize };
+        parameterize.body = body.lambda;
     }
 
     /// `(set! name expression)` (R7RS 4.1.6).
@@ -563,7 +583,6 @@ const Expander = struct {
             ),
             .local => |local| {
                 const where = try self.address(task.env, local);
-                try self.ctx.keepName(id);
                 const value = try self.child(items[2], task.env, .expression);
                 task.dest.* = .{ .local_set = .{ .address = where, .name = id, .value = value } };
             },
@@ -638,7 +657,6 @@ const Expander = struct {
                 // 局所変数である。
                 const local = syntax_env.lookupRib(env, target).?.denotation.local;
                 const value = try self.definedValue(task, items, shorthand);
-                try self.ctx.keepName(id);
                 task.dest.* = .{ .local_define = .{ .address = .{ .depth = 0, .index = local.index }, .name = id, .value = value } };
             },
             .expression => unreachable,
@@ -647,7 +665,7 @@ const Expander = struct {
 
     /// The node of the value a `define` gives its name.
     fn definedValue(self: *Expander, task: Task, items: []const Value, shorthand: bool) Error!*Node {
-        const value = try self.nodes.create(Node);
+        const value = try self.newNode();
         if (shorthand) {
             try self.lambdaNode(value, items[1].asPair().?.cdr, items[2..], task.env, "define");
         } else {
@@ -697,10 +715,9 @@ const Expander = struct {
         // 定義だけの本体には、返す値がない。
         if (scanned.defines == scanned.forms.len)
             return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
-        const body_node = try self.nodes.create(Node);
+        const body_node = try self.newNode();
         try self.sequence(body_node, scanned.forms, inner, .expression, scanned.defines);
-        const lambda = try self.nodes.create(value_mod.Lambda);
-        lambda.* = .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node };
+        const lambda = try self.ctx.create(value_mod.Lambda, .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node });
         dest.* = .{ .lambda = lambda };
     }
 
@@ -1033,8 +1050,7 @@ const Expander = struct {
     /// to right.
     /// Why: R7RS は評価順を規定していない。読み手が期待するのは左から右である。
     fn call(self: *Expander, task: Task, items: []const Value) Error!void {
-        const operands = try self.nodes.alloc(*const Node, items.len - 1);
-        for (operands) |*n| n.* = try self.nodes.create(Node);
+        const operands = try self.newNodes(items.len - 1, task.dest, attachOperands);
         var i = items.len;
         while (i > 1) {
             i -= 1;
@@ -1486,39 +1502,44 @@ test "quote gives the very datum it was read with, not a copy" {
     try std.testing.expectEqual(form.asPair().?.cdr.asPair().?.car.asPair().?, node.constant.asPair().?);
 }
 
-test "a constant that refers to the heap or is a symbol is kept for the collector, and nothing else is" {
+/// Roots for a test: what the context holds, and the nodes the test holds, as the
+/// control register of a machine would.
+const NodeRoots = struct {
+    ctx: *const Context,
+    nodes: []const *const Node = &.{},
+
+    pub fn mark(self: NodeRoots, marker: *heap_mod.Marker) void {
+        for (self.nodes) |n| marker.object(Node, n);
+        self.ctx.mark(marker);
+    }
+};
+
+test "the constants of the code live as long as the code, and go with it" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // ヒープオブジェクトでもシンボルでもない定数には、ルートは要らない。
-    for ([_][]const u8{ "5", "#t", "(quote ())", "x" }) |src| _ = try expand(&f.ctx, a, try f.read(src));
-    try std.testing.expectEqual(0, f.ctx.code_roots.items.len);
-    // シンボルの定数は、ID がコードの外から見えないので、ルートに挙げる。
-    const named = try expand(&f.ctx, a, try f.read("(quote foo)"));
-    try std.testing.expectEqual(1, f.ctx.code_roots.items.len);
-    try std.testing.expectEqual(named.constant.asSymbol().?, f.ctx.code_roots.items[0].asSymbol().?);
+    // 名前 `x` を解決すると、REPL の表に未束縛のセルができる。セルは表が持つ。
+    _ = try expand(&f.ctx, a, try f.read("x"));
     f.ctx.collectIdle();
-    // 残るのは、名前 `x` を解決したときに REPL の表に作った、未束縛のセル1つだけである。
-    // セルは定数ではなく、表がルートとして持つ。
     try std.testing.expectEqual(1, f.ctx.heap.count);
-    // クォートしたリストがその例である。対象はデータそのもので、周りの `quote` 形式のペアではない。
+    // クォートしたデータは、節点から辿られる。対象はデータそのもので、周りの `quote`
+    // 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
-    try std.testing.expectEqual(2, f.ctx.code_roots.items.len);
-    // セルと、読んだ4つのペア。
-    try std.testing.expectEqual(5, f.ctx.heap.count);
-    f.ctx.collectIdle();
-    // セルと、データの2つのペア。
-    try std.testing.expectEqual(3, f.ctx.heap.count);
-    try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
-    // 定数を作るもう一方の箇所: すでに値である形式。
-    const closure = try f.ctx.heap.create(value_mod.Closure, .{ .lambda = undefined, .env = null });
-    const itself = try expand(&f.ctx, a, .fromClosure(closure));
-    try std.testing.expectEqual(closure, itself.constant.asClosure().?);
-    try std.testing.expectEqual(3, f.ctx.code_roots.items.len);
-    f.ctx.collectIdle();
-    // セル、データの2つのペア、クロージャ。
+    f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{node} });
+    // セル、節点、データの2つのペア。
     try std.testing.expectEqual(4, f.ctx.heap.count);
+    try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
+    // コードに誰も届かなくなれば、節点もデータも回収される(ADR-0031 の 2026-10-10 の追記の、
+    // `quote` したデータがセッションの終わりまで残る帰結が外れる)。
+    f.ctx.collectIdle();
+    try std.testing.expectEqual(1, f.ctx.heap.count);
+    // シンボルの定数も、節点から名前に印が付く。
+    const named = try expand(&f.ctx, a, try f.read("(quote zzz-constant)"));
+    f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{named} });
+    var buf: [24]u8 = undefined;
+    for (0..32) |i| _ = try f.ctx.intern(std.fmt.bufPrint(&buf, "other-{d}", .{i}) catch unreachable);
+    try std.testing.expectEqualStrings("zzz-constant", f.ctx.heap.symbols.nameOf(named.constant.asSymbol().?));
 }
 
 test "the name a local variable node holds stays the name after a collection that frees every other symbol" {
@@ -1526,10 +1547,10 @@ test "the name a local variable node holds stays the name after a collection tha
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // 節点はアリーナにあり、GC はたどらない。仮引数の名前は、読んだデータ以外のどこにも無い。
+    // 仮引数の名前は、読んだデータ以外では、節点にしか無い。節点を持つのはテストである。
     const read_node = try expand(&f.ctx, a, try f.read("(lambda (zr) zr)"));
     const set_node = try expand(&f.ctx, a, try f.read("(lambda (zs) (set! zs 1))"));
-    f.ctx.collectIdle();
+    f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{ read_node, set_node } });
     // 回収した ID を別の名前が使う。
     var buf: [16]u8 = undefined;
     for (0..32) |i| _ = try f.ctx.intern(std.fmt.bufPrint(&buf, "other-{d}", .{i}) catch unreachable);
@@ -1541,19 +1562,27 @@ test "the name a local variable node holds stays the name after a collection tha
     try std.testing.expectEqualStrings("(lambda 1 1 (set-local zs 0 0 (const 1)))", out.written());
 }
 
-test "a form whose expansion fails keeps none of the constants it made" {
+test "a form whose expansion fails keeps none of the nodes and constants it made" {
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
     _ = try expand(&f.ctx, a, try f.read("(define-syntax m (syntax-rules () ((_) (list '(tmp) (if)))))"));
-    const before = f.ctx.code_roots.items.len;
+    // 1回目の展開は、`list` のセルを作り、表が持ち続ける。数えるのはその後からである。
+    try std.testing.expectError(error.Raised, expand(&f.ctx, a, try f.read("(m)")));
+    f.ctx.clearDiagnostic();
+    f.ctx.collectIdle();
+    const before = f.ctx.heap.count;
     // 被演算子は左から展開するので、剥離した '(tmp) を定数にしてから (if) で失敗する。
-    // 失敗した形式は実行されないので、その定数を生かしておくと、ヒープの上限を理由なく
-    // 使い続ける。
+    // 失敗した形式の節点と定数は、どこからも指されないので、次の GC で回収される
+    // (roadmap の「マクロの展開の有界化の残り」の (2))。
     for (0..3) |_| {
         try std.testing.expectError(error.Raised, expand(&f.ctx, a, try f.read("(m)")));
-        try std.testing.expectEqual(before, f.ctx.code_roots.items.len);
+        try std.testing.expect(f.ctx.heap.countOf(Node) > 0);
+        f.ctx.clearDiagnostic();
+        f.ctx.collectIdle();
+        try std.testing.expectEqual(0, f.ctx.heap.countOf(Node));
+        try std.testing.expectEqual(before, f.ctx.heap.count);
     }
 }
 

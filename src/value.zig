@@ -1343,13 +1343,14 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum };
+/// コアIRの節点(`Node`、`Lambda`、`Parameterize`)もここにある(ADR-0040)。節点は展開器が
+/// 作り、コードを指すもの(機械の制御のレジスタ、クロージャ、継続のフレーム)から辿られる。
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize };
 
-/// The types that are not in the GC heap but are pointed to from it: the core
-/// IR, which until a later slice stays where the expander allocated it, and the
+/// The types that are not in the GC heap but are pointed to from it: the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, Primitive, Parameterize, ParameterBinding };
+pub const code_types = [_]type{Primitive};
 
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum };

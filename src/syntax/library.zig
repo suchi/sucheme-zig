@@ -55,6 +55,10 @@ pub const Registry = struct {
     /// 本体の処理は機械を走らせるので、その間に GC が走る。処理中の宣言は、このリストが
     /// 指す形式の中にあるので、これがルートになる(ADR-0035 の読み込みの作業リスト)。
     loading: std.ArrayList(Value) = .empty,
+    /// The names of the exports that the `define-library` forms being processed
+    /// have declared and not yet resolved (`defineLibrary`).
+    /// 保留の名前は、どの束縛にも、どの節点にも入っていないので、ここがルートになる。
+    pending_names: std.ArrayList(SymbolId) = .empty,
 
     /// Gives back the tables and the lists, which were all taken from `alloc`.
     /// ライブラリ自身はヒープにあり、ここでは返さない。
@@ -66,14 +70,16 @@ pub const Registry = struct {
         self.tables.deinit(alloc);
         self.list.deinit(alloc);
         self.loading.deinit(alloc);
+        self.pending_names.deinit(alloc);
     }
 
-    /// Tells the collector of the libraries, the tables of their top levels and
-    /// the forms being processed.
+    /// Tells the collector of the libraries, the tables of their top levels,
+    /// the forms being processed and the names of their pending exports.
     pub fn mark(self: *const Registry, marker: *heap_mod.Marker) void {
         for (self.list.items) |lib| marker.object(Library, lib);
         for (self.tables.items) |table| table.mark(marker);
         for (self.loading.items) |form| marker.value(form);
+        for (self.pending_names.items) |id| marker.symbol(id);
     }
 
     /// The table of the top level of `lib`.
@@ -476,6 +482,8 @@ pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Err
     errdefer ctx.libraries.abandon(lib);
     try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
+    const names_before = ctx.libraries.pending_names.items.len;
+    defer ctx.libraries.pending_names.shrinkRetainingCapacity(names_before);
     var pending: std.ArrayList(PendingExport) = .empty;
     for (items[2..]) |declaration| try declare(ctx, scratch, lib, declaration, &pending, 0);
     try finish(ctx, scratch, lib, pending.items);
@@ -497,9 +505,8 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             // Why: 保留の名前は、本体の各形式の間を Zig の一覧で持ち越す。その間に GC が走る。
             // `include-library-declarations` が読んだ宣言は、読み終えると登録表の `loading` から
             // 外れ、名前を指すものが無くなる。名前を挙げておかないと、ID が回収され、別の名前に
-            // 再利用される。
-            try ctx.keepName(export_spec.internal);
-            try ctx.keepName(export_spec.external);
+            // 再利用される。登録表の `pending_names` が、定義を終えるまで持つ。
+            try ctx.libraries.pending_names.appendSlice(ctx.resident(), &.{ export_spec.internal, export_spec.external });
             try pending.append(scratch, export_spec);
         }
     } else if (std.mem.eql(u8, keyword, "import")) {

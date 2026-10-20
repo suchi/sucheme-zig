@@ -30,6 +30,10 @@ const Bignum = value_mod.Bignum;
 const Ratnum = value_mod.Ratnum;
 const Compnum = value_mod.Compnum;
 const Limb = value_mod.Limb;
+const Node = value_mod.Node;
+const Lambda = value_mod.Lambda;
+const Parameterize = value_mod.Parameterize;
+const ParameterBinding = value_mod.ParameterBinding;
 const symbol = @import("symbol.zig");
 const SymbolId = symbol.SymbolId;
 const trace = @import("trace.zig");
@@ -468,12 +472,20 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Record => object.fields.len * @sizeOf(Value),
         MultipleValues => object.items.len * @sizeOf(Value),
         Bignum => object.limbs.len * @sizeOf(Limb),
+        Node => switch (object.*) {
+            .sequence => |nodes| nodes.len * @sizeOf(*const Node),
+            .call => |c| c.operands.len * @sizeOf(*const Node),
+            else => 0,
+        },
+        Parameterize => object.bindings.len * @sizeOf(ParameterBinding),
         else => 0,
     };
 }
 
 /// Whether objects of type `T` own a payload beyond their cell, so that only
 /// their own `create` function may make them.
+/// 節点(`Node` と `Parameterize`)は、ここに入らない。節点は `create` で作り、列を持つ節点は、
+/// 作った後に `allocAttached` の列を持たせる(展開器が、子を決める前に節点を作るため)。
 fn ownsPayload(comptime T: type) bool {
     return switch (T) {
         Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum => true,
@@ -820,6 +832,33 @@ pub const Heap = struct {
         return &cell.value;
     }
 
+    /// A list of `len` elements for a node to hold: the nodes of a sequence or the
+    /// operands of a call (`*const Node`), or the bindings of a `parameterize`
+    /// (`ParameterBinding`), with every element unset.
+    /// Why: 展開器は、子を決める前に節点を作り、列もその時点で作る。列は持ち主の節点の
+    /// ペイロードとして数え、持ち主と一緒に返す(`free`)。呼び出し側は、列を受け取ったら、
+    /// ほかの確保をする前に、ちょうど1つの節点に持たせる。持たせる前に展開が失敗すると、
+    /// 列が返らずに残る。持たせた後に失敗すると、節点ごとごみになり、次の GC が返す。
+    /// 要素は未設定のままで、ごみになった節点の要素は読まれない(`free` が読むのは長さだけ
+    /// である)。展開の途中で GC は走らないので(ADR-0031)、生きている節点が未設定の要素を
+    /// 持つことは無い。
+    pub fn allocAttached(self: *Heap, comptime E: type, len: usize) Error![]E {
+        comptime std.debug.assert(E == *const Node or E == ParameterBinding);
+        const bytes = std.math.mul(usize, len, @sizeOf(E)) catch return error.HeapLimit;
+        try self.reserve(.limit, bytes);
+        const list = try self.backing.alloc(E, len);
+        self.accounted += bytes;
+        if (self.accounted > self.peak) self.peak = self.accounted;
+        return list;
+    }
+
+    /// Gives back a list `allocAttached` returned that no node came to hold.
+    /// 持ち主の節点を作れなかったときだけ使う。
+    pub fn freeDetached(self: *Heap, comptime E: type, list: []E) void {
+        self.accounted -= list.len * @sizeOf(E);
+        self.backing.free(list);
+    }
+
     /// Checks that a cell of `T` and `count` payload elements of `size` bytes
     /// fit under the limit, and returns the bytes they account for.
     /// 桁あふれする大きさは、回り込ませず、上限超過として扱う。
@@ -1052,6 +1091,12 @@ pub const Heap = struct {
                     Record => self.backing.free(cell.value.fields),
                     MultipleValues => self.backing.free(cell.value.items),
                     Bignum => self.backing.free(cell.value.limbs),
+                    Node => switch (cell.value) {
+                        .sequence => |nodes| self.backing.free(nodes),
+                        .call => |c| self.backing.free(c.operands),
+                        else => {},
+                    },
+                    Parameterize => self.backing.free(cell.value.bindings),
                     else => {},
                 }
                 self.backing.destroy(cell);
@@ -1537,11 +1582,23 @@ test "a collection keeps a record, its type and its fields, and frees them all o
     }
 }
 
-test "deinit frees every object, frames and their slots included" {
+/// The code of a procedure that returns `datum`, made in `heap`: a lambda whose
+/// body is a sequence of two nodes, `datum` twice.
+/// 節点はヒープにあり(ADR-0040)、クロージャと継続のフレームが指す先として、テストが使う。
+fn testLambda(heap: *Heap, datum: Value) !*Lambda {
+    const body = try heap.create(Node, .{ .constant = .unspecified_value });
+    const list = try heap.allocAttached(*const Node, 2);
+    body.* = .{ .sequence = list };
+    for (list) |*n| n.* = try heap.create(Node, .{ .constant = datum });
+    return heap.create(Lambda, .{ .arity = 0, .frame_size = 0, .body = body });
+}
+
+test "deinit frees every object, frames and their slots and the lists of nodes included" {
     var heap: Heap = .init(std.testing.allocator, .{});
     const frame = try heap.createFrame(5, null);
-    _ = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
-    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = .{ .node = undefined, .next = 1 } } });
+    const lambda = try testLambda(&heap, .fromFixnum(1));
+    _ = try heap.create(Closure, .{ .lambda = lambda, .env = frame });
+    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = .{ .node = lambda.body, .next = 1 } } });
     _ = try heap.cons(.empty_list_value, .empty_list_value);
     heap.deinit();
     try std.testing.expectEqual(0, heap.accounted);
@@ -1581,22 +1638,47 @@ test "what a root reaches through pairs, closures, frames and continuations surv
     const deep = try heap.cons(.fromFixnum(7), .empty_list_value);
     const frame = try heap.createFrame(2, null);
     frame.values[0] = deep;
-    const closure = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
+    // クロージャのコードは、ヒープの節点を通して、データ(`code_datum`)を指す。
+    const code_datum = try heap.cons(.fromFixnum(8), .empty_list_value);
+    const lambda = try testLambda(&heap, code_datum);
+    const closure = try heap.create(Closure, .{ .lambda = lambda, .env = frame });
     const arg = try heap.create(Args, .{ .value = .{ .closure = closure }, .next = null });
-    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = undefined, .next = 1 } } });
-    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = undefined, .args = arg, .received = 1 } } });
+    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = lambda.body, .next = 1 } } });
+    // 呼び出しの節点は、オペランドの列を持つ。演算子とオペランドは、本体の2つの節点である。
+    const call = try heap.create(Node, .{ .constant = .unspecified_value });
+    const operands = try heap.allocAttached(*const Node, 1);
+    call.* = .{ .call = .{ .operator = lambda.body.sequence[0], .operands = operands } };
+    operands[0] = lambda.body.sequence[1];
+    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = call, .args = arg, .received = 1 } } });
     _ = try heap.cons(.fromFixnum(0), .empty_list_value);
     const garbage_frame = try heap.createFrame(100, null);
     _ = garbage_frame;
+    _ = try testLambda(&heap, .fromFixnum(9));
     const before = heap.count;
-    // ルートは継続だけで、残りはそこからたどって到達する。
+    // ルートは継続だけで、残りはそこからたどって到達する。ごみは、ペア、フレーム、使われない
+    // コード(lambda、本体、2つの節点)の6つである。
     heap.collect(TestRoots{ .kont = top });
-    try std.testing.expectEqual(before - 2, heap.count);
+    try std.testing.expectEqual(before - 6, heap.count);
     try std.testing.expectEqual(7, frame.values[0].asPair().?.car.asFixnum().?);
     try std.testing.expectEqual(frame, closure.env.?);
     try std.testing.expectEqual(arg, top.step.call.args.?);
-    try std.testing.expectEqual(cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
-        cellBytes(Args) + 2 * cellBytes(Kont), heap.accounted);
+    try std.testing.expectEqual(8, closure.lambda.body.sequence[0].constant.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(2 * cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
+        cellBytes(Args) + 2 * cellBytes(Kont) + cellBytes(Lambda) + 4 * cellBytes(Node) + 3 * @sizeOf(*const Node), heap.accounted);
+}
+
+test "a node gives back the list it holds when it is collected, and a list no node came to hold can be given back" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const lambda = try testLambda(&heap, .fromFixnum(1));
+    _ = lambda;
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node), heap.accounted);
+    const bindings = try heap.allocAttached(ParameterBinding, 3);
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node) + 3 * @sizeOf(ParameterBinding), heap.accounted);
+    heap.freeDetached(ParameterBinding, bindings);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
 }
 
 test "an unreachable frame takes its slots off the account with it" {
