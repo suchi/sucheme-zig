@@ -3,15 +3,28 @@
 # かかるので `zig build test-scheme -Dslow=true` のときだけ走り、全コミットでは走らない
 # (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
 # tests/scheme/0230-list-procedures.txt の「長いリスト」のケースにある。
-# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。ただし、`# modes:` の行が
+# あるケースは、元の規模を既定モードだけで走らせ、直後の縮小版を GC のモードだけで
+# 走らせる。1ステップごとの GC は、元の規模では1ケースに数分かかるためである
+# (docs/plans/0022-layer2-measurement.md)。縮小版の規模は、元の5分の1である。
 
 # 30万個のリストを、`map` と `append` と `list-copy` と `reverse` で処理する。
+# modes: default
 (import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define l (iota 300000 '())) (list (length (map (lambda (x) x) l)) (length (append l l)) (length (list-copy l)) (car (reverse l)) (list-ref l 299999) (length (list-tail l 100000)))
 (300000 600000 300000 300000 300000 200000)
 
+# modes: stress
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define l (iota 60000 '())) (list (length (map (lambda (x) x) l)) (length (append l l)) (length (list-copy l)) (car (reverse l)) (list-ref l 59999) (length (list-tail l 20000)))
+(60000 120000 60000 60000 60000 40000)
+
 # 複数のリストの `map` は、1回ごとに `apply` を通る。
+# modes: default
 (import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define l (iota 200000 '())) (apply + (map + l l))
 40000200000
+
+# modes: stress
+(import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define l (iota 40000 '())) (apply + (map + l l))
+1600040000
 
 # `for-each` は、継続を伸ばさずに回る。
 (import (sucheme procedures)) (define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc)))) (define count 0) (for-each (lambda (x) (set! count (+ count 1))) (iota 300000 '())) count
