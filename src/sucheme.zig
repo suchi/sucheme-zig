@@ -1635,6 +1635,30 @@ test "the work of nested modifiers of an import counts against the limit" {
     try std.testing.expectEqualStrings("7\n", w.buffered());
 }
 
+test "the work of nested modifiers counts against the limit when the library they modify is loaded from its file by the same import" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/big.sld", try bigLibrary(a, 200));
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithFiles(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    defer interp.deinit();
+    // ライブラリのファイルの読み込みは、本体を展開して走らせる。展開が外側の計上と検査の状態を
+    // 戻さなければ、読み込みのあとの修飾子の作業は、検査されずに伸びる。
+    var spec: std.Io.Writer.Allocating = .init(a);
+    try spec.writer.writeAll("(import ");
+    for (0..400) |_| try spec.writer.writeAll("(prefix ");
+    try spec.writer.writeAll("(t big)");
+    for (0..400) |_| try spec.writer.writeAll(" p)");
+    try spec.writer.writeAll(")");
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, spec.written(), &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+}
+
 test "the data of a quoted list survives the collections between the lines that use it" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
