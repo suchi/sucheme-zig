@@ -167,7 +167,7 @@ ADR-0031 は、GC を機械のステップの境目と、`Interpreter` がフォ
 ライブラリごとの表と REPL の表は、複製のまま、ヒープの上限に常に数える。2l の `Charged` は、展開の最中だけ数える計上(`Heap.external`)なので、そのままでは使えない。延長として、常に数える計上を足す。
 
 - `Heap` に、常駐の計上 `resident` を足す。`Heap.held` が `accounted` と `symbols.charged` に加えて `resident` を含めるので、上限の検査、GC の閾値、余裕の無さの判定(`exhausted`)のすべてに入る。
-- `Charged` に、どちらの計上に数えるかを持たせる(`.expansion` は今の `external`、`.resident` は新しい `resident`)。常駐の割り当て器は1つで、`Context` が持つ。
+- `Charged` に、どちらの計上に数えるかを持たせる(`.expansion` は今の `external`、`.resident` は新しい `resident`)。常駐の割り当て器は1つで、`Context` が持つ。実装(3o-1)では、`Charged` は変えず、`Heap.residentAllocator` を足した。割り当て器は呼び出しのたびに `Heap` から作り、どこにも保存しない(`Context` は値として動くので、`Heap` を指す割り当て器を保存すると古いアドレスを指す)。
 - 常駐の割り当て器の下は、永続アリーナではなく、ヒープの `backing`(個別に解放できる割り当て器)にする。アリーナの上で数えると、ハッシュ表が伸びたときに、古い領域の分を戻してもメモリは残るので、数えた量が実際より少なくなる。そのため、表を `Context.deinit` で解放する処理を足す(`Global.deinit`、`Registry.deinit`。今はアリーナを捨てて済ませている)。
 - 対象は、ライブラリの表と REPL の表(`env.Global`)、`Registry` の3つのリスト、`displaced_cells` と `replaced`、`sources` である。`env.Core` は、初期化で大きさが決まり、伸びないので、対象にしない。
 - 断られた確保は `error.OutOfMemory` に見える。2l と同じく、断られたことを `Heap` の印で見分け、`define-library` と `import` の入口で `heap limit exceeded` に変える。
@@ -296,8 +296,8 @@ ADR の番号は、並行して計画書を書いている別のレーンと衝�
 
 | PR | 状態 | PR の番号 |
 | --- | --- | --- |
-| 設計(この文書と ADR-0040) | 合意済み(2026-10-20) | [#130](https://github.com/suchi/sucheme-zig/pull/130) |
-| 3o-1 | 未着手 | - |
+| 設計(この文書と ADR-0040) | マージ済み(2026-10-20) | [#130](https://github.com/suchi/sucheme-zig/pull/130) |
+| 3o-1 | 実装済み(PR 作成前)。最上位の表、登録表、読んでいる最中のファイルの列を常駐の計上に、`import` の集合の評価の作業を展開と同じ計上に入れた。完了条件の入力のうち、1500 個の入力は、計上が実際の量に近づいた結果、上限に収まり、エラーにならない(最大常駐サイズ約 161 MiB)。4000 個に増やすと `heap limit exceeded` で終わる。入れ子の `prefix` は `heap limit exceeded` で終わる | - |
 | 3o-2 | 未着手 | - |
 | 3o-3 | 未着手 | - |
 | 3o-4 | 未着手 | - |
