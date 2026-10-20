@@ -84,7 +84,15 @@ fn blockCommentEnd(text: []const u8, pos: usize) SplitError!usize {
 }
 
 /// Returns the end of the datum that starts at `pos`, which is not atmosphere.
+/// 終わりは必ず `pos` より後ろにある。長さ0のデータを返すと、呼び出し側のループが
+/// 同じ位置で回り続けるので、ここで確かめて、止まらない走査を失敗に変える。
 fn datumEnd(text: []const u8, pos: usize) SplitError!usize {
+    const end = try datumEndUnchecked(text, pos);
+    std.debug.assert(end > pos);
+    return end;
+}
+
+fn datumEndUnchecked(text: []const u8, pos: usize) SplitError!usize {
     switch (text[pos]) {
         '(', '[' => return listEnd(text, pos),
         ')', ']' => return error.Unbalanced,
@@ -217,6 +225,16 @@ test "a bracket inside a line comment does not count" {
 
 test "a bracket character does not count" {
     try expectForms("(list #\\( #\\) #\\x28) (b)", &.{ "(list #\\( #\\) #\\x28)", "(b)" });
+}
+
+test "a bracket character alone does not open or close a list" {
+    try expectForms("(a #\\() (b)", &.{ "(a #\\()", "(b)" });
+    try expectForms("(#\\)) (b)", &.{ "(#\\))", "(b)" });
+}
+
+test "a vertical bar ends an atom" {
+    try expectForms("a|b|", &.{ "a", "|b|" });
+    try expectForms("(a|)|) (b)", &.{ "(a|)|)", "(b)" });
 }
 
 test "a character name ends at a delimiter" {
