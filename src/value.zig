@@ -943,15 +943,19 @@ pub const Kont = struct {
 
     pub const Step = union(enum) {
         /// The value is the condition of this `if`.
-        branch: *const If,
-        /// The value is dropped, and these nodes run next.
+        /// 節点は `Node.@"if"` の変種でなければならない。フレームは節点の内部の部分でなく、
+        /// 節点そのものを指す。節点が GC ヒープに移ったときに、フレームから節点を辿れるようにするためである。
+        /// 次の `local_set` `local_define` `global_set` `global_define` `call` も同じである。
+        /// 種類と変種の対応は型では守られず、取り違えると安全ビルドで共用体の変種の検査が止める。
+        branch: *const Node,
+        /// The value is dropped, and the nodes of this sequence run next.
         /// 空にならない。シーケンスの最後のノードは、この継続フレームがすでに無い状態で
         /// 実行される。これにより、末尾位置の呼び出しはフレームを消費しない。
-        sequence: []const *const Node,
-        local_set: *const LocalAssign,
-        local_define: *const LocalAssign,
-        global_set: *const GlobalAssign,
-        global_define: *const GlobalAssign,
+        sequence: SequenceStep,
+        local_set: *const Node,
+        local_define: *const Node,
+        global_set: *const Node,
+        global_define: *const Node,
         /// The value is the next one of the call: the operator first, then each
         /// operand.
         /// `args` には、それより前に届いた値が入る。
@@ -1123,8 +1127,19 @@ pub const Kont = struct {
         continuable: bool,
     };
 
+    /// Where a `sequence` is: the node, and the position of the node that runs next.
+    /// Why: 列の残りを部分スライスで持つと、所有する節点を辿れない。節点と位置で持てば、
+    /// フレームから列の節点に到達できる。
+    pub const SequenceStep = struct {
+        /// A `Node.sequence`.
+        node: *const Node,
+        /// Less than the length of the sequence, and not zero.
+        next: u32,
+    };
+
     pub const CallStep = struct {
-        call: *const Call,
+        /// A `Node.call`.
+        call: *const Node,
         args: ?*const Args,
         /// How many values `args` holds.
         received: usize,
@@ -1334,7 +1349,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 /// IR, which until a later slice stays where the expander allocated it, and the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
+pub const code_types = [_]type{ Node, Lambda, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum };
@@ -1904,10 +1919,11 @@ test "finding the root links the promises it passes straight to the root" {
 
 test "only the frames that take one value ask for exactly one" {
     const node: Node = .{ .constant = .unspecified_value };
-    const if_node: If = .{ .condition = &node, .consequent = &node, .alternative = null };
-    const assign: LocalAssign = .{ .address = .{ .depth = 0, .index = 0 }, .name = @fromBackingInt(@intCast(0)), .value = &node };
-    const global: GlobalAssign = .{ .cell = undefined, .value = &node };
-    const call: Call = .{ .operator = &node, .operands = &.{} };
+    const if_node: Node = .{ .@"if" = .{ .condition = &node, .consequent = &node, .alternative = null } };
+    const assign: Node = .{ .local_set = .{ .address = .{ .depth = 0, .index = 0 }, .name = @fromBackingInt(@intCast(0)), .value = &node } };
+    const global: Node = .{ .global_set = .{ .cell = undefined, .value = &node } };
+    const call: Node = .{ .call = .{ .operator = &node, .operands = &.{} } };
+    const sequence: Node = .{ .sequence = &.{ &node, &node } };
     const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
     const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
     var parameter: Parameter = .{ .value = .unspecified_value, .converter = null };
@@ -1928,7 +1944,7 @@ test "only the frames that take one value ask for exactly one" {
     };
     for (asks_one) |step| try std.testing.expect(step.requiresOneValue());
     const takes_any = [_]Kont.Step{
-        .{ .sequence = &.{&node} },
+        .{ .sequence = .{ .node = &sequence, .next = 1 } },
         .{ .dynamic_exit = null },
         .{ .handler_return = .{ .dyn = null, .raised = .unspecified_value, .continuable = true } },
         .{ .wind_before = .{ .point = &point, .thunk = .unspecified_value } },
@@ -2019,8 +2035,9 @@ test "a node tree and a continuation chain can be built from the layouts" {
     const call: Node = .{ .call = .{ .operator = &reference, .operands = &operands } };
     try std.testing.expectEqual(1, call.call.operands[0].constant.asFixnum().?);
     try std.testing.expectEqual(2, call.call.operator.local_ref.address.index);
-    const base: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .branch = &.{ .condition = &one, .consequent = &one, .alternative = null } } };
-    const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call.call, .args = null, .received = 0 } } };
+    const branch: Node = .{ .@"if" = .{ .condition = &one, .consequent = &one, .alternative = null } };
+    const base: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .branch = &branch } };
+    const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call, .args = null, .received = 0 } } };
     try std.testing.expectEqual(2, top.depth);
     try std.testing.expectEqual(&base, top.next.?);
 }
