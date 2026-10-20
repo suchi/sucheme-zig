@@ -1172,6 +1172,16 @@ test "next rejects a backslash in an identifier between vertical lines that begi
     }
 }
 
+test "next makes no symbol whose name is not UTF-8, when it is given bytes that are not" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 通常の入口は入力全体を先に検査するが、リーダを直接使うとき(ファズ)は、不正なバイトが
+    // 縦棒の間に来うる。文字列と同じく、名前にする前に確かめる。
+    for ([_][]const u8{ "|\xff|", "|a\xc3|", "(|\xed\xa0\x80|)" }) |src| {
+        try std.testing.expectError(error.InvalidUtf8, f.readOne(src));
+    }
+}
+
 test "next reads past the datum after a datum comment" {
     var f: Fixture = .init();
     defer f.deinit();
