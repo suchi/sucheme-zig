@@ -532,6 +532,8 @@ pub const Heap = struct {
     exhausted: bool = false,
     /// How many collections have run.
     collections: usize = 0,
+    /// How many times the markings have rescanned the heap, over all collections.
+    rescans: usize = 0,
     /// How many times `shouldCollect` was asked since the last collection, and
     /// in all.
     /// ストレスモードだけが数える。
@@ -967,6 +969,9 @@ pub const Heap = struct {
         var marker: Marker = .{ .heap = self, .work = self.work };
         roots.mark(&marker);
         marker.finish();
+        // マークの途中でリストを伸ばしていたら、オプションの大きさに戻す。伸ばした分は
+        // 上限の外のメモリなので、次の GC まで持ち越さない。
+        self.ensureWork();
         self.sweep();
         self.symbols.sweep(self.backing);
         self.collections += 1;
@@ -1112,12 +1117,18 @@ pub const Heap = struct {
 /// 到達する。
 ///
 /// オブジェクトに到達するとマークを付け、余地があれば、後で走査するためのリストに
-/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの容量は、
-/// オプションで決まる。到達したときリストが満杯なら、マークだけ付けて、取りこぼした
+/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの初めの容量は、
+/// オプションで決まる。到達したときリストが満杯なら、ヒープの外で倍の大きさに
+/// 確保し直す。確保できないとき(容量0の設定を含む)は、マークだけ付けて、取りこぼした
 /// ことを記録する。`finish` は、取りこぼしがなくなるまで、ヒープ内のマーク済みの
 /// 全オブジェクトを走査し直す。マーク済みのオブジェクトは、リストに載れば順に、
 /// 載らなければ再走査で走査されるので、漏れるものはない。リストの大きさが変えるのは、
 /// マークにかかる時間であって、マークする対象ではない。
+/// Why: 再走査の1回は、オブジェクトの一覧を新しい順に1回なめるだけなので、参照が
+/// 新しいオブジェクトの方向へ伸びる鎖では、1回で進む深さがリストの大きさ程度になり、
+/// 再走査の回数が鎖の長さに比例する。展開器は親の節点を子より先に作るので、深く
+/// 入れ子になったコードがこの形になる(3o-3)。伸ばせば、確保が成功する限り再走査は
+/// 起きない。各オブジェクトは1回しか載らないので、リストはマークされる数を超えない。
 pub const Marker = struct {
     heap: *Heap,
     work: []*Header,
@@ -1153,6 +1164,7 @@ pub const Marker = struct {
         const header = &cell.header;
         if (header.marked) return;
         header.marked = true;
+        if (self.len == self.work.len) self.grow();
         if (self.len < self.work.len) {
             self.work[self.len] = header;
             self.len += 1;
@@ -1168,10 +1180,22 @@ pub const Marker = struct {
         self.heap.symbols.mark(id);
     }
 
+    /// Doubles the list, outside the account of the heap, if the memory is there.
+    /// 容量0の設定はリストを使わない設定なので、伸ばさない。確保に失敗したら、
+    /// 元のリストのまま続ける(`realloc` は失敗のとき元を残す)。
+    fn grow(self: *Marker) void {
+        if (self.work.len == 0) return;
+        const len = std.math.mul(usize, self.work.len, 2) catch return;
+        const bigger = self.heap.backing.realloc(self.work, len) catch return;
+        self.work = bigger;
+        self.heap.work = bigger;
+    }
+
     fn finish(self: *Marker) void {
         self.drain();
         while (self.lost) {
             self.lost = false;
+            self.heap.rescans += 1;
             var it = self.heap.objects;
             while (it) |header| : (it = header.next) {
                 if (header.marked) self.scan(header);
@@ -1810,6 +1834,43 @@ test "when the marking list cannot be allocated the marking rescans and still fi
     heap.backing = std.testing.allocator;
     try std.testing.expectEqual(0, heap.work.len);
     try std.testing.expectEqual(2, heap.count);
+}
+
+/// Makes a list of `n` pairs whose links all run to newer pairs, and returns its head.
+/// 再走査の1回は新しい順にしか進まないので、この向きの鎖は、リストがあふれると
+/// 再走査の回数が鎖の長さに比例する。
+fn chainToNewer(heap: *Heap, comptime n: usize) !Value {
+    var cells: [n]Value = undefined;
+    for (&cells, 0..) |*cell, i| cell.* = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+    for (cells[0 .. n - 1], cells[1..]) |from, to| from.asPair().?.cdr = to;
+    return cells[0];
+}
+
+test "the marking list grows when it fills, so a chain to newer objects needs no rescan, and goes back to its size" {
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    const head = try chainToNewer(&heap, 200);
+    // `branch` を走査すると、`head` と2つ目のペアの2つを積むので、容量1を超える。
+    const branch = try heap.cons(head, try heap.cons(head, head));
+    heap.collect(TestRoots{ .values = &.{branch} });
+    try std.testing.expectEqual(202, heap.count);
+    try std.testing.expectEqual(0, heap.rescans);
+    try std.testing.expectEqual(1, heap.work.len);
+}
+
+test "when the marking list cannot grow the marking rescans and still finishes" {
+    // 最初のリストの確保は通し、伸ばすための確保(その場の伸長と、新しい確保)を失敗させる。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    const head = try chainToNewer(&heap, 200);
+    const branch = try heap.cons(head, try heap.cons(head, head));
+    heap.backing = failing.allocator();
+    heap.collect(TestRoots{ .values = &.{branch} });
+    heap.backing = std.testing.allocator;
+    try std.testing.expectEqual(202, heap.count);
+    try std.testing.expect(heap.rescans > 0);
+    try std.testing.expectEqual(1, heap.work.len);
 }
 
 test "in stress mode every safe point of a short run collects, and the gap grows as the run goes on" {
