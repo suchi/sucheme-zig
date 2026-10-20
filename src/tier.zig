@@ -8,7 +8,9 @@
 //! smaller twin in the quick tier that runs the same logic.
 //!
 //! A test that is skipped says so: the summary of the run counts it as
-//! skipped, so a quick run never hides that the rest exists.
+//! skipped in the summary of `zig build test --summary all`, which plain
+//! `zig build test` does not print on success. The Scheme runner prints the
+//! count of the cases it left out.
 
 const build_options = @import("build_options");
 

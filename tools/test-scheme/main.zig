@@ -127,9 +127,32 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try err.print("test-scheme: {d} passed, {d} failed\n", .{ passed, failed });
+    // Said out loud, so a quick run never reads as the whole suite.
+    if (!tier.slow) {
+        const skipped = try countCases(gpa, io, cwd, slow_dir);
+        try err.print("test-scheme: {d} cases in {s} not run; pass -Dslow=true to run them\n", .{ skipped, slow_dir });
+    }
     try err.flush();
     const status = exitStatus(passed, failed);
     if (status != 0) std.process.exit(status);
+}
+
+/// How many cases the `.txt` files of `dir_name` hold, without running them.
+/// A file that does not parse counts as none; the slow tier reports it.
+fn countCases(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, dir_name: []const u8) !usize {
+    var dir = try cwd.openDir(io, dir_name, .{ .iterate = true });
+    defer dir.close(io);
+    var total: usize = 0;
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) continue;
+        const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir_name, entry.name });
+        const body = cwd.readFileAlloc(io, path, gpa, .unlimited) catch continue;
+        var cases: std.ArrayList(Case) = .empty;
+        parse(gpa, body, &cases) catch continue;
+        total += cases.items.len;
+    }
+    return total;
 }
 
 /// The exit status for a run. Finding no case at all is a failure, because a

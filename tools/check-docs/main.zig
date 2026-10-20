@@ -359,6 +359,16 @@ fn linkTargetInRow(row: []const u8) ?[]const u8 {
 /// a command move to one driven by a schedule and stay green.
 const per_commit_workflow = ".github/workflows/ci.yml";
 
+/// The workflow that runs the slow tier (docs/plans/0007-test-tiers.md), and the
+/// commands the table's slow-tier row names. Not read from the table's cell,
+/// which holds two commands in one row; a command dropped from the workflow
+/// left every check green while the tier ran nowhere.
+const slow_workflow = ".github/workflows/full.yml";
+const slow_commands = [_][]const u8{
+    "zig build test -Dslow=true",
+    "zig build test-scheme -Dslow=true",
+};
+
 /// A row of the verification command table, as this check reads it.
 const CommandRow = struct {
     command: []const u8,
@@ -396,6 +406,7 @@ fn checkCiRunsTheTable(
     // makes this check's reading of that file untrustworthy. The commands are
     // collected only from the one that runs per commit.
     var run_lines: std.ArrayList([]const u8) = .empty;
+    var slow_lines: std.ArrayList([]const u8) = .empty;
     // The keys and values the per-commit workflow actually carries, so the ones
     // that decide whether it runs at all can be held to a closed set.
     var seen: std.ArrayList(struct { key: []const u8, value: []const u8 }) = .empty;
@@ -500,7 +511,24 @@ fn checkCiRunsTheTable(
                 value = value[1 .. value.len - 1];
             }
             if (per_commit) try run_lines.append(gpa, value);
+            if (std.mem.eql(u8, path, slow_workflow)) try slow_lines.append(gpa, value);
         }
+    }
+
+    // The slow tier: the table names both commands, and the slow workflow runs
+    // both. Unlike the per-commit rows this does not follow the stage.
+    for (slow_commands) |command| {
+        var quoted_buf: [96]u8 = undefined;
+        const quoted = std.fmt.bufPrint(&quoted_buf, "`{s}`", .{command}) catch unreachable;
+        if (std.mem.indexOf(u8, table, quoted) == null) rep.fail(
+            "AGENTS.md's table does not name `{s}`, the slow tier's command",
+            .{command},
+        );
+        var ran = false;
+        for (slow_lines.items) |line| {
+            if (runsCommand(line, command)) ran = true;
+        }
+        if (!ran) rep.fail("`{s}` is the slow tier's command, and {s} does not run it", .{ command, slow_workflow });
     }
 
     // The keys that decide whether the per-commit workflow runs at all, and the

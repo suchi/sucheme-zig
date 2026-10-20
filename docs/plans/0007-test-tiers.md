@@ -62,7 +62,7 @@ flowchart LR
 選択肢が 2 つある。勧める案を先頭に置く。
 
 1. 実行時に飛ばす。遅いテストを `slow()` で守り、ビルドのオプション(`-Dslow`)が無いときは `error.SkipZigTest` を返す。スキームのテストは、遅いケースを `tests/scheme-slow/` に置き、同じ step を `-Dslow=true` で走らせたときだけ、ランナーが読む。
-   - 長所: テストのコードが 1 か所に残る。飛ばしたテストは、実行の概要(skipped)に数が出て、黙って消えない。`build.zig` の「検証が黙って止まる」の検査([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))と同じ考え方で、層1 の概要に skipped の件数が出る。
+   - 長所: テストのコードが 1 か所に残る。飛ばしたテストの数は、単体テストでは `zig build test --summary all` の概要(skipped)に、スキームのテストではランナーの最後の行に出る。`--summary all` を付けない `zig build test` は成功時に何も出さない。層2 の step が CI で走り続けることは、`check-docs` が `full.yml` の run 行と照合する。
    - 短所: `zig build test` が飛ばした件数を、読む人が気にする必要がある。
 2. ファイルを分ける。遅いテストを別のファイル(`src/*_slow.zig`)に移し、別の step の対象にする。
    - 長所: 層1 に遅いテストが入る余地が構造上ない。
