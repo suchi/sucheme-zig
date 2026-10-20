@@ -1710,32 +1710,55 @@ test "the imports of libraries that one import loads from their files count toge
     try std.testing.expectEqual(0, interp.ctx.heap.external);
 }
 
+/// How many names the library of `PrefixedImport` exports.
+const prefixed_import_names = 500;
+
+/// What happens when a library of `prefixed_import_names` names is defined and
+/// then imported with a prefix, under a heap of `limit` bytes.
+const PrefixedImport = enum { definition_refused, import_refused, imported };
+
+/// Tries the import of `PrefixedImport` under `limit`; when the import is refused,
+/// checks that none of the names it brings is bound at the REPL's top level.
+fn tryPrefixedImport(a: std.mem.Allocator, source: []const u8, limit: usize) !PrefixedImport {
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = limit });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    interp.evalPrint(a, source, &discard.writer) catch return .definition_refused;
+    interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
+        try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+        for (0..prefixed_import_names) |i| {
+            const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
+            const id = interp.ctx.heap.symbols.lookup(prefixed) orelse continue;
+            try std.testing.expectEqual(null, interp.ctx.globals.lookup(id));
+        }
+        return .import_refused;
+    };
+    return .imported;
+}
+
 test "an import the limit refuses part way through binding binds none of its names" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const source = try bigLibrary(a, 2000);
-    // 上限を少しずつ上げて、`import` が断られる回を探す。断られる場所は、集合の評価の途中か、
-    // 束縛の途中である。どちらの回でも、REPL の最上位に新しい名前が1つも残ってはならない。
+    const source = try bigLibrary(a, prefixed_import_names);
+    // 上限を上げながら、定義が通り `import` が断られる回を探す。断られる場所は、集合の評価の
+    // 途中か、束縛の途中(表を伸ばす確保)である。どの回でも、REPL の最上位に新しい名前が1つも
+    // 残ってはならない。GC の閾値の効き方で、定義が通る上限は単調でないので、二分探索は
+    // 使わない。定義が初めて通るまでは粗く、そのあとは細かく進める。
     var refused: usize = 0;
-    var limit: usize = 192 * 1024;
-    while (limit < 8 * 1024 * 1024) : (limit += if (refused == 0) 4 * 1024 else 512) {
-        var interp: Interpreter = undefined;
-        try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = limit });
-        defer interp.deinit();
-        var discard: std.Io.Writer.Discarding = .init(&.{});
-        interp.evalPrint(a, source, &discard.writer) catch continue;
-        interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
-            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
-            refused += 1;
-            for (0..2000) |i| {
-                const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
-                const id = interp.ctx.heap.symbols.lookup(prefixed) orelse continue;
-                try std.testing.expectEqual(null, interp.ctx.globals.lookup(id));
-            }
-            continue;
-        };
-        break;
+    var limit: usize = 64 * 1024;
+    // 粗い歩みで、定義が通る最初の上限を探し、そこから細かく歩いて、断られる帯を通り抜ける。
+    while (limit < 4 * 1024 * 1024) : (limit += 8 * 1024) {
+        if (try tryPrefixedImport(a, source, limit) != .definition_refused) break;
+    }
+    limit -= 8 * 1024;
+    while (limit < 4 * 1024 * 1024) : (limit += 256) {
+        switch (try tryPrefixedImport(a, source, limit)) {
+            .definition_refused => if (refused != 0) break,
+            .import_refused => refused += 1,
+            .imported => break,
+        }
     }
     try std.testing.expect(refused > 0);
 }
