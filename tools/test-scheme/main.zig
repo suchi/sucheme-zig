@@ -589,9 +589,13 @@ test "a default-only case needs a stress-only case right after it" {
     try std.testing.expectEqual(null, unpairedDefaultOnly(&.{ mk(.both), mk(.default), mk(.stress), mk(.both) }));
     try std.testing.expectEqual(1, unpairedDefaultOnly(&.{ mk(.both), mk(.default), mk(.both) }));
     try std.testing.expectEqual(0, unpairedDefaultOnly(&.{mk(.default)}));
+    // 最初の default の直後が default なので、最初の default が孤立として拾われる。
+    try std.testing.expectEqual(0, unpairedDefaultOnly(&.{ mk(.default), mk(.default), mk(.stress) }));
     // 縮小版だけが残ると、元の規模はどのモードでも走らない。
     try std.testing.expectEqual(0, unpairedStressOnly(&.{ mk(.stress), mk(.both) }));
     try std.testing.expectEqual(null, unpairedStressOnly(&.{ mk(.default), mk(.stress) }));
+    // 先頭でない stress 専用でも、前が default 専用でなければ孤立として拾われる。
+    try std.testing.expectEqual(1, unpairedStressOnly(&.{ mk(.both), mk(.stress) }));
 }
 
 test "parse reads a CRLF file the same as an LF one" {
