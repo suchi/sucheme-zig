@@ -22,6 +22,7 @@
 | [0016-phase3-scheme-stdlib.md](0016-phase3-scheme-stdlib.md) | 段階3(Scheme による標準ライブラリ)のスライスへの分割と実装計画 |
 | [0017-parallel-lanes.md](0017-parallel-lanes.md) | 段階3の残りから段階8までを、レーンに分けて並行に進める再計画 |
 | [0018-phase4-numeric-tower-unicode.md](0018-phase4-numeric-tower-unicode.md) | 段階4(数値塔と Unicode)のスライスへの分割、レーンの間の関数の署名、計上の設計 |
+| [0020-conformance-harness-early.md](0020-conformance-harness-early.md) | 段階6の前倒し(レーン L5): 準拠スイートの取り込み、`(chibi test)` の最小実装、実行器、準拠マトリクスへの結果 |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
