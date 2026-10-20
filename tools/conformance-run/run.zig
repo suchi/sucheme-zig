@@ -78,6 +78,9 @@ pub const RunError = error{
 /// The library the runner reads the records from. The suite does not import it.
 const results_library = "(sucheme test-results)";
 
+/// The prefix of the bindings the runner imports for itself, which the suite does not redefine.
+const runner_prefix = "%conformance-run:";
+
 /// Runs `text`, the whole suite. `required` is every identifier R7RS requires of a
 /// standard library. Everything returned is in `gpa`.
 pub fn runSuite(gpa: std.mem.Allocator, text: []const u8, required: []const []const u8) RunError!SuiteResult {
@@ -112,7 +115,7 @@ pub fn runSuite(gpa: std.mem.Allocator, text: []const u8, required: []const []co
         try header.append(gpa, ' ');
         try header.appendSlice(gpa, lib);
     }
-    try header.appendSlice(gpa, " " ++ results_library ++ ")");
+    try header.appendSlice(gpa, " " ++ results_library ++ " (prefix (only (scheme base) vector-ref) " ++ runner_prefix ++ "))");
 
     var state: State = .{
         .gpa = gpa,
@@ -173,6 +176,9 @@ const State = struct {
     records: usize = 0,
     /// その節で、評価しなかったか誤りで終わった定義の名前。
     broken: std.StringHashMapUnmanaged(void) = .empty,
+    /// その節に、評価しなかったか誤りで終わった形式が1つでもあるか。マクロが作る定義のように、
+    /// 名前を静的に取り出せない定義の連鎖を見るために使う。
+    any_broken: bool = false,
     /// その節で定義された名前と、前の節までに定義された名前。
     defined_here: std.StringHashMapUnmanaged(void) = .empty,
     defined_before: std.StringHashMapUnmanaged(void) = .empty,
@@ -184,6 +190,7 @@ const State = struct {
         self.interp = interp;
         self.records = 0;
         self.broken = .empty;
+        self.any_broken = false;
         // スイートの `import` は、ここで1回だけ評価する。解決できるライブラリだけに絞ってある。
         if (try evalQuietly(interp, self.header) == null) return error.QueryFailed;
     }
@@ -234,7 +241,7 @@ const State = struct {
     fn evaluate(self: *State, c: split.Chunk, form: []const u8) RunError!void {
         const interp = self.interp.?;
         var symbols: std.ArrayList([]const u8) = .empty;
-        try symbolsIn(self.gpa, form, &symbols);
+        try freeSymbols(self.gpa, form, .code, &symbols);
         for (symbols.items) |s| {
             if (contains(self.required, s) and !interp.isBound(s)) {
                 try self.markBroken(form);
@@ -274,24 +281,37 @@ const State = struct {
     }
 
     /// Counts the records the last form added.
+    /// 記録は `(sucheme test-results)` の手続きと、接頭辞を付けて読み込んだ `vector-ref` だけで読む。
+    /// スイートが `length` や `vector-ref` を再定義しても、記録が黙って数えられなくならないためである。
+    /// 記録は `#(節の名前 テストの式 判定 期待した値 得た値)` である。
     fn readRecords(self: *State, c: split.Chunk) RunError!void {
         const interp = self.interp.?;
-        const total = std.fmt.parseInt(usize, try query(self.gpa, interp, "(length (test-results))"), 10) catch return error.QueryFailed;
+        const total = std.fmt.parseInt(usize, try query(self.gpa, interp, "(test-results-count)"), 10) catch return error.QueryFailed;
         while (self.records < total) : (self.records += 1) {
             const i = self.records;
-            const status = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(vector-ref (list-ref (test-results) {d}) 2)", .{i}));
-            const group_text = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(vector-ref (list-ref (test-results) {d}) 0)", .{i}));
+            const group_text = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(" ++ runner_prefix ++ "vector-ref (test-results-ref {d}) 0)", .{i}));
             const group = if (group_text.len >= 2 and group_text[0] == '"') group_text[1 .. group_text.len - 1] else self.current();
             // 記録の節の名前は、実行器が開いた節の名前のどれかでなければならない。
             const name = self.known(group) orelse return error.QueryFailed;
+            const status = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(" ++ runner_prefix ++ "vector-ref (test-results-ref {d}) 2)", .{i}));
             if (std.mem.eql(u8, status, "pass")) {
                 self.countsOf(name).passed += 1;
                 continue;
             }
-            const detail = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(list-ref (test-results) {d})", .{i}));
-            try self.checkCrossSection(detail);
+            const record = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(test-results-ref {d})", .{i}));
+            if (std.mem.eql(u8, status, "error")) {
+                const actual = try query(self.gpa, interp, try std.fmt.allocPrint(self.gpa, "(" ++ runner_prefix ++ "vector-ref (test-results-ref {d}) 4)", .{i}));
+                try self.checkCrossSection(actual);
+                // 同じ節に壊れた定義があるとき、テストの中の未束縛の誤りは、その連鎖として数える。
+                // 定義は、マクロの展開の中にあると、名前を静的に取り出せないためである。
+                if (self.any_broken and std.mem.indexOf(u8, actual, unbound_marker) != null) {
+                    self.countsOf(name).cascaded += 1;
+                    try self.failures.append(self.gpa, .{ .section = name, .line = c.line, .kind = .cascaded, .detail = record });
+                    continue;
+                }
+            } else if (!std.mem.eql(u8, status, "fail")) return error.QueryFailed;
             self.countsOf(name).failed += 1;
-            try self.failures.append(self.gpa, .{ .section = name, .line = c.line, .kind = .failed, .detail = detail });
+            try self.failures.append(self.gpa, .{ .section = name, .line = c.line, .kind = .failed, .detail = record });
         }
     }
 
@@ -301,19 +321,32 @@ const State = struct {
     }
 
     fn markBroken(self: *State, form: []const u8) RunError!void {
+        self.any_broken = true;
         for (try definedNames(self.gpa, form)) |name| try self.broken.put(self.gpa, name, {});
     }
 
     /// Fails when an error names, as unbound, something an earlier section defined.
+    /// 前の節の名前のほうから照らす。名前には `>` や空白(縦棒の識別子)が入りうるので、
+    /// 説明の文字列から名前を切り出すと、切り方を誤って見逃す。名前の後ろは、説明の終わりか、
+    /// 条件の文字列を閉じる `"` でなければならない。
     fn checkCrossSection(self: *State, message: []const u8) RunError!void {
-        const marker = "unbound variable: ";
-        const at = std.mem.indexOf(u8, message, marker) orelse return;
-        const rest = message[at + marker.len ..];
-        const end = std.mem.indexOfAny(u8, rest, "\" )>") orelse rest.len;
-        const name = rest[0..end];
-        if (self.defined_before.contains(name) and !self.defined_here.contains(name)) return error.CrossSectionReference;
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, message, pos, unbound_marker)) |at| {
+            const rest = message[at + unbound_marker.len ..];
+            var it = self.defined_before.keyIterator();
+            while (it.next()) |k| {
+                const name = k.*;
+                if (!std.mem.startsWith(u8, rest, name)) continue;
+                if (rest.len != name.len and rest[name.len] != '"') continue;
+                if (!self.defined_here.contains(name)) return error.CrossSectionReference;
+            }
+            pos = at + unbound_marker.len;
+        }
     }
 };
+
+/// What the interpreter's message for an unbound variable starts with.
+const unbound_marker = "unbound variable: ";
 
 /// Evaluates `source` and discards what it prints. Returns null when it fails.
 fn evalQuietly(interp: *sucheme.Interpreter, source: []const u8) error{OutOfMemory}!?void {
@@ -357,7 +390,9 @@ fn importedLibraries(gpa: std.mem.Allocator, form: []const u8) RunError![]const 
 
 /// The elements of the list `form`, as their source text, or null when it is not a list.
 fn listElements(gpa: std.mem.Allocator, form: []const u8) RunError!?[]const []const u8 {
-    if (form.len < 2 or form[0] != '(' or form[form.len - 1] != ')') return null;
+    if (form.len < 2) return null;
+    const closed = (form[0] == '(' and form[form.len - 1] == ')') or (form[0] == '[' and form[form.len - 1] == ']');
+    if (!closed) return null;
     const inner = form[1 .. form.len - 1];
     var out: std.ArrayList([]const u8) = .empty;
     var pos: usize = 0;
@@ -371,11 +406,19 @@ fn listElements(gpa: std.mem.Allocator, form: []const u8) RunError!?[]const []co
 /// The names a top-level definition binds: `define`, `define-syntax`, `define-values`
 /// and `define-record-type`. Other forms bind nothing here.
 fn definedNames(gpa: std.mem.Allocator, form: []const u8) RunError![]const []const u8 {
-    const elements = try listElements(gpa, form) orelse return &.{};
-    if (elements.len < 2) return &.{};
     var out: std.ArrayList([]const u8) = .empty;
+    try appendDefinedNames(gpa, form, &out);
+    return try out.toOwnedSlice(gpa);
+}
+
+fn appendDefinedNames(gpa: std.mem.Allocator, form: []const u8, out: *std.ArrayList([]const u8)) RunError!void {
+    const elements = try listElements(gpa, form) orelse return;
+    if (elements.len < 2) return;
     const head = elements[0];
-    if (std.mem.eql(u8, head, "define") or std.mem.eql(u8, head, "define-syntax")) {
+    // 最上位の `begin` の中の定義は、最上位の定義である(R7RS 5.6.1)。
+    if (std.mem.eql(u8, head, "begin")) {
+        for (elements[1..]) |e| try appendDefinedNames(gpa, e, out);
+    } else if (std.mem.eql(u8, head, "define") or std.mem.eql(u8, head, "define-syntax")) {
         // `(define (f . args) ...)` と、カリー化した `(define ((f a) b) ...)` は、いちばん内側の
         // 先頭の名前を束縛する。
         var target = elements[1];
@@ -385,50 +428,69 @@ fn definedNames(gpa: std.mem.Allocator, form: []const u8) RunError![]const []con
         }
         try out.append(gpa, target);
     } else if (std.mem.eql(u8, head, "define-values")) {
-        try symbolsIn(gpa, elements[1], &out);
+        try atomsIn(gpa, elements[1], out);
     } else if (std.mem.eql(u8, head, "define-record-type")) {
         // 型の名前、構築子、述語、各フィールドの参照子と変更子。フィールドの名前そのものは束縛しないが、
         // 余分に含めても連鎖が広がるだけで、数え落としにはならない。
-        for (elements[1..]) |e| try symbolsIn(gpa, e, &out);
+        for (elements[1..]) |e| try atomsIn(gpa, e, out);
     }
-    return try out.toOwnedSlice(gpa);
 }
 
-/// Appends every symbol-looking token of `text`, skipping strings, characters and
-/// comments. Numbers and booleans also come out, which is harmless here: they are
-/// never required identifiers or definition names.
-fn symbolsIn(gpa: std.mem.Allocator, text: []const u8, out: *std.ArrayList([]const u8)) RunError!void {
-    var i: usize = 0;
-    while (i < text.len) {
-        const c = text[i];
-        if (c == '"') {
-            i += 1;
-            while (i < text.len and text[i] != '"') : (i += 1) {
-                if (text[i] == '\\') i += 1;
+/// Appends every atom of `datum`, at any depth of its lists.
+fn atomsIn(gpa: std.mem.Allocator, datum: []const u8, out: *std.ArrayList([]const u8)) RunError!void {
+    if (try listElements(gpa, datum)) |elements| {
+        for (elements) |e| try atomsIn(gpa, e, out);
+    } else if (datum.len > 0 and datum[0] != '"' and datum[0] != '#') {
+        try out.append(gpa, datum);
+    }
+}
+
+/// Whether a datum is read as code or as the template of a quasiquote.
+const Reading = enum { code, quasi };
+
+/// Appends the symbols of `datum` that may be evaluated as variables.
+/// 引用されたデータの中のシンボルは、変数として評価されないので数えない。`'x`、`(quote x)`、
+/// ベクタ、文字列、文字は飛ばす。準引用の中は、`,` と `,@`(`unquote` と `unquote-splicing`)の
+/// 中だけを数える。準引用の入れ子の深さは数えない(スイートには無い)。字句は走査器に任せるので、
+/// コメントや縦棒の識別子を独自に読まない。数や真偽値も出てくるが、必須の識別子にも定義の
+/// 名前にもならないので、害は無い。
+fn freeSymbols(gpa: std.mem.Allocator, datum: []const u8, reading: Reading, out: *std.ArrayList([]const u8)) RunError!void {
+    if (datum.len == 0) return;
+    switch (datum[0]) {
+        '\'' => if (reading == .quasi) try freeSymbols(gpa, try prefixed(datum, 1), .quasi, out),
+        '`' => try freeSymbols(gpa, try prefixed(datum, 1), .quasi, out),
+        ',' => {
+            const skip: usize = if (std.mem.startsWith(u8, datum, ",@")) 2 else 1;
+            try freeSymbols(gpa, try prefixed(datum, skip), .code, out);
+        },
+        '(', '[' => {
+            const elements = try listElements(gpa, datum) orelse return;
+            if (elements.len == 0) return;
+            const head = elements[0];
+            if (reading == .code and std.mem.eql(u8, head, "quote")) return;
+            if (reading == .code and std.mem.eql(u8, head, "quasiquote")) {
+                for (elements[1..]) |e| try freeSymbols(gpa, e, .quasi, out);
+                return;
             }
-            i += 1;
-        } else if (c == ';') {
-            i = std.mem.indexOfAnyPos(u8, text, i, "\r\n") orelse text.len;
-        } else if (std.mem.startsWith(u8, text[i..], "#|")) {
-            i = (std.mem.indexOfPos(u8, text, i + 2, "|#") orelse text.len - 2) + 2;
-        } else if (std.mem.startsWith(u8, text[i..], "#\\")) {
-            i += 3;
-            while (i < text.len and !isDelimiter(text[i])) i += 1;
-        } else if (isDelimiter(c) or c == '\'' or c == '`' or c == ',' or c == '@') {
-            i += 1;
-        } else {
-            const start = i;
-            while (i < text.len and !isDelimiter(text[i])) i += 1;
-            try out.append(gpa, text[start..i]);
-        }
+            if (reading == .quasi and (std.mem.eql(u8, head, "unquote") or std.mem.eql(u8, head, "unquote-splicing"))) {
+                for (elements[1..]) |e| try freeSymbols(gpa, e, .code, out);
+                return;
+            }
+            for (elements) |e| try freeSymbols(gpa, e, reading, out);
+        },
+        // ベクタは自己評価的なデータである。準引用の中のベクタだけは、`,` を含みうる。
+        '#' => if (reading == .quasi and std.mem.startsWith(u8, datum, "#(")) {
+            for ((try listElements(gpa, datum[1..])) orelse return) |e| try freeSymbols(gpa, e, .quasi, out);
+        },
+        '"', '|' => {},
+        else => if (reading == .code) try out.append(gpa, datum),
     }
 }
 
-fn isDelimiter(c: u8) bool {
-    return std.ascii.isWhitespace(c) or switch (c) {
-        '(', ')', '[', ']', '"', ';', '|' => true,
-        else => false,
-    };
+/// The datum after a prefix such as `'` or `,@` that is `skip` bytes long.
+fn prefixed(datum: []const u8, skip: usize) RunError![]const u8 {
+    const c = try split.next(datum, skip) orelse return "";
+    return datum[c.start..c.end];
 }
 
 fn contains(haystack: []const []const u8, needle: []const u8) bool {
@@ -549,12 +611,110 @@ fn expectNames(a: std.mem.Allocator, form: []const u8, want: []const []const u8)
     for (want, got) |w, g| try std.testing.expectEqualStrings(w, g);
 }
 
-test "symbols skip strings, characters and comments" {
+fn expectFree(form: []const u8, want: []const []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var out: std.ArrayList([]const u8) = .empty;
-    try symbolsIn(arena.allocator(), "(f 'g \"h i\" #\\j ; k\n #| l |# `(m ,n ,@o))", &out);
-    const want = [_][]const u8{ "f", "g", "m", "n", "o" };
+    try freeSymbols(arena.allocator(), form, .code, &out);
     try std.testing.expectEqual(want.len, out.items.len);
     for (want, out.items) |w, g| try std.testing.expectEqualStrings(w, g);
+}
+
+test "free symbols skip strings, characters, vectors and comments" {
+    try expectFree("(f \"h i\" #\\j ; k\n #| l #| m |# n |# #(o) [p] #;(q) r)", &.{ "f", "p", "r" });
+    try expectFree("(f |a\"b| g)", &.{ "f", "g" });
+}
+
+test "free symbols skip quoted data, and in a quasiquote count only what is unquoted" {
+    try expectFree("(f 'g (quote h) `(i ,j ,@(k l) #(m ,n)) (quasiquote (o (unquote p))))", &.{ "f", "j", "k", "l", "n", "p" });
+    try expectFree("'x", &.{});
+    try expectFree("x", &.{"x"});
+}
+
+test "a quoted name of an unimplemented procedure does not make the form unimplemented" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define f (exact-integer-sqrt 4))
+        \\(test #t (symbol? 'exact-integer-sqrt))
+        \\(test '(a `(b ,f) f) '(a `(b ,f) f))
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(Counts{ .passed = 2, .unimplemented = 1 }, try findSection(r, "a"));
+}
+
+test "a definition inside a top-level begin, or made by a macro, cascades" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(begin (define z (exact-integer-sqrt 4)) (define w 1))
+        \\(test 2 z)
+        \\(test 1 w)
+        \\(test-end)
+        \\(test-begin "b")
+        \\(define-syntax def (syntax-rules () ((_ n v) (define n v))))
+        \\(def y (exact-integer-sqrt 4))
+        \\(test 2 y)
+        \\(test 3 (car 5))
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 2 }, try findSection(r, "a"));
+    // `y` は静的には取り出せないので、テストの中の未束縛の誤りとして、連鎖に数える。未束縛でない誤りは落ちた。
+    try std.testing.expectEqual(Counts{ .failed = 1, .unimplemented = 1, .cascaded = 1 }, try findSection(r, "b"));
+}
+
+test "a name with > or bars defined in an earlier section is caught when a later one uses it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.CrossSectionReference, runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define a->b 1)
+        \\(test-end)
+        \\(test-begin "b")
+        \\(test 1 a->b)
+        \\(test-end)
+        \\(test-end)
+    ));
+    // 値として未束縛の文字列を含むだけの不一致は、節をまたぐ参照ではない。
+    const r = try runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define x 1)
+        \\(test-end)
+        \\(test-begin "b")
+        \\(test "unbound variable: x" "no")
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(Counts{ .failed = 1 }, try findSection(r, "b"));
+}
+
+test "redefining length or vector-ref in the suite does not hide records" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define (length x) 0)
+        \\(define (vector-ref v i) 'no)
+        \\(define (list-ref l i) 'no)
+        \\(test 1 1)
+        \\(test 2 3)
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(Counts{ .passed = 1, .failed = 1 }, try findSection(r, "a"));
 }
