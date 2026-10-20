@@ -53,7 +53,8 @@ fn skipAtmosphere(text: []const u8, pos: usize) SplitError!usize {
         if (std.ascii.isWhitespace(c)) {
             i += 1;
         } else if (c == ';') {
-            i = std.mem.indexOfScalarPos(u8, text, i, '\n') orelse text.len;
+            // 行の終わりは、改行と復帰のどちらでもよい(R7RS の <line ending> は CR だけの行も含む)。
+            i = std.mem.indexOfAnyPos(u8, text, i, "\r\n") orelse text.len;
         } else if (startsWith(text, i, "#|")) {
             i = try blockCommentEnd(text, i);
         } else if (startsWith(text, i, "#;")) {
@@ -149,11 +150,15 @@ fn hashEnd(text: []const u8, pos: usize) SplitError!usize {
         '\\' => return if (pos + 2 >= text.len) pos + 2 else atomEnd(text, pos + 3),
         else => {},
     }
+    // データラベル。数字の並びのすぐ後ろを直接読む。区切りまでを1語として読むと、`#0=#(1)` や
+    // `#0='a` の `#` と `'` が語に入り、定義(`#0=`)と見分けられなくなる。
+    var d = pos + 1;
+    while (d < text.len and std.ascii.isDigit(text[d])) d += 1;
+    // 定義は、後ろのデータまでが1つの形式である。参照(`#0#`)は、下の区切りまでの1語で足りる。
+    if (d > pos + 1 and d < text.len and text[d] == '=') return prefixedEnd(text, d + 1);
     const end = atomEnd(text, pos);
-    const word = text[pos..end];
-    // バイトベクタ(`#u8(`)と、データラベルの定義(`#0=`)は、後ろのデータまでが1つの形式である。
-    if (std.mem.eql(u8, word, "#u8") and end < text.len and text[end] == '(') return listEnd(text, end);
-    if (word.len > 2 and word[word.len - 1] == '=' and allDigits(word[1 .. word.len - 1])) return prefixedEnd(text, end);
+    // バイトベクタ(`#u8(`)も、後ろの括弧までが1つの形式である。
+    if (std.mem.eql(u8, text[pos..end], "#u8") and end < text.len and text[end] == '(') return listEnd(text, end);
     return end;
 }
 
@@ -169,11 +174,6 @@ fn isDelimiter(c: u8) bool {
         '(', ')', '[', ']', '"', ';', '|' => true,
         else => false,
     };
-}
-
-fn allDigits(s: []const u8) bool {
-    for (s) |c| if (!std.ascii.isDigit(c)) return false;
-    return true;
 }
 
 fn startsWith(text: []const u8, pos: usize, prefix: []const u8) bool {
@@ -259,6 +259,42 @@ test "vectors, bytevectors, labels and directives are single forms" {
     try expectForms("#(1 (2)) #u8(1 2) #0=(a . #0#) #!fold-case (x)", &.{
         "#(1 (2))", "#u8(1 2)", "#0=(a . #0#)", "#!fold-case", "(x)",
     });
+}
+
+test "a label definition covers the datum after it, whatever the datum starts with" {
+    try expectForms("#0=#(1 2) (x)", &.{ "#0=#(1 2)", "(x)" });
+    try expectForms("#0='(a b) (x)", &.{ "#0='(a b)", "(x)" });
+    try expectForms("#0=#1=(a) (x)", &.{ "#0=#1=(a)", "(x)" });
+    try expectForms("#12=#\\( (x)", &.{ "#12=#\\(", "(x)" });
+    try expectForms("#;#0=#(1) (x)", &.{"(x)"});
+    try expectForms("#0# (x)", &.{ "#0#", "(x)" });
+}
+
+test "a hash that is not followed by digits is not a label" {
+    try expectForms("#= (a) #a= (b)", &.{ "#=", "(a)", "#a=", "(b)" });
+}
+
+test "unquote-splicing takes the datum after it" {
+    try expectForms(",@ (b) (c)", &.{ ",@ (b)", "(c)" });
+}
+
+test "a string, a comment and a bracket end an atom" {
+    try expectForms("x\"(\" (b)", &.{ "x", "\"(\"", "(b)" });
+    try expectForms("x;(\n(b)", &.{ "x", "(b)" });
+    try expectForms("[a x] (b)", &.{ "[a x]", "(b)" });
+}
+
+test "a token cut short by the end of the text is one form, and a lone prefix is an error" {
+    try expectForms("#\\", &.{"#\\"});
+    try expectForms("#", &.{"#"});
+    try expectForms("#u8", &.{"#u8"});
+    try expectForms("#0", &.{"#0"});
+    try std.testing.expectError(error.Unbalanced, next("'", 0));
+    try std.testing.expectError(error.Unbalanced, next("#0=", 0));
+}
+
+test "a carriage return alone ends a line comment" {
+    try expectForms("; c\r(a)\r(b)", &.{ "(a)", "(b)" });
 }
 
 test "the line is the line of the start of the form" {
