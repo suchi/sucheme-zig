@@ -726,6 +726,8 @@ test "a pending export name survives a library that the declarations load on the
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
         try expectLinePrints(&interp, "(import (t lib)) (exported-name)", "1\n");
+        // 定義が終われば、保留の名前は残らない。
+        try std.testing.expectEqual(0, interp.ctx.libraries.pending_names.items.len);
     }
 }
 
@@ -741,6 +743,8 @@ test "the internal name of an export that nothing defines is still the name when
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
         try expectLineFails(&interp, "(import (t lib))", "unbound identifier in library (t lib): undefined-internal");
+        // 失敗した定義も、保留の名前を残さない。
+        try std.testing.expectEqual(0, interp.ctx.libraries.pending_names.items.len);
     }
 }
 

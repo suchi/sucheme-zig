@@ -1713,6 +1713,33 @@ test "a node gives back the list it holds when it is collected, and a list no no
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.count);
     try std.testing.expectEqual(0, heap.accounted);
+    // 呼び出しの節点も、オペランドの列ごと計上から外れる。
+    const operator = try heap.create(Node, .{ .constant = .fromFixnum(3) });
+    const call = try heap.create(Node, .{ .constant = .unspecified_value });
+    const operands = try heap.allocAttached(*const Node, 4);
+    call.* = .{ .call = .{ .operator = operator, .operands = operands } };
+    for (operands) |*o| o.* = operator;
+    try std.testing.expectEqual(2 * cellBytes(Node) + 4 * @sizeOf(*const Node), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a list for a node is counted against the limit, and the peak follows it" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    // 上限を超える長さは、確保せずに `HeapLimit` で断り、計上を変えない。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, 1024));
+    try std.testing.expectEqual(0, heap.accounted);
+    // バイト数の計算が桁あふれする長さも、同じく断る。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, std.math.maxInt(usize) / 4));
+    try std.testing.expectEqual(0, heap.accounted);
+    const list = try heap.allocAttached(ParameterBinding, 2);
+    try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.accounted);
+    try std.testing.expectEqual(heap.accounted, heap.peak);
+    heap.freeDetached(ParameterBinding, list);
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.peak);
 }
 
 test "an unreachable frame takes its slots off the account with it" {

@@ -1586,6 +1586,33 @@ test "a form whose expansion fails keeps none of the nodes and constants it made
     }
 }
 
+test "a parameterize form whose expansion reaches the limit at any point keeps nothing it took" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const a = f.arena.allocator();
+    const src = "(parameterize ((p 1) (q 2) (r 3)) 4)";
+    // 1回目の展開が作り、表が持ち続けるもの(大域変数のセル)を、先に作らせておく。
+    _ = try expand(&f.ctx, a, try f.read(src));
+    f.ctx.collectIdle();
+    const before = f.ctx.heap.accounted;
+    const limit = f.ctx.heap.options.limit;
+    defer f.ctx.heap.options.limit = limit;
+    // 上限を、今の計上から8バイトずつ上げ、展開の途中のどの確保でも上限に当たるようにする。
+    // 当たった展開が確保したものは、ごみとして回収されるか、その場で返される。返し忘れは、
+    // テスト用アロケータがリークとして報告する。
+    var extra: usize = 0;
+    while (extra < 1024) : (extra += 8) {
+        const form = try f.read(src);
+        f.ctx.heap.options.limit = f.ctx.heap.held() + extra;
+        _ = expand(&f.ctx, a, form) catch {};
+        f.ctx.heap.options.limit = limit;
+        f.ctx.clearDiagnostic();
+        f.ctx.collectIdle();
+        try std.testing.expectEqual(before, f.ctx.heap.accounted);
+    }
+}
+
 test "a program nested deeper than the Zig stack allows still expands" {
     var f: Fixture = undefined;
     try f.init();
