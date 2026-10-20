@@ -1,6 +1,6 @@
 # 取り込んだ第三者のファイル
 
-このディレクトリには、外部の準拠テストスイートを、改変せずに置く。取り込みの方針は [ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) にあり、取り込みの計画は計画書 0020(`docs/plans/0020-conformance-harness-early.md`)にある。
+このディレクトリには、外部の準拠テストスイートを、改変せずに置く。取り込みの方針は [ADR-0013](../../docs/adr/0013-testing-strategy-and-conformance-suite.md) にあり、取り込みの計画は [docs/plans/0020-conformance-harness-early.md](../../docs/plans/0020-conformance-harness-early.md) にある。
 
 ## ライセンス
 
