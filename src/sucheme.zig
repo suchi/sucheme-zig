@@ -470,8 +470,9 @@ test "a closure that a failed library handed to a live library keeps reaching it
         // (t b) は、自分のセル x を指すクロージャを (t a) に渡してから失敗する。
         try expectLineFails(&interp, "(define-library (t b) (export) (import (sucheme core) (t a)) (begin (define x (list 42)) (register! (lambda () (car x))) (car 5)))", "wrong type of argument to car 5");
         try expectLinePrints(&interp, "(import (t a))", "");
-        // Why: 失敗した (t b) の表を手放すと、x のセルは、どこからも指されない。GC はコードを
-        // たどらないので、回収されて、次の行が解放済みの値を読む。
+        // Why: x のセルを指すのは、失敗した (t b) の表と、(t a) が持つクロージャのコードである。
+        // どちらかがセルを持ち続けなければ、回収されて、次の行が解放済みの値を読む(スライス
+        // 3o-3 から、コードは GC ヒープにあり、クロージャのコードからセルが辿られる)。
         interp.ctx.collectIdle();
         interp.ctx.collectIdle();
         try expectLinePrints(&interp, "(run-all)", "42\n");
