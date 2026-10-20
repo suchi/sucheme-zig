@@ -833,6 +833,7 @@ pub const Kont = struct {
         /// 節点は `Node.@"if"` の変種でなければならない。フレームは節点の内部の部分でなく、
         /// 節点そのものを指す。節点が GC ヒープに移ったときに、フレームから節点を辿れるようにするためである。
         /// 次の `local_set` `local_define` `global_set` `global_define` `call` も同じである。
+        /// 種類と変種の対応は型では守られず、取り違えると安全ビルドで共用体の変種の検査が止める。
         branch: *const Node,
         /// The value is dropped, and the nodes of this sequence run next.
         /// 空にならない。シーケンスの最後のノードは、この継続フレームがすでに無い状態で
@@ -1235,7 +1236,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 /// IR, which until a later slice stays where the expander allocated it, and the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
+pub const code_types = [_]type{ Node, Lambda, Primitive, Parameterize, ParameterBinding };
 
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector };

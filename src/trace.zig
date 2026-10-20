@@ -434,8 +434,11 @@ test "the code and the plain data around it are never followed" {
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Call).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(usize).?);
+    // 節点の内部の部分へのポインタは、分類できない。フレームがそれを持つ変更は、
+    // 節点がヒープに移ったときに、黙ってたどられなくなる代わりに、コンパイルエラーになる。
+    try std.testing.expect(comptime interpreter.classify(*const value_mod.If) == null);
+    try std.testing.expect(comptime interpreter.classify(*const value_mod.Call) == null);
     try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(SymbolId).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(?*const Kont).?);
 }
