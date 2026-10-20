@@ -36,8 +36,8 @@ pub fn main(init: std.process.Init) !void {
     const err = &stderr.interface;
 
     const argv = try init.minimal.args.toSlice(gpa);
-    if (argv.len > 1) {
-        try err.print("conformance-run: takes no arguments, got {s}\n", .{argv[1]});
+    if (unexpectedArgument(argv)) |arg| {
+        try err.print("conformance-run: takes no arguments, got {s}\n", .{arg});
         try err.flush();
         std.process.exit(2);
     }
@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     const digest = hexDigest(text);
-    if (!std.mem.eql(u8, &digest, suite_sha256)) {
+    if (!isVendored(&digest)) {
         try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ suite_path, &digest, suite_sha256 });
         try err.flush();
         std.process.exit(1);
@@ -62,6 +62,16 @@ pub fn main(init: std.process.Init) !void {
     };
     try report(out, result);
     try out.flush();
+}
+
+/// The first argument after the program name, which this program does not take, or null.
+fn unexpectedArgument(argv: []const [:0]const u8) ?[]const u8 {
+    return if (argv.len > 1) argv[1] else null;
+}
+
+/// Whether `digest` is the digest of the vendored suite.
+fn isVendored(digest: []const u8) bool {
+    return std.mem.eql(u8, digest, suite_sha256);
 }
 
 fn hexDigest(text: []const u8) [64]u8 {
@@ -83,12 +93,7 @@ fn readRequired(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, err: *std.I
     while (try it.next(io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) continue;
         const body = try dir.readFileAlloc(io, entry.name, gpa, .unlimited);
-        var lines = std.mem.splitScalar(u8, body, '\n');
-        while (lines.next()) |raw| {
-            const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
-            if (line.len == 0 or line[0] == ';') continue;
-            try ids.append(gpa, line);
-        }
+        try appendIdentifiers(gpa, body, &ids);
     }
     // 一覧が空だと、未実装の判定が黙って働かなくなる。
     if (ids.items.len == 0) {
@@ -97,6 +102,17 @@ fn readRequired(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, err: *std.I
         std.process.exit(1);
     }
     return ids.toOwnedSlice(gpa);
+}
+
+/// Appends the identifiers of one `tests/r7rs-required/*.txt`: one per line, skipping blank
+/// lines and the `;` comments of its header.
+fn appendIdentifiers(gpa: std.mem.Allocator, body: []const u8, ids: *std.ArrayList([]const u8)) !void {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (line.len == 0 or line[0] == ';') continue;
+        try ids.append(gpa, line);
+    }
 }
 
 /// Writes the counts of each section, then every failure, then the missing libraries.
@@ -129,6 +145,28 @@ fn report(out: *std.Io.Writer, r: run.SuiteResult) !void {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "any argument is refused, and none is accepted" {
+    try std.testing.expectEqual(@as(?[]const u8, null), unexpectedArgument(&.{"conformance-run"}));
+    try std.testing.expectEqualStrings("--filter", unexpectedArgument(&.{ "conformance-run", "--filter" }).?);
+}
+
+test "only the vendored digest is accepted" {
+    try std.testing.expect(isVendored(suite_sha256));
+    const other = hexDigest("(test 1 1)");
+    try std.testing.expect(!isVendored(&other));
+    try std.testing.expect(!isVendored(suite_sha256[0..63]));
+}
+
+test "the required lists are read one identifier a line, without comments or blank lines" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ids: std.ArrayList([]const u8) = .empty;
+    try appendIdentifiers(arena.allocator(), "; header\r\n; more\n\ncar\r\n  call/cc \n", &ids);
+    try std.testing.expectEqual(@as(usize, 2), ids.items.len);
+    try std.testing.expectEqualStrings("car", ids.items[0]);
+    try std.testing.expectEqualStrings("call/cc", ids.items[1]);
 }
 
 test "the digest is the lowercase hex of SHA-256" {

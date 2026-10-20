@@ -601,6 +601,8 @@ test "the names a definition binds" {
     try expectNames(a, "(define ((curried a) b) a)", &.{"curried"});
     try expectNames(a, "(define-syntax m (syntax-rules ()))", &.{"m"});
     try expectNames(a, "(define-values (p q . r) (values 1 2))", &.{ "p", "q", ".", "r" });
+    try expectNames(a, "(define-record-type <pt> (mk x) pt? (x px set-px!))", &.{ "<pt>", "mk", "x", "pt?", "x", "px", "set-px!" });
+    try expectNames(a, "(begin (define a 1) (begin (define-syntax b c)) 2)", &.{ "a", "b" });
     try expectNames(a, "(test 1 1)", &.{});
     try expectNames(a, "x", &.{});
 }
@@ -623,6 +625,7 @@ fn expectFree(form: []const u8, want: []const []const u8) !void {
 test "free symbols skip strings, characters, vectors and comments" {
     try expectFree("(f \"h i\" #\\j ; k\n #| l #| m |# n |# #(o) [p] #;(q) r)", &.{ "f", "p", "r" });
     try expectFree("(f |a\"b| g)", &.{ "f", "g" });
+    try expectFree("(f #\\\" g |a b| h)", &.{ "f", "g", "h" });
 }
 
 test "free symbols skip quoted data, and in a quasiquote count only what is unquoted" {
@@ -699,6 +702,95 @@ test "a name with > or bars defined in an earlier section is caught when a later
         \\(test-end)
     );
     try std.testing.expectEqual(Counts{ .failed = 1 }, try findSection(r, "b"));
+}
+
+test "a top-level form that uses a name only an earlier section defined stops the run" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // テストの中でなく、最上位の形式の誤りの経路を通る。
+    try std.testing.expectError(error.CrossSectionReference, runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define y 1)
+        \\(test-end)
+        \\(test-begin "b")
+        \\(define z y)
+        \\(test-end)
+        \\(test-end)
+    ));
+    // 前の節で定義していない名前の未束縛は、ふつうの誤りである。同じ節で定義し直した名前も、
+    // 前の節に頼っていない。
+    const r = try runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define y 1)
+        \\(test-end)
+        \\(test-begin "b")
+        \\(define z never-defined)
+        \\(define y 2)
+        \\(test 2 y)
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(Counts{ .passed = 1, .errored = 1 }, try findSection(r, "b"));
+}
+
+test "a definition that is unreadable, raises, or cascades makes its users cascade" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // 節ごとに壊れた形式は1つだけにする。連鎖の判定が、その形式の名前だけで決まるようにするためである。
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "unreadable")
+        \\(define u '#u8(1 #e))
+        \\(test 1 u)
+        \\(test-end)
+        \\(test-begin "raises")
+        \\(define e (car 5))
+        \\(test 1 e)
+        \\(test-end)
+        \\(test-begin "cascades")
+        \\(define f (exact-integer-sqrt 4))
+        \\(define g f)
+        \\(test 1 g)
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(Counts{ .unreadable = 1, .cascaded = 1 }, try findSection(r, "unreadable"));
+    try std.testing.expectEqual(Counts{ .errored = 1, .cascaded = 1 }, try findSection(r, "raises"));
+    try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 2 }, try findSection(r, "cascades"));
+}
+
+test "a record of a group the runner did not open stops the run, and a repeated name adds up" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.QueryFailed, runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test-begin  "z")
+        \\(test 1 1)
+        \\(test-end)
+        \\(test-end)
+    ));
+    const r = try runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test 1 1)
+        \\(test-end)
+        \\(test-begin "a")
+        \\(test 2 2)
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(@as(usize, 1), r.sections.len);
+    try std.testing.expectEqual(Counts{ .passed = 2 }, try findSection(r, "a"));
 }
 
 test "redefining length or vector-ref in the suite does not hide records" {
