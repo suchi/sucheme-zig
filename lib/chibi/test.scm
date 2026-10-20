@@ -27,13 +27,17 @@
         (test-results-add! form 'fail 'error (cadr outcome)))))
 
 ;; スイートが使うのは、名前を省いた2引数の形だけである。
+;; 期待した値の式は、誤りを捕まえる枠の外で評価する。その誤りは最上位へ上がる。上流は枠の中で
+;; 評価し、誤りなら警告を出して期待を #f にして続けるので、ここは上流と違う。
 (define-syntax test
   (syntax-rules ()
     ((_ expected expr) (test-run 'expr expected (lambda () expr)))))
 
+;; スイートは名前つきの2引数の形を使う(`test-read-error` と `test-precision` の中)。名前は記録しない。
 (define-syntax test-assert
   (syntax-rules ()
-    ((_ expr) (test-run 'expr #t (lambda () (if expr #t #f))))))
+    ((_ expr) (test-run 'expr #t (lambda () (if expr #t #f))))
+    ((_ name expr) (test-run 'expr #t (lambda () (if expr #t #f))))))
 
 (define-syntax test-error
   (syntax-rules ()
