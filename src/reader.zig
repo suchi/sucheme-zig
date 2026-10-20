@@ -1,7 +1,9 @@
 //! Reads the external representation of data (R7RS 7.1.2).
 //!
 //! 読むのは、10 進整数、真偽値、識別子、文字、文字列、丸括弧のリスト、ベクタ、`'` と
-//! `` ` `` と `,` と `,@` の略記である。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と文字名を小文字にする。
+//! `` ` `` と `,` と `,@` の略記である。行コメント、入れ子のブロックコメント `#|` `|#`、
+//! データコメント `#;` を読み飛ばす。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と
+//! 文字名を小文字にする。指令 `#!fold-case` と `#!no-fold-case` が、この状態を切り替える。
 //! 読めない記法は `InvalidToken` などの誤りにする。
 //! `Value` を直接作る。ペアは渡された GC ヒープに確保し、識別子は渡されたシンボル表に
 //! インターンする。読み取りの途中でヒープは GC しないので、`next` が返した時点で
@@ -31,6 +33,9 @@ pub const SyntaxError = error{
     UnexpectedCloseParen,
     /// A `'`, `` ` ``, `,` or `,@` followed by `)`: there is nothing to abbreviate.
     MissingDatum,
+    /// A `#;` followed by `)`: there is no datum to comment out.
+    /// R7RS 7.1.1 の <comment> は `#;` <intertoken space> <datum> で、データを欠けない。
+    MissingCommentedDatum,
     /// A `.` that does not stand between the last element of a list and the
     /// one datum that ends it: at the top level, first in a list, after a `'`,
     /// before the `)`, or followed by more than one datum.
@@ -67,6 +72,7 @@ pub fn describe(e: SyntaxError) []const u8 {
         error.Incomplete => "unexpected end of input",
         error.UnexpectedCloseParen => "unexpected )",
         error.MissingDatum => "quote needs a datum",
+        error.MissingCommentedDatum => "datum comment needs a datum",
         error.UnexpectedDot => "unexpected .",
         error.InvalidEscape => "invalid escape in string",
         error.InvalidCharacter => "invalid character",
@@ -114,6 +120,9 @@ const Frame = union(enum) {
     bytevector: std.ArrayList(u8),
     /// A `'`, `` ` ``, `,` or `,@` waiting for its datum.
     abbreviation: Abbreviation,
+    /// A `#;` waiting for the datum it comments out.
+    /// データが完成したら、略記を閉じたあとで捨てる。`#;'a` は `'a` を捨てる。
+    datum_comment,
 
     const List = struct {
         /// The elements so far.
@@ -138,8 +147,9 @@ pub const Reader = struct {
     src: []const u8,
     pos: usize = 0,
     /// Whether identifiers and character names are folded to lower case.
-    /// `include-ci` が読むファイルは、この状態で始まる(R7RS 4.1.7)。指令 `#!fold-case` で
-    /// 入力の途中から切り替える機能は、段階5で足す。
+    /// `include-ci` が読むファイルは、この状態で始まる(R7RS 4.1.7)。指令 `#!fold-case` と
+    /// `#!no-fold-case` が、入力の途中で切り替える(R7RS 2.1)。切り替えた状態は、この読み手の
+    /// 残りの入力に効く。読み手をまたいで残すのは、呼び出し側の役目である。
     fold_case: bool = false,
 
     pub fn init(src: []const u8) Reader {
@@ -153,7 +163,7 @@ pub const Reader = struct {
     pub fn next(self: *Reader, scratch: std.mem.Allocator, sink: Sink) Error!?Value {
         var open: std.ArrayList(Frame) = .empty;
         while (true) {
-            self.skipWhitespace();
+            try self.skipAtmosphere();
             if (self.pos == self.src.len) {
                 if (open.items.len == 0) return null;
                 return error.Incomplete;
@@ -171,8 +181,8 @@ pub const Reader = struct {
                     if (open.items.len == 0) return error.UnexpectedDot;
                     switch (open.items[open.items.len - 1]) {
                         // Why: R7RS 7.1.2 の <vector> は `#(` <datum>* `)` で、
-                        // ドットを置く場所がない。
-                        .abbreviation, .vector, .bytevector => return error.UnexpectedDot,
+                        // ドットを置く場所がない。`#;` が捨てるのも <datum> で、ドットではない。
+                        .abbreviation, .vector, .bytevector, .datum_comment => return error.UnexpectedDot,
                         .list => |*l| {
                             if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
                             l.dot = true;
@@ -188,6 +198,10 @@ pub const Reader = struct {
                 } else if (self.atBytevectorOpen()) {
                     self.pos += 4;
                     try open.append(scratch, .{ .bytevector = .empty });
+                    continue;
+                } else if (self.atDatumComment()) {
+                    self.pos += 2;
+                    try open.append(scratch, .datum_comment);
                     continue;
                 } else try self.atom(scratch, sink),
                 '\'', '`', ',' => |c| {
@@ -206,6 +220,7 @@ pub const Reader = struct {
                     if (open.items.len == 0) return error.UnexpectedCloseParen;
                     switch (open.pop().?) {
                         .abbreviation => return error.MissingDatum,
+                        .datum_comment => return error.MissingCommentedDatum,
                         .list => |l| {
                             if (l.dot and l.tail == null) return error.UnexpectedDot;
                             break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
@@ -220,6 +235,12 @@ pub const Reader = struct {
             while (open.items.len != 0 and open.items[open.items.len - 1] == .abbreviation) {
                 datum = try abbreviated(sink, open.pop().?.abbreviation, datum);
             }
+            // `#;` が待っていたデータなら、捨てて次を読む。捨てたデータはどこからも
+            // 参照されず、ヒープのゴミになる。
+            if (open.items.len != 0 and open.items[open.items.len - 1] == .datum_comment) {
+                _ = open.pop();
+                continue;
+            }
             if (open.items.len == 0) return datum;
             switch (open.items[open.items.len - 1]) {
                 .list => |*l| try l.add(scratch, datum),
@@ -228,7 +249,7 @@ pub const Reader = struct {
                     const byte = std.math.cast(u8, datum.asFixnum() orelse return error.InvalidByte) orelse return error.InvalidByte;
                     try bytes.append(scratch, byte);
                 },
-                .abbreviation => unreachable,
+                .abbreviation, .datum_comment => unreachable,
             }
         }
     }
@@ -256,22 +277,70 @@ pub const Reader = struct {
         return self.pos + 1 < self.src.len and self.src[self.pos + 1] == '\\';
     }
 
-    /// Skips whitespace and line comments.
-    /// 行コメントは `;` から行末の改行の手前までである。改行は空白として次の周で
-    /// 読み飛ばす。文字列の中の `;` と `#\;` は、それぞれの読み取りが先に処理する
-    /// ので、ここには届かない。ブロックコメント `#|` とデータコメント `#;` は
-    /// 段階5で入る。
-    fn skipWhitespace(self: *Reader) void {
+    /// Whether the input is at the `#;` that begins a datum comment.
+    fn atDatumComment(self: *const Reader) bool {
+        return self.pos + 1 < self.src.len and self.src[self.pos + 1] == ';';
+    }
+
+    /// Skips whitespace, line comments, block comments and directives: the
+    /// <atmosphere> of R7RS 7.1.1, except for datum comments.
+    /// 行コメントは `;` から行の終わり(改行か CR)の手前までである。行の終わりは空白として
+    /// 次の周で読み飛ばす。文字列の中の `;` と `#\;` は、それぞれの読み取りが先に処理する
+    /// ので、ここには届かない。データコメント `#;` はデータを読む必要があるので、`next` が
+    /// 開いているものの1つとして扱う。指令は、読み手の畳み込みの状態を切り替える。
+    fn skipAtmosphere(self: *Reader) Error!void {
         while (self.pos < self.src.len) {
             const c = self.src[self.pos];
             if (c == ';') {
-                while (self.pos < self.src.len and self.src[self.pos] != '\n') self.pos += 1;
+                while (self.pos < self.src.len and self.src[self.pos] != '\n' and self.src[self.pos] != '\r') self.pos += 1;
             } else if (isWhitespace(c)) {
                 self.pos += 1;
+            } else if (std.mem.startsWith(u8, self.src[self.pos..], "#|")) {
+                try self.skipBlockComment();
+            } else if (std.mem.startsWith(u8, self.src[self.pos..], "#!")) {
+                try self.directive();
             } else {
                 return;
             }
         }
+    }
+
+    /// Skips the block comment that starts at `#|`, with the comments nested in it.
+    /// R7RS 7.1.1 の <nested comment> である。中の文字列や文字は特別に扱わない。
+    fn skipBlockComment(self: *Reader) Error!void {
+        var depth: usize = 0;
+        while (self.pos + 1 < self.src.len) {
+            const pair = self.src[self.pos..][0..2];
+            if (std.mem.eql(u8, pair, "#|")) {
+                depth += 1;
+                self.pos += 2;
+            } else if (std.mem.eql(u8, pair, "|#")) {
+                depth -= 1;
+                self.pos += 2;
+                if (depth == 0) return;
+            } else {
+                self.pos += 1;
+            }
+        }
+        // 閉じる前に入力が尽きた。REPL は続きの行を求める。
+        return error.Incomplete;
+    }
+
+    /// Reads the directive that starts at `#!`, and switches the folding of
+    /// case as it says (R7RS 2.1).
+    /// 指令の綴りは `#!fold-case` と `#!no-fold-case` だけで、区切り文字か入力の終わりが
+    /// 続かなければならない(R7RS 7.1.1 の注)。それ以外は、読めないトークンである。
+    fn directive(self: *Reader) Error!void {
+        const start = self.pos + 2;
+        var end = start;
+        while (end < self.src.len and !isDelimiter(self.src[end])) end += 1;
+        self.pos = end;
+        const name = self.src[start..end];
+        if (std.mem.eql(u8, name, "fold-case")) {
+            self.fold_case = true;
+        } else if (std.mem.eql(u8, name, "no-fold-case")) {
+            self.fold_case = false;
+        } else return error.InvalidToken;
     }
 
     /// Reads one token up to the next delimiter and classifies it.
@@ -371,9 +440,12 @@ test "isIncomplete asks for more input only for an unfinished datum" {
         .{ "(a) `b ,", true },
         // 文字列が閉じていない。エスケープの途中も含む。
         .{ "\"abc", true },
-        // 単独の `isIncomplete` の判定である。REPL は保留に `\n` を足すので、次の2行の
-        // 入力は REPL では継続行にならない(`\` + 改行と `\x41` + 改行は不正なエスケープ)。
+        // 単独の `isIncomplete` の判定である。REPL は保留に `\n` を足す。`\` + 改行は行継続で、
+        // 文字列はまだ閉じていないので、REPL でも継続行になる。`\x41` + 改行は不正なエスケープ
+        // なので、REPL では継続行にならない。
         .{ "\"a\\", true },
+        .{ "\"a\\\n", true },
+        .{ "\"a\\  \n  b", true },
         .{ "\"a\\x41", true },
         .{ "\"a\\\"", true },
         .{ "\"a\nb", true },
@@ -443,9 +515,22 @@ test "isIncomplete asks for more input only for an unfinished datum" {
         // 構文エラーのあとに閉じていない式があっても、先のエラーで完結とする。
         .{ ") (a", false },
         .{ "(a . ) (b", false },
-        // 段階5までは読めないものも、構文エラーである。
-        .{ "#| x", false },
-        .{ "(a #;1", false },
+        // ブロックコメントが閉じていないか、データコメントのデータが無い。
+        .{ "#| x", true },
+        .{ "#|", true },
+        .{ "#| #| x |#", true },
+        .{ "(a #;1", true },
+        .{ "#;", true },
+        .{ "(a #;", true },
+        // 閉じたブロックコメントと、データを捨て終えたデータコメントは、完結している。
+        .{ "#| ( |#", false },
+        .{ "#;1", false },
+        .{ "#;(a) b", false },
+        .{ "(a #;)", false },
+        // 指令はコメントと同じく、それだけでは何も開かない。
+        .{ "#!fold-case", false },
+        .{ "#!fold-case (a", true },
+        .{ "#!fold-casex", false },
         // 何も無い入力。
         .{ "", false },
         .{ "  ", false },
@@ -952,13 +1037,121 @@ test "next does not read a semicolon in a string or a character as a comment" {
     try std.testing.expectEqualStrings("(\"x\" #\\;)", try f.roundTrip("(\"x\";(\n#\\;)", &buf));
 }
 
-test "next still rejects block comments and datum comments" {
+test "next skips block comments, which nest, wherever whitespace may stand" {
     var f: Fixture = .init();
     defer f.deinit();
-    // 段階5まで入らない。行コメントの導入で、読めるようになってはならない。
-    for ([_][]const u8{ "#|x|#", "#| x", "#;1", "#; 1", "(#;1)" }) |src| {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqual(1, (try f.readOne("#| a |# 1")).asFixnum().?);
+    try std.testing.expectEqual(1, (try f.readOne("1 #| a |#")).asFixnum().?);
+    // 入れ子の内側の `|#` は、内側だけを閉じる(R7RS 7.1.1 の <nested comment>)。
+    try std.testing.expectEqual(1, (try f.readOne("#| a #| b |# c |# 1")).asFixnum().?);
+    try std.testing.expectEqualStrings("(1 2)", try f.roundTrip("(1 #| x |# 2)", &buf));
+    try std.testing.expectEqualStrings("(1 2)", try f.roundTrip("(1 #|x|#2)", &buf));
+    // `#` は区切り文字ではないので、トークンの途中の `#|` はコメントを始めない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("(1#|x|# 2)"));
+    try std.testing.expectEqualStrings("#(1 2)", try f.roundTrip("#(1 #|x|# 2)", &buf));
+    try std.testing.expectEqualStrings("(quote a)", try f.roundTrip("' #| x |# a", &buf));
+    // コメントの中の文字列、文字、行コメント、括弧は、何も始めない。
+    try std.testing.expectEqual(1, (try f.readOne("#| \" ; ( #\\ |# 1")).asFixnum().?);
+    try std.testing.expectEqual(1, (try f.readOne("#|\n( \n|#\n1")).asFixnum().?);
+    // `|#` の `|` を `#|` と重ねて読まない。`#|#` は閉じていない。
+    try std.testing.expectError(error.Incomplete, f.readOne("#|# 1"));
+    try std.testing.expectEqual(1, (try f.readOne("#||# 1")).asFixnum().?);
+    try std.testing.expectEqual(1, (try f.readOne("#|||# 1")).asFixnum().?);
+}
+
+test "next asks for more input inside a block comment" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "#|", "#| x", "#| #| x |#", "(1 #| x", "#| x |" }) |src| {
+        try std.testing.expectError(error.Incomplete, f.readOne(src));
+    }
+    // 閉じる記号だけでは、コメントを始めない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("|# 1"));
+}
+
+test "next reads past the datum after a datum comment" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(1 3)", try f.roundTrip("(1 #;2 3)", &buf));
+    try std.testing.expectEqualStrings("(1 3)", try f.roundTrip("(1 #; 2 3)", &buf));
+    try std.testing.expectEqualStrings("(c)", try f.roundTrip("(#;(a (b)) c)", &buf));
+    try std.testing.expectEqual(2, (try f.readOne("#;1 2")).asFixnum().?);
+    // `#;` に続く <intertoken space> の中の `#;` は、後ろの1つのデータを先に捨てる。
+    try std.testing.expectEqual(3, (try f.readOne("#; #;1 2 3")).asFixnum().?);
+    // 捨てるデータの略記は、そのデータの一部である。略記のあとのコメントは、略記の
+    // データの前の空白である。
+    try std.testing.expectEqual(2, (try f.readOne("#;'1 2")).asFixnum().?);
+    try std.testing.expectEqualStrings("(quote b)", try f.roundTrip("'#;a b", &buf));
+    try std.testing.expectEqualStrings("(a . c)", try f.roundTrip("(a . #;b c)", &buf));
+    try std.testing.expectEqualStrings("#(1 3)", try f.roundTrip("#(1 #;2 3)", &buf));
+    try std.testing.expectEqualStrings("#u8(1 3)", try f.roundTrip("#u8(1 #;2 3)", &buf));
+    try std.testing.expectEqualStrings("(1)", try f.roundTrip("(1 #;\"x)\")", &buf));
+    // 捨てるデータは、読めるデータでなければならない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("#;#z 1"));
+    // 捨てるデータしかない入力には、データが無い。
+    var r: Reader = .init("#;1 #;(2)");
+    try std.testing.expectEqual(null, try r.next(f.arena.allocator(), f.sink()));
+    try std.testing.expectEqual(r.src.len, r.pos);
+}
+
+test "next reports a datum comment with no datum to comment out" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "(a #;)", "(a #; )", "#(#;)", "(#; #;1)" }) |src| {
+        try std.testing.expectError(error.MissingCommentedDatum, f.readOne(src));
+    }
+    for ([_][]const u8{ "#;", "(a #;", "#; #;1" }) |src| {
+        try std.testing.expectError(error.Incomplete, f.readOne(src));
+    }
+    // ドットは、捨てるデータにならない。
+    try std.testing.expectError(error.UnexpectedDot, f.readOne("(a #; . b)"));
+}
+
+test "a directive switches the folding of what the reader reads after it" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("abc", f.heap.symbols.nameOf((try f.readOne("#!fold-case ABC")).asSymbol().?));
+    // 入力の途中で効く。指令より前に読んだものは、そのままである。
+    try std.testing.expectEqualStrings("(A b #\\newline #\\A \"S\")", try f.roundTrip("(A #!fold-case B #\\NEWLINE #\\A \"S\")", &buf));
+    try std.testing.expectEqualStrings("(a B)", try f.roundTrip("#!fold-case (A #!no-fold-case B)", &buf));
+    // 指令の状態は、読み手に残り、次のデータにも効く。
+    var r: Reader = .init("#!fold-case A B #!no-fold-case C");
+    const names = [_][]const u8{ "a", "b", "C" };
+    for (names) |name| {
+        const d = (try r.next(f.arena.allocator(), f.sink())).?;
+        try std.testing.expectEqualStrings(name, f.heap.symbols.nameOf(d.asSymbol().?));
+    }
+    try std.testing.expect(!r.fold_case);
+    // 区切り文字か入力の終わりが続けば、指令である(R7RS 7.1.1 の注)。
+    try std.testing.expectEqualStrings("(a)", try f.roundTrip("#!fold-case(A)", &buf));
+    try std.testing.expectEqualStrings("\"S\"", try f.roundTrip("#!fold-case\"S\"", &buf));
+    try std.testing.expectEqualStrings("x", f.heap.symbols.nameOf((try f.readOne("#!fold-case;c\nX")).asSymbol().?));
+    // 指令だけの入力には、データが無い。
+    var only: Reader = .init("#!fold-case");
+    try std.testing.expectEqual(null, try only.next(f.arena.allocator(), f.sink()));
+    try std.testing.expect(only.fold_case);
+}
+
+test "next rejects a directive that is spelled otherwise or not followed by a delimiter" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "#!fold-casex A", "#!no-fold-case1", "#!FOLD-CASE A", "#!fold A", "#!", "#! fold-case", "#!eof", "#!fold-case#|c|# A" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
+    // `#!` が `#` に続くトークンの中に現れても、指令ではない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("a#!fold-case"));
+}
+
+test "a line comment ends at a carriage return as well as at a newline" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // R7RS 7.1.1 の <line ending> は、改行、CR と改行、CR のどれかである。
+    try std.testing.expectEqualStrings("(a b)", try f.roundTrip("(a ; x\rb)", &buf));
+    try std.testing.expectEqualStrings("(a b)", try f.roundTrip("(a ; x\r\nb)", &buf));
 }
 
 test "next rejects the numbers that are spelled like peculiar identifiers" {
@@ -1304,6 +1497,7 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             error.Incomplete,
             error.UnexpectedCloseParen,
             error.MissingDatum,
+            error.MissingCommentedDatum,
             error.UnexpectedDot,
             error.InvalidToken,
             error.InvalidEscape,

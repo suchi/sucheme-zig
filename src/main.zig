@@ -597,23 +597,30 @@ test "repl evaluates a line with several expressions only once it is closed" {
     try std.testing.expectEqualStrings("", r.err);
 }
 
-test "repl does not continue a line that ends inside a character or an escape" {
+test "repl does not continue a line that ends inside a character or a hex escape" {
     var ob: [256]u8 = undefined;
     var eb: [256]u8 = undefined;
     // REPL は保留に改行を足すので、行末の `#\` は改行文字になる。
     const c = try replOver("#\\\n(+ 1 2)\n", &ob, &eb);
     try std.testing.expectEqualStrings("> #\\newline\n> 3\n> \n", c.out);
     try std.testing.expectEqualStrings("", c.err);
-    // 行末の `\` と `\x41` は、改行と合わせて不正なエスケープになる。継続行にならず、
+    // 行末の `\x41` は、改行と合わせて不正なエスケープになる。継続行にならず、
     // 次の行は新しい入力である。
-    const b = try replOver("\"a\\\n(+ 1 2)\n", &ob, &eb);
-    try std.testing.expectEqualStrings("> > 3\n> \n", b.out);
-    try std.testing.expectEqualStrings("error: invalid escape in string\n", b.err);
     var ob2: [256]u8 = undefined;
     var eb2: [256]u8 = undefined;
     const x = try replOver("\"a\\x41\n(+ 1 2)\n", &ob2, &eb2);
     try std.testing.expectEqualStrings("> > 3\n> \n", x.out);
     try std.testing.expectEqualStrings("error: invalid escape in string\n", x.err);
+}
+
+test "repl continues a string whose line ends in a line continuation" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // 行末の `\` は、保留に足した改行と合わせて行継続になる(R7RS 6.7)。文字列は閉じて
+    // いないので、次の行を求め、次の行の先頭の空白は文字列に入らない。
+    const b = try replOver("\"a\\\n   b\"\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> ... \"ab\"\n> \n", b.out);
+    try std.testing.expectEqualStrings("", b.err);
 }
 
 test "repl reports unexpected end of input when the input ends inside an expression" {

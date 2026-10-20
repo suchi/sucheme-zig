@@ -52,6 +52,12 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
         switch (c) {
             '"' => break,
             '\\' => try readEscape(src, &i, scratch, &bytes),
+            // Why: R7RS 6.7 は、エスケープでない行の終わりを、綴り(LF、CR LF、CR)に
+            // よらず `\n` 1文字と同じにする。
+            '\r' => {
+                if (i < src.len and src[i] == '\n') i += 1;
+                try bytes.append(scratch, '\n');
+            },
             else => try bytes.append(scratch, c),
         }
     }
@@ -80,9 +86,35 @@ fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *st
         'r' => '\r',
         '"', '\\', '|' => c,
         'x' => return readHexEscape(src, i, scratch, bytes),
+        ' ', '\t', '\n', '\r' => return skipLineContinuation(src, i),
         else => return error.InvalidEscape,
     };
     try bytes.append(scratch, byte);
+}
+
+/// Moves `i` past the rest of a line continuation, whose first character after
+/// the backslash has just been read.
+/// R7RS 6.7 の \<intraline whitespace>*<line ending><intraline whitespace>* で、何も表さない。
+/// 行の終わりの前の空白のあとに、行の終わり以外が来たら、エスケープの誤りである。
+fn skipLineContinuation(src: []const u8, i: *usize) ReadError!void {
+    var at = i.* - 1;
+    while (at < src.len and isIntralineWhitespace(src[at])) at += 1;
+    if (at >= src.len) return error.Incomplete;
+    switch (src[at]) {
+        '\n' => at += 1,
+        '\r' => {
+            at += 1;
+            if (at < src.len and src[at] == '\n') at += 1;
+        },
+        else => return error.InvalidEscape,
+    }
+    while (at < src.len and isIntralineWhitespace(src[at])) at += 1;
+    i.* = at;
+}
+
+// Why: R7RS 7.1.1 の <intraline whitespace> は、スペースとタブである。
+fn isIntralineWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t';
 }
 
 /// Reads the rest of `\x<hex>;`, after the `x`, and appends the character's
@@ -224,8 +256,40 @@ test "read: a backslash that begins no escape is invalid" {
     try expectReadError(error.InvalidEscape, "\"\\q\"");
     try expectReadError(error.InvalidEscape, "\"a\\zb\"");
     try expectReadError(error.InvalidEscape, "\"\\X41;\"");
-    // 行継続はまだ読まない(スライス1h)。
-    try expectReadError(error.InvalidEscape, "\"a\\\nb\"");
+    // 行内の空白のあとに行の終わりが来なければ、行継続ではない。
+    try expectReadError(error.InvalidEscape, "\"a\\ b\"");
+    try expectReadError(error.InvalidEscape, "\"a\\ \t\"");
+}
+
+test "read: a backslash, intraline whitespace and a line ending stand for nothing, with the indentation after them" {
+    // R7RS 6.7 の \<intraline whitespace>*<line ending><intraline whitespace>* である。
+    try expectRead("ab", "\"a\\\nb\"");
+    try expectRead("ab", "\"a\\\n   b\"");
+    try expectRead("ab", "\"a\\ \t \n \t b\"");
+    try expectRead("ab", "\"a\\\r\nb\"");
+    try expectRead("ab", "\"a\\\rb\"");
+    // 次の行の先頭の空白だけを捨てる。2つ目の改行は文字列の一部である。
+    try expectRead("a\nb", "\"a\\\n\nb\"");
+    try expectRead("a", "\"a\\\n\"");
+    // 続く行の中の空白は、そのまま残る。
+    try expectRead("ab c", "\"a\\\n  b c\"");
+}
+
+test "read: a line ending in a string is a newline, whatever its spelling" {
+    // R7RS 6.7 の「Any other line ending has the same effect as inserting a \n character」。
+    try expectRead("a\nb", "\"a\nb\"");
+    try expectRead("a\nb", "\"a\r\nb\"");
+    try expectRead("a\nb", "\"a\rb\"");
+    try expectRead("a\n\nb", "\"a\r\r\nb\"");
+    // エスケープの `\r` は、行の終わりではなく、CR の文字である。
+    try expectRead("a\r\nb", "\"a\\r\\nb\"");
+}
+
+test "read: a line continuation that the input cuts short is incomplete" {
+    try expectReadError(error.Incomplete, "\"a\\ ");
+    try expectReadError(error.Incomplete, "\"a\\\n");
+    try expectReadError(error.Incomplete, "\"a\\\n  ");
+    try expectReadError(error.Incomplete, "\"a\\\r");
 }
 
 test "read: a string that does not close is incomplete" {
@@ -240,7 +304,8 @@ test "read: a string that does not close is incomplete" {
 
 test "read: a raw newline, a tab and non-ASCII bytes belong to the string" {
     try expectRead("a\nb", "\"a\nb\"");
-    try expectRead("\t\r", "\"\t\r\"");
+    // 生の CR は行の終わりなので、改行になる(下の行の終わりのテスト)。
+    try expectRead("\t\n", "\"\t\r\"");
     try expectRead("\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}", "\"\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\"");
     try expectRead("a \u{3bb} \u{1F600}", "\"a \u{3bb} \u{1F600}\"");
 }
