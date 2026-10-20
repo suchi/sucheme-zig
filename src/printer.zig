@@ -16,6 +16,7 @@ const symbol = @import("symbol.zig");
 const Heap = @import("heap.zig").Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
+const number = @import("num/number.zig");
 
 pub const Error = std.Io.Writer.Error || error{OutOfMemory};
 
@@ -73,6 +74,9 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
         },
         .value => |x| switch (x.kind()) {
             .fixnum => try out.print("{d}", .{x.asFixnum().?}),
+            // 数の書式は src/num/ が持つ(docs/plans/0018-phase4-numeric-tower-unicode.md)。
+            // `write` と `display` で同じである。
+            .flonum, .bignum, .ratnum, .compnum => try number.write(out, scratch, x, 10),
             .boolean => try out.writeAll(if (x.isTrue()) "#t" else "#f"),
             .empty_list => try out.writeAll("()"),
             .symbol => try out.writeAll(symbols.nameOf(x.asSymbol().?)),
@@ -242,6 +246,24 @@ test "write prints the extremes of a fixnum" {
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("-9223372036854775808", try f.written(&buf, .fromFixnum(std.math.minInt(i64))));
     try std.testing.expectEqualStrings("9223372036854775807", try f.written(&buf, .fromFixnum(std.math.maxInt(i64))));
+}
+
+test "write and display hand the other numbers to src/num, also inside a list" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // 書式の本体はスライス 4e で入る。ここでは、分岐が src/num の `write` に届くことだけを
+    // 固定する(仮の表記は src/num/number.zig のテストが持つ)。
+    const l = try f.list(&.{ .fromFixnum(1), .fromFlonum(0.5) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(1 #<number>)", try f.written(&buf, l));
+    try std.testing.expectEqualStrings("(1 #<number>)", try f.displayed(&buf, l));
+    // ヒープの3種も同じ分岐を通る。
+    var limbs = [_]value_mod.Limb{ 0, 1 };
+    var b: value_mod.Bignum = .{ .limbs = &limbs, .positive = true };
+    var r: value_mod.Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromFixnum(3) };
+    var c: value_mod.Compnum = .{ .real = .fromFixnum(1), .imag = .fromFixnum(2) };
+    const heap_numbers = try f.list(&.{ .fromBignum(&b), .fromRatnum(&r), .fromCompnum(&c) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<number> #<number> #<number>)", try f.written(&buf, heap_numbers));
 }
 
 test "write shows an uninitialized marker that leaked" {

@@ -751,6 +751,31 @@ test "a bytevector holds bytes only, so the walk follows nothing from it, and a 
     try t.expect(&.{addr(&held)});
 }
 
+test "a bignum holds limbs only, and a ratnum and a compnum are followed through their two values" {
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Bignum).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Bignum).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Ratnum).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(value_mod.Compnum).?);
+    var limbs = [_]value_mod.Limb{1};
+    var big: value_mod.Bignum = .{ .limbs = &limbs, .positive = true };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Bignum, &big);
+    try r.expect(&.{});
+    const ratio: value_mod.Ratnum = .{ .numerator = .fromBignum(&big), .denominator = .fromFixnum(3) };
+    var q: Recorder = .{};
+    interpreter.children(&q, value_mod.Ratnum, &ratio);
+    try q.expect(&.{addr(&big)});
+    var other: value_mod.Bignum = .{ .limbs = &limbs, .positive = false };
+    const z: value_mod.Compnum = .{ .real = .fromBignum(&big), .imag = .fromBignum(&other) };
+    var s: Recorder = .{};
+    interpreter.children(&s, value_mod.Compnum, &z);
+    try s.expect(&.{ addr(&big), addr(&other) });
+    // 浮動小数点数は即値で、何も報告しない。
+    var t: Recorder = .{};
+    interpreter.walk(&t, Value, .fromFlonum(1.5));
+    try t.expect(&.{});
+}
+
 test "a type the walk cannot sort has no class" {
     // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
     // テストが答えられる形で行う。
