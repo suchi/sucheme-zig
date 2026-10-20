@@ -384,16 +384,16 @@ flowchart LR
 
 | スライス | 状態 |
 | --- | --- |
-| 6a | PR suchi/sucheme-zig#135。`b2087f3` の2ファイルを取り込んだ。ハッシュは 6e までの間 `tests/vendor/README.md` に置く |
+| 6a | 完了(suchi/sucheme-zig#135)。`b2087f3` の2ファイルを取り込んだ。ハッシュは 6e までの間 `tests/vendor/README.md` に置く |
 | 6b | PR suchi/sucheme-zig#137。ADR-0041 |
-| 6c | 未着手 |
-| 6d | 実装中(ローカル)。PR は、開いている PR が2本未満になってから作る |
+| 6c | 実装済み(ローカル、ミューテーションテストまで)。PR は未作成 |
+| 6d | PR suchi/sucheme-zig#143 |
 | 6e | 未着手 |
 | 6f | 未着手 |
 | 6g | 未着手 |
 
 ## 次にやること
 
-- 6a と 6b をマージする。2つは `docs/roadmap.md` の隣り合う行を変えるので、後からマージするほうで main を取り込む。
-- 6d の PR を作る。そのあと 6c に進む。
+- 6b と 6d をマージする。
+- 6c の PR を作る。そのあと、6a、6c、6d がそろったら 6e に進む。
 - 6d は、実行器(6e)ができるまで、走査器のモジュールを `build.zig` のテストの対象に直接足す。`tools/` の Zig のファイルは、テストのルートから届かないと `check-docs` が拒むためである。6e で、実行器の `main.zig` から import する形に替える。
