@@ -115,6 +115,11 @@ pub fn gcd(gpa: Allocator, a: Const, b: Const) Error!Managed {
 ///
 /// 0、1、-1 の底は、どんな指数でも計算できる。それ以外の底は、`limbsForPow` が
 /// null を返さない指数に限る(u32 に収まる指数)。
+///
+/// 確保は、結果用と作業用に、同じ大きさ(std の `calcPowLimbsBufferLen`)を取る。
+/// 作業用は返る前に解放するが、ピークは結果の大きさ(`limbsForPow`)の約2倍になる。
+/// 上限との照合に `limbsForPow` だけを使う呼び出し側(4d、4e)は、ピークの分を
+/// 見込むこと。
 pub fn pow(gpa: Allocator, base: Const, exponent: u64) Error!Managed {
     if (exponent == 0 or isUnit(base)) {
         // 0^0 = 1、0^n = 0、1^n = 1、(-1)^n = ±1。std の pow は指数を u32 で受け取る。
@@ -144,6 +149,9 @@ fn isUnit(a: Const) bool {
 ///
 /// 数字は呼び出し側(`src/num/syntax.zig` の `scan`)が検査済みでなければならない。
 /// 大文字と小文字を区別しない。先頭の0は許す。符号と区切りは受け付けない。
+///
+/// 時間は桁数の2乗に比例する(40万桁の10進で、実測は数百ミリ秒の桁)。入力の長さの
+/// 上限は呼び出し側が持つこと。
 pub fn parseDigits(gpa: Allocator, digits: []const u8, radix: u8) Error!Managed {
     std.debug.assert(radix >= 2 and radix <= 36);
     for (digits) |ch| std.debug.assert(if (std.fmt.charToDigit(ch, radix)) |_| true else |_| false);
@@ -157,6 +165,9 @@ pub fn parseDigits(gpa: Allocator, digits: []const u8, radix: u8) Error!Managed 
 
 /// Writes `a` in `radix` (2 to 36) with lowercase digits and a leading `-`
 /// for a negative value.
+///
+/// 2のべき以外の基数では、時間が限界値数の2乗に比例する(40万桁の10進で、実測は
+/// 数秒の桁)。結果の大きさに上限を置くのは呼び出し側の役目である。
 pub fn toString(gpa: Allocator, a: Const, radix: u8) Error![]u8 {
     std.debug.assert(radix >= 2 and radix <= 36);
     if (std.math.isPowerOfTwo(radix)) return toStringPowerOfTwo(gpa, a, radix);
@@ -220,7 +231,8 @@ pub fn limbsForDigits(digit_count: usize, radix: u8) usize {
 /// 0、1、-1 の底は指数によらず1を返す。それ以外の底は、指数が u32 に収まり、
 /// 大きさが `usize` に収まるときだけ値を返す。上限は、底のビット数 × 指数を使うので、
 /// 実際より最大で指数ビットだけ大きい(3 の累乗なら約26%)。見積りは確保の上限との
-/// 照合に使うだけなので、大きめに出てよい。
+/// 照合に使うだけなので、大きめに出てよい。数えるのは結果の限界値数だけで、`pow` の
+/// 作業用の確保は含まない(`pow` の doc コメントを参照)。
 pub fn limbsForPow(base: Const, exponent: u64) ?usize {
     if (exponent == 0 or isUnit(base)) return 1;
     if (exponent > std.math.maxInt(u32)) return null;
@@ -660,6 +672,55 @@ test "limbsForDigits is an upper bound and is not wasteful" {
     try testing.expectEqual(@as(usize, 1), limbsForDigits(0, 10));
     // 桁数が極端に大きくても、あふれずに大きな値を返す。
     try testing.expect(limbsForDigits(std.math.maxInt(usize), 10) > std.math.maxInt(usize) / 128);
+}
+
+test "limbsForDigits covers the largest value of every radix and length" {
+    for (2..37) |r| {
+        const radix: u8 = @intCast(r);
+        const text = try tgpa.alloc(u8, 400);
+        defer tgpa.free(text);
+        @memset(text, std.fmt.digitToChar(radix - 1, .lower));
+        for (1..401) |n| {
+            var m = try parseDigits(tgpa, text[0..n], radix);
+            defer m.deinit();
+            try testing.expect(m.len() <= limbsForDigits(n, radix));
+        }
+    }
+}
+
+test "add and sub carry across more than the minimum allocation" {
+    // 2^320 - 1 は5限界値で、1を足すと6限界値になる(Managed の最小の確保は4限界値)。
+    var f_digits: [80]u8 = undefined;
+    @memset(&f_digits, 'f');
+    var max = try parseDigits(tgpa, &f_digits, 16);
+    defer max.deinit();
+    var one = try fromInt(1);
+    defer one.deinit();
+    var pow2 = try fromInt(1);
+    defer pow2.deinit();
+    try pow2.shiftLeft(&pow2, 320);
+
+    var s = try add(tgpa, max.toConst(), one.toConst());
+    defer s.deinit();
+    try expectNormalized(s);
+    try testing.expect(s.toConst().eql(pow2.toConst()));
+
+    var s2 = try add(tgpa, one.toConst(), max.toConst());
+    defer s2.deinit();
+    try testing.expect(s2.toConst().eql(pow2.toConst()));
+
+    // 1 - (-(2^320 - 1)) = 2^320、-(2^320 - 1) - 1 = -2^320
+    var neg_max = try max.clone();
+    defer neg_max.deinit();
+    neg_max.negate();
+    var d = try sub(tgpa, one.toConst(), neg_max.toConst());
+    defer d.deinit();
+    try testing.expect(d.toConst().eql(pow2.toConst()));
+
+    var d2 = try sub(tgpa, neg_max.toConst(), one.toConst());
+    defer d2.deinit();
+    try expectNormalized(d2);
+    try testing.expect(d2.toConst().eql(pow2.toConst().negate()));
 }
 
 test "limbsForPow is an upper bound and reports what pow cannot compute" {
