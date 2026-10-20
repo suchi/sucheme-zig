@@ -479,7 +479,8 @@ pub fn digitValue(c: u21) ?u4
 
 | スライス | 状態 |
 | --- | --- |
-| 4a〜4z | 未着手 |
+| 4c | ドラフトの PR [suchi/sucheme-zig#136](https://github.com/suchi/sucheme-zig/pull/136)。通常の CI は緑、レビュー待ち。Zig 0.17.0 の `Const.toString` が基数8と32で桁を誤るため、2のべきの基数の書き出しは自前にした |
+| 4a、4b、4d 以降 | 未着手 |
 
 ## 次にやること
 
