@@ -1609,6 +1609,8 @@ test "a reader of code rejects a circular reference outside a literal" {
         "`#(1 ,#0=(a . #0#))",
         "`(1 '#0=(a . #0#))",
         "`#0=#(1 #0#)",
+        // quasiquote の外で辿り終えたペアにも、quasiquote の中から着けば、quote の中まで辿る。
+        "(#0=(a '#1=(b . #1#)) `#0#)",
     }) |src| {
         _ = f.readOne(src) catch |e| {
             if (e == error.CircularCode) continue;
@@ -1634,6 +1636,8 @@ test "a reader of code accepts circular data in a literal, and shared code" {
         "(#0=(f x) #0# #0#)",
         "(+ #0=(* 2 3) #0#)",
         "`(#0=(a #(b)) ,#0# #0#)",
+        // cdr として出会う `(quasiquote x)` は、quasiquote の式ではない。
+        "(f quasiquote #(#0=(a . #0#)))",
     }) |src| {
         _ = f.readOne(src) catch |e| {
             std.debug.print("reading {s}: {}\n", .{ src, e });
