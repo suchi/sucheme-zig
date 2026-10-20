@@ -1,0 +1,47 @@
+# スライス 5c: データラベル `#<n>=` と `#<n>#`(R7RS 2.4)。循環と共有を `quote` したデータが、
+# `eq?` で同一性を保つ(docs/design/frontend.md の衛生性の検証項目の9)。
+# 今のプリンタは循環を検出しないので(プリンタのスライス 5j で直す)、循環したデータは
+# 結果として書かず、`eq?` で確かめる。
+
+(let ((x '#0=(a . #0#))) (eq? x (cdr x)))
+#t
+
+(let ((x '#0=(a b c . #0#))) (eq? x (cdr (cdr (cdr x)))))
+#t
+
+(let ((v '#0=#(1 #0#))) (eq? v (vector-ref v 1)))
+#t
+
+# 共有。ラベルを読み終えたあとの参照は、同じオブジェクトである。
+(let ((x '(#0=(1) #0#))) (eq? (car x) (cadr x)))
+#t
+
+(let ((x '(#0=(1) #0#))) x)
+((1) (1))
+
+# 入れ子のラベル。
+(let ((x '#0=(#1=(b . #1#) . #0#))) (list (eq? x (cdr x)) (eq? (car x) (cdar x))))
+(#t #t)
+
+# マクロの引数として渡した循環データも、そのまま `quote` される。
+(define-syntax m (syntax-rules () ((_ d) 'd))) (let ((x (m #0=(a . #0#)))) (eq? x (cdr x)))
+#t
+
+# 循環したリテラルも定数で、変更できない。
+(set-car! '#0=(a . #0#) 1)
+error: cannot modify a constant in set-car! (a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a ...
+
+# 循環したリスト同士の `equal?` は止まる(R7RS 6.1)。
+(equal? '#0=(a . #0#) '#1=(a . #1#))
+#t
+
+# ラベルの範囲は、最も外側のデータである(R7RS 2.4)。
+'#0=a '#0#
+a
+error: reference to an undefined datum label
+
+'(#0=a #0=b)
+error: datum label defined twice
+
+'#0=#0#
+error: datum label needs a datum

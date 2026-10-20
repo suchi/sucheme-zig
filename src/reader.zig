@@ -60,6 +60,13 @@ pub const SyntaxError = error{
     IntegerOutOfRange,
     /// An element of a `#u8(` that is not an integer from 0 to 255 (R7RS 7.1.2, <byte>).
     InvalidByte,
+    /// A `#<n>#` with no `#<n>=` before it in the same outermost datum (R7RS 2.4).
+    UndefinedLabel,
+    /// A second `#<n>=` for a number already labelled in the same outermost datum.
+    DuplicateLabel,
+    /// A `#<n>=` followed by `)`, or labelling only a reference to itself (`#0=#0#`,
+    /// which R7RS 2.4 calls an error).
+    MissingLabeledDatum,
 };
 
 pub const Error = error{
@@ -84,6 +91,9 @@ pub fn describe(e: SyntaxError) []const u8 {
         error.InvalidToken => "unreadable token",
         error.IntegerOutOfRange => "integer out of range",
         error.InvalidByte => "invalid byte in bytevector",
+        error.UndefinedLabel => "reference to an undefined datum label",
+        error.DuplicateLabel => "datum label defined twice",
+        error.MissingLabeledDatum => "datum label needs a datum",
     };
 }
 
@@ -124,9 +134,13 @@ const Frame = union(enum) {
     bytevector: std.ArrayList(u8),
     /// A `'`, `` ` ``, `,` or `,@` waiting for its datum.
     abbreviation: Abbreviation,
-    /// A `#;` waiting for the datum it comments out.
-    /// データが完成したら、略記を閉じたあとで捨てる。`#;'a` は `'a` を捨てる。
-    datum_comment,
+    /// A `#;` waiting for the datum it comments out, and how many labels there
+    /// were when it began.
+    /// データが完成したら、略記を閉じたあとで捨てる。`#;'a` は `'a` を捨てる。捨てたデータの
+    /// 中で定義したラベルも、一緒に捨てる。
+    datum_comment: usize,
+    /// A `#<n>=` waiting for the datum it labels: the label's place in `Labels.entries`.
+    label: usize,
 
     const List = struct {
         /// The elements so far.
@@ -145,6 +159,126 @@ const Frame = union(enum) {
             self.tail = datum;
         }
     };
+};
+
+/// The datum labels of one outermost datum (R7RS 2.4).
+///
+/// まだ読み終えていないラベルへの参照(循環)には、そのラベルの目印を置く。目印は
+/// ヒープに作る新しいペアで、ほかのどのデータとも `eq?` で異なる。最も外側のデータを
+/// 読み終えたら、`resolve` が1回辿って、目印をラベルのデータに置き換える。ラベルごとに
+/// 辿ると、入れ子のラベルが多い入力で費用が大きさの2乗になるので、まとめて1回にする。
+/// 読み取りの途中でヒープは GC しない(`Sink`)ので、目印はルートに入れなくてよい。
+/// 表は `scratch` にあり、読み取りの作業スタック(`open`)と同じく、入力の大きさで抑えられる。
+const Labels = struct {
+    entries: std.ArrayList(Entry) = .empty,
+    /// Where each number is in `entries`.
+    by_number: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+    /// Whose placeholder each placeholder pair is: its place in `entries`.
+    by_placeholder: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+
+    const Entry = struct {
+        number: u64,
+        /// The datum, once it has been read.
+        value: ?Value = null,
+        /// What references read before the datum was finished stand for.
+        placeholder: ?Value = null,
+    };
+
+    /// Starts a label for `number`, and returns its place.
+    fn define(self: *Labels, scratch: std.mem.Allocator, number: u64) Error!usize {
+        const slot = try self.by_number.getOrPut(scratch, number);
+        if (slot.found_existing) return error.DuplicateLabel;
+        slot.value_ptr.* = self.entries.items.len;
+        try self.entries.append(scratch, .{ .number = number });
+        return self.entries.items.len - 1;
+    }
+
+    /// What a reference to `number` reads as: the labelled datum, or the label's
+    /// placeholder while the datum is still being read.
+    fn reference(self: *Labels, scratch: std.mem.Allocator, sink: Sink, number: u64) Error!Value {
+        const i = self.by_number.get(number) orelse return error.UndefinedLabel;
+        const entry = &self.entries.items[i];
+        if (entry.value) |v| return v;
+        if (entry.placeholder) |p| return p;
+        const p = try sink.heap.cons(Value.empty_list_value, Value.empty_list_value);
+        try self.by_placeholder.put(scratch, @intFromPtr(p.asPair().?), i);
+        entry.placeholder = p;
+        return p;
+    }
+
+    /// Finishes the label at `i` with `datum`.
+    /// ラベルの付いたものが、そのラベル自身への参照だけなら、誤りである(R7RS 2.4 の
+    /// `#<n>= #<n>#`)。間に別のラベルを挟んだ `#0=#1=#0#` も同じである。
+    fn finish(self: *Labels, i: usize, datum: Value) Error!void {
+        if (self.entries.items[i].placeholder) |p| {
+            const r = self.resolved(datum) orelse return error.MissingLabeledDatum;
+            if (r.isEq(p)) return error.MissingLabeledDatum;
+        }
+        self.entries.items[i].value = datum;
+    }
+
+    /// `v` with placeholders followed to the data their labels stand for, as far
+    /// as those are finished, or null when that goes round in a circle.
+    /// 目印が指すラベルのデータが、また目印であることがある(`#1=(#0=#1#)` の `#0#`)。
+    /// 辿る回数はラベルの数で抑える。
+    fn resolved(self: *const Labels, v: Value) ?Value {
+        var current = v;
+        var steps: usize = 0;
+        while (self.labelOf(current)) |i| : (steps += 1) {
+            if (steps > self.entries.items.len) return null;
+            current = self.entries.items[i].value orelse return current;
+        }
+        return current;
+    }
+
+    /// The place of the label whose placeholder `v` is, if it is one.
+    fn labelOf(self: *const Labels, v: Value) ?usize {
+        const p = v.asPair() orelse return null;
+        return self.by_placeholder.get(@intFromPtr(p));
+    }
+
+    /// Forgets the labels from `len` on: those of a datum that a `#;` discarded.
+    fn truncate(self: *Labels, len: usize) void {
+        for (self.entries.items[len..]) |entry| {
+            _ = self.by_number.remove(entry.number);
+            if (entry.placeholder) |p| _ = self.by_placeholder.remove(@intFromPtr(p.asPair().?));
+        }
+        self.entries.shrinkRetainingCapacity(len);
+    }
+
+    /// Replaces every placeholder in `datum` with the datum its label stands for.
+    /// データは循環しうるので、訪問済みの集合を持ち、明示的なスタックで辿る。
+    fn resolve(self: *const Labels, scratch: std.mem.Allocator, datum: Value) Error!void {
+        if (self.by_placeholder.count() == 0) return;
+        var visited: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        var stack: std.ArrayList(Value) = .empty;
+        try stack.append(scratch, datum);
+        while (stack.pop()) |v| {
+            if (v.asPair()) |pair| {
+                if ((try visited.getOrPut(scratch, @intFromPtr(pair))).found_existing) continue;
+                try self.replaceIn(scratch, &stack, &pair.car);
+                try self.replaceIn(scratch, &stack, &pair.cdr);
+            } else if (v.asVector()) |vector| {
+                if ((try visited.getOrPut(scratch, @intFromPtr(vector))).found_existing) continue;
+                for (vector.items) |*slot| try self.replaceIn(scratch, &stack, slot);
+            }
+        }
+    }
+
+    /// Replaces the placeholder in `slot`, if it holds one, and leaves what it
+    /// then holds for `resolve` to walk.
+    fn replaceIn(self: *const Labels, scratch: std.mem.Allocator, stack: *std.ArrayList(Value), slot: *Value) Error!void {
+        if (self.labelOf(slot.*) != null) slot.* = self.resolved(slot.*) orelse return error.MissingLabeledDatum;
+        try stack.append(scratch, slot.*);
+    }
+};
+
+/// A datum label or a reference to one, as `Reader.label` reads it.
+const LabelToken = struct {
+    number: u64,
+    kind: Kind,
+
+    const Kind = enum { define, reference };
 };
 
 pub const Reader = struct {
@@ -166,6 +300,8 @@ pub const Reader = struct {
     /// 持ち、呼び出し側がまとめて解放する。
     pub fn next(self: *Reader, scratch: std.mem.Allocator, sink: Sink) Error!?Value {
         var open: std.ArrayList(Frame) = .empty;
+        // ラベルの範囲は最も外側のデータなので、データごとに表を作る(R7RS 2.4)。
+        var labels: Labels = .{};
         while (true) {
             try self.skipAtmosphere();
             if (self.pos == self.src.len) {
@@ -185,8 +321,9 @@ pub const Reader = struct {
                     if (open.items.len == 0) return error.UnexpectedDot;
                     switch (open.items[open.items.len - 1]) {
                         // Why: R7RS 7.1.2 の <vector> は `#(` <datum>* `)` で、
-                        // ドットを置く場所がない。`#;` が捨てるのも <datum> で、ドットではない。
-                        .abbreviation, .vector, .bytevector, .datum_comment => return error.UnexpectedDot,
+                        // ドットを置く場所がない。`#;` が捨てるのも、ラベルを付けるのも
+                        // <datum> で、ドットではない。
+                        .abbreviation, .vector, .bytevector, .datum_comment, .label => return error.UnexpectedDot,
                         .list => |*l| {
                             if (l.dot or l.items.items.len == 0) return error.UnexpectedDot;
                             l.dot = true;
@@ -214,8 +351,19 @@ pub const Reader = struct {
                     continue;
                 } else if (self.atDatumComment()) {
                     self.pos += 2;
-                    try open.append(scratch, .datum_comment);
+                    try open.append(scratch, .{ .datum_comment = labels.entries.items.len });
                     continue;
+                } else if (try self.label()) |l| blk: {
+                    // Why: R7RS 7.1.2 の <bytevector> の要素は <byte> で、<datum> ではないので、
+                    // ラベルもその参照も置けない。
+                    if (open.items.len != 0 and open.items[open.items.len - 1] == .bytevector) return error.InvalidByte;
+                    switch (l.kind) {
+                        .define => {
+                            try open.append(scratch, .{ .label = try labels.define(scratch, l.number) });
+                            continue;
+                        },
+                        .reference => break :blk try labels.reference(scratch, sink, l.number),
+                    }
                 } else try self.atom(scratch, sink),
                 '\'', '`', ',' => |c| {
                     const abbreviation: Abbreviation = switch (c) {
@@ -234,6 +382,7 @@ pub const Reader = struct {
                     switch (open.pop().?) {
                         .abbreviation => return error.MissingDatum,
                         .datum_comment => return error.MissingCommentedDatum,
+                        .label => return error.MissingLabeledDatum,
                         .list => |l| {
                             if (l.dot and l.tail == null) return error.UnexpectedDot;
                             break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
@@ -244,17 +393,25 @@ pub const Reader = struct {
                 },
                 else => try self.atom(scratch, sink),
             };
-            // 完成したデータは、それを待っているすべての略記を閉じる。
-            while (open.items.len != 0 and open.items[open.items.len - 1] == .abbreviation) {
-                datum = try abbreviated(sink, open.pop().?.abbreviation, datum);
+            // 完成したデータは、それを待っているすべての略記とラベルを、内側から順に閉じる。
+            while (open.items.len != 0) {
+                switch (open.items[open.items.len - 1]) {
+                    .abbreviation => |a| datum = try abbreviated(sink, a, datum),
+                    .label => |i| try labels.finish(i, datum),
+                    else => break,
+                }
+                _ = open.pop();
             }
             // `#;` が待っていたデータなら、捨てて次を読む。捨てたデータはどこからも
-            // 参照されず、ヒープのゴミになる。
+            // 参照されず、ヒープのゴミになる。その中で定義したラベルも捨てる。
             if (open.items.len != 0 and open.items[open.items.len - 1] == .datum_comment) {
-                _ = open.pop();
+                labels.truncate(open.pop().?.datum_comment);
                 continue;
             }
-            if (open.items.len == 0) return datum;
+            if (open.items.len == 0) {
+                try labels.resolve(scratch, datum);
+                return datum;
+            }
             switch (open.items[open.items.len - 1]) {
                 .list => |*l| try l.add(scratch, datum),
                 .vector => |*items| try items.append(scratch, datum),
@@ -262,9 +419,27 @@ pub const Reader = struct {
                     const byte = std.math.cast(u8, datum.asFixnum() orelse return error.InvalidByte) orelse return error.InvalidByte;
                     try bytes.append(scratch, byte);
                 },
-                .abbreviation, .datum_comment => unreachable,
+                .abbreviation, .datum_comment, .label => unreachable,
             }
         }
+    }
+
+    /// A `#<n>=` or `#<n>#` at the input: a datum label or a reference to one
+    /// (R7RS 2.4, 7.1.2), with the input moved past it.
+    /// `#` に数字が続かなければ null で、入力を動かさない。数字の後ろに `=` も `#` も
+    /// 無いもの(`#12 a`)と、64 ビットに収まらない数は、読めないトークンである。
+    fn label(self: *Reader) Error!?LabelToken {
+        var end = self.pos + 1;
+        while (end < self.src.len and std.ascii.isDigit(self.src[end])) end += 1;
+        if (end == self.pos + 1) return null;
+        if (end == self.src.len or (self.src[end] != '=' and self.src[end] != '#')) return null;
+        const number = std.fmt.parseInt(u64, self.src[self.pos + 1 .. end], 10) catch {
+            self.pos = end + 1;
+            return error.InvalidToken;
+        };
+        const kind: LabelToken.Kind = if (self.src[end] == '=') .define else .reference;
+        self.pos = end + 1;
+        return .{ .number = number, .kind = kind };
     }
 
     /// Whether the input is at the `#(` that begins a vector.
@@ -542,6 +717,11 @@ test "isIncomplete asks for more input only for an unfinished datum" {
         .{ "#;1", false },
         .{ "#;(a) b", false },
         .{ "(a #;)", false },
+        // ラベルの付くデータが無いか、閉じていない。未定義のラベルの参照は誤りで、完結している。
+        .{ "#0=", true },
+        .{ "#0=(a", true },
+        .{ "(#0=a #0#)", false },
+        .{ "#0#", false },
         // 縦棒の識別子が閉じていない。閉じたものと、エスケープの誤りは完結している。
         .{ "|abc", true },
         .{ "(a |b c", true },
@@ -1294,6 +1474,82 @@ test "isIdentifier follows the R7RS grammar, peculiar identifiers included" {
     }
 }
 
+test "a datum label and a reference to it read as one object, which can hold itself" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 循環するリスト(R7RS 2.4 の例 `#0=(a b c . #0#)` と同じ形)。
+    const cycle = (try f.readOne("#0=(a b c . #0#)")).asPair().?;
+    const third = cycle.cdr.asPair().?.cdr.asPair().?;
+    try std.testing.expect(third.cdr.asPair().? == cycle);
+    // 循環するベクタ。
+    const v = (try f.readOne("#0=#(1 #0#)")).asVector().?;
+    try std.testing.expect(v.items[1].asVector().? == v);
+    // 共有。ラベルを読み終えたあとの参照は、同じオブジェクトである。
+    const shared = (try f.readOne("(#0=(x) #0# #0#)")).asPair().?;
+    const second = shared.cdr.asPair().?;
+    try std.testing.expect(shared.car.asPair().? == second.car.asPair().?);
+    try std.testing.expect(shared.car.asPair().? == second.cdr.asPair().?.car.asPair().?);
+    // 入れ子のラベル。内側の循環と外側の循環が、どちらも閉じる。
+    const outer = (try f.readOne("#0=(#1=(b . #1#) . #0#)")).asPair().?;
+    try std.testing.expect(outer.cdr.asPair().? == outer);
+    const inner = outer.car.asPair().?;
+    try std.testing.expect(inner.cdr.asPair().? == inner);
+    // 略記の中のラベルと、略記をラベルにしたもの。
+    const quoted = (try f.readOne("'#0=(a #0#)")).asPair().?;
+    const body = quoted.cdr.asPair().?.car.asPair().?;
+    try std.testing.expect(body.cdr.asPair().?.car.asPair().? == body);
+    const labelled_quote = (try f.readOne("(#0='a #0#)")).asPair().?;
+    try std.testing.expect(labelled_quote.car.asPair().? == labelled_quote.cdr.asPair().?.car.asPair().?);
+    // 1つのデータに2つのラベル。数は10進の値で比べる。
+    const both = (try f.readOne("(#0=#1=(a) #0# #01#)")).asPair().?;
+    const tail = both.cdr.asPair().?;
+    try std.testing.expect(both.car.asPair().? == tail.car.asPair().?);
+    try std.testing.expect(both.car.asPair().? == tail.cdr.asPair().?.car.asPair().?);
+    // ペアでもベクタでもないデータにも、ラベルを付けられる。
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(a a 12345 12345)", try f.roundTrip("(#7=a #7# #123456789=12345 #123456789#)", &buf));
+}
+
+test "a datum label is in scope only in the rest of the outermost datum it is in" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 最上位のデータが変われば、ラベルは見えない。
+    var r: Reader = .init("#0=a #0#");
+    _ = try r.next(f.arena.allocator(), f.sink());
+    try std.testing.expectError(error.UndefinedLabel, r.next(f.arena.allocator(), f.sink()));
+    // 前方参照は誤りである(R7RS 2.4)。
+    try std.testing.expectError(error.UndefinedLabel, f.readOne("(#0# #0=a)"));
+    try std.testing.expectError(error.UndefinedLabel, f.readOne("#0#"));
+    // データコメントで捨てたデータの中のラベルは、捨てたデータの外から見えない。
+    try std.testing.expectError(error.UndefinedLabel, f.readOne("(#;#0=a #0#)"));
+    // 捨てたデータの中から外のラベルを参照してもよい。
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(a b)", try f.roundTrip("(#0=a #;#0# b)", &buf));
+    try std.testing.expectEqualStrings("(a)", try f.roundTrip("#0=(a #;#0#)", &buf));
+}
+
+test "next reports a datum label that is defined twice or labels no datum" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    try std.testing.expectError(error.DuplicateLabel, f.readOne("(#0=a #0=b)"));
+    try std.testing.expectError(error.DuplicateLabel, f.readOne("#0=(#0=a)"));
+    // ラベルの付いたものが、ラベルそのものへの参照だけである(R7RS 2.4 の `#<n>= #<n>#`)。
+    try std.testing.expectError(error.MissingLabeledDatum, f.readOne("#0=#0#"));
+    try std.testing.expectError(error.MissingLabeledDatum, f.readOne("#0=#1=#0#"));
+    try std.testing.expectError(error.MissingLabeledDatum, f.readOne("(#0=)"));
+    try std.testing.expectError(error.Incomplete, f.readOne("#0="));
+    try std.testing.expectError(error.Incomplete, f.readOne("#0=(a"));
+    // ドットは、ラベルを付けるデータにならない。
+    try std.testing.expectError(error.UnexpectedDot, f.readOne("(a #0= . b)"));
+    // バイトベクタの要素は <byte> で、ラベルを付けられない(R7RS 7.1.2)。
+    try std.testing.expectError(error.InvalidByte, f.readOne("#u8(#0=1)"));
+    try std.testing.expectError(error.InvalidByte, f.readOne("(#0=1 #u8(#0#))"));
+    // 数字の後ろに `=` も `#` も無ければ、ラベルではない。
+    for ([_][]const u8{ "#0", "#0x", "#12 a", "#=a", "##", "#99999999999999999999999=a" }) |src| {
+        try std.testing.expectError(error.InvalidToken, f.readOne(src));
+    }
+}
+
 test "next reads nesting far deeper than a recursive reader could" {
     var f: Fixture = .init();
     defer f.deinit();
@@ -1545,6 +1801,9 @@ const fuzz_inputs = [_][]const u8{
     "\"\\x80;\" \"\\xe9;\" \"\\xff;\"",
     // 縦棒の識別子(スライス 5b): エスケープ、空の名前、閉じないもの、誤ったエスケープ。
     "|a b| |\\x3bb;| || |a\\|b| |\\q| |abc",
+    // データラベル(スライス 5c): 循環、共有、入れ子、未定義、二重の定義、データの無いもの。
+    "#0=(a . #0#) #1=#(1 #1#) (#2=(x) #2# #2#) '#3=(#4=(b . #4#) . #3#)",
+    "(#0=a #0=b) #0# #0=#0# #0=",
     // スカラ値でない 16 進エスケープ。
     "\"\\xD800;\" \"\\x110000;\" \"\\xDFFF;\" #\\xD800 #\\x110000",
     "\"λ\" #\\λ あ #\\x3bb",
@@ -1567,18 +1826,26 @@ const fuzz_corpus: []const []const u8 = blk: {
 };
 
 /// Whether every string in `v` holds valid UTF-8 (ADR-0008).
-fn stringsAreUtf8(v: Value) bool {
-    var cur = v;
-    while (true) {
-        if (cur.asString()) |s| return std.unicode.utf8ValidateSlice(s.bytes);
-        if (cur.asVector()) |vec| {
-            for (vec.items) |item| if (!stringsAreUtf8(item)) return false;
-            return true;
+/// データラベルで循環と共有ができるので、訪問済みの集合を持って辿る。
+fn stringsAreUtf8(gpa: std.mem.Allocator, v: Value) error{OutOfMemory}!bool {
+    var visited: std.AutoHashMapUnmanaged(usize, void) = .empty;
+    defer visited.deinit(gpa);
+    var stack: std.ArrayList(Value) = .empty;
+    defer stack.deinit(gpa);
+    try stack.append(gpa, v);
+    while (stack.pop()) |cur| {
+        if (cur.asString()) |s| {
+            if (!std.unicode.utf8ValidateSlice(s.bytes)) return false;
+        } else if (cur.asVector()) |vec| {
+            if ((try visited.getOrPut(gpa, @intFromPtr(vec))).found_existing) continue;
+            try stack.appendSlice(gpa, vec.items);
+        } else if (cur.asPair()) |p| {
+            if ((try visited.getOrPut(gpa, @intFromPtr(p))).found_existing) continue;
+            try stack.append(gpa, p.car);
+            try stack.append(gpa, p.cdr);
         }
-        const p = cur.asPair() orelse return true;
-        if (!stringsAreUtf8(p.car)) return false;
-        cur = p.cdr;
     }
+    return true;
 }
 
 /// Reads `src` the way the interpreter does: datum after datum, up to the end or
@@ -1621,6 +1888,9 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             error.InvalidUtf8,
             error.IntegerOutOfRange,
             error.InvalidByte,
+            error.UndefinedLabel,
+            error.DuplicateLabel,
+            error.MissingLabeledDatum,
             => return,
         } orelse {
             try std.testing.expectEqual(src.len, r.pos);
@@ -1630,17 +1900,23 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
         // リーダは、入力に関わらず不正な文字列を作らない(不正なバイトを含む文字列リテラルは
         // `InvalidUtf8` になる。src/string_syntax.zig)。`createString` の assert は
         // ReleaseFast では消えるので、その最適化でもこの性質を見る。
-        try std.testing.expect(stringsAreUtf8(datum));
-        var sunk: std.Io.Writer.Discarding = .init(&.{});
-        printer.write(&sunk.writer, gpa, &heap.symbols, datum) catch |err| switch (err) {
+        try std.testing.expect(stringsAreUtf8(gpa, datum) catch return);
+        // Why: 今のプリンタは循環を検出せず(プリンタのスライス 5j で直す)、共有はたどるたびに
+        // 書くので、データラベルのあるデータの書き出しは止まらないか、入力より桁違いに長くなる。
+        // 書き出す先を入力の大きさに比例する長さで切り、ラベルが無ければ収まることを見る。
+        // ラベルの無いデータでは、1バイトの入力が最も長く書かれるのは `'` の `(quote ` と `)` で、
+        // 16 倍に収まる。
+        var printed: [16 * fuzz_max_input + 64]u8 = undefined;
+        var sunk: std.Io.Writer = .fixed(&printed);
+        printer.write(&sunk, gpa, &heap.symbols, datum) catch |err| switch (err) {
             error.OutOfMemory => return,
-            error.WriteFailed => return error.TestUnexpectedResult,
+            error.WriteFailed => if (std.mem.indexOfScalar(u8, src, '=') != null) return else return error.TestUnexpectedResult,
         };
         // Why: 名前が空のシンボル(`||`)だけは、今のプリンタが何も書かない。縦棒を付けて
         // 書き出すのはプリンタのスライス 5j(docs/plans/0019-phase5-ports-and-io.md)で、
         // そこでこの例外を外す。`(string->symbol "")` でも同じ値ができ、5b の前からある。
         const empty_symbol = if (datum.asSymbol()) |id| heap.symbols.nameOf(id).len == 0 else false;
-        try std.testing.expect(sunk.fullCount() > 0 or empty_symbol);
+        try std.testing.expect(sunk.end > 0 or empty_symbol);
     }
 }
 
