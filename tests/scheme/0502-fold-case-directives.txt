@@ -1,0 +1,37 @@
+# スライス 5a: 指令 `#!fold-case` と `#!no-fold-case`(R7RS 2.1)。入力の途中で効き、
+# 後に読む識別子と文字名を畳み込む。文字リテラルと文字列は畳み込まない。
+# 指令の状態は、その入力の中だけで効く。REPL の次の入力まで残すのは、コンソールの
+# ポートを入れるスライスである(docs/plans/0019-phase5-ports-and-io.md の 5i と 5l)。
+
+(define abc 1) #!fold-case ABC
+1
+
+#!fold-case (DEFINE X 2) x
+2
+
+(define abc 1) #!fold-case (list 'Abc #\NEWLINE #\A "S")
+(abc #\newline #\A "S")
+
+# 指令より前に読んだものは、畳み込まない。
+(list 'A #!fold-case 'B)
+(A b)
+
+# `#!no-fold-case` で戻る。
+#!fold-case (list 'A #!no-fold-case 'B)
+(a B)
+
+# 指令の後ろには、区切り文字か入力の終わりが続く。
+#!fold-case(list 'A)
+(a)
+
+#!fold-case
+<no output>
+
+#!fold-casex 'a
+error: unreadable token
+
+#!FOLD-CASE 'a
+error: unreadable token
+
+#!eof
+error: unreadable token

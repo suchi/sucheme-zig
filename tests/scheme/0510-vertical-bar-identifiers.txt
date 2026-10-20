@@ -1,0 +1,55 @@
+# スライス 5b: 縦棒で囲んだ識別子(R7RS 2.1、7.1.1 の `|` <symbol element>* `|`)。
+# 縦棒の間の文字が、そのまま名前になる。エスケープは文字列と同じで、行継続は無い。
+# 縦棒を付けて書き出すのはプリンタのスライス(docs/plans/0019-phase5-ports-and-io.md の 5j)
+# なので、ここでは名前を `symbol->string` と `eq?` で確かめる。
+
+(eq? '|a b| (string->symbol "a b"))
+#t
+
+(symbol->string '|a b|)
+"a b"
+
+# R7RS 2.1 の例。`|H\x65;llo|` は `Hello` と同じ識別子である。
+(eq? '|H\x65;llo| 'Hello)
+#t
+
+(eq? '|\t\t| '|\x9;\x9;|)
+#t
+
+(symbol->string '|\x3BB;|)
+"λ"
+
+# `||` は、名前が空の識別子である。
+(string-length (symbol->string '||))
+0
+
+(symbol->string '|a\|b|)
+"a|b"
+
+# 括弧、`;`、数の形も、名前の一部である。
+(symbol->string '|(1) ; 2|)
+"(1) ; 2"
+
+(symbol? '|1|)
+#t
+
+# 縦棒の識別子は、変数の名前にもなる。
+(define |my var| 42) |my var|
+42
+
+# 畳み込む読み手でも、縦棒の識別子は書かれたとおりである。
+#!fold-case (list (symbol->string 'ABC) (symbol->string '|ABC|))
+("abc" "ABC")
+
+# 縦棒の識別子でライブラリ名を書いても、ファイルの名前に使えない文字の成分は拒否される
+# (docs/design/frontend.md の探索とパス名への対応付け)。
+(import (|../x|))
+error: unknown library: (../x): a library with that name cannot be a file, because a component has a character other than A-Z a-z 0-9 - _ .
+
+# 閉じていない縦棒の識別子は、入力の終わりで誤りになる。
+'|abc
+error: unexpected end of input
+
+# エスケープでない `\` は誤りである。
+'|a\qb|
+error: invalid escape in identifier

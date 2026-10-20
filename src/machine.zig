@@ -1838,11 +1838,13 @@ test "an error raised at the limit of the heap makes its condition from the rese
             }
             // GC が余裕の無さを見つけた量では、別のエラーになる。
             if (!std.mem.eql(u8, "wrong type of argument to car", f.ctx.diagnostic())) continue;
-            if (f.ctx.heap.accounted <= limit) continue;
+            // 上限と比べるのは、ヒープのオブジェクトの量だけでなく、上限に数える全部
+            // (`held`。最上位の表の常駐の計上を含む)である。
+            if (f.ctx.heap.held() <= limit) continue;
             found = true;
             // 条件はヒープにあり、上限を超えた分は予約から取った。
             try std.testing.expectEqual(1, f.ctx.heap.countOf(value_mod.Condition));
-            try std.testing.expect(f.ctx.heap.accounted <= limit + f.ctx.heap.options.raise_reserve);
+            try std.testing.expect(f.ctx.heap.held() <= limit + f.ctx.heap.options.raise_reserve);
             // 送出された値はルートなので、GC のあとも残り、読める。
             f.ctx.collectIdle();
             try std.testing.expectEqual(1, f.ctx.heap.countOf(value_mod.Condition));
@@ -2309,6 +2311,8 @@ test "at the limit of the heap, the call of the handler is made from the reserve
             error.Raised => {},
             // ハンドラを置く前に上限に当たるほど埋まった。これより先の量は試せない。
             error.ReserveExhausted => break,
+            // リーダが式を読めないほど埋まった。これより先の量も試せない。
+            error.HeapLimit => break,
             else => return e,
         }
         // ハンドラは送出された条件を返し、`raise` の規定どおり二次例外になる。ハンドラを
@@ -2319,9 +2323,12 @@ test "at the limit of the heap, the call of the handler is made from the reserve
         try std.testing.expect(original.message.asString() != null);
         // 上限を超えて確保した量で、ハンドラの呼び出しまで予約から取ったことを確かめる。
         // 条件とメッセージだけなら超えない量を、ハンドラの切り替えの点が超える。
-        if (f.ctx.heap.peak <= limit + heap_mod.cellBytes(value_mod.Condition) + heap_mod.cellBytes(value_mod.String) + 64) continue;
+        // `peak` はオブジェクトの量の最大値である。最上位の表の常駐の計上は、展開で伸び、
+        // 実行の間は変わらないので、足すと、実行の間に上限に数えた量の最大値になる。
+        const peak_held = f.ctx.heap.peak + f.ctx.heap.resident;
+        if (peak_held <= limit + heap_mod.cellBytes(value_mod.Condition) + heap_mod.cellBytes(value_mod.String) + 64) continue;
         found = true;
-        try std.testing.expect(f.ctx.heap.peak <= limit + f.ctx.heap.options.raise_reserve);
+        try std.testing.expect(peak_held <= limit + f.ctx.heap.options.raise_reserve);
         // 対照: 予約が無ければ、同じ量でハンドラを呼べない。
         var g: Fixture = undefined;
         try g.initWith(.{ .limit = limit, .min_threshold = limit, .raise_reserve = 0 });
