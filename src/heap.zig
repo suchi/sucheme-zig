@@ -1679,6 +1679,16 @@ test "a node gives back the list it holds when it is collected, and a list no no
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.count);
     try std.testing.expectEqual(0, heap.accounted);
+    // `parameterize` の節点は、束縛の列を持ち、回収されるときに列ごと計上から外れる。
+    const body = try testLambda(&heap, .fromFixnum(2));
+    const held_bindings = try heap.allocAttached(ParameterBinding, 2);
+    _ = try heap.create(Parameterize, .{ .bindings = held_bindings, .body = body });
+    for (held_bindings) |*b| b.* = .{ .param = body.body, .value = body.body };
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node) +
+        cellBytes(Parameterize) + 2 * @sizeOf(ParameterBinding), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
 }
 
 test "an unreachable frame takes its slots off the account with it" {
