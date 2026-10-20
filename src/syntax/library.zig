@@ -229,6 +229,10 @@ const ImportWork = struct {
 /// 数えない `scratch` で行う(その中の展開と本体の実行は、それぞれの計上に従う)。
 pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, work: std.mem.Allocator, spec: Value) Error!Names {
     const Pending = struct { kind: Modifier, arguments: Value };
+    // Why: 修飾子の列も `work` に置くが、大きさは修飾子の数に比例し、修飾子はどれも読んだ形式の
+    // 対を2つ以上使う。形式はヒープにあり、上限に数えてあるので、列は上限を大きく超えない。
+    // 列を数えることを固定するテストは置いていない(列だけで上限を超える入力は、形式が先に
+    // 上限を超える)。
     var pending: std.ArrayList(Pending) = .empty;
     var current = spec;
     while (current.asPair()) |p| {

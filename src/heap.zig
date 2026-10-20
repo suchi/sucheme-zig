@@ -293,6 +293,30 @@ test "a resident request the backing refuses is not left counted" {
     try std.testing.expect(!heap.external_refused);
 }
 
+test "resizing a resident block in place counts the difference, and a growth past the limit is refused" {
+    // 最後の確保をその場で伸び縮みできる割り当て器を下に置き、`resize` の経路を通す
+    // (`realloc` は先に `remap` を試すので、この経路を通らない)。
+    var buffer: [1024]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var heap: Heap = .init(fixed.allocator(), .{ .limit = 256 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    var block = try a.alloc(u8, 100);
+    try std.testing.expect(a.resize(block, 200));
+    block = block.ptr[0..200];
+    try std.testing.expectEqual(200, heap.resident);
+    try std.testing.expect(a.resize(block, 50));
+    block = block.ptr[0..50];
+    try std.testing.expectEqual(50, heap.resident);
+    // 上限を超える伸び方は、下の割り当て器に頼む前に断る。計上は変わらない。
+    try std.testing.expect(!heap.external_refused);
+    try std.testing.expect(!a.resize(block, 300));
+    try std.testing.expect(heap.external_refused);
+    try std.testing.expectEqual(50, heap.resident);
+    a.free(block);
+    try std.testing.expectEqual(0, heap.resident);
+}
+
 test "a collection keeps the resident account, and counts it as live" {
     var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20, .min_threshold = 1 });
     defer heap.deinit();
