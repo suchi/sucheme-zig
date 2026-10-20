@@ -156,7 +156,7 @@ flowchart TD
 
 走査器が知る字句は、文字列、行コメント、ブロックコメント(`#|...|#`)、データのコメント(`#;`)、文字(`#\(` など)、縦棒の識別子(`|...|`)、ベクタとバイトベクタの開き括弧、データラベルの定義(`#0=` とその後ろのデータ)である。数の中身は読まない。
 
-走査器の誤りを見逃さないため、リーダが読めた形式については、リーダが消費した範囲と走査器の範囲が一致することを、実行器が確かめる。一致しなければ、実行器の誤りとして失敗する。
+リーダが消費した範囲と走査器の範囲の照合は、行わない(2026-10-20 に、6e の着手前の確認で、勧める案が承認された)。照合には、リーダの範囲を返す API を src/ に足す必要があり、6e は src/ を変えない方針をとった。代わりに、形式を1つずつ `evalPrint` に渡し、リーダの誤りは「読めない」に分ける。境目の誤りの多くはリーダの誤りとして表れるが、1つの形式に2つのデータが入った場合は表れないので、走査器の単体テストで境目を固定する。
 
 ### 先頭の `import`
 
@@ -165,9 +165,9 @@ flowchart TD
 ### 節と、インタプリタの単位
 
 - 節は、`(test-begin "<名前>")` だけの最上位の形式で始まり、`(test-end)` で終わる。実行器は、走査器が切り出した形式の文字列を、この2つの形と照らして見分ける。
-- 外側の `"R7RS"` の直下の節ごとに、新しいインタプリタを作る(`Interpreter.initWithFiles`)。入れ子の節は、親の節のインタプリタを共有し、結果は入れ子の節の名前で数える。
+- 外側の `"R7RS"` の直下の節ごとに、新しいインタプリタを作る(`Interpreter.initBare`。最上位の束縛は、スイートの `import` が読み込むものだけになる)。入れ子の節は、親の節のインタプリタを共有し、結果は入れ子の節の名前で数える。
 - 節をまたいで、前の節の定義を後の節が使う箇所があるかは、確かめていない(未確認)。試作では、節ごとに分けて走らせて、節をまたぐ未束縛は見つからなかった。実行器は、未束縛の変数の名前が、前の節で定義された名前であれば、実行器の誤りとして報告する。
-- 無限に回るテストへの備えは、今の処理系に実行の歩数の上限が無いので、6e で決める(子プロセスと時間の上限、または機械の歩数の上限の追加)。後者は L0 の所有ファイルに触れるので、選ぶなら L0 と調整する。
+- 無限に回るテストへの備えは、6e では入れない(2026-10-20 に、6e の着手前の確認で、勧める案が承認された)。段階6までは CI でも走らせないので、手元で回り続けたら止める運用にする。開いた問いとして残す: 備えが要るとき、子プロセスと時間の上限にするか、機械に歩数の上限を足すか(後者は L0 の所有ファイルに触れるので、L0 と調整する)。CI で走らせ始める段階6の完了の前に決める。
 
 ### 分類
 
@@ -179,12 +179,13 @@ flowchart TD
   - 読めない: リーダが、その形式を読めない。
   - 未実装: その形式に、`tests/r7rs-required/` に挙がっていて、今の処理系で束縛されていない識別子が、シンボルとして現れる(`Interpreter.isBound` で確かめる)。静的に見るのは、テストの式が自分で `guard` を持つとき、未実装による誤りが捕まって「落ちた」に見えるためである(試作で、`file-error?` と `read-error?` のテストが、`open-input-file` と `read` が未束縛のまま、偽を返して不合格になった)。
   - 連鎖: その形式が、同じ節の中で実行不能だった `define` 系の形式が定義するはずの名前を使う(試作で、`case-lambda` の定義が未束縛で失敗し、その名前を使う後続のテストがすべて未束縛の誤りになった)。
+- 誤り: 最上位の形式そのものが条件を上げた(期待した値の式の誤り、定義の誤りなど)。テストの中で上がった誤りではないので、通った・落ちたには数えず、最上位の形式として別に数える。その形式が定義する名前は、連鎖のもとになる(6e で足した分類)。
 
 実行不能の数は、テストの数でなく、最上位の形式の数である。単位が違うので、通った・落ちたと足さない。段階6の完了の時点では、実行不能が0になるか、除外の一覧に根拠つきで載る。そのとき、通った・落ちたの合計が、テストの全数になる。
 
 ### 除外の一覧
 
-[ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md) の除外の一覧は、`tests/vendor/r7rs-tests.exclude`(名前は 6e で決める)に置く。1行に、節の名前、形式を特定する情報(形式の先頭の行の番号と、形式の文字列のハッシュ)、理由を書く。番号だけで特定しないのは、上流の更新で行がずれたときに、別の形式を除外し続けないためである。この計画の範囲では、一覧は空で始める。未実装は、上の分類が機械的に扱うので、一覧に載せない。
+[ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md) の除外の一覧は、最初の項目が要るときに、別のファイルとして置く。6e では置かない(空のファイルを置いても、読む実装が要るだけで、何も除外しないため)。1行に、節の名前、形式を特定する情報(形式の先頭の行の番号と、形式の文字列のハッシュ)、理由を書く。番号だけで特定しないのは、上流の更新で行がずれたときに、別の形式を除外し続けないためである。未実装は、上の分類が機械的に扱うので、一覧に載せない。
 
 ### インタフェース
 
@@ -204,26 +205,29 @@ pub const SplitError = error{ Unbalanced, UnterminatedString, UnterminatedBlockC
 pub fn next(text: []const u8, pos: usize) SplitError!?Chunk;
 
 // tools/conformance-run/run.zig: スイートの実行。coverage-report からも呼ぶ。
-pub const Counts = struct { passed: u32, failed: u32, unreadable: u32, unimplemented: u32, cascaded: u32 };
+pub const Counts = struct { passed: u32, failed: u32, errored: u32, unreadable: u32, unimplemented: u32, cascaded: u32 };
+pub const Kind = enum { failed, errored, unreadable, unimplemented, cascaded };
 pub const Failure = struct {
     section: []const u8,
     line: u32,
-    kind: enum { failed, unreadable, unimplemented, cascaded },
-    /// テストの式、期待した値、得た値、条件、未束縛の識別子を、表示のための文字列にしたもの。
+    kind: Kind,
+    /// 記録の全体、誤りの説明、未束縛の識別子、または連鎖のもとの名前を、表示のための文字列にしたもの。
     detail: []const u8,
 };
-pub const SectionResult = struct { name: []const u8, counts: Counts, failures: []const Failure };
+pub const SectionResult = struct { name: []const u8, counts: Counts };
 pub const SuiteResult = struct {
     sections: []const SectionResult,
-    /// 先頭の import のうち、解決できなかったライブラリの名前。
+    failures: []const Failure,
+    /// 先頭の import のうち、解決できなかったライブラリ。
     missing_libraries: []const []const u8,
 };
-pub fn runSuite(gpa: std.mem.Allocator, io: std.Io, text: []const u8) !SuiteResult;
+/// `required` は tests/r7rs-required/ の識別子の全体。読むのは main.zig である。
+pub fn runSuite(gpa: std.mem.Allocator, text: []const u8, required: []const []const u8) RunError!SuiteResult;
 ```
 
 ### build.zig の step
 
-- `zig build test-conformance`: スイートを走らせ、節ごとの数と失敗の一覧を標準出力に出す。AGENTS.md の検証コマンド表に、この行は段階6として既にある。段階6より前は、CI は走らせない(`check-docs` が要求するのは `current_stage` 以下の段階の行だけである)。段階6より前の終了コードは、実行器の誤り(ハッシュの不一致、走査器とリーダの不一致、節をまたぐ未束縛)のときだけ非0にする。テストが落ちても0である。段階6の完了の時点で、「落ちた」と、除外の一覧に無い「実行不能」が1件でもあれば非0にする規則に切り替える(この切り替えは、段階6の残りの計画で扱う)。
+- `zig build test-conformance`: スイートを走らせ、節ごとの数と失敗の一覧を標準出力に出す。AGENTS.md の検証コマンド表に、この行は段階6として既にある。段階6より前は、CI は走らせない(`check-docs` が要求するのは `current_stage` 以下の段階の行だけである)。段階6より前の終了コードは、実行器の誤り(ハッシュの不一致、切り出せない、節の対が合わない、記録を読めない、節をまたぐ未束縛)のときだけ非0にする。テストが落ちても0である。段階6の完了の時点で、「落ちた」と、除外の一覧に無い「実行不能」が1件でもあれば非0にする規則に切り替える(この切り替えは、段階6の残りの計画で扱う)。
 - 退行の検出は、段階6より前は、準拠マトリクスの同期検査(`zig build check-report`)が受け持つ。節ごとの数が生成物に載るので、数が変われば `check-report` が赤になる。
 
 ## 準拠マトリクスへの載せ方
@@ -280,7 +284,7 @@ tests/scheme の番号は、L5 の範囲(0800 台)を使う([0017](0017-parallel
 | 6b | BSD 3条項の第3条項と、記録形式の併存を定める ADR が、採用の状態でマージされる | `docs/adr/NNNN-*.md`(新規)、`docs/adr/README.md` の一覧の1行 | T3 | 合意を求める点の2 | 6a、6c、6d と並行できる。6a の README が ADR を参照するので、マージは 6b を先にするか同時にする | 小 |
 | 6c | `(import (chibi test))` が通り、6つの形式の振る舞い(合格、不合格、誤りの記録、`test-values`、`test-error`、節の名前)を `tests/scheme/0800-*.txt` のケースが固定する | `lib/chibi/test.sld`、`lib/chibi/test.scm`、結果を返すライブラリ(`lib/sucheme/` の新しい1組)、`tests/scheme/0800-*.txt` から `0809-*.txt` | T2 | 合意を求める点の4 | 6a、6b、6d と並行できる | 中 |
 | 6d | 走査器が、文字列、コメント、文字、縦棒の識別子、ブロックコメント、データのコメントを扱い、単体テストで固定される | `tools/conformance-run/split.zig` | T1 | なし | 6a、6b、6c と並行できる | 小 |
-| 6e | `zig build test-conformance` が、取り込んだスイートを節ごとに走らせ、3つの分類で数え、失敗の一覧を出す。ハッシュの照合、走査器とリーダの照合が働く | `tools/conformance-run/run.zig`、`tools/conformance-run/main.zig`、`build.zig` の step の追加、除外の一覧のファイル、`tests/scheme/0810-*.txt` から `0819-*.txt`(必要なら) | T2 | 6a、6c、6d。合意を求める点の3 | 単独 | 中 |
+| 6e | `zig build test-conformance` が、取り込んだスイートを節ごとに走らせ、3つの分類で数え、失敗の一覧を出す。ハッシュの照合が働く | `tools/conformance-run/run.zig`、`tools/conformance-run/main.zig`、`build.zig` の step の追加、`tests/scheme/0810-*.txt` から `0819-*.txt`(必要なら) | T2 | 6a、6c、6d。合意を求める点の3 | 単独 | 中 |
 | 6f | `docs/status/conformance.md` に節ごとの表があり、`check-report` が一致を検査する。roadmap の項目の文言と、`docs/status/README.md`、[r7rs-coverage.md](../design/r7rs-coverage.md) の記述が合う | `tools/coverage-report/main.zig`、`docs/status/*`、`docs/design/r7rs-coverage.md` の該当の節、`docs/roadmap.md` の段階6の項目 | T2 | 6e | 6g と並行できる | 中 |
 | 6g | 失敗の一覧が、レーンごとの issue になっている | issue(リポジトリのファイルは持たない) | T1 | 6e | 6f と並行できる | 小 |
 
@@ -384,16 +388,16 @@ flowchart LR
 
 | スライス | 状態 |
 | --- | --- |
-| 6a | 完了(suchi/sucheme-zig#135)。`b2087f3` の2ファイルを取り込んだ。ハッシュは 6e までの間 `tests/vendor/README.md` に置く |
-| 6b | PR suchi/sucheme-zig#137。ADR-0041 |
-| 6c | 実装済み(ローカル、ミューテーションテストまで)。PR は未作成 |
-| 6d | PR suchi/sucheme-zig#143 |
-| 6e | 未着手 |
+| 6a | 完了(suchi/sucheme-zig#135)。`b2087f3` の2ファイルを取り込んだ。`r7rs-tests.scm` のハッシュの正は、6e から実行器の定数 |
+| 6b | 完了(suchi/sucheme-zig#137)。ADR-0041 |
+| 6c | 完了(suchi/sucheme-zig#145) |
+| 6d | 完了(suchi/sucheme-zig#143) |
+| 6e | PR を作る(このブランチ) |
 | 6f | 未着手 |
 | 6g | 未着手 |
 
 ## 次にやること
 
-- 6b と 6d をマージする。
-- 6c の PR を作る。そのあと、6a、6c、6d がそろったら 6e に進む。
-- 6d は、実行器(6e)ができるまで、走査器のモジュールを `build.zig` のテストの対象に直接足す。`tools/` の Zig のファイルは、テストのルートから届かないと `check-docs` が拒むためである。6e で、実行器の `main.zig` から import する形に替える。
+- 6e をマージする。
+- 6e のあと、6f(準拠マトリクスへの載せ方)と 6g(失敗の一覧の issue 化)を並行に進める。
+- 無限に回るテストへの備えを、段階6の完了の前に決める(「節と、インタプリタの単位」の開いた問い)。
