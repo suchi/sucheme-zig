@@ -62,11 +62,13 @@ pub const Error = reader.Error || expand.Error || machine.Error || printer.Error
 
 /// One interpreter: what outlives a single line of input.
 ///
-/// リーダが作るデータとプログラムが実行中に作るものは GC ヒープにあり、そのヒープは
-/// `gpa` が供給し、オプションが上限を定める。シンボルテーブル、グローバル環境、
-/// コードは、インタプリタ専用のアリーナにある。これは docs/design/architecture.md
-/// が例外として記録している。コンテキストはアリーナの中を指すので、インタプリタは
-/// その場で初期化し、あとでコピーしない。
+/// リーダが作るデータ、展開器が作るコード、プログラムが実行中に作るものは GC ヒープに
+/// あり、そのヒープは `gpa` が供給し、オプションが上限を定める。シンボルテーブルは、
+/// ヒープが `gpa` から確保する。大域環境とライブラリの表は、`gpa` から確保して上限に
+/// 数える(`Context.resident`)。
+/// インタプリタ専用のアリーナにあるのは、`(sucheme core)` の表(`Context.core`)である。
+/// コンテキストはアリーナの中を指すので、インタプリタはその場で初期化し、あとで
+/// コピーしない。
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
     ctx: context.Context,
@@ -170,9 +172,8 @@ pub const Interpreter = struct {
     ///
     /// 最初のエラーで止まる。それより前に書いた結果は書かれたままで、エラーは
     /// `diagnostic` が説明する。この呼び出しが実行中にだけ要るものは `arena` から
-    /// 取り、呼び出し側が丸ごと解放する。リーダが作るデータはヒープにあり、何かが
-    /// 参照している間は生きる。シンボルとコードはインタプリタ専用のアリーナに確保し、
-    /// `deinit` まで生きる。
+    /// 取り、呼び出し側が丸ごと解放する。リーダが作るデータと展開器が作るコードは
+    /// ヒープにあり、何かが参照している間は生きる。
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         // 前の行が送出した値は、ここで手放す。この行の GC が回収する。
         self.ctx.clearDiagnostic();
