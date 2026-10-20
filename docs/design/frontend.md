@@ -71,16 +71,20 @@ R7RS 7.1.1 は `<directive>` を `<atmosphere>` の構成要素として定義�
 
 R7RS 2.4 は、プログラムがリテラルの外に循環を持つことを誤りとしている(quasiquote の中も)。展開器はコードとしての循環を辿り続けて止まらないので、2か所で断る。
 
-- リーダ: `Reader.code` が真(既定)のとき、目印を置いたデータだけを辿り、`(quote x)` の形とベクタの中に入らずに循環を見つけたら、`circular reference outside a literal` にする。辿る範囲と判定は `src/reader.zig` の `checkNotCircularCode` の doc コメントにある。データとして読む `read`(計画書 0019 の 5l)は、`code` を偽にする。
+- リーダ: `Reader.code` が真(既定)のとき、目印を置いたデータだけを辿り、要素の位置の `(quote x)` の形とベクタの中に入らずに循環を見つけたら、`circular reference outside a literal` にする。cdr として出会う `(quote x)` は、リストの尾部なので中に入る。quasiquote の形の中では、quote の形とベクタの中にも入る。辿る範囲と判定は `src/reader.zig` の `checkNotCircularCode` の doc コメントにある。データとして読む `read`(計画書 0019 の 5l)は、`code` を偽にする。
 - `syntax-rules`: 規則のパターンとテンプレートに循環があれば、定義の時点で `bad syntax-rules: circular pattern` と `bad syntax-rules: circular template` にする(`src/syntax/rules.zig` の `checkNotCircular`)。リーダは quote とベクタの中の循環を通すが、照合と複製はその中まで辿るからである。
 
 既知の制限。リーダは `quote` を綴りで見る。展開の前に判定するので、束縛を引けないためである。
 
-- 誤りにしすぎる形: `quote` 以外の名前で循環データを受け取り、マクロが展開の中で quote する形(`(m #0=(a . #0#))` で、`m` が `'x` に展開する)は、展開したあとにはリテラルの中にあるが、読んだ時点ではリテラルの外とみなして誤りにする。
-- 通してしまう形: `quote` が特殊形式に束縛されていない場所の `(quote 循環)` は、リテラルとみなして通す。展開器はそれを手続きの呼び出しとして辿り、止まらない。どれも R7RS 2.4 が誤りとするプログラムである。
-  - 入力の例: 何も import しないライブラリの本体の `(define-library (lib c) (begin (quote #0=(a . #0#))))`。最上位で定義し直したあとの `(define quote list) (quote #0=(a . #0#))`。car の循環の `(define quote list) (quote #0=(f #0#))`。
-  - 止まる理由: cdr の循環では、形式の要素を集める `Expander.itemsOf`(`src/syntax/expand.zig`)がリストの終わりに着かない。car の循環では、展開する形式の入れ子が際限なく深くなる。どちらの作業も、マクロを一度も適用しない間は、ヒープの上限に計上されない(ADR-0031 の 2l の追記)ので、上限の誤りにもならない。マクロを一度でも適用したあとなら、上限の誤りで終わる(`(let ((quote list)) (quote #0=(a . #0#)))` は `heap limit exceeded` になる)。
-  - 閉じる方法は2つある。1つは、`itemsOf` がリストの循環を見つけたら、真のリストでない形式と同じ誤りにすること(cdr の循環だけを閉じる)。もう1つは、展開の作業を最初からヒープの上限に計上すること(car の循環も、上限の誤りで閉じる)。後者は 3o で扱う候補として [open-questions.md](open-questions.md) にある。
+- 誤りにしすぎる形: `quote` 以外の名前で循環データを受け取り、マクロが展開の中で quote する形(`(m #0=(a . #0#))` で、`m` が `'x` に展開する)は、展開したあとにはリテラルの中にあるが、読んだ時点ではリテラルの外とみなして誤りにする。`quote` を別の名前で import した `(kwote #0=(a . #0#))`(`(import (rename (scheme base) (quote kwote)))` のあと)も、同じ理由で誤りにする。
+- 通してしまう形: 次の3つは、リテラルの外の循環をリーダが見つけられずに通す。展開器はそれをコードとして辿り、止まらないか、上限の誤りで終わる。どれも R7RS 2.4 が誤りとするプログラムである。
+  - `quote` が特殊形式に束縛されていない場所の `(quote 循環)`。リテラルとみなして通し、展開器はそれを手続きの呼び出しとして辿る。入力の例: 何も import しないライブラリの本体の `(define-library (lib c) (begin (quote #0=(a . #0#))))`。最上位で定義し直したあとの `(define quote list) (quote #0=(a . #0#))`。car の循環の `(define quote list) (quote #0=(f #0#))`。
+  - 要素の位置にあるが式でない `(quote 循環)`。`let` などの束縛の指定 `#0=(let ((quote #0#)) 1)` は、`(quote #0#)` を quote の形とみなして通す。
+  - ベクタを通じてコードに届く循環。リーダはベクタの中に入らないが、`syntax-rules` のベクタのパターンは中の要素をパターン変数に束縛し、テンプレートがそれをコードの位置に置ける。`(define-syntax ev (syntax-rules () ((_ #(e)) (lambda () e))))` のあとの `(ev #(#0=(lambda quote #0#)))` は止まらない。マクロを作るマクロに、ベクタから規則の並びやリテラルの並びの循環を渡すと、`rules.compile` の中で止まらない(`checkNotCircular` は、各規則のパターンとテンプレートだけを見る)。
+  - 止まる理由: cdr の循環では、形式の要素を集める `Expander.itemsOf`(`src/syntax/expand.zig`)がリストの終わりに着かない。car の循環では、展開する形式の入れ子が際限なく深くなる。どちらの作業も、マクロを一度も適用しない間は、ヒープの上限に計上されない(ADR-0031 の 2l の追記)ので、上限の誤りにもならない。マクロを一度でも適用したあとは、確保を伴う辿り方なら上限の誤りで終わる(`(let ((quote list)) (quote #0=(a . #0#)))` は `heap limit exceeded` になる)。確保を伴わない辿り方(リテラルの並びの循環を名前の判定で辿る `rules.compile`)は、そのあとでも止まらない。
+  - 閉じる方法は2つある。1つは、`itemsOf` がリストの循環を見つけたら、真のリストでない形式と同じ誤りにすること(cdr の循環だけを閉じる)。もう1つは、展開の作業を最初からヒープの上限に計上すること(確保を伴う辿り方を、上限の誤りで閉じる)。後者は 3o で扱う候補として [open-questions.md](open-questions.md) にある。リテラルの並びの循環は、どちらでも閉じず、`rules.compile` がリテラルの並びを辿る前に循環を見ることで閉じる。
+
+今のプリンタは循環を検出しない(プリンタのスライス 5j で直す)。REPL で循環したデータを結果として書くと、書き出しが止まらない。`set-cdr!` で作った循環と同じで、5c の前からある。
 
 衛生性の検証項目の9は、Scheme からは別名を含まない循環(`quote` した循環と共有の `eq?`)で通す(`tests/scheme/0520`)。テンプレートの循環を断るので、別名を含む循環はテンプレートから作れない。別名を含む循環の剥離は、`src/syntax/expand.zig` の単体テスト(`quote strips the aliases of a cycle`)が、Zig で組み立てたデータで見ている。
 

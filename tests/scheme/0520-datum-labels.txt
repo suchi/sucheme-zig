@@ -47,6 +47,17 @@ error: circular reference outside a literal
 `#0=(a ,@#0#)
 error: circular reference outside a literal
 
+# quasiquote はベクタの中まで辿るので、ベクタと quote の中の循環も断る。
+`#(1 ,#0=(a . #0#))
+error: circular reference outside a literal
+
+`(1 '#0=(a . #0#))
+error: circular reference outside a literal
+
+# cdr として出会う `(quote x)` は quote の式ではなく、リストの尾部である。
+#0=(lambda quote #0#)
+error: circular reference outside a literal
+
 # テンプレートとパターンの循環は、マクロを定義する時点で断る。
 (define-syntax q (syntax-rules () ((_) '#0=(tmp . #0#))))
 error: bad syntax-rules: circular template

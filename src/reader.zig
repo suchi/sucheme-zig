@@ -281,44 +281,59 @@ const Labels = struct {
 /// Fails with `CircularCode` when `datum`, read as code, is circular outside a
 /// literal (R7RS 2.4).
 ///
-/// 辿るのはペアだけで、`(quote x)` の形(car がシンボル `quote` で、cdr が1要素のリスト)の
-/// 中には入らない。ベクタの中にも入らない。ベクタは自分自身に評価されるリテラルだからである
-/// (R7RS 4.1.2)。quasiquote の中には入る。R7RS 2.4 は、その中の循環を誤りとしている。
-/// 深さ優先で、いま辿っている経路の上のペアと、辿り終えたペアを分けて持つ。経路の上の
-/// ペアに戻れば循環で、辿り終えたペアに着くのは共有なので、もう辿らない。費用はデータの
-/// 大きさに比例する。
+/// 辿るのはペアで、要素の位置(最も外側か、ペアの car)で出会う `(quote x)` の形(car が
+/// シンボル `quote` で、cdr が1要素のリスト)の中には入らない。cdr として出会う同じ形は、
+/// quote の式ではなくリストの尾部(`(lambda quote ...)` の仮引数の並びや本体)なので、中に
+/// 入る。ベクタの中にも入らない。ベクタは自分自身に評価されるリテラルだからである
+/// (R7RS 4.1.2)。
+/// quasiquote の形の中では、quote の形とベクタの中にも入る。R7RS 2.4 は、quasiquote が
+/// 循環を含むこと自体を誤りとしており、quasiquote はベクタの中まで辿るからである。
+/// 深さ優先で、いま辿っている経路の上のものと、辿り終えたものを分けて持つ。経路の上の
+/// ものに戻れば循環で、辿り終えたものに着くのは共有なので、もう辿らない。quasiquote の
+/// 中と外では辿る範囲が違うので、状態は両者で別に持つ。費用はデータの大きさに比例する。
 /// Why: `quote` は綴りで見る。展開の前に判定するので、束縛を引けないためである。そのため、
 /// `quote` 以外の名前で受け取った循環データを、マクロが展開の中で quote する形は、
 /// リテラルの外の循環として拒否する(docs/design/frontend.md の「現状(スライス 5c)」)。
 fn checkNotCircularCode(scratch: std.mem.Allocator, heap: *Heap, datum: Value) Error!void {
     const State = enum { on_path, done };
-    const Step = union(enum) { enter: Value, leave: *value_mod.Pair };
+    const Enter = struct { value: Value, tail: bool, quasi: bool };
+    const Step = union(enum) { enter: Enter, leave: usize };
     var states: std.AutoHashMapUnmanaged(usize, State) = .empty;
     var stack: std.ArrayList(Step) = .empty;
-    try stack.append(scratch, .{ .enter = datum });
+    try stack.append(scratch, .{ .enter = .{ .value = datum, .tail = false, .quasi = false } });
     while (stack.pop()) |step| switch (step) {
-        .leave => |p| try states.put(scratch, @intFromPtr(p), .done),
-        .enter => |v| {
-            const p = v.asPair() orelse continue;
-            if (isQuoteForm(heap, p)) continue;
-            const slot = try states.getOrPut(scratch, @intFromPtr(p));
+        .leave => |key| try states.put(scratch, key, .done),
+        .enter => |e| {
+            const p = e.value.asPair();
+            const vector = if (e.quasi) e.value.asVector() else null;
+            if (p == null and vector == null) continue;
+            if (p) |pair| if (!e.tail and !e.quasi and isFormOf(heap, pair, "quote")) continue;
+            // ペアとベクタの番地は整列しているので、最下位のビットで quasiquote の中と外を分ける。
+            const address = if (p) |pair| @intFromPtr(pair) else @intFromPtr(vector.?);
+            const key = address | @intFromBool(e.quasi);
+            const slot = try states.getOrPut(scratch, key);
             if (slot.found_existing) switch (slot.value_ptr.*) {
                 .on_path => return error.CircularCode,
                 .done => continue,
             };
             slot.value_ptr.* = .on_path;
-            try stack.append(scratch, .{ .leave = p });
-            try stack.append(scratch, .{ .enter = p.cdr });
-            try stack.append(scratch, .{ .enter = p.car });
+            try stack.append(scratch, .{ .leave = key });
+            if (p) |pair| {
+                const quasi = e.quasi or (!e.tail and isFormOf(heap, pair, "quasiquote"));
+                try stack.append(scratch, .{ .enter = .{ .value = pair.cdr, .tail = true, .quasi = quasi } });
+                try stack.append(scratch, .{ .enter = .{ .value = pair.car, .tail = false, .quasi = quasi } });
+            } else for (vector.?.items) |item| {
+                try stack.append(scratch, .{ .enter = .{ .value = item, .tail = false, .quasi = true } });
+            }
         },
     };
 }
 
-/// Whether `p` is `(quote x)`: a pair whose car is the symbol `quote` and whose
-/// cdr is a list of one element.
-fn isQuoteForm(heap: *Heap, p: *const value_mod.Pair) bool {
+/// Whether `p` is `(<name> x)`: a pair whose car is the symbol spelled `name`
+/// and whose cdr is a list of one element.
+fn isFormOf(heap: *Heap, p: *const value_mod.Pair, comptime name: []const u8) bool {
     const head = p.car.asSymbol() orelse return false;
-    if (!std.mem.eql(u8, heap.symbols.nameOf(head), "quote")) return false;
+    if (!std.mem.eql(u8, heap.symbols.nameOf(head), name)) return false;
     const rest = p.cdr.asPair() orelse return false;
     return rest.cdr.kind() == .empty_list;
 }
@@ -1586,6 +1601,14 @@ test "a reader of code rejects a circular reference outside a literal" {
         // `quote` の形でなければ、中に入る。
         "(quote . #0=(a . #0#))",
         "(list 'a #0=(b #0#))",
+        // cdr として出会う `(quote x)` は、quote の式ではなく、リストの尾部である。
+        "#0=(lambda quote #0#)",
+        "(define (h . quote) #0=(if #f quote #0#))",
+        "(f . '#0=(a . #0#))",
+        // quasiquote の中では、quote の形とベクタの中にも入る。
+        "`#(1 ,#0=(a . #0#))",
+        "`(1 '#0=(a . #0#))",
+        "`#0=#(1 #0#)",
     }) |src| {
         _ = f.readOne(src) catch |e| {
             if (e == error.CircularCode) continue;
@@ -1610,6 +1633,7 @@ test "a reader of code accepts circular data in a literal, and shared code" {
         // 共有は循環ではない。読み終えたラベルへの参照は、同じものを指すだけである。
         "(#0=(f x) #0# #0#)",
         "(+ #0=(* 2 3) #0#)",
+        "`(#0=(a #(b)) ,#0# #0#)",
     }) |src| {
         _ = f.readOne(src) catch |e| {
             std.debug.print("reading {s}: {}\n", .{ src, e });
