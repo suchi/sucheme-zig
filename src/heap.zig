@@ -1731,8 +1731,9 @@ test "a list for a node is counted against the limit, and the peak follows it" {
     // 上限を超える長さは、確保せずに `HeapLimit` で断り、計上を変えない。
     try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, 1024));
     try std.testing.expectEqual(0, heap.accounted);
-    // バイト数の計算が桁あふれする長さも、同じく断る。
-    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, std.math.maxInt(usize) / 4));
+    // バイト数の計算が桁あふれする長さも、同じく断る。この長さは、あふれを回り込ませると
+    // 8バイトになり、上限の内に収まって見える。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, std.math.maxInt(usize) / @sizeOf(*const Node) + 2));
     try std.testing.expectEqual(0, heap.accounted);
     const list = try heap.allocAttached(ParameterBinding, 2);
     try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.accounted);
