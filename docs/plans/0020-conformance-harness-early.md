@@ -154,7 +154,7 @@ flowchart TD
 - リーダが読めない形式(数の構文、データラベルなど)があると、REPL と同じ入口に流したとき、読めない字句のあとの入力がずれる。試作で、読めない字句の行のあとに、続く形式がまとめて誤りになった。
 - 行頭の `(` を境目にする方法は使えない。`r7rs-tests.scm` には、複数行の形式の途中で、行頭に `(` が来る箇所がある(試作の走査で、括弧の深さが0でない行頭の `(` が見つかった)。
 
-走査器が知る字句は、文字列、行コメント、ブロックコメント(`#|...|#`)、データのコメント(`#;`)、文字(`#\(` など)、縦棒の識別子(`|...|`)である。数やデータラベルの中身は読まない。
+走査器が知る字句は、文字列、行コメント、ブロックコメント(`#|...|#`)、データのコメント(`#;`)、文字(`#\(` など)、縦棒の識別子(`|...|`)、ベクタとバイトベクタの開き括弧、データラベルの定義(`#0=` とその後ろのデータ)である。数の中身は読まない。
 
 走査器の誤りを見逃さないため、リーダが読めた形式については、リーダが消費した範囲と走査器の範囲が一致することを、実行器が確かめる。一致しなければ、実行器の誤りとして失敗する。
 
@@ -199,7 +199,7 @@ pub const Chunk = struct {
     /// 形式の先頭の行の番号(1から)。
     line: u32,
 };
-pub const SplitError = error{ Unbalanced, UnterminatedString, UnterminatedBlockComment };
+pub const SplitError = error{ Unbalanced, UnterminatedString, UnterminatedBlockComment, UnterminatedIdentifier };
 /// `pos` から後ろで、次の最上位の形式を返す。形式が無ければ null。
 pub fn next(text: []const u8, pos: usize) SplitError!?Chunk;
 
