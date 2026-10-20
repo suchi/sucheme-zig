@@ -76,8 +76,11 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
 /// returns the bytes of its name, which `scratch` holds.
 ///
 /// R7RS 7.1.1 の `|` <symbol element>* `|` である。`|` と `\` のほかの文字は、生の行の
-/// 終わりも含めて、そのまま名前に入る。エスケープは文字列と同じだが、行継続は無い(R7RS 2.1
-/// は文字列と同じエスケープを許すとし、7.1.1 の <symbol element> は行継続を挙げない)。
+/// 終わりも含めて、そのまま名前に入る。エスケープは、<symbol element> が挙げるもの(16進、
+/// `\a \b \t \n \r`、`\|`)に、`\"` と `\\` を足したものである。足した2つは、R7RS 2.1 の本文が
+/// 文字列と同じエスケープを許すとすることと、準拠スイート(tests/vendor/r7rs-tests.scm)が
+/// `'|\"|` と `'|\\123|` を使うことによる。行継続は、<symbol element> に無く、準拠スイートも
+/// 使わないので読まない。docs/design/frontend.md の「現状(スライス 5b)」を参照。
 /// エラーのときは `pos` を元の位置のままにする。
 pub fn readIdentifier(src: []const u8, pos: *usize, scratch: std.mem.Allocator) ReadError![]const u8 {
     std.debug.assert(src[pos.*] == '|');
@@ -300,6 +303,8 @@ test "read: a backslash, intraline whitespace and a line ending stand for nothin
     try expectRead("ab", "\"a\\ \t \n \t b\"");
     try expectRead("ab", "\"a\\\r\nb\"");
     try expectRead("ab", "\"a\\\rb\"");
+    // `\` の直後がタブでも、行内の空白である。
+    try expectRead("ab", "\"a\\\t\nb\"");
     // 次の行の先頭の空白だけを捨てる。2つ目の改行は文字列の一部である。
     try expectRead("a\nb", "\"a\\\n\nb\"");
     try expectRead("a", "\"a\\\n\"");
@@ -428,6 +433,31 @@ test "read: a scratch allocation that fails is an out of memory, and nothing lea
     var ok: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     _ = try read("\"abc\"", &pos, ok.allocator(), &heap);
     try std.testing.expectEqual(ok.allocated_bytes, ok.freed_bytes);
+}
+
+test "readIdentifier: an error leaves the position where it was, and nothing leaks" {
+    // 誤りの種類は reader.zig のテストが見る。ここでは、どの誤りでも位置が動かず、
+    // 集めたバイトを返すことを見る(`std.testing.allocator` が漏れを報告する)。
+    for ([_][]const u8{ "|abc", "|a\\q|", "|a\\\nb|", "|a\xffb|", "|a\\x41" }) |src| {
+        var pos: usize = 0;
+        if (readIdentifier(src, &pos, std.testing.allocator)) |name| {
+            std.testing.allocator.free(name);
+            return error.TestUnexpectedResult;
+        } else |_| {}
+        try std.testing.expectEqual(0, pos);
+    }
+}
+
+test "readIdentifier: a scratch allocation that fails is an out of memory, and nothing leaks" {
+    const check = struct {
+        fn run(gpa: std.mem.Allocator, src: []const u8) !void {
+            var pos: usize = 0;
+            const name = try readIdentifier(src, &pos, gpa);
+            defer gpa.free(name);
+            try std.testing.expectEqual(src.len, pos);
+        }
+    }.run;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, check, .{"|H\\x65;llo world|"});
 }
 
 fn expectWritten(expected: []const u8, mode: Mode, bytes: []const u8) !void {

@@ -1167,7 +1167,8 @@ test "next rejects a backslash in an identifier between vertical lines that begi
     var f: Fixture = .init();
     defer f.deinit();
     // 行継続は文字列だけのもので、<symbol element> には無い。
-    for ([_][]const u8{ "|\\q|", "|\\x;|", "|\\xD800;|", "|\\x110000;|", "|\\xg;|", "|a\\\nb|", "|a\\ b|", "|\\X41;|" }) |src| {
+    // `\` の直後の空白と行の終わりは、どの綴り(スペース、タブ、LF、CR、CR LF)でも誤りである。
+    for ([_][]const u8{ "|\\q|", "|\\x;|", "|\\xD800;|", "|\\x110000;|", "|\\xg;|", "|a\\\nb|", "|a\\ b|", "|a\\\tb|", "|a\\\rb|", "|a\\\r\nb|", "|a\\\t\nb|", "|\\X41;|" }) |src| {
         try std.testing.expectError(error.InvalidSymbolEscape, f.readOne(src));
     }
 }
@@ -1542,6 +1543,8 @@ const fuzz_inputs = [_][]const u8{
     "#\\alarm #\\delete #\\newline #\\null #\\x3bb #\\x",
     // 1 バイトに収まる値の 16 進エスケープ。UTF-8 では 2 バイトになる。
     "\"\\x80;\" \"\\xe9;\" \"\\xff;\"",
+    // 縦棒の識別子(スライス 5b): エスケープ、空の名前、閉じないもの、誤ったエスケープ。
+    "|a b| |\\x3bb;| || |a\\|b| |\\q| |abc",
     // スカラ値でない 16 進エスケープ。
     "\"\\xD800;\" \"\\x110000;\" \"\\xDFFF;\" #\\xD800 #\\x110000",
     "\"λ\" #\\λ あ #\\x3bb",
@@ -1633,7 +1636,11 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             error.OutOfMemory => return,
             error.WriteFailed => return error.TestUnexpectedResult,
         };
-        try std.testing.expect(sunk.fullCount() > 0);
+        // Why: 名前が空のシンボル(`||`)だけは、今のプリンタが何も書かない。縦棒を付けて
+        // 書き出すのはプリンタのスライス 5j(docs/plans/0019-phase5-ports-and-io.md)で、
+        // そこでこの例外を外す。`(string->symbol "")` でも同じ値ができ、5b の前からある。
+        const empty_symbol = if (datum.asSymbol()) |id| heap.symbols.nameOf(id).len == 0 else false;
+        try std.testing.expect(sunk.fullCount() > 0 or empty_symbol);
     }
 }
 

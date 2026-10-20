@@ -41,6 +41,11 @@
 #!fold-case (list (symbol->string 'ABC) (symbol->string '|ABC|))
 ("abc" "ABC")
 
+# 縦棒の識別子でライブラリ名を書いても、ファイルの名前に使えない文字の成分は拒否される
+# (docs/design/frontend.md の探索とパス名への対応付け)。
+(import (|../x|))
+error: unknown library: (../x): a library with that name cannot be a file, because a component has a character other than A-Z a-z 0-9 - _ .
+
 # 閉じていない縦棒の識別子は、入力の終わりで誤りになる。
 '|abc
 error: unexpected end of input
