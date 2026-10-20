@@ -49,7 +49,12 @@ test "isNumber answers for the five kinds of number and nothing else" {
     for ([_]Value{ .fromFixnum(0), .fromFlonum(0.5), .fromBignum(&b), .fromRatnum(&r), .fromCompnum(&c) }) |v| {
         try std.testing.expect(isNumber(v));
     }
-    for ([_]Value{ .fromBool(false), .empty_list_value, .fromCharacter('1'), .unspecified_value, .eof_value }) |v| {
+    var p: value_mod.Pair = .{ .car = .fromFixnum(1), .cdr = .empty_list_value };
+    var bytes = "1".*;
+    var s: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    var items = [_]Value{.fromFixnum(1)};
+    var vec: value_mod.Vector = .{ .items = &items };
+    for ([_]Value{ .fromBool(false), .empty_list_value, .fromCharacter('1'), .unspecified_value, .eof_value, .fromSymbol(@fromBackingInt(@intCast(0))), .{ .pair = &p }, .fromString(&s), .fromVector(&vec) }) |v| {
         try std.testing.expect(!isNumber(v));
     }
 }

@@ -374,6 +374,7 @@ pub fn cellBytes(comptime T: type) usize {
 /// of a string, the elements of a vector, the fields of a record, the values of
 /// a multiple-values object, the limbs of a bignum.
 /// ペイロードはセルとは別に確保され、セルと一緒に返される。
+/// ペイロードを持つ型は `ownsPayload` が答える。この switch の分岐と同じ集合である。
 fn payloadBytes(comptime T: type, object: *const T) usize {
     return switch (T) {
         Frame => object.values.len * @sizeOf(Value),
@@ -384,6 +385,15 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         MultipleValues => object.items.len * @sizeOf(Value),
         Bignum => object.limbs.len * @sizeOf(Limb),
         else => 0,
+    };
+}
+
+/// Whether objects of type `T` own a payload beyond their cell, so that only
+/// their own `create` function may make them.
+fn ownsPayload(comptime T: type) bool {
+    return switch (T) {
+        Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum => true,
+        else => false,
     };
 }
 
@@ -495,15 +505,19 @@ pub const Heap = struct {
 
     /// A new object holding `value`.
     ///
-    /// ペイロードを持つオブジェクトは、専用の関数 `createFrame`、`createString`、
-    /// `createVector`、`createRecord`、`createMultipleValuesIn` で作る。
+    /// ペイロードを持つオブジェクト(`ownsPayload`)は、専用の関数 `createFrame`、
+    /// `createString`、`createVector`、`createBytevector`、`createRecord`、
+    /// `createMultipleValuesIn`、`createBignum` で作る。
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
         return self.createIn(.limit, T, value);
     }
 
     /// A new object holding `value`, held to `budget`.
     pub fn createIn(self: *Heap, budget: Budget, comptime T: type, value: T) Error!*T {
-        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Bytevector and T != Record and T != MultipleValues);
+        // Why: ペイロードを持つ型をここで作ると、ペイロードを計上せず、呼び出し側の切片を
+        // そのまま持つ。スイープがそれを `backing` に返すので、実行時に壊れる。
+        // コンパイル時に断る。
+        comptime std.debug.assert(!ownsPayload(T));
         try self.reserve(budget, cellBytes(T));
         const cell = try self.backing.create(Cell(T));
         cell.value = value;
@@ -2036,6 +2050,17 @@ test "a bignum is held to the limit by its limbs, and a failure leaves the accou
     try std.testing.expectEqual(0, heap.accounted);
     _ = try heap.createBignum(.{ .limbs = three[0..2], .positive = true });
     try std.testing.expectEqual(cellBytes(Bignum) + 2 * @sizeOf(Limb), heap.accounted);
+}
+
+test "create refuses exactly the heap types that own a payload" {
+    // 期待する集合は `ownsPayload` から導かず、手で挙げる。導くと、一覧の漏れを検出できない。
+    const with_payload = [_]type{ Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum };
+    inline for (object_types) |T| {
+        const expected = comptime for (with_payload) |U| {
+            if (U == T) break true;
+        } else false;
+        try std.testing.expectEqual(expected, comptime ownsPayload(T));
+    }
 }
 
 test "when the cell cannot be allocated the limbs of a bignum are given back" {

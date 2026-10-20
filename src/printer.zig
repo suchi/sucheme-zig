@@ -257,6 +257,13 @@ test "write and display hand the other numbers to src/num, also inside a list" {
     const l = try f.list(&.{ .fromFixnum(1), .fromFlonum(0.5) }, .empty_list_value);
     try std.testing.expectEqualStrings("(1 #<number>)", try f.written(&buf, l));
     try std.testing.expectEqualStrings("(1 #<number>)", try f.displayed(&buf, l));
+    // ヒープの3種も同じ分岐を通る。
+    var limbs = [_]value_mod.Limb{ 0, 1 };
+    var b: value_mod.Bignum = .{ .limbs = &limbs, .positive = true };
+    var r: value_mod.Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromFixnum(3) };
+    var c: value_mod.Compnum = .{ .real = .fromFixnum(1), .imag = .fromFixnum(2) };
+    const heap_numbers = try f.list(&.{ .fromBignum(&b), .fromRatnum(&r), .fromCompnum(&c) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<number> #<number> #<number>)", try f.written(&buf, heap_numbers));
 }
 
 test "write shows an uninitialized marker that leaked" {

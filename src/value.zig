@@ -474,8 +474,11 @@ pub const Value = union(enum) {
     /// Whether `a` and `b` are the same value in the sense of `eq?` (R7RS 6.1).
     ///
     /// Why: R7RS 6.1 は、数と文字の `eq?` を実装依存とし、真を返してよいのは `eqv?` が
-    /// 真のときだけとする。段階1の数は固定長整数だけなので、`eqv?` と同じ関数でよい。
-    /// 段階4で数の種類が増えて `eqv?` が分かれたとき、`eq?` はここで別に決める。
+    /// 真のときだけとする。スライス 4d で数の種類が増えたが、ヒープの数を作るのは
+    /// まだ単体テストだけで、`eqv?` もヒープの数を同じオブジェクトかで比べるので、
+    /// 同じ関数でよい。スライス 4e で `eqv?` が数としての比較になったら、`eq?` は
+    /// ここで別に決める(docs/plans/0018-phase4-numeric-tower-unicode.md の合意を求める
+    /// 点の6: ヒープの数は同じオブジェクトか、flonum はビット列で比べる)。
     pub fn isEq(a: Value, b: Value) bool {
         return a.isEqv(b);
     }
@@ -1875,6 +1878,16 @@ test "a bignum, a ratnum and a compnum are heap objects, each answering to its o
     try std.testing.expect(cv.asFlonum() == null);
     try std.testing.expect(cv.isEqv(.fromCompnum(&c)));
     try std.testing.expect(!cv.isEqv(rv));
+
+    // 暫定: 正規化が入るスライス 4e までは、ヒープの数を同じオブジェクトかで比べるので、
+    // 中身が同じ別のオブジェクトは eqv? でない。4e で数としての比較に替え、この3行を
+    // 反対の期待に書き換える。
+    var b2: Bignum = .{ .limbs = &limbs, .positive = false };
+    var r2: Ratnum = r;
+    var c2: Compnum = c;
+    try std.testing.expect(!bv.isEqv(.fromBignum(&b2)));
+    try std.testing.expect(!rv.isEqv(.fromRatnum(&r2)));
+    try std.testing.expect(!cv.isEqv(.fromCompnum(&c2)));
 }
 
 test "finding the root links the promises it passes straight to the root" {
