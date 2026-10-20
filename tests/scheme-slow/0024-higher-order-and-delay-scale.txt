@@ -24,12 +24,24 @@
 (import (sucheme procedures)) (define v (make-vector 250000 1)) (define n 0) (vector-for-each (lambda (x) (set! n (+ n x))) v) n
 250000
 
-# 20万文字の文字列に `string-map` と `string-for-each` を使う。
+# 20万文字の文字列に `string-map` と `string-for-each` を使う。この2つは、元の規模を
+# 既定モードだけで走らせ、直後の縮小版(元の5分の1)を GC のモードだけで走らせる
+# (docs/plans/0022-layer2-measurement.md)。
+# modes: default
 (import (sucheme procedures)) (define s (make-string 200000 #\a)) (string-length (string-map (lambda (c) c) s))
 200000
 
+# modes: stress
+(import (sucheme procedures)) (define s (make-string 40000 #\a)) (string-length (string-map (lambda (c) c) s))
+40000
+
+# modes: default
 (import (sucheme procedures)) (define s (make-string 200000 #\あ)) (define n 0) (string-for-each (lambda (c) (set! n (+ n 1))) s) n
 200000
+
+# modes: stress
+(import (sucheme procedures)) (define s (make-string 40000 #\あ)) (define n 0) (string-for-each (lambda (c) (set! n (+ n 1))) s) n
+40000
 
 # 作り直しながら繰り返す。古いベクタがごみになり、GC が計上から外す。
 (import (sucheme procedures)) (define v (make-vector 50000 1)) (define (again k) (if (= k 0) 'done (begin (vector-map (lambda (x) x) v) (again (- k 1))))) (again 20)
