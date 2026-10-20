@@ -19,7 +19,8 @@
 //! 入力の深さで決まる(docs/design/runtime.md)。
 
 const std = @import("std");
-const Value = @import("value.zig").Value;
+const value_mod = @import("value.zig");
+const Value = value_mod.Value;
 const Heap = @import("heap.zig").Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
@@ -67,6 +68,9 @@ pub const SyntaxError = error{
     /// A `#<n>=` followed by `)`, or labelling only a reference to itself (`#0=#0#`,
     /// which R7RS 2.4 calls an error).
     MissingLabeledDatum,
+    /// Code that is circular outside a literal (R7RS 2.4): what a reader of code
+    /// rejects.
+    CircularCode,
 };
 
 pub const Error = error{
@@ -94,6 +98,7 @@ pub fn describe(e: SyntaxError) []const u8 {
         error.UndefinedLabel => "reference to an undefined datum label",
         error.DuplicateLabel => "datum label defined twice",
         error.MissingLabeledDatum => "datum label needs a datum",
+        error.CircularCode => "circular reference outside a literal",
     };
 }
 
@@ -273,6 +278,51 @@ const Labels = struct {
     }
 };
 
+/// Fails with `CircularCode` when `datum`, read as code, is circular outside a
+/// literal (R7RS 2.4).
+///
+/// 辿るのはペアだけで、`(quote x)` の形(car がシンボル `quote` で、cdr が1要素のリスト)の
+/// 中には入らない。ベクタの中にも入らない。ベクタは自分自身に評価されるリテラルだからである
+/// (R7RS 4.1.2)。quasiquote の中には入る。R7RS 2.4 は、その中の循環を誤りとしている。
+/// 深さ優先で、いま辿っている経路の上のペアと、辿り終えたペアを分けて持つ。経路の上の
+/// ペアに戻れば循環で、辿り終えたペアに着くのは共有なので、もう辿らない。費用はデータの
+/// 大きさに比例する。
+/// Why: `quote` は綴りで見る。展開の前に判定するので、束縛を引けないためである。そのため、
+/// `quote` 以外の名前で受け取った循環データを、マクロが展開の中で quote する形は、
+/// リテラルの外の循環として拒否する(docs/design/frontend.md の「現状(スライス 5c)」)。
+fn checkNotCircularCode(scratch: std.mem.Allocator, heap: *Heap, datum: Value) Error!void {
+    const State = enum { on_path, done };
+    const Step = union(enum) { enter: Value, leave: *value_mod.Pair };
+    var states: std.AutoHashMapUnmanaged(usize, State) = .empty;
+    var stack: std.ArrayList(Step) = .empty;
+    try stack.append(scratch, .{ .enter = datum });
+    while (stack.pop()) |step| switch (step) {
+        .leave => |p| try states.put(scratch, @intFromPtr(p), .done),
+        .enter => |v| {
+            const p = v.asPair() orelse continue;
+            if (isQuoteForm(heap, p)) continue;
+            const slot = try states.getOrPut(scratch, @intFromPtr(p));
+            if (slot.found_existing) switch (slot.value_ptr.*) {
+                .on_path => return error.CircularCode,
+                .done => continue,
+            };
+            slot.value_ptr.* = .on_path;
+            try stack.append(scratch, .{ .leave = p });
+            try stack.append(scratch, .{ .enter = p.cdr });
+            try stack.append(scratch, .{ .enter = p.car });
+        },
+    };
+}
+
+/// Whether `p` is `(quote x)`: a pair whose car is the symbol `quote` and whose
+/// cdr is a list of one element.
+fn isQuoteForm(heap: *Heap, p: *const value_mod.Pair) bool {
+    const head = p.car.asSymbol() orelse return false;
+    if (!std.mem.eql(u8, heap.symbols.nameOf(head), "quote")) return false;
+    const rest = p.cdr.asPair() orelse return false;
+    return rest.cdr.kind() == .empty_list;
+}
+
 /// A datum label or a reference to one, as `Reader.label` reads it.
 const LabelToken = struct {
     number: u64,
@@ -289,6 +339,11 @@ pub const Reader = struct {
     /// `#!no-fold-case` が、入力の途中で切り替える(R7RS 2.1)。切り替えた状態は、この読み手の
     /// 残りの入力に効く。読み手をまたいで残すのは、呼び出し側の役目である。
     fold_case: bool = false,
+    /// Whether the reader reads code, so that a datum circular outside a literal
+    /// is an error (R7RS 2.4).
+    /// 既定は真である。読んだものを展開器がコードとして辿るので、リテラルの外の循環が
+    /// 届くと、展開器が止まらない。データとして読む手続き(`read`)は偽にする。
+    code: bool = true,
 
     pub fn init(src: []const u8) Reader {
         return .{ .src = src };
@@ -410,6 +465,9 @@ pub const Reader = struct {
             }
             if (open.items.len == 0) {
                 try labels.resolve(scratch, datum);
+                // 循環は、読み終える前のラベルへの参照(目印)からしか生まれないので、目印を
+                // 置いたデータだけを検査する。
+                if (self.code and labels.by_placeholder.count() != 0) try checkNotCircularCode(scratch, sink.heap, datum);
                 return datum;
             }
             switch (open.items[open.items.len - 1]) {
@@ -887,6 +945,8 @@ const Fixture = struct {
     arena: std.heap.ArenaAllocator,
     heap: Heap,
     fold_case: bool = false,
+    /// Whether the readers read code, which may not be circular outside a literal.
+    code: bool = true,
 
     fn init() Fixture {
         return .{ .arena = .init(std.testing.allocator), .heap = .init(std.heap.smp_allocator, .{}) };
@@ -905,6 +965,7 @@ const Fixture = struct {
     fn readOne(self: *Fixture, src: []const u8) Error!Value {
         var r: Reader = .init(src);
         r.fold_case = self.fold_case;
+        r.code = self.code;
         const d = (try r.next(self.arena.allocator(), self.sink())) orelse return error.Incomplete;
         if (try r.next(self.arena.allocator(), self.sink()) != null) return error.InvalidToken;
         return d;
@@ -1477,6 +1538,8 @@ test "isIdentifier follows the R7RS grammar, peculiar identifiers included" {
 test "a datum label and a reference to it read as one object, which can hold itself" {
     var f: Fixture = .init();
     defer f.deinit();
+    // データとして読む。コードとしての循環は、下の別のテストが見る。
+    f.code = false;
     // 循環するリスト(R7RS 2.4 の例 `#0=(a b c . #0#)` と同じ形)。
     const cycle = (try f.readOne("#0=(a b c . #0#)")).asPair().?;
     const third = cycle.cdr.asPair().?.cdr.asPair().?;
@@ -1508,6 +1571,54 @@ test "a datum label and a reference to it read as one object, which can hold its
     // ペアでもベクタでもないデータにも、ラベルを付けられる。
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("(a a 12345 12345)", try f.roundTrip("(#7=a #7# #123456789=12345 #123456789#)", &buf));
+}
+
+test "a reader of code rejects a circular reference outside a literal" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // R7RS 2.4 の例と、関数の呼び出しの中の循環、quasiquote の中の循環(同節が誤りとする)。
+    for ([_][]const u8{
+        "#1=(begin (display #\\x) #1#)",
+        "#0=(a . #0#)",
+        "(f #0=(g #0#))",
+        "`#0=(a . #0#)",
+        "(quasiquote #0=(a ,@#0#))",
+        // `quote` の形でなければ、中に入る。
+        "(quote . #0=(a . #0#))",
+        "(list 'a #0=(b #0#))",
+    }) |src| {
+        _ = f.readOne(src) catch |e| {
+            if (e == error.CircularCode) continue;
+            std.debug.print("reading {s}: {}\n", .{ src, e });
+            return e;
+        };
+        std.debug.print("reading {s}: accepted\n", .{src});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "a reader of code accepts circular data in a literal, and shared code" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // quote の中と、自分自身に評価されるベクタの中の循環は、リテラルの中にある。
+    for ([_][]const u8{
+        "'#0=(a . #0#)",
+        "(quote #0=(a . #0#))",
+        "(f '#0=(a . #0#) #(#1=(b . #1#)))",
+        "#0=(quote #0#)",
+        "#0=#(1 #0#)",
+        // 共有は循環ではない。読み終えたラベルへの参照は、同じものを指すだけである。
+        "(#0=(f x) #0# #0#)",
+        "(+ #0=(* 2 3) #0#)",
+    }) |src| {
+        _ = f.readOne(src) catch |e| {
+            std.debug.print("reading {s}: {}\n", .{ src, e });
+            return e;
+        };
+    }
+    // データとして読む読み手(5l の `read`)は、どこの循環も受け入れる。
+    f.code = false;
+    _ = try f.readOne("#1=(begin (display #\\x) #1#)");
 }
 
 test "a datum label is in scope only in the rest of the outermost datum it is in" {
@@ -1891,6 +2002,7 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
             error.UndefinedLabel,
             error.DuplicateLabel,
             error.MissingLabeledDatum,
+            error.CircularCode,
             => return,
         } orelse {
             try std.testing.expectEqual(src.len, r.pos);

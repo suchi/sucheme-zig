@@ -23,9 +23,10 @@
 (let ((x '#0=(#1=(b . #1#) . #0#))) (list (eq? x (cdr x)) (eq? (car x) (cdar x))))
 (#t #t)
 
-# マクロの引数として渡した循環データも、そのまま `quote` される。
+# 既知の制限: マクロの引数として渡した循環データは、マクロの中で quote されるとしても、
+# 読んだ時点ではリテラルの外にあるので、誤りにする(docs/design/frontend.md の「現状(スライス 5c)」)。
 (define-syntax m (syntax-rules () ((_ d) 'd))) (let ((x (m #0=(a . #0#)))) (eq? x (cdr x)))
-#t
+error: circular reference outside a literal
 
 # 循環したリテラルも定数で、変更できない。
 (set-car! '#0=(a . #0#) 1)
@@ -34,6 +35,24 @@ error: cannot modify a constant in set-car! (a a a a a a a a a a a a a a a a a a
 # 循環したリスト同士の `equal?` は止まる(R7RS 6.1)。
 (equal? '#0=(a . #0#) '#1=(a . #1#))
 #t
+
+# リテラルの外の循環は誤りである(R7RS 2.4 の例)。リーダが、コードとして読むときに断る。
+#1=(begin (display #\x) #1#)
+error: circular reference outside a literal
+
+(list 1 #0=(+ 1 #0#))
+error: circular reference outside a literal
+
+# quasiquote の中の循環も誤りである(R7RS 2.4)。
+`#0=(a ,@#0#)
+error: circular reference outside a literal
+
+# テンプレートとパターンの循環は、マクロを定義する時点で断る。
+(define-syntax q (syntax-rules () ((_) '#0=(tmp . #0#))))
+error: bad syntax-rules: circular template
+
+(define-syntax q (syntax-rules () ((_ #(#0=(a . #0#))) 1)))
+error: bad syntax-rules: circular pattern
 
 # ラベルの範囲は、最も外側のデータである(R7RS 2.4)。
 '#0=a '#0#
