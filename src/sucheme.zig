@@ -334,6 +334,7 @@ fn describe(e: Error) []const u8 {
         error.Incomplete,
         error.UnexpectedCloseParen,
         error.MissingDatum,
+        error.MissingCommentedDatum,
         error.UnexpectedDot,
         error.InvalidEscape,
         error.InvalidCharacter,
