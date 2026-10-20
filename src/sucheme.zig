@@ -1710,6 +1710,36 @@ test "the imports of libraries that one import loads from their files count toge
     try std.testing.expectEqual(0, interp.ctx.heap.external);
 }
 
+test "an import the limit refuses part way through binding binds none of its names" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source = try bigLibrary(a, 2000);
+    // 上限を少しずつ上げて、`import` が断られる回を探す。断られる場所は、集合の評価の途中か、
+    // 束縛の途中である。どちらの回でも、REPL の最上位に新しい名前が1つも残ってはならない。
+    var refused: usize = 0;
+    var limit: usize = 192 * 1024;
+    while (limit < 8 * 1024 * 1024) : (limit += if (refused == 0) 4 * 1024 else 512) {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = limit });
+        defer interp.deinit();
+        var discard: std.Io.Writer.Discarding = .init(&.{});
+        interp.evalPrint(a, source, &discard.writer) catch continue;
+        interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            refused += 1;
+            for (0..2000) |i| {
+                const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
+                const id = interp.ctx.heap.symbols.lookup(prefixed) orelse continue;
+                try std.testing.expectEqual(null, interp.ctx.globals.lookup(id));
+            }
+            continue;
+        };
+        break;
+    }
+    try std.testing.expect(refused > 0);
+}
+
 test "the work of nested modifiers counts against the limit when the library they modify is loaded from its file by the same import" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
