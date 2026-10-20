@@ -338,7 +338,7 @@ const State = struct {
                 const name = k.*;
                 if (!std.mem.startsWith(u8, rest, name)) continue;
                 if (rest.len != name.len and rest[name.len] != '"') continue;
-                if (!self.defined_here.contains(name)) return error.CrossSectionReference;
+                return error.CrossSectionReference;
             }
             pos = at + unbound_marker.len;
         }
@@ -720,8 +720,20 @@ test "a top-level form that uses a name only an earlier section defined stops th
         \\(test-end)
         \\(test-end)
     ));
-    // 前の節で定義していない名前の未束縛は、ふつうの誤りである。同じ節で定義し直した名前も、
-    // 前の節に頼っていない。
+    // 同じ名前を定義する形式の中で前の値を使うのも、前の節に頼っている。
+    try std.testing.expectError(error.CrossSectionReference, runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define y 1)
+        \\(test-end)
+        \\(test-begin "b")
+        \\(define y (+ y 1))
+        \\(test-end)
+        \\(test-end)
+    ));
+    // 前の節で定義していない名前の未束縛は、ふつうの誤りである。同じ節で先に定義し直した名前は、
+    // 未束縛にならない。
     const r = try runFake(a,
         \\(import (scheme base) (chibi test))
         \\(test-begin "all")
@@ -756,13 +768,15 @@ test "a definition that is unreadable, raises, or cascades makes its users casca
         \\(test-begin "cascades")
         \\(define f (exact-integer-sqrt 4))
         \\(define g f)
-        \\(test 1 g)
+        \\(define h g)
+        \\(test 1 h)
         \\(test-end)
         \\(test-end)
     );
     try std.testing.expectEqual(Counts{ .unreadable = 1, .cascaded = 1 }, try findSection(r, "unreadable"));
     try std.testing.expectEqual(Counts{ .errored = 1, .cascaded = 1 }, try findSection(r, "raises"));
-    try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 2 }, try findSection(r, "cascades"));
+    // `h` の定義はテストの外なので、`g` が連鎖のもとにならなければ、誤りとして数えられる。
+    try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 3 }, try findSection(r, "cascades"));
 }
 
 test "a record of a group the runner did not open stops the run, and a repeated name adds up" {
