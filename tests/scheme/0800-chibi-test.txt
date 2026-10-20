@@ -1,0 +1,61 @@
+# スライス 6c: `(chibi test)` の最小実装(docs/plans/0020-conformance-harness-early.md)。
+# 準拠スイート(tests/vendor/r7rs-tests.scm)が使う6つの形式だけを持つ。結果はポートに書かず、
+# `(sucheme test-results)` の `test-results` が、記録のリストとして返す。記録は
+# `#(節の名前 テストの式 判定 期待した値 得た値)` で、判定は pass、fail、error のどれかである。
+# 1ケースは1行で、エラーはその行の残りを打ち切る。各ケースは新しいインタプリタで走る。
+
+# 何も走らせていなければ、記録は無い。
+(import (chibi test) (sucheme test-results)) (test-results)
+()
+
+# `test` は、期待した値と式の値を `equal?` で比べる。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 3 (+ 1 2)) (test-results)
+(#(#f (+ 1 2) pass 3 3))
+
+(import (scheme base) (chibi test) (sucheme test-results)) (test '(1 "a") (list 1 "a")) (test-results)
+(#(#f (list 1 "a") pass (1 "a") (1 "a")))
+
+(import (scheme base) (chibi test) (sucheme test-results)) (test 4 (+ 1 2)) (test-results)
+(#(#f (+ 1 2) fail 4 3))
+
+# 式が条件を上げると、error として記録し、次のテストへ進む。得た値の欄は、上がったものである。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1 (raise 'boom)) (test 2 2) (test-results)
+(#(#f (raise (quote boom)) error 1 boom) #(#f 2 pass 2 2))
+
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1 (car 5)) (map (lambda (r) (vector-ref r 2)) (test-results))
+(error)
+
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1 (undefined-name)) (error-object-message (vector-ref (car (test-results)) 4))
+"unbound variable: undefined-name"
+
+# `test-assert` は、式の値が偽でなければ合格である。
+(import (scheme base) (chibi test) (sucheme test-results)) (test-assert (memv 2 '(1 2))) (test-assert (memv 5 '(1 2))) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass fail)
+
+# `test-error` は、式が条件を上げれば合格、値を返せば不合格である。
+(import (scheme base) (chibi test) (sucheme test-results)) (test-error (car 5)) (test-error (+ 1 1)) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass fail)
+
+# `test-values` は、両辺の値をすべて比べる。
+(import (scheme base) (chibi test) (sucheme test-results)) (test-values (values 1 2) (values 1 2)) (test-values (values 1 2) (values 1 3)) (test-values (values) (values)) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass fail pass)
+
+# 節の名前は、いちばん内側の `test-begin` の名前である。`test-end` で外側に戻る。
+(import (scheme base) (chibi test) (sucheme test-results)) (test-begin "outer") (test 1 1) (test-begin "inner") (test 2 2) (test-end) (test 3 3) (test-end) (test 4 4) (map (lambda (r) (vector-ref r 0)) (test-results))
+("outer" "inner" "outer" #f)
+
+# `test-end` は名前を取ってもよい。
+(import (scheme base) (chibi test) (sucheme test-results)) (test-begin "a") (test-end "a") (test 1 1) (vector-ref (car (test-results)) 0)
+#f
+
+# 期待した値の式は、テストの外で評価する。その誤りは記録されず、そのまま上がる。
+(import (scheme base) (chibi test) (sucheme test-results)) (test (car 5) 1)
+error: wrong type of argument to car 5
+
+# テストの中で取った継続で脱出しても、ハンドラは外れ、後のテストは普通に走る。
+(import (scheme base) (chibi test) (sucheme test-results)) (define k #f) (test 1 (call/cc (lambda (c) (set! k c) 1))) (test-error (raise 'x)) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass pass)
+
+# スイートの使い方: `test` のテンプレートが参照する手続きは、利用側の同じ名前に影響されない。
+(import (scheme base) (chibi test) (sucheme test-results)) (define (equal? a b) #f) (define (test-run . args) 'shadowed) (test 1 1) (vector-ref (car (test-results)) 2)
+pass
