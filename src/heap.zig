@@ -273,6 +273,26 @@ test "the resident allocator counts against the limit at all times, and gives ba
     _ = try heap.cons(.empty_list_value, .empty_list_value);
 }
 
+test "a resident request the backing refuses is not left counted" {
+    // 確保は1回目だけ通し、伸ばす要求はすべて断る下の割り当て器。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(failing.allocator(), .{ .limit = 1 << 20 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    const block = try a.alloc(u8, 100);
+    defer a.free(block);
+    try std.testing.expectEqual(100, heap.resident);
+    // 伸ばす要求は、その場で伸ばせず(resize)、移して伸ばせず(remap)、新しく取れない。
+    try std.testing.expect(!a.resize(block, 200));
+    try std.testing.expectEqual(100, heap.resident);
+    try std.testing.expectError(error.OutOfMemory, a.realloc(block, 300));
+    try std.testing.expectEqual(100, heap.resident);
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 10));
+    try std.testing.expectEqual(100, heap.resident);
+    // 下の割り当て器が断ったのであって、上限が断ったのではない。
+    try std.testing.expect(!heap.external_refused);
+}
+
 test "a collection keeps the resident account, and counts it as live" {
     var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20, .min_threshold = 1 });
     defer heap.deinit();
@@ -900,6 +920,31 @@ pub const Heap = struct {
     /// Gives back `bytes` that `charge` counted.
     pub fn credit(self: *Heap, bytes: usize) void {
         self.external -|= bytes;
+    }
+
+    /// What the counting of work outside the heap was before a piece of work began
+    /// its own (`beginCounting`).
+    pub const Counting = struct { external: usize, enforced: bool };
+
+    /// Starts a piece of work whose allocations through `Charged` count against the
+    /// limit, held to it from now on when `enforced`; returns what to give back to
+    /// `endCounting`.
+    /// Why: 計上の範囲は入れ子になる。`import` の評価はライブラリのファイルを読み込み、その
+    /// 宣言の `import` の評価を走らせる。内側の `import` の作業は、外側と同じ1行の作業領域に
+    /// 残るので、外側が数えている間は、内側が終わっても数え続ける(`endCounting`)。展開は
+    /// これを使わず、終わったら外側の計上に戻す(`expand.expandIn`)。
+    pub fn beginCounting(self: *Heap, enforced: bool) Counting {
+        const before: Counting = .{ .external = self.external, .enforced = self.external_enforced };
+        self.external_enforced = enforced;
+        return before;
+    }
+
+    /// Ends the piece of work `beginCounting` started.
+    /// 外側に数えている範囲が無ければ、数えた分を戻す(作業領域は、呼び出し側が捨てる)。
+    /// 外側が検査しているなら、数えた分を外側に残す。
+    pub fn endCounting(self: *Heap, before: Counting) void {
+        if (!before.enforced) self.external = before.external;
+        self.external_enforced = before.enforced;
     }
 
     /// Fails with `HeapLimit` when `bytes` more would pass what `budget` allows.

@@ -190,27 +190,44 @@ pub fn isCoreName(ctx: *const Context, name: Value) bool {
     return rest.kind() == .empty_list;
 }
 
+/// The work of one `import`, a form at the REPL or a declaration of a library:
+/// the tables of names its sets bring, counted against the limit of the heap
+/// until all the sets are bound (ADR-0040).
+/// Why: 修飾子を入れ子に重ねると、段ごとに名前の全部を写すので、作業が上限を大きく超えうる。
+/// 集合を並べても同じで、どの集合の作業も束縛し終えるまで残るので、`import` の全体の間
+/// 数える。数えたものが上限に収まらなければ、確保は `error.OutOfMemory` で断られ、
+/// `heap.external_refused` が立つ。作業は `scratch` に残り、呼び出し側が丸ごと捨てる。
+/// 使い方: `begin` で始め、`allocator` を集合の評価に渡し、`end` を `defer` で呼ぶ。始めた後は
+/// 動かさない(割り当て器が自分を指す)。
+const ImportWork = struct {
+    charge: heap_mod.Charged,
+    counting: heap_mod.Heap.Counting,
+
+    fn begin(ctx: *Context, scratch: std.mem.Allocator) ImportWork {
+        return .{
+            .charge = .{ .heap = &ctx.heap, .backing = scratch },
+            .counting = ctx.heap.beginCounting(true),
+        };
+    }
+
+    fn allocator(self: *ImportWork) std.mem.Allocator {
+        return self.charge.allocator();
+    }
+
+    fn end(self: *ImportWork) void {
+        self.charge.heap.endCounting(self.counting);
+    }
+};
+
 /// Evaluates the import set `spec` (R7RS 5.2): what it brings, by name.
 /// 入れ子の修飾子の深さに比例して進むので、再帰せず、外側から内側へ修飾子を積み、
 /// 内側から順に適用する。エクスポートの名前の文字列は、ヒープの文字列とシンボル表の
 /// 名前を指す。GC が走るまで有効である。
 ///
-/// 修飾子の作業(名前の表と、`prefix` が作る名前)は、ヒープの上限に数える(ADR-0040)。修飾子を
-/// 入れ子に重ねると、段ごとに名前の全部を写すので、1つの集合の作業が上限を大きく超えうる。
-/// 数えた分は、集合を評価し終えたら数えるのをやめる。作業は呼び出し側の `scratch` に残り、
-/// 呼び出し側が丸ごと捨てる。数えたものが上限に収まらなければ、確保は `error.OutOfMemory` で
-/// 断られ、`heap.external_refused` が立つ。ライブラリのファイルを読む処理は、数えない
-/// `scratch` で行う(その中の展開と本体の実行は、それぞれの計上に従う)。
-pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Error!Names {
-    const saved_external = ctx.heap.external;
-    const saved_enforced = ctx.heap.external_enforced;
-    ctx.heap.external_enforced = true;
-    defer {
-        ctx.heap.external = saved_external;
-        ctx.heap.external_enforced = saved_enforced;
-    }
-    var charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = scratch };
-    const work = charge.allocator();
+/// 修飾子の作業(名前の表と、`prefix` が作る名前)は `work` から取る。`work` は、1つの `import`
+/// の間ずっと上限に数える割り当て器である(`ImportWork`)。ライブラリのファイルを読む処理は、
+/// 数えない `scratch` で行う(その中の展開と本体の実行は、それぞれの計上に従う)。
+pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, work: std.mem.Allocator, spec: Value) Error!Names {
     const Pending = struct { kind: Modifier, arguments: Value };
     var pending: std.ArrayList(Pending) = .empty;
     var current = spec;
@@ -415,7 +432,7 @@ pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: ex
 /// `(import <import set> ...)` at the REPL (R7RS 5.2): imports what the sets bring
 /// into the REPL's top level.
 /// 先にすべての集合を評価し、それから束縛する。集合の誤りで、一部だけがインポート
-/// されることはない。
+/// されることはない。束縛の途中で上限に断られたときも、それまでの束縛を戻す。
 pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!void {
     const items = try itemsOf(ctx, scratch, form, "import");
     if (items.len < 2) return ctx.raise("bad import: expected (import <import set> ...)", .{});
@@ -423,8 +440,12 @@ pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Er
     // この形式は、そのあいだ読み手の外にあるので、作業中の形式としてルートに載せる。
     try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
-    const sets = try scratch.alloc(Names, items.len - 1);
-    for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
+    var import_work: ImportWork = .begin(ctx, scratch);
+    defer import_work.end();
+    const work = import_work.allocator();
+    const sets = try work.alloc(Names, items.len - 1);
+    for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, work, spec);
+    errdefer ctx.globals.undoShadows();
     for (sets) |set| try bindImports(ctx, &ctx.globals, set, .repl);
     ctx.globals.commitShadows();
 }
@@ -478,9 +499,12 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             try pending.append(scratch, export_spec);
         }
     } else if (std.mem.eql(u8, keyword, "import")) {
-        // 集合を先にすべて評価してから束縛する。
-        const sets = try scratch.alloc(Names, parts.len - 1);
-        for (sets, parts[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
+        // 集合を先にすべて評価してから束縛する。失敗したら、ライブラリごと登録表から外れる。
+        var import_work: ImportWork = .begin(ctx, scratch);
+        defer import_work.end();
+        const work = import_work.allocator();
+        const sets = try work.alloc(Names, parts.len - 1);
+        for (sets, parts[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, work, spec);
         for (sets) |set| try bindImports(ctx, table, set, .library);
         table.commitShadows();
     } else if (std.mem.eql(u8, keyword, "begin")) {
@@ -907,7 +931,7 @@ test "set! through a macro of another library assigns that library's variable an
 }
 
 fn expectNames(f: *Fixture, spec: []const u8, expected: []const []const u8) !void {
-    const names = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read(spec));
+    const names = try evalImportSet(&f.ctx, f.arena.allocator(), f.arena.allocator(), try f.read(spec));
     try std.testing.expectEqual(expected.len, names.count());
     for (expected) |name| try std.testing.expect(names.contains(name));
 }
@@ -924,8 +948,8 @@ test "the forms of an import set bring the names they say" {
     // 入れ子は内側から適用する。
     try expectNames(&f, "(only (rename (only (sucheme core) car cdr) (car kar)) kar)", &.{"kar"});
     // `except` は、除いた名前以外のすべてを残す。
-    const all = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read("(sucheme core)"));
-    const less = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read("(except (sucheme core) car cdr)"));
+    const all = try evalImportSet(&f.ctx, f.arena.allocator(), f.arena.allocator(), try f.read("(sucheme core)"));
+    const less = try evalImportSet(&f.ctx, f.arena.allocator(), f.arena.allocator(), try f.read("(except (sucheme core) car cdr)"));
     try std.testing.expectEqual(all.count() - 2, less.count());
     try std.testing.expect(all.contains("car") and !less.contains("car"));
     // 特殊形式と補助構文も、名前を持つ。

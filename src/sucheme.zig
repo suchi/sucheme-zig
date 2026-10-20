@@ -1635,6 +1635,81 @@ test "the work of nested modifiers of an import counts against the limit" {
     try std.testing.expectEqualStrings("7\n", w.buffered());
 }
 
+/// An import set of `(t big)` under `depth` nested `prefix` modifiers, in memory
+/// owned by `a`.
+fn deepPrefix(a: std.mem.Allocator, depth: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    for (0..depth) |_| try out.writer.writeAll("(prefix ");
+    try out.writer.writeAll("(t big)");
+    for (0..depth) |_| try out.writer.writeAll(" p)");
+    return out.toOwnedSlice();
+}
+
+/// The deepest nesting of `prefix` over `(t big)` that one import of one set can
+/// take under the limit of `interp`, found by trying deeper sets until one is
+/// refused.
+fn deepestPrefix(interp: *Interpreter, a: std.mem.Allocator) !usize {
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    var depth: usize = 8;
+    while (depth < 4096) : (depth += 8) {
+        const src = try std.fmt.allocPrint(a, "(import {s})", .{try deepPrefix(a, depth)});
+        interp.evalPrint(a, src, &discard.writer) catch {
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            return depth - 8;
+        };
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "the work of all the sets of one import counts against the limit until they are bound" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, 200), &discard.writer);
+    const depth = (try deepestPrefix(&interp, a)) / 4;
+    // 1つの集合の作業は上限の4分の1ほどで、1つなら通る。
+    const one = try deepPrefix(a, depth);
+    try interp.evalPrint(a, try std.fmt.allocPrint(a, "(import {s})", .{one}), &discard.writer);
+    // 同じ集合を8つ並べると、どの集合の作業も束縛し終えるまで残るので、上限に収まらない。
+    var many: std.Io.Writer.Allocating = .init(a);
+    try many.writer.writeAll("(import");
+    for (0..8) |_| try many.writer.print(" {s}", .{one});
+    try many.writer.writeAll(")");
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, many.written(), &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+}
+
+test "the imports of libraries that one import loads from their files count together" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/big.sld", try bigLibrary(a, 200));
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithFiles(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    defer interp.deinit();
+    const depth = (try deepestPrefix(&interp, a)) / 2;
+    // 4つのライブラリが、それぞれ上限の半分ほどの作業をする `import` を宣言する。1つの
+    // `import` がそれらを読み込むと、内側の作業は同じ1行の作業領域に残るので、外側に数え続ける。
+    for (1..5) |i| {
+        const path = try std.fmt.allocPrint(a, "t/a{d}.sld", .{i});
+        const src = try std.fmt.allocPrint(a, "(define-library (t a{d}) (export) (import {s}))", .{ i, try deepPrefix(a, depth) });
+        try tree.write(path, src);
+    }
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, "(import (t a1))", &discard.writer);
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, "(import (t a2) (t a3) (t a4))", &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+}
+
 test "the work of nested modifiers counts against the limit when the library they modify is loaded from its file by the same import" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();

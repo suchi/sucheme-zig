@@ -232,7 +232,7 @@ flowchart TD
 
 | PR | 完了条件(1行) | 触るファイル | 担当の階層 | 見積り(ready まで / マージまで、時間) |
 | --- | --- | --- | --- | --- |
-| 3o-1 常駐の計上 | 名前 1000 個のライブラリを 1500 個が `import` する入力と、入れ子の `prefix` の1行が、既定の上限で `heap limit exceeded` で終わる | `src/heap.zig`、`src/context.zig`、`src/env.zig`、`src/syntax/library.zig`、`src/sucheme.zig`(`deinit`)、`tests/scheme/`、`tests/scheme-slow/` | T3 | 2〜4 / 3〜6 |
+| 3o-1 常駐の計上 | 最上位の表と `import` の作業が上限に数えられ、収まらない量は `heap limit exceeded` で終わる(2026-10-20 に、実装に合わせて書き直した。元は「1500 個が `import` する入力が既定の上限でエラーになる」で、計上が実際の量に近づいた結果、その入力は上限に収まる。確かめ方は、上限 512 KiB の単体テストと、既定の上限での実測) | `src/heap.zig`、`src/context.zig`、`src/env.zig`、`src/syntax/library.zig`、`src/syntax/expand.zig`、`src/sucheme.zig`、`src/machine.zig`(テストの2件) | T3 | 2〜4 / 3〜6 |
 | 3o-2 継続が節点を指す | `Kont.Step` が `If` などの部分と部分スライスを指さない。挙動は変わらない | `src/value.zig`(`Kont.Step`)、`src/machine.zig` | T2(機械的な書き換え。レビューは T3) | 1〜2 / 1.5〜3 |
 | 3o-3 節点を GC ヒープへ | `Context.code_roots` が無い。失敗した展開の節点と、到達できなくなったコードの定数が回収される | `src/value.zig`(`heap_types`)、`src/heap.zig`、`src/trace.zig`(テスト)、`src/core.zig`、`src/syntax/expand.zig`、`src/syntax/library.zig`、`src/machine.zig`(`Roots`)、`src/context.zig`、`src/printer.zig`(テスト)、`docs/design/runtime.md` | T3 | 4〜8 / 6〜12 |
 | 3o-4 要らなくなる保持を外す | `displaced_cells` が無い。定義に失敗したライブラリの表が、常駐の計上から戻る | `src/env.zig`、`src/syntax/library.zig`、`src/value.zig`(`Cell` の doc コメント) | T2 | 1〜2 / 1.5〜3 |
@@ -297,7 +297,7 @@ ADR の番号は、並行して計画書を書いている別のレーンと衝�
 | PR | 状態 | PR の番号 |
 | --- | --- | --- |
 | 設計(この文書と ADR-0040) | マージ済み(2026-10-20) | [#130](https://github.com/suchi/sucheme-zig/pull/130) |
-| 3o-1 | 実装済み(PR 作成前)。最上位の表、登録表、読んでいる最中のファイルの列を常駐の計上に、`import` の集合の評価の作業を展開と同じ計上に入れた。完了条件の入力のうち、1500 個の入力は、計上が実際の量に近づいた結果、上限に収まり、エラーにならない(最大常駐サイズ約 161 MiB)。4000 個に増やすと `heap limit exceeded` で終わる。入れ子の `prefix` は `heap limit exceeded` で終わる | - |
+| 3o-1 | レビューの指摘への対応中(ドラフト)。最上位の表、登録表、読んでいる最中のファイルの列を常駐の計上に、1つの `import` の全部の集合の作業(読み込むライブラリの `import` の分を含む)を、束縛し終えるまで展開と同じ計上に入れた。1500 個の入力は上限に収まり(最大常駐サイズ約 161 MiB)、4000 個は `heap limit exceeded` で終わる。入れ子の `prefix` も同じエラーで終わる | [#139](https://github.com/suchi/sucheme-zig/pull/139) |
 | 3o-2 | 未着手 | - |
 | 3o-3 | 未着手 | - |
 | 3o-4 | 未着手 | - |

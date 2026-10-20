@@ -80,11 +80,12 @@ pub fn expandIn(ctx: *Context, scratch: std.mem.Allocator, form: Value, target: 
     // それを避けるため、作業領域と節点を、ヒープの上限に対して計上する(`heap.Charged`)。
     // 上限に収まらなければ、他の確保と同じ `heap limit exceeded` で終わる。上限の検査は、最初の
     // マクロの適用から効く(`Heap.external_enforced`)。
-    // 展開は、`import` の集合の評価の中(ライブラリのファイルの本体)でも走る。外側の計上と
-    // 検査の状態は、終わったら戻す。外側が数えた分は、この展開の検査にも入る。
+    // 展開は、`import` の評価の中(ライブラリのファイルの本体)でも走る。外側が数えた分は、
+    // この展開の検査にも入る。終わったら、外側の計上と検査の状態に戻す。展開の作業は、
+    // 外側の `import` の作業と違い、外側に残さない(今までどおり、展開ごとに数える)。
+    ctx.heap.external_refused = false;
     const saved_external = ctx.heap.external;
     const saved_enforced = ctx.heap.external_enforced;
-    ctx.heap.external_refused = false;
     ctx.heap.external_enforced = false;
     defer {
         ctx.heap.external = saved_external;
