@@ -479,10 +479,12 @@ pub fn digitValue(c: u21) ?u4
 
 | スライス | 状態 |
 | --- | --- |
-| 4c | ドラフトの PR [suchi/sucheme-zig#136](https://github.com/suchi/sucheme-zig/pull/136)。通常の CI は緑、レビュー待ち。Zig 0.17.0 の `Const.toString` が基数8と32で桁を誤るため、2のべきの基数の書き出しは自前にした |
-| 4a、4b、4d 以降 | 未着手 |
+| 4c | PR [suchi/sucheme-zig#136](https://github.com/suchi/sucheme-zig/pull/136)。通常の CI は緑、レビュー指摘に対応済み。Zig 0.17.0 の `Const.toString` が基数8と32で桁を誤るため、2のべきの基数の書き出しは自前にした |
+| 4d | 実装済み。ドラフトの PR(suchi/sucheme-zig#134)で、自前の敵対的レビュー中 |
+| 4a、4b、4e〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 純粋な層(4a、4b、4c)と Unicode の生成器(4u1)を並行に始め、4d の骨格を L3 の骨格と順序を決めて進める。
+- 4d のレビューを収束させ、マージする。L3 の型の骨格(計画書 0019)は、4d のあとに main を取り込んで進める。
+- 純粋な層(4a、4b)と Unicode の生成器(4u1)を並行に始める。4e は、4a、4b、4c、4d のマージを待つ。
 - 4b の着手の前に、合意を求める点の4の境界の値を、ECMA-262 の原文で確かめる。

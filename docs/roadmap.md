@@ -162,8 +162,8 @@
 
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
-- [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case` と `#!no-fold-case` 指令)
-- [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。スライス未割り当て。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))
+- [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#!fold-case` と `#!no-fold-case` 指令、文字列の行継続)。`#u8` と16進エスケープは、段階3までに入った([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5a から 5c)
+- [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))。スライス 5d([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md))
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
 - [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
@@ -179,7 +179,7 @@
 - [ ] 準拠マトリクスに、準拠スイート(`r7rs-tests.scm`)の結果の列を足す。`(scheme r5rs)` の再エクスポートによる識別子の重複は、この列を足すときに解く
 - [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消
 - [ ] 不合格項目の issue 化と解消
-- [ ] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
+- [x] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
 - [ ] BSD 3条項の第3条項(名前の宣伝利用)について、出典として述べることと推奨として用いることの線を引く新ADRの作成([ADR-0022](adr/0022-unlicensed-proprietary.md))。記録形式が2つ併存することを定める件も同じ ADR で扱う
 
 完了条件: 準拠マトリクスに `r7rs-tests.scm` の結果の列があり、その不合格項目がゼロか、残りすべてに根拠が記録されている。リリース v1.0.0 を出す。[ADR-0010](adr/0010-ci-cd-and-release-strategy.md) が「段階ごとにマイナーバージョンを上げる」としているが、R7RS 準拠の達成を v1.0.0 とする規則が優先する。
