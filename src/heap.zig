@@ -1329,7 +1329,7 @@ test "deinit frees every object, frames and their slots included" {
     var heap: Heap = .init(std.testing.allocator, .{});
     const frame = try heap.createFrame(5, null);
     _ = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
-    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = &.{} } });
+    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = .{ .node = undefined, .next = 1 } } });
     _ = try heap.cons(.empty_list_value, .empty_list_value);
     heap.deinit();
     try std.testing.expectEqual(0, heap.accounted);
@@ -1371,7 +1371,7 @@ test "what a root reaches through pairs, closures, frames and continuations surv
     frame.values[0] = deep;
     const closure = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
     const arg = try heap.create(Args, .{ .value = .{ .closure = closure }, .next = null });
-    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = &.{} } });
+    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = undefined, .next = 1 } } });
     const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = undefined, .args = arg, .received = 1 } } });
     _ = try heap.cons(.fromFixnum(0), .empty_list_value);
     const garbage_frame = try heap.createFrame(100, null);
