@@ -1638,6 +1638,10 @@ test "a reader of code accepts circular data in a literal, and shared code" {
         "`(#0=(a #(b)) ,#0# #0#)",
         // cdr として出会う `(quasiquote x)` は、quasiquote の式ではない。
         "(f quasiquote #(#0=(a . #0#)))",
+        // 共有したコードと、リテラルの中の循環が、同じデータにある。辿り終えたペアに再び
+        // 着くのは共有で、循環ではない。
+        "(let ((y 1)) (list #0=(+ y 1) #0# (eq? '#1=(a . #1#) 'b)))",
+        "(f #0=(g) #0# '#1=(a . #1#))",
     }) |src| {
         _ = f.readOne(src) catch |e| {
             std.debug.print("reading {s}: {}\n", .{ src, e });
