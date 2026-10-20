@@ -230,10 +230,14 @@ pub const Interpreter = struct {
             const form = try r.next(arena, sink) orelse break;
             // `import` と `define-library` は最上位の形式で、何も表示しない。
             if (library.topLevelForm(&self.ctx, form)) |kind| {
-                switch (kind) {
-                    .import => try library.importIntoRepl(&self.ctx, arena, form),
-                    .define_library => try library.defineLibrary(&self.ctx, arena, form),
-                }
+                // 表と作業領域は上限に数える(ADR-0040)。断られた確保は `OutOfMemory` に見えるので、
+                // 上限の超過に変える。
+                self.ctx.heap.external_refused = false;
+                const done = switch (kind) {
+                    .import => library.importIntoRepl(&self.ctx, arena, form),
+                    .define_library => library.defineLibrary(&self.ctx, arena, form),
+                };
+                done catch |e| return self.ctx.limitFailure(e);
                 continue;
             }
             const node = try expand.expand(&self.ctx, arena, form);
@@ -1560,6 +1564,75 @@ test "a datum too large for the heap is refused with the same message" {
     // 収まらなかったデータはゴミであり、小さいものなら収まる。
     try interp.evalPrint(arena.allocator(), "'(1 2)", &w);
     try std.testing.expectEqualStrings("(1 2)\n", w.buffered());
+}
+
+/// The source of a library `(t big)` that exports `count` variables named `n0`,
+/// `n1`, and so on, in memory owned by `a`.
+fn bigLibrary(a: std.mem.Allocator, count: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    try out.writer.writeAll("(define-library (t big) (export");
+    for (0..count) |i| try out.writer.print(" n{d}", .{i});
+    try out.writer.writeAll(") (import (sucheme core)) (begin");
+    for (0..count) |i| try out.writer.print(" (define n{d} {d})", .{ i, i });
+    try out.writer.writeAll("))");
+    return out.toOwnedSlice();
+}
+
+test "the tables of the libraries count against the limit, and one that does not fit is the error heap limit exceeded" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, 200), &discard.writer);
+    // インポートしただけのライブラリも、名前の全部を自分の表に写す。その表が計上に入る。
+    const before = interp.ctx.heap.resident;
+    try interp.evalPrint(a, "(define-library (u 0) (export) (import (t big)))", &discard.writer);
+    try std.testing.expect(interp.ctx.heap.resident >= before + 200 * @sizeOf(@import("symbol.zig").SymbolId));
+    // 表は回収されないので、同じ定義を重ねると、いつか上限に収まらなくなる。
+    var failed = false;
+    for (1..1000) |i| {
+        const src = try std.fmt.allocPrint(a, "(define-library (u {d}) (export) (import (t big)))", .{i});
+        interp.evalPrint(a, src, &discard.writer) catch |e| {
+            try std.testing.expectEqual(error.Raised, e);
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            failed = true;
+            break;
+        };
+    }
+    // 表は生きているデータと同じで、回収されない。上限はほぼ埋まったままになり、以後の行は、
+    // 生きているデータで上限が埋まったときと同じく、上限の超過で終わる。
+    try std.testing.expect(failed);
+    try std.testing.expect(interp.ctx.heap.held() <= interp.ctx.heap.options.limit + interp.ctx.heap.options.raise_reserve);
+}
+
+test "the work of nested modifiers of an import counts against the limit" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, 200), &discard.writer);
+    // 段ごとに 200 個の名前を写すので、作業は段の数に比例して伸びる。上限は 512 KiB である。
+    var spec: std.Io.Writer.Allocating = .init(a);
+    try spec.writer.writeAll("(import ");
+    for (0..400) |_| try spec.writer.writeAll("(prefix ");
+    try spec.writer.writeAll("(t big)");
+    for (0..400) |_| try spec.writer.writeAll(" p)");
+    try spec.writer.writeAll(")");
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, spec.written(), &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    // 数えた作業は、行が終われば数えない。浅い入れ子は通る。
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+    try interp.evalPrint(a, "(import (prefix (prefix (t big) p) q))", &discard.writer);
+    var buf: [16]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(a, "qpn7", &w);
+    try std.testing.expectEqualStrings("7\n", w.buffered());
 }
 
 test "the data of a quoted list survives the collections between the lines that use it" {

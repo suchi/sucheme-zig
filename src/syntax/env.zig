@@ -121,7 +121,7 @@ pub fn resolveAt(ctx: *Context, env: ?*const SyntacticEnv, id: Value) Error!Reso
             const table = topTable(ctx, root);
             const symbol = ident.asSymbol().?;
             return .{
-                .denotation = table.resolve(ctx.persist, &ctx.heap, symbol) catch |err| return ctx.heapFailure(err),
+                .denotation = table.resolve(ctx.resident(), &ctx.heap, symbol) catch |err| return ctx.heapFailure(err),
                 .table = table,
                 .symbol = symbol,
             };

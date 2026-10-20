@@ -56,6 +56,18 @@ pub const Registry = struct {
     /// 指す形式の中にあるので、これがルートになる(ADR-0035 の読み込みの作業リスト)。
     loading: std.ArrayList(Value) = .empty,
 
+    /// Gives back the tables and the lists, which were all taken from `alloc`.
+    /// ライブラリ自身はヒープにあり、ここでは返さない。
+    pub fn deinit(self: *Registry, alloc: std.mem.Allocator) void {
+        for (self.tables.items) |table| {
+            table.deinit(alloc);
+            alloc.destroy(table);
+        }
+        self.tables.deinit(alloc);
+        self.list.deinit(alloc);
+        self.loading.deinit(alloc);
+    }
+
     /// Tells the collector of the libraries, the tables of their top levels and
     /// the forms being processed.
     pub fn mark(self: *const Registry, marker: *heap_mod.Marker) void {
@@ -82,13 +94,18 @@ pub const Registry = struct {
     /// 展開の途中と同じく、この中では GC が走らないので、作ったオブジェクトを登録表に
     /// 載せるまでルートにしなくてよい。
     pub fn begin(self: *Registry, ctx: *Context, name: Value) Error!*Library {
-        const table = try ctx.persist.create(env_mod.Global);
+        const tables = ctx.resident();
+        const table = try tables.create(env_mod.Global);
         table.* = .{};
+        // 表を `tables` に載せるまでは、`deinit` が返さないので、ここで返す。
+        var listed = false;
+        errdefer if (!listed) tables.destroy(table);
         const id: TableId = @fromBackingInt(@intCast(self.tables.items.len));
         const lib = try ctx.create(Library, .{ .name = name, .state = .loading, .exports = null, .root = null, .table = id });
         lib.root = try ctx.create(value_mod.SyntacticEnv, .{ .parent = null, .rib_depth = 0, .bindings = null, .library = lib });
-        try self.tables.append(ctx.persist, table);
-        try self.list.append(ctx.persist, lib);
+        try self.tables.append(tables, table);
+        listed = true;
+        try self.list.append(tables, lib);
         return lib;
     }
 
@@ -177,7 +194,23 @@ pub fn isCoreName(ctx: *const Context, name: Value) bool {
 /// 入れ子の修飾子の深さに比例して進むので、再帰せず、外側から内側へ修飾子を積み、
 /// 内側から順に適用する。エクスポートの名前の文字列は、ヒープの文字列とシンボル表の
 /// 名前を指す。GC が走るまで有効である。
+///
+/// 修飾子の作業(名前の表と、`prefix` が作る名前)は、ヒープの上限に数える(ADR-0040)。修飾子を
+/// 入れ子に重ねると、段ごとに名前の全部を写すので、1つの集合の作業が上限を大きく超えうる。
+/// 数えた分は、集合を評価し終えたら数えるのをやめる。作業は呼び出し側の `scratch` に残り、
+/// 呼び出し側が丸ごと捨てる。数えたものが上限に収まらなければ、確保は `error.OutOfMemory` で
+/// 断られ、`heap.external_refused` が立つ。ライブラリのファイルを読む処理は、数えない
+/// `scratch` で行う(その中の展開と本体の実行は、それぞれの計上に従う)。
 pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Error!Names {
+    const saved_external = ctx.heap.external;
+    const saved_enforced = ctx.heap.external_enforced;
+    ctx.heap.external_enforced = true;
+    defer {
+        ctx.heap.external = saved_external;
+        ctx.heap.external_enforced = saved_enforced;
+    }
+    var charge: heap_mod.Charged = .{ .heap = &ctx.heap, .backing = scratch };
+    const work = charge.allocator();
     const Pending = struct { kind: Modifier, arguments: Value };
     var pending: std.ArrayList(Pending) = .empty;
     var current = spec;
@@ -186,16 +219,17 @@ pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Err
         const kind = std.meta.stringToEnum(Modifier, ctx.heap.symbols.nameOf(head)) orelse break;
         const inner = p.cdr.asPair() orelse
             return ctx.raise("bad import: {s} needs an import set", .{@tagName(kind)});
-        try pending.append(scratch, .{ .kind = kind, .arguments = inner.cdr });
+        try pending.append(work, .{ .kind = kind, .arguments = inner.cdr });
         current = inner.car;
     }
-    var names = try exportsOf(ctx, scratch, current);
-    while (pending.pop()) |m| names = try modify(ctx, scratch, m.kind, m.arguments, names);
+    var names = try exportsOf(ctx, scratch, work, current);
+    while (pending.pop()) |m| names = try modify(ctx, work, m.kind, m.arguments, names);
     return names;
 }
 
-/// What the library named `name` exports.
-fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names {
+/// What the library named `name` exports, in a table taken from `work`.
+/// 見つからないライブラリのファイルは、`scratch` で読む。
+fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, work: std.mem.Allocator, name: Value) Error!Names {
     try checkName(ctx, name);
     var names: Names = .empty;
     if (isCoreName(ctx, name)) {
@@ -206,7 +240,7 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
         var it = ctx.core.entries.keyIterator();
         while (it.next()) |id| {
             const d = (ctx.core.get(&ctx.heap, id.*) catch |e| return ctx.heapFailure(e)).?;
-            try names.put(scratch, ctx.heap.symbols.nameOf(id.*), d);
+            try names.put(work, ctx.heap.symbols.nameOf(id.*), d);
         }
         return names;
     }
@@ -214,7 +248,7 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
     if (lib.state == .loading)
         return ctx.raise("bad import: circular import of the library {s}", .{try nameText(ctx, scratch, name)});
     var export_it = lib.exports;
-    while (export_it) |e| : (export_it = e.next) try names.put(scratch, e.name.bytes, e.denotation);
+    while (export_it) |e| : (export_it = e.next) try names.put(work, e.name.bytes, e.denotation);
     return names;
 }
 
@@ -249,7 +283,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
     }
     // 本体の `include` は、このファイルのディレクトリを基準にする。同じファイルを含む
     // ことは、含んでいる最中のファイルとして見つけて拒否する。
-    try ctx.sources.append(ctx.persist, opened.origin);
+    try ctx.sources.append(ctx.resident(), opened.origin);
     defer _ = ctx.sources.pop();
     try defineLibrary(ctx, scratch, form);
     return ctx.libraries.find(name).?;
@@ -374,7 +408,7 @@ pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: ex
                 else => return ctx.raise("bad import: {s} is defined in this library, and cannot be imported", .{name}),
             }
         };
-        try table.importBinding(ctx.persist, id, entry.value_ptr.*);
+        try table.importBinding(ctx.resident(), id, entry.value_ptr.*);
     }
 }
 
@@ -387,7 +421,7 @@ pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Er
     if (items.len < 2) return ctx.raise("bad import: expected (import <import set> ...)", .{});
     // 集合を評価する間に、ファイルのライブラリを読んで本体を走らせると、GC が走る。
     // この形式は、そのあいだ読み手の外にあるので、作業中の形式としてルートに載せる。
-    try ctx.libraries.loading.append(ctx.persist, form);
+    try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
     const sets = try scratch.alloc(Names, items.len - 1);
     for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
@@ -415,7 +449,7 @@ pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Err
         return ctx.raise("bad define-library: the library {s} is already defined", .{try nameText(ctx, scratch, name)});
     const lib = try ctx.libraries.begin(ctx, name);
     errdefer ctx.libraries.abandon(lib);
-    try ctx.libraries.loading.append(ctx.persist, form);
+    try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
     var pending: std.ArrayList(PendingExport) = .empty;
     for (items[2..]) |declaration| try declare(ctx, scratch, lib, declaration, &pending, 0);
@@ -503,9 +537,9 @@ fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: [
         i -= 1;
         list = ctx.heap.cons(data[i], list) catch |e| return ctx.heapFailure(e);
     }
-    try ctx.libraries.loading.append(ctx.persist, list);
+    try ctx.libraries.loading.append(ctx.resident(), list);
     errdefer _ = ctx.libraries.loading.pop();
-    try ctx.sources.append(ctx.persist, opened.origin);
+    try ctx.sources.append(ctx.resident(), opened.origin);
     return list;
 }
 
@@ -658,7 +692,7 @@ const Fixture = struct {
         for (names) |n| {
             const id = try self.ctx.intern(n);
             const d = (try self.ctx.core.get(&self.ctx.heap, id)).?;
-            try table.importBinding(self.ctx.persist, id, d);
+            try table.importBinding(self.ctx.resident(), id, d);
         }
         table.commitShadows();
         return lib;
@@ -752,7 +786,7 @@ test "the forms being processed and the bindings of a library survive a collecti
     const x = f.ctx.heap.symbols.lookup("x").?;
     table.lookup(x).?.denotation.global.value = try f.ctx.heap.cons(.fromFixnum(1), .empty_list_value);
     const form = try f.read("(define-library (t a) (export))");
-    try f.ctx.libraries.loading.append(f.ctx.persist, form);
+    try f.ctx.libraries.loading.append(f.ctx.resident(), form);
     _ = try f.ctx.heap.cons(.fromFixnum(9), .empty_list_value);
     f.ctx.collectIdle();
     // 作業中の形式は、読んだペアのまま残る。セルの値も残る。
@@ -837,7 +871,7 @@ test "a macro of a library refers to the library's own variable, where the REPL 
     const repl = f.ctx.globals.lookup(helper).?.denotation.global;
     try std.testing.expect(own != repl);
     // マクロを REPL の最上位に束縛して、使う。
-    try f.ctx.globals.defineSyntax(f.ctx.persist, f.ctx.heap.symbols.lookup("use-helper").?, macro);
+    try f.ctx.globals.defineSyntax(f.ctx.resident(), f.ctx.heap.symbols.lookup("use-helper").?, macro);
     f.ctx.globals.commitShadows();
     const node = try expand.expand(&f.ctx, f.arena.allocator(), try f.read("(use-helper)"));
     try std.testing.expectEqual(own, node.global_ref);
@@ -860,8 +894,8 @@ test "set! through a macro of another library assigns that library's variable an
             return fx.ctx.heap.symbols.lookup(name).?;
         }
     }.of;
-    try f.ctx.globals.defineSyntax(f.ctx.persist, id(&f, "bump!"), table.lookup(id(&f, "bump!")).?.denotation.macro);
-    try f.ctx.globals.defineSyntax(f.ctx.persist, id(&f, "clobber!"), table.lookup(id(&f, "clobber!")).?.denotation.macro);
+    try f.ctx.globals.defineSyntax(f.ctx.resident(), id(&f, "bump!"), table.lookup(id(&f, "bump!")).?.denotation.macro);
+    try f.ctx.globals.defineSyntax(f.ctx.resident(), id(&f, "clobber!"), table.lookup(id(&f, "clobber!")).?.denotation.macro);
     f.ctx.globals.commitShadows();
     const node = try expand.expand(&f.ctx, f.arena.allocator(), try f.read("(bump!)"));
     try std.testing.expectEqual(table.lookup(id(&f, "counter")).?.denotation.global, node.global_set.cell);

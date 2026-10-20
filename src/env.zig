@@ -132,6 +132,16 @@ pub const Global = struct {
     /// table had none.
     const Replaced = struct { id: SymbolId, previous: ?Binding };
 
+    /// Gives back what the table took from `alloc`, which must be the allocator
+    /// every call that grew it was given.
+    /// セルとマクロはヒープにあり、ここでは返さない。
+    pub fn deinit(self: *Global, alloc: std.mem.Allocator) void {
+        self.bindings.deinit(alloc);
+        self.displaced_cells.deinit(alloc);
+        self.replaced.deinit(alloc);
+        self.* = .{ .base = self.base };
+    }
+
     /// Gives back the bindings that the expansion that failed replaced.
     ///
     /// Why: 展開が失敗した形式は実行されないので、その形式が作った遮蔽は、残すと特殊形式を
