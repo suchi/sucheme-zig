@@ -20,6 +20,7 @@
 | [0014-phase2-core-language.md](0014-phase2-core-language.md) | 段階2(コア言語の完成)のスライスへの分割と実装計画 |
 | [0015-ci-minutes-reduction.md](0015-ci-minutes-reduction.md) | GitHub Actions の実行分数を抑える運用と、ワークフローの変更案 |
 | [0016-phase3-scheme-stdlib.md](0016-phase3-scheme-stdlib.md) | 段階3(Scheme による標準ライブラリ)のスライスへの分割と実装計画 |
+| [0022-layer2-measurement.md](0022-layer2-measurement.md) | 層2の `test-scheme -Dslow=true` の1件あたりの時間の測定と、短縮案ごとの効果の見積り |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
