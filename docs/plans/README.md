@@ -25,6 +25,7 @@
 | [0019-phase5-ports-and-io.md](0019-phase5-ports-and-io.md) | 段階5(ポートと入出力)のスライスへの分割と実装計画。0017 の L3 と、L2 のリーダの完全化 |
 | [0020-conformance-harness-early.md](0020-conformance-harness-early.md) | 段階6の前倒し(レーン L5): 準拠スイートの取り込み、`(chibi test)` の最小実装、実行器、準拠マトリクスへの結果 |
 | [0021-stage7-8-early-parts.md](0021-stage7-8-early-parts.md) | 段階7(REPL の行編集)と段階8(Web UI)のうち、先に始める部分の実装計画と、実装方式と配置先の比較 |
+| [0022-layer2-measurement.md](0022-layer2-measurement.md) | 層2の `test-scheme -Dslow=true` の1件あたりの時間の測定と、短縮案ごとの効果の見積り |
 | [0023-slice-3o-ir-to-gc-heap.md](0023-slice-3o-ir-to-gc-heap.md) | スライス 3o(コアIRを GC ヒープへ移し、上限の外の確保を閉じる)の設計と PR の分け方 |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。

@@ -446,6 +446,14 @@ pub fn build(b: *std.Build) void {
     for (tools) |t| {
         targets.append(b.allocator, .of(b, t.root_module)) catch @panic("OOM");
     }
+    // 準拠スイートの走査器(スライス 6d)。実行器(6e)ができるまでは、それを使う実行ファイルが
+    // 無いので、モジュールをテストの対象として直接足す。6e で実行器の main.zig から import し、
+    // この行は消す(main.zig のテストが refAllDecls で届く)。
+    targets.append(b.allocator, .of(b, b.createModule(.{
+        .root_source_file = b.path("tools/conformance-run/split.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    }))) catch @panic("OOM");
 
     // ループも一覧も1つ。テストと check-docs に伝えるパスは同じモジュールから来るので、
     // どちらか一方だけを落としたり重複させたりできない。

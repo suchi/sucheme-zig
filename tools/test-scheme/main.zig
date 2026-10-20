@@ -20,6 +20,14 @@
 //! (`%make-record-type` など)を直接呼ぶ、低水準のプリミティブのテストのためである。
 //! 指示のないファイルは、REPL と同じ標準の環境(`(scheme base)`)で走る。
 //!
+//! ケースの直前(入力の行より前)の `# modes: default` または `# modes: stress` の行は、
+//! そのケース1件を、既定モードだけ、またはストレスモードだけで走らせる。指示のない
+//! ケースは両方で走る。ストレスモードは既定より桁違いに遅いので、規模を試すケースの
+//! 一部は、元の規模を `default` で、縮小した規模を直後の `stress` で書く。
+//! `default` のケースの直後に `stress` のケースが無い場合と、`default` の直後でない
+//! `stress` のケースは失敗とする(縮小版の書き忘れで、ストレスの検査が黙って
+//! 外れないようにするため)。docs/plans/0022-layer2-measurement.md を参照。
+//!
 //! エラーは出力の一部である。その行がエラーより前に出力したものの後に、
 //! REPL が出すとおり、`error: ` とインタプリタのメッセージが続く。
 //!
@@ -112,8 +120,21 @@ pub fn main(init: std.process.Init) !void {
                     failed += 1;
                     continue;
                 },
+                error.UnknownMode => {
+                    try err.print("{s}: a `# modes:` line names a mode other than `default` or `stress`\n", .{path});
+                    failed += 1;
+                    continue;
+                },
                 error.OutOfMemory => return e,
             };
+            if (unpairedDefaultOnly(cases.items)) |i| {
+                try err.print("{s}:{d}: a `# modes: default` case has no `# modes: stress` case right after it, so it would never run under stress\n", .{ path, cases.items[i].line });
+                failed += 1;
+            }
+            if (unpairedStressOnly(cases.items)) |i| {
+                try err.print("{s}:{d}: a `# modes: stress` case does not follow a `# modes: default` case\n", .{ path, cases.items[i].line });
+                failed += 1;
+            }
             if (hasCoreDirective(body)) for (cases.items) |*c| {
                 c.core = true;
             };
@@ -126,6 +147,7 @@ pub fn main(init: std.process.Init) !void {
             }
             for (cases.items) |c| {
                 for (modes) |mode| {
+                    if (!c.only.runsIn(mode.options.stress)) continue;
                     if (try runCaseWith(gpa, mode.options, c)) |got| {
                         try err.print(
                             "{s}:{d}: {s}\n  mode:     {s}\n  expected: {s}\n  got:      {s}\n",
@@ -171,7 +193,58 @@ const Case = struct {
     /// Whether the case runs at a top level that sees `(sucheme core)` itself
     /// (`# env: core` in its file), and not the standard environment.
     core: bool = false,
+    /// The modes the case runs in (`# modes: ...` before it).
+    only: Only = .both,
 };
+
+/// The modes a case runs in.
+///
+/// 規模を試すケースの一部は、ストレスモードでは縮小した規模で走らせる(docs/plans/0022)。
+/// 元のケースは `# modes: default`、縮小版は直後に `# modes: stress` で書く。
+const Only = enum {
+    both,
+    default,
+    stress,
+
+    fn runsIn(self: Only, stress: bool) bool {
+        return switch (self) {
+            .both => true,
+            .default => !stress,
+            .stress => stress,
+        };
+    }
+};
+
+const modes_directive = "# modes: ";
+
+/// The restriction a comment line asks for, or null when it is not a `modes` line.
+fn modesDirective(line: []const u8) error{UnknownMode}!?Only {
+    if (!std.mem.startsWith(u8, line, modes_directive)) return null;
+    const name = line[modes_directive.len..];
+    if (std.mem.eql(u8, name, "default")) return .default;
+    if (std.mem.eql(u8, name, "stress")) return .stress;
+    return error.UnknownMode;
+}
+
+/// The index of the first default-only case that no stress-only case follows.
+/// Why: 縮小版を書き忘れると、そのケースはストレスモードで一度も走らないまま緑になる。
+fn unpairedDefaultOnly(cases: []const Case) ?usize {
+    for (cases, 0..) |c, i| {
+        if (c.only != .default) continue;
+        if (i + 1 >= cases.len or cases[i + 1].only != .stress) return i;
+    }
+    return null;
+}
+
+/// The index of the first stress-only case that no default-only case precedes.
+/// Why: 元のケースが `default` 専用でなければ、元の規模が既定モードで走る保証がない。
+fn unpairedStressOnly(cases: []const Case) ?usize {
+    for (cases, 0..) |c, i| {
+        if (c.only != .stress) continue;
+        if (i == 0 or cases[i - 1].only != .default) return i;
+    }
+    return null;
+}
 
 /// The line of a test file that asks for the top level that sees `(sucheme core)`.
 const core_directive = "# env: core";
@@ -188,7 +261,8 @@ fn hasCoreDirective(body: []const u8) bool {
 /// Splits a test file into its cases.
 ///
 /// 形式はファイルの doc コメントを参照。
-fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) error{ OutOfMemory, MissingExpected }!void {
+fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) error{ OutOfMemory, MissingExpected, UnknownMode }!void {
+    var only: Only = .both;
     var input: ?[]const u8 = null;
     var input_line: usize = 0;
     var expected: std.ArrayList(u8) = .empty;
@@ -201,7 +275,13 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) er
         lineno += 1;
         // CRLF でチェックアウトしたものも、LF のものと同じに読めなければならない。
         const line = if (next) |l| std.mem.trimEnd(u8, l, "\r") else "";
-        if (next != null and isComment(line)) continue;
+        if (next != null and isComment(line)) {
+            // ケースの入力より前の `modes` 行だけが、次のケースを制限する。
+            if (input == null) if (try modesDirective(line)) |o| {
+                only = o;
+            };
+            continue;
+        }
         if (line.len == 0) {
             if (input) |in| {
                 if (expected_lines == 0) return error.MissingExpected;
@@ -210,7 +290,8 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(Case)) er
                     gpa.free(text);
                     text = "";
                 }
-                try out.append(gpa, .{ .line = input_line, .input = in, .expected = text });
+                try out.append(gpa, .{ .line = input_line, .input = in, .expected = text, .only = only });
+                only = .both;
                 input = null;
                 expected_lines = 0;
             }
@@ -461,6 +542,60 @@ test "parse joins several expected lines" {
         cases.deinit(std.testing.allocator);
     }
     try std.testing.expectEqualStrings("1\n2", cases.items[0].expected);
+}
+
+test "a modes line before a case restricts that case alone to one mode" {
+    var cases: std.ArrayList(Case) = .empty;
+    try parse(std.testing.allocator, "# modes: default\n1\n1\n\n# modes: stress\n2\n2\n\n3\n3\n", &cases);
+    defer {
+        for (cases.items) |c| std.testing.allocator.free(c.expected);
+        cases.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(3, cases.items.len);
+    try std.testing.expectEqual(Only.default, cases.items[0].only);
+    try std.testing.expectEqual(Only.stress, cases.items[1].only);
+    try std.testing.expectEqual(Only.both, cases.items[2].only);
+}
+
+test "a modes line after the input does not restrict the case" {
+    var cases: std.ArrayList(Case) = .empty;
+    try parse(std.testing.allocator, "1\n# modes: stress\n1\n", &cases);
+    defer {
+        for (cases.items) |c| std.testing.allocator.free(c.expected);
+        cases.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(1, cases.items.len);
+    try std.testing.expectEqual(Only.both, cases.items[0].only);
+}
+
+test "a modes line with an unknown mode is an error" {
+    var cases: std.ArrayList(Case) = .empty;
+    defer cases.deinit(std.testing.allocator);
+    try std.testing.expectError(error.UnknownMode, parse(std.testing.allocator, "# modes: fast\n1\n1\n", &cases));
+}
+
+test "a case runs in the modes its restriction names" {
+    try std.testing.expect(Only.both.runsIn(false) and Only.both.runsIn(true));
+    try std.testing.expect(Only.default.runsIn(false) and !Only.default.runsIn(true));
+    try std.testing.expect(!Only.stress.runsIn(false) and Only.stress.runsIn(true));
+}
+
+test "a default-only case needs a stress-only case right after it" {
+    const mk = struct {
+        fn c(only: Only) Case {
+            return .{ .line = 1, .input = "1", .expected = "1", .only = only };
+        }
+    }.c;
+    try std.testing.expectEqual(null, unpairedDefaultOnly(&.{ mk(.both), mk(.default), mk(.stress), mk(.both) }));
+    try std.testing.expectEqual(1, unpairedDefaultOnly(&.{ mk(.both), mk(.default), mk(.both) }));
+    try std.testing.expectEqual(0, unpairedDefaultOnly(&.{mk(.default)}));
+    // 最初の default の直後が default なので、最初の default が孤立として拾われる。
+    try std.testing.expectEqual(0, unpairedDefaultOnly(&.{ mk(.default), mk(.default), mk(.stress) }));
+    // 縮小版だけが残ると、元の規模はどのモードでも走らない。
+    try std.testing.expectEqual(0, unpairedStressOnly(&.{ mk(.stress), mk(.both) }));
+    try std.testing.expectEqual(null, unpairedStressOnly(&.{ mk(.default), mk(.stress) }));
+    // 先頭でない stress 専用でも、前が default 専用でなければ孤立として拾われる。
+    try std.testing.expectEqual(1, unpairedStressOnly(&.{ mk(.both), mk(.stress) }));
 }
 
 test "parse reads a CRLF file the same as an LF one" {

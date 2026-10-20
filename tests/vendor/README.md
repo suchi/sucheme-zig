@@ -47,5 +47,5 @@
 
 1. 上流の `master` のうち、コミットから7日以上たった版を選ぶ。コミットの日時は、`https://github.com/ashinn/chibi-scheme/commit/<SHA>.patch` の `Date:` の行で確かめる。
 2. その版の `tests/r7rs-tests.scm` と `COPYING` を、`https://raw.githubusercontent.com/ashinn/chibi-scheme/<SHA>/<パス>` から取得して、このディレクトリのファイルを置き換える。
-3. 差分をレビューする。`COPYING` が変わっていたら、許諾の条文を読み直し、[ADR-0022](../../docs/adr/0022-unlicensed-proprietary.md) と第3条項の ADR の前提が変わっていないかを確かめる。
+3. 差分をレビューする。`COPYING` が変わっていたら、許諾の条文を読み直し、[ADR-0022](../../docs/adr/0022-unlicensed-proprietary.md) と、第3条項の扱いを定めた [ADR-0041](../../docs/adr/0041-bsd-name-clause-attribution-not-endorsement.md) の前提が変わっていないかを確かめる。
 4. この README の「取得の記録」と、ハッシュ(上の表、または実行器の定数)を、同じコミットで更新する。
