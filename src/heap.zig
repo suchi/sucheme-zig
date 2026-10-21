@@ -975,6 +975,7 @@ pub const Heap = struct {
         while (weak) |w| {
             weak = w.next;
             w.next = null;
+            w.listed = false;
             w.prune(w, self);
         }
         // マークの途中でリストを伸ばしていたら、オプションの大きさに戻す。伸ばした分は
@@ -1134,6 +1135,10 @@ pub const Heap = struct {
 /// 掃除がする)。
 pub const Weak = struct {
     next: ?*Weak = null,
+    /// Whether the marking in progress has the table on its list.
+    /// 1回の GC で同じ表を2回登録すると、列が輪になって、途中の表が刈られずに解放済みの
+    /// セルを指したまま残る。`holdWeakly` が表明して防ぐ。
+    listed: bool = false,
     prune: *const fn (*Weak, *Heap) void,
 };
 
@@ -1170,6 +1175,8 @@ pub const Marker = struct {
     /// 表は、弱く持つものをマークせずに、ここで自分を登録する。登録とマークが同じ
     /// 呼び出しで起きるので、マークを省いた表が刈られずに残ることはない。
     pub fn holdWeakly(self: *Marker, w: *Weak) void {
+        std.debug.assert(!w.listed);
+        w.listed = true;
         w.next = self.weak;
         self.weak = w;
     }

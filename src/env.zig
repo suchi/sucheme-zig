@@ -308,12 +308,19 @@ pub const Global = struct {
     /// `Iterator.next`)。
     fn pruneUnbound(w: *heap_mod.Weak, heap: *Heap) void {
         const self: *Global = @fieldParentPtr("weak", w);
+        var removed = false;
         var it = self.bindings.iterator();
         while (it.next()) |entry| {
             if (!weakly(entry.value_ptr.*)) continue;
             if (heap.isMarked(Cell, entry.value_ptr.denotation.global)) continue;
             self.bindings.removeByPtr(entry.key_ptr);
+            removed = true;
         }
+        // Why: 外した位置には削除の印が残り、表は作り直されない。未知の名前を参照する行を
+        // 繰り返すと印が溜まり、探索が長くなる(敵対的レビューの計測で、印を残したままの表は
+        // 強く持つ表の約5倍遅かった)。`rehash` はその場で印を消し、確保しない。表の項目への
+        // ポインタは無効になるが、GC の境目で表の項目を指したまま持つものは無い。
+        if (removed) self.bindings.rehash(std.hash_map.AutoContext(SymbolId){});
     }
 
     /// The binding of `id`, made when there is none yet: what `base` exports under
