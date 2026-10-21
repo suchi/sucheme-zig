@@ -19,7 +19,8 @@
 //! - それ以外は、形式の中で `(chibi test)` が記録したテストを、通った・落ちたに数える。
 //!   落ちたは、値の不一致(fail)と、テストの中で上がった誤り(error)の両方である。
 //!
-//! 通った・落ちたの単位はテストで、ほかは最上位の形式である。単位が違うので足さない。
+//! 通った・落ちたの単位はテストで、ほかは最上位の形式である。ただし連鎖は、同じ節に実行不能の
+//! 形式があるときにテストの中で上がった未束縛の誤りを、テストの単位で含む。単位が違うので足さない。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -35,7 +36,7 @@ pub const suite_path = "tests/vendor/r7rs-tests.scm";
 pub const suite_sha256 = "004d215a38f990bbf2bfaa8b4a395aa59ef98d155096f8e31cc361b7812f7d6a";
 
 /// Whether `digest` is the digest of the vendored suite.
-pub fn isVendored(digest: []const u8) bool {
+fn isVendored(digest: []const u8) bool {
     return std.mem.eql(u8, digest, suite_sha256);
 }
 
@@ -101,6 +102,15 @@ const results_library = "(sucheme test-results)";
 
 /// The prefix of the bindings the runner imports for itself, which the suite does not redefine.
 const runner_prefix = "%conformance-run:";
+
+/// Runs `text` with `runSuite` if it is the vendored suite, or returns `error.NotVendored`.
+/// 実行器と準拠マトリクスの生成器は、どちらもこの関数を通してスイートを走らせる。照合を
+/// 呼び出し元ごとに書くと、片方で照合が外れても、テストが見つけないためである。
+pub fn runVendored(gpa: std.mem.Allocator, text: []const u8, required: []const []const u8) (RunError || error{NotVendored})!SuiteResult {
+    const digest = hexDigest(text);
+    if (!isVendored(&digest)) return error.NotVendored;
+    return runSuite(gpa, text, required);
+}
 
 /// Runs `text`, the whole suite. `required` is every identifier R7RS requires of a
 /// standard library. Everything returned is in `gpa`.
@@ -539,6 +549,22 @@ const fake_required = [_][]const u8{ "car", "exact-integer-sqrt", "string-upcase
 
 fn runFake(arena: std.mem.Allocator, text: []const u8) !SuiteResult {
     return runSuite(arena, text, &fake_required);
+}
+
+test "a suite that is not the vendored one is not run" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // runSuite なら走るスイートでも、ハッシュが違えば走らせない。
+    const text =
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test 1 1)
+        \\(test-end)
+        \\(test-end)
+    ;
+    _ = try runFake(arena.allocator(), text);
+    try std.testing.expectError(error.NotVendored, runVendored(arena.allocator(), text, &fake_required));
 }
 
 fn findSection(r: SuiteResult, name: []const u8) !Counts {

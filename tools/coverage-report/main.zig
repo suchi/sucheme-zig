@@ -7,7 +7,7 @@
 //! 輸出を見る)。エラー文言の分類では答えない。
 //!
 //! 2つ目の表は、取り込んだ準拠スイート(tests/vendor/r7rs-tests.scm)を、準拠スイートの実行器
-//! (tools/conformance-run の run.zig)と同じ `runSuite` で走らせた節ごとの数である(スライス 6f)。
+//! (tools/conformance-run の run.zig)と同じ `runVendored` で走らせた節ごとの数である(スライス 6f)。
 //! スイートの SHA-256 が実行器の定数と違うか、実行器が自分の誤りを報告したら、表を作らずに
 //! 非ゼロで終わる。
 //!
@@ -164,15 +164,14 @@ fn runVendoredSuite(
         try err.flush();
         std.process.exit(1);
     };
-    const digest = conformance.hexDigest(text);
-    if (!conformance.isVendored(&digest)) {
-        try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ path, &digest, conformance.suite_sha256 });
-        try err.flush();
-        std.process.exit(1);
-    }
     var required: std.ArrayList([]const u8) = .empty;
     for (libs) |lib| try required.appendSlice(gpa, lib.ids);
-    return conformance.runSuite(gpa, text, required.items) catch |e| {
+    return conformance.runVendored(gpa, text, required.items) catch |e| {
+        if (e == error.NotVendored) {
+            try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ path, &conformance.hexDigest(text), conformance.suite_sha256 });
+            try err.flush();
+            std.process.exit(1);
+        }
         try err.print("the conformance runner cannot trust this run: {t}\nrun `zig build test-conformance` to see where\n", .{e});
         try err.flush();
         std.process.exit(1);
@@ -208,7 +207,7 @@ const suite_preamble =
     \\
     \\取り込んだ準拠スイート `tests/vendor/r7rs-tests.scm` を、節ごとに走らせた結果である。取り込んだ版は [tests/vendor/README.md](../../tests/vendor/README.md) にある。分類の定義は [docs/plans/0020-conformance-harness-early.md](../plans/0020-conformance-harness-early.md) の「分類」にあり、落ちたものと走らせなかったものの一覧は `zig build test-conformance` が出す。
     \\
-    \\- 「通った」と「落ちた」はテストの数である。ほかの列は、走らせなかったか、それ自体が誤りを上げた最上位の形式の数で、単位が違うので足さない。
+    \\- 「通った」と「落ちた」はテストの数である。ほかの列は、走らせなかったか、それ自体が誤りを上げた最上位の形式の数である。ただし「連鎖」は、同じ節に実行不能の形式があるときにテストの中で上がった未束縛の誤りを、テストの数で含む。単位が違うので足さない。
     \\- 入れ子の節(「Read syntax」と「Numeric syntax」)は、親の節(6.13)と別の行に数える。
     \\
     \\| 節 | 通った | 落ちた | 誤り | 読めない | 未実装 | 連鎖 |
@@ -409,9 +408,10 @@ test "parseArgs names the first argument it does not know" {
 test "the suite table has one row a section in order, the column sums, and the missing libraries" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
+    // 列の取り違えが表に出るよう、行の中でも合計でも、6つの数をすべて違う値にする。
     const sections = [_]conformance.SectionResult{
-        .{ .name = "4.1 a", .counts = .{ .passed = 2, .failed = 1, .errored = 1, .unreadable = 3, .unimplemented = 4, .cascaded = 5 } },
-        .{ .name = "6.2 b", .counts = .{ .passed = 10, .unimplemented = 1 } },
+        .{ .name = "4.1 a", .counts = .{ .passed = 2, .failed = 6, .errored = 7, .unreadable = 3, .unimplemented = 4, .cascaded = 5 } },
+        .{ .name = "6.2 b", .counts = .{ .passed = 10, .failed = 20, .errored = 30, .unreadable = 40, .unimplemented = 1, .cascaded = 50 } },
     };
     try renderSuite(&out.writer, .{
         .sections = &sections,
@@ -422,9 +422,9 @@ test "the suite table has one row a section in order, the column sums, and the m
     try std.testing.expect(std.mem.startsWith(u8, text, suite_preamble));
     const rows = text[suite_preamble.len..];
     try std.testing.expectEqualStrings(
-        \\| 4.1 a | 2 | 1 | 1 | 3 | 4 | 5 |
-        \\| 6.2 b | 10 | 0 | 0 | 0 | 1 | 0 |
-        \\| 合計 | 12 | 1 | 1 | 3 | 5 | 5 |
+        \\| 4.1 a | 2 | 6 | 7 | 3 | 4 | 5 |
+        \\| 6.2 b | 10 | 20 | 30 | 40 | 1 | 50 |
+        \\| 合計 | 12 | 26 | 37 | 43 | 5 | 55 |
         \\
         \\スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme r5rs)`
         \\
@@ -436,4 +436,12 @@ test "the suite table has no missing-library line when every library resolves" {
     defer out.deinit();
     try renderSuite(&out.writer, .{ .sections = &.{}, .failures = &.{}, .missing_libraries = &.{} });
     try std.testing.expectEqualStrings(suite_preamble ++ "| 合計 | 0 | 0 | 0 | 0 | 0 | 0 |\n", out.written());
+}
+
+test "the suite table has the missing-library line for a single library" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try renderSuite(&out.writer, .{ .sections = &.{}, .failures = &.{}, .missing_libraries = &.{"(scheme time)"} });
+    try std.testing.expectEqualStrings(suite_preamble ++ "| 合計 | 0 | 0 | 0 | 0 | 0 | 0 |\n" ++
+        "\nスイートが `import` するライブラリのうち、解決できなかったもの: `(scheme time)`\n", out.written());
 }

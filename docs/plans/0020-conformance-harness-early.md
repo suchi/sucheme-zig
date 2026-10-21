@@ -285,7 +285,7 @@ tests/scheme の番号は、L5 の範囲(0800 台)を使う([0017](0017-parallel
 | 6c | `(import (chibi test))` が通り、6つの形式の振る舞い(合格、不合格、誤りの記録、`test-values`、`test-error`、節の名前)を `tests/scheme/0800-*.txt` のケースが固定する | `lib/chibi/test.sld`、`lib/chibi/test.scm`、結果を返すライブラリ(`lib/sucheme/` の新しい1組)、`tests/scheme/0800-*.txt` から `0809-*.txt` | T2 | 合意を求める点の4 | 6a、6b、6d と並行できる | 中 |
 | 6d | 走査器が、文字列、コメント、文字、縦棒の識別子、ブロックコメント、データのコメントを扱い、単体テストで固定される | `tools/conformance-run/split.zig` | T1 | なし | 6a、6b、6c と並行できる | 小 |
 | 6e | `zig build test-conformance` が、取り込んだスイートを節ごとに走らせ、3つの分類で数え、失敗の一覧を出す。ハッシュの照合が働く | `tools/conformance-run/run.zig`、`tools/conformance-run/main.zig`、`build.zig` の step の追加、`tests/scheme/0810-*.txt` から `0819-*.txt`(必要なら) | T2 | 6a、6c、6d。合意を求める点の3 | 単独 | 中 |
-| 6f | `docs/status/conformance.md` に節ごとの表があり、`check-report` が一致を検査する。roadmap の項目の文言と、`docs/status/README.md`、[r7rs-coverage.md](../design/r7rs-coverage.md) の記述が合う | `tools/coverage-report/main.zig`、`docs/status/*`、`docs/design/r7rs-coverage.md` の該当の節、`docs/roadmap.md` の段階6の項目 | T2 | 6e | 6g と並行できる | 中 |
+| 6f | `docs/status/conformance.md` に節ごとの表があり、`check-report` が一致を検査する。roadmap の項目の文言と、`docs/status/README.md`、[r7rs-coverage.md](../design/r7rs-coverage.md) の記述が合う | `tools/coverage-report/main.zig`、`docs/status/*`、`docs/design/r7rs-coverage.md` の該当の節、`docs/roadmap.md` の現在地と段階6の項目。6f で、ハッシュの照合を共有するために、`tools/conformance-run/run.zig` と `main.zig`、`build.zig` のモジュールの追加、`tests/vendor/README.md` も触った | T2 | 6e | 6g と並行できる | 中 |
 | 6g | 失敗の一覧が、レーンごとの issue になっている | issue(リポジトリのファイルは持たない) | T1 | 6e | 6f と並行できる | 小 |
 
 ```mermaid

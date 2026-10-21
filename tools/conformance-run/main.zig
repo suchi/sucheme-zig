@@ -42,15 +42,13 @@ pub fn main(init: std.process.Init) !void {
         try err.flush();
         std.process.exit(1);
     };
-    const digest = run.hexDigest(text);
-    if (!run.isVendored(&digest)) {
-        try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ suite_path, &digest, run.suite_sha256 });
-        try err.flush();
-        std.process.exit(1);
-    }
-
     const required = try readRequired(gpa, io, cwd, err);
-    const result = run.runSuite(gpa, text, required) catch |e| {
+    const result = run.runVendored(gpa, text, required) catch |e| {
+        if (e == error.NotVendored) {
+            try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ suite_path, &run.hexDigest(text), run.suite_sha256 });
+            try err.flush();
+            std.process.exit(1);
+        }
         try err.print("conformance-run: the runner cannot trust this run: {t}\n", .{e});
         try err.flush();
         std.process.exit(1);
@@ -114,7 +112,7 @@ fn report(out: *std.Io.Writer, r: run.SuiteResult) !void {
         total.cascaded += c.cascaded;
     }
     try out.print("{s:<36} {d:>6} {d:>6} {d:>6} {d:>10} {d:>13} {d:>8}\n", .{ "total", total.passed, total.failed, total.errored, total.unreadable, total.unimplemented, total.cascaded });
-    try out.print("\npassed and failed count tests; the other columns count top-level forms that were not run or that raised.\n", .{});
+    try out.print("\npassed and failed count tests; the other columns count top-level forms that were not run or that raised,\nexcept that cascaded also counts tests that raised an unbound error in a section with a broken form.\n", .{});
 
     if (r.failures.len > 0) try out.print("\n", .{});
     for (r.failures) |f| {
