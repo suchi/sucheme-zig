@@ -176,7 +176,7 @@
 
 - [x] `(chibi test)` 互換の最小実装
 - [x] `r7rs-tests.scm` の取り込みと実行
-- [ ] 準拠マトリクスに、準拠スイート(`r7rs-tests.scm`)の結果の列を足す。`(scheme r5rs)` の再エクスポートによる識別子の重複は、この列を足すときに解く
+- [x] 準拠マトリクスに、準拠スイート(`r7rs-tests.scm`)の結果の表を足す。`(scheme r5rs)` の再エクスポートによる識別子の重複は、この表を足すときに解く(スライス 6f。結果は節ごとに出るので、列でなく別の表にした。重複は、表を分けずに注記で示すと決めた)
 - [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消
 - [ ] 不合格項目の issue 化と解消
 - [x] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
