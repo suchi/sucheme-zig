@@ -874,8 +874,10 @@ test "runFile puts the place in the file before an error the expander raises" {
     var eb: [256]u8 = undefined;
     const r = try runProgram("(define x 1)\n(define (f)\n  (if))\n", &eb);
     try std.testing.expectEqual(exit_runtime_error, r.status);
-    // パスは一時ディレクトリの絶対パスである。行と桁は、`(if)` の `(` の位置である。
-    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: /"));
+    // パスは一時ディレクトリの絶対パスで、形が OS で違う(Windows はドライブ文字で始まる)ので、
+    // 名前のあとだけを見る。行と桁は、`(if)` の `(` の位置である。
+    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: "));
+    try std.testing.expect(std.mem.indexOf(u8, r.err, "error: prog.scm") == null);
     try std.testing.expect(std.mem.endsWith(u8, r.err, "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)\n"));
 }
 
