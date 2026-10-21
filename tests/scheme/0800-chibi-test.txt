@@ -8,6 +8,17 @@
 (import (chibi test) (sucheme test-results)) (test-results)
 ()
 
+(import (chibi test) (sucheme test-results)) (test-results-count)
+0
+
+# 実行器が使う `test-results-count` と `test-results-ref` は、記録の数と、古い順の i 番目を返す。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1 1) (test 2 3) (test-error (raise 'x)) (list (test-results-count) (vector-ref (test-results-ref 0) 2) (vector-ref (test-results-ref 1) 2) (vector-ref (test-results-ref 2) 2))
+(3 pass fail pass)
+
+# スイートが `length` や `list-ref` を再定義しても、これらは影響されない。
+(import (scheme base) (chibi test) (sucheme test-results)) (define (length x) 0) (define (list-ref l i) 'no) (test 1 1) (list (test-results-count) (vector-ref (test-results-ref 0) 2))
+(1 pass)
+
 # `test` は、期待した値と式の値を `equal?` で比べる。
 (import (scheme base) (chibi test) (sucheme test-results)) (test 3 (+ 1 2)) (test-results)
 (#(#f (+ 1 2) pass 3 3))

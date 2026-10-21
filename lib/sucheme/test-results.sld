@@ -6,13 +6,21 @@
 ;; 節の名前は、いちばん内側の `test-begin` の名前で、どの節の中でもなければ #f である。
 (define-library (sucheme test-results)
   (import (scheme base))
-  (export test-results test-results-add! test-group-push! test-group-pop!)
+  (export test-results test-results-count test-results-ref
+          test-results-add! test-group-push! test-group-pop!)
   (begin
     ;; 新しい順に持ち、`test-results` が古い順に直して返す。
     (define records '())
+    (define count 0)
     (define groups '())
     (define (test-results) (reverse records))
+    ;; 準拠スイートの実行器(tools/conformance-run)が記録を読むための手続き。実行器は、スイートが
+    ;; 再定義しうる `length` や `list-ref` を最上位の名前で呼ばずに、これらだけを使う。
+    ;; `i` は古い順の番号(0から)である。
+    (define (test-results-count) count)
+    (define (test-results-ref i) (list-ref records (- count i 1)))
     (define (test-results-add! form status expected actual)
+      (set! count (+ count 1))
       (set! records
             (cons (vector (if (null? groups) #f (car groups)) form status expected actual)
                   records)))
