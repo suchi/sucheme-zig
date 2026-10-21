@@ -207,6 +207,15 @@ pub const Interpreter = struct {
         self.diagnostic_text = if (written) |_| self.diagnostic_buffer.items else |_| "out of memory";
     }
 
+    /// Sets the most steps one top-level form may take, or null for no limit.
+    ///
+    /// 上限に達した形式は、`evalPrint` が `error.StepLimit` を返して終わる。ハンドラでは
+    /// 捕まえられない。準拠スイートの実行器が、止まらないテストを打ち切るために使う
+    /// (計画書 0024)。既定は上限なしである。
+    pub fn setStepLimit(self: *Interpreter, limit: ?u64) void {
+        self.ctx.step_limit = limit;
+    }
+
     /// Whether `identifier` is bound: a global binding, or a special form.
     ///
     /// 準拠マトリクス(tools/coverage-report)が使う。名前を引くだけで、シンボルを
@@ -359,6 +368,7 @@ fn describe(e: Error) []const u8 {
         error.OutOfMemory => "out of memory",
         // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。
         error.HeapLimit, error.ReserveExhausted => context.heap_limit_message,
+        error.StepLimit => "step limit exceeded",
         else => @errorName(e),
     };
 }
@@ -2237,4 +2247,85 @@ test "a macro that nests what it expands to ends at the limit of the heap" {
 test "slow: a macro that never stops ends at the limit of the default heap" {
     try tier.slow();
     try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_) (f))))", "(f)", heap.default_limit);
+}
+
+test "a form that does not stop ends at the step limit, and the next form runs" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (loop))", &w));
+    try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
+    // 残りは形式ごとに戻るので、上限に達した次の形式も、上限いっぱいまで走れる。
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+    try std.testing.expectEqualStrings("", interp.diagnostic());
+}
+
+test "a handler does not catch the step limit" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 捕まえられる誤りにすると、(chibi test) の test のように誤りを捕まえて続ける式が止まらない。
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(guard (e (#t 'caught)) (let loop () (loop)))", &w));
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(with-exception-handler (lambda (e) 'caught) (lambda () (let loop () (loop))))", &w));
+    try std.testing.expectEqualStrings("", w.buffered());
+}
+
+test "the step limit lets a form take exactly that many steps" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // `(+ 1 2)` は、今の機械で 8 歩かかる(周回を数えて確かめた)。上限がその数なら通り、
+    // 1つ少なければ止まる。機械の周回の作りが変わってこの数が変われば、ここも直す。
+    const steps_for_sum = 8;
+    interp.setStepLimit(steps_for_sum);
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+    interp.setStepLimit(steps_for_sum - 1);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(+ 1 2)", &w));
+}
+
+test "with no step limit, a long loop runs to its end" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1))))", &w);
+    // 既定は上限なしである。100 万回の版は層2に置く。
+    try interp.evalPrint(arena.allocator(), "(count 100000)", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
+    interp.setStepLimit(1000);
+    interp.setStepLimit(null);
+    try interp.evalPrint(arena.allocator(), "(count 100000)", &w);
+    try std.testing.expectEqualStrings("done\ndone\n", w.buffered());
+}
+
+test "slow: with no step limit, a loop of a million calls runs to its end" {
+    try tier.slow();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1)))) (count 1000000)", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
 }

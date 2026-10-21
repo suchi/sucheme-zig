@@ -19,9 +19,11 @@ const Value = value_mod.Value;
 /// `OutOfMemory` はホストのメモリが尽きたこと、`ReserveExhausted` は上限に達した状態で
 /// 送出のための予約領域も尽き、条件オブジェクトを作れなかったことを表す。どちらも
 /// `raised` を空のまま返し、その行を終える(docs/design/runtime.md の上限超過と確保の失敗)。
+/// `StepLimit` は、1つの最上位の形式が `step_limit` の歩数を使い切ったことを表す。ハンドラに
+/// 渡さず、`dynamic-wind` の `after` も呼ばずに、その形式を終える(計画書 0024)。
 /// ヒープの `HeapLimit` はこの集合に入れない。ヒープの確保を素の `try` で返すと
 /// コンパイルエラーになり、`heapFailure` を通して送出することを型が強いる。
-pub const Error = error{ OutOfMemory, Raised, ReserveExhausted };
+pub const Error = error{ OutOfMemory, Raised, ReserveExhausted, StepLimit };
 
 /// What the error is called when the heap cannot hold more.
 /// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。
@@ -80,6 +82,10 @@ pub const Context = struct {
     /// 対話の全体で1つの通し番号で、周回させない(`newMark`)。マクロの定義は行をまたいで
     /// 残り、その規則が別名を含みうるので、行ごとに数え直すことはできない。
     next_mark: u64 = 0,
+    /// The most steps one run of the machine may take, or null for no limit.
+    /// 機械は、`Machine.run` の1回ごとに残りをこの値に戻す(src/machine.zig)。既定は上限なしで、
+    /// 準拠スイートの実行器だけが置く(計画書 0024)。
+    step_limit: ?u64 = null,
 
     /// A context whose top level imports everything `(sucheme core)` exports.
     /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
