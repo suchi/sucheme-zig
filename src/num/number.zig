@@ -39,6 +39,9 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u
 
 test {
     std.testing.refAllDecls(@This());
+    // Why: 純粋な層のテストを単体テストの集合に載せる。4e が `parse` から syntax.zig を
+    // 呼ぶようになったら、この参照は要らなくなる。
+    _ = @import("syntax.zig");
 }
 
 test "isNumber answers for the five kinds of number and nothing else" {
