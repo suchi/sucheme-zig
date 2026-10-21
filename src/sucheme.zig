@@ -794,6 +794,24 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     }
 }
 
+test "a circular constant of the code is marked once, survives the collections, and goes with the code" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 1, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            // 定数の循環するリスト(R7RS 2.4)は、コードの節点だけが持つ。マークは印で循環を止める。
+            try expectLinePrints(&interp, "(define (f) '#0=(1 circular-only . #0#))", "");
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "(car (cdr (cdr (cdr (f))))) (eq? (f) (cdr (cdr (f))))", "circular-only\n#t\n");
+            // 手続きを置き換えると、循環するリストを持つものは無くなり、名前ごと回収される。
+            try expectLinePrints(&interp, "(set! f #f)", "");
+            interp.ctx.collectIdle();
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("circular-only") == null);
+        }
+    }
+}
+
 test "a symbol made from a string stays the symbol of its name at every work list capacity" {
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 1, 0 }) |capacity| {
