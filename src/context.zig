@@ -388,6 +388,25 @@ test "the place of a raise belongs to the value raised, and the innermost place 
     try std.testing.expect(ctx.raised_at == null);
 }
 
+test "the pairs of the table of positions are roots while the context holds it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    var kept: positions_mod.Table = .init(std.testing.allocator);
+    defer kept.deinit();
+    const file = try kept.addFile("a.scm");
+    // 表だけが持つペアは、表をコンテキストに置いている間は回収されず、外せば回収される。
+    const pair = try ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+    try kept.record(pair.asPair().?, .{ .file = file, .location = .{} });
+    ctx.positions = &kept;
+    ctx.collectIdle();
+    const held = ctx.heap.count;
+    ctx.positions = null;
+    ctx.collectIdle();
+    try std.testing.expectEqual(held - 1, ctx.heap.count);
+}
+
 test "a message as long as the REPL's line is kept whole" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
