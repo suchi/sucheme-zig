@@ -24,6 +24,7 @@ const Value = value_mod.Value;
 const Heap = @import("heap.zig").Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
+const positions_mod = @import("positions.zig");
 
 /// What the reader cannot read: the input is not a datum.
 pub const SyntaxError = error{
@@ -109,6 +110,15 @@ pub const Sink = struct {
     /// 読み取りの途中でヒープは GC しないので、呼び出し側が受け取る時点でデータは
     /// 完全な形をしている。
     heap: *Heap,
+    /// Where the positions of the lists read are kept, with the number of the
+    /// file they are read from, or null when they are not kept.
+    /// 記録するのは、括弧で書いたリストと略記(`'x` など)が作る先頭のペアの位置である。
+    positions: ?Recording = null,
+
+    pub const Recording = struct {
+        table: *positions_mod.Table,
+        file: u32,
+    };
 };
 
 /// A prefix that abbreviates a form (R7RS 2.4).
@@ -137,8 +147,8 @@ const Frame = union(enum) {
     vector: std.ArrayList(Value),
     /// A `#u8(` whose bytes so far are these.
     bytevector: std.ArrayList(u8),
-    /// A `'`, `` ` ``, `,` or `,@` waiting for its datum.
-    abbreviation: Abbreviation,
+    /// A `'`, `` ` ``, `,` or `,@` waiting for its datum, and where it was.
+    abbreviation: struct { kind: Abbreviation, at: positions_mod.Location },
     /// A `#;` waiting for the datum it comments out, and how many labels there
     /// were when it began.
     /// データが完成したら、略記を閉じたあとで捨てる。`#;'a` は `'a` を捨てる。捨てたデータの
@@ -148,6 +158,8 @@ const Frame = union(enum) {
     label: usize,
 
     const List = struct {
+        /// Where the `(` was.
+        at: positions_mod.Location,
         /// The elements so far.
         items: std.ArrayList(Value) = .empty,
         /// Whether a `.` has been read, so that the next datum is the tail.
@@ -359,6 +371,9 @@ pub const Reader = struct {
     /// 既定は真である。読んだものを展開器がコードとして辿るので、リテラルの外の循環が
     /// 届くと、展開器が止まらない。データとして読む手続き(`read`)は偽にする。
     code: bool = true,
+    /// How far into `src` the lines and columns have been counted.
+    /// 位置を記録しない読み手は、数えない。
+    cursor: positions_mod.Cursor = .{},
 
     pub fn init(src: []const u8) Reader {
         return .{ .src = src };
@@ -380,8 +395,9 @@ pub const Reader = struct {
             }
             var datum: Value = switch (self.src[self.pos]) {
                 '(' => {
+                    const at = self.here(sink);
                     self.pos += 1;
-                    try open.append(scratch, .{ .list = .{} });
+                    try open.append(scratch, .{ .list = .{ .at = at } });
                     continue;
                 },
                 '.' => if (self.atDot()) {
@@ -441,9 +457,10 @@ pub const Reader = struct {
                         '`' => .quasiquote,
                         else => if (self.pos + 1 < self.src.len and self.src[self.pos + 1] == '@') .unquote_splicing else .unquote,
                     };
+                    const at = self.here(sink);
                     // Why: `,@` は 2 文字で 1 つの記号である(R7RS 2.4)。
                     self.pos += if (abbreviation == .unquote_splicing) 2 else 1;
-                    try open.append(scratch, .{ .abbreviation = abbreviation });
+                    try open.append(scratch, .{ .abbreviation = .{ .kind = abbreviation, .at = at } });
                     continue;
                 },
                 ')' => blk: {
@@ -455,7 +472,9 @@ pub const Reader = struct {
                         .label => return error.MissingLabeledDatum,
                         .list => |l| {
                             if (l.dot and l.tail == null) return error.UnexpectedDot;
-                            break :blk try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
+                            const list = try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
+                            try recordPosition(sink, list, l.at);
+                            break :blk list;
                         },
                         .vector => |items| break :blk .fromVector(try sink.heap.createVector(items.items)),
                         .bytevector => |bytes| break :blk .fromBytevector(try sink.heap.createBytevector(bytes.items)),
@@ -466,7 +485,10 @@ pub const Reader = struct {
             // 完成したデータは、それを待っているすべての略記とラベルを、内側から順に閉じる。
             while (open.items.len != 0) {
                 switch (open.items[open.items.len - 1]) {
-                    .abbreviation => |a| datum = try abbreviated(sink, a, datum),
+                    .abbreviation => |a| {
+                        datum = try abbreviated(sink, a.kind, datum);
+                        try recordPosition(sink, datum, a.at);
+                    },
                     .label => |i| try labels.finish(i, datum),
                     else => break,
                 }
@@ -495,6 +517,13 @@ pub const Reader = struct {
                 .abbreviation, .datum_comment, .label => unreachable,
             }
         }
+    }
+
+    /// The place of the input's next character, when `sink` keeps positions.
+    /// 記録しない読み手は数えずに、使われない値を返す。
+    fn here(self: *Reader, sink: Sink) positions_mod.Location {
+        if (sink.positions == null) return .{};
+        return self.cursor.locate(self.src, self.pos);
     }
 
     /// A `#<n>=` or `#<n>#` at the input: a datum label or a reference to one
@@ -864,6 +893,14 @@ fn listOf(sink: Sink, items: []const Value, tail: Value) Error!Value {
         result = try sink.heap.cons(items[i], result);
     }
     return result;
+}
+
+/// Keeps that `datum` was read at `at`, when `sink` keeps positions and
+/// `datum` is a pair: `()` is not one.
+fn recordPosition(sink: Sink, datum: Value, at: positions_mod.Location) Error!void {
+    const recording = sink.positions orelse return;
+    const pair = datum.asPair() orelse return;
+    try recording.table.record(pair, .{ .file = recording.file, .location = at });
 }
 
 /// `(quote datum)` for `'datum`, and likewise `quasiquote`, `unquote` and
@@ -1620,6 +1657,44 @@ test "a reader of code rejects a circular reference outside a literal" {
         std.debug.print("reading {s}: accepted\n", .{src});
         return error.TestUnexpectedResult;
     }
+}
+
+test "a reader that keeps positions records where each list and abbreviation began" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var table: positions_mod.Table = .init(std.testing.allocator);
+    defer table.deinit();
+    const file = try table.addFile("a.scm");
+    var sink = f.sink();
+    sink.positions = .{ .table = &table, .file = file };
+    // 2行目の `(b` は4桁目、`'c` は3行目の3桁目、`(d)` は CR LF のあとの4行目、`#(` の中の
+    // `(e)` は `あ` を1文字と数えて7桁目に始まる。
+    var r: Reader = .init("(a\n   (b\n  'c) . ())\r\n#;(x) (d)\n#(\"\u{3042}\" (e))");
+    const first = (try r.next(f.arena.allocator(), sink)).?;
+    const Expected = struct { datum: Value, line: u32, column: u32 };
+    const p = first.asPair().?;
+    const b = p.cdr.asPair().?.car;
+    const quoted = b.asPair().?.cdr.asPair().?.car;
+    for ([_]Expected{
+        .{ .datum = first, .line = 1, .column = 1 },
+        .{ .datum = b, .line = 2, .column = 4 },
+        .{ .datum = quoted, .line = 3, .column = 3 },
+    }) |e| {
+        const at = table.of(e.datum) orelse return error.TestExpectedPosition;
+        try std.testing.expectEqual(file, at.file);
+        try std.testing.expectEqual(positions_mod.Location{ .line = e.line, .column = e.column }, at.location);
+    }
+    // 先頭のペアだけを記録する。リストの2番目のペアと、`()` は記録しない。
+    try std.testing.expect(table.of(p.cdr) == null);
+    const d = (try r.next(f.arena.allocator(), sink)).?;
+    try std.testing.expectEqual(positions_mod.Location{ .line = 4, .column = 7 }, table.of(d).?.location);
+    const v = (try r.next(f.arena.allocator(), sink)).?;
+    try std.testing.expectEqual(positions_mod.Location{ .line = 5, .column = 7 }, table.of(v.asVector().?.items[1]).?.location);
+    // 記録しない読み手は、表に何も足さない。
+    const before = table.by_pair.count();
+    var plain: Reader = .init("(a (b))");
+    _ = (try plain.next(f.arena.allocator(), f.sink())).?;
+    try std.testing.expectEqual(before, table.by_pair.count());
 }
 
 test "a reader of code accepts circular data in a literal, and shared code" {

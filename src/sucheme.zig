@@ -21,6 +21,7 @@ pub const version = build_options.version;
 pub const heap = @import("heap.zig");
 
 const reader = @import("reader.zig");
+const positions_mod = @import("positions.zig");
 
 /// Whether `source` ends inside a datum that more input could finish.
 ///
@@ -80,6 +81,16 @@ pub const Interpreter = struct {
     /// What `diagnostic` returns: the contents of `diagnostic_buffer`, or a fixed
     /// text when the buffer could not hold the description.
     diagnostic_text: []const u8,
+    /// The name of the file the input of `evalPrint` is read from, or null for the
+    /// lines of the REPL and of WASM.
+    /// 名前があれば、展開時のエラーの説明に、その形式を読んだ位置を前置する。文字列は
+    /// 呼び出し側が持つ。
+    file_name: ?[]const u8,
+    /// Where in a file the error the last `evalPrint` returned was raised, if
+    /// it is known.
+    error_at: ?ErrorAt,
+
+    const ErrorAt = struct { file: []const u8, location: positions_mod.Location };
 
     pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
         return self.initWithOptions(gpa, .{});
@@ -135,6 +146,8 @@ pub const Interpreter = struct {
         self.ctx.embedded = embedded;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
+        self.file_name = null;
+        self.error_at = null;
     }
 
     /// Replaces the top level that imports `(sucheme core)` with one that imports
@@ -178,6 +191,7 @@ pub const Interpreter = struct {
         // 前の行が送出した値は、ここで手放す。この行の GC が回収する。
         self.ctx.clearDiagnostic();
         self.diagnostic_text = "";
+        self.error_at = null;
         self.run(arena, source, out) catch |e| {
             self.keepDiagnostic(arena, e);
             return e;
@@ -199,10 +213,10 @@ pub const Interpreter = struct {
     fn keepDiagnostic(self: *Interpreter, scratch: std.mem.Allocator, e: Error) void {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
-        const written = if (self.ctx.raised) |v|
-            describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v)
-        else
-            w.writer.writeAll(describe(e));
+        const written = if (self.ctx.raised) |v| blk: {
+            if (self.error_at) |at| w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column }) catch |failed| break :blk failed;
+            break :blk describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v);
+        } else w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
         self.diagnostic_text = if (written) |_| self.diagnostic_buffer.items else |_| "out of memory";
     }
@@ -224,9 +238,17 @@ pub const Interpreter = struct {
         // 使い、不正になりうる形を並べたりしない(docs/design/platform-and-web.md)。
         if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
         var r: reader.Reader = .init(source);
+        // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
+        // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
+        var table: positions_mod.Table = .init(arena);
+        self.ctx.positions = &table;
+        defer self.ctx.positions = null;
+        const recording: ?reader.Sink.Recording = if (self.file_name) |file| .{ .table = &table, .file = try table.addFile(file) } else null;
         // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
-        const sink: reader.Sink = .{ .heap = &self.ctx.heap };
+        const sink: reader.Sink = .{ .heap = &self.ctx.heap, .positions = recording };
         while (true) {
+            // 前の形式の位置は、もう引かない。鍵のペアを、ルートとして持ち続けないためでもある。
+            table.by_pair.clearRetainingCapacity();
             // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
             // このためここもセーフポイントである。エラーで終わった行のゴミも、
             // 次の行を読む前にここで回収される。
@@ -241,10 +263,10 @@ pub const Interpreter = struct {
                     .import => library.importIntoRepl(&self.ctx, arena, form),
                     .define_library => library.defineLibrary(&self.ctx, arena, form),
                 };
-                done catch |e| return self.ctx.limitFailure(e);
+                done catch |e| return self.located(self.ctx.limitFailure(e), &table, form);
                 continue;
             }
-            const node = try expand.expand(&self.ctx, arena, form);
+            const node = expand.expand(&self.ctx, arena, form) catch |e| return self.located(e, &table, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
             // 最上位の REPL は、複数値を受け取る(docs/design/runtime.md の複数値の表)。
@@ -253,6 +275,17 @@ pub const Interpreter = struct {
                 for (multiple.items) |item| try self.printResult(out, arena, item);
             } else try self.printResult(out, arena, v);
         }
+    }
+
+    /// `e`, the error that processing the top-level form `form` failed with, after
+    /// keeping where it was raised for `diagnostic`.
+    /// 展開器がより内側の形式の位置を記録していなければ、最上位の形式の位置にする。ライブラリの
+    /// 宣言の誤りなど、展開器の外で送出したものは、こちらになる。
+    fn located(self: *Interpreter, e: Error, table: *const positions_mod.Table, form: value.Value) Error {
+        if (e != error.Raised) return e;
+        self.ctx.noteRaisedAt(table.of(form));
+        if (self.ctx.raisedPosition()) |p| self.error_at = .{ .file = table.fileName(p.file), .location = p.location };
+        return e;
     }
 
     /// Writes `v`, a result of a form, and a newline, unless it is the
@@ -894,11 +927,12 @@ test "a file that includes itself, or is included by a file it includes, is refu
     var interp: Interpreter = undefined;
     try initOnTree(&interp, &tree, false);
     defer interp.deinit();
-    try expectLineFails(&interp, "(include \"self.scm\")", "bad include: self.scm includes itself, directly or through other files");
-    try expectLineFails(&interp, "(include \"a.scm\")", "bad include: ./a.scm includes itself, directly or through other files");
+    // 含んだファイルの中の誤りは、REPL の行でも、そのファイルの中の位置を前置する。
+    try expectLineFailsInTree(&interp, &tree, "(include \"self.scm\")", "self.scm:1:1", "bad include: self.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "(include \"a.scm\")", "b.scm:1:14", "bad include: ./a.scm includes itself, directly or through other files");
     // ライブラリのファイル自身を含むことも、同じ鎖である。
     try expectLineFails(&interp, "(import (t lib))", "bad include: lib.sld includes itself, directly or through other files");
-    try expectLineFails(&interp, "(import (t via))", "bad include: ../t/via.sld includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "(import (t via))", "t/loop.scm:1:1", "bad include: ../t/via.sld includes itself, directly or through other files");
     // 失敗のあとは、読んでいる最中のファイルが空に戻り、同じ名前をもう一度含める。
     try std.testing.expectEqual(0, interp.ctx.sources.items.len);
     try tree.write("self.scm", "(define fixed 1)");
@@ -927,7 +961,8 @@ test "the same file may be included twice, one after the other, but a chain of f
     defer interp.deinit();
     try expectLinePrints(&interp, "(include \"once.scm\" \"once.scm\") n", "1\n");
     var expected: [128]u8 = undefined;
-    try expectLineFails(&interp, "(include \"c0.scm\")", try std.fmt.bufPrint(&expected, "implementation restriction: files include one another more than {d} deep, at c{d}.scm", .{ max, max }));
+    var where: [32]u8 = undefined;
+    try expectLineFailsInTree(&interp, &tree, "(include \"c0.scm\")", try std.fmt.bufPrint(&where, "c{d}.scm:1:1", .{max - 1}), try std.fmt.bufPrint(&expected, "implementation restriction: files include one another more than {d} deep, at c{d}.scm", .{ max, max }));
     // 1つ短い鎖は読める。
     try tree.write(try std.fmt.bufPrint(&name_buf, "c{d}.scm", .{max - 1}), "(define end 1)");
     try expectLinePrints(&interp, "(include \"c0.scm\") end", "1\n");
@@ -1279,7 +1314,7 @@ test "include-ci refuses a file name and a file as include does, and says its ow
     try expectLineFails(&interp, "(include-ci \"../x.scm\")", "bad include-ci: ../x.scm: the file name goes up out of the directory the files are searched in");
     try expectLineFails(&interp, "(include-ci \"open.scm\")", "cannot include-ci open.scm: unexpected end of input");
     try expectLineFails(&interp, "(include-ci \"hash.scm\")", "cannot include-ci hash.scm: unreadable token");
-    try expectLineFails(&interp, "(include-ci \"self.scm\")", "bad include-ci: self.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "(include-ci \"self.scm\")", "self.scm:1:1", "bad include-ci: self.scm includes itself, directly or through other files");
     // ASCII でない文字の識別子は、畳み込む読み手も畳み込まない読み手も、まだ読めない。
     try expectLineFails(&interp, "(include-ci \"greek.scm\")", "cannot include-ci greek.scm: unreadable token");
     try expectLineFails(&interp, "(include \"greek.scm\")", "cannot include greek.scm: unreadable token");
@@ -1509,6 +1544,59 @@ test "evalPrint stops at the first error and describes it" {
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "1 (foo) 2", &w));
     try std.testing.expectEqualStrings("1\n", w.buffered());
     try std.testing.expectEqualStrings("unbound variable: foo", interp.diagnostic());
+}
+
+test "an error the expander raises in a named file says where, at the innermost form read" {
+    // ストレスモードでは、形式の間の機械のステップごとに GC が走る。表の鍵のペアは、そのたびに
+    // ルートとして残る。
+    for ([_]bool{ false, true }) |stress| try expectPlacesOfErrors(stress);
+}
+
+fn expectPlacesOfErrors(stress: bool) !void {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{ .stress = stress });
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    const cases = [_]struct { line: []const u8, message: []const u8 }{
+        // 誤りのある形式そのものの位置。2つ目の形式は2行目にある。
+        .{ .line = "(define x 1)\n  (if)", .message = "prog.scm:2:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // 外側の形式でなく、内側の形式の位置。
+        .{ .line = "(define (f)\n  (lambda (x x) x))", .message = "prog.scm:2:3: bad lambda: duplicate parameter: x" },
+        // ペアでない形式は位置を持たないので、それを含む形式の位置。
+        .{ .line = "(define y\n   (car if))", .message = "prog.scm:2:4: if is a syntactic keyword and cannot be used as a variable" },
+        // マクロの出力は位置を持たないので、マクロを使った形式の位置。
+        .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(m)", .message = "prog.scm:2:1: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // マクロの引数として渡した形式は、読んだペアのままなので、その位置。
+        .{ .line = "(define-syntax n (syntax-rules () ((_ e) (list e))))\n(n\n (lambda))", .message = "prog.scm:3:2: bad lambda: expected (lambda (name ...) body ...)" },
+        // 本体の先頭の形式(定義と、定義かどうかを決めるマクロの使用)も、内側の形式の位置。
+        .{ .line = "(define (f)\n  (define))", .message = "prog.scm:2:3: bad define: expected (define name expression)" },
+        .{ .line = "(define (f)\n  (define a 1)\n  (define a 2) a)", .message = "prog.scm:3:3: bad define: a is already defined earlier in this body" },
+        .{ .line = "(define (f)\n  (begin\n   (define)) 1)", .message = "prog.scm:3:4: bad define: expected (define name expression)" },
+        .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(define (f)\n  (m))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        .{ .line = "(define-syntax b (syntax-rules () ((_) (begin (if)))))\n(define (f)\n  (b))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+    };
+    for (cases) |c| try expectLineFails(&interp, c.line, c.message);
+}
+
+test "a runtime error, a reader error and a line of the REPL say no place" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // 実行時の誤りは、節点が位置を持たないので、位置を付けない(docs/design/frontend.md)。
+    try expectLineFails(&interp, "(define x 1)\n(car x)", "wrong type of argument to car 1");
+    // ファイルの名前が無い入力(REPL と WASM の行)は、展開時の誤りにも位置を付けない。
+    interp.file_name = null;
+    try expectLineFails(&interp, "\n  (if)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+}
+
+test "an error raised outside the expander says the place of the top-level form" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // ライブラリの宣言の誤りは、展開器の外で送出するので、最上位の形式の位置になる。
+    try expectLineFails(&interp, "1\n (define-library (t a)\n (bogus))", "prog.scm:2:2: bad define-library: bogus is not a library declaration");
 }
 
 test "evalPrint describes a reader error, and a later success clears the message" {
@@ -1898,6 +1986,13 @@ fn expectLineFails(interp: *Interpreter, line: []const u8, message: []const u8) 
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line, &w));
     try std.testing.expectEqualStrings(message, interp.diagnostic());
+}
+
+/// Evaluates `line` on `interp` and expects it to fail with `message`, raised
+/// in the file of `tree` at `where` (`<path>:<line>:<column>`).
+fn expectLineFailsInTree(interp: *Interpreter, tree: *const resolve.Tree, line: []const u8, where: []const u8, message: []const u8) !void {
+    var buf: [512]u8 = undefined;
+    try expectLineFails(interp, line, try std.fmt.bufPrint(&buf, "{s}/{s}: {s}", .{ tree.path, where, message }));
 }
 
 /// Evaluates `line` on `interp` and expects it to write `output`.

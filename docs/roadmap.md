@@ -163,7 +163,8 @@
 - [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [ ] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#!fold-case` と `#!no-fold-case` 指令、文字列の行継続)。`#u8` と16進エスケープは、段階3までに入った([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5a から 5c)
-- [ ] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))。スライス 5d([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md))
+- [x] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))。スライス 5d([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md))。展開時の誤りに、ファイルと行と桁を前置する
+- [ ] 位置情報の残り: ライブラリのファイルと、ライブラリの宣言(`include` など)が読むファイルの位置の記録、コアIRの節点への位置の複写と、実行時の誤りへの位置の表示([design/frontend.md](design/frontend.md) の「現状(スライス 5d)」)。スライス未割り当て
 - [ ] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)
 - [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
