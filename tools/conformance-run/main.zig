@@ -1,7 +1,7 @@
 //! Runs the vendored R7RS conformance suite and reports what passed, section by section.
 //!
 //! `zig build test-conformance` で走らせる。tests/vendor/r7rs-tests.scm を読み、SHA-256 を
-//! 下の定数と照らしてから、run.zig で節ごとに実行する。節ごとの数と、落ちたもの・走らせ
+//! run.zig の定数と照らしてから、run.zig で節ごとに実行する。節ごとの数と、落ちたもの・走らせ
 //! なかったものの一覧を標準出力に出す。設計は docs/plans/0020-conformance-harness-early.md
 //! の「実行器の設計」にある。
 //!
@@ -15,13 +15,8 @@
 const std = @import("std");
 const run = @import("run.zig");
 
-const suite_path = "tests/vendor/r7rs-tests.scm";
+const suite_path = run.suite_path;
 const required_dir = "tests/r7rs-required";
-
-/// The SHA-256 of the vendored suite, the one the runner trusts.
-/// 値の正はここである(tests/vendor/README.md の「ハッシュ」)。取り込んだファイルを
-/// 更新するときは、README の取得の記録と同じコミットで変える。
-const suite_sha256 = "004d215a38f990bbf2bfaa8b4a395aa59ef98d155096f8e31cc361b7812f7d6a";
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
@@ -47,9 +42,9 @@ pub fn main(init: std.process.Init) !void {
         try err.flush();
         std.process.exit(1);
     };
-    const digest = hexDigest(text);
-    if (!isVendored(&digest)) {
-        try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ suite_path, &digest, suite_sha256 });
+    const digest = run.hexDigest(text);
+    if (!run.isVendored(&digest)) {
+        try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ suite_path, &digest, run.suite_sha256 });
         try err.flush();
         std.process.exit(1);
     }
@@ -67,17 +62,6 @@ pub fn main(init: std.process.Init) !void {
 /// The first argument after the program name, which this program does not take, or null.
 fn unexpectedArgument(argv: []const [:0]const u8) ?[]const u8 {
     return if (argv.len > 1) argv[1] else null;
-}
-
-/// Whether `digest` is the digest of the vendored suite.
-fn isVendored(digest: []const u8) bool {
-    return std.mem.eql(u8, digest, suite_sha256);
-}
-
-fn hexDigest(text: []const u8) [64]u8 {
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(text, &hash, .{});
-    return std.fmt.bytesToHex(hash, .lower);
 }
 
 /// Every identifier `tests/r7rs-required/*.txt` lists.
@@ -152,13 +136,6 @@ test "any argument is refused, and none is accepted" {
     try std.testing.expectEqualStrings("--filter", unexpectedArgument(&.{ "conformance-run", "--filter" }).?);
 }
 
-test "only the vendored digest is accepted" {
-    try std.testing.expect(isVendored(suite_sha256));
-    const other = hexDigest("(test 1 1)");
-    try std.testing.expect(!isVendored(&other));
-    try std.testing.expect(!isVendored(suite_sha256[0..63]));
-}
-
 test "the required lists are read one identifier a line, without comments or blank lines" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -167,9 +144,4 @@ test "the required lists are read one identifier a line, without comments or bla
     try std.testing.expectEqual(@as(usize, 2), ids.items.len);
     try std.testing.expectEqualStrings("car", ids.items[0]);
     try std.testing.expectEqualStrings("call/cc", ids.items[1]);
-}
-
-test "the digest is the lowercase hex of SHA-256" {
-    const d = hexDigest("abc");
-    try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &d);
 }

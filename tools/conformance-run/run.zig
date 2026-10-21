@@ -25,6 +25,27 @@ const std = @import("std");
 const sucheme = @import("sucheme");
 const split = @import("split.zig");
 
+/// Where the vendored suite is, from the repository root.
+pub const suite_path = "tests/vendor/r7rs-tests.scm";
+
+/// The SHA-256 of the vendored suite, the one the runner trusts.
+/// 値の正はここである(tests/vendor/README.md の「ハッシュ」)。実行器(main.zig)と準拠マトリクスの
+/// 生成器(tools/coverage-report)の両方が、これと照らしてからスイートを走らせる。取り込んだ
+/// ファイルを更新するときは、README の取得の記録と同じコミットで変える。
+pub const suite_sha256 = "004d215a38f990bbf2bfaa8b4a395aa59ef98d155096f8e31cc361b7812f7d6a";
+
+/// Whether `digest` is the digest of the vendored suite.
+pub fn isVendored(digest: []const u8) bool {
+    return std.mem.eql(u8, digest, suite_sha256);
+}
+
+/// The lowercase hex of the SHA-256 of `text`.
+pub fn hexDigest(text: []const u8) [64]u8 {
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(text, &hash, .{});
+    return std.fmt.bytesToHex(hash, .lower);
+}
+
 /// What happened in one section.
 pub const Counts = struct {
     passed: u32 = 0,
@@ -500,6 +521,18 @@ fn contains(haystack: []const []const u8, needle: []const u8) bool {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "only the vendored digest is accepted" {
+    try std.testing.expect(isVendored(suite_sha256));
+    const other = hexDigest("(test 1 1)");
+    try std.testing.expect(!isVendored(&other));
+    try std.testing.expect(!isVendored(suite_sha256[0..63]));
+}
+
+test "the digest is the lowercase hex of SHA-256" {
+    const d = hexDigest("abc");
+    try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &d);
 }
 
 const fake_required = [_][]const u8{ "car", "exact-integer-sqrt", "string-upcase", "+", "define" };
