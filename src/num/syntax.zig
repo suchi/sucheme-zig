@@ -383,6 +383,19 @@ test "complex numbers in rectangular form" {
     try expectScan("-2i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = int(.negative, "2") } } });
     try expectScan("+i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = one } } });
     try expectScan("-i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = int(.negative, "1") } } });
+    // 実部の無い虚数単位は大文字でも読める。小数と有理数の虚部も、実部が無ければ読める。
+    try expectScan("+I", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = one } } });
+    try expectScan("-I", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = int(.negative, "1") } } });
+    try expectScan("+1.5i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = dec(.positive, "1", "5", "") } } });
+    try expectScan("-.5e2i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = null, .imag = dec(.negative, "", "5", "2") } } });
+    try expectScan("+1/2i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{
+        .real = null,
+        .imag = .{ .ratio = .{ .sign = .positive, .numerator = "1", .denominator = "2" } },
+    } } });
+    try expectScan("-3/4i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{
+        .real = null,
+        .imag = .{ .ratio = .{ .sign = .negative, .numerator = "3", .denominator = "4" } },
+    } } });
     try expectScan("1+i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = int(.positive, "1"), .imag = one } } });
     try expectScan("1-i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = int(.positive, "1"), .imag = int(.negative, "1") } } });
     try expectScan("+1+2I", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = int(.positive, "1"), .imag = int(.positive, "2") } } });
@@ -404,6 +417,7 @@ test "complex numbers with infnan parts" {
     try expectScan("1+inf.0i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = int(.positive, "1"), .imag = .{ .infnan = .positive_infinity } } } });
     try expectScan("1-nan.0i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = int(.positive, "1"), .imag = .{ .infnan = .negative_nan } } } });
     try expectScan("-inf.0+inf.0i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = .{ .infnan = .negative_infinity }, .imag = .{ .infnan = .positive_infinity } } } });
+    try expectScan("1-inf.0i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{ .real = int(.positive, "1"), .imag = .{ .infnan = .negative_infinity } } } });
     try expectNot("inf.0i", 10);
     try expectNot("1+inf.0", 10);
     try expectNot("1+inf.0ii", 10);
