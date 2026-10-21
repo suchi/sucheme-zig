@@ -19,8 +19,9 @@
 //! - それ以外は、形式の中で `(chibi test)` が記録したテストを、通った・落ちたに数える。
 //!   落ちたは、値の不一致(fail)と、テストの中で上がった誤り(error)の両方である。
 //!
-//! 通った・落ちたの単位はテストで、ほかは最上位の形式である。ただし連鎖は、同じ節に実行不能の
-//! 形式があるときにテストの中で上がった未束縛の誤りを、テストの単位で含む。単位が違うので足さない。
+//! 通った・落ちたの単位はテストで、ほかは最上位の形式である。ただし連鎖は、同じ外側の節(入れ子の
+//! 節を含む)に評価しなかったか誤りで終わった形式があるときにテストの中で上がった未束縛の誤りを、
+//! テストの単位で含む。単位が違うので足さない。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -731,6 +732,31 @@ test "a definition inside a top-level begin, or made by a macro, cascades" {
     try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 2 }, try findSection(r, "a"));
     // `y` は静的には取り出せないので、テストの中の未束縛の誤りとして、連鎖に数える。未束縛でない誤りは落ちた。
     try std.testing.expectEqual(Counts{ .failed = 1, .unimplemented = 1, .cascaded = 1 }, try findSection(r, "b"));
+}
+
+test "an unbound error in a test cascades after an errored form, and across nested sections" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(car 5)
+        \\(test 1 nowhere-defined)
+        \\(test-end)
+        \\(test-begin "p")
+        \\(define q (exact-integer-sqrt 4))
+        \\(test-begin "n")
+        \\(test 1 nowhere-else)
+        \\(test-end)
+        \\(test-end)
+        \\(test-end)
+    );
+    // 誤りで終わった形式も、テストの中の未束縛の誤りを連鎖にする。
+    try std.testing.expectEqual(Counts{ .errored = 1, .cascaded = 1 }, try findSection(r, "a"));
+    // 判定は外側の節ごとなので、親の節の未実装が、入れ子の節の行の連鎖になる。
+    try std.testing.expectEqual(Counts{ .unimplemented = 1 }, try findSection(r, "p"));
+    try std.testing.expectEqual(Counts{ .cascaded = 1 }, try findSection(r, "n"));
 }
 
 test "a name with > or bars defined in an earlier section is caught when a later one uses it" {

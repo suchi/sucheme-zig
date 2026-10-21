@@ -392,11 +392,11 @@ flowchart LR
 | 6c | 完了(suchi/sucheme-zig#145) |
 | 6d | 完了(suchi/sucheme-zig#143) |
 | 6e | 完了(suchi/sucheme-zig#149) |
-| 6f | PR を作る(このブランチ) |
-| 6g | 未着手。作る issue の一覧を親のセッションに示し、ユーザーの承認を得てから作る |
+| 6f | suchi/sucheme-zig#151 |
+| 6g | 完了。ユーザーの承認を得て、main の e0ce204 の結果から5件を作った: L2 は suchi/sucheme-zig#152、L0 は suchi/sucheme-zig#153(誤りの1件、bug)、L4 は suchi/sucheme-zig#154、L1 は suchi/sucheme-zig#155、L3 は suchi/sucheme-zig#156 |
 
 ## 次にやること
 
 - 6f をマージする。
-- 6g(失敗の一覧の issue 化)の一覧を作って示す。
+- 各レーンの PR がマージされたら、「失敗の一覧を、各レーンの作業項目に流す手順」の5のとおり、issue のチェックを更新する。
 - 無限に回るテストへの備えを、段階6の完了の前に決める(「節と、インタプリタの単位」の開いた問い)。
