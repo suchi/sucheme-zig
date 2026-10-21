@@ -1521,6 +1521,12 @@ fn expectPlacesOfErrors(stress: bool) !void {
         .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(m)", .message = "prog.scm:2:1: bad if: expected (if test consequent) or (if test consequent alternative)" },
         // マクロの引数として渡した形式は、読んだペアのままなので、その位置。
         .{ .line = "(define-syntax n (syntax-rules () ((_ e) (list e))))\n(n\n (lambda))", .message = "prog.scm:3:2: bad lambda: expected (lambda (name ...) body ...)" },
+        // 本体の先頭の形式(定義と、定義かどうかを決めるマクロの使用)も、内側の形式の位置。
+        .{ .line = "(define (f)\n  (define))", .message = "prog.scm:2:3: bad define: expected (define name expression)" },
+        .{ .line = "(define (f)\n  (define a 1)\n  (define a 2) a)", .message = "prog.scm:3:3: bad define: a is already defined earlier in this body" },
+        .{ .line = "(define (f)\n  (begin\n   (define)) 1)", .message = "prog.scm:3:4: bad define: expected (define name expression)" },
+        .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(define (f)\n  (m))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        .{ .line = "(define-syntax b (syntax-rules () ((_) (begin (if)))))\n(define (f)\n  (b))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
     };
     for (cases) |c| try expectLineFails(&interp, c.line, c.message);
 }

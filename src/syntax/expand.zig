@@ -197,6 +197,25 @@ const Expander = struct {
         owner.* = .{ .call = .{ .operator = owner, .operands = list } };
     }
 
+    /// Where `form` was read, or null when it was not read from a file, or no
+    /// positions are kept.
+    fn siteOf(self: *const Expander, form: Value) ?positions.Position {
+        const table = self.ctx.positions orelse return null;
+        return table.of(form);
+    }
+
+    /// Keeps that `output`, the output of a macro, stands at `site`, when it is a
+    /// pair without a place of its own.
+    /// Why: 本体の先頭のマクロの出力は、仕事を通らずに本体の形式の並びに入るので、仕事の
+    /// 位置の引き継ぎ(`run`)が届かない。表に置けば、仕事になったときに `run` が引く。
+    fn inheritSite(self: *Expander, output: Value, site: ?positions.Position) Error!void {
+        const table = self.ctx.positions orelse return;
+        const at = site orelse return;
+        const pair = output.asPair() orelse return;
+        if (table.by_pair.contains(pair)) return;
+        try table.record(pair, at);
+    }
+
     /// Expands `form`, which is at the top level, and returns its node.
     fn run(self: *Expander, form: Value) Error!*const Node {
         const root = try self.newNode();
@@ -805,6 +824,11 @@ const Expander = struct {
         // まだ見ていない形式の並びの積み。`begin` を展開すると、その中の形式を、残りの前に積む。
         var pending: std.ArrayList([]const Value) = .empty;
         try pending.append(self.scratch, body);
+        // 本体の先頭の形式は、仕事を積まずにここで調べるので、送出したら、調べていた形式の位置を
+        // 記録する(`run` は、本体を持つ形式の位置しか知らない)。
+        var site: ?positions.Position = null;
+        // 送出でない失敗(確保の失敗)では、位置は読まれない(`Interpreter.located`)。
+        errdefer self.ctx.noteRaisedAt(site);
         while (pending.items.len > 0) {
             const next = &pending.items[pending.items.len - 1];
             if (next.len == 0) {
@@ -813,6 +837,7 @@ const Expander = struct {
             }
             var form = next.*[0];
             next.* = next.*[1..];
+            site = self.siteOf(form);
             const definition = while (true) {
                 const pair = form.asPair() orelse break false;
                 const head = try self.headOf(rib, pair.car) orelse break false;
@@ -825,7 +850,11 @@ const Expander = struct {
                             try self.checkDepended(rib, depended.items, target, "define");
                             try forms.append(self.scratch, form);
                         },
-                        .begin => try pending.append(self.scratch, (try self.itemsOf(form))[1..]),
+                        .begin => {
+                            const items = (try self.itemsOf(form))[1..];
+                            for (items) |item| try self.inheritSite(item, site);
+                            try pending.append(self.scratch, items);
+                        },
                         .@"define-syntax" => {
                             consulted.clearRetainingCapacity();
                             const syntax = try self.syntaxDefinition(rib, try self.itemsOf(form), &consulted);
@@ -842,6 +871,9 @@ const Expander = struct {
                     .macro => |m| {
                         try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
                         form = try rules.transform(self.ctx, &self.work, m, form, rib);
+                        // 出力は、本体の形式として、本体を持つ形式の位置でなく、マクロを使った
+                        // 形式の位置を引き継ぐ。
+                        try self.inheritSite(form, site);
                         continue;
                     },
                     .local, .global, .auxiliary => break false,

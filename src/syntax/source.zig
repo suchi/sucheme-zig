@@ -103,8 +103,10 @@ pub fn readDataFrom(ctx: *Context, scratch: std.mem.Allocator, files: ?resolve.F
 /// 埋め込みのファイルの根は `<embedded>` である。
 fn displayName(scratch: std.mem.Allocator, origin: resolve.Origin) error{OutOfMemory}![]const u8 {
     var name: std.ArrayList(u8) = .empty;
-    if (!std.mem.eql(u8, origin.root, ".")) {
-        try name.appendSlice(scratch, origin.root);
+    // ルートの末尾の `/`(`-I lib/`)は落とし、区切りを1つにする。
+    const root = std.mem.trimEnd(u8, origin.root, "/");
+    if (!std.mem.eql(u8, root, ".")) {
+        try name.appendSlice(scratch, root);
         try name.append(scratch, '/');
     }
     for (origin.path, 0..) |component, i| {
@@ -165,4 +167,18 @@ pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8,
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "the name of a file for a message is its root and its path, without the working directory" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { root: []const u8, name: []const u8 }{
+        .{ .root = ".", .name = "sub/x.scm" },
+        .{ .root = "lib", .name = "lib/sub/x.scm" },
+        .{ .root = "lib/", .name = "lib/sub/x.scm" },
+        .{ .root = "/abs//", .name = "/abs/sub/x.scm" },
+        .{ .root = resolve.embedded_root, .name = "<embedded>/sub/x.scm" },
+    };
+    for (cases) |c| try std.testing.expectEqualStrings(c.name, try displayName(a, .{ .root = c.root, .path = &.{ "sub", "x.scm" } }));
 }
