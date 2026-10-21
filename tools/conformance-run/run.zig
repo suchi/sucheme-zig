@@ -19,11 +19,34 @@
 //! - それ以外は、形式の中で `(chibi test)` が記録したテストを、通った・落ちたに数える。
 //!   落ちたは、値の不一致(fail)と、テストの中で上がった誤り(error)の両方である。
 //!
-//! 通った・落ちたの単位はテストで、ほかは最上位の形式である。単位が違うので足さない。
+//! 通った・落ちたの単位はテストで、ほかは最上位の形式である。ただし連鎖は、同じ外側の節(入れ子の
+//! 節を含む)に評価しなかったか誤りで終わった形式があるときにテストの中で上がった未束縛の誤りを、
+//! テストの単位で含む。単位が違うので足さない。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
 const split = @import("split.zig");
+
+/// Where the vendored suite is, from the repository root.
+pub const suite_path = "tests/vendor/r7rs-tests.scm";
+
+/// The SHA-256 of the vendored suite, the one the runner trusts.
+/// 値の正はここである(tests/vendor/README.md の「ハッシュ」)。実行器(main.zig)と準拠マトリクスの
+/// 生成器(tools/coverage-report)の両方が、これと照らしてからスイートを走らせる。取り込んだ
+/// ファイルを更新するときは、README の取得の記録と同じコミットで変える。
+pub const suite_sha256 = "004d215a38f990bbf2bfaa8b4a395aa59ef98d155096f8e31cc361b7812f7d6a";
+
+/// Whether `digest` is the digest of the vendored suite.
+fn isVendored(digest: []const u8) bool {
+    return std.mem.eql(u8, digest, suite_sha256);
+}
+
+/// The lowercase hex of the SHA-256 of `text`.
+pub fn hexDigest(text: []const u8) [64]u8 {
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(text, &hash, .{});
+    return std.fmt.bytesToHex(hash, .lower);
+}
 
 /// What happened in one section.
 pub const Counts = struct {
@@ -80,6 +103,15 @@ const results_library = "(sucheme test-results)";
 
 /// The prefix of the bindings the runner imports for itself, which the suite does not redefine.
 const runner_prefix = "%conformance-run:";
+
+/// Runs `text` with `runSuite` if it is the vendored suite, or returns `error.NotVendored`.
+/// 実行器と準拠マトリクスの生成器は、どちらもこの関数を通してスイートを走らせる。照合を
+/// 呼び出し元ごとに書くと、片方で照合が外れても、テストが見つけないためである。
+pub fn runVendored(gpa: std.mem.Allocator, text: []const u8, required: []const []const u8) (RunError || error{NotVendored})!SuiteResult {
+    const digest = hexDigest(text);
+    if (!isVendored(&digest)) return error.NotVendored;
+    return runSuite(gpa, text, required);
+}
 
 /// Runs `text`, the whole suite. `required` is every identifier R7RS requires of a
 /// standard library. Everything returned is in `gpa`.
@@ -502,10 +534,38 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+test "only the vendored digest is accepted" {
+    try std.testing.expect(isVendored(suite_sha256));
+    const other = hexDigest("(test 1 1)");
+    try std.testing.expect(!isVendored(&other));
+    try std.testing.expect(!isVendored(suite_sha256[0..63]));
+}
+
+test "the digest is the lowercase hex of SHA-256" {
+    const d = hexDigest("abc");
+    try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &d);
+}
+
 const fake_required = [_][]const u8{ "car", "exact-integer-sqrt", "string-upcase", "+", "define" };
 
 fn runFake(arena: std.mem.Allocator, text: []const u8) !SuiteResult {
     return runSuite(arena, text, &fake_required);
+}
+
+test "a suite that is not the vendored one is not run" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // runSuite なら走るスイートでも、ハッシュが違えば走らせない。
+    const text =
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test 1 1)
+        \\(test-end)
+        \\(test-end)
+    ;
+    _ = try runFake(arena.allocator(), text);
+    try std.testing.expectError(error.NotVendored, runVendored(arena.allocator(), text, &fake_required));
 }
 
 fn findSection(r: SuiteResult, name: []const u8) !Counts {
@@ -672,6 +732,31 @@ test "a definition inside a top-level begin, or made by a macro, cascades" {
     try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 2 }, try findSection(r, "a"));
     // `y` は静的には取り出せないので、テストの中の未束縛の誤りとして、連鎖に数える。未束縛でない誤りは落ちた。
     try std.testing.expectEqual(Counts{ .failed = 1, .unimplemented = 1, .cascaded = 1 }, try findSection(r, "b"));
+}
+
+test "an unbound error in a test cascades after an errored form, and across nested sections" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(car 5)
+        \\(test 1 nowhere-defined)
+        \\(test-end)
+        \\(test-begin "p")
+        \\(define q (exact-integer-sqrt 4))
+        \\(test-begin "n")
+        \\(test 1 nowhere-else)
+        \\(test-end)
+        \\(test-end)
+        \\(test-end)
+    );
+    // 誤りで終わった形式も、テストの中の未束縛の誤りを連鎖にする。
+    try std.testing.expectEqual(Counts{ .errored = 1, .cascaded = 1 }, try findSection(r, "a"));
+    // 判定は外側の節ごとなので、親の節の未実装が、入れ子の節の行の連鎖になる。
+    try std.testing.expectEqual(Counts{ .unimplemented = 1 }, try findSection(r, "p"));
+    try std.testing.expectEqual(Counts{ .cascaded = 1 }, try findSection(r, "n"));
 }
 
 test "a name with > or bars defined in an earlier section is caught when a later one uses it" {

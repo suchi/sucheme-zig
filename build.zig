@@ -322,6 +322,15 @@ pub fn build(b: *std.Build) void {
     // ReleaseSafe にし、実行ファイルと同じソースに対してホスト向けに作る。
     const conformance = tool(b, "conformance-run", .ReleaseSafe);
     conformance.root_module.addImport("sucheme", sucheme_host);
+    // 準拠マトリクスの生成器は、実行器と同じ runSuite で節ごとの数を出す(スライス 6f)。
+    // run.zig のテストは、実行器の main.zig から届くので、このモジュールはテストの対象にしない。
+    const conformance_run = b.createModule(.{
+        .root_source_file = b.path("tools/conformance-run/run.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    conformance_run.addImport("sucheme", sucheme_host);
+    coverage.root_module.addImport("conformance", conformance_run);
     const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage, conformance };
 
     const run_check_docs = b.addRunArtifact(check_docs);

@@ -32,7 +32,7 @@
 
 取り込んだファイルの SHA-256 である。同じ値を2か所に置かないため、それぞれ1か所だけに書く。
 
-- `r7rs-tests.scm`: 値の正は、準拠スイートの実行器の定数 `suite_sha256`([tools/conformance-run/main.zig](../../tools/conformance-run/main.zig))である。`zig build test-conformance` は、読み込んだファイルのハッシュがこの定数と違えば、何も実行せずに失敗する。
+- `r7rs-tests.scm`: 値の正は、準拠スイートの実行器の定数 `suite_sha256`([tools/conformance-run/run.zig](../../tools/conformance-run/run.zig))である。`zig build test-conformance` と `zig build check-report` は、読み込んだファイルのハッシュがこの定数と違えば、何も実行せずに失敗する。
 - `COPYING`: 実行器は読まないので、ここに書く。`86805fe7af1bd20d5f5050d86c61d6fe038452cb08c6106a08761e010d37da43`
 
 確かめ方: `sha256sum tests/vendor/r7rs-tests.scm tests/vendor/COPYING`。

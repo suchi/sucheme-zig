@@ -92,7 +92,9 @@ flowchart LR
     report --> summary["CI のジョブ要約"]
 ```
 
-上の図は完成形である。現状は、意味論テストと準拠スイートの結果の入力はまだ無く、`tests/r7rs-required/*.txt` と、そのライブラリを `import` した空の最上位でその識別子が束縛されるか(`Interpreter.initBare` と `Interpreter.isBound`)だけから作る。`lib/` の `.sld` は、`import` を通して読まれる(スライス 3l)。表は、ライブラリごとの「束縛済み」と「全体」、および一意の識別子の合計である。`(scheme r5rs)` が他のライブラリの識別子を再エクスポートするので、ライブラリごとの数の和は一意の合計と一致しない。「束縛済み」は準拠を意味しない。段階6で準拠スイートの結果の列を足す。計画は [../plans/0011-slice-1m-conformance-report-early.md](../plans/0011-slice-1m-conformance-report-early.md) にある。
+上の図は完成形である。現状は、意味論テストの結果の入力はまだ無い。1つ目の表は、`tests/r7rs-required/*.txt` と、そのライブラリを `import` した空の最上位でその識別子が束縛されるか(`Interpreter.initBare` と `Interpreter.isBound`)から作る。`lib/` の `.sld` は、`import` を通して読まれる(スライス 3l)。表は、ライブラリごとの「束縛済み」と「全体」、および一意の識別子の合計である。`(scheme r5rs)` が他のライブラリの識別子を再エクスポートするので、ライブラリごとの数の和は一意の合計と一致しない。この重複は、表を分けずに注記で示す(スライス 6f で、表の構成として決めた)。「束縛済み」は準拠を意味しない。計画は [../plans/0011-slice-1m-conformance-report-early.md](../plans/0011-slice-1m-conformance-report-early.md) にある。
+
+2つ目の表は、`r7rs-tests.scm` を、準拠スイートの実行器(`tools/conformance-run`)と同じ `runSuite` で節ごとに走らせた結果である(スライス 6f)。スイートの結果はライブラリごとでなく節ごとに出るので、1つ目の表の列にはせず、別の表にした。列は、通った・落ちた(テストの数)と、誤り・読めない・未実装・連鎖(最上位の形式の数。連鎖は、同じ外側の節に評価しなかったか誤りで終わった形式があるとき、テストの中で上がった未束縛の誤りをテストの数で含む)である。分類は [../plans/0020-conformance-harness-early.md](../plans/0020-conformance-harness-early.md) の「分類」が正である。
 
 `docs/status/conformance.md` は生成物である。CI は生成し直した結果が現在のファイルと一致するかを検査し、一致しない場合は失敗させる。これにより、進捗ドキュメントがコードから乖離しない。CI からの自動コミットは行わない(ブランチ保護と衝突し、レビューを経ない変更が入るため)。
 
@@ -100,7 +102,7 @@ flowchart LR
 
 - ライブラリごとの「要求された識別子のうちエクスポート済みの数」と「全体数」
 - 意味論テストの合格数と全体数
-- `r7rs-tests.scm` の合格数と全体数
+- `r7rs-tests.scm` の節ごとの、通った・落ちたテストの数と、走らせなかったか誤りを上げた最上位の形式の数(全体数は、走らせなかった形式が0になるまで定まらない)
 - `cond-expand` のフィーチャのうち、現時点で真にできるもの
 
 README には数値を転記しない。生成物は `docs/status/conformance.md` だけとし、README と [../roadmap.md](../roadmap.md) はそこへのリンクを持つ。
