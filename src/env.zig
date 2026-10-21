@@ -120,7 +120,8 @@ pub const Global = struct {
     /// The cells of the top level's own variables that a `define-syntax` or an
     /// `import` has replaced.
     /// 前に展開したコードが、まだセルを指しうる(R7RS 5.4: 既存の参照は変わらない)。
-    /// GC はコードをたどらないので、ここが持ち続ける。
+    /// スライス 3o-3 から、コードは GC ヒープにあり、指すコードが生きていればセルも辿られる
+    /// ので、この保持は要らない。外すのはスライス 3o-4 である(計画書 0023)。
     displaced_cells: std.ArrayList(*Cell) = .empty,
     /// The syntactic bindings that the expansion in progress has replaced, with
     /// what each name was bound to before, in order.

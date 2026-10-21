@@ -817,9 +817,10 @@ pub const Address = struct {
 
 /// A node of the core IR: what the expander produces and the machine runs
 /// (docs/design/runtime.md).
-/// ノードは不変で、ノードは配下のノードをポインタで参照する。ノードは展開器が確保
-/// した場所にあり、後のスライスがコードを GC ヒープに置くまでは、そこはインタプリタの
-/// アリーナである。
+/// ノードは不変で、ノードは配下のノードをポインタで参照する。ノードは GC ヒープの
+/// オブジェクトで(ADR-0040)、列(`sequence` と `Call.operands`)は持ち主のノードの
+/// ペイロードとして数え、持ち主と一緒に返す(`Heap.allocAttached`)。列を2つのノードで
+/// 共有しない。
 pub const Node = union(enum) {
     /// A literal, or the datum of a `quote`.
     constant: Value,
@@ -1343,13 +1344,14 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum };
+/// コアIRの節点(`Node`、`Lambda`、`Parameterize`)もここにある(ADR-0040)。節点は展開器が
+/// 作り、コードを指すもの(機械の制御のレジスタ、クロージャ、継続のフレーム)から辿られる。
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize };
 
-/// The types that are not in the GC heap but are pointed to from it: the core
-/// IR, which until a later slice stays where the expander allocated it, and the
+/// The types that are not in the GC heap but are pointed to from it: the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, Primitive, Parameterize, ParameterBinding };
+pub const code_types = [_]type{Primitive};
 
 /// What a value is, without how it is stored.
 pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum };
@@ -1482,10 +1484,10 @@ pub const LocalBinding = struct {
 
 /// The location of a global variable (docs/design/runtime.md, the cells of the
 /// global bindings).
-/// GC ヒープにある。コア IR の節点(アリーナにある)はセルを指すが、GC は節点を
-/// たどらない。それでも回収されないのは、作られたセルがすべて、REPL の束縛の表か、
-/// 遮蔽されたインポートの束縛を持ち続ける表か、`define-syntax` が表から外したセルを
-/// 持ち続ける表から到達できるからである(src/env.zig)。
+/// GC ヒープにある。セルに届くのは、最上位の束縛の表と、セルを指すコアIRの節点
+/// (GC ヒープにある。ADR-0040)である。表から外れたセルを持ち続ける表(`define-syntax`
+/// が外したセルの `displaced_cells`、定義に失敗したライブラリの表)は、節点が辿られる
+/// 前の保持で、スライス 3o-4 で外す(src/env.zig)。
 pub const Cell = struct {
     /// The name, for the message of an error.
     name: SymbolId,

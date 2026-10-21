@@ -30,6 +30,10 @@ const Bignum = value_mod.Bignum;
 const Ratnum = value_mod.Ratnum;
 const Compnum = value_mod.Compnum;
 const Limb = value_mod.Limb;
+const Node = value_mod.Node;
+const Lambda = value_mod.Lambda;
+const Parameterize = value_mod.Parameterize;
+const ParameterBinding = value_mod.ParameterBinding;
 const symbol = @import("symbol.zig");
 const SymbolId = symbol.SymbolId;
 const trace = @import("trace.zig");
@@ -53,9 +57,10 @@ pub const Options = struct {
     /// The account at which the first collection is asked for, and the least
     /// that any later one is asked for at.
     min_threshold: usize = 1024 * 1024,
-    /// How many objects the marking keeps to scan.
-    /// これを超えて待つオブジェクトがあっても、マークは止まらず、ヒープを走査し直して
-    /// 拾う(`Marker` を参照)。テストは 0 にして、再走査の経路を走らせる。
+    /// How many objects the marking's list holds at first, and between collections.
+    /// マークの途中で満杯になればリストを伸ばし、伸ばせなければヒープを走査し直して
+    /// 拾う(`Marker` を参照)。0 はリストを使わない設定で、伸ばさない。テストは 0 に
+    /// して、再走査の経路を走らせる。
     work_capacity: usize = 4096,
     /// Ask for a collection at every safe point of the start of a run, and less
     /// and less often as it goes on (see `stress_ramp`).
@@ -468,12 +473,20 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Record => object.fields.len * @sizeOf(Value),
         MultipleValues => object.items.len * @sizeOf(Value),
         Bignum => object.limbs.len * @sizeOf(Limb),
+        Node => switch (object.*) {
+            .sequence => |nodes| nodes.len * @sizeOf(*const Node),
+            .call => |c| c.operands.len * @sizeOf(*const Node),
+            else => 0,
+        },
+        Parameterize => object.bindings.len * @sizeOf(ParameterBinding),
         else => 0,
     };
 }
 
 /// Whether objects of type `T` own a payload beyond their cell, so that only
 /// their own `create` function may make them.
+/// 節点(`Node` と `Parameterize`)は、ここに入らない。節点は `create` で作り、列を持つ節点は、
+/// 作った後に `allocAttached` の列を持たせる(展開器が、子を決める前に節点を作るため)。
 fn ownsPayload(comptime T: type) bool {
     return switch (T) {
         Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum => true,
@@ -520,6 +533,8 @@ pub const Heap = struct {
     exhausted: bool = false,
     /// How many collections have run.
     collections: usize = 0,
+    /// How many times the markings have rescanned the heap, over all collections.
+    rescans: usize = 0,
     /// How many times `shouldCollect` was asked since the last collection, and
     /// in all.
     /// ストレスモードだけが数える。
@@ -820,6 +835,33 @@ pub const Heap = struct {
         return &cell.value;
     }
 
+    /// A list of `len` elements for a node to hold: the nodes of a sequence or the
+    /// operands of a call (`*const Node`), or the bindings of a `parameterize`
+    /// (`ParameterBinding`), with every element unset.
+    /// Why: 展開器は、子を決める前に節点を作り、列もその時点で作る。列は持ち主の節点の
+    /// ペイロードとして数え、持ち主と一緒に返す(`free`)。呼び出し側は、列を受け取ったら、
+    /// ほかの確保をする前に、ちょうど1つの節点に持たせる。持たせる前に展開が失敗すると、
+    /// 列が返らずに残る。持たせた後に失敗すると、節点ごとごみになり、次の GC が返す。
+    /// 要素は未設定のままで、ごみになった節点の要素は読まれない(`free` が読むのは長さだけ
+    /// である)。展開の途中で GC は走らないので(ADR-0031)、生きている節点が未設定の要素を
+    /// 持つことは無い。
+    pub fn allocAttached(self: *Heap, comptime E: type, len: usize) Error![]E {
+        comptime std.debug.assert(E == *const Node or E == ParameterBinding);
+        const bytes = std.math.mul(usize, len, @sizeOf(E)) catch return error.HeapLimit;
+        try self.reserve(.limit, bytes);
+        const list = try self.backing.alloc(E, len);
+        self.accounted += bytes;
+        if (self.accounted > self.peak) self.peak = self.accounted;
+        return list;
+    }
+
+    /// Gives back a list `allocAttached` returned that no node came to hold.
+    /// 持ち主の節点を作れなかったときだけ使う。
+    pub fn freeDetached(self: *Heap, comptime E: type, list: []E) void {
+        self.accounted -= list.len * @sizeOf(E);
+        self.backing.free(list);
+    }
+
     /// Checks that a cell of `T` and `count` payload elements of `size` bytes
     /// fit under the limit, and returns the bytes they account for.
     /// 桁あふれする大きさは、回り込ませず、上限超過として扱う。
@@ -928,6 +970,9 @@ pub const Heap = struct {
         var marker: Marker = .{ .heap = self, .work = self.work };
         roots.mark(&marker);
         marker.finish();
+        // マークの途中でリストを伸ばしていたら、オプションの大きさに戻す。伸ばした分は
+        // 上限の外のメモリなので、次の GC まで持ち越さない。
+        self.ensureWork();
         self.sweep();
         self.symbols.sweep(self.backing);
         self.collections += 1;
@@ -1052,6 +1097,12 @@ pub const Heap = struct {
                     Record => self.backing.free(cell.value.fields),
                     MultipleValues => self.backing.free(cell.value.items),
                     Bignum => self.backing.free(cell.value.limbs),
+                    Node => switch (cell.value) {
+                        .sequence => |nodes| self.backing.free(nodes),
+                        .call => |c| self.backing.free(c.operands),
+                        else => {},
+                    },
+                    Parameterize => self.backing.free(cell.value.bindings),
                     else => {},
                 }
                 self.backing.destroy(cell);
@@ -1067,12 +1118,20 @@ pub const Heap = struct {
 /// 到達する。
 ///
 /// オブジェクトに到達するとマークを付け、余地があれば、後で走査するためのリストに
-/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの容量は、
-/// オプションで決まる。到達したときリストが満杯なら、マークだけ付けて、取りこぼした
+/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの初めの容量は、
+/// オプションで決まる。到達したときリストが満杯なら、ヒープの外で倍の大きさに
+/// 確保し直す。確保できないとき(容量0の設定を含む)は、マークだけ付けて、取りこぼした
 /// ことを記録する。`finish` は、取りこぼしがなくなるまで、ヒープ内のマーク済みの
 /// 全オブジェクトを走査し直す。マーク済みのオブジェクトは、リストに載れば順に、
 /// 載らなければ再走査で走査されるので、漏れるものはない。リストの大きさが変えるのは、
 /// マークにかかる時間であって、マークする対象ではない。
+/// Why: 再走査の1回は、オブジェクトの一覧を新しい順に1回なめるだけなので、参照が
+/// 新しいオブジェクトの方向へ伸びる鎖では、1回で進む深さがリストの大きさ程度になり、
+/// 再走査の回数が鎖の長さに比例する。展開器は親の節点を子より先に作るので、深く
+/// 入れ子になったコードがこの形になる(3o-3)。伸ばせば、確保が成功する限り再走査は
+/// 起きない。各オブジェクトは1回しか載らないので、積まれている数はマークされる数を
+/// 超えない。確保の大きさは倍々なのでその2倍まで、`realloc` が写す間は新旧の両方を
+/// 持つので3倍までになる。
 pub const Marker = struct {
     heap: *Heap,
     work: []*Header,
@@ -1108,6 +1167,7 @@ pub const Marker = struct {
         const header = &cell.header;
         if (header.marked) return;
         header.marked = true;
+        if (self.len == self.work.len) self.grow();
         if (self.len < self.work.len) {
             self.work[self.len] = header;
             self.len += 1;
@@ -1123,10 +1183,23 @@ pub const Marker = struct {
         self.heap.symbols.mark(id);
     }
 
+    /// Doubles the list, outside the account of the heap, if the memory is there.
+    /// 空のリスト(容量0の設定か、初めの確保の失敗)は伸ばさない。どちらも静的な
+    /// `no_work` を指すので、アロケータが確保したものとして扱わない。確保に失敗したら、
+    /// 元のリストのまま続ける(`realloc` は失敗のとき元を残す)。
+    fn grow(self: *Marker) void {
+        if (self.work.len == 0) return;
+        const len = std.math.mul(usize, self.work.len, 2) catch return;
+        const bigger = self.heap.backing.realloc(self.work, len) catch return;
+        self.work = bigger;
+        self.heap.work = bigger;
+    }
+
     fn finish(self: *Marker) void {
         self.drain();
         while (self.lost) {
             self.lost = false;
+            self.heap.rescans += 1;
             var it = self.heap.objects;
             while (it) |header| : (it = header.next) {
                 if (header.marked) self.scan(header);
@@ -1537,11 +1610,23 @@ test "a collection keeps a record, its type and its fields, and frees them all o
     }
 }
 
-test "deinit frees every object, frames and their slots included" {
+/// The code of a procedure that returns `datum`, made in `heap`: a lambda whose
+/// body is a sequence of two nodes, `datum` twice.
+/// 節点はヒープにあり(ADR-0040)、クロージャと継続のフレームが指す先として、テストが使う。
+fn testLambda(heap: *Heap, datum: Value) !*Lambda {
+    const body = try heap.create(Node, .{ .constant = .unspecified_value });
+    const list = try heap.allocAttached(*const Node, 2);
+    body.* = .{ .sequence = list };
+    for (list) |*n| n.* = try heap.create(Node, .{ .constant = datum });
+    return heap.create(Lambda, .{ .arity = 0, .frame_size = 0, .body = body });
+}
+
+test "deinit frees every object, frames and their slots and the lists of nodes included" {
     var heap: Heap = .init(std.testing.allocator, .{});
     const frame = try heap.createFrame(5, null);
-    _ = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
-    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = .{ .node = undefined, .next = 1 } } });
+    const lambda = try testLambda(&heap, .fromFixnum(1));
+    _ = try heap.create(Closure, .{ .lambda = lambda, .env = frame });
+    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = .{ .node = lambda.body, .next = 1 } } });
     _ = try heap.cons(.empty_list_value, .empty_list_value);
     heap.deinit();
     try std.testing.expectEqual(0, heap.accounted);
@@ -1581,22 +1666,85 @@ test "what a root reaches through pairs, closures, frames and continuations surv
     const deep = try heap.cons(.fromFixnum(7), .empty_list_value);
     const frame = try heap.createFrame(2, null);
     frame.values[0] = deep;
-    const closure = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
+    // クロージャのコードは、ヒープの節点を通して、データ(`code_datum`)を指す。
+    const code_datum = try heap.cons(.fromFixnum(8), .empty_list_value);
+    const lambda = try testLambda(&heap, code_datum);
+    const closure = try heap.create(Closure, .{ .lambda = lambda, .env = frame });
     const arg = try heap.create(Args, .{ .value = .{ .closure = closure }, .next = null });
-    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = undefined, .next = 1 } } });
-    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = undefined, .args = arg, .received = 1 } } });
+    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = lambda.body, .next = 1 } } });
+    // 呼び出しの節点は、オペランドの列を持つ。演算子とオペランドは、本体の2つの節点である。
+    const call = try heap.create(Node, .{ .constant = .unspecified_value });
+    const operands = try heap.allocAttached(*const Node, 1);
+    call.* = .{ .call = .{ .operator = lambda.body.sequence[0], .operands = operands } };
+    operands[0] = lambda.body.sequence[1];
+    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = call, .args = arg, .received = 1 } } });
     _ = try heap.cons(.fromFixnum(0), .empty_list_value);
     const garbage_frame = try heap.createFrame(100, null);
     _ = garbage_frame;
+    _ = try testLambda(&heap, .fromFixnum(9));
     const before = heap.count;
-    // ルートは継続だけで、残りはそこからたどって到達する。
+    // ルートは継続だけで、残りはそこからたどって到達する。ごみは、ペア、フレーム、使われない
+    // コード(lambda、本体、2つの節点)の6つである。
     heap.collect(TestRoots{ .kont = top });
-    try std.testing.expectEqual(before - 2, heap.count);
+    try std.testing.expectEqual(before - 6, heap.count);
     try std.testing.expectEqual(7, frame.values[0].asPair().?.car.asFixnum().?);
     try std.testing.expectEqual(frame, closure.env.?);
     try std.testing.expectEqual(arg, top.step.call.args.?);
-    try std.testing.expectEqual(cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
-        cellBytes(Args) + 2 * cellBytes(Kont), heap.accounted);
+    try std.testing.expectEqual(8, closure.lambda.body.sequence[0].constant.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(2 * cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
+        cellBytes(Args) + 2 * cellBytes(Kont) + cellBytes(Lambda) + 4 * cellBytes(Node) + 3 * @sizeOf(*const Node), heap.accounted);
+}
+
+test "a node gives back the list it holds when it is collected, and a list no node came to hold can be given back" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const lambda = try testLambda(&heap, .fromFixnum(1));
+    _ = lambda;
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node), heap.accounted);
+    const bindings = try heap.allocAttached(ParameterBinding, 3);
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node) + 3 * @sizeOf(ParameterBinding), heap.accounted);
+    heap.freeDetached(ParameterBinding, bindings);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+    // `parameterize` の節点は、束縛の列を持ち、回収されるときに列ごと計上から外れる。
+    const body = try testLambda(&heap, .fromFixnum(2));
+    const held_bindings = try heap.allocAttached(ParameterBinding, 2);
+    _ = try heap.create(Parameterize, .{ .bindings = held_bindings, .body = body });
+    for (held_bindings) |*b| b.* = .{ .param = body.body, .value = body.body };
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node) +
+        cellBytes(Parameterize) + 2 * @sizeOf(ParameterBinding), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+    // 呼び出しの節点も、オペランドの列ごと計上から外れる。
+    const operator = try heap.create(Node, .{ .constant = .fromFixnum(3) });
+    const call = try heap.create(Node, .{ .constant = .unspecified_value });
+    const operands = try heap.allocAttached(*const Node, 4);
+    call.* = .{ .call = .{ .operator = operator, .operands = operands } };
+    for (operands) |*o| o.* = operator;
+    try std.testing.expectEqual(2 * cellBytes(Node) + 4 * @sizeOf(*const Node), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a list for a node is counted against the limit, and the peak follows it" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    // 上限を超える長さは、確保せずに `HeapLimit` で断り、計上を変えない。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, 1024));
+    try std.testing.expectEqual(0, heap.accounted);
+    // バイト数の計算が桁あふれする長さも、同じく断る。この長さは、あふれを回り込ませると
+    // 8バイトになり、上限の内に収まって見える。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, std.math.maxInt(usize) / @sizeOf(*const Node) + 2));
+    try std.testing.expectEqual(0, heap.accounted);
+    const list = try heap.allocAttached(ParameterBinding, 2);
+    try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.accounted);
+    try std.testing.expectEqual(heap.accounted, heap.peak);
+    heap.freeDetached(ParameterBinding, list);
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.peak);
 }
 
 test "an unreachable frame takes its slots off the account with it" {
@@ -1718,6 +1866,76 @@ test "when the marking list cannot be allocated the marking rescans and still fi
     heap.backing = std.testing.allocator;
     try std.testing.expectEqual(0, heap.work.len);
     try std.testing.expectEqual(2, heap.count);
+}
+
+/// Makes a spine of `n` pairs, each holding a leaf pair, whose links all run to
+/// newer pairs, and returns its head.
+/// 背骨のペアを先に作ってから葉と次の背骨をつなぐので、すべての参照が新しいペアへ
+/// 向く。再走査の1回は新しい順にしか進まないので、リストがあふれると、再走査の回数が
+/// 背骨の長さに比例する。
+fn spineToNewer(heap: *Heap, comptime n: usize) !Value {
+    var spine: [n]Value = undefined;
+    for (&spine) |*s| s.* = try heap.cons(.empty_list_value, .empty_list_value);
+    for (spine, 0..) |s, i| {
+        s.asPair().?.car = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+        if (i + 1 < n) s.asPair().?.cdr = spine[i + 1];
+    }
+    return spine[0];
+}
+
+/// Makes a frame of 16 slots: the first holds `head`, and each other a pair of its own.
+/// 走査すると16個を一度に積むので、容量1のリストは何度か伸びなければ収まらない。
+fn wideFrame(heap: *Heap, head: Value) !*Frame {
+    const frame = try heap.createFrame(16, null);
+    frame.values[0] = head;
+    for (frame.values[1..], 1..) |*v, i| v.* = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+    return frame;
+}
+
+test "the marking list grows when it fills, so a spine to newer objects needs no rescan, and goes back to its size" {
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    const frame = try wideFrame(&heap, try spineToNewer(&heap, 50));
+    heap.collect(TestRoots{ .frame = frame });
+    try std.testing.expectEqual(1 + 15 + 100, heap.count);
+    try std.testing.expectEqual(0, heap.rescans);
+    try std.testing.expectEqual(1, heap.work.len);
+}
+
+test "when the marking list cannot grow the marking rescans, as many times as the spine is long, and still finishes" {
+    // 最初のリストの確保は通し、伸ばすための確保(その場の伸長と、新しい確保)を失敗させる。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    const frame = try wideFrame(&heap, try spineToNewer(&heap, 50));
+    heap.backing = failing.allocator();
+    heap.collect(TestRoots{ .frame = frame });
+    heap.backing = std.testing.allocator;
+    try std.testing.expectEqual(1 + 15 + 100, heap.count);
+    try std.testing.expect(heap.rescans >= 40);
+    try std.testing.expectEqual(1, heap.work.len);
+}
+
+test "an object a rescan puts on the list is scanned before the rescan ends" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    // `y` が最も古く、`z`、`w` の順に新しい。`r` の走査で `y` があふれ、再走査が `y` から
+    // `z` をリストに積む。`w` は `z` の走査でしか届かず、`y` より新しいので、再走査は
+    // 新しい順に進むから、もう過ぎている。再走査の後でリストを空にしなければ、`w` は
+    // マークされない。
+    const y = try heap.cons(.empty_list_value, .empty_list_value);
+    const z = try heap.cons(.empty_list_value, .empty_list_value);
+    const w = try heap.cons(.fromFixnum(4), .empty_list_value);
+    y.asPair().?.car = z;
+    z.asPair().?.car = w;
+    const x = try heap.cons(.fromFixnum(1), .empty_list_value);
+    const r = try heap.cons(x, y);
+    heap.backing = failing.allocator();
+    heap.collect(TestRoots{ .values = &.{r} });
+    heap.backing = std.testing.allocator;
+    try std.testing.expectEqual(5, heap.count);
+    try std.testing.expectEqual(4, w.asPair().?.car.asFixnum().?);
 }
 
 test "in stress mode every safe point of a short run collects, and the gap grows as the run goes on" {

@@ -1,6 +1,6 @@
 //! What the expander and the machine share between the lines of a session: the
-//! GC heap (which holds the symbols) and the arena beside it, the bindings of the top level,
-//! the constants of the code, and the value the most recent error raised.
+//! GC heap (which holds the symbols and the code) and the arena beside it, the bindings
+//! of the top level, and the value the most recent error raised.
 
 const std = @import("std");
 const symbol = @import("symbol.zig");
@@ -28,17 +28,16 @@ pub const Error = error{ OutOfMemory, Raised, ReserveExhausted };
 pub const heap_limit_message = "heap limit exceeded";
 
 /// What the interpreter carries between lines: the heap and the arena, the
-/// global bindings, the constants of the code, and the value the most recent error
-/// raised.
+/// global bindings, and the value the most recent error raised.
 pub const Context = struct {
-    /// Where what the reader and the machine make is allocated, and collected:
-    /// the pairs, the closures, the frames of calls, the continuations, the
-    /// argument lists, the strings, the vectors and the conditions.
+    /// Where what the reader, the expander and the machine make is allocated, and
+    /// collected: the pairs, the core IR, the closures, the frames of calls, the
+    /// continuations, the argument lists, the strings, the vectors and the conditions.
     heap: Heap,
     /// Where what the heap does not hold, and does not count, is allocated: the
-    /// table of `(sucheme core)` and the core IR the expander builds.
-    /// 大域変数のセルそのものは GC ヒープにある。最上位の束縛の表は、ここでなく `resident`
-    /// にある。この中のものは、インタプリタが解放されるまで解放されない。
+    /// table of `(sucheme core)`.
+    /// 大域変数のセルとコアIRの節点は GC ヒープにある。最上位の束縛の表は、ここでなく
+    /// `resident` にある。この中のものは、インタプリタが解放されるまで解放されない。
     persist: std.mem.Allocator,
     /// The bindings of the REPL's top level: what it imports from `core`, and the
     /// variables and macros it defines (src/env.zig).
@@ -71,11 +70,6 @@ pub const Context = struct {
     /// や `lambda` をインポートで得る必要がある。製品の経路は、これを立てない
     /// (docs/adr/0037-core-library-exposed-in-stage-2.md の段階3の取り消し)。
     core_open: bool = false,
-    /// The constants of the code that refer to the heap: a quoted list, say.
-    /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
-    /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
-    /// 要らなくなる。
-    code_roots: std.ArrayList(Value) = .empty,
     /// The value the most recent error raised, if the line was cut short by
     /// one.
     /// 段階2のスライス 2b からは、条件オブジェクトに限らない `Value` である(R7RS 6.11 は
@@ -117,7 +111,7 @@ pub const Context = struct {
     }
 
     /// Frees the heap, and the tables that count against its limit.
-    /// アリーナにあるもの(`core` と `code_roots`)は、アリーナの持ち主が捨てる。
+    /// アリーナにあるもの(`core`)は、アリーナの持ち主が捨てる。
     pub fn deinit(self: *Context) void {
         const tables = self.resident();
         self.globals.deinit(tables);
@@ -157,15 +151,14 @@ pub const Context = struct {
     }
 
     /// Tells the collector of the roots the context holds: the cells of the
-    /// global variables and of `core`, the libraries, the constants of the code and
-    /// the value raised.
-    /// 機械は自分のルートを加える。機械の実行をまたいでヒープの値を持つものは、
-    /// すべてここに挙げる(ADR-0035)。
+    /// global variables and of `core`, the libraries, and the value raised.
+    /// 機械は自分のルート(制御のレジスタを含む)を加える。機械の実行をまたいでヒープの値を
+    /// 持つものは、すべてここに挙げる(ADR-0035、ADR-0040)。コードの定数と名前は、節点から
+    /// 辿られる。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
         self.core.mark(marker);
         self.libraries.mark(marker);
-        for (self.code_roots.items) |v| marker.value(v);
         if (self.raised) |v| marker.value(v);
     }
 
@@ -178,20 +171,6 @@ pub const Context = struct {
             return self.raise("implementation restriction: too many macro applications", .{});
         defer self.next_mark += 1;
         return self.next_mark;
-    }
-
-    /// Keeps `v`, a constant of some code, alive for as long as the context is.
-    /// シンボルの定数も、ヒープを指す定数と同じく、コードの外から見えないので、ここに挙げる。
-    /// 挙げないと、シンボルが回収され、ID が別の名前に再利用される。
-    pub fn keepConstant(self: *Context, v: Value) error{OutOfMemory}!void {
-        if (v.pointsIntoHeap() or v.kind() == .symbol) try self.code_roots.append(self.persist, v);
-    }
-
-    /// Keeps the symbol `name`, which a node of some code holds, alive for as long as
-    /// the context is.
-    /// 局所変数の節点は、名前を、未初期化の変数を読んだときのメッセージのために持つ。
-    pub fn keepName(self: *Context, name: symbol.SymbolId) error{OutOfMemory}!void {
-        try self.code_roots.append(self.persist, .fromSymbol(name));
     }
 
     /// The symbol named `name`, interned first if it is new; a name the limit
