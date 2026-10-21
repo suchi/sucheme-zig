@@ -46,10 +46,9 @@ pub const Registry = struct {
     /// Every library whose definition began and has not failed, oldest first.
     list: std.ArrayList(*Library) = .empty,
     /// The tables of the libraries' top levels, indexed by `Library.table`.
-    /// 表はアリーナにあり、定義に失敗したライブラリの表も、中身を残したまま持ち続ける
-    /// (`abandon` が外すのは `list` からだけである)。失敗した本体がほかのライブラリに
-    /// 渡したクロージャが、その表のセルを指し続けうるためである。表の番号を再利用しない
-    /// ので、失敗したライブラリを指す古い識別子が、別のライブラリの表を引くことはない。
+    /// 定義に失敗したライブラリの表は、`abandon` が中身を返し、空のまま残る。表の番号を
+    /// 再利用しないので、失敗したライブラリを指す古い識別子が、別のライブラリの表を引く
+    /// ことはない。
     tables: std.ArrayList(*env_mod.Global) = .empty,
     /// The `define-library` forms being processed, innermost last.
     /// 本体の処理は機械を走らせるので、その間に GC が走る。処理中の宣言は、このリストが
@@ -115,21 +114,21 @@ pub const Registry = struct {
         return lib;
     }
 
-    /// Takes a library whose definition failed out of the registry.
-    /// Why: 表は手放さない。失敗した本体が、実行の途中で、ほかのライブラリの状態にクロージャを
-    /// 残すことがある。そのクロージャのコードは、このライブラリのセルを `global_ref` の節点で
-    /// 指す。スライス 3o-2 までは GC がコードをたどらなかったので、表が持ち続けないと、セルが
-    /// 回収されて、あとでそのクロージャを呼ぶと解放済みの値を読んだ。3o-3 から、コードは GC
-    /// ヒープにあり、クロージャのコードからセルが辿られるので、表を手放せる。手放すのは
-    /// スライス 3o-4 である(計画書 0023)。ライブラリだけを登録表から外し、同じ名前で
-    /// もう一度定義できるようにする。
-    pub fn abandon(self: *Registry, lib: *Library) void {
+    /// Takes a library whose definition failed out of the registry, and gives
+    /// back what its table holds.
+    /// 失敗した本体が、実行の途中で、ほかのライブラリの状態にクロージャを残すことがある。
+    /// そのクロージャのコードは、このライブラリのセルを `global_ref` の節点で指すので、
+    /// セルはコードから辿られる(ADR-0040)。表が持ち続ける必要は無い。表そのもの(空の
+    /// `Global`)は `tables` に残し、番号を再利用しないので、失敗したライブラリを指す古い
+    /// 識別子が、別のライブラリの表を引くことはない。同じ名前で、もう一度定義できる。
+    pub fn abandon(self: *Registry, ctx: *Context, lib: *Library) void {
         for (self.list.items, 0..) |item, i| {
             if (item == lib) {
                 _ = self.list.orderedRemove(i);
                 break;
             }
         }
+        self.tableOf(lib).deinit(ctx.resident());
     }
 };
 
@@ -417,7 +416,7 @@ fn modify(ctx: *Context, scratch: std.mem.Allocator, kind: Modifier, arguments: 
 /// Binds `names` in `table`, as imported bindings.
 /// REPL では、インポートは同じ名前の今の束縛を置き換える(R7RS 5.2)。ライブラリの本体では、
 /// 同じ識別子を別の束縛で2回インポートすることと、本体が先に定義した名前をインポートすること
-/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_cells` に残り、
+/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_unbound` に残り、
 /// 本体の終わりに未束縛として報告される(`finish`)。
 pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: expand.Mode) Error!void {
     var it = names.iterator();
@@ -481,7 +480,7 @@ pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Err
     if (isCoreName(ctx, name) or ctx.libraries.find(name) != null)
         return ctx.raise("bad define-library: the library {s} is already defined", .{try nameText(ctx, scratch, name)});
     const lib = try ctx.libraries.begin(ctx, name);
-    errdefer ctx.libraries.abandon(lib);
+    errdefer ctx.libraries.abandon(ctx, lib);
     try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
     const names_before = ctx.libraries.pending_names.items.len;
@@ -653,7 +652,7 @@ fn unboundNames(ctx: *Context, scratch: std.mem.Allocator, table: *const env_mod
             else => {},
         }
     }
-    for (table.displaced_cells.items) |cell| {
+    for (table.displaced_unbound.items) |cell| {
         if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.heap.symbols.nameOf(cell.name));
     }
     std.mem.sort([]const u8, names.items, {}, struct {
@@ -802,7 +801,7 @@ test "a library whose definition failed leaves the registry, and is collected" {
     try std.testing.expectEqual(2, f.ctx.heap.countOf(Library));
     try std.testing.expectEqual(2, f.ctx.heap.countOf(value_mod.SyntacticEnv));
     const lost_table = f.ctx.libraries.tableOf(lost);
-    f.ctx.libraries.abandon(lost);
+    f.ctx.libraries.abandon(&f.ctx, lost);
     try std.testing.expectEqual(null, f.ctx.libraries.find(try f.read("(t lost)")));
     try std.testing.expectEqual(keep, f.ctx.libraries.find(try f.read("(t keep)")).?);
     f.ctx.collectIdle();
@@ -811,6 +810,23 @@ test "a library whose definition failed leaves the registry, and is collected" {
     // 同じ名前で、もう一度始められる。
     const again = try f.library("(t lost)", &.{});
     try std.testing.expect(f.ctx.libraries.tableOf(again) != lost_table);
+}
+
+test "the table of a library whose definition failed is given back, and its cells go with the code" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const lost = try f.library("(t lost)", &.{ "define", "quote" });
+    _ = try f.expandIn(lost, "(define x '(1 2))");
+    f.ctx.collectIdle();
+    const cells = f.ctx.heap.countOf(value_mod.Cell);
+    const resident = f.ctx.heap.resident;
+    f.ctx.libraries.abandon(&f.ctx, lost);
+    // 表の束縛の分が、常駐の計上から戻る。
+    try std.testing.expect(f.ctx.heap.resident < resident);
+    f.ctx.collectIdle();
+    // `x` のセルは、表のほかに持つものが無いので、回収される。
+    try std.testing.expect(f.ctx.heap.countOf(value_mod.Cell) < cells);
 }
 
 test "the forms being processed and the bindings of a library survive a collection" {

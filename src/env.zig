@@ -117,12 +117,14 @@ pub const Global = struct {
     /// 表の束縛が先に引かれるので、名前を `Core` から写した後は、そこが引かれることは
     /// ない。
     base: ?*Core = null,
-    /// The cells of the top level's own variables that a `define-syntax` or an
-    /// `import` has replaced.
-    /// 前に展開したコードが、まだセルを指しうる(R7RS 5.4: 既存の参照は変わらない)。
-    /// スライス 3o-3 から、コードは GC ヒープにあり、指すコードが生きていればセルも辿られる
-    /// ので、この保持は要らない。外すのはスライス 3o-4 である(計画書 0023)。
-    displaced_cells: std.ArrayList(*Cell) = .empty,
+    /// The cells of the top level's own variables that had no value when a
+    /// `define-syntax` or an `import` replaced them.
+    /// ライブラリの本体の終わりに、未束縛として報告するために持つ(`library.unboundNames`、
+    /// ADR-0042)。置き換えた時点で値を持っていたセルは持たない。前に展開したコードがまだ
+    /// 指していれば(R7RS 5.4: 既存の参照は変わらない)、そのコードから辿られる(ADR-0040)。
+    /// 値の有無は展開の時点で見るので、同じ形式の中で定義してから置き換えた名前のセルは、
+    /// ここに入ったあとで値を持つ。報告する側は、本体の終わりに値をもう一度見る。
+    displaced_unbound: std.ArrayList(*Cell) = .empty,
     /// The syntactic bindings that the expansion in progress has replaced, with
     /// what each name was bound to before, in order.
     /// 特殊形式やマクロの名前への `define` と、`define-syntax` と `import` が記録する。
@@ -138,7 +140,7 @@ pub const Global = struct {
     /// セルとマクロはヒープにあり、ここでは返さない。
     pub fn deinit(self: *Global, alloc: std.mem.Allocator) void {
         self.bindings.deinit(alloc);
-        self.displaced_cells.deinit(alloc);
+        self.displaced_unbound.deinit(alloc);
         self.replaced.deinit(alloc);
         self.* = .{ .base = self.base };
     }
@@ -171,8 +173,8 @@ pub const Global = struct {
     /// docs/design/frontend.md の REPL の表のとおり、インポートした束縛は遮蔽し、REPL
     /// 自身の束縛は差し替える。どちらも、表の束縛を REPL 自身のマクロにすることである。
     /// 前に展開したコードが指すセルは変わらない(同節: 既存の参照は変わらない)。
-    /// REPL 自身の変数のセルは、表から外れても `displaced_cells` が持ち続ける。インポート
-    /// した変数のセルは、エクスポート元が持つ。
+    /// 表から外れたセルは、指すコードが持つ。値の無い REPL 自身のセルだけは、未束縛の
+    /// 報告のために `displaced_unbound` が持つ。
     pub fn defineSyntax(self: *Global, alloc: std.mem.Allocator, id: SymbolId, m: *value_mod.Macro) error{OutOfMemory}!void {
         try self.replace(alloc, id, .{ .denotation = .{ .macro = m }, .imported = false });
     }
@@ -189,7 +191,7 @@ pub const Global = struct {
     fn replace(self: *Global, alloc: std.mem.Allocator, id: SymbolId, new: Binding) error{OutOfMemory}!void {
         const previous = self.bindings.get(id);
         if (previous) |b| switch (b.denotation) {
-            .global => |cell| if (!b.imported) try self.displaced_cells.append(alloc, cell),
+            .global => |cell| if (!b.imported and cell.value.kind() == .uninitialized) try self.displaced_unbound.append(alloc, cell),
             .special, .macro, .local, .auxiliary => {},
         };
         try self.replaced.append(alloc, .{ .id = id, .previous = previous });
@@ -254,8 +256,8 @@ pub const Global = struct {
     }
 
     /// Tells the collector of every cell and macro: those the table binds, the
-    /// cells of its own that it has since replaced, and what the expansion in
-    /// progress has replaced; and of every name the table is keyed by.
+    /// cells of its own that had no value when they were replaced, and what the
+    /// expansion in progress has replaced; and of every name the table is keyed by.
     /// Why: 名前は、束縛の表のキーとして持つ生のシンボル ID である。マクロの束縛の名前は
     /// マクロ自身が持たないので、キーを知らせなければ、名前が回収されて ID が別の名前に
     /// 再利用され、表が別のシンボルの束縛を持つ。`replaced` の名前は、展開が失敗したときに
@@ -266,7 +268,7 @@ pub const Global = struct {
             marker.symbol(entry.key_ptr.*);
             markDenotation(marker, entry.value_ptr.denotation);
         }
-        for (self.displaced_cells.items) |cell| marker.object(Cell, cell);
+        for (self.displaced_unbound.items) |cell| marker.object(Cell, cell);
         for (self.replaced.items) |r| {
             marker.symbol(r.id);
             if (r.previous) |b| markDenotation(marker, b.denotation);
@@ -460,25 +462,31 @@ test "a define-syntax binds a macro, which is bound and cannot be assigned, and 
     try std.testing.expectEqual(cell, (try f.resolve(x)).global);
 }
 
-test "a define-syntax replaces a variable, and the variable's cell survives a collection" {
+test "a define-syntax replaces a variable, whose cell then goes unless it has no value" {
     var f: Fixture = undefined;
     f.init();
     defer f.deinit();
     const a = f.arena.allocator();
+    const z: SymbolId = @fromBackingInt(@intCast(2));
     const own = try f.define(x);
     own.value = try f.heap.cons(.fromFixnum(1), .empty_list_value);
     try f.core.addPrimitive(a, y, &probe);
     const imported = (try f.resolve(y)).global;
+    // 参照だけで作った、値の無い自分のセル。
+    const unbound = (try f.resolve(z)).global;
     try f.global.defineSyntax(a, x, try testMacro(&f.heap));
     try f.global.defineSyntax(a, y, try testMacro(&f.heap));
+    try f.global.defineSyntax(a, z, try testMacro(&f.heap));
     f.global.commitShadows();
-    // 2つのセル、ペア、2つのマクロ。
-    try std.testing.expectEqual(5, f.heap.count);
+    // 3つのセル、ペア、3つのマクロ。
+    try std.testing.expectEqual(7, f.heap.count);
     f.heap.collect(Roots{ .global = &f.global, .core = &f.core });
-    // 前に展開したコードがセルを指しうるので、表から外れたセルも残る。マクロは表にある。
+    // 値を持つ自分のセルは、表から外れ、指すコードも無いので、ペアごと回収される。
+    // インポートしたセルは `Core` が持つ。値の無いセルは、未束縛の報告のために残る。
     try std.testing.expectEqual(5, f.heap.count);
-    try std.testing.expectEqual(1, own.value.asPair().?.car.asFixnum().?);
     try std.testing.expectEqual(&probe, imported.value.asPrimitive().?);
+    try std.testing.expectEqual(1, f.global.displaced_unbound.items.len);
+    try std.testing.expectEqual(unbound, f.global.displaced_unbound.items[0]);
 }
 
 test "a define-syntax that a failed expansion made is undone, and one that succeeded is kept" {
@@ -622,7 +630,7 @@ test "a name that only core exports is bound without a cell being made, and an e
     try std.testing.expect(!empty.isBound(x));
 }
 
-test "an import replaces a binding, keeps the variable it replaced for the code that points at it, and is undone with the expansion" {
+test "an import replaces a binding, lets the variable it replaced go with the code, and is undone with the expansion" {
     var f: Fixture = undefined;
     f.init();
     defer f.deinit();
@@ -638,9 +646,11 @@ test "an import replaces a binding, keeps the variable it replaced for the code 
     try std.testing.expect(b.imported);
     try std.testing.expectEqual(imported, b.denotation.global);
     f.global.commitShadows();
-    // 置き換えられた REPL 自身の変数は、コードがまだ指しうるので、回収されない。
+    // 置き換えられた REPL 自身の変数は、指すコードが無ければ、ペアごと回収される。
+    const before = f.heap.count;
     f.heap.collect(Roots{ .global = &f.global, .core = &f.core });
-    try std.testing.expectEqual(1, own.value.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(before - 2, f.heap.count);
+    try std.testing.expectEqual(0, f.global.displaced_unbound.items.len);
     // 失敗した展開のインポートは、元の束縛に戻る。束縛の無かった名前は、束縛の無い状態に戻る。
     const z: SymbolId = @fromBackingInt(@intCast(2));
     try f.global.importBinding(a, x, .{ .special = .@"if" });

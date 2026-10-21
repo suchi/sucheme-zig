@@ -794,6 +794,53 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     }
 }
 
+test "a library whose definition fails gives back everything its table took" {
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    // 参照してからインポートした `car` は、値の無いまま置き換えたセルとして表が持ち、本体の
+    // 終わりに未束縛として報告される。その失敗で、表は束縛も2つのリストも返す。
+    try expectLineFails(&interp, "(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (car 1))) (import (only (sucheme core) car)))", "unbound identifier in library (t a): car");
+    const tables = interp.ctx.libraries.tables.items;
+    const table = tables[tables.len - 1];
+    try std.testing.expectEqual(0, table.bindings.count());
+    try std.testing.expectEqual(0, table.bindings.capacity());
+    try std.testing.expectEqual(0, table.displaced_unbound.capacity);
+    try std.testing.expectEqual(0, table.replaced.capacity);
+}
+
+test "a variable that a define-syntax replaced is still there for the code made before" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define (g) (cons 'old-g 1)) (define (h) (g))", "");
+        // `g` の表の束縛はマクロになる。前に展開した `h` のコードは、元のセルを指し続ける
+        // (R7RS 5.4)。セルを持つのは、そのコードだけである。
+        try expectLinePrints(&interp, "(define-syntax g (syntax-rules () ((_) 'macro)))", "");
+        try churnSymbols(&interp);
+        try expectLinePrints(&interp, "(h) (g)", "(old-g . 1)\nmacro\n");
+    }
+}
+
+test "a circular constant of the code is marked once, survives the collections, and goes with the code" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 1, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            // 定数の循環するリスト(R7RS 2.4)は、コードの節点だけが持つ。マークは印で循環を止める。
+            try expectLinePrints(&interp, "(define (f) '#0=(1 circular-only . #0#))", "");
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "(car (cdr (cdr (cdr (f))))) (eq? (f) (cdr (cdr (f))))", "circular-only\n#t\n");
+            // 手続きを置き換えると、循環するリストを持つものは無くなり、名前ごと回収される。
+            try expectLinePrints(&interp, "(set! f #f)", "");
+            interp.ctx.collectIdle();
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("circular-only") == null);
+        }
+    }
+}
+
 test "a symbol made from a string stays the symbol of its name at every work list capacity" {
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 1, 0 }) |capacity| {

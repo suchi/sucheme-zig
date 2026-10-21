@@ -75,3 +75,4 @@
 | [0039](0039-standard-environment-installed-at-init.md) | 最上位の初期環境は初期化で `(scheme base)` を読み込んで作り、読み込みもヒープの上限に計上する | 採用 | 2026-10-19 |
 | [0040](0040-core-ir-in-the-gc-heap.md) | コアIRの節点を GC ヒープに置き、最上位の表を常に上限に数え、未束縛のセルを弱く持つ | 採用 | 2026-10-20 |
 | [0041](0041-bsd-name-clause-attribution-not-endorsement.md) | 取り込んだ準拠スイートの著者名は出典としてだけ使い、推奨や認定と読める形では使わない | 採用 | 2026-10-20 |
+| [0042](0042-keep-replaced-cells-without-a-value.md) | 値の無いまま置き換えた最上位のセルは、未束縛の報告のために表が持つ | 採用 | 2026-10-21 |

@@ -4,6 +4,8 @@
 - 日付: 2026-10-20
 - 一部置き換え: [ADR-0031: gc-at-machine-step-boundaries](0031-gc-at-machine-step-boundaries.md) のルートの「コードの定数」と、[ADR-0035: stage-2-gc-roots-and-raise-reserve](0035-stage-2-gc-roots-and-raise-reserve.md) の境目で持っているルートの一覧(機械のレジスタに制御を加え、`Context` のルートの表からコードの定数を外す)を置き換える。GC を境目でだけ走らせること、境目の一覧、予約領域は変わらない
 
+> 2026-10-21 追記: 決定5のうち、`displaced_cells` をやめる部分は、[ADR-0042: keep-replaced-cells-without-a-value](0042-keep-replaced-cells-without-a-value.md) が置き換えた。スライス 3o-4 の実装で、ライブラリの本体の終わりの未束縛の検査がこのリストを読んでいることが分かったためである。表は、置き換えたときにまだ値の無い自分のセルだけを持ち、その時点で値を持っていたセルは持たない。定義に失敗したライブラリの表を手放すことは、決定5のとおりである。
+
 スライス 3o の設計([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))とともに、2026-10-20 にユーザーが承認した。実装は、計画書の 3o-1 から 3o-5 の PR が順に行う。
 
 ## 背景
