@@ -416,7 +416,7 @@ fn modify(ctx: *Context, scratch: std.mem.Allocator, kind: Modifier, arguments: 
 /// Binds `names` in `table`, as imported bindings.
 /// REPL では、インポートは同じ名前の今の束縛を置き換える(R7RS 5.2)。ライブラリの本体では、
 /// 同じ識別子を別の束縛で2回インポートすることと、本体が先に定義した名前をインポートすること
-/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_cells` に残り、
+/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_unbound` に残り、
 /// 本体の終わりに未束縛として報告される(`finish`)。
 pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: expand.Mode) Error!void {
     var it = names.iterator();
@@ -652,7 +652,7 @@ fn unboundNames(ctx: *Context, scratch: std.mem.Allocator, table: *const env_mod
             else => {},
         }
     }
-    for (table.displaced_cells.items) |cell| {
+    for (table.displaced_unbound.items) |cell| {
         if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.heap.symbols.nameOf(cell.name));
     }
     std.mem.sort([]const u8, names.items, {}, struct {

@@ -794,6 +794,20 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     }
 }
 
+test "a variable that a define-syntax replaced is still there for the code made before" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define (g) (cons 'old-g 1)) (define (h) (g))", "");
+        // `g` の表の束縛はマクロになる。前に展開した `h` のコードは、元のセルを指し続ける
+        // (R7RS 5.4)。セルを持つのは、そのコードだけである。
+        try expectLinePrints(&interp, "(define-syntax g (syntax-rules () ((_) 'macro)))", "");
+        try churnSymbols(&interp);
+        try expectLinePrints(&interp, "(h) (g)", "(old-g . 1)\nmacro\n");
+    }
+}
+
 test "a circular constant of the code is marked once, survives the collections, and goes with the code" {
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 1, 0 }) |capacity| {
