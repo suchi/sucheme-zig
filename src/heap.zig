@@ -970,6 +970,14 @@ pub const Heap = struct {
         var marker: Marker = .{ .heap = self, .work = self.work };
         roots.mark(&marker);
         marker.finish();
+        // 弱く持つ表は、マークが済んでから、掃除の前に、マークされなかったものを外す。
+        var weak = marker.weak;
+        while (weak) |w| {
+            weak = w.next;
+            w.next = null;
+            w.listed = false;
+            w.prune(w, self);
+        }
         // マークの途中でリストを伸ばしていたら、オプションの大きさに戻す。伸ばした分は
         // 上限の外のメモリなので、次の GC まで持ち越さない。
         self.ensureWork();
@@ -1060,6 +1068,14 @@ pub const Heap = struct {
         if (total > ceiling) return error.HeapLimit;
     }
 
+    /// Whether the marking in progress has reached `pointer`.
+    /// マークの後、掃除の前(`Weak.prune` の中)でだけ意味がある。
+    pub fn isMarked(self: *const Heap, comptime T: type, pointer: *const T) bool {
+        _ = self;
+        const cell: *const Cell(T) = @alignCast(@fieldParentPtr("value", pointer));
+        return cell.header.marked;
+    }
+
     /// The number of objects of type `T` in the heap.
     /// テストが、ある種類のオブジェクトが回収されたか残っているかを、そのオブジェクトの
     /// 中身を読まずに確かめるためにある。
@@ -1113,6 +1129,19 @@ pub const Heap = struct {
     }
 };
 
+/// A table that holds some of its objects weakly (ADR-0040, decision 6).
+/// 表に埋め込み、マークのときに `Marker.holdWeakly` で登録する。`prune` は、`Heap.isMarked`
+/// で生死を見て、マークされなかったものを表から外す。何も確保せず、何も解放しない(解放は
+/// 掃除がする)。
+pub const Weak = struct {
+    next: ?*Weak = null,
+    /// Whether the marking in progress has the table on its list.
+    /// 1回の GC で同じ表を2回登録すると、列が輪になって、途中の表が刈られずに解放済みの
+    /// セルを指したまま残る。`holdWeakly` が表明して防ぐ。
+    listed: bool = false,
+    prune: *const fn (*Weak, *Heap) void,
+};
+
 /// The marking of one collection.
 /// `roots` がプログラムの出発点となる値を渡し、`finish` がそこからたどれるすべてに
 /// 到達する。
@@ -1138,6 +1167,19 @@ pub const Marker = struct {
     len: usize = 0,
     /// An object was marked and not put on the list.
     lost: bool = false,
+    /// The tables that hold some of their objects weakly, as `holdWeakly` met them.
+    weak: ?*Weak = null,
+
+    /// Asks that `w` drop what the marking did not reach, once the marking is done
+    /// and before the sweep (`Heap.collect`).
+    /// 表は、弱く持つものをマークせずに、ここで自分を登録する。登録とマークが同じ
+    /// 呼び出しで起きるので、マークを省いた表が刈られずに残ることはない。
+    pub fn holdWeakly(self: *Marker, w: *Weak) void {
+        std.debug.assert(!w.listed);
+        w.listed = true;
+        w.next = self.weak;
+        self.weak = w;
+    }
 
     /// Marks what `v` refers to.
     pub fn value(self: *Marker, v: Value) void {

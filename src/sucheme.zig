@@ -2238,3 +2238,51 @@ test "slow: a macro that never stops ends at the limit of the default heap" {
     try tier.slow();
     try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_) (f))))", "(f)", heap.default_limit);
 }
+
+test "lines that refer to unknown names do not leave a cell each after a collection, and a name code still refers to keeps its cell" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define (later) unknown-later)", "");
+        interp.ctx.collectIdle();
+        const cells = interp.ctx.heap.countOf(value.Cell);
+        var buf: [48]u8 = undefined;
+        for (0..50) |i| try expectLinePrints(&interp, std.fmt.bufPrint(&buf, "(if #f unknown-{d})", .{i}) catch unreachable, "");
+        interp.ctx.collectIdle();
+        // 行のコードは死んでいるので、未束縛のセルと名前は表から外れて回収される。
+        try std.testing.expectEqual(cells, interp.ctx.heap.countOf(value.Cell));
+        try std.testing.expect(interp.ctx.heap.symbols.lookup("unknown-7") == null);
+        // 生きている手続きが指す名前は、表に残り、後の定義がそのセルに値を入れる。
+        try expectLinePrints(&interp, "(define unknown-later 5) (later)", "5\n");
+    }
+}
+
+test "an unbound cell that an exported macro makes in a loaded library goes once no code points at it" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        // マクロの出力の自由な名前は、ライブラリの最上位で解決される。定義を終えたライブラリの
+        // 表にできる未束縛のセルも、指すコードが無くなれば外れる。名前そのものは、マクロの
+        // 規則のデータが持つので残る。
+        try expectLinePrints(&interp, "(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) (if #f lib-only-unknown))))))", "");
+        try expectLinePrints(&interp, "(import (t m)) (m)", "");
+        const lib = interp.ctx.libraries.list.items[interp.ctx.libraries.list.items.len - 1];
+        const table = interp.ctx.libraries.tableOf(lib);
+        const id = interp.ctx.heap.symbols.lookup("lib-only-unknown").?;
+        // ストレスモードでは、行の途中の GC が、もう外している。
+        if (!stress) try std.testing.expect(table.lookup(id) != null);
+        interp.ctx.collectIdle();
+        try std.testing.expectEqual(null, table.lookup(id));
+    }
+}
+
+test "a library still reports a name that only dead code of its body refers to, whenever the collections run" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLineFails(&interp, "(define-library (t a) (export) (import (sucheme core)) (begin (if #f car-typo)) (begin (define y1 1) (define y2 2)))", "unbound identifier in library (t a): car-typo");
+    }
+}
