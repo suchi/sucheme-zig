@@ -380,6 +380,8 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     var interp: sucheme.Interpreter = undefined;
     try interp.initWithFiles(gpa, .{}, files);
     defer interp.deinit();
+    // 展開時のエラーには、ファイルの中の位置を前置する(docs/design/frontend.md の位置情報)。
+    interp.file_name = path;
     var discard: std.Io.Writer.Discarding = .init(&.{});
     interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
         error.WriteFailed => return e,
@@ -866,6 +868,15 @@ test "runFile reports an unbound variable and a syntax error with status 1" {
     const unclosed = try runProgram("(define x 1\n", &eb);
     try std.testing.expectEqual(exit_runtime_error, unclosed.status);
     try std.testing.expect(std.mem.startsWith(u8, unclosed.err, "error: "));
+}
+
+test "runFile puts the place in the file before an error the expander raises" {
+    var eb: [256]u8 = undefined;
+    const r = try runProgram("(define x 1)\n(define (f)\n  (if))\n", &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    // パスは一時ディレクトリの絶対パスである。行と桁は、`(if)` の `(` の位置である。
+    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: /"));
+    try std.testing.expect(std.mem.endsWith(u8, r.err, "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)\n"));
 }
 
 test "runFile reports a program that is not valid UTF-8 with status 1" {

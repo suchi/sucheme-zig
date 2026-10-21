@@ -29,6 +29,7 @@ const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
 const heap_mod = @import("../heap.zig");
 const source = @import("source.zig");
+const positions = @import("../positions.zig");
 const cond_expand = @import("cond_expand.zig");
 const freeze = @import("../freeze.zig");
 
@@ -138,6 +139,10 @@ const Task = struct {
     op: Op = .expand,
     /// For `include_file`: whether the file is read with case folded (`include-ci`).
     fold_case: bool = false,
+    /// Where the nearest form that holds this one was read, for the message of an error
+    /// (docs/design/frontend.md の位置情報).
+    /// マクロの出力と、ペアでない形式は、位置を持たないので、これを引き継ぐ。
+    site: ?positions.Position = null,
 
     /// What a task does.
     const Op = enum {
@@ -196,7 +201,17 @@ const Expander = struct {
     fn run(self: *Expander, form: Value) Error!*const Node {
         const root = try self.newNode();
         try self.stack.append(self.scratch, .{ .form = form, .env = self.root, .pos = .top, .dest = root });
-        while (self.stack.pop()) |task| try self.step(task);
+        while (self.stack.pop()) |popped| {
+            var task = popped;
+            if (self.ctx.positions) |table| task.site = table.of(task.form) orelse task.site;
+            const pushed = self.stack.items.len;
+            self.step(task) catch |e| {
+                if (e == error.Raised) self.ctx.noteRaisedAt(task.site);
+                return e;
+            };
+            // この形式が積んだ仕事は、この形式の中にある。位置を持たないものは、この位置を引き継ぐ。
+            for (self.stack.items[pushed..]) |*queued| queued.site = queued.site orelse task.site;
+        }
         return root;
     }
 
@@ -496,7 +511,7 @@ const Expander = struct {
         // ファイルを読む時点から、作業領域と節点をヒープの上限に数える(`Heap.external_enforced`)。
         self.ctx.heap.external_enforced = true;
         const subject = try std.fmt.allocPrint(self.scratch, "{s} {s}", .{ what, name });
-        const data = try source.readData(self.ctx, self.scratch, self.ctx.files, opened.source, subject, task.fold_case);
+        const data = try source.readDataFrom(self.ctx, self.scratch, self.ctx.files, opened.source, opened.origin, subject, task.fold_case);
         if (data.len == 0) return self.constant(task, .unspecified_value);
         try self.ctx.sources.append(self.ctx.resident(), opened.origin);
         // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。

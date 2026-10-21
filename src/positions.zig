@@ -107,6 +107,10 @@ pub const Cursor = struct {
     }
 };
 
+test {
+    std.testing.refAllDecls(@This());
+}
+
 test "locate counts lines with each line ending, and columns in characters" {
     const text = "ab\ncd\r\nef\rg\u{3042}h";
     var c: Cursor = .{};
