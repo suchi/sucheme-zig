@@ -130,6 +130,15 @@ pub const Global = struct {
     /// 特殊形式やマクロの名前への `define` と、`define-syntax` と `import` が記録する。
     /// 展開が失敗したら `undoShadows` が元に戻し、成功したら `commitShadows` が捨てる。
     replaced: std.ArrayList(Replaced) = .empty,
+    /// Whether the table holds its own unbound cells strongly.
+    /// 既定では弱く持つ(ADR-0040 の決定6)。コードが指していない未束縛のセルは、GC の
+    /// 掃除の前に表から外れ、名前を後で解決すると新しいセルになる。定義の途中のライブラリの
+    /// 表は強く持つ(`library.Registry.begin` が立て、`finish` が下ろす)。本体の終わりの
+    /// 未束縛の検査が、表に残るセルから名前を報告するので、弱く持つと報告が GC の時期に
+    /// 依存するからである。
+    keep_unbound: bool = false,
+    /// Where the marking finds the table to prune (`Heap.Weak`).
+    weak: heap_mod.Weak = .{ .prune = pruneUnbound },
 
     /// A name, and its binding before the expansion replaced it; null when the
     /// table had none.
@@ -262,16 +271,48 @@ pub const Global = struct {
     /// マクロ自身が持たないので、キーを知らせなければ、名前が回収されて ID が別の名前に
     /// 再利用され、表が別のシンボルの束縛を持つ。`replaced` の名前は、展開が失敗したときに
     /// 表を戻すキーで、表にもう無いことがある。
+    /// 未束縛の自分のセルは、表が強く持つとき(`keep_unbound`)のほかは挙げない。そのセルと
+    /// 名前は、指すコードが挙げれば残り、挙げなければ `pruneUnbound` が表から外す。
     pub fn mark(self: *const Global, marker: *Marker) void {
         var it = self.bindings.iterator();
         while (it.next()) |entry| {
+            if (!self.keep_unbound and weakly(entry.value_ptr.*)) continue;
             marker.symbol(entry.key_ptr.*);
             markDenotation(marker, entry.value_ptr.denotation);
         }
+        // Why: 表は `Context` の中か常駐の確保にあり、定数ではない。`mark` が `*const` を
+        // 受けるのは、マークが表を書き換えないためで、刈るのはマークの後の別の段である。
+        if (!self.keep_unbound) marker.holdWeakly(@constCast(&self.weak));
         for (self.displaced_unbound.items) |cell| marker.object(Cell, cell);
         for (self.replaced.items) |r| {
             marker.symbol(r.id);
             if (r.previous) |b| markDenotation(marker, b.denotation);
+        }
+    }
+
+    /// Whether the table holds `b` weakly: a cell of its own that has no value.
+    /// インポートした束縛のセルは、エクスポート元が持つので、ここでは見ない。
+    fn weakly(b: Binding) bool {
+        if (b.imported) return false;
+        return switch (b.denotation) {
+            .global => |cell| cell.value.kind() == .uninitialized,
+            .special, .macro, .local, .auxiliary => false,
+        };
+    }
+
+    /// Takes out of the table the unbound cells of its own that the marking did
+    /// not reach.
+    /// Why: 走査の途中で今の項目を外す。0.17 の `HashMapUnmanaged` の `removeByPtr` は
+    /// その位置に削除の印を付けるだけで、表を並べ直さず、反復子は位置の順に使用中の項目を
+    /// 探すので、残りの項目を飛ばさない(std/hash_map.zig の `removeByIndex` と
+    /// `Iterator.next`)。
+    fn pruneUnbound(w: *heap_mod.Weak, heap: *Heap) void {
+        const self: *Global = @fieldParentPtr("weak", w);
+        var it = self.bindings.iterator();
+        while (it.next()) |entry| {
+            if (!weakly(entry.value_ptr.*)) continue;
+            if (heap.isMarked(Cell, entry.value_ptr.denotation.global)) continue;
+            self.bindings.removeByPtr(entry.key_ptr);
         }
     }
 
@@ -561,12 +602,48 @@ test "the cells the table binds and the imported cells it shadowed survive a col
 const Roots = struct {
     global: *const Global,
     core: *const Core,
+    /// The cells that code still points at, for the tests.
+    cells: []const *Cell = &.{},
 
     pub fn mark(self: Roots, marker: *Marker) void {
         self.global.mark(marker);
         self.core.mark(marker);
+        for (self.cells) |cell| marker.object(Cell, cell);
     }
 };
+
+test "an unbound cell that no code points at leaves the table at a collection, and one that code points at stays" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const z: SymbolId = @fromBackingInt(@intCast(2));
+    _ = try f.resolve(x);
+    const pointed = (try f.resolve(y)).global;
+    // 値を持つ自分のセルは、強く持つ。
+    const valued = try f.define(z);
+    valued.value = .fromFixnum(3);
+    f.global.commitShadows();
+    f.heap.collect(Roots{ .global = &f.global, .core = &f.core, .cells = &.{pointed} });
+    try std.testing.expectEqual(null, f.global.lookup(x));
+    try std.testing.expectEqual(pointed, f.global.lookup(y).?.denotation.global);
+    try std.testing.expectEqual(valued, f.global.lookup(z).?.denotation.global);
+    try std.testing.expectEqual(2, f.heap.count);
+    // 外れた名前を解決し直すと、新しい未束縛のセルになる。
+    const again = (try f.resolve(x)).global;
+    try std.testing.expectEqual(value_mod.Kind.uninitialized, again.value.kind());
+    try std.testing.expectEqual(3, f.heap.count);
+}
+
+test "a table that keeps its unbound cells keeps them through a collection" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.global.keep_unbound = true;
+    const cell = (try f.resolve(x)).global;
+    f.heap.collect(Roots{ .global = &f.global, .core = &f.core });
+    try std.testing.expectEqual(cell, f.global.lookup(x).?.denotation.global);
+    try std.testing.expectEqual(1, f.heap.count);
+}
 
 test "a cell that does not fit the heap is the heap's error, and leaves the name as it was" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

@@ -1519,21 +1519,22 @@ test "the constants of the code live as long as the code, and go with it" {
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // 名前 `x` を解決すると、REPL の表に未束縛のセルができる。セルは表が持つ。
+    // 名前 `x` を解決すると、REPL の表に未束縛のセルができる。指すコードが無くなれば、
+    // 表は弱く持つので、セルは外れて回収される(ADR-0040 の決定6)。
     _ = try expand(&f.ctx, a, try f.read("x"));
     f.ctx.collectIdle();
-    try std.testing.expectEqual(1, f.ctx.heap.count);
+    try std.testing.expectEqual(0, f.ctx.heap.count);
     // クォートしたデータは、節点から辿られる。対象はデータそのもので、周りの `quote`
     // 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
     f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{node} });
-    // セル、節点、データの2つのペア。
-    try std.testing.expectEqual(4, f.ctx.heap.count);
+    // 節点と、データの2つのペア。
+    try std.testing.expectEqual(3, f.ctx.heap.count);
     try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
     // コードに誰も届かなくなれば、節点もデータも回収される(ADR-0031 の 2026-10-10 の追記の、
     // `quote` したデータがセッションの終わりまで残る帰結が外れる)。
     f.ctx.collectIdle();
-    try std.testing.expectEqual(1, f.ctx.heap.count);
+    try std.testing.expectEqual(0, f.ctx.heap.count);
     // シンボルの定数も、節点から名前に印が付く。
     const named = try expand(&f.ctx, a, try f.read("(quote zzz-constant)"));
     f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{named} });

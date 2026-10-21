@@ -101,7 +101,8 @@ pub const Registry = struct {
     pub fn begin(self: *Registry, ctx: *Context, name: Value) Error!*Library {
         const tables = ctx.resident();
         const table = try tables.create(env_mod.Global);
-        table.* = .{};
+        // 定義の途中は、未束縛のセルを強く持つ(`finish` の未束縛の検査が読む)。
+        table.* = .{ .keep_unbound = true };
         // 表を `tables` に載せるまでは、`deinit` が返さないので、ここで返す。
         var listed = false;
         errdefer if (!listed) tables.destroy(table);
@@ -633,6 +634,9 @@ fn finish(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, pending: []c
             list.written(),
         });
     }
+    // 検査が済めば、ほかの最上位の表と同じく弱く持つ。エクスポートしたマクロの展開が、
+    // この表に未束縛のセルを作ることがある。
+    table.keep_unbound = false;
     lib.state = .loaded;
 }
 
