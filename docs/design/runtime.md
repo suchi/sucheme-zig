@@ -391,7 +391,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 | 継続 | 継続フレームの列。空なら実行完了 |
 | 直前の値 | 直近の評価結果 |
 | 動的状態の列 | `dynamic-wind`、ハンドラ、ハンドラ切り替え、パラメータの束縛 |
-| 歩数の残り | 最上位の形式1つが使える周回の数(`Registers.steps_left`)。`Interpreter.setStepLimit` で上限を置いたときだけ尽き、尽きたら `error.StepLimit` で形式を打ち切る([ADR-0043](../adr/0043-machine-step-limit-not-catchable.md)、スライス 6h-1)。既定は上限なしで、完了まで走る。WASM で制御を戻して再開する形は段階8である([platform-and-web.md](platform-and-web.md) の再開可能性) |
+| 歩数の残り | 最上位の形式1つが使える周回の数(`Registers.steps_left`)。`Interpreter.setStepLimit` で上限を置いたときだけ尽き、尽きたら `error.StepLimit` で形式を打ち切る([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md)、スライス 6h-1)。既定は上限なしで、完了まで走る。WASM で制御を戻して再開する形は段階8である([platform-and-web.md](platform-and-web.md) の再開可能性) |
 
 現在の例外ハンドラは独立した状態にしない。動的状態の列から定数時間で導出する([ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md))。
 
@@ -572,7 +572,7 @@ R7RS 6.11 は `raise` について次のように規定している。
 
 `after` の中でさらに未処理例外が起きた場合、巻き戻しは1つ外側の点から再開する。したがって `after` が新しい点を積まなければ有限回で最外に到達する。
 
-積む場合は停止を保証できない。`(define (loop) (dynamic-wind (lambda () #t) (lambda () (car '())) (lambda () (loop))))` は、脱出のたびに `after` が新しい wind 点を作って再び例外を起こすため巡回する。継続フレームは脱出のたびに捨てられるので計上量は増えず、上限超過にもならない。R7RS はこのプログラムの停止を要求していないので非準拠ではない。利用者が `after` の中に無限の再帰を書いた場合に限る。歩数制限が入ったあと(段階8)は、WASM ではホストに制御が戻り、停止ボタンで中断できる。今の REPL と WASM は歩数の上限を置かず、ブラウザでは停止ボタンが Worker を捨てて作り直すことで止める(状態は初期化される)。ネイティブの REPL とファイルの実行では、プロセスを止める以外に止める手段が無い。上限を置いた形式は打ち切られるが、`after` は呼ばれない([ADR-0043](../adr/0043-machine-step-limit-not-catchable.md))。
+積む場合は停止を保証できない。`(define (loop) (dynamic-wind (lambda () #t) (lambda () (car '())) (lambda () (loop))))` は、脱出のたびに `after` が新しい wind 点を作って再び例外を起こすため巡回する。継続フレームは脱出のたびに捨てられるので計上量は増えず、上限超過にもならない。R7RS はこのプログラムの停止を要求していないので非準拠ではない。利用者が `after` の中に無限の再帰を書いた場合に限る。歩数制限が入ったあと(段階8)は、WASM ではホストに制御が戻り、停止ボタンで中断できる。今の REPL と WASM は歩数の上限を置かず、ブラウザでは停止ボタンが Worker を捨てて作り直すことで止める(状態は初期化される)。ネイティブの REPL とファイルの実行では、プロセスを止める以外に止める手段が無い。上限を置いた形式は打ち切られるが、`after` は呼ばれない([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md))。
 
 起動時に既定のハンドラを積む方式は採らない。R7RS 6.11 の「インストールした時点のハンドラ」の計算に実在しないインストール点が混ざり、切り替え先の意味が曖昧になる。
 
@@ -654,6 +654,6 @@ R7RS 6.1 は「Even if its arguments are circular data structures, equal? must a
 
 ブラウザではメインスレッドを長時間占有できない。機械のループは歩数の制限で制御を呼び出し元に返す。WASM のエクスポートは続きがあるかどうかを状態コードで返し、JS 側が再開する。この構造はネイティブ側でも割り込み処理に使える。
 
-これは設計の目標で、入れるのは段階8である。今の実装には、続きを返すエクスポート(`sucheme_step`)が無い。`Machine.run` は完了するまで走り、`sucheme_eval_begin` は評価を完了して戻る([platform-and-web.md](platform-and-web.md) のエクスポートと再開可能性)。歩数の上限は、スライス 6h-1 で、制御を戻さずに形式を打ち切る形だけが入った([ADR-0043](../adr/0043-machine-step-limit-not-catchable.md))。準拠スイートの実行器だけが置き、WASM は置かない。
+これは設計の目標で、入れるのは段階8である。今の実装には、続きを返すエクスポート(`sucheme_step`)が無い。`Machine.run` は完了するまで走り、`sucheme_eval_begin` は評価を完了して戻る([platform-and-web.md](platform-and-web.md) のエクスポートと再開可能性)。歩数の上限は、スライス 6h-1 で、制御を戻さずに形式を打ち切る形だけが入った([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md))。準拠スイートの実行器だけが置き、WASM は置かない。
 
 深い再帰はヒープフレームを消費するだけなので Zig のスタックは溢れない。フレームは計上の対象なので、無限再帰は上限超過として Scheme のエラーになる。フレーム数に別の上限を設けるかどうかは実装時に決める([open-questions.md](open-questions.md))。
