@@ -76,3 +76,4 @@
 | [0040](0040-core-ir-in-the-gc-heap.md) | コアIRの節点を GC ヒープに置き、最上位の表を常に上限に数え、未束縛のセルを弱く持つ | 採用 | 2026-10-20 |
 | [0041](0041-bsd-name-clause-attribution-not-endorsement.md) | 取り込んだ準拠スイートの著者名は出典としてだけ使い、推奨や認定と読める形では使わない | 採用 | 2026-10-20 |
 | [0042](0042-keep-replaced-cells-without-a-value.md) | 値の無いまま置き換えた最上位のセルは、未束縛の報告のために表が持つ | 採用 | 2026-10-21 |
+| [0043](0043-loading-library-holds-unbound-cells-strongly.md) | 定義の途中のライブラリの表は、未束縛のセルを強く持つ | 採用 | 2026-10-21 |
