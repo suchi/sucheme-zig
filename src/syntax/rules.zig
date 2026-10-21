@@ -68,11 +68,45 @@ pub fn compile(ctx: *Context, scratch: std.mem.Allocator, spec: Value, env: ?*Sy
     var r = rules;
     while (r.asPair()) |p| : (r = p.cdr) {
         const rule = try s.ruleOf(p.car);
+        try checkNotCircular(ctx, scratch, rule.pattern, "bad syntax-rules: circular pattern");
+        try checkNotCircular(ctx, scratch, rule.template, "bad syntax-rules: circular template");
         const vars = try s.patternVars(rule.pattern);
         _ = try s.transcribe(rule.template, vars, try s.dryMatches(vars), null, 0, true);
     }
     if (r.kind() != .empty_list) return ctx.raise(shape, .{});
     return ctx.create(Macro, .{ .literals = literals, .rules = rules, .env = env, .ellipsis = ellipsis });
+}
+
+/// Raises `message` when `form` is circular.
+/// パターンの照合とテンプレートの複製は、ペアとベクタを quote の中まで辿るので、循環した
+/// パターンやテンプレートでは止まらない。リーダは quote とベクタの中の循環をリテラルとして
+/// 通す(src/reader.zig の `checkNotCircularCode`)ので、ここで定義の時点に断る。辿り方は
+/// リーダと同じく、経路の上と辿り終えたものを分けた深さ優先で、共有は1回だけ辿る。
+fn checkNotCircular(ctx: *Context, scratch: std.mem.Allocator, form: Value, comptime message: []const u8) Error!void {
+    const State = enum { on_path, done };
+    const Step = union(enum) { enter: Value, leave: usize };
+    var states: std.AutoHashMapUnmanaged(usize, State) = .empty;
+    defer states.deinit(scratch);
+    var stack: std.ArrayList(Step) = .empty;
+    defer stack.deinit(scratch);
+    try stack.append(scratch, .{ .enter = form });
+    while (stack.pop()) |step| switch (step) {
+        .leave => |id| try states.put(scratch, id, .done),
+        .enter => |v| {
+            const id: usize = if (v.asPair()) |p| @intFromPtr(p) else if (v.asVector()) |vec| @intFromPtr(vec) else continue;
+            const slot = try states.getOrPut(scratch, id);
+            if (slot.found_existing) switch (slot.value_ptr.*) {
+                .on_path => return ctx.raise(message, .{}),
+                .done => continue,
+            };
+            slot.value_ptr.* = .on_path;
+            try stack.append(scratch, .{ .leave = id });
+            if (v.asPair()) |p| {
+                try stack.append(scratch, .{ .enter = p.cdr });
+                try stack.append(scratch, .{ .enter = p.car });
+            } else for (v.asVector().?.items) |item| try stack.append(scratch, .{ .enter = item });
+        },
+    };
 }
 
 /// How much of its work area an application of a macro keeps for the next one.
@@ -923,4 +957,21 @@ test "a pattern and a template nested deep are matched and transcribed" {
 test "slow: a pattern and a template nested deeper than the Zig stack allows are matched and transcribed" {
     try tier.slow();
     try expectDeep(200_000);
+}
+
+test "a template or a pattern that is circular is an error when the macro is defined" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // リーダは quote とベクタの中の循環を通す(リテラルの中にある)。テンプレートは、その中まで
+    // 写すので、循環を定義の時点で断る。
+    try std.testing.expectError(error.Raised, f.macro("(syntax-rules () ((_) '#0=(tmp . #0#)))"));
+    try std.testing.expectEqualStrings("bad syntax-rules: circular template", f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.macro("(syntax-rules () ((_ x) #(#0=(x . #0#))))"));
+    try std.testing.expectEqualStrings("bad syntax-rules: circular template", f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.macro("(syntax-rules () ((_ #(#0=(a . #0#))) 1))"));
+    try std.testing.expectEqualStrings("bad syntax-rules: circular pattern", f.ctx.diagnostic());
+    // 共有は循環ではない。
+    const m = try f.macro("(syntax-rules () ((_ x) '(#0=(a x) #0#)))");
+    try std.testing.expectEqualStrings("(#<alias quote> ((#<alias a> 1) (#<alias a> 1)))", try f.transcribed(m, "(m 1)"));
 }

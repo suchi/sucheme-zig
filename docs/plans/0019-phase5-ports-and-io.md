@@ -61,7 +61,7 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 5a コメントと指令と行継続 | L2 | `#\| a #\| b \|# \|# 1` が `1`、`(list 1 #;2 3)` が `(1 3)`、同じ入力の中で、`#!fold-case` のあとの `ABC` が `abc` で、`#!no-fold-case` で戻る(REPL の次の入力まで残すのは 5i と 5l)。文字列の行継続が読める | `src/reader.zig`、`src/string_syntax.zig` | T2 | なし | 5b と 5c とは直列(同じファイル)。L3 とは並行 | 小 |
 | 5b 縦棒の識別子 | L2 | `(eq? '\|a b\| (string->symbol "a b"))` が `#t`。`\|\x41;\|` が `A` という名前のシンボル | `src/reader.zig`、`src/string_syntax.zig`(文字列とエスケープを共有するので、新しいファイルは作らなかった)。`src/sucheme.zig` の誤りの説明の振り分けに1行(5a も同じ) | T2 | 5a | L3 と並行 | 小 |
-| 5c データラベル | L2 | `(let ((x '#0=(a . #0#))) (eq? x (cdr x)))` が `#t`。衛生性の検証項目の9 | `src/reader.zig` | T2(T3 がレビュー) | 5b | L3 と並行 | 中 |
+| 5c データラベル | L2 | `(let ((x '#0=(a . #0#))) (eq? x (cdr x)))` が `#t`。衛生性の検証項目の9。リテラルの外の循環と、`syntax-rules` のパターンとテンプレートの循環が、止まらずに誤りになる | `src/reader.zig`。`src/syntax/rules.zig`(循環の検査の関数1つと呼び出し、2026-10-20 に承認)。`src/sucheme.zig` の誤りの説明の振り分けに1行 | T2(T3 がレビュー) | 5b | L3 と並行 | 中 |
 | 5d 位置情報の副表 | L2 | 展開時のエラーが、ファイルと行と桁を添えて報告される | `src/reader.zig`、`src/syntax/source.zig` の受け渡しの部分 | T3 | 5c、3o のマージ | L3 と並行。3o とは直列 | 中 |
 | 5g ポートの型の骨格 | L3 | `Value` に `port` の変種があり、GC が辿り、計上し、回収する。プリンタが `#<port>` と書く。手続きは足さない | `src/value.zig`、`src/trace.zig`、`src/heap.zig`、`src/printer.zig` の1行 | T3 | 0018 の数の型の骨格との順序(下の「型の骨格の衝突」) | L2 と並行 | 小 |
 | 5h 文字列ポートとバイトベクタポート | L3 | `(let ((p (open-input-string "ab"))) (list (read-char p) (peek-char p) (read-char p) (eof-object? (read-char p))))` が `(#\a #\b #\b #t)`。`get-output-string` と `get-output-bytevector` が往復する | `src/port.zig`(新規)、`src/prim/port.zig`(新規)、`src/prim/table.zig` の1行、`lib/scheme/base.sld` のポートの輸出 | T2 | 5g | L2 と並行 | 中 |
@@ -437,7 +437,8 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | この計画書 | 合意済み(2026-10-20) | suchi/sucheme-zig#132 |
 | 5a | マージ済み。ブロックコメント、データコメント、`#!fold-case` と `#!no-fold-case`、文字列の行継続と行の終わり、CR で終わる行コメント。指令の状態は同じ `Reader` の中だけで、REPL の入力をまたいで残すのは 5i と 5l | suchi/sucheme-zig#141 |
 | 5b | PR 作成済み。縦棒の識別子。エスケープは <symbol element> のものに `\"` と `\\` を足したもので、行継続は無い。畳み込む読み手でも畳み込まない。縦棒を付けて書き出すのは 5j | suchi/sucheme-zig#146 |
-| 5c から 5r | 未着手 | - |
+| 5c | 実装済み(PR 作成前)。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | - |
+| 5d から 5r | 未着手 | - |
 
 ## 次にやること
 

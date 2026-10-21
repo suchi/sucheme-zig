@@ -212,31 +212,31 @@ pub const Machine = struct {
                         value = .fromClosure(try ctx.create(Closure, .{ .lambda = lambda, .env = env }));
                     },
                     .@"if" => |*i| {
-                        kont = try self.push(kont, env, .{ .branch = i });
+                        kont = try self.push(kont, env, .{ .branch = node });
                         control = i.condition;
                     },
                     .sequence => |nodes| {
-                        if (nodes.len > 1) kont = try self.push(kont, env, .{ .sequence = nodes[1..] });
+                        if (nodes.len > 1) kont = try self.push(kont, env, .{ .sequence = .{ .node = node, .next = 1 } });
                         control = nodes[0];
                     },
                     .local_set => |*a| {
-                        kont = try self.push(kont, env, .{ .local_set = a });
+                        kont = try self.push(kont, env, .{ .local_set = node });
                         control = a.value;
                     },
                     .local_define => |*a| {
-                        kont = try self.push(kont, env, .{ .local_define = a });
+                        kont = try self.push(kont, env, .{ .local_define = node });
                         control = a.value;
                     },
                     .global_set => |*a| {
-                        kont = try self.push(kont, env, .{ .global_set = a });
+                        kont = try self.push(kont, env, .{ .global_set = node });
                         control = a.value;
                     },
                     .global_define => |*a| {
-                        kont = try self.push(kont, env, .{ .global_define = a });
+                        kont = try self.push(kont, env, .{ .global_define = node });
                         control = a.value;
                     },
                     .call => |*c| {
-                        kont = try self.push(kont, env, .{ .call = .{ .call = c, .args = null, .received = 0 } });
+                        kont = try self.push(kont, env, .{ .call = .{ .call = node, .args = null, .received = 0 } });
                         control = c.operator;
                     },
                     .parameterize => |pz| {
@@ -262,7 +262,8 @@ pub const Machine = struct {
                     if (k.step.requiresOneValue()) return self.wrongValueCount(m);
                 }
                 switch (k.step) {
-                    .branch => |i| {
+                    .branch => |n| {
+                        const i = &n.@"if";
                         if (value.isTrue()) {
                             control = i.consequent;
                         } else if (i.alternative) |alternative| {
@@ -271,37 +272,41 @@ pub const Machine = struct {
                             value = .unspecified_value;
                         }
                     },
-                    .sequence => |rest| {
+                    .sequence => |s| {
+                        const nodes = s.node.sequence;
                         // 最後の節点は、この列のフレームが残っていない状態で走る。
-                        if (rest.len > 1) kont = try self.push(kont, env, .{ .sequence = rest[1..] });
-                        control = rest[0];
+                        if (s.next + 1 < nodes.len) kont = try self.push(kont, env, .{ .sequence = .{ .node = s.node, .next = s.next + 1 } });
+                        control = nodes[s.next];
                     },
-                    .local_set => |a| {
+                    .local_set => |n| {
+                        const a = &n.local_set;
                         const slot = slotAt(env, a.address);
                         if (slot.kind() == .uninitialized) return self.uninitialized(a.name);
                         slot.* = value;
                         value = .unspecified_value;
                     },
-                    .local_define => |a| {
-                        slotAt(env, a.address).* = value;
+                    .local_define => |n| {
+                        slotAt(env, n.local_define.address).* = value;
                         value = .unspecified_value;
                     },
-                    .global_set => |a| {
+                    .global_set => |n| {
+                        const a = &n.global_set;
                         // `set!` は変数を作らない。未束縛の変数への代入はエラーである。
                         if (a.cell.value.kind() == .uninitialized) return self.unbound(a.cell.name);
                         a.cell.value = value;
                         value = .unspecified_value;
                     },
-                    .global_define => |a| {
-                        a.cell.value = value;
+                    .global_define => |n| {
+                        n.global_define.cell.value = value;
                         value = .unspecified_value;
                     },
                     .call => |c| {
+                        const call = &c.call.call;
                         const args = try ctx.create(Args, .{ .value = value, .next = c.args });
                         const received = c.received + 1;
-                        if (received <= c.call.operands.len) {
+                        if (received <= call.operands.len) {
                             kont = try self.push(kont, env, .{ .call = .{ .call = c.call, .args = args, .received = received } });
-                            control = c.call.operands[received - 1];
+                            control = call.operands[received - 1];
                         } else {
                             // 末尾呼び出し: 本体は呼び出しの継続のもとで走る。その継続は
                             // `kont` に残っているものである。

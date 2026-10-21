@@ -232,12 +232,13 @@ test "a frame is followed through its slots and its parent" {
 
 test "a continuation frame is followed through its link, its environment and its pending arguments" {
     var env: Frame = .{ .values = &.{}, .parent = null };
-    var rest: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = &.{} } };
-    var arg: Args = .{ .value = .empty_list_value, .next = null };
     const node: value_mod.Node = .{ .constant = .unspecified_value };
-    const nodes = [_]*const value_mod.Node{&node};
-    const call: value_mod.Call = .{ .operator = &node, .operands = &nodes };
-    const condition: value_mod.If = .{ .condition = &node, .consequent = &node, .alternative = null };
+    const nodes = [_]*const value_mod.Node{ &node, &node };
+    const sequence: value_mod.Node = .{ .sequence = &nodes };
+    var rest: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = &sequence, .next = 1 } } };
+    var arg: Args = .{ .value = .empty_list_value, .next = null };
+    const call: value_mod.Node = .{ .call = .{ .operator = &node, .operands = &nodes } };
+    const condition: value_mod.Node = .{ .@"if" = .{ .condition = &node, .consequent = &node, .alternative = null } };
 
     const waiting: Kont = .{ .next = &rest, .env = &env, .depth = 2, .step = .{ .call = .{ .call = &call, .args = &arg, .received = 1 } } };
     var r: Recorder = .{};
@@ -249,7 +250,7 @@ test "a continuation frame is followed through its link, its environment and its
     var q: Recorder = .{};
     interpreter.children(&q, Kont, &branching);
     try q.expect(&.{ addr(&rest), addr(&env) });
-    const sequencing: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = &nodes } };
+    const sequencing: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = &sequence, .next = 1 } } };
     var s: Recorder = .{};
     interpreter.children(&s, Kont, &sequencing);
     try s.expect(&.{});
@@ -433,8 +434,11 @@ test "the code and the plain data around it are never followed" {
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Node).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(*const value_mod.Primitive).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify([]const *const value_mod.Node).?);
-    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Call).?);
     try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(usize).?);
+    // 節点の内部の部分へのポインタは、分類できない。フレームがそれを持つ変更は、
+    // 節点がヒープに移ったときに、黙ってたどられなくなる代わりに、コンパイルエラーになる。
+    try std.testing.expect(comptime interpreter.classify(*const value_mod.If) == null);
+    try std.testing.expect(comptime interpreter.classify(*const value_mod.Call) == null);
     try std.testing.expectEqual(Class.symbol, comptime interpreter.classify(SymbolId).?);
     try std.testing.expectEqual(Class.follow, comptime interpreter.classify(?*const Kont).?);
 }

@@ -1,0 +1,20 @@
+# スライス 3o-2: 継続のフレームが節点を指す形へ書き換えても、挙動が変わらないことの固定。
+# 列の途中、本体の定義、if の条件、局所と大域の set!、呼び出しの途中のオペランドで
+# 捕捉した継続を、何度も再開する。各ケースは新しいインタプリタで走る。
+
+# 列の2番目より後ろで捕捉した継続の再開。本体の定義のフレームと if のフレームを通る。
+(define k #f) (define n 0) (define (f) (begin 'a (call/cc (lambda (c) (set! k c))) (set! n (+ n 1)) (list n 'end))) (define (run) (define result (f)) (if (< n 3) (k #f) result)) (run)
+(3 end)
+
+# 大域の set! のフレームと、呼び出しの途中のオペランドのフレーム。捕捉の前に評価した
+# オペランドは、再開しても捕捉の時点の値のままである。
+(define k #f) (define n 0) (define g #f) (define (run) (set! g (list n (call/cc (lambda (c) (set! k c) 'first)) (begin (set! n (+ n 1)) n))) (if (< n 3) (k n) g)) (run)
+(0 2 3)
+
+# 局所変数の set! のフレーム。
+(define k #f) (define n 0) (define (run) (define v 0) (set! v (+ 100 (call/cc (lambda (c) (set! k c) 0)))) (if (< n 2) (begin (set! n (+ n 1)) (k n)) v)) (run)
+102
+
+# if の条件の中で捕捉した継続の再開。
+(define k #f) (define n 0) (define (run) (if (call/cc (lambda (c) (set! k c) #f)) (list 'then n) (begin (set! n (+ n 1)) (if (< n 3) (k #f) (k #t))))) (run)
+(then 3)
