@@ -2278,7 +2278,26 @@ test "a handler does not catch the step limit" {
     // 捕まえられる誤りにすると、(chibi test) の test のように誤りを捕まえて続ける式が止まらない。
     try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(guard (e (#t 'caught)) (let loop () (loop)))", &w));
     try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(with-exception-handler (lambda (e) 'caught) (lambda () (let loop () (loop))))", &w));
+    // 送出を捕まえるたびに続けるループも止まる。ハンドラへの受け渡しで残りを戻すと、ここが止まらない。
+    interp.setStepLimit(100000);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (guard (e (#t 0)) (car '())) (loop))", &w));
     try std.testing.expectEqualStrings("", w.buffered());
+}
+
+test "the step limit ends a form without calling the after of a dynamic-wind" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define x 0)", &w);
+    interp.setStepLimit(1000);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(dynamic-wind (lambda () #f) (lambda () (let loop () (loop))) (lambda () (set! x 1)))", &w));
+    // 打ち切りは巻き戻しを通らない(ADR-0044)。
+    try interp.evalPrint(arena.allocator(), "x", &w);
+    try std.testing.expectEqualStrings("0\n", w.buffered());
 }
 
 test "the step limit lets a form take exactly that many steps" {
