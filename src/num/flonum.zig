@@ -108,29 +108,23 @@ pub fn parseDecimal(text: []const u8) ParseError!f64 {
     return std.fmt.parseFloat(f64, text) catch error.InvalidSpelling;
 }
 
-/// `<digit>* [. <digit>*] [e [+-] <digit>+]` で、整数部と小数部のどちらかに桁がある。
+/// `<digit>* [. <digit>*] [e [+-] <digit>*]` の形である。桁が足りない綴り(`.`、`1e`)は、
+/// ここでは通し、`std.fmt.parseFloat` の拒否に任せる(テストが固定する)。
 ///
 /// Why: `std.fmt.parseFloat` は符号、`inf`、`nan`、`0x` の16進、`_` の区切りも受理する
 /// (docs/design/numerics-and-unicode.md)。`syntax.scan` を通ったものしか来ない約束だが、
 /// 約束が破れたときに別の値を黙って返さないよう、渡す前にここで形を確かめる。
 fn isDecimalSpelling(text: []const u8) bool {
     var i: usize = 0;
-    const whole_start = i;
     while (i < text.len and std.ascii.isDigit(text[i])) i += 1;
-    var mantissa_digits = i - whole_start;
     if (i < text.len and text[i] == '.') {
         i += 1;
-        const fraction_start = i;
         while (i < text.len and std.ascii.isDigit(text[i])) i += 1;
-        mantissa_digits += i - fraction_start;
     }
-    if (mantissa_digits == 0) return false;
     if (i < text.len and (text[i] == 'e' or text[i] == 'E')) {
         i += 1;
         if (i < text.len and (text[i] == '+' or text[i] == '-')) i += 1;
-        const exponent_start = i;
         while (i < text.len and std.ascii.isDigit(text[i])) i += 1;
-        if (i == exponent_start) return false;
     }
     return i == text.len;
 }
@@ -213,7 +207,7 @@ test "parseDecimal rounds to nearest even, and saturates instead of failing" {
 }
 
 test "parseDecimal refuses what is not a <decimal 10>" {
-    for ([_][]const u8{ "", "inf", "nan", "0x10", "1_0", "e5", "1e", "+1.0", "-1.0", "1.0f", "+inf.0", "1 " }) |text| {
+    for ([_][]const u8{ "", ".", "e5", ".e5", "1e", "1e+", "inf", "nan", "0x10", "1_0", "+1.0", "-1.0", "1.0f", "+inf.0", "1 " }) |text| {
         try std.testing.expectError(error.InvalidSpelling, parseDecimal(text));
     }
 }
