@@ -794,6 +794,21 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     }
 }
 
+test "a library whose definition fails gives back everything its table took" {
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    // 参照してからインポートした `car` は、値の無いまま置き換えたセルとして表が持ち、本体の
+    // 終わりに未束縛として報告される。その失敗で、表は束縛も2つのリストも返す。
+    try expectLineFails(&interp, "(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (car 1))) (import (only (sucheme core) car)))", "unbound identifier in library (t a): car");
+    const tables = interp.ctx.libraries.tables.items;
+    const table = tables[tables.len - 1];
+    try std.testing.expectEqual(0, table.bindings.count());
+    try std.testing.expectEqual(0, table.bindings.capacity());
+    try std.testing.expectEqual(0, table.displaced_unbound.capacity);
+    try std.testing.expectEqual(0, table.replaced.capacity);
+}
+
 test "a variable that a define-syntax replaced is still there for the code made before" {
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
