@@ -119,9 +119,11 @@ pub const Global = struct {
     base: ?*Core = null,
     /// The cells of the top level's own variables that had no value when a
     /// `define-syntax` or an `import` replaced them.
-    /// ライブラリの本体の終わりに、未束縛として報告するために持つ(`library.unboundNames`)。
-    /// 値を持つセルは持たない。前に展開したコードがまだ指していれば(R7RS 5.4: 既存の参照は
-    /// 変わらない)、そのコードから辿られる(ADR-0040)。
+    /// ライブラリの本体の終わりに、未束縛として報告するために持つ(`library.unboundNames`、
+    /// ADR-0042)。置き換えた時点で値を持っていたセルは持たない。前に展開したコードがまだ
+    /// 指していれば(R7RS 5.4: 既存の参照は変わらない)、そのコードから辿られる(ADR-0040)。
+    /// 値の有無は展開の時点で見るので、同じ形式の中で定義してから置き換えた名前のセルは、
+    /// ここに入ったあとで値を持つ。報告する側は、本体の終わりに値をもう一度見る。
     displaced_unbound: std.ArrayList(*Cell) = .empty,
     /// The syntactic bindings that the expansion in progress has replaced, with
     /// what each name was bound to before, in order.

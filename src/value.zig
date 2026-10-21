@@ -1486,8 +1486,8 @@ pub const LocalBinding = struct {
 /// global bindings).
 /// GC ヒープにある。セルに届くのは、最上位の束縛の表と、セルを指すコアIRの節点
 /// (GC ヒープにある。ADR-0040)である。表から外れたセルは、指す節点が持つ。例外は、
-/// 値の無いまま `import` か `define-syntax` に置き換えられたセルで、ライブラリの本体の
-/// 終わりに未束縛として報告するために、表の `displaced_unbound` が持つ(src/env.zig)。
+/// 置き換えた時点で値の無かったセルで、ライブラリの本体の終わりに未束縛として報告する
+/// ために、表の `displaced_unbound` が持つ(src/env.zig、ADR-0042)。
 pub const Cell = struct {
     /// The name, for the message of an error.
     name: SymbolId,
