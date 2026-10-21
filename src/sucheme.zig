@@ -2258,6 +2258,26 @@ test "lines that refer to unknown names do not leave a cell each after a collect
     }
 }
 
+test "an unbound cell that an exported macro makes in a loaded library goes once no code points at it" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        // マクロの出力の自由な名前は、ライブラリの最上位で解決される。定義を終えたライブラリの
+        // 表にできる未束縛のセルも、指すコードが無くなれば外れる。名前そのものは、マクロの
+        // 規則のデータが持つので残る。
+        try expectLinePrints(&interp, "(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) (if #f lib-only-unknown))))))", "");
+        try expectLinePrints(&interp, "(import (t m)) (m)", "");
+        const lib = interp.ctx.libraries.list.items[interp.ctx.libraries.list.items.len - 1];
+        const table = interp.ctx.libraries.tableOf(lib);
+        const id = interp.ctx.heap.symbols.lookup("lib-only-unknown").?;
+        // ストレスモードでは、行の途中の GC が、もう外している。
+        if (!stress) try std.testing.expect(table.lookup(id) != null);
+        interp.ctx.collectIdle();
+        try std.testing.expectEqual(null, table.lookup(id));
+    }
+}
+
 test "a library still reports a name that only dead code of its body refers to, whenever the collections run" {
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
