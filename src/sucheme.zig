@@ -1340,6 +1340,85 @@ test "the clause of a cond-expand that applies may include a file, in an express
     try expectLinePrints(&interp, "(import (t lib)) w", "from-the-clause\n");
 }
 
+test "the definitions of a file an include reads at the start of a body are definitions of the body" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("defs.scm", "(define a 1) (define b 2)");
+        try tree.write("tail.scm", "(define c 3) (+ c 1)");
+        try tree.write("more.scm", "(define d (+ a b))");
+        try tree.write("empty.scm", "; nothing\n");
+        try tree.write("ci.scm", "(DEFINE (F) 7)");
+        try tree.write("late.scm", "(define e 5)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // 最初の失敗するテスト。
+        try expectLinePrints(&interp, "((lambda () (include \"defs.scm\") (+ a b)))", "3\n");
+        // ファイルの定義のあとの式は、本体の式である。
+        try expectLinePrints(&interp, "((lambda () (include \"tail.scm\")))", "4\n");
+        // 複数のファイルは書いた順に読まれ、前の定義と後の定義が同じ本体に並ぶ。
+        try expectLinePrints(&interp, "((lambda () (define z 0) (include \"defs.scm\" \"more.scm\") (list z d)))", "(0 3)\n");
+        try expectLinePrints(&interp, "((lambda () (include \"empty.scm\") (define y 1) y))", "1\n");
+        try expectLinePrints(&interp, "((lambda () (include-ci \"ci.scm\") (f)))", "7\n");
+        // 本体の局所変数なので、最上位には現れない。
+        try expectLineFails(&interp, "a", "unbound variable: a");
+        // cond-expand の節の include も、本体の定義になる。
+        try expectLinePrints(&interp, "((lambda () (cond-expand (r7rs (include \"defs.scm\"))) (+ a b)))", "3\n");
+        // 式の後ろの定義は、ファイルから来ても誤りである。
+        try expectLineFailsInTree(&interp, &tree, "((lambda () 0 (include \"late.scm\") e))", "late.scm:1:1", "bad define: a definition is only allowed at the top level or at the start of a body");
+        try expectLineFailsInTree(&interp, &tree, "((lambda () (define a 0) (include \"defs.scm\") a))", "defs.scm:1:1", "bad define: a is already defined earlier in this body");
+        // ファイルの中身が式だけでも、今までどおり値になる。
+        try tree.write("e.scm", "(+ n 1)");
+        try expectLinePrints(&interp, "((lambda (n) (include \"e.scm\")) 5)", "6\n");
+        try expectLinePrints(&interp, "(let-syntax () (include \"defs.scm\") (+ a b))", "3\n");
+    }
+}
+
+test "a file an include reads at the start of a body is the base of the names its forms include, then and later" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        // 本体を走査するあいだに読むファイル(`inner.scm`)と、走査のあとで定義の値を展開する
+        // ときに読むファイル(`val.scm`)の両方が、`sub/` を基準にする。
+        try tree.write("sub/outer.scm", "(include \"inner.scm\") (define (g) (include \"val.scm\")) (define c (+ i 1))");
+        try tree.write("sub/inner.scm", "(define i 1)");
+        try tree.write("sub/val.scm", "42");
+        try tree.write("val.scm", "'top");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "((lambda () (include \"sub/outer.scm\") (list c (g))))", "(2 42)\n");
+        // ファイルのあとの形式は、含んだ側の基準に戻る。
+        try expectLinePrints(&interp, "((lambda () (include \"sub/outer.scm\") (define (h) (include \"val.scm\")) (list (g) (h))))", "(42 top)\n");
+        // 定義の並びがファイルの途中で終わっても、残りの形式はファイルを基準にする。
+        try tree.write("sub/mid.scm", "(define j 1) (list j (include \"val.scm\"))");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\")))", "(1 42)\n");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\") (include \"val.scm\")))", "top\n");
+        try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+    }
+}
+
+test "an include at the start of a body refuses a file that includes itself, and says where in the file" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("loop.scm", "(define q 1) (include \"loop.scm\")");
+    try tree.write("bad.scm", "(define r 1) (define)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFailsInTree(&interp, &tree, "((lambda () (include \"loop.scm\") q))", "loop.scm:1:14", "bad include: loop.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "((lambda () (include \"bad.scm\") r))", "bad.scm:1:14", "bad define: expected (define name expression)");
+    try expectLineFails(&interp, "((lambda () (include \"missing.scm\") 1))", "bad include: missing.scm: no such file");
+    // 失敗のあとは、読んでいる最中のファイルが空に戻る。
+    try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+    try tree.write("loop.scm", "(define q 1)");
+    try expectLinePrints(&interp, "((lambda () (include \"loop.scm\") q))", "1\n");
+}
+
 test "features returns the identifiers of the build in the order of its list, as a new list each time" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});

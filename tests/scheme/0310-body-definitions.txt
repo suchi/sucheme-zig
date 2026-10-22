@@ -1,0 +1,117 @@
+# Slice 3p-1: the definitions that a `cond-expand` at the start of a body holds
+# (R7RS 4.2.1, 5.3.2), and the definitions in the body of a `let-syntax` and a
+# `letrec-syntax` (R7RS 4.3.1). What an `include` at the start of a body reads is
+# checked by the unit tests of src/sucheme.zig, which have a temporary directory.
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+# 最初の失敗するテスト。
+((lambda () (cond-expand (r7rs (define x 1))) x))
+1
+
+# 当てはまる節の定義だけが、本体の定義になる。
+((lambda () (cond-expand (no-such-feature (define x 1)) (else (define x 2))) x))
+2
+
+# 節の中の定義と式は、本体の並びに続けて置かれる。
+((lambda () (define a 1) (cond-expand (r7rs (define b 2) (define c 3))) (define d 4) (list a b c d)))
+(1 2 3 4)
+
+((lambda () (cond-expand (r7rs (define b 2) (+ b 1)))))
+3
+
+# 定義の後の式の位置にある cond-expand も、式だけなら値になる。
+((lambda () (define a 1) (cond-expand (r7rs (+ a 1)))))
+2
+
+# 節の中の define-syntax と begin も、本体の定義である。
+((lambda () (cond-expand (r7rs (define-syntax m (syntax-rules () ((_) 5))) (begin (define y (m))))) y))
+5
+
+# 入れ子の cond-expand。
+((lambda () (cond-expand (r7rs (cond-expand ((not no-such-feature) (define z 6))))) z))
+6
+
+# マクロの適用が cond-expand になっても、本体の定義になる。
+((lambda () (define-syntax defs (syntax-rules () ((_ n v) (cond-expand (r7rs (define n v)))))) (defs w 7) w))
+7
+
+# 本体の定義は本体の局所変数で、最上位の同じ名前を書き換えない。
+(define x 10) (list ((lambda () (cond-expand (r7rs (define x 1))) x)) x)
+(1 10)
+
+# どの節も当てはまらない cond-expand は、本体の先頭では定義を持たない並びである。
+((lambda () (cond-expand (no-such-feature (define x 1))) 2))
+2
+
+((lambda () (cond-expand (r7rs)) 3))
+3
+
+# 本体に式が残らなければ、誤りである。
+((lambda () (cond-expand (no-such-feature 1))))
+error: bad lambda: a body needs an expression after its definitions
+
+((lambda () (cond-expand (r7rs (define x 1)))))
+error: bad lambda: a body needs an expression after its definitions
+
+# 式の後ろの定義は、cond-expand から来ても誤りである。
+((lambda () 1 (cond-expand (r7rs (define x 1))) x))
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+((lambda () (cond-expand (r7rs 1 (define x 1))) x))
+error: bad define: a definition is only allowed at the top level or at the start of a body
+
+# 同じ名前の2回の定義は、cond-expand をまたいでも誤りである。
+((lambda () (define x 1) (cond-expand (r7rs (define x 2))) x))
+error: bad define: x is already defined earlier in this body
+
+# let-syntax と letrec-syntax の本体の定義。
+(let-syntax ((m (syntax-rules () ((_) 1)))) (define x (m)) x)
+1
+
+(letrec-syntax ((m (syntax-rules () ((_ 0) 2) ((_ n) (m 0))))) (define x (m 5)) x)
+2
+
+(let-syntax () (define-syntax m (syntax-rules () ((_) 3))) (m))
+3
+
+(let-syntax () (define (f) 4) (define-syntax m (syntax-rules () ((_) (f)))) (m))
+4
+
+# 本体は自分の有効範囲を持つ。定義は本体の局所変数で、最上位の変数にならない。
+(define x 5) (list (let-syntax () (define x 1) x) x)
+(1 5)
+
+(begin (let-syntax () (define only-inside 1) only-inside) only-inside)
+error: unbound variable: only-inside
+
+# 外側の局所変数は、本体の中から見える。
+((lambda (y) (let-syntax () (define x 1) (+ x y))) 10)
+11
+
+((lambda (y) (let-syntax ((m (syntax-rules () ((_) y)))) (define x (m)) (lambda () (+ x y)))) 20)
+#<procedure>
+
+(((lambda (y) (let-syntax ((m (syntax-rules () ((_) y)))) (define x (m)) (lambda () (+ x y)))) 20))
+40
+
+# 本体の局所変数は、閉じ込めた手続きの呼び出しをまたいで残る。
+(define f (let-syntax () (define n 0) (lambda () (set! n (+ n 1)) n))) (begin (f) (f))
+2
+
+# let-syntax の本体の先頭でも、cond-expand と begin の定義が並びになる。
+(let-syntax () (cond-expand (r7rs (define a 1))) (begin (define b 2)) (+ a b))
+3
+
+# 本体の定義の誤りは、lambda の本体と同じである。
+(let-syntax () (define x 1))
+error: bad let-syntax: a body needs an expression after its definitions
+
+(letrec-syntax () (define x 1))
+error: bad letrec-syntax: a body needs an expression after its definitions
+
+(let-syntax () (define x 1) (define x 2) x)
+error: bad define: x is already defined earlier in this body
+
+(let-syntax () 1 (define x 1) x)
+error: bad define: a definition is only allowed at the top level or at the start of a body
