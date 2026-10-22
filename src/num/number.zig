@@ -103,6 +103,15 @@ pub fn parse(h: *Heap, text: []const u8, default_radix: u8) Error!?Value {
 /// `#e1eN` は 2.7 倍だった。小さい入力には約 700 バイトの固定費がある。そこで 8 倍と
 /// 2048 バイトを見込む。見積りを通ったあとで確保が断られないことは、テストが上限を
 /// 掃引して固定する。
+///
+/// 倍率を一律にした理由: 種類ごとに倍率を分けると、分岐が増え、倍率が足りない種類で
+/// `HeapLimit` の誤りが出る(R7RS 6.2.7 は内容を理由に誤りを出さない)。大きめの見積りは、
+/// 置ける数が `#f` になる側に倒れ、「ヒープに収まらない数は `#f`」という方針の内側に
+/// 収まる。受け入れた制約として、独立レビューの実測(2026-10-22)では、見積りが実際の
+/// ピークの何倍かは、整数が 4.1、`#i` の整数が 8.2 から 9.3、同程度の桁の分数が 1.6 から
+/// 1.7、10進小数が 1.4、`#e1eN` が 3.0、`#e1.5e4000` が 3.3 である。したがって、`#i` の
+/// 整数と偏った分数は、実際に要る上限の約 8 から 9 倍、整数は約 4 倍の余地が無いと `#f`
+/// になる。
 const work_factor = 8;
 const work_slack = 2048;
 
@@ -135,6 +144,8 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, text: []const u8, literal: syntax
             // Why: `#i-0` は -0.0 である。基数10以外で -0.0 を書くと `#i-0` になる(`write`)ので、
             // これを -0.0 と読まないと、R7RS 6.2.7 の往復条件 `(eqv? z (string->number
             // (number->string z radix) radix))` が -0.0 で成り立たない。小数点の綴りは基数10に限る。
+            // 往復条件の式と、「結果は明示的な基数接頭辞を含まない」という文は、
+            // docs/spec/errata-corrected-r7rs.pdf の 6.2.7 の原文で照合した(2026-10-22)。
             if (inexact) return .fromFlonum(signedF64(i.sign, try exact.ratioToF64(gpa, n.toConst(), one)));
             applySign(&n, i.sign);
             return try fromInteger(h, n.toConst());
