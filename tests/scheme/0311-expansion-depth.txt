@@ -1,7 +1,7 @@
 # Slice 3p-2: a macro that nests lambda without end stops at the limit of the depth
-# of procedures the expander makes (an implementation restriction, R7RS 1.3.2).
+# of the scopes the expander makes (an implementation restriction, R7RS 1.3.2).
 # 上限に届くまでの時間は深さの2乗で伸びる(ReleaseSafe で約1秒)ので、ここには1件だけ
-# 置く。引数のある lambda、本体の定義、let-syntax の本体の定義の形は、
+# 置く。引数のある lambda、本体の定義、let-syntax を重ねる形は、
 # tests/scheme-slow/0025-expansion-depth-scale.txt にある。上限の境目は、
 # src/syntax/expand.zig の単体テストが小さい上限で確かめる。
 #
@@ -9,7 +9,7 @@
 
 # 最初の失敗するテスト。入れ子の lambda を重ねて止まらないマクロが、有界で終わる。
 (define-syntax f (syntax-rules () ((_) (lambda () (f))))) (f)
-error: implementation restriction: procedures are nested more than 10000 deep
+error: implementation restriction: scopes are nested more than 10000 deep
 
 # 上限より浅い入れ子は、今までどおり展開できる。
 (define-syntax f2 (syntax-rules () ((_ 0) 'done) ((_ n) ((lambda () (f2 0)))))) (f2 1)
