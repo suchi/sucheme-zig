@@ -1397,7 +1397,22 @@ test "a file an include reads at the start of a body is the base of the names it
         try tree.write("sub/mid.scm", "(define j 1) (list j (include \"val.scm\"))");
         try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\")))", "(1 42)\n");
         try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\") (include \"val.scm\")))", "top\n");
+        // 走査がファイルを読み終えて続くと、次の include は含んだ側の基準に戻る。
+        try tree.write("sub/a.scm", "(define p 2)");
+        try tree.write("sub/b.scm", "'sub-b");
+        try tree.write("b.scm", "'top-b");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/a.scm\") (include \"b.scm\")))", "top-b\n");
+        // 名前が複数の include で、定義の並びが前のファイルで終わっても、まだ走査していない後ろの
+        // ファイルの形式は、そのファイルを基準にし、そのあとは含んだ側に戻る。
+        try tree.write("sub/t1.scm", "1");
+        try tree.write("sub/t2.scm", "(include \"b.scm\")");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/t1.scm\" \"sub/t2.scm\")))", "sub-b\n");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/t1.scm\" \"sub/t2.scm\") (include \"b.scm\")))", "top-b\n");
         try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+        try expectLinePrints(&interp, "(include \"sub/t1.scm\")", "1\n");
+        // 空のファイルだけを含む本体には、式が無い。
+        try tree.write("empty.scm", "; nothing\n");
+        try expectLineFails(&interp, "((lambda () (include \"empty.scm\")))", "bad lambda: a body needs an expression after its definitions");
     }
 }
 
@@ -1653,6 +1668,8 @@ fn expectPlacesOfErrors(stress: bool) !void {
         .{ .line = "(define (f)\n  (begin\n   (define)) 1)", .message = "prog.scm:3:4: bad define: expected (define name expression)" },
         .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(define (f)\n  (m))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
         .{ .line = "(define-syntax b (syntax-rules () ((_) (begin (if)))))\n(define (f)\n  (b))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // 本体の先頭の cond-expand の節の中身も、begin と同じく、cond-expand の形式の位置。
+        .{ .line = "(define-syntax c (syntax-rules () ((_) (cond-expand (r7rs (if))))))\n(define (f)\n  (c))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
     };
     for (cases) |c| try expectLineFails(&interp, c.line, c.message);
 }

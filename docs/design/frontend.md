@@ -632,7 +632,7 @@ Zig で書く範囲は [ADR-0006](../adr/0006-library-system-and-scheme-level-st
 
 現状(スライス 3l)。REPL と CLI と WASM の最上位の初期環境は、`(scheme base)` が輸出するものになった。初期化が、何も束縛していない最上位に `(import (scheme base))` を評価して作る。`when` や `unless` など、`lib/` が定義する構文と手続きも、この環境で見える。`delay` `force` `make-promise` `promise?` などは `(import (scheme lazy))` が要る。`(sucheme core)` の `import` は、利用者のコード(REPL とファイルとユーザーのライブラリ)からは `bad import: the library (sucheme core) is only for the standard libraries the executable carries` で拒否される。標準環境の読み込みは、ヒープの上限に計上する(入りきらない上限は初期化が失敗する)。判断は [ADR-0039](../adr/0039-standard-environment-installed-at-init.md) にある。内部の名前(`%make-record-type` など)を直接呼ぶ低水準のテストは、Scheme のテストでは `# env: core` の行で、単体テストでは `Interpreter.initCore` 系の入口で、コアを直接見る最上位を使う。
 
-現状(スライス 3p-1)。本体の先頭の `include` と `cond-expand`。本体の走査(`scanBody`)は、先頭の意味が `cond-expand` の形式を、当てはまる節の中身の並びとして、`begin` と同じように走査する。先頭の意味が `include` か `include-ci` の形式は、その場でファイルを読み、中身を並びとして走査する。名前が複数あれば、書いた順に並べる。`let-syntax` と `letrec-syntax` の本体の定義は、上の展開器の節に書いた。
+現状(スライス 3p-1)。本体の先頭の `include` と `cond-expand`。本体の走査(`scanBody`)は、先頭の意味が `cond-expand` の形式を、当てはまる節の中身の並びとして、`begin` と同じように走査する。先頭の意味が `include` か `include-ci` の形式は、その場でファイルを読み、中身を並びとして走査する。名前が複数あれば、書いた順に並べる。空のファイルは、何も置かない(`cond-expand` で節が当てはまらないときと同じ)。空のファイルだけを含む本体は、式が無いので誤りになる。`let-syntax` と `letrec-syntax` の本体の定義は、上の展開器の節に書いた。
 
 - 読んでいる最中のファイル: ファイルの中身を走査するあいだは、そのファイルを `ctx.sources` に載せ、中の `include` の名前の基準にし、自分自身を含む鎖を見つける。走査が終われば下ろす。
 - 走査のあとの展開: 定義の値や本体の式は、走査のあとで、仕事として展開する。その中の `include` も、ファイルを基準にする必要がある。そのため、走査は、ファイルの中身の前後に出入りの印を置き(`BodyItem` の `enter` と `leave`)、本体の並びを作るとき(`bodySequence`)に、印を、ファイルを載せる仕事と下ろす仕事(`enter_file` と `leave_file`)にする。定義の並びがファイルの途中で終わっても、残りの形式に印を付けて並べる。
