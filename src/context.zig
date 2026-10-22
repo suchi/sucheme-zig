@@ -10,6 +10,7 @@ const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
 const library = @import("syntax/library.zig");
 const resolve = @import("resolve.zig");
+const positions_mod = @import("positions.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
 
@@ -78,6 +79,15 @@ pub const Context = struct {
     /// 何でも送出できるとする)。ヒープを指しうるので GC のルートであり(`mark`)、
     /// `clearDiagnostic` で空にするまで回収されない。
     raised: ?Value = null,
+    /// Where in a file the expander was when it raised a value, and the value.
+    /// 位置は、`raised` がその値であるときだけ意味を持つ(`raisedPosition`)。値も GC の
+    /// ルートにする。回収された値の番地が新しい条件に使い回されると、無関係な位置を指すため
+    /// である。
+    raised_at: ?RaisedAt = null,
+    /// The positions of the pairs of the form being read and expanded
+    /// (src/positions.zig), or null when none are kept.
+    /// 表の鍵のペアは GC のルートである(`mark`)。
+    positions: ?*positions_mod.Table = null,
     /// The mark the next application of a macro takes.
     /// 対話の全体で1つの通し番号で、周回させない(`newMark`)。マクロの定義は行をまたいで
     /// 残り、その規則が別名を含みうるので、行ごとに数え直すことはできない。
@@ -166,6 +176,26 @@ pub const Context = struct {
         self.core.mark(marker);
         self.libraries.mark(marker);
         if (self.raised) |v| marker.value(v);
+        if (self.raised_at) |at| marker.value(at.value);
+        if (self.positions) |kept| kept.mark(marker);
+    }
+
+    pub const RaisedAt = struct { value: Value, position: positions_mod.Position };
+
+    /// Keeps that the value just raised was raised at `position`, unless a
+    /// place has been kept for it already: the innermost form keeps it first.
+    pub fn noteRaisedAt(self: *Context, position: ?positions_mod.Position) void {
+        const at = position orelse return;
+        const v = self.raised orelse return;
+        if (self.raisedPosition() != null) return;
+        self.raised_at = .{ .value = v, .position = at };
+    }
+
+    /// Where the value raised was raised, when it is known.
+    pub fn raisedPosition(self: *const Context) ?positions_mod.Position {
+        const at = self.raised_at orelse return null;
+        const v = self.raised orelse return null;
+        return if (v.isEq(at.value)) at.position else null;
     }
 
     /// A mark that no application of a macro has had (docs/design/frontend.md).
@@ -255,6 +285,7 @@ pub const Context = struct {
 
     pub fn clearDiagnostic(self: *Context) void {
         self.raised = null;
+        self.raised_at = null;
     }
 
     /// Raises an error: makes the condition with the message and keeps it in
@@ -336,6 +367,50 @@ test "raise keeps a condition with the message, and returns Raised" {
     ctx.clearDiagnostic();
     try std.testing.expect(ctx.raised == null);
     try std.testing.expectEqualStrings("", ctx.diagnostic());
+}
+
+test "the place of a raise belongs to the value raised, and the innermost place is kept" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    const inner: positions_mod.Position = .{ .file = 0, .location = .{ .line = 2, .column = 3 } };
+    const outer: positions_mod.Position = .{ .file = 0, .location = .{ .line = 1, .column = 1 } };
+    // 何も送出していなければ、位置を持たない。
+    ctx.noteRaisedAt(inner);
+    try std.testing.expect(ctx.raisedPosition() == null);
+    try std.testing.expectEqual(error.Raised, ctx.raise("first", .{}));
+    ctx.noteRaisedAt(null);
+    try std.testing.expect(ctx.raisedPosition() == null);
+    ctx.noteRaisedAt(inner);
+    ctx.noteRaisedAt(outer);
+    try std.testing.expectEqual(inner, ctx.raisedPosition().?);
+    // 別の値を送出したら、前の位置はその値のものではない。
+    try std.testing.expectEqual(error.Raised, ctx.raise("second", .{}));
+    try std.testing.expect(ctx.raisedPosition() == null);
+    ctx.noteRaisedAt(outer);
+    try std.testing.expectEqual(outer, ctx.raisedPosition().?);
+    ctx.clearDiagnostic();
+    try std.testing.expect(ctx.raised_at == null);
+}
+
+test "the pairs of the table of positions are roots while the context holds it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    var kept: positions_mod.Table = .init(std.testing.allocator);
+    defer kept.deinit();
+    const file = try kept.addFile("a.scm");
+    // 表だけが持つペアは、表をコンテキストに置いている間は回収されず、外せば回収される。
+    const pair = try ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+    try kept.record(pair.asPair().?, .{ .file = file, .location = .{} });
+    ctx.positions = &kept;
+    ctx.collectIdle();
+    const held = ctx.heap.count;
+    ctx.positions = null;
+    ctx.collectIdle();
+    try std.testing.expectEqual(held - 1, ctx.heap.count);
 }
 
 test "a message as long as the REPL's line is kept whole" {

@@ -29,6 +29,7 @@ const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
 const heap_mod = @import("../heap.zig");
 const source = @import("source.zig");
+const positions = @import("../positions.zig");
 const cond_expand = @import("cond_expand.zig");
 const freeze = @import("../freeze.zig");
 
@@ -138,6 +139,10 @@ const Task = struct {
     op: Op = .expand,
     /// For `include_file`: whether the file is read with case folded (`include-ci`).
     fold_case: bool = false,
+    /// Where the nearest form that holds this one was read, for the message of an error
+    /// (docs/design/frontend.md の位置情報).
+    /// マクロの出力と、ペアでない形式は、位置を持たないので、これを引き継ぐ。
+    site: ?positions.Position = null,
 
     /// What a task does.
     const Op = enum {
@@ -192,11 +197,40 @@ const Expander = struct {
         owner.* = .{ .call = .{ .operator = owner, .operands = list } };
     }
 
+    /// Where `form` was read, or null when it was not read from a file, or no
+    /// positions are kept.
+    fn siteOf(self: *const Expander, form: Value) ?positions.Position {
+        const table = self.ctx.positions orelse return null;
+        return table.of(form);
+    }
+
+    /// Keeps that `output`, the output of a macro, stands at `site`, when it is a
+    /// pair without a place of its own.
+    /// Why: 本体の先頭のマクロの出力は、仕事を通らずに本体の形式の並びに入るので、仕事の
+    /// 位置の引き継ぎ(`run`)が届かない。表に置けば、仕事になったときに `run` が引く。
+    fn inheritSite(self: *Expander, output: Value, site: ?positions.Position) Error!void {
+        const table = self.ctx.positions orelse return;
+        const at = site orelse return;
+        const pair = output.asPair() orelse return;
+        if (table.by_pair.contains(pair)) return;
+        try table.record(pair, at);
+    }
+
     /// Expands `form`, which is at the top level, and returns its node.
     fn run(self: *Expander, form: Value) Error!*const Node {
         const root = try self.newNode();
         try self.stack.append(self.scratch, .{ .form = form, .env = self.root, .pos = .top, .dest = root });
-        while (self.stack.pop()) |task| try self.step(task);
+        while (self.stack.pop()) |popped| {
+            var task = popped;
+            if (self.ctx.positions) |table| task.site = table.of(task.form) orelse task.site;
+            const pushed = self.stack.items.len;
+            self.step(task) catch |e| {
+                if (e == error.Raised) self.ctx.noteRaisedAt(task.site);
+                return e;
+            };
+            // この形式が積んだ仕事は、この形式の中にある。位置を持たないものは、この位置を引き継ぐ。
+            for (self.stack.items[pushed..]) |*queued| queued.site = queued.site orelse task.site;
+        }
         return root;
     }
 
@@ -496,7 +530,7 @@ const Expander = struct {
         // ファイルを読む時点から、作業領域と節点をヒープの上限に数える(`Heap.external_enforced`)。
         self.ctx.heap.external_enforced = true;
         const subject = try std.fmt.allocPrint(self.scratch, "{s} {s}", .{ what, name });
-        const data = try source.readData(self.ctx, self.scratch, self.ctx.files, opened.source, subject, task.fold_case);
+        const data = try source.readDataFrom(self.ctx, self.scratch, self.ctx.files, opened.source, opened.origin, subject, task.fold_case);
         if (data.len == 0) return self.constant(task, .unspecified_value);
         try self.ctx.sources.append(self.ctx.resident(), opened.origin);
         // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。
@@ -790,6 +824,11 @@ const Expander = struct {
         // まだ見ていない形式の並びの積み。`begin` を展開すると、その中の形式を、残りの前に積む。
         var pending: std.ArrayList([]const Value) = .empty;
         try pending.append(self.scratch, body);
+        // 本体の先頭の形式は、仕事を積まずにここで調べるので、送出したら、調べていた形式の位置を
+        // 記録する(`run` は、本体を持つ形式の位置しか知らない)。
+        var site: ?positions.Position = null;
+        // 送出でない失敗(確保の失敗)では、位置は読まれない(`Interpreter.located`)。
+        errdefer self.ctx.noteRaisedAt(site);
         while (pending.items.len > 0) {
             const next = &pending.items[pending.items.len - 1];
             if (next.len == 0) {
@@ -798,6 +837,7 @@ const Expander = struct {
             }
             var form = next.*[0];
             next.* = next.*[1..];
+            site = self.siteOf(form);
             const definition = while (true) {
                 const pair = form.asPair() orelse break false;
                 const head = try self.headOf(rib, pair.car) orelse break false;
@@ -810,7 +850,11 @@ const Expander = struct {
                             try self.checkDepended(rib, depended.items, target, "define");
                             try forms.append(self.scratch, form);
                         },
-                        .begin => try pending.append(self.scratch, (try self.itemsOf(form))[1..]),
+                        .begin => {
+                            const items = (try self.itemsOf(form))[1..];
+                            for (items) |item| try self.inheritSite(item, site);
+                            try pending.append(self.scratch, items);
+                        },
                         .@"define-syntax" => {
                             consulted.clearRetainingCapacity();
                             const syntax = try self.syntaxDefinition(rib, try self.itemsOf(form), &consulted);
@@ -827,6 +871,9 @@ const Expander = struct {
                     .macro => |m| {
                         try decided.append(self.scratch, .{ .id = pair.car, .denotation = head });
                         form = try rules.transform(self.ctx, &self.work, m, form, rib);
+                        // 出力は、本体の形式として、本体を持つ形式の位置でなく、マクロを使った
+                        // 形式の位置を引き継ぐ。
+                        try self.inheritSite(form, site);
                         continue;
                     },
                     .local, .global, .auxiliary => break false,
@@ -1519,21 +1566,22 @@ test "the constants of the code live as long as the code, and go with it" {
     try f.init();
     defer f.deinit();
     const a = f.arena.allocator();
-    // 名前 `x` を解決すると、REPL の表に未束縛のセルができる。セルは表が持つ。
+    // 名前 `x` を解決すると、REPL の表に未束縛のセルができる。指すコードが無くなれば、
+    // 表は弱く持つので、セルは外れて回収される(ADR-0040 の決定6)。
     _ = try expand(&f.ctx, a, try f.read("x"));
     f.ctx.collectIdle();
-    try std.testing.expectEqual(1, f.ctx.heap.count);
+    try std.testing.expectEqual(0, f.ctx.heap.count);
     // クォートしたデータは、節点から辿られる。対象はデータそのもので、周りの `quote`
     // 形式のペアではない。
     const node = try expand(&f.ctx, a, try f.read("(quote (1 2))"));
     f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{node} });
-    // セル、節点、データの2つのペア。
-    try std.testing.expectEqual(4, f.ctx.heap.count);
+    // 節点と、データの2つのペア。
+    try std.testing.expectEqual(3, f.ctx.heap.count);
     try std.testing.expectEqual(2, node.constant.asPair().?.cdr.asPair().?.car.asFixnum().?);
     // コードに誰も届かなくなれば、節点もデータも回収される(ADR-0031 の 2026-10-10 の追記の、
     // `quote` したデータがセッションの終わりまで残る帰結が外れる)。
     f.ctx.collectIdle();
-    try std.testing.expectEqual(1, f.ctx.heap.count);
+    try std.testing.expectEqual(0, f.ctx.heap.count);
     // シンボルの定数も、節点から名前に印が付く。
     const named = try expand(&f.ctx, a, try f.read("(quote zzz-constant)"));
     f.ctx.heap.collect(NodeRoots{ .ctx = &f.ctx, .nodes = &.{named} });
