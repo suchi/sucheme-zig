@@ -246,7 +246,7 @@ pub const Parameter = struct { value: Value, converter: Value }; // 2g
 
 - `Machine.run(self, root: *const Node) Error!Value` の署名は変えない。
 - レジスタに動的点 `dyn: ?*const DynPoint` を足す(2d)。`Roots` に `dyn` を足し、GC のルートにする。
-- `Kont.Step` にバリアントを足す。ハンドラの戻り(2d)、動的エクステントの通常終了(2d)、`dynamic-wind` の3つの局面(2e)、巻き戻しの進行(2e)、`call-with-values` の受け手(2f)、`make-parameter` の変換の戻り(2g)、`parameterize` の3つの局面(2g)。局面と保持する状態は [runtime.md](../design/runtime.md) の「必要なフレームの種類」と「巻き戻しの進行」の表が正である。
+- `Kont.Step` にバリアントを足す。ハンドラの戻り(2d)、動的範囲の通常終了(2d)、`dynamic-wind` の3つの局面(2e)、巻き戻しの進行(2e)、`call-with-values` の受け手(2f)、`make-parameter` の変換の戻り(2g)、`parameterize` の3つの局面(2g)。局面と保持する状態は [runtime.md](../design/runtime.md) の「必要なフレームの種類」と「巻き戻しの進行」の表が正である。
 - 末尾位置の印は、段階2でも作らない。`apply` `call/cc` `call-with-values` の被呼び出し側は、機械操作プリミティブの適用の時点の継続(呼び出し側の継続そのもの)で走るので、フレームを積まずに末尾呼び出しになる。2c で確かめ、[ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md) に、決定を変えない追記として書く。
 
 ### 条件と診断(`src/context.zig`、`src/sucheme.zig`)

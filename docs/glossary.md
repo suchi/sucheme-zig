@@ -59,3 +59,5 @@ Scheme のジェネレータ(繰り返し値を返す手続き)は、生成ツ�
 
 - 長音: 文書内で多数派の表記にそろえる(スカラ、トリガ)。
 - `docs/adr/`、`docs/review/`、`docs/releases/`、`docs/spec/` は、記録としての性質があるので、以前の語のまま残している。
+- コードのコメントが見出し名で参照しているため、次の2つの見出しは以前の語のまま残している。`docs/design/runtime.md` の「動的範囲の通常終了」(`src/machine.zig` と `src/value.zig` のコメントが参照する)と、`docs/plans/0020-conformance-harness-early.md` の「実行器の設計」(`tools/conformance-run/` のコメントが参照する)。本文中のこれらの見出しへの参照も合わせている。
+- `docs/status/conformance.md` は、`tools/coverage-report` が出力する生成物なので、「最上位」が残っている。出力の文言を直す変更で、生成し直す。
