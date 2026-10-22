@@ -362,7 +362,8 @@ flowchart TD
 | 3l | マージ済み([#125](https://github.com/suchi/sucheme-zig/pull/125))。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。最上位の初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
 | 3m | 実装済み(PR 作成前)。`sucheme [-I <dir>]... <file>` がプログラムを実行する。式の値は出さず、実行時エラーは 1、読めないファイルは 66、ファイルの後ろの引数は 64。仕様の3点は、ユーザーが 2026-10-19 に承認した。`main` の配線(引数から終了ステータスまで)は単体テストの外で、手で確かめた | - |
 | 3n | 実装済み(PR 作成前)。`web/samples.mjs` に6個のサンプル、`web/share.mjs` に共有リンク(`#code=<base64url>`)。リンクを開いても自動では実行しない。サンプルの評価と符号化の検査は `tools/test-wasm`。画面の操作はブラウザで手で確かめた。仕様の4点は、ユーザーが 2026-10-19 に承認した | - |
-| 3o から 3r | 未着手 | - |
+| 3o | マージ済み(2026-10-21)。5つの PR に分けた(計画書 [0023](0023-slice-3o-ir-to-gc-heap.md))。コアIRの節点は GC ヒープにあり、`Context.code_roots` は無い。最上位の表とライブラリの登録表は常に上限に数える。失敗した展開の節点、到達できなくなったコードの定数、定義に失敗したライブラリの表、コードが指さない未束縛のセルは、回収されるか手放される([ADR-0040](../adr/0040-core-ir-in-the-gc-heap.md)、[ADR-0042](../adr/0042-keep-replaced-cells-without-a-value.md)、[ADR-0043](../adr/0043-loading-library-holds-unbound-cells-strongly.md))。見積りと実績は [0012](0012-schedule-estimates-and-actuals.md) の「3o の内訳」 | [#130](https://github.com/suchi/sucheme-zig/pull/130)、[#139](https://github.com/suchi/sucheme-zig/pull/139)、[#140](https://github.com/suchi/sucheme-zig/pull/140)、[#150](https://github.com/suchi/sucheme-zig/pull/150)、[#159](https://github.com/suchi/sucheme-zig/pull/159)、[#161](https://github.com/suchi/sucheme-zig/pull/161) |
+| 3p から 3r | 未着手 | - |
 
 ## 次にやること
 

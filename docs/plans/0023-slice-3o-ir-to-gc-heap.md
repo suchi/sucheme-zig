@@ -335,9 +335,8 @@ ADR の番号は、並行して計画書を書いている別のレーンと衝�
 | 3o-2 | マージ済み(2026-10-20)。継続のフレームは、節点の部分でなく節点を指す。列のフレームは、列の節点と次の位置を持つ | [#140](https://github.com/suchi/sucheme-zig/pull/140) |
 | 3o-3 | マージ済み(2026-10-21)。`Node`、`Lambda`、`Parameterize` を GC ヒープの型にし、列を持ち主のペイロードにした。機械のルートに制御を足し、`Context.code_roots` を外した。保留中のエクスポートの名前は登録表の `pending_names` が持つ。失敗した展開の節点と、届かなくなったコードの定数は、次の GC で回収される。マークの作業リストは、満杯のときに伸びる | [#150](https://github.com/suchi/sucheme-zig/pull/150) |
 | 3o-4 | マージ済み(2026-10-21)。定義に失敗したライブラリの表の中身を `Registry.abandon` が返す。`displaced_cells` を `displaced_unbound` に変え、値の無いまま置き換えたセルだけを持つ(ADR-0042) | [#159](https://github.com/suchi/sucheme-zig/pull/159) |
-| 3o-5 | 実装済み(ドラフト)。最上位の表は値の無い自分のセルを弱く持ち、コードが指していないものは GC の掃除の前に表から外れる。定義の途中のライブラリの表だけは強く持つ | - |
+| 3o-5 | マージ済み(2026-10-21)。最上位の表は値の無い自分のセルを弱く持ち、コードが指していないものは GC の掃除の前に表から外れる。定義の途中のライブラリの表だけは強く持つ(ADR-0043) | [#161](https://github.com/suchi/sucheme-zig/pull/161) |
 
 ## 次にやること
 
-- 3o-5 をマージする。これで 3o は終わる。
-- 3o の終わりに、[0016](0016-phase3-scheme-stdlib.md) の 3o の行と、[0012](0012-schedule-estimates-and-actuals.md) の見積りと実績を更新する。
+- 3o は終わった。[0016](0016-phase3-scheme-stdlib.md) の 3o の行と、[0012](0012-schedule-estimates-and-actuals.md) の「3o の内訳」を更新した。この計画書で残る作業は無い。
