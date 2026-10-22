@@ -526,39 +526,52 @@ test "parse compares the estimate with the room that is left, not with the limit
     try expectReads(&h, "12", "12");
 }
 
-test "once the estimate lets a number through, the work of reading it does not run out" {
+/// Reads a number of each kind at `digits` digits, at limits from none up to well past what
+/// the estimate asks, and checks that no limit makes the reading fail: a limit lets the number
+/// through or it does not, and from the least limit that lets it through every limit does.
+fn expectEstimateHolds(digits: usize, steps: usize) !void {
     var prng: std.Random.DefaultPrng = .init(0x4e5);
     const random = prng.random();
-    var a: [20000]u8 = undefined;
-    var b: [20000]u8 = undefined;
-    for (&a) |*c| c.* = '1' + random.uintLessThan(u8, 9);
-    for (&b) |*c| c.* = '1' + random.uintLessThan(u8, 9);
-    for ([_]usize{ 3, 150, 2000, 20000 }) |digits| {
-        const texts = [_][]const u8{
-            try std.fmt.allocPrint(testing.allocator, "{s}", .{a[0..digits]}),
-            try std.fmt.allocPrint(testing.allocator, "#i{s}", .{a[0..digits]}),
-            try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ a[0..digits], b[0..digits] }),
-            try std.fmt.allocPrint(testing.allocator, "#i{s}/{s}", .{ a[0..digits], b[0..digits] }),
-            try std.fmt.allocPrint(testing.allocator, "#e1e{d}", .{digits * 4}),
-            try std.fmt.allocPrint(testing.allocator, "#e1e-{d}", .{digits * 4}),
-            try std.fmt.allocPrint(testing.allocator, "#e{s}.{s}e-{d}", .{ a[0..digits], b[0..digits], digits }),
-        };
-        defer for (texts) |t| testing.allocator.free(t);
-        for (texts) |text| {
-            // 上限を掃引する。数を返す最小の上限から先は、どの上限でも数を返し、
-            // 誤り(`HeapLimit` と `OutOfMemory`)になる上限は無い。
-            var read = false;
-            var limit: usize = 0;
-            const top = digits * 70 + 8192;
-            while (limit <= top) : (limit += top / 60 + 1) {
-                var h: Heap = .init(testing.allocator, .{ .limit = limit });
-                defer h.deinit();
-                const result = try parse(&h, text, 10);
-                if (result != null) read = true else try testing.expect(!read);
-            }
-            try testing.expect(read);
+    const a = try testing.allocator.alloc(u8, digits);
+    defer testing.allocator.free(a);
+    const b = try testing.allocator.alloc(u8, digits);
+    defer testing.allocator.free(b);
+    for (a) |*c| c.* = '1' + random.uintLessThan(u8, 9);
+    for (b) |*c| c.* = '1' + random.uintLessThan(u8, 9);
+    const texts = [_][]const u8{
+        try std.fmt.allocPrint(testing.allocator, "{s}", .{a}),
+        try std.fmt.allocPrint(testing.allocator, "#i{s}", .{a}),
+        try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ a, b }),
+        try std.fmt.allocPrint(testing.allocator, "#i{s}/{s}", .{ a, b }),
+        try std.fmt.allocPrint(testing.allocator, "#e1e{d}", .{digits * 4}),
+        try std.fmt.allocPrint(testing.allocator, "#e1e-{d}", .{digits * 4}),
+        try std.fmt.allocPrint(testing.allocator, "#e{s}.{s}e-{d}", .{ a, b, digits }),
+    };
+    defer for (texts) |t| testing.allocator.free(t);
+    for (texts) |text| {
+        var read = false;
+        var limit: usize = 0;
+        const top = digits * 70 + 8192;
+        while (limit <= top) : (limit += top / steps + 1) {
+            var h: Heap = .init(testing.allocator, .{ .limit = limit });
+            defer h.deinit();
+            const result = try parse(&h, text, 10);
+            if (result != null) read = true else try testing.expect(!read);
         }
+        try testing.expect(read);
     }
+}
+
+test "once the estimate lets a number through, the work of reading it does not run out" {
+    try expectEstimateHolds(3, 30);
+    try expectEstimateHolds(150, 30);
+    try expectEstimateHolds(500, 12);
+}
+
+test "once the estimate lets a number through, the work of reading it does not run out at a large scale" {
+    try tier.slow();
+    try expectEstimateHolds(2000, 40);
+    try expectEstimateHolds(20000, 60);
 }
 
 test "parse leaves the count of work as it found it, and gives OutOfMemory when the backing refuses" {

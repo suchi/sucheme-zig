@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const bigint = @import("bigint.zig");
+const tier = @import("../tier.zig");
 
 const Allocator = std.mem.Allocator;
 const Const = bigint.Const;
@@ -239,21 +240,30 @@ test "ratioToF64 rounds once in the top band of the subnormal numbers, [2^-1023,
     try testing.expectEqual(@as(u64, 1) << 51, bitsOf(try ratioToF64(tgpa, shifted.toConst(), den.toConst())));
 }
 
-test "ratioToF64 agrees with the division of f64, which rounds correctly when both are exact" {
-    var prng: std.Random.DefaultPrng = .init(0x4e1);
+fn expectAgreesWithDivision(count: usize, seed: u64) !void {
+    var prng: std.Random.DefaultPrng = .init(seed);
     const random = prng.random();
-    for (0..20000) |_| {
+    for (0..count) |_| {
         const a = random.int(u53) | 1;
         const b = random.int(u53) | 1;
         const expected = @as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(b));
         try testing.expectEqual(bitsOf(expected), bitsOf(try ratio(@intCast(a), @intCast(b))));
     }
     // 整数だけでも、i64 の変換は丸めが正しい。
-    for (0..20000) |_| {
+    for (0..count) |_| {
         const a = random.int(i64);
         const expected: f64 = @floatFromInt(a);
         try testing.expectEqual(bitsOf(expected), bitsOf(try ratio(a, 1)));
     }
+}
+
+test "ratioToF64 agrees with the division of f64, which rounds correctly when both are exact" {
+    try expectAgreesWithDivision(3000, 0x4e1);
+}
+
+test "ratioToF64 agrees with the division of f64 at a large scale" {
+    try tier.slow();
+    try expectAgreesWithDivision(300_000, 0x4e6);
 }
 
 test "ratioToF64 agrees with the reading of 1e<k> and 1e-<k> for powers of ten" {
@@ -302,11 +312,11 @@ test "fromF64 gives the exact value in lowest terms, and ratioToF64 takes it bac
     try testing.expectEqual(@as(i64, 1) << 55, try tenth.denominator.toInt(i64));
 }
 
-test "fromF64 then ratioToF64 returns every finite f64 as it was" {
-    var prng: std.Random.DefaultPrng = .init(0x4e2);
+fn expectFromF64RoundTrips(count: usize, seed: u64) !void {
+    var prng: std.Random.DefaultPrng = .init(seed);
     const random = prng.random();
     var done: usize = 0;
-    while (done < 20000) {
+    while (done < count) {
         const x: f64 = @bitCast(random.int(u64));
         if (!std.math.isFinite(x)) continue;
         var exact = try fromF64(tgpa, @abs(x));
@@ -320,4 +330,13 @@ test "fromF64 then ratioToF64 returns every finite f64 as it was" {
         defer exact.deinit();
         try testing.expectEqual(bitsOf(x), bitsOf(try ratioToF64(tgpa, exact.numerator.toConst(), exact.denominator.toConst())));
     }
+}
+
+test "fromF64 then ratioToF64 returns every finite f64 as it was" {
+    try expectFromF64RoundTrips(3000, 0x4e2);
+}
+
+test "fromF64 then ratioToF64 returns every finite f64 as it was at a large scale" {
+    try tier.slow();
+    try expectFromF64RoundTrips(300_000, 0x4e7);
 }
