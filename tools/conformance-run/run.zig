@@ -104,6 +104,14 @@ const results_library = "(sucheme test-results)";
 /// The prefix of the bindings the runner imports for itself, which the suite does not redefine.
 const runner_prefix = "%conformance-run:";
 
+/// The most steps of the machine one top-level form of the suite may take.
+/// Why: 止まらない形式を、CI のジョブの時間切れでなく、どの形式かが分かる誤りで止めるためである
+/// (ADR-0044)。値は、取り込んだスイートの形式1つあたりの歩数の最大値の約 100 倍で、測った値と
+/// 止まるまでの時間は計画書 0024 の「測定」にある。ほかのレーンが手続きを足して、今は評価されない
+/// 形式が評価されるようになっても、正当な形式が当たらない余裕を取る。正当な形式が当たったら、その
+/// 歩数を測って上げる。当たった形式は誤りに数えられるので、`check-report` が赤になり、黙って見逃されない。
+const step_limit = 250_000;
+
 /// Runs `text` with `runSuite` if it is the vendored suite, or returns `error.NotVendored`.
 /// 実行器と準拠マトリクスの生成器は、どちらもこの関数を通してスイートを走らせる。照合を
 /// 呼び出し元ごとに書くと、片方で照合が外れても、テストが見つけないためである。
@@ -225,6 +233,8 @@ const State = struct {
         self.any_broken = false;
         // スイートの `import` は、ここで1回だけ評価する。解決できるライブラリだけに絞ってある。
         if (try evalQuietly(interp, self.header) == null) return error.QueryFailed;
+        // 上限は見出しのあとに置く。見出しの `import` が上限に当たると、実行器の誤りとして止まるためである。
+        interp.setStepLimit(step_limit);
     }
 
     fn closeSection(self: *State) void {
@@ -294,6 +304,8 @@ const State = struct {
             interp.evalPrint(arena.allocator(), form, &discard.writer) catch |e| switch (e) {
                 error.Raised => break :blk try self.gpa.dupe(u8, interp.diagnostic()),
                 error.OutOfMemory, error.HeapLimit, error.ReserveExhausted, error.WriteFailed => break :blk try self.gpa.dupe(u8, interp.diagnostic()),
+                // 上限で打ち切った形式も、最上位の形式そのものの誤りに数える(計画書 0024)。
+                error.StepLimit => break :blk try self.gpa.dupe(u8, interp.diagnostic()),
                 else => {
                     // `Raised` でも資源の誤りでもないものは、リーダの誤りである(展開器の誤りは
                     // 条件として上がる)。何も評価されていない。
@@ -732,6 +744,38 @@ test "a definition inside a top-level begin, or made by a macro, cascades" {
     try std.testing.expectEqual(Counts{ .unimplemented = 1, .cascaded = 2 }, try findSection(r, "a"));
     // `y` は静的には取り出せないので、テストの中の未束縛の誤りとして、連鎖に数える。未束縛でない誤りは落ちた。
     try std.testing.expectEqual(Counts{ .failed = 1, .unimplemented = 1, .cascaded = 1 }, try findSection(r, "b"));
+}
+
+test "a form that does not stop is an error at the step limit, and the section goes on" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runFake(arena.allocator(),
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(define (spin) (spin))
+        \\(test 1 (spin))
+        \\(define x (let loop () (loop)))
+        \\(test 1 x)
+        \\(test 2 (+ 1 1))
+        \\(test-end)
+        \\(test-begin "b")
+        \\(test 1 (let loop () (loop)))
+        \\(test-end)
+        \\(test-end)
+    );
+    // 止まらない式は誤りに数え、止まらない定義は連鎖のもとにする。後続のテストは走る。
+    try std.testing.expectEqual(Counts{ .passed = 1, .errored = 2, .cascaded = 1 }, try findSection(r, "a"));
+    // 上限は、節ごとに作るインタプリタのどれにも置く。
+    try std.testing.expectEqual(Counts{ .errored = 1 }, try findSection(r, "b"));
+    var limits: usize = 0;
+    for (r.failures) |f| {
+        if (f.kind == .errored) {
+            try std.testing.expectEqualStrings("step limit exceeded", f.detail);
+            limits += 1;
+        }
+    }
+    try std.testing.expectEqual(3, limits);
 }
 
 test "an unbound error in a test cascades after an errored form, and across nested sections" {
