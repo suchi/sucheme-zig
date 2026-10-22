@@ -664,7 +664,15 @@ test "write then parse gives the same number for random integers, ratios and flo
     var prng: std.Random.DefaultPrng = .init(0x4e4);
     const random = prng.random();
     var buf: [128]u8 = undefined;
-    for (0..200_000) |_| {
+    for (0..200_000) |i| {
+        // Why: `testing.allocator` は確保ごとに別のメモリ領域(ページ)を割り当てる。ヒープに
+        // 残る数のセルが、プロセスの領域の数の上限(`vm.max_map_count`)に達すると、
+        // `munmap` が失敗して `unreachable` に当たり、約7万回目の反復で落ちる(実装の
+        // 不具合ではない)。ヒープを定期的に作り直して、残るセルの数を抑える。
+        if (i % 5000 == 0) {
+            h.deinit();
+            h = .init(testing.allocator, .{});
+        }
         const radixes = [_]u8{ 2, 8, 10, 16 };
         const radix = radixes[random.uintLessThan(usize, 4)];
         const n = random.int(i64);
