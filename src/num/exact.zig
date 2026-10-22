@@ -17,7 +17,9 @@ pub const Error = bigint.Error;
 ///
 /// `denominator` は正である。大きさが `f64` の範囲を超えれば無限大に、非正規化数の半分より
 /// 小さければ0になる(誤りにしない)。結果の符号は `numerator` の符号で、0 は +0.0 を返す。
-/// 作業領域は、浮動小数点数の範囲が決める大きさで、入力の大きさの 2 倍に収まる。
+/// 作業領域は、割る前に範囲の外を除くので、分子と分母の大きさに、動かすビット数(高々1200)を
+/// 足した大きさの数倍になる(分子と分母の写し、動かしたもの、商と余りと作業用)。実測では、
+/// 桁数が大きい分数で入力の合計の約 5 倍だった(src/num/number.zig の `work_factor`)。
 pub fn ratioToF64(gpa: Allocator, numerator: Const, denominator: Const) Error!f64 {
     std.debug.assert(denominator.positive and !denominator.eqlZero());
     if (numerator.eqlZero()) return 0.0;
@@ -214,6 +216,29 @@ test "ratioToF64 reaches the subnormal numbers and the edges of the range" {
     try testing.expectEqual(@as(u64, 0), bitsOf(try ratioToF64(tgpa, one.toConst(), huge.toConst())));
 }
 
+test "ratioToF64 rounds once in the top band of the subnormal numbers, [2^-1023, 2^-1022)" {
+    // ((2^52 + 1) << 125 + 1) / 2^1200 は、(2^52 + 1) × 2^-1075 より、わずかに大きい。
+    // この帯では残す桁が 52 で、(2^52 + 1) / 2 = 2^51 + 0.5 の同点が、わずかな余りで切り上がり、
+    // (2^51 + 1) × 2^-1074 になる。残す桁を 53 にすると、一度 53 桁に丸めてから非正規化数に
+    // 丸め直すので、同点の偶数側の 2^51 × 2^-1074 になってしまう。
+    var m = try Managed.initSet(tgpa, (@as(u64, 1) << 52) + 1);
+    defer m.deinit();
+    var shifted = try Managed.init(tgpa);
+    defer shifted.deinit();
+    try shifted.shiftLeft(&m, 125);
+    var plus_one = try Managed.initSet(tgpa, 1);
+    defer plus_one.deinit();
+    try plus_one.add(&shifted, &plus_one);
+    var one = try Managed.initSet(tgpa, 1);
+    defer one.deinit();
+    var den = try Managed.init(tgpa);
+    defer den.deinit();
+    try den.shiftLeft(&one, 1200);
+    try testing.expectEqual((@as(u64, 1) << 51) + 1, bitsOf(try ratioToF64(tgpa, plus_one.toConst(), den.toConst())));
+    // 余りが無ければ同点で、偶数側へ。
+    try testing.expectEqual(@as(u64, 1) << 51, bitsOf(try ratioToF64(tgpa, shifted.toConst(), den.toConst())));
+}
+
 test "ratioToF64 agrees with the division of f64, which rounds correctly when both are exact" {
     var prng: std.Random.DefaultPrng = .init(0x4e1);
     const random = prng.random();
@@ -257,6 +282,15 @@ test "fromF64 gives the exact value in lowest terms, and ratioToF64 takes it bac
     defer four.deinit();
     try testing.expectEqual(@as(i64, 4), try four.numerator.toInt(i64));
     try testing.expectEqual(@as(i64, 1), try four.denominator.toInt(i64));
+    // 2^51 は整数で、分母は 1(仮数の末尾の0ビットを、指数が -1 のところまで落とす)。
+    var two51 = try fromF64(tgpa, 2251799813685248.0);
+    defer two51.deinit();
+    try testing.expectEqual(@as(i64, 1) << 51, try two51.numerator.toInt(i64));
+    try testing.expectEqual(@as(i64, 1), try two51.denominator.toInt(i64));
+    var half_odd = try fromF64(tgpa, 2251799813685248.5);
+    defer half_odd.deinit();
+    try testing.expectEqual((@as(i64, 1) << 52) + 1, try half_odd.numerator.toInt(i64));
+    try testing.expectEqual(@as(i64, 2), try half_odd.denominator.toInt(i64));
     var zero = try fromF64(tgpa, -0.0);
     defer zero.deinit();
     try testing.expect(zero.numerator.eqlZero());

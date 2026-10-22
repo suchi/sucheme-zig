@@ -74,10 +74,11 @@ pub fn makeRatio(h: *Heap, gpa: std.mem.Allocator, numerator: Const, denominator
 /// 大きさ(置けない大きさの正確な整数、`#e+inf.0`、分母が0の `1/0`)なら null を返し、内容を
 /// 理由に誤りを送出しない(R7RS 6.2.7)。複素数の綴りは、スライス 4e-2 までは null になる。
 ///
-/// 作業領域はヒープの上限に計上する。結果の大きさは、確保の前に桁数と指数から見積もり、
-/// 置けない大きさなら確保せずに null を返す。見積りは、結果の限界値数に、作業用の
-/// `Managed` と `pow` の作業用、ペイロードの写しを見込んだ 3 倍(`work_factor`)で、上限の
-/// 残りと比べる。見積りを通ったあとに確保が断られたら、`HeapLimit` になる。
+/// 作業領域はヒープの上限に計上する。結果の大きさは、確保の前に(綴りの写しの確保も
+/// 含めて)桁数と指数から見積もり、置けない大きさなら確保せずに null を返す。見積りは、
+/// 読む数の限界値数に、作業用の `Managed`、除算の商と余りと作業用、`pow` の作業用、
+/// ペイロードの写しを見込んだ倍率(`work_factor` と `work_slack`)で、上限の残りと比べる。
+/// 上限にほかの作業が数えられていて断られたときだけ、`HeapLimit` になる。
 pub fn parse(h: *Heap, text: []const u8, default_radix: u8) Error!?Value {
     const literal = syntax.scan(text, default_radix) orelse return null;
     const real = switch (literal.shape) {
@@ -94,13 +95,21 @@ pub fn parse(h: *Heap, text: []const u8, default_radix: u8) Error!?Value {
     };
 }
 
-/// How many times the limbs of a result the work of reading it may take at the most.
-const work_factor = 3;
+/// How many times the bytes of the limbs that a number is read from the work of reading
+/// it may take at the most, and the bytes it takes whatever the size.
+/// Why: 実測した(2026-10-22、ヒープの上限を二分探索して、読み込みが成功する最小の上限を
+/// 求めた)。桁数が 2000 から 20000 の乱数で、整数は 2.0 倍、`#i` の整数は 1.0 倍、分数は
+/// 分子と分母の合計の 5.0 倍(約分と除算の商と余りと作業用)、`#e1e-N` は冪の 4.4 倍、
+/// `#e1eN` は 2.7 倍だった。小さい入力には約 700 バイトの固定費がある。そこで 8 倍と
+/// 2048 バイトを見込む。見積りを通ったあとで確保が断られないことは、テストが上限を
+/// 掃引して固定する。
+const work_factor = 8;
+const work_slack = 2048;
 
-/// Whether a result of `limbs` limbs can be made in what room the heap has left.
+/// Whether a number read from `limbs` limbs can be made in what room the heap has left.
 fn fitsInHeap(h: *const Heap, limbs: usize) bool {
     const room = h.options.limit -| h.held();
-    return limbs *| @sizeOf(value_mod.Limb) *| work_factor <= room;
+    return limbs *| @sizeOf(value_mod.Limb) *| work_factor +| work_slack <= room;
 }
 
 const one_limbs = [_]value_mod.Limb{1};
@@ -123,6 +132,9 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, text: []const u8, literal: syntax
             if (!fitsInHeap(h, bigint.limbsForDigits(i.digits.len, literal.radix))) return null;
             var n = try bigint.parseDigits(gpa, i.digits, literal.radix);
             defer n.deinit();
+            // Why: `#i-0` は -0.0 である。基数10以外で -0.0 を書くと `#i-0` になる(`write`)ので、
+            // これを -0.0 と読まないと、R7RS 6.2.7 の往復条件 `(eqv? z (string->number
+            // (number->string z radix) radix))` が -0.0 で成り立たない。小数点の綴りは基数10に限る。
             if (inexact) return .fromFlonum(signedF64(i.sign, try exact.ratioToF64(gpa, n.toConst(), one)));
             applySign(&n, i.sign);
             return try fromInteger(h, n.toConst());
@@ -181,20 +193,27 @@ fn parseExponent(text: []const u8) i64 {
     return if (negative) -value else value;
 }
 
+/// The digit `index` places from the start of the whole part, over the whole part and the
+/// fraction part taken as one run of digits.
+fn digitAt(whole: []const u8, fraction: []const u8, index: usize) u8 {
+    return if (index < whole.len) whole[index] else fraction[index - whole.len];
+}
+
 /// The exact value of a decimal that `#e` is on: the digits, times a power of ten.
 fn parseExactDecimal(h: *Heap, gpa: std.mem.Allocator, d: anytype) Error!?Value {
-    const digits = try gpa.alloc(u8, d.whole.len + d.fraction.len);
-    defer gpa.free(digits);
-    @memcpy(digits[0..d.whole.len], d.whole);
-    @memcpy(digits[d.whole.len..], d.fraction);
+    // 桁は整数部と小数部を続けて数える。先頭の0を飛ばして有効桁の数を決め、見積りを通って
+    // から、有効桁だけを写す(桁数に比例する確保も、見積りの前には行わない)。
+    const total = d.whole.len + d.fraction.len;
     var start: usize = 0;
-    while (start < digits.len and digits[start] == '0') start += 1;
+    while (start < total and digitAt(d.whole, d.fraction, start) == '0') start += 1;
     // 0 は、どんな指数でも 0 である。
-    if (start == digits.len) return .fromFixnum(0);
-    const significant = digits[start..];
+    if (start == total) return .fromFixnum(0);
     const exponent10 = parseExponent(d.exponent) - @as(i64, @intCast(d.fraction.len));
     const power_limbs = bigint.limbsForPow(ten, @abs(exponent10)) orelse return null;
-    if (!fitsInHeap(h, bigint.limbsForDigits(significant.len, 10) +| power_limbs)) return null;
+    if (!fitsInHeap(h, bigint.limbsForDigits(total - start, 10) +| power_limbs)) return null;
+    const significant = try gpa.alloc(u8, total - start);
+    defer gpa.free(significant);
+    for (significant, start..) |*c, i| c.* = digitAt(d.whole, d.fraction, i);
     var m = try bigint.parseDigits(gpa, significant, 10);
     defer m.deinit();
     var power = try bigint.pow(gpa, ten, @abs(exponent10));
@@ -287,6 +306,8 @@ const testing = std.testing;
 fn zeros(comptime n: usize) [n]u8 {
     return @splat('0');
 }
+
+const zeros_100000 = zeros(100000);
 
 /// Reads `text` and writes the result in radix 10, or returns null if it is not a number.
 fn readWrite(h: *Heap, text: []const u8, default_radix: u8, out_radix: u8) !?[]u8 {
@@ -410,6 +431,12 @@ test "parse reads a decimal as a flonum, and as an exact ratio after #e" {
     try expectReads(&h, "0", "#e0.000e-999999999");
     try expectReads(&h, "100", "#e1.00e2");
     try expectReads(&h, "1", "#e1000e-3");
+    // 符号は、整数にも分数にも付く。
+    try expectReads(&h, "-1000", "#e-1e3");
+    try expectReads(&h, "-1500", "#e-1.5e3");
+    try expectReads(&h, "-12", "#e-12.");
+    try expectReads(&h, "-1/8", "#e-0.125");
+    try expectReads(&h, "1000", "#e+1e3");
 }
 
 test "parse reads a ratio or an integer as a flonum after #i, with the nearest value" {
@@ -470,10 +497,68 @@ test "parse says no to an exact number too large for the heap, before it allocat
     try testing.expectEqual(0, h.external);
     try testing.expectEqual(0, h.accounted);
     try testing.expect(!h.external_enforced);
+    // 桁数が大きい `#e` の小数も、綴りを写す前に見積もって、null になる(整数と同じ)。
+    const big_decimal = try std.fmt.allocPrint(testing.allocator, "#e{s}.5", .{&digits});
+    defer testing.allocator.free(big_decimal);
+    try expectReads(&h, null, big_decimal);
+    try testing.expectEqual(0, h.external);
+    // 桁は先頭の0を数えない。0が大きいだけの綴りは、小さい数として読める。
+    const zeros_text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1e{d}", .{ &zeros_100000, 100000 });
+    defer testing.allocator.free(zeros_text);
+    try expectReads(&h, "1/10", zeros_text);
+    // 指数部が大きすぎても、整数があふれない。
+    try expectReads(&h, null, "#e1.55e-99999999999999999999");
+    try expectReads(&h, null, "#e-1.55e99999999999999999999");
     // 収まる大きさは読める。
     const expected = "1" ++ zeros(300);
     try expectReads(&h, expected, "#e1e300");
     try testing.expectEqual(0, h.external);
+}
+
+test "parse compares the estimate with the room that is left, not with the limit" {
+    var h: Heap = .init(testing.allocator, .{ .limit = 64 * 1024 });
+    defer h.deinit();
+    try expectReads(&h, "1" ++ zeros(3000), "#e1e3000");
+    var filler: [55000]u8 = undefined;
+    @memset(&filler, 'x');
+    _ = try h.createString(&filler);
+    try expectReads(&h, null, "#e1e3000");
+    try expectReads(&h, "12", "12");
+}
+
+test "once the estimate lets a number through, the work of reading it does not run out" {
+    var prng: std.Random.DefaultPrng = .init(0x4e5);
+    const random = prng.random();
+    var a: [20000]u8 = undefined;
+    var b: [20000]u8 = undefined;
+    for (&a) |*c| c.* = '1' + random.uintLessThan(u8, 9);
+    for (&b) |*c| c.* = '1' + random.uintLessThan(u8, 9);
+    for ([_]usize{ 3, 150, 2000, 20000 }) |digits| {
+        const texts = [_][]const u8{
+            try std.fmt.allocPrint(testing.allocator, "{s}", .{a[0..digits]}),
+            try std.fmt.allocPrint(testing.allocator, "#i{s}", .{a[0..digits]}),
+            try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ a[0..digits], b[0..digits] }),
+            try std.fmt.allocPrint(testing.allocator, "#i{s}/{s}", .{ a[0..digits], b[0..digits] }),
+            try std.fmt.allocPrint(testing.allocator, "#e1e{d}", .{digits * 4}),
+            try std.fmt.allocPrint(testing.allocator, "#e1e-{d}", .{digits * 4}),
+            try std.fmt.allocPrint(testing.allocator, "#e{s}.{s}e-{d}", .{ a[0..digits], b[0..digits], digits }),
+        };
+        defer for (texts) |t| testing.allocator.free(t);
+        for (texts) |text| {
+            // 上限を掃引する。数を返す最小の上限から先は、どの上限でも数を返し、
+            // 誤り(`HeapLimit` と `OutOfMemory`)になる上限は無い。
+            var read = false;
+            var limit: usize = 0;
+            const top = digits * 70 + 8192;
+            while (limit <= top) : (limit += top / 60 + 1) {
+                var h: Heap = .init(testing.allocator, .{ .limit = limit });
+                defer h.deinit();
+                const result = try parse(&h, text, 10);
+                if (result != null) read = true else try testing.expect(!read);
+            }
+            try testing.expect(read);
+        }
+    }
 }
 
 test "parse leaves the count of work as it found it, and gives OutOfMemory when the backing refuses" {
