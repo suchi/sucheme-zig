@@ -253,7 +253,7 @@ flowchart TB
 
 手続きとして扱うと、R7RS 4.3.3 の規範例 `(syntax-error "expected an identifier but got" (x . y))` のテンプレート引数 `(a . b)` が式として展開され、`a` を演算子とする不正な呼び出しになる。送出されるべき誤りの代わりに別の誤りが出る。
 
-`let-syntax` と `letrec-syntax` の本体は、スライス 2l の実装では式の並びであり、定義(`define` と `define-syntax`)を置けない。rib を持たない構文環境(前述)には、本体の定義が使うスロットが無いためで、仮に決めた制限である。変換子は、`let-syntax` では外側の環境で、`letrec-syntax` では束縛を足した環境で読む。後者は、先に空のマクロをキーワードに束縛し、変換子ができてから中身を入れ替える。環境の束縛が変換子を読む前にそろうので、変換子が引く `_` や省略記号の意味は、読んだ後で変わらない。
+`let-syntax` と `letrec-syntax` の本体は、`lambda` の本体と同じく、定義(`define` と `define-syntax`)のあとに式が続く並びである(R7RS 4.3.1。スライス 3p-1)。スライス 2l では式の並びで、定義を置けなかった。本体は自分の有効範囲を持ち、定義は本体の局所変数になる。外側の並びへは繋ぎ込まない(R6RS の `let-syntax` とは違う)。最上位の `let-syntax` の定義も、最上位の変数にならない。R7RS 4.3.1 は、キーワードの領域を本体とし、外側への繋ぎ込みを書いていない(原文で確かめた)。準拠スイート(`tests/vendor/r7rs-tests.scm` の 4.3 の、`(let () (define x 1) (let-syntax () (define x 2) #f) (test 1 x))`)も、繋ぎ込まないことを前提にしている。このケースは、3p-1 の前は展開の誤りで、3p-1 から通る。2026-10-22 にユーザーが、この扱いを選んだ。展開器は、キーワードを束縛した rib の無い環境の内側に rib を足して、本体を走査する。`define` が1つでもあれば、本体を、引数の無い手続きの呼び出しにして、そのフレームに局所変数を置く。`define` が無ければ(`define-syntax` だけなら)、フレームを作らず、足した rib を外側と同じ深さに戻す。今までの、定義の無い `let-syntax` の評価の費用は変わらない。変換子は、`let-syntax` では外側の環境で、`letrec-syntax` では束縛を足した環境で読む。後者は、先に空のマクロをキーワードに束縛し、変換子ができてから中身を入れ替える。環境の束縛が変換子を読む前にそろうので、変換子が引く `_` や省略記号の意味は、読んだ後で変わらない。
 
 内部定義の扱いは `letrec*` 意味論に従う(R7RS 5.3.2)。本体の先頭から `define` と `define-syntax` を、書かれた順に1つずつ処理する。先頭が `begin` の形式は、その中の形式を残りの前に置いて、同じ並びとして処理する(スライス 3i。R7RS 5.3.2)。`define-syntax` はその場で変換子を作って構文環境へ入れ、`define` はその場でスロットを確保する。どちらも、後の形式の判定から見える。マクロ展開によって新たな `define` が現れる可能性があるため、本体の走査は展開と交互に行う(`src/syntax/expand.zig` の `scanBody`)。定義の判定に使った識別子と、変換子が読むのに使った識別子(`_` と省略記号と変換子の先頭)の意味を、後の定義が変えることは R7RS 5.4 の誤りで、走査が報告する。
 
@@ -562,7 +562,7 @@ OS のフィーチャ名は R7RS 付録B の標準名を提供する。付録B�
 - 要求の評価: `and` `or` `not` の部分の要求は、短絡せずにすべて調べる。後ろの部分の誤りを、前の部分が真偽を決めたからといって見逃さないためである。当てはまる節より後ろの節は調べない。`else` は最後の節にだけ置ける。`else` `library` `and` `or` `not` は、綴りで見分ける。変数の束縛ではないためである。
 - `(library <name>)`: `(sucheme core)` は、利用者のコードからは偽で、埋め込みの標準ライブラリの中でだけ真である(`import` が通るかと同じ判定である)。定義済みのライブラリは真である。そうでなければ、ファイルが探索ルートの下で開けるときに真で、ファイルは読まない。読むと本体が走り、要求を評価しただけで副作用が起きる。名前がファイルの名前にならないときは、誤りでなく偽である。
 - 入れ子の上限: 要求の入れ子は 64 まで、ライブラリ宣言(`cond-expand` と `include-library-declarations`)の入れ子も 64 までである。評価と処理が再帰するので、入力が決める深さを、実装制限として報告する。
-- 本体の先頭の `begin` は、スライス 3i が展開するようにした。`cond-expand` が持つ定義と `include` が持つ定義を、本体の定義の並びとして展開することは、まだできない(スライス 3p の項目)。
+- 本体の先頭の `begin` は、スライス 3i が展開するようにした。`cond-expand` が持つ定義と `include` が持つ定義も、スライス 3p-1 から、本体の定義の並びとして展開する。本体の先頭の `cond-expand` で、どの節も当てはまらないときは、最上位と同じく、何も置かない(定義の無い並びである)。そのため、本体に式が残らなければ、`a body needs an expression after its definitions` の誤りになる。
 
 ## 標準ライブラリの起動順序
 
@@ -611,7 +611,7 @@ Zig で書く範囲は [ADR-0006](../adr/0006-library-system-and-scheme-level-st
 - コンストラクタが受けないフィールドは、不定の値で始まる。アクセサとモディファイアは、レコードの型を確かめ、合わなければ、手続きの名前と渡された値を添えて誤りにする。述語と手続きは、型の値を閉じ込める(型の名前の変数を、あとで引き直さない)。
 - 型の名前と同じ綴りを、コンストラクタ、述語、アクセサ、モディファイアの名前に使うと、あとの定義が、型でなくその名前の新しい値を引く。R7RS 5.5 がこの使い方を誤りとするかは書かれておらず、検査していない。
 
-本体の先頭の `begin`。`define-record-type` と `define-values` は、1回の使用が複数の定義になるので、`(begin (define ...) ...)` に展開する。本体の定義の位置で使えるように、本体の走査(`src/syntax/expand.zig` の `scanBody`)が、先頭の意味が `begin` の形式を、その中の形式の並びとして処理する。`include` と `cond-expand` が持つ定義を並びとして展開することは、3p に残した。
+本体の先頭の `begin`。`define-record-type` と `define-values` は、1回の使用が複数の定義になるので、`(begin (define ...) ...)` に展開する。本体の定義の位置で使えるように、本体の走査(`src/syntax/expand.zig` の `scanBody`)が、先頭の意味が `begin` の形式を、その中の形式の並びとして処理する。`include` と `cond-expand` が持つ定義を並びとして展開することは、3p に残した(3p-1 で入れた。この節の終わりの「現状(スライス 3p-1)」)。
 
 衛生性。`guard` の `=>` と `else` は、`cond` と同じく、利用側が変数として束縛していればリテラルとして照合しない。`let-values` の一時変数と、`guard` の `condition` などの内部名は、展開ごとに別の名前になり、利用側の束縛と衝突しない(`tests/scheme/0275-derived-hygiene-2.txt`)。`define-values` の変数が0個の形は、`%define-values-dummy` を最上位に定義する。これは上の仮決めの結果で、本体の中では別名のままで衝突しない。
 
@@ -631,4 +631,11 @@ Zig で書く範囲は [ADR-0006](../adr/0006-library-system-and-scheme-level-st
 現状(スライス 3k)。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld` が加わった。`(scheme base)` は、`tests/r7rs-required/base.txt` の識別子のうち、`(sucheme core)` と `(sucheme derived)` と `(sucheme procedures)` に実装があるものだけを、その並びの順にエクスポートする。実装の無いもの(数値塔を要るものとポートの識別子、および 3l が決める整数の手続き)は書かない。どれが無いかは、`import` の誤り(`bad import: ... is not exported by the import set`)と準拠マトリクスで分かる。`%` で始まる名前と、別のライブラリの名前(`delay` `force` `make-promise` `promise?` と、3回以上重ねる合成アクセサ)は入れない。`(scheme cxr)` は `(sucheme core)` の `car` と `cdr` で24個を定義し、`(scheme case-lambda)` と `(scheme lazy)` は、`(sucheme derived)` と `(sucheme core)` のものを再エクスポートする。
 
 現状(スライス 3l)。REPL と CLI と WASM の最上位の初期環境は、`(scheme base)` が輸出するものになった。初期化が、何も束縛していない最上位に `(import (scheme base))` を評価して作る。`when` や `unless` など、`lib/` が定義する構文と手続きも、この環境で見える。`delay` `force` `make-promise` `promise?` などは `(import (scheme lazy))` が要る。`(sucheme core)` の `import` は、利用者のコード(REPL とファイルとユーザーのライブラリ)からは `bad import: the library (sucheme core) is only for the standard libraries the executable carries` で拒否される。標準環境の読み込みは、ヒープの上限に計上する(入りきらない上限は初期化が失敗する)。判断は [ADR-0039](../adr/0039-standard-environment-installed-at-init.md) にある。内部の名前(`%make-record-type` など)を直接呼ぶ低水準のテストは、Scheme のテストでは `# env: core` の行で、単体テストでは `Interpreter.initCore` 系の入口で、コアを直接見る最上位を使う。
+
+現状(スライス 3p-1)。本体の先頭の `include` と `cond-expand`。本体の走査(`scanBody`)は、先頭の意味が `cond-expand` の形式を、当てはまる節の中身の並びとして、`begin` と同じように走査する。先頭の意味が `include` か `include-ci` の形式は、その場でファイルを読み、中身を並びとして走査する。名前が複数あれば、書いた順に並べる。`let-syntax` と `letrec-syntax` の本体の定義は、上の展開器の節に書いた。
+
+- 読んでいる最中のファイル: ファイルの中身を走査するあいだは、そのファイルを `ctx.sources` に載せ、中の `include` の名前の基準にし、自分自身を含む鎖を見つける。走査が終われば下ろす。
+- 走査のあとの展開: 定義の値や本体の式は、走査のあとで、仕事として展開する。その中の `include` も、ファイルを基準にする必要がある。そのため、走査は、ファイルの中身の前後に出入りの印を置き(`BodyItem` の `enter` と `leave`)、本体の並びを作るとき(`bodySequence`)に、印を、ファイルを載せる仕事と下ろす仕事(`enter_file` と `leave_file`)にする。定義の並びがファイルの途中で終わっても、残りの形式に印を付けて並べる。
+- 誤りの位置: ファイルの中身は、ファイルの中の位置を持つ。本体の先頭の形式の誤りは、そのファイルの位置を前置する。`cond-expand` の節の中身は、`begin` と同じく、`cond-expand` の形式の位置を引き継ぐ。
+- 本体の先頭でない `include` と `cond-expand`(式の位置)は、今までどおり、仕事として展開する。
 
