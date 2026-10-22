@@ -40,6 +40,8 @@ const tier = @import("tier.zig");
 // Why: 4c の純粋な層は、まだ呼び手が無い。単体テストの集合に載せるためだけの参照で、
 // 4e が number.zig から呼ぶようになったら、この行は要らなくなる。
 const bigint = @import("num/bigint.zig");
+// Why: 4b の flonum.zig も同じ。4e が number.zig から呼ぶまでの、単体テストの集合に載せる参照。
+const flonum = @import("num/flonum.zig");
 const embedded_lib = @import("embedded_lib");
 
 /// The files under `lib/`, which every interpreter searches before the files beneath
@@ -409,6 +411,7 @@ fn describe(e: Error) []const u8 {
 test {
     std.testing.refAllDecls(@This());
     _ = bigint;
+    _ = flonum;
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {
