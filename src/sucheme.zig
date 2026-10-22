@@ -622,8 +622,8 @@ test "a file that defines another library than the one asked for is refused, the
     var interp: Interpreter = undefined;
     try initOnTree(&interp, &tree, false);
     defer interp.deinit();
-    try expectLineFailsInTree(&interp, &tree, "(import (t a))", "t/a.sld:1:1", "bad import: the file of the library (t a) defines the library (t b)");
-    try expectLineFailsInTree(&interp, &tree, "(import (t c))", "t/c.sld:1:1", "bad import: the file of the library (t c) defines the library (t C)");
+    try expectLineFails(&interp, "(import (t a))", "bad import: the file of the library (t a) defines the library (t b)");
+    try expectLineFails(&interp, "(import (t c))", "bad import: the file of the library (t c) defines the library (t C)");
     // 照合に失敗したファイルは、何も登録しない。
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
     // 名前が合えば、ほかの宣言が無くてもよい。
@@ -780,7 +780,7 @@ test "the internal name of an export that nothing defines is still the name when
         var interp: Interpreter = undefined;
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
-        try expectLineFailsInTree(&interp, &tree, "(import (t lib))", "t/lib.sld:1:1", "unbound identifier in library (t lib): undefined-internal");
+        try expectLineFails(&interp, "(import (t lib))", "unbound identifier in library (t lib): undefined-internal");
         // 失敗した定義も、保留の名前を残さない。
         try std.testing.expectEqual(0, interp.ctx.libraries.pending_names.items.len);
     }
@@ -931,7 +931,7 @@ test "a file that includes itself, or is included by a file it includes, is refu
     try expectLineFailsInTree(&interp, &tree, "(include \"self.scm\")", "self.scm:1:1", "bad include: self.scm includes itself, directly or through other files");
     try expectLineFailsInTree(&interp, &tree, "(include \"a.scm\")", "b.scm:1:14", "bad include: ./a.scm includes itself, directly or through other files");
     // ライブラリのファイル自身を含むことも、同じ鎖である。
-    try expectLineFailsInTree(&interp, &tree, "(import (t lib))", "t/lib.sld:1:58", "bad include: lib.sld includes itself, directly or through other files");
+    try expectLineFails(&interp, "(import (t lib))", "bad include: lib.sld includes itself, directly or through other files");
     try expectLineFailsInTree(&interp, &tree, "(import (t via))", "t/loop.scm:1:1", "bad include: ../t/via.sld includes itself, directly or through other files");
     // 失敗のあとは、読んでいる最中のファイルが空に戻り、同じ名前をもう一度含める。
     try std.testing.expectEqual(0, interp.ctx.sources.items.len);
@@ -1293,7 +1293,7 @@ test "an include-ci declaration of a library folds the file, and a library keeps
         try tree.write("t/v.scm", "(DEFINE (V) (+ (U) 1))");
         try expectLinePrints(&interp, "(import (t ci2)) (v)", "2\n");
         // 宣言の綴りは畳み込まない。`include-library-declarations` は、畳み込む版を持たない。
-        try expectLineFailsInTree(&interp, &tree, "(import (t decl))", "t/decls.scm:1:1", "bad define-library: EXPORT is not a library declaration");
+        try expectLineFails(&interp, "(import (t decl))", "bad define-library: EXPORT is not a library declaration");
     }
 }
 
@@ -1426,8 +1426,8 @@ test "libraries that import each other through files are a circular import" {
     var interp: Interpreter = undefined;
     try initOnTree(&interp, &tree, false);
     defer interp.deinit();
-    try expectLineFailsInTree(&interp, &tree, "(import (t a))", "t/b.sld:1:32", "bad import: circular import of the library (t a)");
-    try expectLineFailsInTree(&interp, &tree, "(import (t self))", "t/self.sld:1:35", "bad import: circular import of the library (t self)");
+    try expectLineFails(&interp, "(import (t a))", "bad import: circular import of the library (t a)");
+    try expectLineFails(&interp, "(import (t self))", "bad import: circular import of the library (t self)");
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
 }
 
@@ -1451,8 +1451,7 @@ test "a chain of files that import one another is loaded to a depth, and refused
     defer interp.deinit();
     // 末尾(l{fits})は上限の外で、その1つ前までが入る。
     var expected_fail: [128]u8 = undefined;
-    var where: [32]u8 = undefined;
-    try expectLineFailsInTree(&interp, &tree, "(import (chain l0))", try std.fmt.bufPrint(&where, "chain/l{d}.sld:1:43", .{fits - 1}), try std.fmt.bufPrint(&expected_fail, "implementation restriction: libraries import one another more than {d} deep, at (chain l{d})", .{ library.max_load_depth, fits }));
+    try expectLineFails(&interp, "(import (chain l0))", try std.fmt.bufPrint(&expected_fail, "implementation restriction: libraries import one another more than {d} deep, at (chain l{d})", .{ library.max_load_depth, fits }));
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
     // 末尾を、何も import しない形にすれば、鎖の全体が入る。
     const last = try std.fmt.bufPrint(&path_buf, "chain/l{d}.sld", .{fits - 1});
@@ -1591,18 +1590,16 @@ test "a runtime error, a reader error and a line of the REPL say no place" {
     try expectLineFails(&interp, "\n  (if)", "bad if: expected (if test consequent) or (if test consequent alternative)");
 }
 
-test "an error raised outside the expander says the place of the declaration, or of the top-level form" {
+test "an error raised outside the expander says the place of the top-level form" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     interp.file_name = "prog.scm";
-    // ライブラリの宣言の誤りは、展開器の外で送出するので、その宣言の位置になる。
-    try expectLineFails(&interp, "1\n (define-library (t a)\n (bogus))", "prog.scm:3:2: bad define-library: bogus is not a library declaration");
-    // 宣言の外の誤りは、最上位の形式の位置になる。
-    try expectLineFails(&interp, "1\n (define-library)", "prog.scm:2:2: bad define-library: expected (define-library <name> <declaration> ...)");
+    // ライブラリの宣言の誤りは、展開器の外で送出するので、最上位の形式の位置になる。
+    try expectLineFails(&interp, "1\n (define-library (t a)\n (bogus))", "prog.scm:2:2: bad define-library: bogus is not a library declaration");
 }
 
-test "an error in the file of a library, or in a file its declarations read, says the place in that file" {
+test "an expansion error in the file of a library, or in a file its declarations read, says the place in that file" {
     for ([_]bool{ false, true }) |stress| {
         var tree: resolve.Tree = undefined;
         try tree.init(std.testing.allocator);
@@ -1610,15 +1607,12 @@ test "an error in the file of a library, or in a file its declarations read, say
         try tree.write("t/e.sld", "(define-library (t e) (export) (import (sucheme core))\n (begin\n   (if)))");
         try tree.write("t/i.sld", "(define-library (t i) (export) (import (sucheme core)) (include \"i-body.scm\"))");
         try tree.write("t/i-body.scm", "(define x 1)\n\n  (lambda)");
-        try tree.write("t/r.sld", "(define-library (t r) (export) (import (sucheme core))\n (begin (car 5)))");
         var interp: Interpreter = undefined;
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
         // ファイルの名前が無い REPL の行から読み込んでも、ライブラリのファイルの位置が付く。
         try expectLineFailsInTree(&interp, &tree, "(import (t e))", "t/e.sld:3:4", "bad if: expected (if test consequent) or (if test consequent alternative)");
         try expectLineFailsInTree(&interp, &tree, "(import (t i))", "t/i-body.scm:3:3", "bad lambda: expected (lambda (name ...) body ...)");
-        // 本体を走らせて送出した実行時の誤りには、外側の宣言の位置も付けない。
-        try expectLineFails(&interp, "(import (t r))", "wrong type of argument to car 5");
     }
 }
 

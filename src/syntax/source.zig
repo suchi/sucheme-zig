@@ -12,7 +12,6 @@ const context = @import("../context.zig");
 const Context = context.Context;
 const reader = @import("../reader.zig");
 const resolve = @import("../resolve.zig");
-const positions = @import("../positions.zig");
 
 pub const Error = context.Error;
 
@@ -69,12 +68,6 @@ pub fn sinkFrom(ctx: *Context, scratch: std.mem.Allocator, origin: resolve.Origi
     var to = sink(ctx);
     if (ctx.positions) |table| to.positions = .{ .table = table, .file = try table.addFile(try displayName(scratch, origin)) };
     return to;
-}
-
-/// Where `form` was read from a file, or null when that is not known.
-pub fn siteOf(ctx: *const Context, form: Value) ?positions.Position {
-    const table = ctx.positions orelse return null;
-    return table.of(form);
 }
 
 /// The next datum of the file `r` reads, or null at its end.

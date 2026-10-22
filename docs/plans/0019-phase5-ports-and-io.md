@@ -435,11 +435,11 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 
 | スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 5s ライブラリのファイルの位置 | L2 | ライブラリのファイルの本体の誤りと、ライブラリの宣言が読むファイルの中の誤りが、そのファイルの名前と行と桁を添えて報告される。REPL から `import` したライブラリでも付く | `src/syntax/library.zig`(L0 の所有。`readLibraryForm` と `enterIncluded` が、読むファイルの名前を `src/syntax/source.zig` に渡す部分だけ)、`src/syntax/source.zig`(1つのデータを位置つきで読む入口)、`docs/design/frontend.md` の「現状」。実装で足したもの: `src/syntax/library.zig` の宣言と `define-library` の位置の記録と、本体の実行時の誤りに位置を付けない数行、`src/context.zig`(`noteRaisedWithoutPlace`。L0 の所有)、`src/sucheme.zig` のテスト(L0 の所有) | T2 | 5d のマージ。L0 が `src/syntax/library.zig` を触るスライスを進めていないこと(着手の前に親が確かめる) | L3 と並行 | 小 |
+| 5s ライブラリのファイルの位置 | L2 | ライブラリのファイルの本体の誤りと、ライブラリの宣言が読むファイルの中の誤りが、そのファイルの名前と行と桁を添えて報告される。REPL から `import` したライブラリでも付く | `src/syntax/library.zig`(L0 の所有。`readLibraryForm` と `enterIncluded` が、読むファイルの名前を `src/syntax/source.zig` に渡す部分だけ)、`src/syntax/source.zig`(1つのデータを位置つきで読む入口)、`docs/design/frontend.md` の「現状」、`src/sucheme.zig` のテスト(L0 の所有) | T2 | 5d のマージ。L0 が `src/syntax/library.zig` を触るスライスを進めていないこと(着手の前に親が確かめる) | L3 と並行 | 小 |
 
 - 段階: 段階5に置く。リーダの完全化と位置情報の副表を段階5に置いた理由(0014)と同じで、5d の続きだからである。段階5の完了(5r)の前提に 5s を加えた。
 - 名前: 5e は 0018 に渡した名前、5f は欠番で、5g から 5r は L3 が使うので、次の 5s にする。
-- 所有の外のファイル: `src/syntax/library.zig` は L0 の所有なので、5d と同じく、触れる範囲をユーザーの承認で決める。
+- 所有の外のファイル: `src/syntax/library.zig` は L0 の所有なので、5d と同じく、触れる範囲をユーザーの承認で決める。2026-10-22 に、名前を渡す2か所だけと決まった。宣言の誤りの位置と、本体の実行時の誤りの位置は、frontend.md の「現状(スライス 5d)」の既知の制限に書き、3q 以降で直す候補にした。
 - 規模の根拠: 5d で、読む経路に位置を渡す形(`source.readDataFrom`)ができている。`library.zig` の2つの読み手が、同じ形でファイルの名前を渡せば足りる見込みである。見込みで、`library.zig` の読み手を確かめて決めたものではない。
 - `tests/scheme` の番号は、5d の範囲(0530 から 0539)の残りを使う。ハーネスはファイルの名前を渡さないので、位置の確かめは単体テストで行う見込みである。
 
@@ -458,7 +458,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5b | マージ済み。縦棒の識別子。エスケープは <symbol element> のものに `\"` と `\\` を足したもので、行継続は無い。畳み込む読み手でも畳み込まない。縦棒を付けて書き出すのは 5j | suchi/sucheme-zig#146 |
 | 5c | マージ済み。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | suchi/sucheme-zig#147 |
 | 5d | マージ済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | suchi/sucheme-zig#160 |
-| 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。本体の実行時の誤りには位置を付けない(docs/design/frontend.md の「現状(スライス 5d)」) | この PR |
+| 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
 | 5g から 5r | 未着手 | - |
 
 ## 次にやること

@@ -303,9 +303,6 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
         else => |n| return nameFailure(ctx, text, n),
     };
     const form = try readLibraryForm(ctx, scratch, opened, text);
-    // ファイルの中の誤りで、より内側の位置が分からないものは、この `define-library` の位置にする
-    // (docs/design/frontend.md の位置情報)。
-    errdefer ctx.noteRaisedAt(source_mod.siteOf(ctx, form));
     // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
     if (form.asPair().?.cdr.asPair()) |rest| {
         if (!sameName(rest.car, name)) return ctx.raise(
@@ -498,8 +495,6 @@ pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Err
 
 /// Processes one declaration of a library.
 fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration: Value, pending: *std.ArrayList(PendingExport), depth: usize) Error!void {
-    // 宣言の中で送出し、より内側の位置(本体の形式など)が分からなければ、この宣言の位置にする。
-    errdefer ctx.noteRaisedAt(source_mod.siteOf(ctx, declaration));
     if (depth >= max_declaration_depth)
         return ctx.raise("implementation restriction: library declarations are nested more than {d} deep", .{max_declaration_depth});
     const bad = "bad define-library: a declaration must be a list that starts with an identifier";
@@ -533,7 +528,8 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             // フォームの間は、機械もリーダも何も保持していない境目である(ADR-0035)。
             if (ctx.heap.shouldCollect()) ctx.collectIdle();
             const node = try expand.expandIn(ctx, scratch, body, target, .{});
-            try runBody(ctx, scratch, node);
+            var m: machine.Machine = .init(ctx, scratch);
+            _ = try m.run(node);
         }
     } else if (std.mem.eql(u8, keyword, "include") or std.mem.eql(u8, keyword, "include-ci")) {
         const fold_case = std.mem.eql(u8, keyword, "include-ci");
@@ -544,7 +540,8 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             while (rest.asPair()) |p| : (rest = p.cdr) {
                 if (ctx.heap.shouldCollect()) ctx.collectIdle();
                 const node = try expand.expandIn(ctx, scratch, p.car, target, .{});
-                try runBody(ctx, scratch, node);
+                var m: machine.Machine = .init(ctx, scratch);
+                _ = try m.run(node);
             }
         }
     } else if (std.mem.eql(u8, keyword, "include-library-declarations")) {
@@ -561,16 +558,6 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
     } else {
         return ctx.raise("bad define-library: {s} is not a library declaration", .{keyword});
     }
-}
-
-/// Runs `node`, a form of the body of a library.
-/// 実行時の誤りには位置を付けないので、送出したら、外側の宣言の位置が付かないようにする。
-fn runBody(ctx: *Context, scratch: std.mem.Allocator, node: *const value_mod.Node) Error!void {
-    var m: machine.Machine = .init(ctx, scratch);
-    _ = m.run(node) catch |e| {
-        if (e == error.Raised) ctx.noteRaisedWithoutPlace();
-        return e;
-    };
 }
 
 /// Reads the file that `name`, the file name of an `include` declaration, means, and
