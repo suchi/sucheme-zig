@@ -78,6 +78,10 @@ pub const Machine = struct {
         /// まで続く。ハンドラが継続で外へ脱出すれば(2e)、深い継続は辿れなくなり、その後の
         /// GC が余裕を見つけて印を戻す。
         limit_reported: bool = false,
+        /// How many more steps the run may take.
+        /// 上限なしは `maxInt` で表す。1周ごとの比べ方を1つにして、`?u64` の分岐を周回に
+        /// 足さないためである。`maxInt` 歩は使い切れない。
+        steps_left: u64 = std.math.maxInt(u64),
     };
 
     /// Runs `node` to its value.
@@ -86,7 +90,7 @@ pub const Machine = struct {
     /// 途中の `dynamic-wind` の `after` をすべて呼ぶ。着いたら、送出された値を `ctx.raised`
     /// に置いて `error.Raised` を返す(docs/design/runtime.md の未処理例外)。
     pub fn run(self: *Machine, root: *const Node) Error!Value {
-        var regs: Registers = .{ .control = root };
+        var regs: Registers = .{ .control = root, .steps_left = self.ctx.step_limit orelse std.math.maxInt(u64) };
         while (true) {
             if (self.steps(&regs)) |v| return v else |e| if (e != error.Raised) return e;
             // Why: 送出の地点は、ステップの中のどこでも `ctx.raise` を返せばよい。値をハンドラ
@@ -194,6 +198,9 @@ pub const Machine = struct {
             regs.dyn = dyn;
         }
         while (true) {
+            // 1周を1歩と数える。上限に達したら、ハンドラに渡さずに実行を終える(計画書 0024)。
+            if (regs.steps_left == 0) return error.StepLimit;
+            regs.steps_left -= 1;
             if (ctx.heap.shouldCollect()) try self.collect(.{ .ctx = ctx, .control = control, .env = env, .kont = kont, .value = value, .dyn = dyn }, &regs.limit_reported);
             if (control) |node| {
                 control = null;
