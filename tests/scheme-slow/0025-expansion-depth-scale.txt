@@ -1,0 +1,20 @@
+# スライス 3p-2 を規模で試す。入れ子の lambda を重ねて止まらないマクロが、手続きの入れ子の
+# 深さの上限で、有界で終わる。上限に届くまでの時間は深さの2乗で伸びるので
+# `zig build test-scheme -Dslow=true` のときだけ走り、全コミットでは走らない
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0311-expansion-depth.txt と、src/syntax/expand.zig の単体テストにある。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。
+#
+# 1ケースは1行で、エラーはその行の残りを打ち切る。
+
+# 引数のある lambda。
+(define-syntax g (syntax-rules () ((_ x) (lambda (y) (g y))))) (g 1)
+error: implementation restriction: procedures are nested more than 10000 deep
+
+# 本体の定義の lambda。
+(define-syntax h (syntax-rules () ((_) (lambda () (define (k) (h)) k)))) (h)
+error: implementation restriction: procedures are nested more than 10000 deep
+
+# let-syntax の本体の定義が作るフレーム。
+(define-syntax s (syntax-rules () ((_) (let-syntax () (define x (s)) x)))) (s)
+error: implementation restriction: procedures are nested more than 10000 deep

@@ -40,7 +40,18 @@ pub const Error = context.Error;
 /// 既定は番地の幅いっぱいの値である。テストは上限に届かせるために、より小さい値を渡す。
 pub const Limits = struct {
     address: u32 = std.math.maxInt(u32),
+    /// The deepest procedures the expander makes may be nested (a rib depth).
+    depth: u32 = max_depth,
 };
+
+/// The deepest procedures may be nested in what the expander makes: an
+/// implementation restriction (R7RS 1.3.2).
+/// Why: 識別子の解決は、構文環境の鎖を内側からたどるので、深さに比例する。入れ子の
+/// `lambda` を重ねて止まらないマクロは、1段ごとに深さに比例する解決を繰り返すので、時間が
+/// 深さの2乗で伸び、展開がいつまでも終わらない(ヒープの上限に当たる前に、時間が尽きる)。
+/// 深さに上限を置いて、有界で終わらせる。環境の探索を深さに依存しない形にする案は、新しい
+/// 機構になるので採らなかった(docs/plans/0016-phase3-scheme-stdlib.md の 3p の中身)。
+pub const max_depth = 10000;
 
 /// Expands `form`, which is at the top level of a program.
 /// 節点は GC ヒープに確保し、上限に数える(ADR-0040)。展開の実行中だけ要るものは
@@ -753,6 +764,7 @@ const Expander = struct {
         comptime form_name: []const u8,
     ) Error!void {
         const inner = try syntax_env.extend(self.ctx, env);
+        try self.checkDepth(inner);
         var slots: u32 = 0;
         var rest = params_form;
         while (rest.asPair()) |p| : (rest = p.cdr) try self.parameter(inner, &slots, p.car, form_name);
@@ -797,6 +809,13 @@ const Expander = struct {
                 .leave => .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = dest, .op = .leave_file },
             });
         }
+    }
+
+    /// Checks that `rib`, the rib of a procedure's frame, is not nested deeper
+    /// than the limit.
+    fn checkDepth(self: *Expander, rib: *const SyntacticEnv) Error!void {
+        if (rib.rib_depth > self.limits.depth)
+            return self.ctx.raise("implementation restriction: procedures are nested more than {d} deep", .{self.limits.depth});
     }
 
     /// Binds the next slot of a call's frame in `rib`, after checking that the
@@ -1162,7 +1181,8 @@ const Expander = struct {
             rib.rib_depth = inner.rib_depth;
             return self.bodySequence(task.dest, scanned, rib);
         }
-        // 本体を、引数の無い手続きにして、すぐに呼ぶ。
+        // 本体を、引数の無い手続きにして、すぐに呼ぶ。フレームを作るので、深さの上限に数える。
+        try self.checkDepth(rib);
         const body_node = try self.newNode();
         try self.bodySequence(body_node, scanned, rib);
         const operator = try self.newNode();
@@ -1610,6 +1630,35 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a b) a)", limits));
     try std.testing.expectEqualStrings("implementation restriction: a procedure has too many variables", f.ctx.diagnostic());
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
+}
+
+test "procedures nested deeper than the limit are an implementation restriction, and the limit itself is not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .depth = 2 };
+    const message = "implementation restriction: procedures are nested more than 2 deep";
+    // 深さ 2 が収まる最後である。
+    try std.testing.expectEqualStrings("(lambda 0 0 (lambda 0 0 (const 1)))", try f.expandText("(lambda () (lambda () 1))", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (lambda () (lambda () 1)))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // 定義の略記の手続きも、同じく数える。
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (define (g) (lambda () 1)) g)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // let-syntax の本体は、define があるときだけフレームを作るので、そのときだけ数える。
+    try std.testing.expectEqualStrings("(lambda 0 0 (lambda 0 0 (const 1)))", try f.expandText("(lambda () (let-syntax () (lambda () 1)))", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (let-syntax () (define x 1) (lambda () x)))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // 止まらないマクロも、上限で終わる。
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) (lambda () (m)))))", "(const #<unspecified>)");
+    try std.testing.expectError(error.Raised, f.expandText("(m)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+}
+
+test "the default limit of the depth of procedures is the one the messages and the tests of the scheme side name" {
+    // tests/scheme/0311-expansion-depth.txt と tests/scheme-slow/0025-expansion-depth-scale.txt が、
+    // この値を文言の中に書いている。
+    try std.testing.expectEqual(10000, (Limits{}).depth);
 }
 
 test "a special form at the top level is not a variable or a value to assign" {
