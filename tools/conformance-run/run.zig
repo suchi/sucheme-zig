@@ -106,11 +106,10 @@ const runner_prefix = "%conformance-run:";
 
 /// The most steps of the machine one top-level form of the suite may take.
 /// Why: 止まらない形式を、CI のジョブの時間切れでなく、どの形式かが分かる誤りで止めるためである
-/// (ADR-0044、計画書 0024 の「上限の値」)。2026-10-22 に、取り込んだスイートの形式1つあたりの
-/// 歩数の最大値を測ると 2339 歩(1690 行目の形式)だったので、その約 100 倍にした。ほかのレーンが
-/// 手続きを足して、今は評価されない形式が評価されるようになっても、正当な形式が当たらない余裕を取る。
-/// ReleaseSafe で、上限まで回る形式1つは約 0.1 秒で止まる。正当な形式が当たったら、その歩数を測って
-/// 上げる。当たった形式は誤りに数えられるので、`check-report` が赤になり、黙って見逃されない。
+/// (ADR-0044)。値は、取り込んだスイートの形式1つあたりの歩数の最大値の約 100 倍で、測った値と
+/// 止まるまでの時間は計画書 0024 の「測定」にある。ほかのレーンが手続きを足して、今は評価されない
+/// 形式が評価されるようになっても、正当な形式が当たらない余裕を取る。正当な形式が当たったら、その
+/// 歩数を測って上げる。当たった形式は誤りに数えられるので、`check-report` が赤になり、黙って見逃されない。
 const step_limit = 250_000;
 
 /// Runs `text` with `runSuite` if it is the vendored suite, or returns `error.NotVendored`.
@@ -760,10 +759,15 @@ test "a form that does not stop is an error at the step limit, and the section g
         \\(test 1 x)
         \\(test 2 (+ 1 1))
         \\(test-end)
+        \\(test-begin "b")
+        \\(test 1 (let loop () (loop)))
+        \\(test-end)
         \\(test-end)
     );
     // 止まらない式は誤りに数え、止まらない定義は連鎖のもとにする。後続のテストは走る。
     try std.testing.expectEqual(Counts{ .passed = 1, .errored = 2, .cascaded = 1 }, try findSection(r, "a"));
+    // 上限は、節ごとに作るインタプリタのどれにも置く。
+    try std.testing.expectEqual(Counts{ .errored = 1 }, try findSection(r, "b"));
     var limits: usize = 0;
     for (r.failures) |f| {
         if (f.kind == .errored) {
@@ -771,7 +775,7 @@ test "a form that does not stop is an error at the step limit, and the section g
             limits += 1;
         }
     }
-    try std.testing.expectEqual(2, limits);
+    try std.testing.expectEqual(3, limits);
 }
 
 test "an unbound error in a test cascades after an errored form, and across nested sections" {
