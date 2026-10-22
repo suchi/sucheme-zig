@@ -460,6 +460,13 @@ test "parse says no to an exact number too large for the heap, before it allocat
     var digits: [100000]u8 = undefined;
     @memset(&digits, '9');
     try expectReads(&h, null, &digits);
+    // 分数は、分子と分母の合計で見積もる。
+    const big_numerator = try std.fmt.allocPrint(testing.allocator, "{s}/1", .{&digits});
+    defer testing.allocator.free(big_numerator);
+    try expectReads(&h, null, big_numerator);
+    const big_denominator = try std.fmt.allocPrint(testing.allocator, "1/{s}", .{&digits});
+    defer testing.allocator.free(big_denominator);
+    try expectReads(&h, null, big_denominator);
     try testing.expectEqual(0, h.external);
     try testing.expectEqual(0, h.accounted);
     try testing.expect(!h.external_enforced);
@@ -520,6 +527,37 @@ test "parse with any limit gives a number, no, or a heap limit error, and leaves
             if (parse(&h, text, 10)) |_| {} else |e| try testing.expectEqual(error.HeapLimit, e);
             try testing.expectEqual(0, h.external);
             try testing.expect(!h.external_enforced);
+        }
+    }
+}
+
+test "makeRatio puts the sign on the numerator, reduces, and makes an integer of a unit denominator" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_]struct { n: i64, d: i64, expected: []const u8 }{
+        .{ .n = 1, .d = 2, .expected = "1/2" },
+        .{ .n = 1, .d = -2, .expected = "-1/2" },
+        .{ .n = -1, .d = -2, .expected = "1/2" },
+        .{ .n = -6, .d = 4, .expected = "-3/2" },
+        .{ .n = 6, .d = -4, .expected = "-3/2" },
+        .{ .n = 0, .d = -5, .expected = "0" },
+        .{ .n = 4, .d = -2, .expected = "-2" },
+        .{ .n = 7, .d = 1, .expected = "7" },
+        .{ .n = std.math.minInt(i64), .d = -1, .expected = "9223372036854775808" },
+    }) |case| {
+        var n = try Managed.initSet(testing.allocator, case.n);
+        defer n.deinit();
+        var d = try Managed.initSet(testing.allocator, case.d);
+        defer d.deinit();
+        const v = try makeRatio(&h, testing.allocator, n.toConst(), d.toConst());
+        var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer aw.deinit();
+        try write(&aw.writer, testing.allocator, v, 10);
+        try testing.expectEqualStrings(case.expected, aw.written());
+        // 分母は、正の整数の bignum か fixnum で、1 ではない。
+        if (v.asRatnum()) |r| {
+            try testing.expect(r.denominator.kind() == .fixnum or r.denominator.kind() == .bignum);
+            try testing.expect(r.denominator.asFixnum() != 1);
         }
     }
 }
