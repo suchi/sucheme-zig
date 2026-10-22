@@ -2521,12 +2521,14 @@ test "with no step limit, a long loop runs to its end" {
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1))))", &w);
-    // 既定は上限なしである。100 万回の版は層2に置く。
-    try interp.evalPrint(arena.allocator(), "(count 100000)", &w);
+    // 既定は上限なしである。`(count 1000)` は1回あたり 20 歩ほどで、下で外す上限の 1000 歩を
+    // 十分に超える。歩数に比例して時間がかかるので、大きい既定の上限まで見る 100 万回の版は
+    // 層2に置く。上限ちょうどの境目は "the step limit lets a form take exactly that many steps" が見る。
+    try interp.evalPrint(arena.allocator(), "(count 1000)", &w);
     try std.testing.expectEqualStrings("done\n", w.buffered());
     interp.setStepLimit(1000);
     interp.setStepLimit(null);
-    try interp.evalPrint(arena.allocator(), "(count 100000)", &w);
+    try interp.evalPrint(arena.allocator(), "(count 1000)", &w);
     try std.testing.expectEqualStrings("done\ndone\n", w.buffered());
 }
 
