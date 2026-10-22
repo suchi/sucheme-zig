@@ -8,7 +8,7 @@
 
 ## 解こうとしている問題
 
-段階3までの処理系には、ポートが無い。結果の出力は、`Interpreter.evalPrint` に渡す `std.Io.Writer` だけを通り、Scheme のプログラムは `display` も `read-char` も呼べない。`eval` と `exit` は、機械操作プリミティブとして設計だけがある([runtime.md](../design/runtime.md) の機械操作プリミティブ)。リーダは、データラベル、ブロックコメント、`#;`、縦棒の識別子、`#!fold-case` の指令、文字列の行継続を読めない([frontend.md](../design/frontend.md) の段階ごとの実装範囲)。プリンタは循環を検出しないので、`set-cdr!` で作った循環リストを REPL が書くと止まらない。
+段階3までの処理系には、ポートが無い。結果の出力は、`Interpreter.evalPrint` に渡す `std.Io.Writer` だけを通り、Scheme のプログラムは `display` も `read-char` も呼べない。`eval` と `exit` は、機械操作プリミティブとして設計だけがある([runtime.md](../design/runtime.md) の機械操作プリミティブ)。リーダは、データラベル、ブロックコメント、`#;`、縦棒の識別子、`#!fold-case` のディレクティブ、文字列の行継続を読めない([frontend.md](../design/frontend.md) の段階ごとの実装範囲)。プリンタは循環を検出しないので、`set-cdr!` で作った循環リストを REPL が書くと止まらない。
 
 R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)` の9つと、`(scheme base)` のポートの識別子である。必須の識別子の一覧は `tests/r7rs-required/` の各ファイルが正で、ここに複製しない。
 
@@ -59,19 +59,19 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 
 | スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 5a コメントと指令と行継続 | L2 | `#\| a #\| b \|# \|# 1` が `1`、`(list 1 #;2 3)` が `(1 3)`、同じ入力の中で、`#!fold-case` のあとの `ABC` が `abc` で、`#!no-fold-case` で戻る(REPL の次の入力まで残すのは 5i と 5l)。文字列の行継続が読める | `src/reader.zig`、`src/string_syntax.zig` | T2 | なし | 5b と 5c とは直列(同じファイル)。L3 とは並行 | 小 |
+| 5a コメントとディレクティブと行継続 | L2 | `#\| a #\| b \|# \|# 1` が `1`、`(list 1 #;2 3)` が `(1 3)`、同じ入力の中で、`#!fold-case` のあとの `ABC` が `abc` で、`#!no-fold-case` で戻る(REPL の次の入力まで残すのは 5i と 5l)。文字列の行継続が読める | `src/reader.zig`、`src/string_syntax.zig` | T2 | なし | 5b と 5c とは逐次(同じファイル)。L3 とは並行 | 小 |
 | 5b 縦棒の識別子 | L2 | `(eq? '\|a b\| (string->symbol "a b"))` が `#t`。`\|\x41;\|` が `A` という名前のシンボル | `src/reader.zig`、`src/string_syntax.zig`(文字列とエスケープを共有するので、新しいファイルは作らなかった)。`src/sucheme.zig` の誤りの説明の振り分けに1行(5a も同じ) | T2 | 5a | L3 と並行 | 小 |
 | 5c データラベル | L2 | `(let ((x '#0=(a . #0#))) (eq? x (cdr x)))` が `#t`。衛生性の検証項目の9。リテラルの外の循環と、`syntax-rules` のパターンとテンプレートの循環が、止まらずに誤りになる | `src/reader.zig`。`src/syntax/rules.zig`(循環の検査の関数1つと呼び出し、2026-10-20 に承認)。`src/sucheme.zig` の誤りの説明の振り分けに1行 | T2(T3 がレビュー) | 5b | L3 と並行 | 中 |
-| 5d 位置情報の副表 | L2 | 展開時のエラーが、ファイルと行と桁を添えて報告される | `src/reader.zig`、`src/positions.zig`(新規)、`src/syntax/source.zig` の受け渡しの部分。2026-10-21 に承認された所有の外のもの: `src/syntax/expand.zig`(仕事に位置を持たせる分)、`src/context.zig`(表と送出の位置)、`src/sucheme.zig`(表の配線と説明の前置)、`src/main.zig`(パスを渡す1か所) | T3 | 5c、3o のマージ | L3 と並行。3o とは直列 | 中 |
-| 5g ポートの型の骨格 | L3 | `Value` に `port` の変種があり、GC が辿り、計上し、回収する。プリンタが `#<port>` と書く。手続きは足さない | `src/value.zig`、`src/trace.zig`、`src/heap.zig`、`src/printer.zig` の1行 | T3 | 0018 の数の型の骨格との順序(下の「型の骨格の衝突」) | L2 と並行 | 小 |
-| 5h 文字列ポートとバイトベクタポート | L3 | `(let ((p (open-input-string "ab"))) (list (read-char p) (peek-char p) (read-char p) (eof-object? (read-char p))))` が `(#\a #\b #\b #t)`。`get-output-string` と `get-output-bytevector` が往復する | `src/port.zig`(新規)、`src/prim/port.zig`(新規)、`src/prim/table.zig` の1行、`lib/scheme/base.sld` のポートの輸出 | T2 | 5g | L2 と並行 | 中 |
+| 5d 位置情報の副表 | L2 | 展開時のエラーが、ファイルと行と桁を添えて報告される | `src/reader.zig`、`src/positions.zig`(新規)、`src/syntax/source.zig` の受け渡しの部分。2026-10-21 に承認された所有の外のもの: `src/syntax/expand.zig`(仕事に位置を持たせる分)、`src/context.zig`(表と送出の位置)、`src/sucheme.zig`(表の配線と説明の前置)、`src/main.zig`(パスを渡す1か所) | T3 | 5c、3o のマージ | L3 と並行。3o とは逐次 | 中 |
+| 5g ポートの型の骨格 | L3 | `Value` に `port` のバリアントがあり、GC が辿り、計上し、回収する。プリンタが `#<port>` と書く。手続きは足さない | `src/value.zig`、`src/trace.zig`、`src/heap.zig`、`src/printer.zig` の1行 | T3 | 0018 の数の型の骨格との順序(下の「型の骨格のコンフリクト」) | L2 と並行 | 小 |
+| 5h 文字列ポートとバイトベクタポート | L3 | `(let ((p (open-input-string "ab"))) (list (read-char p) (peek-char p) (read-char p) (eof-object? (read-char p))))` が `(#\a #\b #\b #t)`。`get-output-string` と `get-output-bytevector` がラウンドトリップする | `src/port.zig`(新規)、`src/prim/port.zig`(新規)、`src/prim/table.zig` の1行、`lib/scheme/base.sld` のポートの輸出 | T2 | 5g | L2 と並行 | 中 |
 | 5i コンソールのポートと現在のポート | L3 | `(display "hi")` と `(newline)` と `(write-string "x" (current-error-port))` が、ネイティブでも WASM でも、評価の結果の出力と同じ順で出る。`current-output-port` が `parameterize` で差し替わる | `src/port.zig`、`src/prim/port.zig`、`src/platform/`(新規)、`src/sucheme.zig` の配線、`src/wasm.zig`、`lib/scheme/write.sld`(新規、`display` だけ先に) | T2 | 5h | L2 と並行 | 中 |
 | 5j `write` の3種 | L3 | `(let ((x (list 1 2))) (set-cdr! (cdr x) x) (write x))` が `#0=(1 2 . #0#)`。`write-shared` が共有を、`write-simple` がラベルなしを書く。`display` が循環で止まる。非 ASCII を含むシンボルを縦棒で書く | `src/printer.zig`、`src/prim/port.zig` の書き出しの手続き、`lib/scheme/write.sld` | T2(T3 がレビュー) | 5i | L2 と並行 | 中 |
 | 5k ファイルポートと `(scheme file)` | L3 | `with-output-to-file` で書いたファイルを `call-with-input-file` で読み返せる。開けないファイルで `file-error?` が真になる条件が送出される。WASM で `file-exists?` が `#f` を返す | `src/port.zig`、`src/prim/port.zig`、`src/resolve.zig` の第2類の入口、`src/platform/`、`lib/scheme/file.sld`(新規) | T3(GC との関係)、T2(手続き) | 5i | L2 と並行 | 大 |
-| 5l `read` と `(scheme read)` | L3 | `(read (open-input-string "(a . b) c"))` が `(a . b)` で、続く `read` が `c`、その次が EOF。読めない入力で `read-error?` が真になる。`#!fold-case` がポートごとに効く | `src/prim/port.zig`、`lib/scheme/read.sld`(新規) | T2 | 5h、5a(指令の状態) | L2 と並行。5a のマージ後 | 小 |
+| 5l `read` と `(scheme read)` | L3 | `(read (open-input-string "(a . b) c"))` が `(a . b)` で、続く `read` が `c`、その次が EOF。読めない入力で `read-error?` が真になる。`#!fold-case` がポートごとに効く | `src/prim/port.zig`、`lib/scheme/read.sld`(新規) | T2 | 5h、5a(ディレクティブの状態) | L2 と並行。5a のマージ後 | 小 |
 | 5m `exit` と `(scheme process-context)` | L3 | 事例12が通る。`sucheme prog.scm a b` で `(command-line)` が `("prog.scm" "a" "b")` の形の文字列のリスト。終了コードが [platform-and-web.md](../design/platform-and-web.md) の表どおり。WASM が -6 と `sucheme_exit_code` を返す | `src/machine.zig` の `MachineOp.exit` と巻き戻しの目標、`src/value.zig` の `MachineOp` の1行、`src/prim/process.zig`(新規)、`src/main.zig` のファイルの実行の部分、`src/wasm.zig`、`web/sucheme.js`、`tools/test-wasm/`、`lib/scheme/process-context.sld`(新規) | T3(機械)、T2(残り) | 5i | 3o と重なる(下の「機械の重なり」) | 中 |
 | 5n `(scheme time)` | L3 | `(< 0 (current-jiffy))` と `(exact-integer? (jiffies-per-second))` が `#t`。`current-second` が不正確な数を返す。WASM でも同じ | `src/prim/time.zig`(新規)、`src/platform/`、`src/wasm.zig`、`web/sucheme.js`、`tools/test-wasm/`、`lib/scheme/time.sld`(新規) | T2 | 5i、0018 の浮動小数点数 | L2 と並行 | 小 |
-| 5o `eval` と環境の値 | L3 | `(eval '(* 7 3) (environment '(scheme base)))` が `21`。`(eval '(define foo 32) (environment '(scheme base)))` が誤りを送出する。`interaction-environment` で定義した名前が REPL から見える。EOF の値と約束を `eval` で定数にするテストが通る | `src/machine.zig` の `MachineOp.eval`、`src/value.zig` の環境の値の型、`src/prim/eval.zig`(新規)、`lib/scheme/eval.sld` `repl.sld`(新規) | T3 | 3o のマージ、5m | 3o とは直列 | 大 |
+| 5o `eval` と環境の値 | L3 | `(eval '(* 7 3) (environment '(scheme base)))` が `21`。`(eval '(define foo 32) (environment '(scheme base)))` が誤りを送出する。`interaction-environment` で定義した名前が REPL から見える。EOF の値と約束を `eval` で定数にするテストが通る | `src/machine.zig` の `MachineOp.eval`、`src/value.zig` の環境の値の型、`src/prim/eval.zig`(新規)、`lib/scheme/eval.sld` `repl.sld`(新規) | T3 | 3o のマージ、5m | 3o とは逐次 | 大 |
 | 5p `load` と `(scheme load)` | L3 | `(load "x.scm")` が探索ルートの中の `x.scm` を、指定の環境で評価する。ルートの外の名前を拒否する | `src/prim/eval.zig`、`src/resolve.zig` の第1類の入口、`lib/scheme/load.sld`(新規) | T2 | 5o | L2 と並行 | 小 |
 | 5q `(scheme r5rs)` | L3 | `(import (scheme r5rs))` が通り、`(eval '(+ 1 2) (scheme-report-environment 5))` が `3`。付録Aの全ライブラリが `import` できる | `lib/scheme/r5rs.sld`(新規)、`src/prim/eval.zig` の `null-environment` と `scheme-report-environment` | T2(輸出の転記は T1) | 5k、5l、5n、5p、0018 の `(scheme inexact)` `(scheme complex)` `(scheme char)` | 最後 | 小 |
 | 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q、v0.4.0 の公開 | 最後 | 小 |
@@ -80,19 +80,19 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 
 ### 5a から 5d の中身(L2)
 
-- 5a: `skipWhitespace` を、行コメント、入れ子のブロックコメント、データコメント、指令を読み飛ばす形に広げる。`#;` は、続く1つのデータを読んで捨てる。捨てるデータの中のデータラベルの扱いは 5c で決める。指令の直後に区切りが要る([frontend.md](../design/frontend.md) のケースフォールディングの節。`#!fold-casex` は読み取りの誤り)。閉じていない `#|` と、データの来ない `#;` は `Incomplete` にする。`isIncomplete` の判定表の `"#| x"` と `"(a #;1"` の行は、偽から真に変わる。行継続は `\` に続く行内の空白、改行、次の行の先頭の空白を読み飛ばす(R7RS 6.7 と 7.1.1 の `<line ending>` と `<intraline whitespace>`。原文で確かめてから書く)。
+- 5a: `skipWhitespace` を、行コメント、入れ子のブロックコメント、データコメント、ディレクティブを読み飛ばす形に広げる。`#;` は、続く1つのデータを読んで捨てる。捨てるデータの中のデータラベルの扱いは 5c で決める。ディレクティブの直後に区切りが要る([frontend.md](../design/frontend.md) のケースフォールディングの節。`#!fold-casex` は読み取りの誤り)。閉じていない `#|` と、データの来ない `#;` は `Incomplete` にする。`isIncomplete` の判定表の `"#| x"` と `"(a #;1"` の行は、偽から真に変わる。行継続は `\` に続く行内の空白、改行、次の行の先頭の空白を読み飛ばす(R7RS 6.7 と 7.1.1 の `<line ending>` と `<intraline whitespace>`。原文で確かめてから書く)。
 - 5b: `|` で始まるトークンを、R7RS 7.1.1 の `<symbol element>` の規則で読む。`\x` の16進と、文字列と同じ記憶術のエスケープを許す(原文の生成規則で確かめる)。名前に ASCII でない文字を含むシンボルは、`#!fold-case` のもとでも畳み込まない縦棒の記法でだけ作れる。畳み込みの扱いは R7RS 2.1 の規定で確かめる。`folded` の ASCII の assert は、縦棒の識別子を通さない形に保つ。
-- 5c: `#n=` を読んだら、ラベルの表に仮の目印(placeholder)を置き、データを読み終えたら、目印を本体で置き換える。置き換えは、作ったペアとベクタを訪問済みの集合つきで辿る(循環を作るので、Zig の再帰を使わない。[runtime.md](../design/runtime.md) の入力の深さに比例する処理)。ラベルの表と訪問済みの集合は、計上の対象である(runtime.md の計上の対象の「データラベルの表」)。読み取りの途中で GC は走らない(`Sink` の doc コメント)ので、目印はルートに入れなくてよい。未定義のラベルの参照と、同じラベルの二重定義は、読み取りの誤り(新しい `SyntaxError` の変種)にする。`#;` の中のラベルは、捨てるデータの中だけで有効にする。目印の表現(専用の `Value` の変種を作らず、ラベルの表の中の未完成のペアを指すなど)は、5c の中で決め、PR に書く。
+- 5c: `#n=` を読んだら、ラベルの表にプレースホルダ(placeholder)を置き、データを読み終えたら、プレースホルダを本体で置き換える。置き換えは、作ったペアとベクタを訪問済みの集合つきで辿る(循環を作るので、Zig の再帰を使わない。[runtime.md](../design/runtime.md) の入力の深さに比例する処理)。ラベルの表と訪問済みの集合は、計上の対象である(runtime.md の計上の対象の「データラベルの表」)。読み取りの途中で GC は走らない(`Sink` の doc コメント)ので、プレースホルダはルートに入れなくてよい。未定義のラベルの参照と、同じラベルの二重定義は、読み取りの誤り(新しい `SyntaxError` のバリアント)にする。`#;` の中のラベルは、捨てるデータの中だけで有効にする。プレースホルダの表現(専用の `Value` のバリアントを作らず、ラベルの表の中の未完成のペアを指すなど)は、5c の中で決め、PR に書く。
 - 5d: [frontend.md](../design/frontend.md) の位置情報の節を実装する。副表は、1つのトップレベルフォームを読んでから展開し終えるまでの作業表で、ルートに登録し、展開が終われば捨てる。展開時の誤りに、ファイルと行と桁を前置する。L7 の「エラー位置の表示」が、この結果を使う。展開器がコアIRの節点に位置を写す部分は、5d に入れない(2026-10-21 にユーザーが判断した)。位置を読むのは実行時の誤りの報告で、5d の完了条件の外だからである。実行時の誤りに位置を出すスライスで、読む側と一緒に入れる。そのスライスは、まだ割り当てていない(L7 の「エラー位置の表示」の計画で決める)。
 
 ### 5g から 5r の中身(L3)
 
-- 5g: ヒープの型 `Port` を足す。中身は、方向(入力、出力)、種類(テキスト、バイナリ)、開いているか、畳み込みの状態(`#!fold-case` の状態はポートごと。[frontend.md](../design/frontend.md))、裏付け(下の表)の直和である。`Value` と `Kind` と `heap_types` に1行ずつ、`payloadBytes` と `free` に1行ずつ足す。`isEqv` は同一性で比べる。裏付けの各変種の中身は、合意を求める点の1と3と4の回答で決まる。骨格の PR では、文字列ポートの変種1つだけを置き、ほかは各スライスが足す。
+- 5g: ヒープの型 `Port` を足す。中身は、方向(入力、出力)、種類(テキスト、バイナリ)、開いているか、畳み込みの状態(`#!fold-case` の状態はポートごと。[frontend.md](../design/frontend.md))、裏付け(下の表)の直和である。`Value` と `Kind` と `heap_types` に1行ずつ、`payloadBytes` と `free` に1行ずつ足す。`isEqv` は同一性で比べる。裏付けの各バリアントの中身は、合意を求める点の1と3と4の回答で決まる。骨格の PR では、文字列ポートのバリアント1つだけを置き、ほかは各スライスが足す。
 - 5h: `src/port.zig` に、ポートの読み書きの関数を置く(下の「署名」)。`src/prim/port.zig` に、`(scheme base)` のポートの手続きのうち、明示したポートを取るものと、文字列ポートとバイトベクタポートを作るものを置く。`call-with-port` は Scheme で書けるので、`lib/sucheme/procedures.scm` に置く(R7RS 6.13.1 の定義を原文で確かめる)。`read-bytevector!` は `requireMutable` を呼ぶ([runtime.md](../design/runtime.md) のリテラルの不変性)。
 - 5i: 標準入力、標準出力、標準エラーのポートを、`Interpreter` が作る。`current-input-port` `current-output-port` `current-error-port` は、パラメータオブジェクトである(R7RS 6.13.1)。既存の `make-parameter` の機構に載せる。ネイティブの出力は `evalPrint` が受け取る `std.Io.Writer` に、WASM の出力は既存の出力バッファに書く。WASM の出力バッファを計上の外に置く例外([ADR-0038](../adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md))は変えない。プラットフォームの差は、[platform-and-web.md](../design/platform-and-web.md) のプラットフォーム抽象の形(`src/platform/native.zig` と `src/platform/wasm.zig` をコンパイル時に選ぶ)で、このスライスから置く。
 - 5j: プリンタを、`write`(循環にだけラベル)、`write-shared`(2回以上現れるペアとベクタすべてにラベル)、`write-simple`(ラベルなし)、`display`(循環にだけラベル)の4つの形にする。原文は R7RS 6.13.3 で、`display` は「must not loop forever on self-referencing pairs, vectors, or records」である。ラベルは、先に1回辿って、共有または循環しているオブジェクトを数え、2回目に書く。辿る表は計上の対象である。プリンタは今、作業スタックを `scratch`(計上の外)に置いているので、5j で計上つきの確保に移す。名前に ASCII でない文字を含むシンボルと、そのまま書くと別のデータとして読まれる名前(空白や括弧を含むもの、数として読めるもの)は、縦棒で囲んで書く(R7RS 6.13.3 の「Symbols that contain non-ASCII characters are escaped with vertical lines」)。数として読めるかの判定は、0018 の `scan` を呼ぶ(下の「署名」)。REPL が結果を書くのも `write` なので、循環した結果が止まらない問題も、ここで直る。名前が空のシンボルは `||` と書く。そのとき、リーダのファズの不変条件(書き出した長さが0でない)に 5b が置いた、名前が空のシンボルの例外を外す(`src/reader.zig` の `fuzzReadAll`)。
 - 5k: ファイルポートを、[frontend.md](../design/frontend.md) のファイルを開く経路の第2類として、リゾルバを通して開く。探索ルートの制約はかけない。失敗は、`ConditionKind.file` の条件で送出する。WASM の扱いは frontend.md の表どおり(開く手続きと `delete-file` は `file-error`、`file-exists?` は `#f`)。閉じ忘れたファイルの扱いは、合意を求める点の4で決める。
-- 5l: `read` は、ポートの残りの入力を `Reader` に渡し、読めたデータの長さだけポートを進める。`Reader` の今の形(入力のスライス、`pos`、`fold_case`)で足り、`src/reader.zig` を変えない見込みである。指令で変わった `fold_case` は、読み終えたあとポートに書き戻す。ファイルとコンソールのポートでは、データの途中で入力のバッファが尽きたとき(`Incomplete`)、バッファに続きを足して、データの頭から読み直す。読み直しの費用はデータの長さの2乗に比例する。REPL の継続行の判定と同じ制約で、段階7の差分読み取りの項目([roadmap.md](../roadmap.md))が解く。`reader.zig` の変更が要ると分かったら、L3 の担当は止めて、L2 に頼む([0017](0017-parallel-lanes.md) の引き継ぎの条件の2)。
+- 5l: `read` は、ポートの残りの入力を `Reader` に渡し、読めたデータの長さだけポートを進める。`Reader` の今の形(入力のスライス、`pos`、`fold_case`)で足り、`src/reader.zig` を変えない見込みである。ディレクティブで変わった `fold_case` は、読み終えたあとポートに書き戻す。ファイルとコンソールのポートでは、データの途中で入力のバッファが尽きたとき(`Incomplete`)、バッファに続きを足して、データの頭から読み直す。読み直しの費用はデータの長さの2乗に比例する。REPL の継続行の判定と同じ制約で、段階7の差分読み取りの項目([roadmap.md](../roadmap.md))が解く。`reader.zig` の変更が要ると分かったら、L3 の担当は止めて、L2 に頼む([0017](0017-parallel-lanes.md) の引き継ぎの条件の2)。
 - 5m: `MachineOp` に `exit` を足す。未処理例外と同じ巻き戻しの経路で最外まで戻り、途中の `after` を呼ぶ([runtime.md](../design/runtime.md) の未処理例外と、必要なフレームの種類の「`exit` の巻き戻し」)。最外に着いたら、終了の値を持って、`error.Raised` と別の Zig の誤り(名前は 5m で決める)で機械の外へ出る。`emergency-exit` は、純粋プリミティブとして、巻き戻さずに同じ誤りを返す。`exit` の値から終了コードへの変換は [platform-and-web.md](../design/platform-and-web.md) の表どおり。`sucheme prog.scm` の後ろの引数を、今の 64 での拒否から、`command-line` に渡す形に変える(`src/main.zig` の doc コメントの表を直す)。引数と環境変数を UTF-8 として検査する位置は、platform-and-web.md の未決の記述どおり、このスライスで決める。WASM は `sucheme_set_command_line` と `sucheme_exit_code` を足し、`exit` で -6 を返す。環境変数は空として扱う。
 - 5n: `current-jiffy` と `jiffies-per-second` は正確な整数(固定長整数で足りる)、`current-second` は不正確な数である(R7RS 6.14)。`current-second` は 0018 の浮動小数点数が入ってから足す。それまでに 5n を始めるなら、`current-jiffy` と `jiffies-per-second` だけを先に入れ、`(scheme time)` の `.sld` は `current-second` が入ってから置く。TAI は、R7RS が許す「UTC に定数を足したもの」で返す。足す定数の値と出典(IERS の公表値)は、5n の着手時に一次情報で確かめる(未確認)。WASM の import の形は、合意を求める点の2で決める。ネイティブの時計の API(Zig 0.17.0 の `std.Io.Clock` の種類)は、5n の着手時に標準ライブラリのソースで確かめ、[zig-api-notes.md](../design/zig-api-notes.md) に足す(未確認)。
 - 5o: 環境の値(`environment` が返す指定子)のヒープの型を足し、`MachineOp` に `eval` を足す。`eval` は、データを指定の環境で展開し、できた節点を `eval` の継続のもとで、末尾の位置として評価する(R7RS 3.5)。`environment` は、空の環境に輸入集合を `import` した、変更できない環境を作る(R7RS 6.12)。環境の表の形と、展開した節点の置き場所は、3o の結果に従う。3o の前に `eval` を入れると、`eval` を繰り返すループが、計上の外の節点を際限なく積む。roadmap の、`Expander.constant` の EOF の値と約束の分岐を Scheme から通すテストは、`(eval (list 'quote (eof-object)) ...)` の形で書く。
@@ -109,7 +109,7 @@ flowchart TD
     nf["0018 浮動小数点数と書式(L1)"]
     np["0018 数の解析関数(L1)"]
     nl["0018 段階4のライブラリ(L1)"]
-    s5a["5a コメントと指令"]
+    s5a["5a コメントとディレクティブ"]
     s5b["5b 縦棒の識別子"]
     s5c["5c データラベル"]
     s5d["5d 位置情報"]
@@ -158,25 +158,25 @@ flowchart TD
 
 ### 並行できるものと、できないもの
 
-- L2(5a から 5d)と L3(5g から 5q)は、所有するファイルが重ならないので、並行できる。重なるのは、5l が 5a の指令の状態に依存する点だけで、5l は 5a のマージを待つ。
-- L2 の中は直列である(どれも `src/reader.zig` を触る)。0018 の数の構文(5e)も、L2 の中で 5c のあとに置く。
-- L3 の中では、5i のあとに、5j、5k、5m、5n を並行できる。どれも `src/prim/port.zig` か `src/platform/` に足すが、足す関数が別で、隣り合う行の衝突だけである。同時に開く PR の数は、[0017](0017-parallel-lanes.md) の上限 W に従う。
+- L2(5a から 5d)と L3(5g から 5q)は、所有するファイルが重ならないので、並行できる。重なるのは、5l が 5a のディレクティブの状態に依存する点だけで、5l は 5a のマージを待つ。
+- L2 の中は逐次である(どれも `src/reader.zig` を触る)。0018 の数の構文(5e)も、L2 の中で 5c のあとに置く。
+- L3 の中では、5i のあとに、5j、5k、5m、5n を並行できる。どれも `src/prim/port.zig` か `src/platform/` に足すが、足す関数が別で、隣り合う行のコンフリクトだけである。同時に開く PR の数は、[0017](0017-parallel-lanes.md) の上限 W に従う。
 - 5o は 3o のマージを待つ。5p と 5q は 5o のあとである。
 
-### 型の骨格の衝突
+### 型の骨格のコンフリクト
 
-`src/value.zig`、`src/trace.zig`、`src/heap.zig` には、0018(L1)が数の型を、この計画(5g)がポートの型を足す。どちらも `Value` の変種、`Kind`、`heap_types`、`payloadBytes`、`free` の末尾に1行ずつ足すので、衝突は隣り合う行だけである。
+`src/value.zig`、`src/trace.zig`、`src/heap.zig` には、0018(L1)が数の型を、この計画(5g)がポートの型を足す。どちらも `Value` のバリアント、`Kind`、`heap_types`、`payloadBytes`、`free` の末尾に1行ずつ足すので、コンフリクトは隣り合う行だけである。
 
 - 順序: 0018 の骨格(スライス 4d)を先にマージし、5g は 4d のマージのあとに着手する(2026-10-20 に親のセッションが決めた。合意を求める点の7の「同時なら 0018 が先」を、着手の順序まで固定したもの)。段階4のリリースが段階5より前で、5j が数の書式を呼ぶためである。4d の PR ができたときと、マージされたときは、親が知らせる。
 - 5g は、main を取り込んでから、4d の行の後ろに自分の行を足す。
-- どちらの骨格の PR も、型の変種と、GC と計上の最小の行だけにして、手続きを含めない。
+- どちらの骨格の PR も、型のバリアントと、GC と計上の最小の行だけにして、手続きを含めない。
 
 ### 機械の重なり
 
 `src/machine.zig` は、L0 の 3o と、この計画の 5m と 5o が触る。`origin/main`(`83e173d`)で確かめたこと:
 
 - 0016 は 3o の変更ファイルを `src/syntax/expand.zig`、`src/syntax/env.zig`、`src/context.zig`、`src/core.zig` としており、`src/machine.zig` にどこまで及ぶかは見積れないと書いている(0016 の「確かめられなかったこと」)。`Machine` は、`Context` を持ち、`apply` の中で `MachineOp` を振り分け、`invoke` で巻き戻す。`Context.code_roots`(3o が無くす)は `src/context.zig` にある。
-- 5m が触るのは、`MachineOp` の変種の追加、`apply` の振り分けの1行、`invoke` の巻き戻しの目標に「終了」を加える部分である。展開器と節点には触れない。
+- 5m が触るのは、`MachineOp` のバリアントの追加、`apply` の振り分けの1行、`invoke` の巻き戻しの目標に「終了」を加える部分である。展開器と節点には触れない。
 - 5o は、`apply` から展開器を呼び、できた節点を評価する。節点の置き場所と環境の表の形は、3o が決める。
 
 取り決め:
@@ -187,8 +187,8 @@ flowchart TD
 ### そのほかのファイルの重なり
 
 - `src/sucheme.zig`: [0017](0017-parallel-lanes.md) では L0 の所有である。5i(コンソールのポートの配線)と 5m(終了の結果)が、`Interpreter` に小さく足す。3o と同時に開いたときは、後からマージするほうが取り込む。
-- `src/main.zig`: L6 が REPL の入口を、5m がファイルの実行の引数と終了コードを触る。触る関数が別で、隣り合う行の衝突だけの見込みである。
-- `lib/scheme/base.sld`: 0018 が数の識別子を、5h がポートの識別子を輸出に足す。輸出の並びの中で、L3 の分を1つの塊にまとめて置き、隣り合う行の衝突にとどめる。
+- `src/main.zig`: L6 が REPL の入口を、5m がファイルの実行の引数と終了コードを触る。触る関数が別で、隣り合う行のコンフリクトだけの見込みである。
+- `lib/scheme/base.sld`: 0018 が数の識別子を、5h がポートの識別子を輸出に足す。輸出の並びの中で、L3 の分を1つの塊にまとめて置き、隣り合う行のコンフリクトにとどめる。
 - `web/sucheme.js` と `tools/test-wasm/`: ホスト側の import と、新しいエクスポートの呼び出しは L3(5m、5n)が足す。`web/` のそれ以外は L7 の所有である。
 - `src/prim/table.zig`: 5h、5m、5n、5o が1行ずつ足す。
 
@@ -196,8 +196,8 @@ flowchart TD
 
 roadmap の段階4の「リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加」は、0018 の担当である。[0017](0017-parallel-lanes.md) の取り決めで `src/reader.zig` は L2 の所有なので、実装は L2 のスライス 5e として行い、0018 が解析関数を `src/num/` に置く。
 
-- 5e は、0018 の解析関数のマージと、5c のマージのあとに置く。5a から 5c は `atom` の外(空白の読み飛ばし、`#` の分岐、`|`)を主に触り、5e は `atom` の中の数の判定を差し替えるので、順序を逆にしても衝突は小さい。0018 の解析関数が 5a より先に揃ったときは、5e を 5a の前に入れてよい。
-- 5e の完了条件と検証項目は 0018 が書く。この計画は、5e を L2 の直列の中に置くことだけを決める。
+- 5e は、0018 の解析関数のマージと、5c のマージのあとに置く。5a から 5c は `atom` の外(空白の読み飛ばし、`#` の分岐、`|`)を主に触り、5e は `atom` の中の数の判定を差し替えるので、順序を逆にしてもコンフリクトは小さい。0018 の解析関数が 5a より先に揃ったときは、5e を 5a の前に入れてよい。
+- 5e の完了条件と検証項目は 0018 が書く。この計画は、5e を L2 の逐次の中に置くことだけを決める。
 
 ## 署名
 
@@ -276,13 +276,13 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | `(scheme process-context)` | `exit` は機械操作プリミティブ。残りは純粋プリミティブ | 5m |
 | `(scheme time)` | 純粋プリミティブ3つ | 5n |
 | `(scheme eval)` | `eval` は機械操作プリミティブ、`environment` は純粋プリミティブ(展開器のライブラリの表を引く) | 5o |
-| `(scheme repl)` | `interaction-environment` だけ。REPL の最上位の環境を指す環境の値を返す | 5o |
+| `(scheme repl)` | `interaction-environment` だけ。REPL のトップレベルの環境を指す環境の値を返す | 5o |
 | `(scheme load)` | `load` だけ。読み込みはリゾルバ、評価は 5o の機構 | 5p |
 | `(scheme r5rs)` | 再輸出の `.sld` と、`null-environment` `scheme-report-environment` | 5q |
 
 ## 検証項目の割り当て
 
-- 衛生性の検証項目の9(循環データと共有構造の `quote`): 5c。データラベルで循環と共有を作り、`eq?` で同一性を確かめる。剥離が循環で止まることは、`src/syntax/expand.zig` の単体テスト(`quote strips the aliases of a cycle`)がすでに見ている。Scheme から通すのが 5c の追加である。結果を `write` で見るケースは 5j に足す。
+- 衛生性の検証項目の9(循環データと共有構造の `quote`): 5c。データラベルで循環と共有を作り、`eq?` で同一性を確かめる。剥ぎ取りが循環で止まることは、`src/syntax/expand.zig` の単体テスト(`quote strips the aliases of a cycle`)がすでに見ている。Scheme から通すのが 5c の追加である。結果を `write` で見るケースは 5j に足す。
 - [runtime.md](../design/runtime.md) の例外の事例12: 5m。`(dynamic-wind (lambda () #f) (lambda () (display "in") (exit 3)) (lambda () (display "cleanup")))` の出力と終了コードを、ネイティブ(ファイルの実行)と WASM(-6 と `sucheme_exit_code`)の両方で見る。
 - roadmap の完了条件の `#!fold-case`: 5a(リーダ)と 5l(ポートごとの状態)。
 - roadmap の完了条件の循環の `write`: 5j。
@@ -317,7 +317,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 勧める案を先に書く。勧める案でよいときは、そう返信する。小さく戻せる選択(ファイルの構成、名前、テストの足し方)は、[AGENTS.md](../../AGENTS.md) の規則どおり、ここでは諮らず、PR に書く。1 から 3 は [open-questions.md](../design/open-questions.md) の「段階5までに決める」の3行で、4 から 6 は、この計画を書くなかで、データ形式または設計の判断と分かったものである。
 
 1. ポートのバッファの大きさと、バッファリングの方針(open-questions.md の1行目)。
-   - 勧める案: ファイルとコンソールのポートは、開くときに固定の大きさのバッファを1つ持つ。バッファはヒープの計上つきの確保で取り、ポートと一緒に回収する。ファイルへの出力は、バッファが満ちたとき、`flush-output-port`、閉じるとき、終了するときに書き出す。コンソールの出力は、それに加えて、最上位の式の評価のたびと、コンソールから入力を読む前に書き出す(プロンプトと出力の順を保つため)。大きさは、5k で、候補の値を `ReleaseSafe` で測って決め、決めた値と測定の方法をコードの `Why:` コメントに書く。文字列ポートとバイトベクタポートは、このバッファを持たない(3の表現そのものがバッファである)。
+   - 勧める案: ファイルとコンソールのポートは、開くときに固定の大きさのバッファを1つ持つ。バッファはヒープの計上つきの確保で取り、ポートと一緒に回収する。ファイルへの出力は、バッファが満ちたとき、`flush-output-port`、閉じるとき、終了するときに書き出す。コンソールの出力は、それに加えて、トップレベルの式の評価のたびと、コンソールから入力を読む前に書き出す(プロンプトと出力の順を保つため)。大きさは、5k で、候補の値を `ReleaseSafe` で測って決め、決めた値と測定の方法をコードの `Why:` コメントに書く。文字列ポートとバイトベクタポートは、このバッファを持たない(3の表現そのものがバッファである)。
      - メリット: 確保がポートごとに1回で、上限への計上が開くときに決まる。書き出しの時点が決まっているので、出力の順序をテストできる。
      - デメリット: 大きな値を1つ選ぶと、多数のファイルを開いたときに計上が膨らむ。小さく選ぶと、システムコールが増える。
    - 別案A: バッファを持たず、書き込みのたびにシステムコールを呼ぶ。実装が最も小さいが、`write-char` を繰り返すプログラムが遅い。
@@ -356,7 +356,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
      - デメリット: ブラウザで `read` を使うサンプルが、段階8まで動かない。
    - 別案: 段階5で、評価の前にホストが入力の全体を渡すエクスポート(仮の名前 `sucheme_set_stdin`)を足す。対話はできないが、入力を読むサンプルが動く。段階8で入れる `sucheme_provide_input` と別の経路になり、境界の契約が増える。
 
-7. 型の骨格のマージの順序(報告)。「型の骨格の衝突」の節のとおり、先に ready になったほうを先に、同時なら 0018 を先にする。[0017](0017-parallel-lanes.md) の取り決めの具体化で、確認の対象ではない。異論があれば返信する。合意のあと、4d を先にマージし、5g はそのあとに着手する形に固定した(「型の骨格の衝突」の節)。
+7. 型の骨格のマージの順序(報告)。「型の骨格のコンフリクト」の節のとおり、先に ready になったほうを先に、同時なら 0018 を先にする。[0017](0017-parallel-lanes.md) の取り決めの具体化で、確認の対象ではない。異論があれば返信する。合意のあと、4d を先にマージし、5g はそのあとに着手する形に固定した(「型の骨格のコンフリクト」の節)。
 
 回答(2026-10-20): ユーザーが、1 から 6 のすべてを勧める案どおりに承認した。
 
@@ -365,7 +365,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 各スライスの PR を ready にする前に、[AGENTS.md](../../AGENTS.md) の検証コマンド表の「全コミット」の行をすべて通す。段階5で足す検証は次のとおりである。
 
 - 5a から 5q: `zig build test-scheme` の `tests/scheme/` に、上の番号の範囲でケースを足す。
-- 5i、5m、5n: `zig build test-wasm` に、出力の順序、-6 と終了コード、時刻の import の往復を足す。
+- 5i、5m、5n: `zig build test-wasm` に、出力の順序、-6 と終了コード、時刻の import のラウンドトリップを足す。
 - 5k: ファイルを書いて読み返すケース。書き込み先は、テストのランナーが作る一時のディレクトリにする(ランナーの変更が要るかは 5k で確かめる)。
 - 5m: ファイルの実行の終了コードは、今は単体テストの外で手で確かめている(0016 の 3m の進捗)。事例12の終了コードを自動で見る方法(`tests/cli-slow/` の形を使えるか)を、5m で確かめる。
 - 5q: `zig build report` と `zig build check-report`。
@@ -378,7 +378,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 
 | ファイル | 変更 | スライス |
 | --- | --- | --- |
-| `src/reader.zig` | コメント、指令、縦棒の識別子、データラベル、位置情報 | 5a から 5d(L2) |
+| `src/reader.zig` | コメント、ディレクティブ、縦棒の識別子、データラベル、位置情報 | 5a から 5d(L2) |
 | `src/string_syntax.zig` | 文字列の行継続、縦棒の識別子の名前 | 5a、5b(L2) |
 | `src/value.zig`、`src/trace.zig`、`src/heap.zig` | ポートの型、環境の値の型、`MachineOp` の `exit` と `eval` | 5g、5m、5o |
 | `src/port.zig`(新規) | ポートの読み書き | 5h、5i、5k |
@@ -422,7 +422,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 
 - 5k の GC とファイルの閉じ方が、レビューの巡ごとに必須の指摘を減らさない。このとき、合意を求める点の4の別案A(回収のときに閉じない)に落とし、閉じ忘れの資源を既知の制限として v0.5.0 に入れる。
 - 3o が段階4以降に送られる。このとき、5o、5p、5q を段階6の前に送り、v0.5.0 の完了条件の「付録Aのライブラリすべて」を、`(scheme eval)` `(scheme repl)` `(scheme load)` `(scheme r5rs)` を除いた形に狭めることを諮る(roadmap の完了条件の変更になる)。
-- 5c の目印の置き換えが、GC と計上の不変条件を変える必要に行き当たる。このとき、T3 へ引き継ぐ([0017](0017-parallel-lanes.md) の引き継ぎの条件の4)。
+- 5c のプレースホルダの置き換えが、GC と計上の不変条件を変える必要に行き当たる。このとき、T3 へ引き継ぐ([0017](0017-parallel-lanes.md) の引き継ぎの条件の4)。
 
 ## 合意のあとにやること
 
@@ -435,7 +435,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | スライス | 状態 | PR |
 | --- | --- | --- |
 | この計画書 | 合意済み(2026-10-20) | suchi/sucheme-zig#132 |
-| 5a | マージ済み。ブロックコメント、データコメント、`#!fold-case` と `#!no-fold-case`、文字列の行継続と行の終わり、CR で終わる行コメント。指令の状態は同じ `Reader` の中だけで、REPL の入力をまたいで残すのは 5i と 5l | suchi/sucheme-zig#141 |
+| 5a | マージ済み。ブロックコメント、データコメント、`#!fold-case` と `#!no-fold-case`、文字列の行継続と行の終わり、CR で終わる行コメント。ディレクティブの状態は同じ `Reader` の中だけで、REPL の入力をまたいで残すのは 5i と 5l | suchi/sucheme-zig#141 |
 | 5b | マージ済み。縦棒の識別子。エスケープは <symbol element> のものに `\"` と `\\` を足したもので、行継続は無い。畳み込む読み手でも畳み込まない。縦棒を付けて書き出すのは 5j | suchi/sucheme-zig#146 |
 | 5c | マージ済み。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | suchi/sucheme-zig#147 |
 | 5d | PR 作成済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | この PR |

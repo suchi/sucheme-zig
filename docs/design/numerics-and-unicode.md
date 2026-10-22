@@ -16,9 +16,9 @@ R7RS 6.2 の完全な数値塔を実装する。`cond-expand` のフィーチャ
 
 不変条件は正規化の規則(後述)の裏返しである。表現を作る関数が1箇所に閉じ、そこで必ず正規化する。構造体のフィールドの並びと正確な型はコードに置く([ADR-0018](../adr/0018-incremental-vertical-slices.md))。
 
-多倍長整数には `std.math.big.int.Managed` を使う。Zig 0.17.0 の標準ライブラリに存在することは実機で確認した(2^100 の計算と基数10への変換が動作する)。多倍長演算を自前で書く必要はない。`Managed` は `std.mem.Allocator` で限界値列を確保するため、GC の sweep で `deinit` を呼ぶ。ヒープ外ペイロードとして計上の対象に含める([runtime.md](runtime.md) の計上の対象)。
+多倍長整数には `std.math.big.int.Managed` を使う。Zig 0.17.0 の標準ライブラリに存在することは実機で確認した(2^100 の計算と基数10への変換が動作する)。多倍長演算を自前で書く必要はない。`Managed` は `std.mem.Allocator` で limbs(多倍長整数の桁の配列)を確保するため、GC の sweep で `deinit` を呼ぶ。ヒープ外ペイロードとして計上の対象に含める([runtime.md](runtime.md) の計上の対象)。
 
-段階4のスライス 4d で、ヒープに置く形を具体化した(段階4の計画書 [0018](../plans/0018-phase4-numeric-tower-unicode.md) の合意を求める点の5と、[ADR-0007](../adr/0007-numeric-tower-scope.md) の 2026-10-20 の追記)。bignum のオブジェクト(`src/value.zig` の `Bignum`)は `Managed` を持たず、作ったあとに変えない限界値列と符号を持つ。限界値列は文字列のバイト列と同じペイロードで、確保のときに上限に照らし(`Heap.createBignum`)、sweep で解放して計上から引く(`Heap.free`)。`Managed` は演算の途中だけ、上限に計上する作業領域で使い、結果を写す。上の段落の「sweep で `deinit` を呼ぶ」は、この形で満たす。理由は2つある。`Managed` は割り当て器を持つので、走査の分類(`src/trace.zig`)を通らない。演算のたびに自分の限界値列を伸ばすので、伸びた分が確保の時点で上限に照らされない。
+段階4のスライス 4d で、ヒープに置く形を具体化した(段階4の計画書 [0018](../plans/0018-phase4-numeric-tower-unicode.md) の合意を求める点の5と、[ADR-0007](../adr/0007-numeric-tower-scope.md) の 2026-10-20 の追記)。bignum のオブジェクト(`src/value.zig` の `Bignum`)は `Managed` を持たず、作ったあとに変えない limbs と符号を持つ。limbs は文字列のバイト列と同じペイロードで、確保のときに上限に照らし(`Heap.createBignum`)、sweep で解放して計上から引く(`Heap.free`)。`Managed` は演算の途中だけ、上限に計上する作業領域で使い、結果を写す。上の段落の「sweep で `deinit` を呼ぶ」は、この形で満たす。理由は2つある。`Managed` は割り当て器を持つので、走査の分類(`src/trace.zig`)を通らない。演算のたびに自分の limbs を伸ばすので、伸びた分が確保の時点で上限に照らされない。
 
 ### 正規化の規則
 
@@ -59,7 +59,7 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 > The error case can occur only when z is not a complex number or is a complex number with a non-rational real or imaginary part.
 
-したがって有限の浮動小数点数には、どの基数でも往復可能な表現が必ず存在する。`(number->string 0.5 2)` は `"#i1/10"` を返す。基数2で `1/10` は 1/2 であり、`#i` は正確性接頭辞であって明示的な基数接頭辞ではないので、結果に基数接頭辞を含めないという制約にも反しない。
+したがって有限の浮動小数点数には、どの基数でもラウンドトリップ可能な表現が必ず存在する。`(number->string 0.5 2)` は `"#i1/10"` を返す。基数2で `1/10` は 1/2 であり、`#i` は正確性接頭辞であって明示的な基数接頭辞ではないので、結果に基数接頭辞を含めないという制約にも反しない。
 
 ここで解析側の規則に注意が必要である。R7RS 7.1.1 の `<prefix R>` は `<radix R> <exactness>` か `<exactness> <radix R>` で、空の派生が許されるのは `<radix 10>` だけである。したがって `"#i1/10"` は `<num 2>` から文法どおりには導出できない。
 
@@ -67,9 +67,9 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 > If supplied, radix is a default radix that will be overridden if an explicit radix prefix is present in string (e.g. "#o177"). If radix is not supplied, then the default radix is 10.
 
-既定基数であり、文字列に明示的な基数接頭辞があればそれが優先する。したがって2つを満たす。`<radix R>` が省略された場合は第2引数の値を基数として解析するので `(string->number "#i1/10" 2)` は 1/2 を不正確にした値になり、往復条件が成り立つ。明示的な接頭辞があれば第2引数を無視するので `(string->number "#o177" 2)` は 127 になる。第2引数を固定の基数として扱うと後者が `#f` になる。
+既定基数であり、文字列に明示的な基数接頭辞があればそれが優先する。したがって2つを満たす。`<radix R>` が省略された場合は第2引数の値を基数として解析するので `(string->number "#i1/10" 2)` は 1/2 を不正確にした値になり、ラウンドトリップ条件が成り立つ。明示的な接頭辞があれば第2引数を無視するので `(string->number "#o177" 2)` は 127 になる。第2引数を固定の基数として扱うと後者が `#f` になる。
 
-往復性のテストは基数10だけでなく2、8、16でも行う。基数10だけだとこの食い違いを検出できない。
+ラウンドトリップ性のテストは基数10だけでなく2、8、16でも行う。基数10だけだとこの食い違いを検出できない。
 
 エラーにできるのは `(number->string +inf.0 2)` のように実部または虚部が有理数でない場合に限る。
 
@@ -77,9 +77,9 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 > If z is inexact, the radix is 10, and the above expression can be satisfied by a result that contains a decimal point, then the result contains a decimal point and is expressed using the minimum number of digits (exclusive of exponent and trailing zeroes) needed to make the above expression true [4, 5]; otherwise the format of the result is unspecified.
 
-要求は2つである。結果が小数点を含むこと(それで往復条件を満たせる場合)と、桁数が最小であること。基数10以外では「otherwise the format of the result is unspecified」なので、桁数の最小性も小数点も要求されない。
+要求は2つである。結果が小数点を含むこと(それでラウンドトリップ条件を満たせる場合)と、桁数が最小であること。基数10以外では「otherwise the format of the result is unspecified」なので、桁数の最小性も小数点も要求されない。
 
-Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを実機で確認した。ただしどちらも Scheme の記法とは一致しない。
+Zig の `{d}` と `{e}` はいずれも最短ラウンドトリップ表現を与えることを実機で確認した。ただしどちらも Scheme の記法とは一致しない。
 
 | 値 | Zig の `{d}` | Zig の `{e}` | Scheme として必要な表示 |
 | --- | --- | --- | --- |
@@ -90,8 +90,8 @@ Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを�
 
 したがって `printer` は Zig の最短桁列を数字の供給源として使い、小数点の配置と指数表記への切り替えを自前で行う。規則は次のとおり。
 
-- 小数点を必ず含める。指数表記に切り替える場合も仮数部に小数点を置く(`1.0e300`)。小数点を含む結果で往復条件を満たせる以上、R7RS 6.2.7 が小数点を要求する。不正確な整数値も同じ規則で `100.0` になる。
-- 指数部が一定の範囲を超える場合に指数表記へ切り替える。範囲は実装定義とし、ECMAScript の `Number.prototype.toString` と同じ範囲にする(十進の最初の桁の位を n として、-7 < n < 21 なら小数で書く。境界の値は、スライス 4b の着手の前に ECMA-262 の原文で確かめる)。段階4の計画書 [0018](../plans/0018-phase4-numeric-tower-unicode.md) の合意を求める点の4で決めた(2026-10-20)。指数表記にするかどうかは「format of the result」の一部ではなく桁数の最小性の問題なので、どちらでも往復条件と小数点の要求を満たせる。
+- 小数点を必ず含める。指数表記に切り替える場合も仮数部に小数点を置く(`1.0e300`)。小数点を含む結果でラウンドトリップ条件を満たせる以上、R7RS 6.2.7 が小数点を要求する。不正確な整数値も同じ規則で `100.0` になる。
+- 指数部が一定の範囲を超える場合に指数表記へ切り替える。範囲は実装定義とし、ECMAScript の `Number.prototype.toString` と同じ範囲にする(十進の最初の桁の位を n として、-7 < n < 21 なら小数で書く。境界の値は、スライス 4b の着手の前に ECMA-262 の原文で確かめる)。段階4の計画書 [0018](../plans/0018-phase4-numeric-tower-unicode.md) の合意を求める点の4で決めた(2026-10-20)。指数表記にするかどうかは「format of the result」の一部ではなく桁数の最小性の問題なので、どちらでもラウンドトリップ条件と小数点の要求を満たせる。
 - `+inf.0` `-inf.0` `+nan.0` を専用に出力する。Zig は `inf` と `nan` を出すため変換が必要である。
 - 負のゼロは `-0.0` と出力する。
 
@@ -123,7 +123,7 @@ Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを�
 
 > If string is not a syntactically valid notation for a number, or would result in a number that the implementation cannot represent, then string->number returns #f. An error is never signaled due to the content of string.
 
-したがって解析は、確保の前に結果の大きさを見積もり、上限を超える場合は確保せず `#f` を返す。`(string->number "#e1e999999999")` は 10 の9億9999万9999乗の限界値列を要するので `#f` になる。見積もりをせずに確保すると上限超過の Scheme のエラーになり、「エラーを送出しない」という要求に反する。分母0の `"1/0"` も同じく `#f` を返す。正規化の経路が分母0を拒否する前に、解析側で `#f` に変換する。
+したがって解析は、確保の前に結果の大きさを見積もり、上限を超える場合は確保せず `#f` を返す。`(string->number "#e1e999999999")` は 10 の9億9999万9999乗の limbs を要するので `#f` になる。見積もりをせずに確保すると上限超過の Scheme のエラーになり、「エラーを送出しない」という要求に反する。分母0の `"1/0"` も同じく `#f` を返す。正規化の経路が分母0を拒否する前に、解析側で `#f` に変換する。
 
 この規則はリーダにも適用する。R7RS 6.2.7 が「The rules used by a particular implementation for string->number must also be applied to read and to the routine that reads programs」と要求している。適用しないと `(define inf 1)` が数値の束縛として誤って解釈される。
 
@@ -131,7 +131,7 @@ Zig の `{d}` と `{e}` はいずれも最短往復表現を与えることを�
 
 ### 検証の方針
 
-- 往復性: 無作為な `f64` の値について `(string->number (number->string x))` が `x` に一致することを確認する。Zig の擬似乱数で多数の値を生成する。
+- ラウンドトリップ性: 無作為な `f64` の値について `(string->number (number->string x))` が `x` に一致することを確認する。Zig の擬似乱数で多数の値を生成する。
 - 階層の網羅: 5種の表現の全組合せについて四則演算と比較を確認する。
 - 境界: `i64` の最大値と最小値の前後、fixnum と bignum の境界、分母が1になる約分、`0/n`、ゼロ除算。
 - 負数の整数除算: `floor` 系と `truncate` 系を符号の4通りで確認する。被演算子が不正確整数の場合も確認する。R7RS 6.2.6 は `(truncate/ -5.0 -2)` が 2.0 と -1.0 を返す例を挙げている。
@@ -186,7 +186,7 @@ Unicode Character Database のファイルから多段テーブルを生成す�
 
 - ビルド時にネットワークへアクセスしない。再現可能なビルドを保ち、供給連鎖上の面も単純にする。
 - 第三者パッケージへの依存を増やさない。
-- 生成器をリポジトリに残すことで、Unicode のバージョン更新を追える。
+- 生成ツールをリポジトリに残すことで、Unicode のバージョン更新を追える。
 
 生成元の Unicode バージョンと、使用した UCD ファイル名を生成結果のヘッダコメントと ADR に記録する。更新は手動の作業とし、更新時は生成結果の差分をレビューする。
 

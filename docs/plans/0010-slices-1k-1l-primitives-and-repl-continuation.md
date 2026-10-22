@@ -49,9 +49,9 @@ flowchart TD
 
 「触るファイルが重ならない」は、完全には成り立たない。確かめた重なりは3つで、それぞれ手当てを決める。
 
-- `src/reader.zig`: 1j-1 は、リーダのファジングのテストを `src/reader.zig` に足す([0009](0009-slice-1j-release-v0-1-0.md))。L1 は行コメントを、1l の残り(L2)は完結判定の関数を、同じファイルに足す。L1 は既存の関数(`skipWhitespace`)の中に、L2 は `Reader` の定義の直後に限って書く。1j-1 は、ファイル末尾のテストの節に足す。L1 は最初にマージされるので、1j-1 のファジングは行コメントが読める文法を最初から対象にできる。L2 とは、どちらが先にマージされても衝突は機械的に解ける。
+- `src/reader.zig`: 1j-1 は、リーダのファジングのテストを `src/reader.zig` に足す([0009](0009-slice-1j-release-v0-1-0.md))。L1 は行コメントを、1l の残り(L2)は完結判定の関数を、同じファイルに足す。L1 は既存の関数(`skipWhitespace`)の中に、L2 は `Reader` の定義の直後に限って書く。1j-1 は、ファイル末尾のテストの節に足す。L1 は最初にマージされるので、1j-1 のファジングは行コメントが読める文法を最初から対象にできる。L2 とは、どちらが先にマージされてもコンフリクトは機械的に解ける。
 - `tests/scheme/` の番号: 1k と 1l が同じ「次の番号」を取る。1k は 0017 から 0029 を、1l は 0030 から使う。
-- 進捗の表: [0003](0003-phase1-minimal-slice.md) の進捗の表と [roadmap.md](../roadmap.md) のチェックボックスは、並行する PR が同じ行を触って衝突するので、1k では統合の K6 が更新する(K0 から K5 の PR は更新しない)。
+- 進捗の表: [0003](0003-phase1-minimal-slice.md) の進捗の表と [roadmap.md](../roadmap.md) のチェックボックスは、並行する PR が同じ行を触ってコンフリクトするので、1k では統合の K6 が更新する(K0 から K5 の PR は更新しない)。
 
 ## 完了条件
 
@@ -77,7 +77,7 @@ L1: `1 ; コメント` が `1` を返す。独立した PR として最初にマ
 
 含めるもの:
 
-- 1k: プリミティブ(下の一覧)。`Primitive` の呼び出し規約の変更(ヒープと一時領域を渡す、引数の個数を表で検査する)。登録表。プリンタが、データの中の未規定値を書くようにする変更。文字列の ASCII 判定フラグ([ADR-0008](../adr/0008-string-representation.md))。
+- 1k: プリミティブ(下の一覧)。`Primitive` の呼び出し規約の変更(ヒープと一時領域を渡す、引数の個数を表で検査する)。レジストリ。プリンタが、データの中の未規定値を書くようにする変更。文字列の ASCII 判定フラグ([ADR-0008](../adr/0008-string-representation.md))。
 - 1l: 行コメント `;`。リーダの完結判定の関数。REPL の継続行。
 
 含めないもの(送り先は「選ばなかったものと送り先」の表):
@@ -148,7 +148,7 @@ flowchart LR
 ```
 
 - 置き場所: `src/prim/` に、R7RS の節ごとのファイルを置く。`arith.zig`(6.2)、`pair.zig`(6.4)、`equiv.zig`(6.1)、`boolean.zig`(6.3)、`symbol.zig`(6.5)、`procedure.zig`(6.10)、`char.zig`(6.6)、`string.zig`(6.7)、`vector.zig`(6.8)。小さなファイルが3つ(`boolean.zig` `symbol.zig` `procedure.zig`)できるが、段階3以降でそれぞれの族が育つ置き場所になる。新しいファイルは、`test { std.testing.refAllDecls(@This()); }` を持つ。
-- 登録表: `src/prim/table.zig` が、各ファイルの `primitives` をコンパイル時に連結した配列 `all` を持つ。`Context.initWithOptions` は、`arith.primitives` の代わりに `table.all` を大域環境に束縛する。表のテストが、名前が全体で一意なことを確かめる。
+- レジストリ: `src/prim/table.zig` が、各ファイルの `primitives` をコンパイル時に連結した配列 `all` を持つ。`Context.initWithOptions` は、`arith.primitives` の代わりに `table.all` を大域環境に束縛する。表のテストが、名前が全体で一意なことを確かめる。
 - 機械との関係: `Machine.apply` が `call` の唯一の呼び出し元である。順序は、引数の個数の検査、呼び出し、エラーの写像である。プリミティブは Scheme の手続きを呼ばず、機械も起動しない([architecture.md](../design/architecture.md) の「プリミティブの非再入」)。1k のプリミティブは、どれも手続きを引数に取らないので、この不変条件に触れるものが無い。`apply` や `map` のように手続きを呼ぶものは、段階2と3で、機械がレジスタを書き換える別の仕組みにする。
 - 確保: プリミティブは、渡された `heap` の API(`cons` `createString` `createVector`)だけで確保する。`std.mem.Allocator` を直接使わない(確保点の一元化)。一時領域は、機械が引数を置くのに使っているものと同じで、計上の外にある。`equal?` の作業スタックのように呼び出しの間だけ要るものに使い、返す前に解放する。
 
@@ -197,11 +197,11 @@ pub const Primitive = struct {
 
 ### プリンタの変更: データの中の未規定値
 
-未規定値は、これまでデータの中に入る経路が無かった。プリンタは外部表現を持たず、何も書かない。`(list (set! x 1))` と `(cons 1 (if #f #f))` が作れるようになると、`write` が `(1 . )` や `()` のように、読めない出力を書く。K1 で、プリンタがデータの中の未規定値を `#<unspecified>` と書くようにする。REPL が最上位の未規定値を出力しないのは、プリンタでなく `Interpreter` の判定なので、変わらない。プリンタの既存のテスト「未規定値で何も書かない」は、書き換える。
+未規定値は、これまでデータの中に入る経路が無かった。プリンタは外部表現を持たず、何も書かない。`(list (set! x 1))` と `(cons 1 (if #f #f))` が作れるようになると、`write` が `(1 . )` や `()` のように、読めない出力を書く。K1 で、プリンタがデータの中の未規定値を `#<unspecified>` と書くようにする。REPL がトップレベルの未規定値を出力しないのは、プリンタでなく `Interpreter` の判定なので、変わらない。プリンタの既存のテスト「未規定値で何も書かない」は、書き換える。
 
 ### 実演プログラム
 
-動作を確認できるようにするため、各単位の完了時に、その単位のプリミティブだけで動くプログラムを `tests/scheme/` に足し、`zig build run` で試す。1i のマージ後は、同じ式を Web UI でも試す。言語に `let` と `cond` と可変長引数の `lambda` が無いので、プログラムは `define` `lambda` `if` だけで書く。1ケースは1行で、1つの `Interpreter` で評価される(実行器の形式)。
+動作を確認できるようにするため、各単位の完了時に、その単位のプリミティブだけで動くプログラムを `tests/scheme/` に足し、`zig build run` で試す。1i のマージ後は、同じ式を Web UI でも試す。言語に `let` と `cond` と可変長引数の `lambda` が無いので、プログラムは `define` `lambda` `if` だけで書く。1ケースは1行で、1つの `Interpreter` で評価される(ランナーの形式)。
 
 | 単位 | 実演 |
 | --- | --- |
@@ -271,7 +271,7 @@ flowchart TD
 
 ### テストの方法
 
-`tests/scheme/` の形式では、継続行を書けない。1ケースは1行の入力で、実行器は `Interpreter.evalPrint` を直接呼ぶ。REPL の読み取りの経路を通らない。REPL を通す形式を実行器に足す案は採らない(検査ツールを育てない、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))。
+`tests/scheme/` の形式では、継続行を書けない。1ケースは1行の入力で、ランナーは `Interpreter.evalPrint` を直接呼ぶ。REPL の読み取りの経路を通らない。REPL を通す形式をランナーに足す案は採らない(検査ツールを育てない、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))。
 
 | 対象 | 置き場所 | 層 |
 | --- | --- | --- |
@@ -302,7 +302,7 @@ flowchart TD
    - 別案: 型の述語(`char?` `string?` `vector?`)だけ残し、中身の操作を段階3へ送る。長所は 1k が機械とペアに集中し、目安に収まること。短所は、文字列とベクタが書き出せるだけの型のままになること。
 3. プリミティブの呼び出し規約。
    - 勧める案: `Primitive` に引数の個数の範囲を持たせて機械が検査し、`call` に `Services`(ヒープと一時領域)を渡す。すべてのプリミティブが同じ型になる。
-     - 長所: 個数の検査が1か所になり、範囲外の添字の読み取り(`ReleaseSafe` でパニック、WASM でトラップ)の経路が閉じる。登録表が1つの配列になる。`services` を使う関数を探せば、確保するプリミティブが一覧できる。
+     - 長所: 個数の検査が1か所になり、範囲外の添字の読み取り(`ReleaseSafe` でパニック、WASM でトラップ)の経路が閉じる。レジストリが1つの配列になる。`services` を使う関数を探せば、確保するプリミティブが一覧できる。
      - 短所: 既存の `arith.zig` の呼び出しと単体テストを直す。`value.zig` が `heap.zig` の型を名指す(ポインタ越し)。
    - 別案: 純粋なもの(引数だけ)と確保するもの(ヒープも)を、`union` の2種類で持つ。長所は `arith.zig` を直さないこと。短所は、機械の分岐と型が増えること、`equal?` が一時領域を要して3種類目が要ること。
    - 別案: `*Context` を渡す。長所は将来 `raise` を直接呼べること。短所は、`context.zig` が登録のために `prim/` を読むので、参照が環になること、プリミティブが触れる状態(大域環境、シンボル表)が広がること。
@@ -320,12 +320,12 @@ flowchart TD
    - 勧める案: `reader.isIncomplete` が、リーダ自身を使い捨てのヒープで走らせる。
      - 長所: 字句の規則が1つで、リーダが育つ(文字リテラル、ブロックコメント、縦棒識別子)と判定が自動で追従する。[ADR-0014](../adr/0014-repl-line-editor-boundary.md) の「リーダに委ねる」そのものである。
      - 短所: 判定のたびにデータを作って捨てる。行が足されるたびに全体を読み直す(上限で抑える)。
-   - 別案: 確保しない専用の走査器を足す。長所は速いこと。短所は、字句の規則が2つになり食い違うこと(文字列のエスケープ、`#\(`、`;`)。ADR-0014 が避けたかったことである。
+   - 別案: 確保しない専用のスキャナを足す。長所は速いこと。短所は、字句の規則が2つになり食い違うこと(文字列のエスケープ、`#\(`、`;`)。ADR-0014 が避けたかったことである。
    - 別案: リーダに「読むだけで作らない」モードを足す(`Sink` の差し替え)。長所は規則が1つで確保も無いこと。短所は、リーダの全分岐に及び 1l が大きくなること。速さが問題になったときの道として残す。
    - 別案: 式ごとに評価してから、尾の不完結な部分を保留する。長所は、複数の式を含む行の出力が遅れないこと。短所は、`Interpreter` の入口(読み取りの位置を返す形)を変えること。
 7. `LineReader` の `union` を 1l で作るか。
    - 勧める案: 作らない。完結判定の共有(`isIncomplete`)だけを、[ADR-0014](../adr/0014-repl-line-editor-boundary.md) の境界として保つ。`union` は、`rich` が入る段階7で作る。
-     - 長所: 変種が1つの `union` は、使われない構造である(YAGNI)。差し替えの局所性は、`repl` が `*std.Io.Reader` から読み、判定を共有する現状で保たれる。
+     - 長所: バリアントが1つの `union` は、使われない構造である(YAGNI)。差し替えの局所性は、`repl` が `*std.Io.Reader` から読み、判定を共有する現状で保たれる。
      - 短所: ADR-0014 の「`LineReader` という `union` を置く」の文言を、文字どおりには満たさない。守るなら、ADR に追記する(決定の意図は変えない)。
    - 別案: `dumb` だけの `union` を作る。長所は ADR の文言どおりであること。短所は、`rich` の形が分からないまま `read` の署名(プロンプトを受ける)を固めることになり、段階7で作り直す可能性が高いこと。
 8. 継続行のプロンプトと上限。
@@ -336,7 +336,7 @@ flowchart TD
    - 別案: 上限を別の定数にして大きくする(例: 1 MiB)。長所は大きな式を貼れること。短所は、判定の2乗の費用が上限に応じて増えること。
 9. 重なりの手当て(「重なりの確認」)。
    - 勧める案: 上の3点の手当てのとおり。どちらが先にマージされても構わない。
-   - 別案: 1j-1 を 1l のあとに直列にする。長所は競合が起きないこと。短所は、並行の利益が減ること。
+   - 別案: 1j-1 を 1l のあとに逐次にする。長所は競合が起きないこと。短所は、並行の利益が減ること。
 
 ## 並行できる単位
 
@@ -356,7 +356,7 @@ flowchart TD
     k5 --> k6
 ```
 
-K0 は私が直列に作る。呼び出し規約、アリティ表、エラーの写像、登録表が、後続の全部が頼る部分だからである。K0 は動作を変えない整理(Refactor)で、既存のテストが緑のまま通ることを条件にする。K0 ができたら、K1 から K2、K3、K4、K5 を別々のワークツリーで並行に進める。書いてよいファイルを分ける。
+K0 は私が逐次に作る。呼び出し規約、アリティ表、エラーの写像、レジストリが、後続の全部が頼る部分だからである。K0 は動作を変えない整理(Refactor)で、既存のテストが緑のまま通ることを条件にする。K0 ができたら、K1 から K2、K3、K4、K5 を別々のワークツリーで並行に進める。書いてよいファイルを分ける。
 
 | 単位 | 内容 | 最初の失敗するテスト(Red) | 書いてよいファイル |
 | --- | --- | --- | --- |
@@ -368,11 +368,11 @@ K0 は私が直列に作る。呼び出し規約、アリティ表、エラー�
 | K5 | 文字・文字列・ベクタ、ASCII 判定フラグ | `(vector-ref (vector 1 2) 1)` が `2` | `src/prim/char.zig` `string.zig` `vector.zig`、`src/value.zig`(`String` のフラグ)、`src/heap.zig`(`createString`)、`tests/scheme/0021-char-operations.txt` `0022-string-operations.txt` `0023-vector-operations.txt` |
 | K6 | 実演プログラム、プリミティブのエラーの一覧、規模のテスト、文書 | なし(統合の確認) | `tests/scheme/0024-programs.txt` `0025-primitive-errors.txt`、`tests/scheme-slow/0013-list-scale.txt`、`docs/` |
 
-`src/prim/table.zig` の行は、各単位が自分の族の1行を足す。統合は私が直列に行い、隣り合う行の競合を解く。`src/value.zig` は K0、K3、K5 が別の箇所を触る。
+`src/prim/table.zig` の行は、各単位が自分の族の1行を足す。統合は私が逐次に行い、隣り合う行の競合を解く。`src/value.zig` は K0、K3、K5 が別の箇所を触る。
 
 ### 1l
 
-1l は小さいので、直列に進める(L1 行コメント、L2 完結判定、L3 REPL)。L1 は独立した PR として最初にマージする。L3 は L2 に頼り、L3 のテストは L1 の行コメントを使う。並行の利益が大きいのは 1k の K3 から K5 と、1j の3つである。
+1l は小さいので、逐次に進める(L1 行コメント、L2 完結判定、L3 REPL)。L1 は独立した PR として最初にマージする。L3 は L2 に頼り、L3 のテストは L1 の行コメントを使う。並行の利益が大きいのは 1k の K3 から K5 と、1j の3つである。
 
 | 単位 | 内容 | 最初の失敗するテスト(Red) | 書いてよいファイル |
 | --- | --- | --- | --- |
@@ -397,10 +397,10 @@ K0 は私が直列に作る。呼び出し規約、アリティ表、エラー�
 | --- | --- | --- | --- |
 | `src/value.zig` | `Primitive` `Services` `PrimitiveError`、`Value` の同一性、`String` のフラグ | 変更 | 1k |
 | `src/machine.zig` | `apply` の個数検査、`Services` の組み立て、エラーの写像 | 変更 | 1k |
-| `src/context.zig` | 登録表の使用 | 変更 | 1k |
+| `src/context.zig` | レジストリの使用 | 変更 | 1k |
 | `src/heap.zig` | `createString` がフラグを計算する | 変更 | 1k |
 | `src/printer.zig` | データの中の未規定値 | 変更 | 1k |
-| `src/prim/table.zig` | 登録表 | 新規 | 1k |
+| `src/prim/table.zig` | レジストリ | 新規 | 1k |
 | `src/prim/arith.zig` | 新しい規約へ、除算 | 変更 | 1k |
 | `src/prim/pair.zig` `equiv.zig` `boolean.zig` `symbol.zig` `procedure.zig` `char.zig` `string.zig` `vector.zig` | 各族のプリミティブ | 新規 | 1k |
 | `tests/scheme/0017-*.txt` から `0025-*.txt` | 振る舞い、エラー、実演プログラム | 新規 | 1k |
@@ -427,7 +427,7 @@ K0 は私が直列に作る。呼び出し規約、アリティ表、エラー�
 | リーダは `;` を読めず、`unreadable token` で報告する。既存のテストも `;` を拒否する綴りに数えている | `printf '(+ 1\n2)\n; c\n(car 1)\n' \| zig build run` を実行して確かめ、`src/reader.zig` のテストを読んだ |
 | REPL は `(+ 1` の行で `unexpected end of input`、次の行 `2)` で `unexpected )` を報告する。`car` は未束縛である | 同じ実行で確かめた |
 | `Reader.next` は、リスト、ベクタ、`'` のあと、文字列、`#\` の途中で `Incomplete` を返す | `src/reader.zig`、`src/string_syntax.zig`、`src/char_syntax.zig` と、それぞれの既存のテストを読んだ |
-| `tests/scheme/` の実行器は、1ケースを1行の入力として `evalPrint` へ直接渡し、REPL を通らない。各ケースは既定とストレスモードの2方式で走る | `tools/test-scheme/main.zig` を読んだ |
+| `tests/scheme/` のランナーは、1ケースを1行の入力として `evalPrint` へ直接渡し、REPL を通らない。各ケースは既定とストレスモードの2方式で走る | `tools/test-scheme/main.zig` を読んだ |
 | 新しいプリミティブの名前は、すべて付録Aの抽出で `(scheme base)` にある。`display` と `write` は `(scheme write)` にある | `tests/r7rs-required/base.txt` と `write.txt` を読んだ |
 | 1i の `sucheme_eval_begin` は、入力全体を `evalPrint` へ渡す | `origin/feature/phase1-slice-1i-wasm-web-ui`(先頭 `e360444`)の `src/wasm.zig` を読んだ。1i はまだマージされていない(PR #36) |
 | 1j-1 は `src/reader.zig` を触る。[0009](0009-slice-1j-release-v0-1-0.md) のファイルの表に書かれている | 読んだ |
@@ -442,7 +442,7 @@ K0 は私が直列に作る。呼び出し規約、アリティ表、エラー�
 | `eqv?` | 同じ記号、真偽値、空リスト、同じ位置のペア・ベクタ・文字列、同じ手続きは真。厳密と不正確の混在、`=` が偽の数、`char=?` が偽の文字、別々の位置のペア・ベクタ・文字列は偽。空の文字列・ベクタ、`+nan.0` は未規定 | 段階1に数は固定長整数だけ。数と文字は値の同一、それ以外は参照の同一 |
 | `eq?` | 記号、真偽値、空リスト、ペア、手続き、空でない文字列・ベクタでは `eqv?` と同じ。数と文字では実装依存だが、真を返すのは `eqv?` が真のときだけ | `eqv?` と同じ実装でよい(値の同一性) |
 | `equal?` | ペア、ベクタ、文字列を再帰的に比べ、ほかは `eqv?`。`eqv?` なら `equal?` も真 | 作業スタックで再帰を避ける |
-| `quotient` `remainder` `modulo` | `quotient` `remainder` は切り捨て除算(`truncate-quotient` `truncate-remainder`)、`modulo` は床除算(`floor-remainder`)。`(modulo -13 4)` は 3、`(modulo 13 -4)` は -3、`(modulo -13 -4)` は -1。除数 0 は「error」 | 除数 0 は `DivisionByZero`。固定長整数の最小値を -1 で割ると溢れるので `IntegerOverflow` |
+| `quotient` `remainder` `modulo` | `quotient` `remainder` は切り捨て除算(`truncate-quotient` `truncate-remainder`)、`modulo` は床除算(`floor-remainder`)。`(modulo -13 4)` は 3、`(modulo 13 -4)` は -3、`(modulo -13 -4)` は -1。除数 0 は「error」 | 除数 0 は `DivisionByZero`。固定長整数の最小値を -1 で割るとあふれるので `IntegerOverflow` |
 | `number?` | 数の型の述語は、非数の引数にも使え、偽を返す | 段階1は固定長整数だけなので、整数なら真 |
 | `integer->char` `char->integer` | `char->integer` は 0 から `#xD7FF`、または `#xE000` から `#x10FFFF` の整数を返す。`integer->char` はその逆 | 範囲外(サロゲートと `#x10FFFF` 超)は `OutOfRange`。1h の `isScalarValue` を使う |
 | `string-ref` `vector-ref` | 添字は 0 起点。「It is an error if k is not a valid index」 | 範囲外は `OutOfRange` |
