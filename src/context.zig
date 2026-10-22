@@ -174,15 +174,35 @@ pub const Context = struct {
         if (self.positions) |kept| kept.mark(marker);
     }
 
-    pub const RaisedAt = struct { value: Value, position: positions_mod.Position };
+    /// The value raised and its place, or null for its place when it was raised
+    /// where no place is shown (`noteRaisedWithoutPlace`).
+    pub const RaisedAt = struct { value: Value, position: ?positions_mod.Position };
 
     /// Keeps that the value just raised was raised at `position`, unless a
-    /// place has been kept for it already: the innermost form keeps it first.
+    /// place has been decided for it already: the innermost form decides first.
     pub fn noteRaisedAt(self: *Context, position: ?positions_mod.Position) void {
         const at = position orelse return;
         const v = self.raised orelse return;
-        if (self.raisedPosition() != null) return;
+        if (self.placeDecided()) return;
         self.raised_at = .{ .value = v, .position = at };
+    }
+
+    /// Keeps that the value just raised shows no place, whatever the forms
+    /// that hold where it was raised.
+    /// Why: 実行時の誤りは、節点が位置を持たないので、位置を付けない(docs/design/frontend.md)。
+    /// ライブラリの本体を走らせて送出したものは、外側の宣言や `define-library` の位置を
+    /// 記録する経路(`noteRaisedAt`)を通って返るので、ここで先に決めておく。
+    pub fn noteRaisedWithoutPlace(self: *Context) void {
+        const v = self.raised orelse return;
+        if (self.placeDecided()) return;
+        self.raised_at = .{ .value = v, .position = null };
+    }
+
+    /// Whether the place of the value raised has been decided.
+    fn placeDecided(self: *const Context) bool {
+        const at = self.raised_at orelse return false;
+        const v = self.raised orelse return false;
+        return v.isEq(at.value);
     }
 
     /// Where the value raised was raised, when it is known.
@@ -386,6 +406,16 @@ test "the place of a raise belongs to the value raised, and the innermost place 
     try std.testing.expectEqual(outer, ctx.raisedPosition().?);
     ctx.clearDiagnostic();
     try std.testing.expect(ctx.raised_at == null);
+    // 位置を付けないと決めた値には、外側の位置も付かない。
+    try std.testing.expectEqual(error.Raised, ctx.raise("third", .{}));
+    ctx.noteRaisedWithoutPlace();
+    ctx.noteRaisedAt(outer);
+    try std.testing.expect(ctx.raisedPosition() == null);
+    // 先に位置が決まっていれば、それを残す。
+    try std.testing.expectEqual(error.Raised, ctx.raise("fourth", .{}));
+    ctx.noteRaisedAt(inner);
+    ctx.noteRaisedWithoutPlace();
+    try std.testing.expectEqual(inner, ctx.raisedPosition().?);
 }
 
 test "the pairs of the table of positions are roots while the context holds it" {

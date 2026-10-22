@@ -12,6 +12,7 @@ const context = @import("../context.zig");
 const Context = context.Context;
 const reader = @import("../reader.zig");
 const resolve = @import("../resolve.zig");
+const positions = @import("../positions.zig");
 
 pub const Error = context.Error;
 
@@ -62,12 +63,27 @@ pub fn sink(ctx: *Context) reader.Sink {
     return .{ .heap = &ctx.heap };
 }
 
+/// The sink the reader makes the data of the file `origin` names in, keeping the
+/// positions of its lists in `ctx.positions` when there is a table.
+pub fn sinkFrom(ctx: *Context, scratch: std.mem.Allocator, origin: resolve.Origin) Error!reader.Sink {
+    var to = sink(ctx);
+    if (ctx.positions) |table| to.positions = .{ .table = table, .file = try table.addFile(try displayName(scratch, origin)) };
+    return to;
+}
+
+/// Where `form` was read from a file, or null when that is not known.
+pub fn siteOf(ctx: *const Context, form: Value) ?positions.Position {
+    const table = ctx.positions orelse return null;
+    return table.of(form);
+}
+
 /// The next datum of the file `r` reads, or null at its end.
 pub fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, subject: []const u8) Error!?Value {
     return readDatumTo(ctx, r, scratch, sink(ctx), subject);
 }
 
-fn readDatumTo(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, to: reader.Sink, subject: []const u8) Error!?Value {
+/// The next datum of the file `r` reads into `to`, or null at its end.
+pub fn readDatumTo(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, to: reader.Sink, subject: []const u8) Error!?Value {
     return r.next(scratch, to) catch |e| switch (e) {
         error.OutOfMemory, error.HeapLimit => |heap_error| ctx.heapFailure(heap_error),
         else => |syntax| ctx.raise("cannot {s}: {s}", .{ subject, reader.describe(syntax) }),
@@ -89,10 +105,7 @@ pub fn readDataFrom(ctx: *Context, scratch: std.mem.Allocator, files: ?resolve.F
     defer ctx.heap.backing.free(text);
     var r: reader.Reader = .init(text);
     r.fold_case = fold_case;
-    var to = sink(ctx);
-    if (ctx.positions) |table| if (origin) |o| {
-        to.positions = .{ .table = table, .file = try table.addFile(try displayName(scratch, o)) };
-    };
+    const to = if (origin) |o| try sinkFrom(ctx, scratch, o) else sink(ctx);
     var data: std.ArrayList(Value) = .empty;
     while (try readDatumTo(ctx, &r, scratch, to, subject)) |datum| try data.append(scratch, datum);
     return data.items;
