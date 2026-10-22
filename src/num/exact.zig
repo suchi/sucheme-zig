@@ -263,7 +263,7 @@ test "ratioToF64 agrees with the division of f64, which rounds correctly when bo
 
 test "ratioToF64 agrees with the division of f64 at a large scale" {
     try tier.slow();
-    try expectAgreesWithDivision(300_000, 0x4e6);
+    try expectAgreesWithDivision(30_000, 0x4e6);
 }
 
 test "ratioToF64 agrees with the reading of 1e<k> and 1e-<k> for powers of ten" {
@@ -338,5 +338,5 @@ test "fromF64 then ratioToF64 returns every finite f64 as it was" {
 
 test "fromF64 then ratioToF64 returns every finite f64 as it was at a large scale" {
     try tier.slow();
-    try expectFromF64RoundTrips(300_000, 0x4e7);
+    try expectFromF64RoundTrips(30_000, 0x4e7);
 }

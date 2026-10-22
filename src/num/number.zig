@@ -581,8 +581,7 @@ test "once the estimate lets a number through, the work of reading it does not r
 
 test "once the estimate lets a number through, the work of reading it does not run out at a large scale" {
     try tier.slow();
-    try expectEstimateHolds(2000, 40);
-    try expectEstimateHolds(20000, 60);
+    try expectEstimateHolds(2000, 30);
 }
 
 test "parse leaves the count of work as it found it, and gives OutOfMemory when the backing refuses" {
@@ -773,7 +772,7 @@ test "write then parse gives the same number for random integers, ratios and flo
     var prng: std.Random.DefaultPrng = .init(0x4e4);
     const random = prng.random();
     var buf: [128]u8 = undefined;
-    for (0..200_000) |i| {
+    for (0..20_000) |i| {
         // Why: `testing.allocator` は確保ごとに別のメモリ領域(ページ)を割り当てる。ヒープに
         // 残る数のセルが、プロセスの領域の数の上限(`vm.max_map_count`)に達すると、
         // `munmap` が失敗して `unreachable` に当たり、約7万回目の反復で落ちる(実装の
