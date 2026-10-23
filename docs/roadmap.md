@@ -179,7 +179,7 @@
 - [x] `(chibi test)` 互換の最小実装
 - [x] `r7rs-tests.scm` の取り込みと実行
 - [x] 準拠マトリクスに、準拠スイート(`r7rs-tests.scm`)の結果の表を足す。`(scheme r5rs)` の再エクスポートによる識別子の重複は、この表を足すときに解く(スライス 6f。結果は節ごとに出るので、列でなく別の表にした。重複は、表を分けずに注記で示すと決めた)
-- [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消([計画書 0025](plans/0025-fuzzing-the-evaluator.md)。下書き)
+- [ ] ファジングの入力コーパスの拡充と、見つかった不具合の解消([計画書 0025](plans/0025-fuzzing-the-evaluator.md)。スライス 6i-1 から 6i-3)
 - [ ] 不合格項目の issue 化と解消(issue 化はスライス 6g で済んだ。レーンごとの issue は [計画書 0020](plans/0020-conformance-harness-early.md) の進捗の表にある。解消は各レーンで行う)
 - [x] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
 - [x] BSD 3条項の第3条項(名前の宣伝利用)について、出典として述べることと推奨として用いることの線を引く新ADRの作成([ADR-0022](adr/0022-unlicensed-proprietary.md))。記録形式が2つ併存することを定める件も同じ ADR で扱う。[ADR-0041](adr/0041-bsd-name-clause-attribution-not-endorsement.md) で決めた
