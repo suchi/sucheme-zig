@@ -467,6 +467,17 @@ pub fn build(b: *std.Build) void {
     for (tools) |t| {
         targets.append(b.allocator, .of(b, t.root_module)) catch @panic("OOM");
     }
+    // 評価器のファジング(計画書 0025)。テストだけのモジュールで、実行ファイルは作らない。
+    // リーダのファジングと別のバイナリにするのは、1つのバイナリに `std.testing.fuzz` を呼ぶ
+    // テストを2つ置くと、探索の実行でファザーが進まなくなるからである。`-Doptimize` に従うので、
+    // fuzz.yml の `-Doptimize=ReleaseSafe` がこのバイナリにも効く。
+    const fuzz_eval = b.createModule(.{
+        .root_source_file = b.path("tools/fuzz-eval/fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "sucheme", .module = sucheme }},
+    });
+    targets.append(b.allocator, .of(b, fuzz_eval)) catch @panic("OOM");
 
     // ループも一覧も1つ。テストと check-docs に伝えるパスは同じモジュールから来るので、
     // どちらか一方だけを落としたり重複させたりできない。
