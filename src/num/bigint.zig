@@ -376,6 +376,27 @@ test "mul refuses before it computes when the temporaries of Karatsuba's method 
     try std.testing.expectEqual(std.math.maxInt(Limb), product.limbs[2 * limbs - 1]);
 }
 
+test "mul asks for the whole probe, and only when the shorter factor is long enough" {
+    // 大きさで断る割り当て器(2000 バイトの固定の領域)を使い、試し取りの大きさと条件を固定する。
+    var storage: [100]Limb = undefined;
+    @memset(&storage, std.math.maxInt(Limb));
+    const long: Const = .{ .limbs = &storage, .positive = true };
+    const short: Const = .{ .limbs = storage[0..10], .positive = true };
+    var buffer: [2000]u8 align(@alignOf(Limb)) = undefined;
+    // 100 桁 x 100 桁: 結果は 200 桁(1600 バイト)で入るが、試し取り(264 桁)は入らない。
+    {
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        try std.testing.expectError(error.OutOfMemory, mul(fixed.allocator(), long, long));
+    }
+    // 100 桁 x 10 桁: 短い方が閾値以下なので、試し取りをしない。学校式で、領域は結果の分だけ。
+    {
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        var product = try mul(fixed.allocator(), long, short);
+        defer product.deinit();
+        try std.testing.expectEqual(110, product.len());
+    }
+}
+
 test "add, sub, mul, divide and gcd agree with i128 on the edge values" {
     for (edge_values) |a| {
         for (edge_values) |b| try checkPair(a, b);

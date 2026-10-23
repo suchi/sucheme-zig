@@ -828,3 +828,36 @@ test "a backing allocator that fails is OutOfMemory, even after a refusal by the
     failing.fail_index = failing.alloc_index;
     try testing.expectError(error.OutOfMemory, compare(&h, a, third));
 }
+
+test "the work area of a complex operation is held to the limit, like a real one" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const text = try googol(3000);
+    defer testing.allocator.free(text);
+    // z = 10^3000 + 10^3000 i。
+    const zt = try std.fmt.allocPrint(testing.allocator, "{s}+{s}i", .{ text, text });
+    defer testing.allocator.free(zt);
+    const z = try read(&h, zt);
+    // 実部が 10^3000、虚部が 1/3 の数と、実部が 1/10^3000 の数。実部の比較に、作業領域が要る。
+    const at = try std.fmt.allocPrint(testing.allocator, "{s}+1/3i", .{text});
+    defer testing.allocator.free(at);
+    const bt = try std.fmt.allocPrint(testing.allocator, "1/{s}+1/3i", .{text});
+    defer testing.allocator.free(bt);
+    const a = try read(&h, at);
+    const b = try read(&h, bt);
+    // 実数の逆数を掛ける。結果(1+i)は小さいが、各部の積と約分の一時領域(限界値列)は大きい。
+    const inv_text = try std.fmt.allocPrint(testing.allocator, "1/{s}", .{text});
+    defer testing.allocator.free(inv_text);
+    const inv = try read(&h, inv_text);
+    h.options.limit = h.held() + 256;
+    try testing.expectError(error.HeapLimit, apply(&h, .mul, z, inv));
+    try testing.expectError(error.HeapLimit, numEqual(&h, a, b));
+    try testing.expectEqual(0, h.external);
+    try testing.expect(!h.external_enforced);
+    h.options.limit = heap_mod.default_limit;
+    const product = try apply(&h, .mul, z, inv);
+    const shown = try show(product);
+    defer testing.allocator.free(shown);
+    try testing.expectEqualStrings("1+i", shown);
+    try testing.expect(!(try numEqual(&h, a, b)));
+}
