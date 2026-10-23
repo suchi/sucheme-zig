@@ -42,16 +42,34 @@ fn seed(comptime text: []const u8) []const u8 {
     return &bytes;
 }
 
+/// An input whose result shows that the input was evaluated.
+/// `fact` は、入力が評価器に届いたことを固定する(入力を捨てても定数の評価だけは通る)。
+const input_fact = "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20)";
+/// An input that needs the standard environment.
+/// `assv` は `(scheme base)` が Scheme で定義する(lib/sucheme/procedures.scm)。標準環境を
+/// 作らずにコアだけで作ると、未束縛になって結果が出ない。
+const input_assv = "(cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none))";
+/// An input that passes the heap limit in one step.
+/// ヒープの上限が効いて、Scheme の条件になることを固定する。
+const input_heap = "(make-vector 100000000)";
+
+/// What `zig build test` checks the runs of some inputs ended with.
+const expected = [_]struct { src: []const u8, out: []const u8, diagnostic: []const u8 }{
+    .{ .src = input_fact, .out = "2432902008176640000\n", .diagnostic = "" },
+    .{ .src = input_assv, .out = "b\n", .diagnostic = "" },
+    .{ .src = input_heap, .out = "", .diagnostic = "heap limit exceeded" },
+};
+
 /// The inputs `zig build test` runs, as text.
 /// 構文ごとに短い入力を置く。探索はここから広がる。取り込んだ準拠スイートの文面は使わない
 /// (計画書 0025 の合意を求める点の3)。
 const inputs = [_][]const u8{
-    "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20)",
+    input_fact,
     "(define x 1) (set! x (+ x 1)) x",
     "((lambda (a . rest) (list a rest)) 1 2 3)",
     "(let loop ((i 0) (acc '())) (if (< i 5) (loop (+ i 1) (cons i acc)) acc))",
     "(let* ((a 1) (b (+ a 1))) (letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1))))) (odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))) (even? b)))",
-    "(cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none))",
+    input_assv,
     "(case (* 2 3) ((2 3 5 7) 'prime) ((1 4 6 8 9) 'composite))",
     "(and 1 2 #f 3) (or #f 2) (when #t 'w) (unless #f 'u)",
     "(do ((v (make-vector 5)) (i 0 (+ i 1))) ((= i 5) v) (vector-set! v i i))",
@@ -78,6 +96,7 @@ const inputs = [_][]const u8{
     "(delay (+ 1 2)) (force (delay (+ 1 2))) (make-parameter 1)",
     "(undefined-variable) (car) (1 2) (lambda) (if) (define)",
     "#0=(a . #0#) '#1=(b . #1#)",
+    input_heap,
 };
 
 /// `inputs` as corpus entries.
@@ -96,6 +115,11 @@ const Record = struct {
 
     srcs: [capacity][max_input]u8 = undefined,
     lens: [capacity]usize = @splat(0),
+    /// The start of what each run wrote, and of the diagnostic it ended with.
+    outs: [capacity][64]u8 = undefined,
+    out_lens: [capacity]usize = @splat(0),
+    diagnostics: [capacity][64]u8 = undefined,
+    diagnostic_lens: [capacity]usize = @splat(0),
     /// How many runs there were, also those past `capacity`.
     count: usize = 0,
 
@@ -105,6 +129,18 @@ const Record = struct {
             self.lens[self.count] = src.len;
         }
         self.count += 1;
+    }
+
+    /// Writes down how the run `add` wrote down last ended.
+    fn end(self: *Record, out: []const u8, diagnostic: []const u8) void {
+        const i = self.count - 1;
+        if (i >= capacity) return;
+        const o = @min(out.len, self.outs[i].len);
+        @memcpy(self.outs[i][0..o], out[0..o]);
+        self.out_lens[i] = o;
+        const d = @min(diagnostic.len, self.diagnostics[i].len);
+        @memcpy(self.diagnostics[i][0..d], diagnostic[0..d]);
+        self.diagnostic_lens[i] = d;
     }
 };
 
@@ -137,6 +173,7 @@ fn run(record: ?*Record, smith: *std.testing.Smith) anyerror!void {
         error.OutOfMemory => return e,
         else => {},
     };
+    if (record) |r| r.end(out.buffered(), interp.diagnostic());
 
     var after_buf: [16]u8 = undefined;
     var after: std.Io.Writer = .fixed(&after_buf);
@@ -165,4 +202,13 @@ test "fuzz: the interpreter ends any input with a value or a specified error, an
         try std.testing.expectEqualSlices(u8, text, record.srcs[i][0..record.lens[i]]);
     }
     try std.testing.expectEqual(0, record.lens[inputs.len]);
+    // 入力が届いても、評価されなければ、上の照合は緑のままである。標準環境とヒープの上限が
+    // 効いていることも含めて、いくつかの入力の結果を見る。
+    for (expected) |e| {
+        const i = for (inputs, 0..) |text, j| {
+            if (std.mem.eql(u8, text, e.src)) break j;
+        } else return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(e.out, record.outs[i][0..record.out_lens[i]]);
+        try std.testing.expectEqualStrings(e.diagnostic, record.diagnostics[i][0..record.diagnostic_lens[i]]);
+    }
 }
