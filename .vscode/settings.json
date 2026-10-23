@@ -9,6 +9,7 @@
     "compnum",
     "comptime",
     "deinit",
+    "DFFF",
     "Dslow",
     "Dtarget",
     "fixnum",
@@ -32,6 +33,7 @@
     "SRFI",
     "stdlib",
     "sucheme",
+    "suchi",
     "zigversion",
     "zork"
   ]
