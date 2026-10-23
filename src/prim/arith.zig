@@ -39,7 +39,7 @@ fn fromWide(n: i128) Error!Value {
     return .fromFixnum(std.math.cast(i64, n) orelse return error.IntegerOverflow);
 }
 
-/// Checks that every argument is a number the operation takes.
+/// Checks that every argument is a real number: a fixnum, a bignum, a ratnum or a flonum.
 ///
 /// 値によらず、すべての引数の型を先に検査する。エラーが、前の引数まででもう答えが決まった
 /// かどうかや、途中の計算の結果に左右されないようにするためである。
@@ -50,12 +50,17 @@ fn requireReals(args: []const Value) Error!void {
     };
 }
 
+/// Checks that every argument is a number, a complex one included.
+fn requireNumbers(args: []const Value) Error!void {
+    for (args) |a| if (!number.isNumber(a)) return error.WrongType;
+}
+
 /// `(+ z1 ...)`.
 ///
 /// 引数がなければ和は 0 である(R7RS 6.2.6)。1つなら、その引数そのもの(`(+ -0.0)` は
 /// `-0.0`)。
 fn add(services: *const Services, args: []const Value) Error!Value {
-    try requireReals(args);
+    try requireNumbers(args);
     if (args.len == 0) return .fromFixnum(0);
     var sum = args[0];
     for (args[1..]) |a| sum = try ops.apply(services.heap, .add, sum, a);
@@ -67,7 +72,7 @@ fn add(services: *const Services, args: []const Value) Error!Value {
 ///
 /// 引数は1つ以上要る。個数は機械が表の下限で検査するので、`args[0]` を読んでよい。
 fn subtract(services: *const Services, args: []const Value) Error!Value {
-    try requireReals(args);
+    try requireNumbers(args);
     if (args.len == 1) return ops.negate(services.heap, args[0]);
     var difference = args[0];
     for (args[1..]) |a| difference = try ops.apply(services.heap, .sub, difference, a);
@@ -78,7 +83,7 @@ fn subtract(services: *const Services, args: []const Value) Error!Value {
 ///
 /// 引数がなければ積は 1 である(R7RS 6.2.6)。
 fn multiply(services: *const Services, args: []const Value) Error!Value {
-    try requireReals(args);
+    try requireNumbers(args);
     if (args.len == 0) return .fromFixnum(1);
     var product = args[0];
     for (args[1..]) |a| product = try ops.apply(services.heap, .mul, product, a);
@@ -89,7 +94,7 @@ fn multiply(services: *const Services, args: []const Value) Error!Value {
 ///
 /// 正確な0で割ると `DivisionByZero` である。被除数が不正確でも同じ。引数は1つ以上要る。
 fn divide(services: *const Services, args: []const Value) Error!Value {
-    try requireReals(args);
+    try requireNumbers(args);
     if (args.len == 1) return ops.apply(services.heap, .div, .fromFixnum(1), args[0]);
     var quotient = args[0];
     for (args[1..]) |a| quotient = try ops.apply(services.heap, .div, quotient, a);
@@ -102,12 +107,17 @@ fn divide(services: *const Services, args: []const Value) Error!Value {
 /// 引数が1つなら真、なしならエラー(機械が表の下限で報告する)である。最初に成り
 /// 立たなかった組より後のものも含め、すべての引数が数であることを検査する。エラーが
 /// 値に左右されないようにするためである。NaN を含む組は、どの比較でも偽である。
+/// `=` は複素数も取る。順序を決める `<` `>` `<=` `>=` は実数だけで、複素数は `WrongType`。
 fn comparison(comptime op: std.math.CompareOperator) Primitive.Fn {
     return &struct {
         fn call(services: *const Services, args: []const Value) Error!Value {
-            try requireReals(args);
+            if (op == .eq) try requireNumbers(args) else try requireReals(args);
             var holds = true;
             for (args[0 .. args.len - 1], args[1..]) |a, b| {
+                if (op == .eq) {
+                    if (!try ops.numEqual(services.heap, a, b)) holds = false;
+                    continue;
+                }
                 const order = try ops.compare(services.heap, a, b);
                 if (order == null or !orderHolds(order.?, op)) holds = false;
             }
@@ -118,8 +128,8 @@ fn comparison(comptime op: std.math.CompareOperator) Primitive.Fn {
 
 fn orderHolds(order: std.math.Order, comptime op: std.math.CompareOperator) bool {
     return switch (op) {
-        .eq => order == .eq,
-        .neq => order != .eq,
+        // `=` は `numEqual` で比べるので、順序を決める演算子だけがここに来る。
+        .eq, .neq => unreachable,
         .lt => order == .lt,
         .lte => order != .gt,
         .gt => order == .gt,
@@ -453,6 +463,47 @@ test "arithmetic checks the type of every argument" {
         const first = [_]Value{.empty_list_value};
         try std.testing.expectError(error.WrongType, callWith(name, &first));
     }
+}
+
+test "+ - * / take complex numbers, and the result is real when the imaginary part comes to zero" {
+    try expectCall("4+6i", "+", &.{ "1+2i", "3+4i" });
+    try expectCall("3+3i", "+", &.{ "1+2i", "1", "1+i" });
+    try expectCall("2", "+", &.{ "1+2i", "1-2i" });
+    try expectCall("-5+10i", "*", &.{ "1+2i", "3+4i" });
+    try expectCall("5", "*", &.{ "1+2i", "1-2i" });
+    try expectCall("-2-2i", "-", &.{ "1+2i", "3+4i" });
+    try expectCall("-1-2i", "-", &.{"1+2i"});
+    try expectCall("1+2i", "+", &.{"1+2i"});
+    try expectCall("11/25+2/25i", "/", &.{ "1+2i", "3+4i" });
+    try expectCall("-i", "/", &.{"+i"});
+    try expectCall("1/5-2/5i", "/", &.{"1+2i"});
+    try expectCall("1.5+2.0i", "+", &.{ "1+2i", "0.5" });
+}
+
+test "= takes complex numbers, and the order comparisons take real numbers only" {
+    try expectCall("#t", "=", &.{ "1+2i", "1+2i", "1+2i" });
+    try expectCall("#f", "=", &.{ "1+2i", "1+2i", "1+3i" });
+    try expectCall("#f", "=", &.{ "1+2i", "1" });
+    try expectCall("#t", "=", &.{ "1+2i", "1.0+2.0i" });
+    try expectCall("#t", "=", &.{"1+2i"});
+    for ([_][]const u8{ "<", ">", "<=", ">=" }) |name| {
+        var f: test_support.Fixture = undefined;
+        f.init();
+        defer f.deinit();
+        const z = (try number.parse(f.services.heap, "1+2i", 10)).?;
+        try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ .fromFixnum(0), z }));
+        try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{z}));
+        // 型は、組の答えが決まっていても、すべての引数について検査する。
+        try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ .fromFixnum(2), .fromFixnum(1), z }));
+    }
+}
+
+test "a complex number divided by an exact zero is an error" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const z = (try number.parse(f.services.heap, "1+2i", 10)).?;
+    try std.testing.expectError(error.DivisionByZero, f.call(&primitives, "/", &.{ z, .fromFixnum(0) }));
 }
 
 const min_i64 = std.math.minInt(i64);

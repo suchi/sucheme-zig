@@ -6,8 +6,8 @@
 //! する(不正確さの伝播。R7RS 6.2.2)。結果の正規化は `number.zig` の生成関数が行うので、
 //! このファイルは `Value` の数の変種を直接作らない(flonum を除く)。
 //!
-//! 引数は実数(fixnum、bignum、ratnum、flonum)である。型の検査は呼び出し側
-//! (`src/prim/arith.zig`)が行う。
+//! 引数は数(fixnum、bignum、ratnum、flonum、compnum)である。型の検査は呼び出し側
+//! (`src/prim/arith.zig`)が行う。順序の比較(`compare`)は実数だけを扱う。
 //!
 //! 作業領域は、`Heap.Charged` から取り、演算の間だけ上限に照らす(計画書 0018 の
 //! 「演算の作業領域」)。断られたら `HeapLimit` になる。作業領域を使わない経路
@@ -33,37 +33,83 @@ pub const Error = heap_mod.Error || error{DivisionByZero};
 /// The four arithmetic operations.
 pub const Op = enum { add, sub, mul, div };
 
-/// `a op b`.
+/// `a op b`, for numbers of any of the five kinds.
 ///
 /// 除数が正確な0なら、被除数が不正確でも `DivisionByZero` である。`(/ 1 0.0)` は `+inf.0`。
 /// 正確な数と不正確な数の積は、正確な側が0でも不正確になる(`(* 0 +inf.0)` は `+nan.0`。
 /// R7RS 6.2.6 は0と `+nan.0` のどちらも許す)。
+///
+/// 複素数は、実部と虚部を実数の演算で計算し、`number.makeRectangular` で正規化する(虚部が
+/// 正確な0なら実数、部分の正確性はそろえる)。和と差は部分ごと、積は `(a+bi)(c+di) =
+/// (ac-bd) + (ad+bc)i`、商は分母の共役を掛けて `|c+di|^2` で割る。片方が実数のときは、
+/// 実数を各部に掛けるか割る(`(* +inf.0+1.0i 2)` が `+inf.0+2.0i` になり、`inf * 0` の
+/// `+nan.0` を作らない)。
 pub fn apply(h: *Heap, op: Op, a: Value, b: Value) Error!Value {
-    std.debug.assert(isReal(a) and isReal(b));
-    if (a.asFixnum()) |x| if (b.asFixnum()) |y| if (fixnumOp(op, x, y)) |v| return v;
-    if (fastFloat(a)) |x| if (fastFloat(b)) |y| if (a.asFlonum() != null or b.asFlonum() != null) {
-        if (op == .div and isExactZero(b)) return error.DivisionByZero;
-        return .fromFlonum(floatOp(op, x, y));
-    };
+    std.debug.assert(number.isNumber(a) and number.isNumber(b));
+    if (try fastApply(op, a, b)) |v| return v;
+    return counted(Value, applyWork, h, .{ op, a, b });
+}
+
+fn applyWork(h: *Heap, gpa: std.mem.Allocator, op: Op, a: Value, b: Value) Error!Value {
+    if (a.kind() == .compnum or b.kind() == .compnum) return complexApply(h, gpa, op, a, b);
+    return applyIn(h, gpa, op, a, b);
+}
+
+/// Runs `f(h, gpa, args...)` with a work area from `Heap.Charged`, held to the limit while it
+/// runs; a refusal of the work area is `HeapLimit`.
+///
+/// Why: 作業領域の計上は入れ子になる(`Heap.beginCounting`)。この関数は、作業領域を使う
+/// 入口だけが呼ぶ。
+fn counted(comptime T: type, comptime f: anytype, h: *Heap, args: anytype) Error!T {
     h.external_refused = false;
     const before = h.beginCounting(true);
     defer h.endCounting(before);
     var charged: heap_mod.Charged = .{ .heap = h, .backing = h.backing };
-    return applyIn(h, charged.allocator(), op, a, b) catch |e| switch (e) {
+    return @call(.auto, f, .{ h, charged.allocator() } ++ args) catch |e| switch (e) {
         error.OutOfMemory => if (h.external_refused) error.HeapLimit else error.OutOfMemory,
         else => |other| other,
     };
 }
 
+/// The result of an operation on two real numbers that takes no work area (two fixnums with a
+/// fixnum result, or a flonum with a number that is exactly an `f64`), or null.
+fn fastApply(op: Op, a: Value, b: Value) Error!?Value {
+    if (a.asFixnum()) |x| if (b.asFixnum()) |y| if (fixnumOp(op, x, y)) |v| return v;
+    if (fastFloat(a)) |x| if (fastFloat(b)) |y| if (a.asFlonum() != null or b.asFlonum() != null) {
+        if (op == .div and isExactZero(b)) return error.DivisionByZero;
+        return .fromFlonum(floatOp(op, x, y));
+    };
+    return null;
+}
+
+/// `a op b` for two real numbers, inside a work area.
+fn realApply(h: *Heap, gpa: std.mem.Allocator, op: Op, a: Value, b: Value) Error!Value {
+    if (try fastApply(op, a, b)) |v| return v;
+    return applyIn(h, gpa, op, a, b);
+}
+
 /// `-a`.
 ///
 /// 不正確な0の符号を保つ(`(- 0.0)` は `-0.0`)。`0 - a` では `0.0` になってしまう。
+/// 複素数は、実部と虚部のそれぞれを反転する。
 pub fn negate(h: *Heap, a: Value) Error!Value {
+    std.debug.assert(number.isNumber(a));
     if (a.asFlonum()) |x| return .fromFlonum(-x);
+    if (a.kind() == .compnum) return counted(Value, negateComplex, h, .{a});
     return apply(h, .sub, .fromFixnum(0), a);
 }
 
-/// How `a` and `b` order, or null if they do not (a NaN is among them).
+fn negateComplex(h: *Heap, gpa: std.mem.Allocator, a: Value) Error!Value {
+    const c = a.asCompnum().?;
+    return number.makeRectangular(h, gpa, try negateReal(h, gpa, c.real), try negateReal(h, gpa, c.imag));
+}
+
+fn negateReal(h: *Heap, gpa: std.mem.Allocator, v: Value) Error!Value {
+    if (v.asFlonum()) |x| return .fromFlonum(-x);
+    return realApply(h, gpa, .sub, .fromFixnum(0), v);
+}
+
+/// How `a` and `b` order, or null if they do not (a NaN is among them). Both are real numbers.
 ///
 /// 正確な数と不正確な数は、flonum を正確な有理数にして比べる。`f64` に寄せて比べると、
 /// `=` が推移的でなくなる(R7RS 6.2.2 は推移的であることを求める)。
@@ -71,14 +117,93 @@ pub fn compare(h: *Heap, a: Value, b: Value) Error!?std.math.Order {
     std.debug.assert(isReal(a) and isReal(b));
     if (a.asFixnum()) |x| if (b.asFixnum()) |y| return std.math.order(x, y);
     if (fastFloat(a)) |x| if (fastFloat(b)) |y| return orderFloat(x, y);
-    h.external_refused = false;
-    const before = h.beginCounting(true);
-    defer h.endCounting(before);
-    var charged: heap_mod.Charged = .{ .heap = h, .backing = h.backing };
-    return compareIn(charged.allocator(), a, b) catch |e| switch (e) {
-        error.OutOfMemory => if (h.external_refused) error.HeapLimit else error.OutOfMemory,
-        else => |other| other,
-    };
+    return counted(?std.math.Order, compareWork, h, .{ a, b });
+}
+
+fn compareWork(_: *Heap, gpa: std.mem.Allocator, a: Value, b: Value) Error!?std.math.Order {
+    return compareIn(gpa, a, b);
+}
+
+/// Whether `a` and `b` are `=` (R7RS 6.2.6), for numbers of any of the five kinds.
+///
+/// 複素数は、実部どうしと虚部どうしが、どちらも正確な値で等しいときに等しい。実数の虚部は
+/// 正確な0である(`(= 1.0+0.0i 1.0)` は真)。NaN を含む部分は等しくない。
+pub fn numEqual(h: *Heap, a: Value, b: Value) Error!bool {
+    std.debug.assert(number.isNumber(a) and number.isNumber(b));
+    if (a.kind() != .compnum and b.kind() != .compnum) return (try compare(h, a, b)) == .eq;
+    return counted(bool, numEqualComplex, h, .{ a, b });
+}
+
+fn numEqualComplex(_: *Heap, gpa: std.mem.Allocator, a: Value, b: Value) Error!bool {
+    const x = partsOf(a);
+    const y = partsOf(b);
+    if ((try compareIn(gpa, x.re, y.re)) != .eq) return false;
+    return (try compareIn(gpa, x.im, y.im)) == .eq;
+}
+
+/// The real and the imaginary part of a number; a real number has an exact zero for its
+/// imaginary part.
+const Parts = struct { re: Value, im: Value };
+
+fn partsOf(v: Value) Parts {
+    if (v.asCompnum()) |c| return .{ .re = c.real, .im = c.imag };
+    return .{ .re = v, .im = .fromFixnum(0) };
+}
+
+fn complexApply(h: *Heap, gpa: std.mem.Allocator, op: Op, a: Value, b: Value) Error!Value {
+    const x = partsOf(a);
+    const y = partsOf(b);
+    const a_complex = a.kind() == .compnum;
+    const b_complex = b.kind() == .compnum;
+    var re: Value = undefined;
+    var im: Value = undefined;
+    switch (op) {
+        .add, .sub => {
+            re = try realApply(h, gpa, op, x.re, y.re);
+            // 実数の虚部は正確な0である。0 を足し引きすると、-0.0 の符号が変わるので、
+            // 複素数でない側の虚部は演算に加えない。
+            im = if (!b_complex)
+                x.im
+            else if (!a_complex)
+                (if (op == .add) y.im else try negateReal(h, gpa, y.im))
+            else
+                try realApply(h, gpa, op, x.im, y.im);
+        },
+        .mul => {
+            if (!b_complex) {
+                re = try realApply(h, gpa, .mul, x.re, b);
+                im = try realApply(h, gpa, .mul, x.im, b);
+            } else if (!a_complex) {
+                re = try realApply(h, gpa, .mul, a, y.re);
+                im = try realApply(h, gpa, .mul, a, y.im);
+            } else {
+                const ac = try realApply(h, gpa, .mul, x.re, y.re);
+                const bd = try realApply(h, gpa, .mul, x.im, y.im);
+                const ad = try realApply(h, gpa, .mul, x.re, y.im);
+                const bc = try realApply(h, gpa, .mul, x.im, y.re);
+                re = try realApply(h, gpa, .sub, ac, bd);
+                im = try realApply(h, gpa, .add, ad, bc);
+            }
+        },
+        .div => {
+            if (!b_complex) {
+                re = try realApply(h, gpa, .div, x.re, b);
+                im = try realApply(h, gpa, .div, x.im, b);
+            } else {
+                // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c^2+d^2)
+                const cc = try realApply(h, gpa, .mul, y.re, y.re);
+                const dd = try realApply(h, gpa, .mul, y.im, y.im);
+                const norm = try realApply(h, gpa, .add, cc, dd);
+                const ac = try realApply(h, gpa, .mul, x.re, y.re);
+                const bd = try realApply(h, gpa, .mul, x.im, y.im);
+                const bc = try realApply(h, gpa, .mul, x.im, y.re);
+                const ad = try realApply(h, gpa, .mul, x.re, y.im);
+                re = try realApply(h, gpa, .div, try realApply(h, gpa, .add, ac, bd), norm);
+                im = try realApply(h, gpa, .div, try realApply(h, gpa, .sub, bc, ad), norm);
+            }
+        },
+    }
+    return number.makeRectangular(h, gpa, re, im);
 }
 
 fn isReal(v: Value) bool {
@@ -463,6 +588,144 @@ test "comparing with infinities and NaN" {
     try expectOrder(&h, "+nan.0", "+nan.0", null);
     try expectOrder(&h, "+nan.0", "18446744073709551616", null);
     try expectOrder(&h, "1/2", "+nan.0", null);
+}
+
+fn expectEqual(h: *Heap, a: []const u8, b: []const u8, expected: bool) !void {
+    const got = try numEqual(h, try read(h, a), try read(h, b));
+    testing.expectEqual(expected, got) catch |e| {
+        std.debug.print("(= {s} {s}): expected {any}, got {any}\n", .{ a, b, expected, got });
+        return e;
+    };
+}
+
+fn expectNegate(h: *Heap, a: []const u8, expected: []const u8) !void {
+    const text = try show(try negate(h, try read(h, a)));
+    defer testing.allocator.free(text);
+    try testing.expectEqualStrings(expected, text);
+}
+
+test "complex numbers add and subtract part by part, and become real when the imaginary part is zero" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectOp(&h, .add, "1+2i", "3+4i", "4+6i");
+    try expectOp(&h, .sub, "1+2i", "3+4i", "-2-2i");
+    try expectOp(&h, .add, "1+2i", "1-2i", "2");
+    try expectOp(&h, .sub, "1+2i", "1+2i", "0");
+    try expectOp(&h, .add, "1+2i", "3", "4+2i");
+    try expectOp(&h, .add, "3", "1+2i", "4+2i");
+    try expectOp(&h, .sub, "3", "1+2i", "2-2i");
+    try expectOp(&h, .sub, "1+2i", "3", "-2+2i");
+    try expectOp(&h, .add, "1/2+1/3i", "1/2-1/3i", "1");
+    try expectOp(&h, .add, "18446744073709551616+i", "18446744073709551616-i", "36893488147419103232");
+}
+
+test "a complex number with an inexact part gives an inexact one, and an inexact zero part stays" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectOp(&h, .add, "1+2i", "0.5", "1.5+2.0i");
+    try expectOp(&h, .add, "1.5+2.5i", "1", "2.5+2.5i");
+    try expectOp(&h, .sub, "1.5+2.5i", "1.5+2.5i", "0.0+0.0i");
+    try expectOp(&h, .add, "1+2i", "0.5+0.5i", "1.5+2.5i");
+    // 複素数でない側の虚部は演算に加えないので、虚部の -0.0 の符号が変わらない。
+    try expectOp(&h, .add, "1.0-0.0i", "2", "3.0-0.0i");
+    try expectOp(&h, .sub, "1.0-0.0i", "2", "-1.0-0.0i");
+    try expectOp(&h, .sub, "2", "1.0+3.0i", "1.0-3.0i");
+}
+
+test "complex numbers multiply by the four products, and by a real number part by part" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectOp(&h, .mul, "1+2i", "3+4i", "-5+10i");
+    try expectOp(&h, .mul, "1+2i", "1-2i", "5");
+    try expectOp(&h, .mul, "+i", "+i", "-1");
+    try expectOp(&h, .mul, "1+2i", "2", "2+4i");
+    try expectOp(&h, .mul, "2", "1+2i", "2+4i");
+    try expectOp(&h, .mul, "1+2i", "0", "0");
+    try expectOp(&h, .mul, "0", "1+2i", "0");
+    try expectOp(&h, .mul, "1/2+1/3i", "6", "3+2i");
+    try expectOp(&h, .mul, "1.5+2.5i", "2", "3.0+5.0i");
+    try expectOp(&h, .mul, "18446744073709551616+i", "18446744073709551616-i", "340282366920938463463374607431768211457");
+    // 実数を掛けるときは各部に掛けるので、無限大と 0 の積の `+nan.0` を作らない。
+    try expectOp(&h, .mul, "+inf.0+1.0i", "2", "+inf.0+2.0i");
+    try expectOp(&h, .mul, "2", "+inf.0+1.0i", "+inf.0+2.0i");
+}
+
+test "complex numbers divide by the conjugate, and by a real number part by part" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectOp(&h, .div, "1+2i", "3+4i", "11/25+2/25i");
+    try expectOp(&h, .div, "1", "+i", "-i");
+    try expectOp(&h, .div, "+i", "+i", "1");
+    try expectOp(&h, .div, "1+2i", "2", "1/2+i");
+    try expectOp(&h, .div, "1+2i", "1+2i", "1");
+    try expectOp(&h, .div, "5", "1+2i", "1-2i");
+    try expectOp(&h, .div, "1.0+2.0i", "3.0+4.0i", "0.44+0.08i");
+    try expectOp(&h, .div, "1.0+2.0i", "2", "0.5+1.0i");
+}
+
+test "dividing a complex number by an exact zero is an error, and by an inexact zero is not" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][]const u8{ "1+2i", "1.5+2.5i", "18446744073709551616+i" }) |dividend| {
+        try testing.expectError(error.DivisionByZero, apply(&h, .div, try read(&h, dividend), .fromFixnum(0)));
+    }
+    try expectOp(&h, .div, "1.5+2.5i", "0.0", "+inf.0+inf.0i");
+    try testing.expectEqual(0, h.external);
+    try testing.expect(!h.external_enforced);
+}
+
+test "negating a complex number negates both parts, and keeps the sign of an inexact zero" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectNegate(&h, "1+2i", "-1-2i");
+    try expectNegate(&h, "+i", "-i");
+    try expectNegate(&h, "1.5-2.5i", "-1.5+2.5i");
+    try expectNegate(&h, "1.0+0.0i", "-1.0-0.0i");
+    try expectNegate(&h, "1/2+1/3i", "-1/2-1/3i");
+    // 実部が不正確な 0 のときも符号を反転する(`0 - z` では 0.0 のままになる)。
+    try expectNegate(&h, "0.0+1.0i", "-0.0-1.0i");
+}
+
+test "= on complex numbers compares both parts exactly" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectEqual(&h, "1+2i", "1+2i", true);
+    try expectEqual(&h, "1+2i", "1+3i", false);
+    try expectEqual(&h, "1+2i", "2+2i", false);
+    try expectEqual(&h, "1+2i", "1", false);
+    try expectEqual(&h, "1", "1+2i", false);
+    try expectEqual(&h, "1+2i", "1.0+2.0i", true);
+    try expectEqual(&h, "1.0+0.0i", "1.0", true);
+    try expectEqual(&h, "1.0-0.0i", "1.0", true);
+    try expectEqual(&h, "1", "1.0+0.0i", true);
+    try expectEqual(&h, "+nan.0+1.0i", "+nan.0+1.0i", false);
+    try expectEqual(&h, "1.0+nan.0i", "1.0+nan.0i", false);
+    try expectEqual(&h, "1/2+1/3i", "0.5+0.3333333333333333i", false);
+    try expectEqual(&h, "18446744073709551616+i", "18446744073709551616+i", true);
+    try expectEqual(&h, "18446744073709551616+i", "18446744073709551617+i", false);
+    // 実数どうしは `compare` と同じである。
+    try expectEqual(&h, "1", "1.0", true);
+    try expectEqual(&h, "+nan.0", "+nan.0", false);
+    try expectEqual(&h, "9007199254740993", "9007199254740992.0", false);
+}
+
+test "the work area of a complex operation is given back" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const text = try googol(300);
+    defer testing.allocator.free(text);
+    const z = try apply(&h, .add, try read(&h, text), try read(&h, "+i"));
+    const w = try read(&h, "1/3+1/7i");
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        _ = try apply(&h, .mul, z, z);
+        _ = try apply(&h, .div, z, w);
+        _ = try apply(&h, .add, z, w);
+        _ = try negate(&h, z);
+        _ = try numEqual(&h, z, w);
+    }
+    try testing.expectEqual(0, h.external);
+    try testing.expect(!h.external_enforced);
 }
 
 fn googol(len: usize) ![]u8 {
