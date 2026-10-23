@@ -507,13 +507,13 @@ pub fn digitValue(c: u21) ?u4
 | 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため)。実績: PR を作ってからマージまで約 14 時間(2026-10-22 20:37 JST から 2026-10-23 10:32 JST。夜間の待ちを含む) |
 | 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則。実績: PR を作ってから ready まで約 44 分、マージまで約 77 分(2026-10-23 11:24 JST から 12:08 JST、12:41 JST。層2 は約 30 分) |
 | 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。マージ済み([suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181))。実績: PR を作ってから ready まで約 57 分、マージまで約 128 分(2026-10-23 13:27 JST から 14:24 JST、15:35 JST。層2 は約 25 分) |
-| 4f | ドラフト PR [suchi/sucheme-zig#182](https://github.com/suchi/sucheme-zig/pull/182)。四則と比較。compnum の範囲、述語の担当、巨大な bignum の演算の時間は、2026-10-23 に決まった(下の「4f の決定」) |
-| 4g〜4z、4u1〜4u4 | 未着手 |
+| 4f | マージ済み([suchi/sucheme-zig#182](https://github.com/suchi/sucheme-zig/pull/182))。四則と比較(compnum を含む)。実績: PR を作ってから ready まで約 5.5 時間、マージまで約 7 時間(2026-10-23 17:31 JST から 23:03 JST、翌 00:27 JST。独立レビュー 3 巡と main の取り込みを含む。層2 は約 32 分) |
+| 4g-1 | 述語、`exact` `inexact`、`floor` 系、`numerator` `denominator`、`max` `min`。ブランチ `feature/phase4-slice-4g-1-numeric-predicates-and-rounding`。4g は 4g-1(これ)、4g-2(整数除算と `abs` など)、4g-3(`expt` `exact-integer-sqrt` `rationalize`)、4g-4(`number->string` `string->number`)の4つの PR に分ける(2026-10-23。大きいので、レビューを小さくするため) |
+| 4g-2〜4g-4、4h〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4f(四則と比較)の PR を作り、レビューを経てマージする。
-- 4g(整数と有理数の手続き)と 4h(`(scheme inexact)`)は、4f のマージのあとに並行に進める。
+- 4g-1(述語、変換、丸め、極値)の PR を作り、レビューを経てマージする。続けて 4g-2(整数除算と `abs` など)、4g-3、4g-4 の順に進める。4h(`(scheme inexact)`)は、4g と並行に進められる。
 - 4g で確かめる(4f の独立レビューで見つかった。4f 以前からかは未確認): `(lcm -9223372036854775808 3)` が「wrong type of argument to remainder 9223372036854775808 3」の誤りになること。`(remainder 9223372036854775808 1)` が「integer out of range」で、文言が他の誤りと揃っていないこと。整数除算が bignum を取るようになる 4g で、まとめて直す。
 - 4g で、`lib/sucheme/procedures.scm` の整数手続き(`gcd` `floor/` など)の Scheme の実装を置き換えるとき、`+ - *` があふれなくなって古くなったコメント(379 行付近と 405 行付近の「あふれる」)も直す。
 - 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。

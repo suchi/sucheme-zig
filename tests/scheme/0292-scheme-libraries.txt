@@ -31,8 +31,8 @@
 (1 2 3 4)
 
 # 実装の無いもの、内部用の名前、別のライブラリの名前は、エクスポートしない。
-(import (only (scheme base) exact))
-error: bad import: exact is not exported by the import set
+(import (only (scheme base) open-input-string))
+error: bad import: open-input-string is not exported by the import set
 
 (import (only (scheme base) newline))
 error: bad import: newline is not exported by the import set

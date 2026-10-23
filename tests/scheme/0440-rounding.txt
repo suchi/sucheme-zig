@@ -1,0 +1,78 @@
+# Slice 4g-1: `floor` `ceiling` `truncate` `round`, `numerator` `denominator`, `max` and `min`
+# (R7RS 6.2.6). Flonums are made with `inexact`: the reader does not read them yet (slice 4r).
+
+# 正確な有理数は、正確な整数に丸める。round は、同じ近さのときに偶数へ丸める。
+(list (floor (/ 7 2)) (ceiling (/ 7 2)) (truncate (/ 7 2)) (round (/ 7 2)))
+(3 4 3 4)
+
+(list (floor (/ -7 2)) (ceiling (/ -7 2)) (truncate (/ -7 2)) (round (/ -7 2)))
+(-4 -3 -3 -4)
+
+(list (round (/ 5 2)) (round (/ -5 2)) (round (/ 1 2)) (round (/ 3 2)) (round (/ -1 2)))
+(2 -2 0 2 0)
+
+(list (round (/ 1 3)) (round (/ 2 3)) (round (/ -2 3)) (round (/ -1 3)))
+(0 1 -1 0)
+
+(list (floor 7) (ceiling 7) (truncate 7) (round 7))
+(7 7 7 7)
+
+(list (floor (* 4294967296 4294967296)) (round (- (* 4294967296 4294967296))))
+(18446744073709551616 -18446744073709551616)
+
+(list (floor (/ (+ (* 4294967296 4294967296) 1) 2)) (ceiling (/ (+ (* 4294967296 4294967296) 1) 2)))
+(9223372036854775808 9223372036854775809)
+
+# 不正確な数は、不正確なまま丸める。R7RS 6.2.6 の例。
+(list (floor (inexact (/ -43 10))) (ceiling (inexact (/ -43 10))) (truncate (inexact (/ -43 10))) (round (inexact (/ -43 10))))
+(-5.0 -4.0 -4.0 -4.0)
+
+(list (floor (inexact (/ 7 2))) (ceiling (inexact (/ 7 2))) (truncate (inexact (/ 7 2))) (round (inexact (/ 7 2))))
+(3.0 4.0 3.0 4.0)
+
+(list (round (inexact (/ 5 2))) (round (inexact (/ -5 2))) (round (inexact (/ 1 2))) (round (inexact (/ -1 2))))
+(2.0 -2.0 0.0 -0.0)
+
+(floor 'a)
+error: wrong type of argument to floor a
+
+(round "1")
+error: wrong type of argument to round "1"
+
+# numerator と denominator。R7RS 6.2.6 の例。
+(list (numerator (/ 6 4)) (denominator (/ 6 4)) (numerator 5) (denominator 5) (numerator 0) (denominator 0))
+(3 2 5 1 0 1)
+
+(list (numerator (/ -3 2)) (denominator (/ -3 2)) (denominator (/ 1 (* 4294967296 4294967296))))
+(-3 2 18446744073709551616)
+
+(list (numerator (inexact (/ 1 2))) (denominator (inexact (/ 1 2))) (denominator (inexact 6)))
+(1.0 2.0 1.0)
+
+(numerator 'a)
+error: wrong type of argument to numerator a
+
+(denominator (/ (inexact 1) (inexact 0)))
+error: argument out of range in denominator +inf.0
+
+# max と min。不正確な引数があれば、結果は不正確である。R7RS 6.2.6 の例。
+(list (max 3 4) (min 3 4) (max 5) (min 5) (max 1 2 3) (min 3 1 2))
+(4 3 5 5 3 1)
+
+(list (max 3 (inexact 4)) (max (inexact 3) 4) (min 3 (inexact 4)) (min (inexact 3) 4))
+(4.0 4.0 3.0 3.0)
+
+(list (max 3 (inexact 2)) (min 3 (inexact 2)))
+(3.0 2.0)
+
+(list (max (/ 1 2) (/ 1 3)) (min (/ 1 2) (/ 1 3)) (max (* 4294967296 4294967296) 5))
+(1/2 1/3 18446744073709551616)
+
+(max 1 'a)
+error: wrong type of argument to max 1 a
+
+(min 'a)
+error: wrong type of argument to min a
+
+(max)
+error: wrong number of arguments to max

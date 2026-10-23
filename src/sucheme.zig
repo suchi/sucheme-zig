@@ -1055,7 +1055,10 @@ test "the data of an include are held to the limit of the heap, from the first f
     for (ones, 0..) |*b, i| b.* = if (i % 2 == 0) '1' else ' ';
     try tree.write("ones.scm", ones);
     var small: Interpreter = undefined;
-    try small.initWithFiles(std.testing.allocator, .{ .limit = 512 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    // Why: 標準環境の初期化が使うヒープは、束縛が増えるにつれて増える。上限は、初期化に余裕を持たせ、
+    // 100 KB の式の並び(約 50000 個の節点)では超える大きさにする。512 KiB は、4g-1 で束縛を17個
+    // 足した時点で、初期化が収まらなくなった。
+    try small.initWithFiles(std.testing.allocator, .{ .limit = 640 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
     defer small.deinit();
     // 小さい上限では、マクロの適用が無くても、ヒープの上限のエラーで終わり、次の行は読める。
     try expectLineFails(&small, "(include \"ones.scm\")", "heap limit exceeded");
