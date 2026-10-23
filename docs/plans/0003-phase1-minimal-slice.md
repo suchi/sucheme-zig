@@ -67,7 +67,7 @@
 
 コードが正であり、ここには ADR にも設計文書にも無い、実装中の決定と環境の事実だけを書く。
 
-- 実装中の決定: 読み取り、展開、実行の順に進む。展開器(`src/syntax/expand.zig`)はデータをコアIR(`value.zig` の `Node`)に変換し、変数を字句アドレス(深さと添字、u32)に解決する。作業は自前のスタックで進め、Zig の再帰は使わない。機械(`src/machine.zig`)は制御・環境・継続・値の4レジスタで、継続フレームは不変、末尾位置の印は持たない([ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md))。特別な形は `expand.zig` のキーワードの列挙で扱い、変数にも再定義にも代入にも仮引数にも使えなかった(段階2のスライス 2i で、構文環境に置き換わった。仮引数と局所の定義には、特殊形式と同じ綴りを使える)。`define` は最上位(最上位の `begin` の中を含む)と、`lambda` の本体の先頭だけ。本体の先頭の `define` の名前は展開器が集め、呼び出しのたびに仮引数と同じフレームに `.uninitialized` で作る(`letrec*`)。式のあとの `define` は、展開時に `bad define` になる。プリミティブは大域環境の束縛で、`define` で置き換えられた(段階2のスライス 2j で、インポートした束縛になった。REPL の `define` と `set!` は新しいセルで遮蔽し、それより前に定義した手続きは元のプリミティブを見続ける)。リーダは `Value` を `Interpreter` の永続アリーナに直接作る(`quote` が定義に渡すため)。このアリーナと、シンボル表、大域環境、コアIR、フレーム、継続フレーム、条件は 1g の `heap.zig` まで回収されない。Scheme のエラーは条件オブジェクト(`Value.condition`)で、`Context.raise` が作って `error.Raised` で機械の外へ返す。ハンドラは段階2。
+- 実装中の決定: 読み取り、展開、実行の順に進む。展開器(`src/syntax/expand.zig`)はデータをコアIR(`value.zig` の `Node`)に変換し、変数を字句アドレス(深さと添字、u32)に解決する。作業は自前のスタックで進め、Zig の再帰は使わない。機械(`src/machine.zig`)は制御・環境・継続・値の4レジスタで、継続フレームは不変、末尾位置の印は持たない([ADR-0029](../adr/0029-no-tail-marks-in-stage-1-machine.md))。特別な形は `expand.zig` のキーワードの列挙で扱い、変数にも再定義にも代入にも仮引数にも使えなかった(段階2のスライス 2i で、構文環境に置き換わった。仮引数と局所の定義には、特殊形式と同じ綴りを使える)。`define` はトップレベル(トップレベルの `begin` の中を含む)と、`lambda` の本体の先頭だけ。本体の先頭の `define` の名前は展開器が集め、呼び出しのたびに仮引数と同じフレームに `.uninitialized` で作る(`letrec*`)。式のあとの `define` は、展開時に `bad define` になる。プリミティブは大域環境の束縛で、`define` で置き換えられた(段階2のスライス 2j で、インポートした束縛になった。REPL の `define` と `set!` は新しいセルで隠蔽し、それより前に定義した手続きは元のプリミティブを見続ける)。リーダは `Value` を `Interpreter` の永続アリーナに直接作る(`quote` が定義に渡すため)。このアリーナと、シンボル表、大域環境、コアIR、フレーム、継続フレーム、条件は 1g の `heap.zig` まで回収されない。Scheme のエラーは条件オブジェクト(`Value.condition`)で、`Context.raise` が作って `error.Raised` で機械の外へ返す。ハンドラは段階2。
 - 深さ: 継続の深さに上限は無い。機械が `peak_depth` で数え、テストが末尾呼び出しで増えないことを確かめる。非末尾の無限再帰はメモリを使い切るまで走るので、テストにこの形を入れない。
 - テストの書式: `tests/scheme/*.txt` は、入力の行、期待する出力の行、空行の順。出力が空のケースは期待する行に `<no output>` と書く。書式は `tools/test-scheme/main.zig` の doc コメントが正。
 - レビュー: スライスの PR ごとに、設計の意図を渡さないサブエージェントに `adversarial-review` を1巡させる。機械の検査を壊して確かめるときは `tools/review-harness/harness.py` を使う。
@@ -83,15 +83,15 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 | スライス | 決める事項 |
 | --- | --- |
 | 1b | 内部値のうち未束縛の表現。大域環境に名前が無いことで表したので、専用の値は要らなかった。1a で決める予定だったが、1a には束縛が無く使う箇所が無いので 1b に移した |
-| 1e | 内部値のうち未初期化の表現。`Value` の即値の変種 `.uninitialized` にした(ヒープオブジェクトにすると、読み取りのたびに種類の判定が要るうえ、1g で回収の対象が増える)。大域の束縛セルが入る段階2で、未束縛と合わせて再び決める |
+| 1e | 内部値のうち未初期化の表現。`Value` の即値のバリアント `.uninitialized` にした(ヒープオブジェクトにすると、読み取りのたびに種類の判定が要るうえ、1g で回収の対象が増える)。大域の束縛セルが入る段階2で、未束縛と合わせて再び決める |
 | 1f | 字句アドレスの深さと添字のビット幅: u32 にして、超える入れ子を実装制限として報告する([ADR-0030](../adr/0030-lexical-address-width-u32.md))。フレーム数の上限: 設けない。1g の計上の上限が入るときに決め直す |
-| 1g | 決めた: GC は機械のステップの境目で実行する([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。起動の閾値は、直前の GC のあとの計上量の倍率と最小値の大きいほうで、上限の手前で頭打ちにする。GC のあとの計上量が上限に近いときは `heap limit exceeded`。値は `src/heap.zig` の定数が正で、ベンチマークは未実施の暫定値。巻き戻しの単位は `Heap.createFrame` の1回の呼び出し(ペイロードを先に確保し、セルの確保が失敗したら返す)。作業リストの容量は `Options.work_capacity`(テストでは0)で、溢れたら全走査でマークし直す。フレーム数の上限は設けない(計上の上限が止める)。上限の既定は `Options.limit`。予約領域の具体的なバイト数は段階2に移した(1g は条件オブジェクトを上限の外のアリーナに作る) |
+| 1g | 決めた: GC は機械のステップの境目で実行する([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。起動の閾値は、直前の GC のあとの計上量の倍率と最小値の大きいほうで、上限の手前で頭打ちにする。GC のあとの計上量が上限に近いときは `heap limit exceeded`。値は `src/heap.zig` の定数が正で、ベンチマークは未実施の暫定値。巻き戻しの単位は `Heap.createFrame` の1回の呼び出し(ペイロードを先に確保し、セルの確保が失敗したら返す)。ワークリストの容量は `Options.work_capacity`(テストでは0)で、あふれたら全走査でマークし直す。フレーム数の上限は設けない(計上の上限が止める)。上限の既定は `Options.limit`。予約領域の具体的なバイト数は段階2に移した(1g は条件オブジェクトを上限の外のアリーナに作る) |
 | 1h | 決めた: Windows の引数と環境変数は Zig 0.17.0 が WTF-8 に変換し、不対サロゲートは `utf8ValidateSlice` が拒否する([zig-api-notes.md](../design/zig-api-notes.md))。引数が Scheme の文字列になる経路は段階5の `command-line` まで無いので、検査の位置はそこで決める。Windows 実機での実行は未確認。1h で入る入力は `Interpreter.evalPrint` の先頭で検査する |
-| 1i | 決めた([0008](0008-slice-1i-wasm-web-ui.md)): 出力バッファは初期化のときに 256 KiB を1回だけ確保し、伸ばさない(溢れたら `output buffer full` のエラー)。ローカルで開く手段は、依存パッケージの無い Node.js のスクリプト `web/serve.mjs`。PR の zip を開くレビュアは Node.js だけでよい(Zig もリポジトリも要らない) |
+| 1i | 決めた([0008](0008-slice-1i-wasm-web-ui.md)): 出力バッファは初期化のときに 256 KiB を1回だけ確保し、伸ばさない(あふれたら `output buffer full` のエラー)。ローカルで開く手段は、依存パッケージの無い Node.js のスクリプト `web/serve.mjs`。PR の zip を開くレビュー担当者は Node.js だけでよい(Zig もリポジトリも要らない) |
 | 1j | 決めた: 加えない([ADR-0033](../adr/0033-aarch64-built-but-not-tested.md)) |
 | 1k | 決めた([0010](0010-slices-1k-1l-primitives-and-repl-continuation.md)): 呼び出し規約は、個数の範囲を `Primitive` に持たせて機械が検査し、`call` に `Services` を渡す。エラーは Zig の `error` の集合を広げ、`apply` が条件に写す。K0 の実装で足したこと: 関数の型の別名 `Primitive.Fn`(`Call` は IR の節点の名前と衝突するため)、単体テストが機械を起こさずにプリミティブを呼ぶ `src/prim/test_support.zig` |
 
-検査ツールについての未決事項(`refAllDecls` の到達性、`test_excluded` の理由、CI が表の行を走らせる検査の範囲、フックの判定の機械検査)は、この段階では決めない。段階0の経緯から、検査ツールを育てることが製品を作ることに先立ってはならない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))。製品コードが育って同じ誤りが2回起きたときに決める。
+検査ツールについての未決事項(`refAllDecls` の到達性、`test_excluded` の理由、CI が表の行を走らせる検査の範囲、フックの判定の自動検査)は、この段階では決めない。段階0の経緯から、検査ツールを育てることが製品を作ることに先立ってはならない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md))。製品コードが育って同じ誤りが2回起きたときに決める。
 
 ## 各スライスの進め方
 
@@ -103,7 +103,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 6. 必須が帰結(1)(2)(3)に当たらなくなったらマージを依頼する。
 7. 同じ PR で、この計画書の進捗の表と「次にやること」、スライスで決めたことの表を更新する。
 
-レビューの対象はそのスライスの差分に限る。既存の文書の全面再走査はしない。段階の終わりに1回、計画書と帳簿を見る([ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md))。
+レビューの対象はそのスライスの差分に限る。既存の文書の全面再走査はしない。段階の終わりに1回、計画書と台帳を見る([ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md))。
 
 ## 検証コマンドの追加
 
@@ -119,7 +119,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 
 1a で `build.zig` の `current_stage` を1に上げたので、段階1の全コミットの行は `zig build check-docs` が CI に要求する。そのため 1a の時点で表にあった `wasm`・`test-wasm`・`report`・`check-report` の4行をいったん外した。上の表のスライスで戻す。`report` と `check-report` は 1m で戻す。
 
-戻す行の意味は次のとおり。`zig build test-wasm` は Node.js 上でエクスポートを呼び出す往復テストである([ADR-0010](../adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([design/r7rs-coverage.md](../design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
+戻す行の意味は次のとおり。`zig build test-wasm` は Node.js 上でエクスポートを呼び出すラウンドトリップテストである([ADR-0010](../adr/0010-ci-cd-and-release-strategy.md))。`zig build check-report` は準拠マトリクスを生成し直して現在のファイルと一致するかを検査する([design/r7rs-coverage.md](../design/r7rs-coverage.md))。`zig build report` は生成するだけで一致を検査しない。
 
 `.github/workflows/ci.yml` の変更を伴うので、各スライスでユーザーの承認を得てから行う([AGENTS.md](../../AGENTS.md) のセキュリティの節)。
 
@@ -130,7 +130,7 @@ GC を 1g まで遅らせるのは、1f までのヒープ使用量が小さく�
 1. スライス 1k(プリミティブ)は K0 から K6 までマージ済みで、完了した。1k の未決は [docs/review/stage1-slice-1k.md](../review/stage1-slice-1k.md) の任意の指摘(段階の終わりに1回見る)だけになる。
 2. 1l は #43 と #55 でマージ済みである。1j-1(ファジング)から 1j-3 は、1k の K6 と並行して進めてよい。1j-4 と 1j-5 は、段階1の全項目(1k と 1l を含む)がそろってから出す。段階1の全スライスが済み、v0.1.0 は公開された。段階1の完了の手続きは [0013](0013-stage1-completion.md) にある。計画は [0009](0009-slice-1j-release-v0-1-0.md) と 0010。
 3. `build.zig` などのコメントの日本語化の残りは [Issue #30](https://github.com/suchi/sucheme-zig/issues/30) の PR で進めている。スライス 1i は [#36](https://github.com/suchi/sucheme-zig/pull/36) で `main` に入っている。
-4. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数の登録表 `Context.code_roots` も要らなくなる)。条件オブジェクトは、残していたとおり段階2のスライス 2b でヒープに移った。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。1k は、大きさを数で決める生成(`make-vector` など)を入れないので、見直さない。見直しは、それらが入る段階3の最初のスライスで行う([0010](0010-slices-1k-1l-primitives-and-repl-continuation.md))。
+4. 1g で残したこと: シンボル表は弱い表にしていない(回収されない)。コードの節点と `Lambda` はヒープの外にある(コードをヒープに移すスライスで、コードの定数のレジストリ `Context.code_roots` も要らなくなる)。条件オブジェクトは、残していたとおり段階2のスライス 2b でヒープに移った。1ステップで大きく確保するプリミティブが入るとき、境目だけの GC の方針を見直す([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。1k は、大きさを数で決める生成(`make-vector` など)を入れないので、見直さない。見直しは、それらが入る段階3の最初のスライスで行う([0010](0010-slices-1k-1l-primitives-and-repl-continuation.md))。
 5. スライス 1m(準拠マトリクスの最小版、[#44](https://github.com/suchi/sucheme-zig/pull/44))は `main` に入っている。計画は [0011](0011-slice-1m-conformance-report-early.md)。束縛を増やす PR(1k の K1 以降を含む)は、`zig build report` を実行して `docs/status/conformance.md` を更新する。
 
 1f で意図して残したこと: 本体の途中の `define` の構文エラーは展開時、継続の深さの上限は無い(計上の上限が止める)、条件は `error.Raised` の脱出でハンドラは無い。最後の項目のハンドラが無いことは、段階2のスライス 2d で変わった(例外ハンドラが入り、未処理の送出だけが `error.Raised` で機械の外へ出る)。

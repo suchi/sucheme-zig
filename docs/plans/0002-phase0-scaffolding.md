@@ -29,7 +29,7 @@
 | `build.zig` | 版の強制と、ビルド・検証の step の定義 | 新規 |
 | `src/sucheme.zig` | 公開 API のモジュールのルート | 新規 |
 | `src/main.zig` | ネイティブの実行ファイルのエントリ | 新規 |
-| `tools/check-docs/main.zig` | ドキュメントとビルド設定の機械検査 | 新規 |
+| `tools/check-docs/main.zig` | ドキュメントとビルド設定の自動検査 | 新規 |
 | `tools/extract-r7rs-required/main.zig` | 付録Aの HTML から必須識別子を抽出する | 新規 |
 | `tools/extract-r7rs-required/appendix-a.html` | 抽出の入力。出典と取得日を `SOURCE.md` に記録する | 新規 |
 | `tools/extract-r7rs-required/SOURCE.md` | 取得元 URL、取得日、複製の許諾の根拠 | 新規 |
@@ -129,7 +129,7 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 `wasm32-freestanding` を対象とするモジュールに `addTest` を作ってはならない。実機で確認したところ、テストランナーが freestanding で成立せず4件のコンパイルエラーになる(`posix.system.getrandom`、`IOV_MAX`、`STDIN_FILENO`、`process/Args.zig` のフィールドアクセス)。
 
-したがって `test` step の対象はネイティブ対象のモジュールに限る。段階1で `src/wasm.zig` を追加するときは、`wasm` step でビルドするだけとし、`test` step には入れない。WASM の振る舞いの検証は Node.js 上での往復テストで行う([ADR-0010](../adr/0010-ci-cd-and-release-strategy.md))。
+したがって `test` step の対象はネイティブ対象のモジュールに限る。段階1で `src/wasm.zig` を追加するときは、`wasm` step でビルドするだけとし、`test` step には入れない。WASM の振る舞いの検証は Node.js 上でのラウンドトリップテストで行う([ADR-0010](../adr/0010-ci-cd-and-release-strategy.md))。
 
 この除外の規則を `tools/check-docs` の検査にも反映する。除外対象のファイル名を `build.zig` に列挙し、check-docs がその列挙を読む。
 
@@ -179,7 +179,7 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 | ワークフローが走ること | `ci.yml` の `on`・`jobs`・`push`・`branches`・`pull_request`・`strategy`・`matrix`・`os`・`runs-on`・`steps` が揃い、値が閉じた集合に入る。キーの集合を閉じても値は見ていなかったので、`on:` を消す・`os: []` にする・存在しないランナーを指すだけで、run の段を1行も触らずに CI が1回も走らなくなった |
 | CI が表の行を走らせること | `AGENTS.md` の検証コマンド表と `.github/workflows/ci.yml` が双方向に一致する。表が「CIで実行=全コミット」かつ段階が現在以下とする行を ci.yml が走らせ、ci.yml が走らせるコマンドにはそういう行がある。段階は `build.zig` の `current_stage` から渡る。コマンドに付けてよい後続は許可リストで限る。逆方向があるので、行を隠したりセルの綴りを崩したりしても、対応の無い段として現れる([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
 | ADR と一覧の対応 | 各ADRが一覧に1行持ち、一覧の各行が実在するファイルを指す。行が何を書いているか(ステータス・置き換え・追記の位置)は検査しない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
-| ワークフローのキー | 使ってよいキーの列挙にないキーが無い。`if:` と `continue-on-error:` は列挙に入れていないので、ジョブ階層でも段階層でも報告される。`run:` のブロックスカラーも報告する。キーとして読めない行は、コロンを含むかどうかに関わらず報告するので、複数行の平スカラーの継続行も通らない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
+| ワークフローのキー | 使ってよいキーの列挙にないキーが無い。`if:` と `continue-on-error:` は列挙に入れていないので、ジョブ階層でも段階層でも報告される。`run:` のブロックスカラーも報告する。キーとして読めない行は、コロンを含むかどうかに関わらず報告するので、複数行の平スカラの継続行も通らない([ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)) |
 | `--root` と `--exclude` の実在 | 渡されたパスが実在するファイルを指す |
 | テストの到達性 | `src/` と `tools/` の全 `.zig` が、`test` step の対象モジュールのルートから `@import` の連鎖で到達できる。除外リストにあるものを除く |
 | `refAllDecls` の規約 | 他の `.zig` を `@import` するファイルが `refAllDecls(@This())` を呼ぶ `test` を持つ。呼び出しは修飾され、引数は `@This()` である |
@@ -193,13 +193,13 @@ Zig 0.17.0 では、モジュールの非ルートファイルの `test` ブロ�
 
 ### バージョン宣言の不在の検査は置かない
 
-当初は「README・ロードマップ・オンボーディング・SOW に版数の宣言が現れない」ことを検査する計画だったが、置かない。機械検査にできない。
+当初は「README・ロードマップ・オンボーディング・SOW に版数の宣言が現れない」ことを検査する計画だったが、置かない。自動検査にできない。
 
 実際に走らせると偽陽性と偽陰性が同時に出る。`docs/onboarding.md` には `[0.17.0 の言語リファレンス](https://ziglang.org/documentation/0.17.0/)` という参照の URL があり、これは宣言ではないのに `0.17.0` に一致する。同じファイルの落とし穴の表には `0.17 では std.Io.Dir.cwd()` と書かれており、こちらは版を上げたときに古くなる記述なのに `0.17.0` には一致しない。「宣言」と「参照」と「確認の記録」を文字列で区別できない。
 
 対象ファイルを列挙する形にすると、列挙に載っていないファイルが黙って対象外になる。リポジトリの追跡 Markdown は数十ファイルあり、列挙は4ファイルだった。本計画書自身も `0.17.0` を含み、列挙の外にある。件数は変更とともに動くので書かない。
 
-版数の記述の扱いは [../design/zig-api-notes.md](../design/zig-api-notes.md) の更新手順に人手の作業として残す。同ファイルの「`tools/check-docs` が検査するのは第1種だけである」という記述を、本計画の検査項目に合わせて書き換える。機械検査するのは3箇所の一致だけであり、宣言の不在は人手で確認する。
+版数の記述の扱いは [../design/zig-api-notes.md](../design/zig-api-notes.md) の更新手順に人手の作業として残す。同ファイルの「`tools/check-docs` が検査するのは第1種だけである」という記述を、本計画の検査項目に合わせて書き換える。自動検査するのは3箇所の一致だけであり、宣言の不在は人手で確認する。
 
 ### 報告の形
 
@@ -306,11 +306,11 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 | 用途 | コマンド | 使えるようになる段階 | CIで実行 |
 | --- | --- | --- | --- |
 | 実行 | `zig build run -- <引数>` | 0 | - |
-| テスト(WASM の往復) | `zig build test-wasm` | 1 | 全コミット |
+| テスト(WASM のラウンドトリップ) | `zig build test-wasm` | 1 | 全コミット |
 | 進捗の同期検査 | `zig build check-report` | 1 | 全コミット |
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
 
-`test-wasm` は [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) が要求する「Node.js 上でのエクスポート呼び出しの往復テスト」である。行がないと、`README.md` が謳う WebAssembly の動作保証を検証する経路が CI に入らず、`sucheme.wasm` が一度も実行されずに出荷される。
+`test-wasm` は [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) が要求する「Node.js 上でのエクスポート呼び出しのラウンドトリップテスト」である。行がないと、`README.md` が謳う WebAssembly の動作保証を検証する経路が CI に入らず、`sucheme.wasm` が一度も実行されずに出荷される。
 
 `check-report` は [../design/r7rs-coverage.md](../design/r7rs-coverage.md) が要求する「生成し直した結果が現在のファイルと一致するかを検査し、一致しない場合は失敗させる」である。`zig build report` は生成するだけで同期を検査しない。行がないと、[0001-sow.md](0001-sow.md) のリスク対策と段階6の「CI による同期検査」が成立しない。
 
@@ -422,7 +422,7 @@ group の共有では解決しない。打ち切りは group 単位でイベン�
 | [../design/architecture.md](../design/architecture.md) | ディレクトリの役割、横断的な不変条件 |
 | [../design/r7rs-coverage.md](../design/r7rs-coverage.md) | 必須識別子の一覧の扱い |
 | [ADR-0001](../adr/0001-zig-version-pinning.md) | Zig のバージョン固定と API ノートの運用 |
-| [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) | CI のジョブ構成、ランナー、WASM の往復テスト、ファジングの扱い |
+| [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) | CI のジョブ構成、ランナー、WASM のラウンドトリップテスト、ファジングの扱い |
 | [ADR-0020](../adr/0020-repository-visibility-private.md) | リポジトリの可視性 |
 | [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md) | テストの3層構成、ベンダリングの規律 |
 | [ADR-0022](../adr/0022-unlicensed-proprietary.md) | ライセンス |

@@ -23,7 +23,7 @@ description: 現在の状況を短いダッシュボードで報告する。Issu
 | この会話の用事 | `TaskList`。会話の中でユーザーに聞いて、まだ答えが無いこと(判断待ち)を、直近の自分の発言から拾う |
 | ローカル | `git branch --show-current`、`git status --short`。[docs/roadmap.md](../../../docs/roadmap.md) の「現在地」が指す計画書の進捗表と「次にやること」(スライスの現在地) |
 
-出力ファイル(`tasks/*.output`)はシェルで読まない。記録全体が入っていて、文脈を溢れさせる([watch-subagent](../watch-subagent/SKILL.md))。
+出力ファイル(`tasks/*.output`)はシェルで読まない。記録全体が入っていて、文脈をあふれさせる([watch-subagent](../watch-subagent/SKILL.md))。
 
 ## 報告の形
 

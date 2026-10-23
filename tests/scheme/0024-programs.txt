@@ -29,7 +29,7 @@ error: division by zero in quotient 2432902008176640000 0
 (define (even2? n) (if (= n 0) #t (odd2? (- n 1)))) (define (odd2? n) (if (= n 0) #f (even2? (- n 1)))) (list (even2? 100000) (odd2? 100000) (even2? 7))
 (#t #f #f)
 
-# 整数。素数の判定、べき乗(2 の 62 乗は収まり、63 乗は溢れる)、桁の和、コラッツ数列。
+# 整数。素数の判定、べき乗(2 の 62 乗は fixnum に収まり、63 乗からは bignum になる)、桁の和、コラッツ数列。
 (define (prime? n) (if (< n 2) #f (prime-from? n 2))) (define (prime-from? n d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (prime-from? n (+ d 1))))) (list (prime? 1) (prime? 2) (prime? 97) (prime? 91))
 (#f #t #t #f)
 

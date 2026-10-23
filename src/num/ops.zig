@@ -4,7 +4,7 @@
 //! 二項演算は、両オペランドの階層のうち高い方に揃えてから計算する。階層は fixnum、bignum、
 //! ratnum、flonum の順である。正確な数と不正確な数の演算は、正確な側を flonum にして計算
 //! する(不正確さの伝播。R7RS 6.2.2)。結果の正規化は `number.zig` の生成関数が行うので、
-//! このファイルは `Value` の数の変種を直接作らない(flonum を除く)。
+//! このファイルは `Value` の数のバリアントを直接作らない(flonum を除く)。
 //!
 //! 引数は数(fixnum、bignum、ratnum、flonum、compnum)である。型の検査は呼び出し側
 //! (`src/prim/arith.zig`)が行う。順序の比較(`compare`)は実数だけを扱う。
@@ -761,7 +761,7 @@ test "a limit that refuses the work area gives HeapLimit, and leaves nothing cou
     const text = try googol(5000);
     defer testing.allocator.free(text);
     const big = try read(&h, text);
-    // 積は、2倍の大きさの限界値列を要する。上限の残りに入らない大きさまで、くり返し掛ける。
+    // 積は、2倍の大きさのlimbsを要する。上限の残りに入らない大きさまで、くり返し掛ける。
     var x = big;
     var refused = false;
     var i: usize = 0;
@@ -787,7 +787,7 @@ test "a work area beyond the limit is refused even when the result is small" {
     const ratio_text = try std.fmt.allocPrint(testing.allocator, "1/{s}", .{text});
     defer testing.allocator.free(ratio_text);
     const ratio = try read(&h, ratio_text);
-    // 結果(0 と比較の答え)は小さいが、作業領域(限界値列)は上限に入らない。
+    // 結果(0 と比較の答え)は小さいが、作業領域(limbs)は上限に入らない。
     h.options.limit = h.held() + 256;
     try testing.expectError(error.HeapLimit, apply(&h, .sub, a, b));
     try testing.expectError(error.HeapLimit, compare(&h, a, ratio));

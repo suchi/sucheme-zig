@@ -5,23 +5,25 @@
 ;; 残し、ここには入れない。名前の並びは `tests/r7rs-required/base.txt` の順である。
 (define-library (scheme base)
   (import (sucheme core) (sucheme derived) (sucheme procedures))
-  (export * + - ... / < <= = => > >= _ and append apply assoc assq assv begin boolean=? boolean?
-          bytevector bytevector-append bytevector-copy bytevector-copy! bytevector-length
+  (export * + - ... / < <= = => > >= _ abs and append apply assoc assq assv begin boolean=?
+          boolean? bytevector bytevector-append bytevector-copy bytevector-copy! bytevector-length
           bytevector-u8-ref bytevector-u8-set! bytevector? caar cadr
           call-with-current-continuation call-with-values call/cc car case cdar cddr cdr
           char->integer char<=? char<? char=? char>=? char>? char? cond cond-expand cons define
           define-record-type define-syntax define-values do dynamic-wind else eof-object
           eof-object? eq? equal? eqv? error error-object-irritants error-object-message
-          error-object? features file-error? for-each guard if include include-ci integer->char
-          lambda length let let* let*-values let-syntax let-values letrec letrec* letrec-syntax
-          list list->string list->vector list-copy list-ref list-set! list-tail list?
-          make-bytevector make-list make-parameter make-string make-vector map member memq memv
-          modulo not null? number? or pair? parameterize procedure? quasiquote quote quotient
-          raise raise-continuable read-error? remainder reverse set! set-car! set-cdr! string
+          error-object? even? features file-error? floor-quotient floor-remainder floor/ for-each
+          gcd guard if include include-ci integer->char lambda lcm length let let* let*-values
+          let-syntax let-values letrec letrec* letrec-syntax list list->string list->vector
+          list-copy list-ref list-set! list-tail list? make-bytevector make-list make-parameter
+          make-string make-vector map member memq memv modulo negative? not null? number? odd? or
+          pair? parameterize positive? procedure? quasiquote quote quotient raise
+          raise-continuable read-error? remainder reverse set! set-car! set-cdr! square string
           string->list string->symbol string->utf8 string->vector string-append string-copy
           string-copy! string-fill! string-for-each string-length string-map string-ref
           string-set! string<=? string<? string=? string>=? string>? string? substring
-          symbol->string symbol=? symbol? syntax-error syntax-rules unless unquote
-          unquote-splicing utf8->string values vector vector->list vector->string vector-append
-          vector-copy vector-copy! vector-fill! vector-for-each vector-length vector-map
-          vector-ref vector-set! vector? when with-exception-handler))
+          symbol->string symbol=? symbol? syntax-error syntax-rules truncate-quotient
+          truncate-remainder truncate/ unless unquote unquote-splicing utf8->string values vector
+          vector->list vector->string vector-append vector-copy vector-copy! vector-fill!
+          vector-for-each vector-length vector-map vector-ref vector-set! vector? when
+          with-exception-handler zero?))
