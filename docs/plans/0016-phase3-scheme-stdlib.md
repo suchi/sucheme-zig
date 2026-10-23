@@ -375,11 +375,12 @@ flowchart TD
 | 3l | マージ済み([#125](https://github.com/suchi/sucheme-zig/pull/125))。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。トップレベルの初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
 | 3m | マージ済み([#126](https://github.com/suchi/sucheme-zig/pull/126))。`sucheme [-I <dir>]... <file>` がプログラムを実行する。式の値は出さず、実行時エラーは 1、読めないファイルは 66、ファイルの後ろの引数は 64。仕様の3点は、ユーザーが 2026-10-19 に承認した。`main` の配線(引数から終了ステータスまで)は単体テストの外で、手で確かめた | - |
 | 3n | マージ済み([#127](https://github.com/suchi/sucheme-zig/pull/127))。`web/samples.mjs` に6個のサンプル、`web/share.mjs` に共有リンク(`#code=<base64url>`)。リンクを開いても自動では実行しない。サンプルの評価と符号化の検査は `tools/test-wasm`。画面の操作はブラウザで手で確かめた。仕様の4点は、ユーザーが 2026-10-19 に承認した | - |
-| 3s | PR 作成済み。`(sucheme procedures)` に、整数の手続き `abs` `even?` `odd?` `zero?` `positive?` `negative?` `square` `gcd` `lcm` `floor/` `floor-quotient` `floor-remainder` `truncate/` `truncate-quotient` `truncate-remainder` を Scheme で書き、`(scheme base)` からエクスポートする。割り当ての経緯は「未束縛の識別子の行き先」の表の注 | この PR(3s) |
+| 3s | マージ済み([#178](https://github.com/suchi/sucheme-zig/pull/178))。`(sucheme procedures)` に、整数の手続き `abs` `even?` `odd?` `zero?` `positive?` `negative?` `square` `gcd` `lcm` `floor/` `floor-quotient` `floor-remainder` `truncate/` `truncate-quotient` `truncate-remainder` を Scheme で書き、`(scheme base)` からエクスポートする。割り当ての経緯は「未束縛の識別子の行き先」の表の注。`floor-quotient` と `gcd` は、結果が固定長の整数に収まるときに途中の値があふれない形で書いた | - |
 | 3o | マージ済み(2026-10-21)。5つの PR に分けた(計画書 [0023](0023-slice-3o-ir-to-gc-heap.md))。コアIRの節点は GC ヒープにあり、`Context.code_roots` は無い。トップレベルの表とライブラリのレジストリは常に上限に数える。失敗した展開の節点、到達できなくなったコードの定数、定義に失敗したライブラリの表、コードが指さない未束縛のセルは、回収されるか手放される([ADR-0040](../adr/0040-core-ir-in-the-gc-heap.md)、[ADR-0042](../adr/0042-keep-replaced-cells-without-a-value.md)、[ADR-0043](../adr/0043-loading-library-holds-unbound-cells-strongly.md))。見積りと実績は [0012](0012-schedule-estimates-and-actuals.md) の「3o の内訳」 | [#130](https://github.com/suchi/sucheme-zig/pull/130)、[#139](https://github.com/suchi/sucheme-zig/pull/139)、[#140](https://github.com/suchi/sucheme-zig/pull/140)、[#150](https://github.com/suchi/sucheme-zig/pull/150)、[#159](https://github.com/suchi/sucheme-zig/pull/159)、[#161](https://github.com/suchi/sucheme-zig/pull/161) |
 | 3p-1 | マージ済み([#167](https://github.com/suchi/sucheme-zig/pull/167))。本体の先頭の `include` と `cond-expand` が持つ定義を、定義の並びとして展開する。`let-syntax` と `letrec-syntax` の本体に定義を置ける(本体は自分の有効範囲を持つ)。設計は [frontend.md](../design/frontend.md) の展開器の節と「現状(スライス 3p-1)」 | - |
-| 3p-2 | PR 作成済み。展開器が作る構文環境の入れ子の深さ(環境の鎖の長さ。`lambda` の rib と、rib を持たない `let-syntax` の環境の両方を数える)に上限(`src/syntax/expand.zig` の `max_depth`、10000)を置き、超えたら実装制限の誤りにする。入れ子の `lambda` や `let-syntax` を重ねる止まらないマクロが、ReleaseSafe で約1秒で終わる(上限に届くまでの時間は深さの2乗で伸び、1000 では 0.02 秒だった)。最初は rib の深さで数えたが、レビューで、`let-syntax` を重ねる形が止まらないことが分かり、鎖の長さに替えた。値は、`let*` の束縛の数(入れ子の `lambda` の数になる)について [frontend.md](../design/frontend.md) が通ると書いている 1500 を下回らないように選んだ | この PR |
-| 3q、3r | 未着手 | - |
+| 3p-2 | マージ済み([#171](https://github.com/suchi/sucheme-zig/pull/171))。展開器が作る構文環境の入れ子の深さ(環境の鎖の長さ。`lambda` の rib と、rib を持たない `let-syntax` の環境の両方を数える)に上限(`src/syntax/expand.zig` の `max_depth`、10000)を置き、超えたら実装制限の誤りにする。入れ子の `lambda` や `let-syntax` を重ねる止まらないマクロが、ReleaseSafe で約1秒で終わる(上限に届くまでの時間は深さの2乗で伸び、1000 では 0.02 秒だった)。最初は rib の深さで数えたが、レビューで、`let-syntax` を重ねる形が止まらないことが分かり、鎖の長さに替えた。値は、`let*` の束縛の数(入れ子の `lambda` の数になる)について [frontend.md](../design/frontend.md) が通ると書いている 1500 を下回らないように選んだ | - |
+| 3q | 段階6へ送った(suchi/sucheme-zig#173) | - |
+| 3r | 3つの PR に分ける(2026-10-23 にユーザーが承認した)。3r-1 はリリースの準備(版を 0.3.0 にし、リリースノートを書き、roadmap の段階3と open-questions を整理する)、3r-2 は開発版に戻す、3r-3 は振り返りと handoff.md の更新である。タグ v0.3.0 の push は、3r-1 のマージの後に、ユーザーの確認を取ってから行う。3r-1 は PR 作成済み | この PR(3r-1) |
 
 ## 次にやること
 
@@ -387,4 +388,4 @@ flowchart TD
 2. 3k と 3l はマージ済み。`!` で終わる手続きの検査と `(sucheme core)` を隠す変更は、ユーザーが 2026-10-19 に、3l に入れる案を選んだ。
 3. 3m、3n、3o はマージ済み。
 4. 合意の反映は済んだ(roadmap の段階3の項目にスライスの割り当てを書いた)。
-5. 3p-1 はマージ済み。3p-2 の PR のレビューを収束させる。3q は、段階3で直すか段階6へ送るかを、ユーザーに諮っている(ADR-0019 の解決規則を変えるため)。そのあとに 3r に進む。
+5. 3p-1、3p-2、3s はマージ済み。3q は段階6へ送った。3r-1 の PR を収束させ、マージの後にタグ v0.3.0 を打ち、3r-2 と 3r-3 に進む。
