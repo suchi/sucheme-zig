@@ -40,6 +40,10 @@ const tier = @import("tier.zig");
 // Why: 4c の純粋な層は、まだ呼び手が無い。単体テストの集合に載せるためだけの参照で、
 // 4e が number.zig から呼ぶようになったら、この行は要らなくなる。
 const bigint = @import("num/bigint.zig");
+// Why: 4b の flonum.zig も同じ。4e が number.zig から呼ぶまでの、単体テストの集合に載せる参照。
+const flonum = @import("num/flonum.zig");
+// Why: 4e-1 の exact.zig も同じ。number.zig が呼ぶまでの、単体テストの集合に載せる参照。
+const exact = @import("num/exact.zig");
 const embedded_lib = @import("embedded_lib");
 
 /// The files under `lib/`, which every interpreter searches before the files beneath
@@ -221,6 +225,15 @@ pub const Interpreter = struct {
         self.diagnostic_text = if (written) |_| self.diagnostic_buffer.items else |_| "out of memory";
     }
 
+    /// Sets the most steps one top-level form may take, or null for no limit.
+    ///
+    /// 上限に達した形式は、`evalPrint` が `error.StepLimit` を返して終わる。ハンドラでは
+    /// 捕まえられない。準拠スイートの実行器が、止まらないテストを打ち切るために使う
+    /// (計画書 0024)。既定は上限なしである。
+    pub fn setStepLimit(self: *Interpreter, limit: ?u64) void {
+        self.ctx.step_limit = limit;
+    }
+
     /// Whether `identifier` is bound: a global binding, or a special form.
     ///
     /// 準拠マトリクス(tools/coverage-report)が使う。名前を引くだけで、シンボルを
@@ -392,6 +405,7 @@ fn describe(e: Error) []const u8 {
         error.OutOfMemory => "out of memory",
         // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。
         error.HeapLimit, error.ReserveExhausted => context.heap_limit_message,
+        error.StepLimit => "step limit exceeded",
         else => @errorName(e),
     };
 }
@@ -399,6 +413,8 @@ fn describe(e: Error) []const u8 {
 test {
     std.testing.refAllDecls(@This());
     _ = bigint;
+    _ = flonum;
+    _ = exact;
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {
@@ -1340,6 +1356,100 @@ test "the clause of a cond-expand that applies may include a file, in an express
     try expectLinePrints(&interp, "(import (t lib)) w", "from-the-clause\n");
 }
 
+test "the definitions of a file an include reads at the start of a body are definitions of the body" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("defs.scm", "(define a 1) (define b 2)");
+        try tree.write("tail.scm", "(define c 3) (+ c 1)");
+        try tree.write("more.scm", "(define d (+ a b))");
+        try tree.write("empty.scm", "; nothing\n");
+        try tree.write("ci.scm", "(DEFINE (F) 7)");
+        try tree.write("late.scm", "(define e 5)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // 最初の失敗するテスト。
+        try expectLinePrints(&interp, "((lambda () (include \"defs.scm\") (+ a b)))", "3\n");
+        // ファイルの定義のあとの式は、本体の式である。
+        try expectLinePrints(&interp, "((lambda () (include \"tail.scm\")))", "4\n");
+        // 複数のファイルは書いた順に読まれ、前の定義と後の定義が同じ本体に並ぶ。
+        try expectLinePrints(&interp, "((lambda () (define z 0) (include \"defs.scm\" \"more.scm\") (list z d)))", "(0 3)\n");
+        try expectLinePrints(&interp, "((lambda () (include \"empty.scm\") (define y 1) y))", "1\n");
+        try expectLinePrints(&interp, "((lambda () (include-ci \"ci.scm\") (f)))", "7\n");
+        // 本体の局所変数なので、最上位には現れない。
+        try expectLineFails(&interp, "a", "unbound variable: a");
+        // cond-expand の節の include も、本体の定義になる。
+        try expectLinePrints(&interp, "((lambda () (cond-expand (r7rs (include \"defs.scm\"))) (+ a b)))", "3\n");
+        // 式の後ろの定義は、ファイルから来ても誤りである。
+        try expectLineFailsInTree(&interp, &tree, "((lambda () 0 (include \"late.scm\") e))", "late.scm:1:1", "bad define: a definition is only allowed at the top level or at the start of a body");
+        try expectLineFailsInTree(&interp, &tree, "((lambda () (define a 0) (include \"defs.scm\") a))", "defs.scm:1:1", "bad define: a is already defined earlier in this body");
+        // ファイルの中身が式だけでも、今までどおり値になる。
+        try tree.write("e.scm", "(+ n 1)");
+        try expectLinePrints(&interp, "((lambda (n) (include \"e.scm\")) 5)", "6\n");
+        try expectLinePrints(&interp, "(let-syntax () (include \"defs.scm\") (+ a b))", "3\n");
+    }
+}
+
+test "a file an include reads at the start of a body is the base of the names its forms include, then and later" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        // 本体を走査するあいだに読むファイル(`inner.scm`)と、走査のあとで定義の値を展開する
+        // ときに読むファイル(`val.scm`)の両方が、`sub/` を基準にする。
+        try tree.write("sub/outer.scm", "(include \"inner.scm\") (define (g) (include \"val.scm\")) (define c (+ i 1))");
+        try tree.write("sub/inner.scm", "(define i 1)");
+        try tree.write("sub/val.scm", "42");
+        try tree.write("val.scm", "'top");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "((lambda () (include \"sub/outer.scm\") (list c (g))))", "(2 42)\n");
+        // ファイルのあとの形式は、含んだ側の基準に戻る。
+        try expectLinePrints(&interp, "((lambda () (include \"sub/outer.scm\") (define (h) (include \"val.scm\")) (list (g) (h))))", "(42 top)\n");
+        // 定義の並びがファイルの途中で終わっても、残りの形式はファイルを基準にする。
+        try tree.write("sub/mid.scm", "(define j 1) (list j (include \"val.scm\"))");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\")))", "(1 42)\n");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\") (include \"val.scm\")))", "top\n");
+        // 走査がファイルを読み終えて続くと、次の include は含んだ側の基準に戻る。
+        try tree.write("sub/a.scm", "(define p 2)");
+        try tree.write("sub/b.scm", "'sub-b");
+        try tree.write("b.scm", "'top-b");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/a.scm\") (include \"b.scm\")))", "top-b\n");
+        // 名前が複数の include で、定義の並びが前のファイルで終わっても、まだ走査していない後ろの
+        // ファイルの形式は、そのファイルを基準にし、そのあとは含んだ側に戻る。
+        try tree.write("sub/t1.scm", "1");
+        try tree.write("sub/t2.scm", "(include \"b.scm\")");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/t1.scm\" \"sub/t2.scm\")))", "sub-b\n");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/t1.scm\" \"sub/t2.scm\") (include \"b.scm\")))", "top-b\n");
+        try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+        try expectLinePrints(&interp, "(include \"sub/t1.scm\")", "1\n");
+        // 空のファイルだけを含む本体には、式が無い。
+        try tree.write("empty.scm", "; nothing\n");
+        try expectLineFails(&interp, "((lambda () (include \"empty.scm\")))", "bad lambda: a body needs an expression after its definitions");
+    }
+}
+
+test "an include at the start of a body refuses a file that includes itself, and says where in the file" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("loop.scm", "(define q 1) (include \"loop.scm\")");
+    try tree.write("bad.scm", "(define r 1) (define)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFailsInTree(&interp, &tree, "((lambda () (include \"loop.scm\") q))", "loop.scm:1:14", "bad include: loop.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "((lambda () (include \"bad.scm\") r))", "bad.scm:1:14", "bad define: expected (define name expression)");
+    try expectLineFails(&interp, "((lambda () (include \"missing.scm\") 1))", "bad include: missing.scm: no such file");
+    // 失敗のあとは、読んでいる最中のファイルが空に戻る。
+    try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+    try tree.write("loop.scm", "(define q 1)");
+    try expectLinePrints(&interp, "((lambda () (include \"loop.scm\") q))", "1\n");
+}
+
 test "features returns the identifiers of the build in the order of its list, as a new list each time" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});
@@ -1574,6 +1684,8 @@ fn expectPlacesOfErrors(stress: bool) !void {
         .{ .line = "(define (f)\n  (begin\n   (define)) 1)", .message = "prog.scm:3:4: bad define: expected (define name expression)" },
         .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(define (f)\n  (m))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
         .{ .line = "(define-syntax b (syntax-rules () ((_) (begin (if)))))\n(define (f)\n  (b))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // 本体の先頭の cond-expand の節の中身も、begin と同じく、cond-expand の形式の位置。
+        .{ .line = "(define-syntax c (syntax-rules () ((_) (cond-expand (r7rs (if))))))\n(define (f)\n  (c))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
     };
     for (cases) |c| try expectLineFails(&interp, c.line, c.message);
 }
@@ -1597,6 +1709,23 @@ test "an error raised outside the expander says the place of the top-level form"
     interp.file_name = "prog.scm";
     // ライブラリの宣言の誤りは、展開器の外で送出するので、最上位の形式の位置になる。
     try expectLineFails(&interp, "1\n (define-library (t a)\n (bogus))", "prog.scm:2:2: bad define-library: bogus is not a library declaration");
+}
+
+test "an expansion error in the file of a library, or in a file its declarations read, says the place in that file" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/e.sld", "(define-library (t e) (export) (import (sucheme core))\n (begin\n   (if)))");
+        try tree.write("t/i.sld", "(define-library (t i) (export) (import (sucheme core)) (include \"i-body.scm\"))");
+        try tree.write("t/i-body.scm", "(define x 1)\n\n  (lambda)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // ファイルの名前が無い REPL の行から読み込んでも、ライブラリのファイルの位置が付く。
+        try expectLineFailsInTree(&interp, &tree, "(import (t e))", "t/e.sld:3:4", "bad if: expected (if test consequent) or (if test consequent alternative)");
+        try expectLineFailsInTree(&interp, &tree, "(import (t i))", "t/i-body.scm:3:3", "bad lambda: expected (lambda (name ...) body ...)");
+    }
 }
 
 test "evalPrint describes a reader error, and a later success clears the message" {
@@ -2332,6 +2461,108 @@ test "a macro that nests what it expands to ends at the limit of the heap" {
 test "slow: a macro that never stops ends at the limit of the default heap" {
     try tier.slow();
     try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_) (f))))", "(f)", heap.default_limit);
+}
+
+test "a form that does not stop ends at the step limit, and the next form runs" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (loop))", &w));
+    try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
+    // 残りは形式ごとに戻るので、上限に達した次の形式も、上限いっぱいまで走れる。
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+    try std.testing.expectEqualStrings("", interp.diagnostic());
+}
+
+test "a handler does not catch the step limit" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 捕まえられる誤りにすると、(chibi test) の test のように誤りを捕まえて続ける式が止まらない。
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(guard (e (#t 'caught)) (let loop () (loop)))", &w));
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(with-exception-handler (lambda (e) 'caught) (lambda () (let loop () (loop))))", &w));
+    // 送出を捕まえるたびに続けるループも止まる。ハンドラへの受け渡しで残りを戻すと、ここが止まらない。
+    interp.setStepLimit(100000);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (guard (e (#t 0)) (car '())) (loop))", &w));
+    try std.testing.expectEqualStrings("", w.buffered());
+}
+
+test "the step limit ends a form without calling the after of a dynamic-wind" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define x 0)", &w);
+    interp.setStepLimit(1000);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(dynamic-wind (lambda () #f) (lambda () (let loop () (loop))) (lambda () (set! x 1)))", &w));
+    // 打ち切りは巻き戻しを通らない(ADR-0044)。
+    try interp.evalPrint(arena.allocator(), "x", &w);
+    try std.testing.expectEqualStrings("0\n", w.buffered());
+}
+
+test "the step limit lets a form take exactly that many steps" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // `(+ 1 2)` は、今の機械で 8 歩かかる(周回を数えて確かめた)。上限がその数なら通り、
+    // 1つ少なければ止まる。機械の周回の作りが変わってこの数が変われば、ここも直す。
+    const steps_for_sum = 8;
+    interp.setStepLimit(steps_for_sum);
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+    interp.setStepLimit(steps_for_sum - 1);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(+ 1 2)", &w));
+}
+
+test "with no step limit, a long loop runs to its end" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1))))", &w);
+    // 既定は上限なしである。`(count 1000)` は1回あたり 20 歩ほどで、下で外す上限の 1000 歩を
+    // 十分に超える。歩数に比例して時間がかかるので、大きい既定の上限まで見る 100 万回の版は
+    // 層2に置く。上限ちょうどの境目は "the step limit lets a form take exactly that many steps" が見る。
+    try interp.evalPrint(arena.allocator(), "(count 1000)", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
+    interp.setStepLimit(1000);
+    interp.setStepLimit(null);
+    try interp.evalPrint(arena.allocator(), "(count 1000)", &w);
+    try std.testing.expectEqualStrings("done\ndone\n", w.buffered());
+}
+
+test "slow: with no step limit, a loop of a million calls runs to its end" {
+    try tier.slow();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1)))) (count 1000000)", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
 }
 
 test "lines that refer to unknown names do not leave a cell each after a collection, and a name code still refers to keeps its cell" {

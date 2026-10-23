@@ -302,7 +302,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
         error.Unreadable => return ctx.raise("cannot load the library {s}: the system refused to open its file", .{text}),
         else => |n| return nameFailure(ctx, text, n),
     };
-    const form = try readLibraryForm(ctx, scratch, opened.source, text);
+    const form = try readLibraryForm(ctx, scratch, opened, text);
     // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
     if (form.asPair().?.cdr.asPair()) |rest| {
         if (!sameName(rest.car, name)) return ctx.raise(
@@ -324,14 +324,16 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
 /// `max_file_bytes`)をその間も持ち続けると、入れ子の深さ分が同時にメモリに載る。リーダが
 /// 作る値は、内容を指さない(シンボルは永続領域へ、文字列はヒープへ複製する)ので、読み終えた
 /// 時点で手放す。
-fn readLibraryForm(ctx: *Context, scratch: std.mem.Allocator, source: resolve.Source, text: []const u8) Error!Value {
-    defer source_mod.closeSource(ctx.files, source);
+/// 読んだリストの位置は、ファイルの名前とともに `ctx.positions` に記録する。
+fn readLibraryForm(ctx: *Context, scratch: std.mem.Allocator, opened: resolve.Opened, text: []const u8) Error!Value {
+    defer source_mod.closeSource(ctx.files, opened.source);
     const subject = try std.fmt.allocPrint(scratch, "load the library {s}", .{text});
-    const contents = try source_mod.readText(ctx, ctx.files, source, subject);
+    const contents = try source_mod.readText(ctx, ctx.files, opened.source, subject);
     defer ctx.heap.backing.free(contents);
     if (ctx.heap.shouldCollect()) ctx.collectIdle();
     var r: reader.Reader = .init(contents);
-    const form = (try source_mod.readDatum(ctx, &r, scratch, subject)) orelse
+    const to = try source_mod.sinkFrom(ctx, scratch, opened.origin);
+    const form = (try source_mod.readDatumTo(ctx, &r, scratch, to, subject)) orelse
         return ctx.raise("cannot {s}: its file is empty", .{subject});
     if (topLevelForm(ctx, form) != .define_library)
         return ctx.raise("cannot {s}: its file must hold one (define-library ...) form", .{subject});
@@ -567,7 +569,7 @@ fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: [
     const text = (name.asString() orelse return ctx.raise("bad {s}: a file name must be a string", .{what})).bytes;
     const opened = try source_mod.openIncluded(ctx, scratch, text, what);
     const subject = try std.fmt.allocPrint(scratch, "{s} {s}", .{ what, text });
-    const data = try source_mod.readData(ctx, scratch, ctx.files, opened.source, subject, fold_case);
+    const data = try source_mod.readDataFrom(ctx, scratch, ctx.files, opened.source, opened.origin, subject, fold_case);
     var list: Value = .empty_list_value;
     var i = data.len;
     while (i > 0) {

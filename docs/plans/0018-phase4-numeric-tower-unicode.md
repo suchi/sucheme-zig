@@ -153,12 +153,14 @@ pub fn scan(text: []const u8, default_radix: u8) ?Literal
 /// +inf.0 -inf.0 +nan.0 と -0.0 を専用に書く。確保しない。
 pub fn write(out: *std.Io.Writer, x: f64) std.Io.Writer.Error!void
 
-/// scan が decimal と判定した綴り(符号を除く)を、最も近い f64 にする。
-/// 範囲を超える大きさは無限大、小さすぎるものは0になる。確保しない。
-/// 中身は std.fmt.parseFloat に綴りを渡すだけで、scan が先に受理集合を絞る
-/// (下の実験の2と3)。
-pub fn parseDecimal(whole: []const u8, fraction: []const u8, exponent: []const u8) f64
+/// scan が decimal と判定した綴り(符号を除き、整数部、小数点、小数部、指数部が
+/// 続いて並ぶ1つの切片)を、最も近い f64 にする。範囲を超える大きさは無限大、
+/// 小さすぎるものは0になる。確保しない。中身は std.fmt.parseFloat に綴りを渡すだけで、
+/// scan が先に受理集合を絞る(下の実験の2と3)。形が合わない綴りは error.InvalidSpelling。
+pub fn parseDecimal(text: []const u8) error{InvalidSpelling}!f64
 ```
+
+4b の実装で、`parseDecimal` の署名を、当初の3つの切片(整数部、小数部、指数部)から、1つの切片に変えた。3つに分けると、`std.fmt.parseFloat` に渡す前に連結が要り、桁数に上限のない入力では、確保するか、桁を切り詰めて丸めの判定を自前で持つことになる。1つの切片なら、標準ライブラリがそのまま読む。`syntax.scan` の `decimal` の切片は、部分が無いとき(`1e5` の小数部、`1.5` の指数部)に入力を指さない空文字列になるので、切片のポインタから範囲を作らない。4e-1 の `parse` は、元の文字列から接頭辞(`#x` など)と符号を除いたものを渡す。誤りを返す形にしたのは、`parseFloat` が符号、`inf`、`0x`、`_` も受理するため、約束が破れたときに別の値を黙って返さないようにするためである。
 
 `src/num/bigint.zig`(スライス 4c): `std.math.big.int` の上に、この処理系が要る演算だけを薄く置く。入力は `std.math.big.int.Const`、出力は呼び出し側が渡した割り当て器で確保した `Managed` である。
 
@@ -296,7 +298,8 @@ pub fn digitValue(c: u21) ?u4
 | 4b 浮動小数点数の書式と解析 | `flonum.write` が設計文書の表のとおりに書き、`parseDecimal` と合わせて境界の値がラウンドトリップする | `src/num/flonum.zig` | T2 | 合意を求める点の4(指数表記の範囲) | 可 | 小 |
 | 4c 多倍長の薄い層 | `bigint` の各関数が、`i64` の範囲で `i128` の計算と一致し、基数2、8、10、16で `toString` と `parseDigits` がラウンドトリップする | `src/num/bigint.zig` | T2 | なし | 可 | 中 |
 | 4d 型の骨格 | `Value` に4つのバリアント、`heap_types` に3つの型が入り、走査と計上の検証項目が通る。プリンタの分岐が `num.write` を呼ぶ(中身は仮) | `src/value.zig` `src/heap.zig` `src/trace.zig` `src/printer.zig`(分岐だけ) `src/num/number.zig`(仮の `write` だけ) | T3 | 合意を求める点の5、6 | 4a〜4c と可。L3 の骨格とは順に(下) | 中 |
-| 4e 数の生成と正規化、`parse` と `write` | `num.parse` と `num.write` が、5種(複素数を除く場合は4種)についてラウンドトリップする | `src/num/number.zig` | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大 |
+| 4e-1 数の生成と正規化、`parse` と `write`(複素数を除く) | `num.parse` と `num.write` が、fixnum、bignum、ratnum、flonum について、基数2、8、10、16でラウンドトリップする。純粋な変換(`src/num/exact.zig`)を含む | `src/num/number.zig` `src/num/exact.zig`(新規) | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大の前半 |
+| 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum についてラウンドトリップし、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いの判断 | 4f と可 | 大の後半 |
 | 4r リーダの数の構文(L2 の作業) | リーダが `num.parse` で数を読み、`(define inf 1)` と `(define |1_000| 3)` 以外の数の綴りが数になる | `src/reader.zig` | T2 | 4e。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4f 四則と比較 | `+ - * / = < > <= >=` が数値塔の全組合せで動き、作業領域が返る | `src/prim/arith.zig` `src/num/ops.zig`(新規) | T2 | 4e | 4h、4u2 と可 | 大 |
 | 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行のコンフリクトは機械的に解く) | 大 |
@@ -344,7 +347,7 @@ pub fn digitValue(c: u21) ?u4
 
 | 番号 | 中身 | 出典 | スライス |
 | --- | --- | --- | --- |
-| 0400〜0409 | 数の構文の受理と拒否(`string->number` 経由)。設計文書の `parseFloat` の表、`<infnan>` の4つ、`#e0.1` と `#e1e400`、`1/0`、大文字小文字(`#X1a`) | R7RS 7.1.1、6.2.7。[numerics-and-unicode.md](../design/numerics-and-unicode.md) の表 | 4e(4r の後はリーダの側も) |
+| 0400〜0409 | 数の構文の受理と拒否(`string->number` 経由)。設計文書の `parseFloat` の表、`<infnan>` の4つ、`#e0.1` と `#e1e400`、`1/0`、大文字小文字(`#X1a`) | R7RS 7.1.1、6.2.7。[numerics-and-unicode.md](../design/numerics-and-unicode.md) の表 | 4g、4r(`string->number` とリーダが入るまで、Scheme からは試せない。4e-1 は Zig の単体テスト) |
 | 0410〜0419 | 数の述語と正確性(`number?` `complex?` `real?` `rational?` `integer?` `exact?` `inexact?` `exact-integer?` `finite?` `infinite?` `nan?`)。`(real? -2.5+0i)` と `(real? -2.5+0.0i)` | R7RS 6.2.6 の例 | 4f、4g |
 | 0420〜0429 | 四則と比較の全組合せ、不正確さの伝播、`max` と `min` | R7RS 6.2.2、6.2.6 | 4f、4g |
 | 0430〜0439 | 整数除算の全組、符号の4通りと不正確な整数(`(truncate/ -5.0 -2)`) | R7RS 6.2.6 の例 | 4g |
@@ -375,6 +378,17 @@ pub fn digitValue(c: u21) ?u4
 
 あわせて、無作為なビット列の有限の `f64` を、`render` の既定の書式で書き、`parseFloat` で読み直して、ビット列が一致することを確かめた(失敗は無かった。件数は、4b の単体テストで定める)。これは Zig の書式についての確認で、4b が作る Scheme の書式のラウンドトリップ性は、4b のテストで改めて確かめる。
 
+## ECMA-262 の Number::toString の確認
+
+合意を求める点の4の境界の値を、原文で確かめた記録である。
+
+- 確認した日: 2026-10-21。
+- 版: ECMAScript 2026(第17版)の仕様の原稿のリポジトリ(`spec.html`)。ユーザーから zip で渡された複製で、zip の注記にあるコミットは `d89c03f2db8a597bc915b363a6518d0cc8acdbc0`、ファイルの日付は 2026-07-28 である。tc39.es への接続は、この環境で HTTP 403 で拒否されたため、公開されている版との一致は確かめていない。
+- 場所: 節 id `sec-numeric-types-number-tostring`(Number::toString)の手順 6。節の番号は、`spec.html` が自動採番のため、ファイルからは確かめていない。
+- 規則: 整数 n、k、s を、k ≥ 1、radix^(k-1) ≤ s < radix^k、𝔽(s × radix^(n-k)) が x、k が最小、となるものとする。radix が 10 でない、または n が -5 以上 21 以下(両端を含む)なら小数で書く。それ以外は指数表記で、仮数部は先頭の桁と、k > 1 なら小数点と残りの桁、続けて `e`、符号(`+` か `-`)、abs(n - 1) の十進表記を置く。
+- 計画書の記述との関係: 食い違いは無い。原文の n は、x = 0.d1d2… × 10^n の n(小数点の位置)で、最初の桁の位は n - 1 になる。計画書の n(最初の桁の位)で言えば、-7 < n < 21 で小数、それ以外が指数表記であり、原文の「-5 以上 21 以下」と同じ範囲である。確かめた境界は、1e20 が小数(`100000000000000000000.0`)、1e21 が指数表記(`1.0e21`)、1e-6 が小数(`0.000001`)、1e-7 が指数表記(`1.0e-7`)である。
+- この処理系の差分: 原文は指数の符号を常に書く(`1e+21`)。R7RS の書式として、4b は正の符号を書かず、`1.0e21` と書く。仮数部にも小数点を置くのは、R7RS 6.2.7 が小数点を要求するためである。
+
 `i64` と `f64` とポインタを持つ `union(enum)` の大きさは16バイトだった。実際の `Value` の大きさは、4d のテストで確かめる。
 
 ## 合意を求める点
@@ -398,7 +412,7 @@ pub fn digitValue(c: u21) ?u4
      - デメリット: 段階4の作業が増える。`sqrt` `log` `atan` などの分岐の切れ目の扱いが細かい。
    - 別案: 段階5以降に繰り延べる。段階4は早く終わるが、`exact-complex` が偽のままで、`real?` などの述語を後で書き直す。
 4. 指数表記に切り替える指数部の範囲。
-   - 勧める案: ECMAScript の `Number.prototype.toString` と同じ範囲にする。十進の指数(最初の桁の位)を n としたとき、-7 < n < 21 なら小数で書き、それ以外は指数表記にする(ECMA-262 の Number::toString の規則。境界の値は 4b の着手の前に原文で確かめる)。
+   - 勧める案: ECMAScript の `Number.prototype.toString` と同じ範囲にする。十進の指数(最初の桁の位)を n としたとき、-7 < n < 21 なら小数で書き、それ以外は指数表記にする(ECMA-262 の Number::toString の規則。境界の値は 2026-10-21 に原文で確かめ、食い違いは無かった。下の「ECMA-262 の Number::toString の確認」)。
      - メリット: 一次情報で範囲が定まる。Web UI(JavaScript)の表示と揃う。`1e21` を21桁の小数で書かずに済む。
      - デメリット: ほかの Scheme 処理系と揃うかは確かめていない(未確認。Chez Scheme、Chibi、Gauche のソースで確かめる案もあるが、処理系ごとに違う見込み)。
    - 別案: 主な Scheme 処理系の1つのソースを読み、その範囲に合わせる。設計文書の「一般的な Scheme 処理系に合わせる」に字義どおり従えるが、どれを基準にするかの判断が別に要る。
@@ -470,7 +484,6 @@ pub fn digitValue(c: u21) ?u4
 
 - `std.fmt.float.binaryToDecimal` が、版をまたいで保たれる API かどうか。
 - `@sizeOf(Value)` が flonum のバリアントを足しても変わらないこと(同じ形の小さな共用体では変わらなかった)。
-- ECMA-262 の Number::toString の境界の値(合意を求める点の4)。記憶によるので、4b の前に原文で確かめる。
 - ほかの Scheme 処理系の指数表記の範囲と、Unicode の表の段数の慣行。
 - UCD のライセンスの表示の要件。
 - `string-downcase` の語末のシグマの扱いを R7RS 6.7 が求めるか。
@@ -481,11 +494,12 @@ pub fn digitValue(c: u21) ?u4
 | --- | --- |
 | 4c | マージ済み([suchi/sucheme-zig#136](https://github.com/suchi/sucheme-zig/pull/136))。Zig 0.17.0 の `Const.toString` が基数8と32で桁を誤るため、2のべきの基数の書き出しは自前にした |
 | 4d | マージ済み([suchi/sucheme-zig#134](https://github.com/suchi/sucheme-zig/pull/134)) |
-| 4a | 実装済み。ドラフトの PR で、自前の敵対的レビュー中 |
-| 4b、4e〜4z、4u1〜4u4 | 未着手 |
+| 4a | マージ済み([suchi/sucheme-zig#148](https://github.com/suchi/sucheme-zig/pull/148)) |
+| 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
+| 4e-1 | PR を作る(このブランチ)。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
+| 4e-2、4f〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
 - 4d のレビューを収束させ、マージする。L3 の型の骨格(計画書 0019)は、4d のあとに main を取り込んで進める。
 - 純粋な層(4a、4b)と Unicode の生成ツール(4u1)を並行に始める。4e は、4a、4b、4c、4d のマージを待つ。
-- 4b の着手の前に、合意を求める点の4の境界の値を、ECMA-262 の原文で確かめる。

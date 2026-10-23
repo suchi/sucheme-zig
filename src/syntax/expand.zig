@@ -29,6 +29,7 @@ const Denotation = syntax_env.Denotation;
 const rules = @import("rules.zig");
 const heap_mod = @import("../heap.zig");
 const source = @import("source.zig");
+const resolve = @import("../resolve.zig");
 const positions = @import("../positions.zig");
 const cond_expand = @import("cond_expand.zig");
 const freeze = @import("../freeze.zig");
@@ -39,7 +40,24 @@ pub const Error = context.Error;
 /// 既定は番地の幅いっぱいの値である。テストは上限に届かせるために、より小さい値を渡す。
 pub const Limits = struct {
     address: u32 = std.math.maxInt(u32),
+    /// The deepest the syntactic environments the expander makes may be nested
+    /// (the length of a chain of them).
+    depth: u32 = max_depth,
 };
+
+/// The deepest the syntactic environments may be nested in what the expander
+/// makes: an implementation restriction (R7RS 1.3.2).
+/// 数えるのは環境の鎖の長さ(`SyntacticEnv.nesting`)で、`lambda` の rib と、rib を持たない
+/// `let-syntax` と `letrec-syntax` の環境の両方である。`lambda` だけの入れ子なら、手続きの
+/// 入れ子の深さと同じになる。
+/// Why: 識別子の解決は、構文環境の鎖を内側からたどるので、鎖の長さに比例する。入れ子の
+/// `lambda` や `let-syntax` を重ねて止まらないマクロは、1段ごとに長さに比例する解決を
+/// 繰り返すので、時間が長さの2乗で伸び、展開がいつまでも終わらない(ヒープの上限に当たる
+/// 前に、時間が尽きる)。鎖の長さに上限を置いて、有界で終わらせる。rib の深さで数えると、
+/// rib を持たない `let-syntax` を重ねる形が止まらない(3p-2 のレビューで見つかった)。
+/// 環境の探索を深さに依存しない形にする案は、新しい機構になるので採らなかった
+/// (docs/plans/0016-phase3-scheme-stdlib.md の 3p の中身)。
+pub const max_depth = 10000;
 
 /// Expands `form`, which is at the top level of a program.
 /// 節点は GC ヒープに確保し、上限に数える(ADR-0040)。展開の実行中だけ要るものは
@@ -143,6 +161,8 @@ const Task = struct {
     /// (docs/design/frontend.md の位置情報).
     /// マクロの出力と、ペアでない形式は、位置を持たないので、これを引き継ぐ。
     site: ?positions.Position = null,
+    /// For `enter_file`: the file that the forms after this task were read from.
+    origin: ?resolve.Origin = null,
 
     /// What a task does.
     const Op = enum {
@@ -150,6 +170,9 @@ const Task = struct {
         expand,
         /// Read the file whose name `form` is, and expand the data in it in place of `dest`.
         include_file,
+        /// The forms of a body that come next were read from the file `origin`, which an
+        /// `include` at the start of the body read (`scanBody`).
+        enter_file,
         /// The data of a file that an `include` read have all been expanded.
         leave_file,
     };
@@ -238,6 +261,7 @@ const Expander = struct {
         switch (task.op) {
             .expand => {},
             .include_file => return self.includeFile(task),
+            .enter_file => return self.ctx.sources.append(self.ctx.resident(), task.origin.?),
             .leave_file => {
                 _ = self.ctx.sources.pop();
                 return;
@@ -501,12 +525,7 @@ const Expander = struct {
     /// 基準のディレクトリになり、自分自身を含む鎖を見つける。展開は再帰しないので、終わりの
     /// 印を、データの下にスタックしておく(`leave_file`)。名前が複数あれば、1つずつ順に読む。
     fn includeForm(self: *Expander, task: Task, items: []const Value, fold_case: bool) Error!void {
-        const what = if (fold_case) "include-ci" else "include";
-        const names = items[1..];
-        if (names.len == 0) return self.ctx.raise("bad {s}: expected ({s} <file name> ...)", .{ what, what });
-        for (names) |name| {
-            if (name.asString() == null) return self.ctx.raise("bad {s}: a file name must be a string", .{what});
-        }
+        const names = try self.includeNames(items, fold_case);
         if (names.len == 1) {
             try self.stack.append(self.scratch, .{ .form = names[0], .env = task.env, .pos = task.pos, .dest = task.dest, .op = .include_file, .fold_case = fold_case });
             return;
@@ -519,20 +538,39 @@ const Expander = struct {
         }
     }
 
-    /// Reads the file that the name `task.form` means and queues its data to fill
-    /// `task.dest`, in order. A file with no data does nothing.
-    fn includeFile(self: *Expander, task: Task) Error!void {
-        const name = task.form.asString().?.bytes;
-        const what = if (task.fold_case) "include-ci" else "include";
+    /// The file names of `(include <string> ...)` or `(include-ci <string> ...)`,
+    /// after checking that there is one at least and that each is a string.
+    fn includeNames(self: *Expander, items: []const Value, fold_case: bool) Error![]const Value {
+        const what = if (fold_case) "include-ci" else "include";
+        const names = items[1..];
+        if (names.len == 0) return self.ctx.raise("bad {s}: expected ({s} <file name> ...)", .{ what, what });
+        for (names) |name| {
+            if (name.asString() == null) return self.ctx.raise("bad {s}: a file name must be a string", .{what});
+        }
+        return names;
+    }
+
+    /// The file that the name `name` of an include means, opened, and the data in it.
+    /// 名前は、読んでいる最中のファイルの一番内側(無ければ作業ディレクトリ)を基準にする。
+    fn readIncluded(self: *Expander, name: []const u8, fold_case: bool) Error!struct { origin: resolve.Origin, data: []const Value } {
+        const what = if (fold_case) "include-ci" else "include";
         const opened = try source.openIncluded(self.ctx, self.scratch, name, what);
         // Why: ファイルのデータは、大きさが REPL の1行の上限に縛られず、1 MiB のファイル1つが
         // 数十 MiB の節点になる。入れ子や名前の並びで掛け算になるので、マクロの適用を待たず、
         // ファイルを読む時点から、作業領域と節点をヒープの上限に数える(`Heap.external_enforced`)。
         self.ctx.heap.external_enforced = true;
         const subject = try std.fmt.allocPrint(self.scratch, "{s} {s}", .{ what, name });
-        const data = try source.readDataFrom(self.ctx, self.scratch, self.ctx.files, opened.source, opened.origin, subject, task.fold_case);
+        const data = try source.readDataFrom(self.ctx, self.scratch, self.ctx.files, opened.source, opened.origin, subject, fold_case);
+        return .{ .origin = opened.origin, .data = data };
+    }
+
+    /// Reads the file that the name `task.form` means and queues its data to fill
+    /// `task.dest`, in order. A file with no data does nothing.
+    fn includeFile(self: *Expander, task: Task) Error!void {
+        const read = try self.readIncluded(task.form.asString().?.bytes, task.fold_case);
+        const data = read.data;
         if (data.len == 0) return self.constant(task, .unspecified_value);
-        try self.ctx.sources.append(self.ctx.resident(), opened.origin);
+        try self.ctx.sources.append(self.ctx.resident(), read.origin);
         // 終わりの印は、データの下に積む。データと、データが展開に使う仕事が先に済む。
         try self.stack.append(self.scratch, .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = task.dest, .op = .leave_file });
         const pos: Position = if (task.pos == .top) .top else .expression;
@@ -732,6 +770,7 @@ const Expander = struct {
         comptime form_name: []const u8,
     ) Error!void {
         const inner = try syntax_env.extend(self.ctx, env);
+        try self.checkDepth(inner);
         var slots: u32 = 0;
         var rest = params_form;
         while (rest.asPair()) |p| : (rest = p.cdr) try self.parameter(inner, &slots, p.car, form_name);
@@ -744,15 +783,45 @@ const Expander = struct {
                 return self.ctx.raise("bad " ++ form_name ++ ": the parameters must be an identifier or a list of identifiers", .{});
             try self.parameter(inner, &slots, rest, form_name);
         }
-        const scanned = try self.scanBody(body, inner, &slots);
-        // Why: R7RS 5.3.2 の本体は、定義のあとに式が続く形で、式は 1 つ以上要る。
-        // 定義だけの本体には、返す値がない。
-        if (scanned.defines == scanned.forms.len)
-            return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
+        const scanned = try self.scanBody(body, inner, &slots, form_name);
         const body_node = try self.newNode();
-        try self.sequence(body_node, scanned.forms, inner, .expression, scanned.defines);
+        try self.bodySequence(body_node, scanned, inner);
         const lambda = try self.ctx.create(value_mod.Lambda, .{ .arity = arity, .rest = has_rest, .frame_size = slots, .body = body_node });
         dest.* = .{ .lambda = lambda };
+    }
+
+    /// Fills `dest` with the forms of `body` run in order, in `rib`: the definitions
+    /// at the start, and the expressions after them.
+    /// 節点は形式だけに作る。ファイルの出入りの印は、その間の形式の仕事を挟む仕事にする
+    /// (`enter_file` と `leave_file`)。形式が 1 つなら、その形式が `dest` を埋める。
+    fn bodySequence(self: *Expander, dest: *Node, body: Body, rib: *SyntacticEnv) Error!void {
+        const nodes: []const *const Node = if (body.forms == 1) &.{} else try self.newNodes(body.forms, dest, attachSequence);
+        // 後ろのものから先に積むので、前の形式が先に展開される。
+        var i = body.items.len;
+        var n = body.forms;
+        while (i > 0) {
+            i -= 1;
+            try self.stack.append(self.scratch, switch (body.items[i]) {
+                .form => |form| blk: {
+                    n -= 1;
+                    break :blk .{
+                        .form = form,
+                        .env = rib,
+                        .pos = if (n < body.defines) .body else .expression,
+                        .dest = if (body.forms == 1) dest else @constCast(nodes[n]),
+                    };
+                },
+                .enter => |origin| .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = dest, .op = .enter_file, .origin = origin },
+                .leave => .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = dest, .op = .leave_file },
+            });
+        }
+    }
+
+    /// Checks that `env`, an environment the expander has just made, is not
+    /// nested deeper than the limit.
+    fn checkDepth(self: *Expander, env: *const SyntacticEnv) Error!void {
+        if (env.nesting > self.limits.depth)
+            return self.ctx.raise("implementation restriction: scopes are nested more than {d} deep", .{self.limits.depth});
     }
 
     /// Binds the next slot of a call's frame in `rib`, after checking that the
@@ -778,9 +847,28 @@ const Expander = struct {
         try self.nextSlot(rib, slots, form);
     }
 
-    /// The forms of a body, the macro uses at its start expanded, and how many
-    /// of them, from the start, are definitions.
-    const Body = struct { forms: []const Value, defines: usize };
+    /// The forms of a body, the macro uses at its start expanded, with where the
+    /// files an `include` at its start read begin and end among them; how many
+    /// forms there are; and how many of them, from the start, are definitions.
+    const Body = struct { items: []const BodyItem, forms: usize, defines: usize };
+
+    /// A form of a body, or the place where the forms of a file begin or end.
+    const BodyItem = union(enum) {
+        form: Value,
+        /// The forms after this were read from the file.
+        enter: resolve.Origin,
+        /// The forms of the file that the nearest `enter` before this began end here.
+        leave,
+    };
+
+    /// Forms of a body that the scan has not looked at yet, and the file they
+    /// were read from, if an `include` at the start of the body read them.
+    const Pending = struct {
+        forms: []const Value,
+        origin: ?resolve.Origin = null,
+        /// Whether the scan has put the file on `ctx.sources` and an `enter` in the body.
+        entered: bool = false,
+    };
 
     /// A head identifier the scan of a body decided a form by, and what it
     /// meant then.
@@ -798,11 +886,21 @@ const Expander = struct {
     ///
     /// 先頭の意味が `begin` なら、その中の形式を、残りの前に置いて、同じ並びとして走査する
     /// (R7RS 5.3.2 は、定義を置ける場所では、`begin` を、その中の定義の並びと同じとする)。
-    /// 空の `(begin)` は、空の並びである。`include` と `cond-expand` が持つ定義は、まだ
-    /// 展開しない(スライス 3p)。
+    /// 空の `(begin)` は、空の並びである。`cond-expand` は、当てはまる節の中身を、同じように
+    /// 並びとして走査する。当てはまる節が無ければ、空の並びである(最上位と同じ。R7RS 4.2.1 は
+    /// この場合を unspecified としている)。`include` と `include-ci` は、ここでファイルを読み、
+    /// その中身を並びとして走査する。ファイルの中身を走査するあいだは、そのファイルを
+    /// `ctx.sources` に載せ、中の `include` の基準にする。走査のあとで展開する形式のために、
+    /// ファイルの中身の前後に出入りの印を置く(`BodyItem`)。走査を終えたら、載せたファイルを
+    /// 下ろす。展開のときは、印の仕事が載せ直す(`bodySequence`)。
     /// Why: スライス 3i の `define-record-type` と `define-values` は、マクロの適用が複数の
     /// 定義を作るので、`(begin (define ...) ...)` に展開する。本体の中でも使えるように、
-    /// `begin` だけをここで展開する。
+    /// `begin` をここで展開する。`include` と `cond-expand` の定義(R7RS 4.1.7、4.2.1、5.3.2)は、
+    /// スライス 3p-1 が足した。
+    ///
+    /// 定義の後に式が無ければ、誤りにする(R7RS 5.3.2 の本体は、定義のあとに式が 1 つ以上続く
+    /// 形で、定義だけの本体には返す値が無い)。`form_name` は、そのメッセージのための、本体を
+    /// 持つ形式の名前である。
     ///
     /// 形式の先頭の意味は、仮引数と、それより前の定義を束縛した `rib` で判定する。本体の
     /// 定義の領域は本体の全体である(R7RS 5.3.2)。そのため、仮引数と同じ名前の定義は、
@@ -813,8 +911,9 @@ const Expander = struct {
     /// 変換子の先頭)は、後の定義が束縛するたびに、意味が変わらないことを確かめる
     /// (`checkDepended`)。本体の終わりまで待てない。走査の途中でマクロを適用するので、
     /// 待つと、定義の時点の検査が見ていない読み方で先に適用される。
-    fn scanBody(self: *Expander, body: []const Value, rib: *SyntacticEnv, slots: *u32) Error!Body {
-        var forms: std.ArrayList(Value) = .empty;
+    fn scanBody(self: *Expander, body: []const Value, rib: *SyntacticEnv, slots: *u32, comptime form_name: []const u8) Error!Body {
+        var items: std.ArrayList(BodyItem) = .empty;
+        var forms: usize = 0;
         // この本体が定義した名前と、判定に使った先頭の識別子。
         var defined: std.ArrayList(Value) = .empty;
         var decided: std.ArrayList(Decided) = .empty;
@@ -822,8 +921,11 @@ const Expander = struct {
         var depended: std.ArrayList(Decided) = .empty;
         var consulted: std.ArrayList(Value) = .empty;
         // まだ見ていない形式の並びの積み。`begin` を展開すると、その中の形式を、残りの前に積む。
-        var pending: std.ArrayList([]const Value) = .empty;
-        try pending.append(self.scratch, body);
+        var pending: std.ArrayList(Pending) = .empty;
+        try pending.append(self.scratch, .{ .forms = body });
+        // 走査が載せたファイルは、走査を終えたら下ろす。失敗のときは、展開の入口も下ろす。
+        const reading = self.ctx.sources.items.len;
+        defer self.ctx.sources.shrinkRetainingCapacity(reading);
         // 本体の先頭の形式は、仕事を積まずにここで調べるので、送出したら、調べていた形式の位置を
         // 記録する(`run` は、本体を持つ形式の位置しか知らない)。
         var site: ?positions.Position = null;
@@ -831,12 +933,20 @@ const Expander = struct {
         errdefer self.ctx.noteRaisedAt(site);
         while (pending.items.len > 0) {
             const next = &pending.items[pending.items.len - 1];
-            if (next.len == 0) {
-                _ = pending.pop();
+            if (next.origin != null and !next.entered) {
+                next.entered = true;
+                try self.ctx.sources.append(self.ctx.resident(), next.origin.?);
+                try items.append(self.scratch, .{ .enter = next.origin.? });
+            }
+            if (next.forms.len == 0) {
+                if (pending.pop().?.entered) {
+                    _ = self.ctx.sources.pop();
+                    try items.append(self.scratch, .leave);
+                }
                 continue;
             }
-            var form = next.*[0];
-            next.* = next.*[1..];
+            var form = next.forms[0];
+            next.forms = next.forms[1..];
             site = self.siteOf(form);
             const definition = while (true) {
                 const pair = form.asPair() orelse break false;
@@ -848,12 +958,30 @@ const Expander = struct {
                             try self.defineOnce(&defined, target, "define");
                             try self.nextSlot(rib, slots, target);
                             try self.checkDepended(rib, depended.items, target, "define");
-                            try forms.append(self.scratch, form);
+                            try items.append(self.scratch, .{ .form = form });
+                            forms += 1;
                         },
                         .begin => {
-                            const items = (try self.itemsOf(form))[1..];
-                            for (items) |item| try self.inheritSite(item, site);
-                            try pending.append(self.scratch, items);
+                            const inside = (try self.itemsOf(form))[1..];
+                            for (inside) |item| try self.inheritSite(item, site);
+                            try pending.append(self.scratch, .{ .forms = inside });
+                        },
+                        .@"cond-expand" => {
+                            const chosen = try cond_expand.select(self.ctx, self.scratch, (try self.itemsOf(form))[1..]);
+                            const inside = if (chosen) |clause| try self.itemsOf(clause) else &.{};
+                            for (inside) |item| try self.inheritSite(item, site);
+                            try pending.append(self.scratch, .{ .forms = inside });
+                        },
+                        .include, .@"include-ci" => {
+                            const fold_case = special == .@"include-ci";
+                            const names = try self.includeNames(try self.itemsOf(form), fold_case);
+                            // ファイルは、名前を書いた順に走査する。積みの上が先なので、後ろから積む。
+                            const first = pending.items.len;
+                            for (names) |name| {
+                                const read = try self.readIncluded(name.asString().?.bytes, fold_case);
+                                try pending.append(self.scratch, .{ .forms = read.data, .origin = read.origin });
+                            }
+                            std.mem.reverse(Pending, pending.items[first..]);
                         },
                         .@"define-syntax" => {
                             consulted.clearRetainingCapacity();
@@ -882,14 +1010,32 @@ const Expander = struct {
                 break true;
             };
             if (!definition) {
-                const defines = forms.items.len;
-                try forms.append(self.scratch, form);
+                const defines = forms;
+                try items.append(self.scratch, .{ .form = form });
+                forms += 1;
+                // 残りの形式は、走査しないで、積みの上から順に並べる。まだ載せていないファイルの
+                // 形式にも、出入りの印を置く。
                 var i = pending.items.len;
-                while (i > 0) : (i -= 1) try forms.appendSlice(self.scratch, pending.items[i - 1]);
-                return self.checkDecided(.{ .forms = forms.items, .defines = defines }, rib, decided.items);
+                while (i > 0) : (i -= 1) {
+                    const rest = pending.items[i - 1];
+                    if (rest.origin != null and !rest.entered) try items.append(self.scratch, .{ .enter = rest.origin.? });
+                    for (rest.forms) |f| try items.append(self.scratch, .{ .form = f });
+                    forms += rest.forms.len;
+                    if (rest.origin != null) try items.append(self.scratch, .leave);
+                }
+                return self.checkBody(.{ .items = items.items, .forms = forms, .defines = defines }, rib, decided.items, form_name);
             }
         }
-        return self.checkDecided(.{ .forms = forms.items, .defines = forms.items.len }, rib, decided.items);
+        return self.checkBody(.{ .items = items.items, .forms = forms, .defines = forms }, rib, decided.items, form_name);
+    }
+
+    /// Checks `body`, the result of a scan, as `checkDecided` does, and that it
+    /// has an expression after its definitions, and returns it.
+    fn checkBody(self: *Expander, body: Body, rib: *SyntacticEnv, decided: []const Decided, comptime form_name: []const u8) Error!Body {
+        _ = try self.checkDecided(body, rib, decided);
+        if (body.defines == body.forms)
+            return self.ctx.raise("bad " ++ form_name ++ ": a body needs an expression after its definitions", .{});
+        return body;
     }
 
     /// Checks that each head the scan of a body decided a form by still means
@@ -981,13 +1127,25 @@ const Expander = struct {
 
     /// `(let-syntax ((keyword transformer) ...) body ...)` and `letrec-syntax`
     /// (R7RS 4.3.1).
-    /// 本体は、キーワードを束縛した新しい環境で展開する。環境は rib を持たないので、
-    /// 本体の中の局所変数の番地は、外側と同じ深さから数える(`extendWithoutRib`)。
-    /// `let-syntax` の変換子は外側の環境で読み、`letrec-syntax` の変換子は、束縛を
-    /// 足した環境で読む。後者は、同じ束縛の中のキーワード(自分自身を含む)を見える。
+    /// 本体は、キーワードを束縛した新しい環境で展開する。その環境は rib を持たない
+    /// (`extendWithoutRib`)。`let-syntax` の変換子は外側の環境で読み、`letrec-syntax` の
+    /// 変換子は、束縛を足した環境で読む。後者は、同じ束縛の中のキーワード(自分自身を含む)を
+    /// 見える。
     ///
-    /// 本体は式の並びで、定義は置けない(式の位置の `begin` と同じ)。R7RS は本体と書くが、
-    /// rib を持たない環境には、定義が置くスロットが無い。仮に決めた制限である。
+    /// 本体は、`lambda` の本体と同じく、定義のあとに式が続く並びである(R7RS 4.3.1)。本体は
+    /// 自分の有効範囲を持ち、定義は本体の局所変数になる。外側の並びに繋ぎ込まない(R6RS の
+    /// `let-syntax` とは違う)。最上位の `let-syntax` の定義も、最上位の変数にならない。
+    /// 本体は、その内側に rib を足して走査する(`scanBody`)。`define` が1つでもあれば、本体を
+    /// 引数の無い手続きの呼び出しにして、そのフレームに局所変数を置く。`define` が無ければ
+    /// (`define-syntax` だけなら)、フレームを作らない。足した rib を、外側と同じ深さに戻し、
+    /// 本体の中の局所変数の番地を、外側と同じ深さから数える。
+    /// Why: 2026-10-22 にユーザーが、本体を自分の有効範囲にする案を選んだ。R7RS 4.3.1 は、
+    /// 本体を「0個以上の定義と1個以上の式」とし、キーワードの領域を本体とするだけで、外側への
+    /// 繋ぎ込みを書いていない(docs/spec の原文で確かめた)。定義の無い本体にフレームを作ると、
+    /// 今までの `let-syntax` の評価のたびに、手続きの確保と呼び出しが増える。
+    /// Why: 深さを戻せるのは、走査が rib の深さを読むものを作らないからである。局所変数の束縛
+    /// (`bindLocal`)は `define` だけが作り、子の環境は、走査のあとの展開の仕事が作る。
+    ///
     /// Why: 変換子が `_` や省略記号の意味を `letrec-syntax` の環境で引くので、環境の束縛を
     /// 先に置いてから変換子を作る。後から束縛が増えると、定義の時点の検査が見ていない読み方で
     /// 適用される。束縛はいったん空のマクロに置き、変換子ができたら中身を入れ替える。
@@ -1022,7 +1180,23 @@ const Expander = struct {
                 try syntax_env.bindMacro(self.ctx, inner, pair[0], macro);
             }
         }
-        try self.sequence(task.dest, items[2..], inner, .expression, 0);
+        const rib = try syntax_env.extend(self.ctx, inner);
+        // キーワードの環境と本体の rib の2つが、鎖を伸ばす。フレームを作らないときも、解決は
+        // 両方をたどるので、上限に数える。
+        try self.checkDepth(rib);
+        var slots: u32 = 0;
+        const scanned = try self.scanBody(items[2..], rib, &slots, form_name);
+        if (slots == 0) {
+            rib.rib_depth = inner.rib_depth;
+            return self.bodySequence(task.dest, scanned, rib);
+        }
+        // 本体を、引数の無い手続きにして、すぐに呼ぶ。
+        const body_node = try self.newNode();
+        try self.bodySequence(body_node, scanned, rib);
+        const operator = try self.newNode();
+        operator.* = .{ .lambda = try self.ctx.create(value_mod.Lambda, .{ .arity = 0, .rest = false, .frame_size = slots, .body = body_node }) };
+        _ = try self.newNodes(0, task.dest, attachOperands);
+        task.dest.call.operator = operator;
     }
 
     /// The bindings of a `let-syntax`, a list of forms.
@@ -1466,6 +1640,52 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
 }
 
+test "scopes nested deeper than the limit are an implementation restriction, and the limit itself is not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .depth = 2 };
+    const message = "implementation restriction: scopes are nested more than 2 deep";
+    // 深さ 2 が収まる最後である。
+    try std.testing.expectEqualStrings("(lambda 0 0 (lambda 0 0 (const 1)))", try f.expandText("(lambda () (lambda () 1))", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (lambda () (lambda () 1)))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // 定義の略記の手続きも、同じく数える。
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (define (g) (lambda () 1)) g)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) (lambda () (m)))))", "(const #<unspecified>)");
+    try std.testing.expectError(error.Raised, f.expandText("(m)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+}
+
+test "a let-syntax counts its two environments against the limit, whether its body makes a frame or not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .depth = 2 };
+    const message = "implementation restriction: scopes are nested more than 2 deep";
+    // キーワードの環境と本体の rib で 2 つになり、上限 2 に収まる最後である。
+    try std.testing.expectEqualStrings("(const 1)", try f.expandText("(let-syntax () 1)", limits));
+    try std.testing.expectEqualStrings("(call (lambda 0 1 (seq (define-local x 0 0 (const 1)) (local x 0 0))))", try f.expandText("(let-syntax () (define x 1) x)", limits));
+    // 外側にもう1段あれば、本体がフレームを作っても作らなくても、超える。
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (let-syntax () 1))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.expandText("(let-syntax () (let-syntax () 1))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.expandText("(letrec-syntax () (let-syntax () (define y 2) y))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // フレームを作らない let-syntax を重ねて止まらないマクロも、上限で終わる。
+    try f.expectExpands("(define-syntax s (syntax-rules () ((_) (let-syntax () (s)))))", "(const #<unspecified>)");
+    try std.testing.expectError(error.Raised, f.expandText("(s)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+}
+
+test "the default limit of the depth of scopes is the one the messages and the tests of the scheme side name" {
+    // tests/scheme/0311-expansion-depth.txt と tests/scheme-slow/0025-expansion-depth-scale.txt が、
+    // この値を文言の中に書いている。
+    try std.testing.expectEqual(10000, (Limits{}).depth);
+}
+
 test "a special form at the top level is not a variable or a value to assign" {
     var f: Fixture = undefined;
     try f.init();
@@ -1702,6 +1922,20 @@ test "the body of a let-syntax counts frames from the lambda around it, not from
     );
     // 本体は式の並びで、最後の式が値になる。
     try f.expectExpands("(let-syntax () 1 2)", "(seq (const 1) (const 2))");
+    // define-syntax だけの本体も、フレームを作らない。
+    try f.expectExpands("(lambda (x) (let-syntax () (define-syntax m (syntax-rules () ((_) x))) (m)))", "(lambda 1 1 (local x 0 0))");
+}
+
+test "a let-syntax whose body defines a variable runs the body as a call of a procedure without arguments" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // 本体の定義は新しいフレームの局所変数で、外側の変数は1つ深くなる。
+    try f.expectExpands(
+        "(lambda (x) (let-syntax () (define y 1) (+ x y)))",
+        "(lambda 1 1 (call (lambda 0 1 (seq (define-local y 0 0 (const 1)) (call (global +) (local x 1 0) (local y 0 0))))))",
+    );
+    try f.expectExpands("(letrec-syntax () (define y 2) y)", "(call (lambda 0 1 (seq (define-local y 0 0 (const 2)) (local y 0 0))))");
 }
 
 test "a let-syntax keyword hides the one around it only inside the body" {

@@ -77,3 +77,4 @@
 | [0041](0041-bsd-name-clause-attribution-not-endorsement.md) | 取り込んだ準拠スイートの著者名は出典としてだけ使い、推奨や認定と読める形では使わない | 採用 | 2026-10-20 |
 | [0042](0042-keep-replaced-cells-without-a-value.md) | 値の無いまま置き換えた最上位のセルは、未束縛の報告のために表が持つ | 採用 | 2026-10-21 |
 | [0043](0043-loading-library-holds-unbound-cells-strongly.md) | 定義の途中のライブラリの表は、未束縛のセルを強く持つ | 採用 | 2026-10-21 |
+| [0044](0044-machine-step-limit-not-catchable.md) | 機械の歩数の上限は、周回を数え、ハンドラで捕まえられない誤りで形式を打ち切る | 採用 | 2026-10-21 |

@@ -83,9 +83,9 @@ error: bad letrec-syntax: m is bound twice
 (letrec-syntax m 1)
 error: bad letrec-syntax: the bindings must be a list
 
-# 本体の定義は、まだ受け付けない。
+# 本体には定義を置ける(スライス 3p-1。詳しいケースは 0310-body-definitions.txt)。
 (let-syntax ((m (syntax-rules () ((_) 1)))) (define x 1) x)
-error: bad define: a definition is only allowed at the top level or at the start of a body
+1
 
 # let-syntax は変数として使えず、仮引数が同じ綴りを束縛すれば変数になる。
 ((lambda (let-syntax) (let-syntax 1 2)) list)
