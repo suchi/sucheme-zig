@@ -498,7 +498,7 @@ pub fn digitValue(c: u21) ?u4
 | 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
 | 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
 | 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則 |
-| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。PR を作る(このブランチ)。4g と 4r の前にマージする |
+| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。ドラフト PR [suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181)。独立レビューの指摘に対応中。4g と 4r の前にマージする |
 | 4f〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること

@@ -198,9 +198,11 @@ fn fitsInHeap(h: *const Heap, limbs: usize) bool {
 /// Why: 読む時間は、桁数と指数に対して2乗に近く伸びる(`bigint` の桁の読み取り、累乗、
 /// 約分の gcd、除算)。ヒープの上限に収まる綴りでも、既定の上限(256MiB)では、読むのに
 /// 数十秒かかる(ReleaseSafe で `#e1e10000000` が約30秒)。そこで綴りの大きさに上限を置く。
-/// 値は、2026-10-23 に、実測(ReleaseSafe で、桁数10万と指数±100万の組み合わせが約0.5〜0.6秒、
-/// 桁数30万と指数±100万が約1.2秒)を示して決まった。複素数は実部と虚部を別々に見るので、
-/// 最悪は部分の数だけ増える。R7RS 6.2.7 は内容を理由に誤りを出さないので、超えた綴りは
+/// 値は、2026-10-23 に、実測を示して決まった(いずれも ReleaseSafe で、WASM は未測定)。
+/// 1つの実数で、桁数10万と指数±100万のとき、数字が同じ並び(9だけなど)なら約0.6秒、
+/// 乱数の桁なら約1.7秒(`#e` + 乱数99,999桁 + `e-1000000` が1.6秒、乱数100,000桁の分数が
+/// 1.1秒)かかる。複素数と極形式は部分ごとに見るので、部分の数だけ増え、両部が最悪の綴りなら
+/// 約3秒になる。R7RS 6.2.7 は内容を理由に誤りを出さないので、超えた綴りは
 /// 数でないものと同じく null を返す(`string->number` は `#f`)。ヒープの上限と同じ側に倒れる。
 /// 後から緩めるのは、互換を壊さない。
 ///
@@ -916,6 +918,11 @@ test "parse says no to an exact spelling over the limits, wherever the heap has 
     try expectReadsFormatted(&h, null, "#e{s}.5", .{at});
     try expectReadsFormatted(&h, null, "#e1.{s}", .{at});
     try expectReadsFormatted(&h, null, "#e0.{s}", .{over});
+    // 先頭の0も数える: 0 が上限の個数あって 1 が続く綴りは、整数部の 0 と合わせて上限を超える。
+    const zeros_max = try filled(max_spelling_digits, '0');
+    defer testing.allocator.free(zeros_max);
+    try expectReadsFormatted(&h, null, "#e0.{s}1", .{zeros_max});
+    try expectReadsFormatted(&h, null, "#e-0.{s}1", .{zeros_max});
     // 正確な小数の指数の絶対値。符号によらない。
     try expectReads(&h, null, "#e1e1000001");
     try expectReads(&h, null, "#e1e-1000001");
@@ -935,6 +942,12 @@ test "parse says no to an exact spelling over the limits, wherever the heap has 
     // 断ったあとに、数えたものを残さない。
     try testing.expectEqual(0, h.external);
     try testing.expectEqual(0, h.accounted);
+}
+
+test "the limits of a spelling are the values the design decided" {
+    // 値を変えるのは設計の判断である(docs/design/numerics-and-unicode.md)。
+    try testing.expectEqual(100_000, max_spelling_digits);
+    try testing.expectEqual(1_000_000, max_spelling_exponent);
 }
 
 test "parse does not limit what costs little: an inexact decimal and an exact zero" {
@@ -1002,6 +1015,23 @@ test "parse reads an exact spelling just within the limits" {
         const lead = try filled(max_spelling_digits - 2, '0');
         defer testing.allocator.free(lead);
         const text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1", .{lead});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 分子と分母がともに上限ちょうど(約分の gcd が最も重い形に近い)。
+        const denominator = try filled(max_spelling_digits, '7');
+        defer testing.allocator.free(denominator);
+        denominator[max_spelling_digits - 1] = '3';
+        const text = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ nines, denominator });
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 仮数が上限ちょうどで、指数も上限ちょうど。
+        const fraction = try filled(max_spelling_digits - 2, '1');
+        defer testing.allocator.free(fraction);
+        const text = try std.fmt.allocPrint(testing.allocator, "#e1.{s}e-1000000", .{fraction});
         defer testing.allocator.free(text);
         try testing.expect((try parse(&h, text, 10)) != null);
     }
