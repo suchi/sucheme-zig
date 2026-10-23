@@ -81,8 +81,10 @@ pub fn makeRatio(h: *Heap, gpa: std.mem.Allocator, numerator: Const, denominator
 ///
 /// Why: 部分の正確性の混在の扱いは、2026-10-22 に、そろえる案で決まった(設計文書
 /// docs/design/numerics-and-unicode.md の複素数の節)。R7RS 6.2.1 は、正確な複素数は正確な
-/// 実部と正確な虚部を持ち、それ以外は不正確な複素数とするだけで、混在した部分を持てる
-/// かを定めていない。
+/// 実部と正確な虚部を持ち、それ以外は不正確な複素数とするだけである。6.2.6 は、
+/// `real-part` と `imag-part` が、`make-rectangular` に正確な引数が渡された不正確な複素数に
+/// 対して、正確な実数を返してよいとする。混在した部分は仕様が許すだけで必須ではないので、
+/// そろえても仕様に反しない。
 pub fn makeRectangular(h: *Heap, gpa: std.mem.Allocator, real: Value, imag: Value) Error!Value {
     std.debug.assert(isNumber(real) and isNumber(imag));
     std.debug.assert(real.kind() != .compnum and imag.kind() != .compnum);
@@ -360,17 +362,16 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u
 
 fn writeComplex(out: *std.Io.Writer, scratch: std.mem.Allocator, c: *const Compnum, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
     const inexact = c.real.asFlonum() != null;
-    // 部分の接頭辞は、全体の先頭に1つだけ置く。
-    const prefix_in_parts = !inexact or radix == 10;
+    // 部分の `#i` は、全体の先頭に1つだけ置く。基数10の flonum は接頭辞を持たない。
     if (inexact and radix != 10) try out.writeAll("#i");
-    if (c.real.asFixnum() != 0) try writePart(out, scratch, c.real, radix, prefix_in_parts);
+    if (c.real.asFixnum() != 0) try writePart(out, scratch, c.real, radix);
     if (c.imag.asFixnum()) |n| {
         if (n == 1) return out.writeAll("+i");
         if (n == -1) return out.writeAll("-i");
     }
     var imag: std.Io.Writer.Allocating = .init(scratch);
     defer imag.deinit();
-    try writePart(&imag.writer, scratch, c.imag, radix, prefix_in_parts);
+    try writePart(&imag.writer, scratch, c.imag, radix);
     const text = imag.written();
     // 符号の無い虚部(`1/10`、`2.5`)には `+` を付ける。`+inf.0` と負の数は、符号を持っている。
     if (text[0] != '+' and text[0] != '-') try out.writeByte('+');
@@ -378,8 +379,8 @@ fn writeComplex(out: *std.Io.Writer, scratch: std.mem.Allocator, c: *const Compn
     try out.writeByte('i');
 }
 
-fn writePart(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u8, with_prefix: bool) (std.Io.Writer.Error || error{OutOfMemory})!void {
-    if (v.asFlonum()) |x| return writeFlonumIn(out, scratch, x, radix, with_prefix);
+fn writePart(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
+    if (v.asFlonum()) |x| return writeFlonumIn(out, scratch, x, radix, false);
     try write(out, scratch, v, radix);
 }
 
@@ -692,6 +693,9 @@ test "parse makes both parts inexact when only one is, and keeps both exact when
         .{ .text = "#e1.5-2.5i", .expected = "3/2-5/2i" },
         .{ .text = "#e+1.5i", .expected = "+3/2i" },
         .{ .text = "1+2i", .expected = "1+2i" },
+        // fixnum の実部の変換(2^53 を超えると丸める)。
+        .{ .text = "4294967296+1.5i", .expected = "4294967296.0+1.5i" },
+        .{ .text = "9007199254740993+0.5i", .expected = "9007199254740992.0+0.5i" },
     }) |case| try expectReads(&h, case.expected, case.text);
     // 部分の型を、数ごとに確かめる。
     const z = (try parse(&h, "1+2.5i", 10)).?.asCompnum().?;

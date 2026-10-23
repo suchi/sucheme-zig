@@ -497,10 +497,13 @@ pub fn digitValue(c: u21) ?u4
 | 4a | マージ済み([suchi/sucheme-zig#148](https://github.com/suchi/sucheme-zig/pull/148)) |
 | 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
 | 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
-| 4e-2 | PR を作る(このブランチ)。複素数の構文と書き出し、部分の正確性をそろえる規則 |
+| 4e-2 | ドラフト PR [suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179)。複素数の構文と書き出し、部分の正確性をそろえる規則。独立レビューの指摘に対応中 |
+| 4e-3 | 読み取りの大きさの上限(桁数と指数)。値の案をユーザーに諮っている。承認後に別 PR で `parse` に足す。4g と 4r の前にマージする |
 | 4f〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4d のレビューを収束させ、マージする。L3 の型の骨格(計画書 0019)は、4d のあとに main を取り込んで進める。
-- 純粋な層(4a、4b)と Unicode の生成器(4u1)を並行に始める。4e は、4a、4b、4c、4d のマージを待つ。
+- 4e-2(#179)のレビューを収束させ、マージする。
+- 4e-3(読み取りの大きさの上限)を、値の承認後に別 PR で進める。4g の `string->number` と 4r のリーダーが `parse` を呼ぶ前に、マージする。
+- 4f(算術)に進む。4f は 4e-2 と並行にできる。
+- Unicode の生成器(4u1)は、数値の層と並行に進められる。
