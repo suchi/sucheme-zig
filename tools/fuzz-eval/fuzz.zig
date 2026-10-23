@@ -116,6 +116,7 @@ const Record = struct {
 
     srcs: [capacity][max_input]u8 = undefined,
     lens: [capacity]usize = @splat(0),
+    fail_ats: [capacity]u16 = @splat(0),
     /// The start of what each run wrote, and of the diagnostic it ended with.
     outs: [capacity][64]u8 = undefined,
     out_lens: [capacity]usize = @splat(0),
@@ -124,10 +125,11 @@ const Record = struct {
     /// How many runs there were, also those past `capacity`.
     count: usize = 0,
 
-    fn add(self: *Record, src: []const u8) void {
+    fn add(self: *Record, src: []const u8, fail_at: u16) void {
         if (self.count < capacity) {
             @memcpy(self.srcs[self.count][0..src.len], src);
             self.lens[self.count] = src.len;
+            self.fail_ats[self.count] = fail_at;
         }
         self.count += 1;
     }
@@ -145,24 +147,44 @@ const Record = struct {
     }
 };
 
+/// The latest allocation after the start a fuzz run may make fail.
+/// ファザーが 0 から選び、0 なら失敗させない。初期入力は Smith の値を持たないので 0 で
+/// 届き、出力の照合は失敗を混ぜずに走る。
+const max_fail_at = 512;
+
+/// What `evalOnce` saw.
+const Outcome = struct {
+    /// Whether an allocation was made to fail.
+    induced: bool,
+};
+
 /// One fuzz run: a fresh interpreter evaluates the input, then a constant.
-/// 見るのは次の3つである。パニックや安全検査の失敗が起きないこと(テストランナーが見る)。
-/// 確保が漏れないこと(`std.testing.allocator` が見る)。`evalPrint` が返す誤りが
-/// `OutOfMemory` でないこと。上限はヒープに置いてあり、この割り当て器は断らないので、
-/// `OutOfMemory` が返るのは、上限の外の確保が際限なく増えたときである。最後に、誤りのあとも
-/// インタプリタが使えることを、定数を評価して見る。定数にするのは、入力が `+` などの名前を
-/// 定義し直せるからである。
-///
-/// インタプリタは、実行のたびに `(scheme base)` つきで作り直す(計画書 0025 の合意を求める
-/// 点の1)。前の入力の定義が残らないので、ファザーが保存した入力1つで誤りを再現できる。
-/// ファイルは読まない(`files` が null)。
+/// 入力の後ろの Smith の値で、初期化のあとの確保を1回だけ失敗させる(`evalOnce`)。
 fn run(record: ?*Record, smith: *std.testing.Smith) anyerror!void {
     var buf: [max_input]u8 = undefined;
     const src = buf[0..smith.slice(&buf)];
-    if (record) |r| r.add(src);
+    const fail_at = smith.valueRangeAtMost(u16, 0, max_fail_at);
+    if (record) |r| r.add(src, fail_at);
+    _ = try evalOnce(record, src, fail_at);
+}
 
+/// Evaluates `src` in a fresh interpreter, making the `fail_at`-th allocation
+/// after the start fail when it is not 0, then evaluates a constant.
+/// 見るのは次の4つである。パニックや安全検査の失敗が起きないこと(テストランナーが見る)。
+/// 確保が漏れないこと(`std.testing.allocator` が見る)。失敗を混ぜなかったのに `evalPrint` が
+/// `OutOfMemory` を返さないこと。上限はヒープに置いてあり、この割り当て器は断らないので、
+/// `OutOfMemory` が返るのは、上限の外の確保が際限なく増えたときである。最後に、確保の失敗を
+/// 含む誤りのあとも、インタプリタが使えることを、定数を評価して見る。定数にするのは、入力が
+/// `+` などの名前を定義し直せるからである。
+///
+/// インタプリタは、実行のたびに `(scheme base)` つきで作り直す(計画書 0025 の合意を求める
+/// 点の1)。前の入力の定義が残らないので、ファザーが保存した入力1つで誤りを再現できる。
+/// ファイルは読まない(`files` が null)。初期化の途中と、`evalPrint` の作業用のアリーナの確保は
+/// 失敗させない(計画書 0025 の「残っていること」)。
+fn evalOnce(record: ?*Record, src: []const u8, fail_at: u16) anyerror!Outcome {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     var interp: sucheme.Interpreter = undefined;
-    try interp.initWithFiles(std.testing.allocator, .{ .limit = heap_limit }, null);
+    try interp.initWithFiles(failing.allocator(), .{ .limit = heap_limit }, null);
     defer interp.deinit();
     interp.setStepLimit(step_limit);
 
@@ -170,16 +192,19 @@ fn run(record: ?*Record, smith: *std.testing.Smith) anyerror!void {
     defer arena.deinit();
     var out_buf: [output_capacity]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
+    if (fail_at != 0) failing.fail_index = failing.alloc_index + fail_at - 1;
     interp.evalPrint(arena.allocator(), src, &out) catch |e| switch (e) {
-        error.OutOfMemory => return e,
+        error.OutOfMemory => if (!failing.has_induced_failure) return e,
         else => {},
     };
+    failing.fail_index = std.math.maxInt(usize);
     if (record) |r| r.end(out.buffered(), interp.diagnostic());
 
     var after_buf: [16]u8 = undefined;
     var after: std.Io.Writer = .fixed(&after_buf);
     try interp.evalPrint(arena.allocator(), "#t", &after);
     try std.testing.expectEqualStrings("#t\n", after.buffered());
+    return .{ .induced = failing.has_induced_failure };
 }
 
 /// Runs the fuzz test on `corpus`.
@@ -201,6 +226,8 @@ test "fuzz: the interpreter ends any input with a value or a specified error, an
     try std.testing.expectEqual(inputs.len + 1, record.count);
     for (inputs, 0..) |text, i| {
         try std.testing.expectEqualSlices(u8, text, record.srcs[i][0..record.lens[i]]);
+        // 初期入力の実行では、確保を失敗させない。
+        try std.testing.expectEqual(0, record.fail_ats[i]);
     }
     try std.testing.expectEqual(0, record.lens[inputs.len]);
     // 入力が届いても、評価されなければ、上の照合は緑のままである。標準環境とヒープの上限が
@@ -212,4 +239,15 @@ test "fuzz: the interpreter ends any input with a value or a specified error, an
         try std.testing.expectEqualStrings(e.out, record.outs[i][0..record.out_lens[i]]);
         try std.testing.expectEqualStrings(e.diagnostic, record.diagnostics[i][0..record.diagnostic_lens[i]]);
     }
+}
+
+test "an allocation that fails in the middle of an input leaves the interpreter usable" {
+    // 初期入力は確保を失敗させずに走るので、失敗を混ぜる経路は、ここで通る。`evalOnce` は、
+    // 失敗のあとに定数を評価できることと、漏れが無いことを見る。
+    for ([_]u16{ 1, 50, 200 }) |fail_at| {
+        const outcome = try evalOnce(null, input_fact, fail_at);
+        try std.testing.expect(outcome.induced);
+    }
+    // 0 なら失敗させない。
+    try std.testing.expect(!(try evalOnce(null, input_fact, 0)).induced);
 }
