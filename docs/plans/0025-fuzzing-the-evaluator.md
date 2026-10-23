@@ -1,6 +1,6 @@
 # 0025: ファジングの拡充 — 評価器を通しで試す対象と、入力コーパス
 
-- 対応する決定: [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md)(テストの3層。リーダのファジング)、[ADR-0044](../adr/0044-machine-step-limit-not-catchable.md)(機械の歩数の上限)、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)(機械検査の対象)
+- 対応する決定: [ADR-0013](../adr/0013-testing-strategy-and-conformance-suite.md)(テストの3層。リーダのファジング)、[ADR-0044](../adr/0044-machine-step-limit-not-catchable.md)(機械の歩数の上限)、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md)(自動検査の対象)
 - 段階: 6。roadmap の段階6の作業項目「ファジングの入力コーパスの拡充と、見つかった不具合の解消」。レーン L5([0017](0017-parallel-lanes.md))
 - 日付: 2026-10-22
 - 状態: 合意済み(2026-10-23)。「合意を求める点」の5項目すべてを、勧める案どおりに承認した。6i-1 の着手の時期は、親のセッションが指示する
@@ -18,7 +18,7 @@
 
 準拠スイートと `tests/scheme/` は、書いた人が思いついた入力しか試さない。ファジングは、壊れた入力、途中で切れた入力、型の合わない引数、深い入れ子を試す。見つけたいのは次の種類の誤りである。
 
-- 安全検査の失敗(範囲外の参照、到達しないはずの分岐、整数の溢れ)と、panic
+- 安全検査の失敗(範囲外の参照、到達しないはずの分岐、整数のあふれ)と、panic
 - 確保の漏れ(`std.testing.allocator` が報告する)
 - 決めた誤り以外の誤りが、`evalPrint` から返ること
 - 誤りのあとで、インタプリタが使えなくなること

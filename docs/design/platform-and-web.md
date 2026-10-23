@@ -102,7 +102,7 @@ Windows では引数と環境変数が UTF-16 で渡される。Zig 0.17.0 は�
 
 妥当な UTF-8 でないものをすべて拒否する。判定は `std.unicode.utf8ValidateSlice` に委ね、自前で条件を列挙しない。列挙すると取りこぼす。実機で確認したところ、過長符号化(`0xC0 0x80`)、サロゲート符号位置の符号化、5バイト列、不完全な列、継続バイトの単独出現に加えて、`0xFE` と `0xFF` も `false` になる。後者2つは「過長」「サロゲート」「U+10FFFF 超過」のどれにも当てはまらないため、条件を数え上げる書き方では漏れる。
 
-置換文字への差し替えは行わない。黙って内容を変えると、往復しない文字列が処理系の中に入る。
+置換文字への差し替えは行わない。黙って内容を変えると、ラウンドトリップしない文字列が処理系の中に入る。
 
 バイナリポートはバイト列をそのまま扱うので検証しない。`string->utf8` は妥当な文字列からバイト列を作るだけなので検証する対象がない。検証が必要なのはバイト列から文字列を作る向き、すなわち `utf8->string` である。
 
@@ -280,11 +280,11 @@ import を増やさないのは、ホスト側が用意しなければならな�
 
 段階2までの `src/wasm.zig` が宣言する import は `host_write_stderr` だけで、パニックのときの書き込みにだけ使う。`host_write_stdout` と `host_now_ms` は宣言していない。出力は出力バッファだけを通り、`host_now_ms` は時刻の手続きが入る段階5で足す([open-questions.md](open-questions.md) の時刻の import の形の行)。`host_write_stdout` を足す段階は決めていない。
 
-ホスト関数の import と、`alloc` による領域確保、文字列の往復は実機で確認した。
+ホスト関数の import と、`alloc` による領域確保、文字列のラウンドトリップは実機で確認した。
 
 ### 再開可能性
 
-`sucheme_step` が歩数制限で戻る設計は、[runtime.md](runtime.md) の機械の状態の「歩数の残り」に対応する。今の WASM には歩数の制限も `sucheme_step` も無く、機械は完了まで走る(歩数の上限は、制御を戻さずに形式を打ち切る形だけが入っていて、準拠スイートの実行器だけが置く。[ADR-0044](../adr/0044-machine-step-limit-not-catchable.md))。停止ボタンは、`web/app.js` が Worker を `terminate()` で捨てて作り直す形で、作り直した処理系は初期状態に戻る。以下は設計の目標で、段階8で入れる。これにより次の3つが同時に成立する。
+`sucheme_step` が歩数制限で戻る設計は、[runtime.md](runtime.md) の機械の状態の「歩数の残り」に対応する。今の WASM には歩数の制限も `sucheme_step` も無く、機械は完了まで走る(歩数の上限は、制御を戻さずに形式を打ち切る形だけが入っていて、準拠スイートのランナーだけが置く。[ADR-0044](../adr/0044-machine-step-limit-not-catchable.md))。停止ボタンは、`web/app.js` が Worker を `terminate()` で捨てて作り直す形で、作り直した処理系は初期状態に戻る。以下は設計の目標で、段階8で入れる。これにより次の3つが同時に成立する。
 
 - ブラウザのメインスレッドを長時間占有しない。
 - 実行の中断(停止ボタン)を実現できる。
@@ -363,7 +363,7 @@ sequenceDiagram
 
 Worker 上で動かすことで、長時間の計算中も画面が応答し、停止ボタンが機能する。
 
-各ラウンドで出力を取得したら `sucheme_output_clear` を呼ぶ。呼ばないとバッファが単調増加し、同じ内容を毎ラウンド再送するため転送量が出力長の二乗に比例する。無限ループの `display` で線形メモリを食い潰す。出力バッファは、設計では計上の対象である([runtime.md](runtime.md) の計上の対象)。段階2までの実装は、固定の大きさ(`src/wasm.zig` の `output_capacity`)のバッファを `std.heap.wasm_allocator` から確保し、計上の外に置く。溢れる書き込みは失敗し、評価は `output buffer full` で終わるので、バッファは単調に増えない。
+各ラウンドで出力を取得したら `sucheme_output_clear` を呼ぶ。呼ばないとバッファが単調増加し、同じ内容を毎ラウンド再送するため転送量が出力長の二乗に比例する。無限ループの `display` で線形メモリを食い潰す。出力バッファは、設計では計上の対象である([runtime.md](runtime.md) の計上の対象)。段階2までの実装は、固定の大きさ(`src/wasm.zig` の `output_capacity`)のバッファを `std.heap.wasm_allocator` から確保し、計上の外に置く。あふれる書き込みは失敗し、評価は `output buffer full` で終わるので、バッファは単調に増えない。
 
 ### 段階ごとの範囲
 
@@ -378,9 +378,9 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 段階7までは配置しない。段階8で、private にアクセス制限できるクラウドに置く([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。配置先のサービスは段階8で選ぶ。
 
-段階1から段階7は、PR のたびに `.github/workflows/preview.yml` が成果物 `sucheme-web` を上げる。中身は、`web/` のファイル(`serve.mjs` を含む)と `sucheme.wasm` を1つのディレクトリに並べたもので、`actions/upload-artifact` が zip にまとめる。保持期間は7日である。レビュアは zip を展開し、展開したディレクトリで `node serve.mjs` を実行して、表示された URL をブラウザで開く。Node.js だけが要り、Zig もリポジトリも要らない。
+段階1から段階7は、PR のたびに `.github/workflows/preview.yml` が成果物 `sucheme-web` を上げる。中身は、`web/` のファイル(`serve.mjs` を含む)と `sucheme.wasm` を1つのディレクトリに並べたもので、`actions/upload-artifact` が zip にまとめる。保持期間は7日である。レビュー担当者は zip を展開し、展開したディレクトリで `node serve.mjs` を実行して、表示された URL をブラウザで開く。Node.js だけが要り、Zig もリポジトリも要らない。
 
-ローカルで開く手段には制約がある。`file://` から始まる取得は Fetch の対象外であり、`.wasm` だけでなくモジュールスクリプトと Worker のスクリプト取得も失敗する。したがって `file://` で直接開く道は閉じており、ローカルの HTTP サーバを立てる形に絞られる。理由と、zip を開くレビュアとの関係は [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) にある。手段は `web/serve.mjs` に決めた([plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md))。
+ローカルで開く手段には制約がある。`file://` から始まる取得は Fetch の対象外であり、`.wasm` だけでなくモジュールスクリプトと Worker のスクリプト取得も失敗する。したがって `file://` で直接開く道は閉じており、ローカルの HTTP サーバを立てる形に絞られる。理由と、zip を開くレビュー担当者との関係は [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md) にある。手段は `web/serve.mjs` に決めた([plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md))。
 
 ## REPL の行編集
 
