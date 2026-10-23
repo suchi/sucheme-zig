@@ -116,6 +116,9 @@ const Record = struct {
 
     srcs: [capacity][max_input]u8 = undefined,
     lens: [capacity]usize = @splat(0),
+    fail_ats: [capacity]u16 = @splat(0),
+    /// Whether each run made an allocation fail.
+    induced: [capacity]bool = @splat(false),
     /// The start of what each run wrote, and of the diagnostic it ended with.
     outs: [capacity][64]u8 = undefined,
     out_lens: [capacity]usize = @splat(0),
@@ -124,18 +127,20 @@ const Record = struct {
     /// How many runs there were, also those past `capacity`.
     count: usize = 0,
 
-    fn add(self: *Record, src: []const u8) void {
+    fn add(self: *Record, src: []const u8, fail_at: u16) void {
         if (self.count < capacity) {
             @memcpy(self.srcs[self.count][0..src.len], src);
             self.lens[self.count] = src.len;
+            self.fail_ats[self.count] = fail_at;
         }
         self.count += 1;
     }
 
     /// Writes down how the run `add` wrote down last ended.
-    fn end(self: *Record, out: []const u8, diagnostic: []const u8) void {
+    fn end(self: *Record, out: []const u8, diagnostic: []const u8, induced: bool) void {
         const i = self.count - 1;
         if (i >= capacity) return;
+        self.induced[i] = induced;
         const o = @min(out.len, self.outs[i].len);
         @memcpy(self.outs[i][0..o], out[0..o]);
         self.out_lens[i] = o;
@@ -145,24 +150,109 @@ const Record = struct {
     }
 };
 
+/// The latest allocation after the start a fuzz run may make fail.
+/// ファザーが 0 から選び、0 なら失敗させない。初期入力は Smith の値を持たないので 0 で
+/// 届き、出力の照合は失敗を混ぜずに走る。
+const max_fail_at = 512;
+
+/// What `evalOnce` saw.
+const Outcome = struct {
+    /// Whether an allocation was made to fail.
+    induced: bool,
+    /// How many allocations went through after the start before the one
+    /// that failed, or null when none failed.
+    failed_after: ?usize,
+};
+
+/// An allocator that makes one chosen allocation fail, and passes on the rest.
+/// Why: std の `FailingAllocator` は、失敗させる番号に達すると、そのあとの確保をすべて失敗
+/// させる(`alloc_index` を進めない)。ここで試したいのは1回だけの失敗で、失敗を捕まえて先に
+/// 進む経路(`src/heap.zig` の作業スタックの確保など)が、そのあとの確保の成功を受けて一貫した
+/// 状態を保つかも見る。数えるのは `alloc` だけで、`resize` と `remap` は失敗させない。
+const OneShotFailure = struct {
+    backing: std.mem.Allocator,
+    /// How many more allocations succeed before the one that fails, or null
+    /// when none is to fail.
+    countdown: ?usize = null,
+    /// How many allocations went through since `arm`.
+    passed: usize = 0,
+    /// Whether the chosen allocation has failed.
+    induced: bool = false,
+    /// How many allocations went through since `arm` before the one that
+    /// failed.
+    failed_after: ?usize = null,
+
+    fn allocator(self: *OneShotFailure) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    /// Makes the `fail_at`-th allocation from now fail, or none when it is 0.
+    fn arm(self: *OneShotFailure, fail_at: usize) void {
+        self.countdown = if (fail_at == 0) null else fail_at - 1;
+        self.passed = 0;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotFailure = @ptrCast(@alignCast(ctx));
+        if (self.countdown) |n| {
+            if (n == 0) {
+                self.countdown = null;
+                self.induced = true;
+                self.failed_after = self.passed;
+                return null;
+            }
+            self.countdown = n - 1;
+        }
+        self.passed += 1;
+        return self.backing.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotFailure = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotFailure = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotFailure = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ra);
+    }
+};
+
 /// One fuzz run: a fresh interpreter evaluates the input, then a constant.
-/// 見るのは次の3つである。パニックや安全検査の失敗が起きないこと(テストランナーが見る)。
-/// 確保が漏れないこと(`std.testing.allocator` が見る)。`evalPrint` が返す誤りが
-/// `OutOfMemory` でないこと。上限はヒープに置いてあり、この割り当て器は断らないので、
-/// `OutOfMemory` が返るのは、上限の外の確保が際限なく増えたときである。最後に、誤りのあとも
-/// インタプリタが使えることを、定数を評価して見る。定数にするのは、入力が `+` などの名前を
-/// 定義し直せるからである。
-///
-/// インタプリタは、実行のたびに `(scheme base)` つきで作り直す(計画書 0025 の合意を求める
-/// 点の1)。前の入力の定義が残らないので、ファザーが保存した入力1つで誤りを再現できる。
-/// ファイルは読まない(`files` が null)。
+/// 入力の後ろの Smith の値で、初期化のあとの確保を1回だけ失敗させる(`evalOnce`)。
 fn run(record: ?*Record, smith: *std.testing.Smith) anyerror!void {
     var buf: [max_input]u8 = undefined;
     const src = buf[0..smith.slice(&buf)];
-    if (record) |r| r.add(src);
+    const fail_at = smith.valueRangeAtMost(u16, 0, max_fail_at);
+    if (record) |r| r.add(src, fail_at);
+    _ = try evalOnce(record, src, fail_at, std.testing.allocator);
+}
 
+/// Evaluates `src` in a fresh interpreter on `backing`, making the
+/// `fail_at`-th allocation after the start fail when it is not 0, then
+/// evaluates a constant.
+/// 見るのは次の4つである。パニックや安全検査の失敗が起きないこと(テストランナーが見る)。
+/// 確保が漏れないこと(`std.testing.allocator` が見る)。失敗を混ぜなかったのに `evalPrint` が
+/// `OutOfMemory` を返さないこと。上限はヒープに置いてあり、この割り当て器は断らないので、
+/// `OutOfMemory` が返るのは、上限の外の確保が際限なく増えたときである。最後に、確保の失敗を
+/// 含む誤りのあとも、インタプリタが使えることを、定数を評価して見る。定数にするのは、入力が
+/// `+` などの名前を定義し直せるからである。
+///
+/// インタプリタは、実行のたびに `(scheme base)` つきで作り直す(計画書 0025 の合意を求める
+/// 点の1)。前の入力の定義が残らないので、ファザーが保存した入力1つで誤りを再現できる。
+/// ファイルは読まない(`files` が null)。初期化の途中と、`evalPrint` の作業用のアリーナの確保は
+/// 失敗させない(計画書 0025 の「残っていること」)。`backing` は、ふつうは
+/// `std.testing.allocator` である。テストは、仕掛けていない失敗を作るために、自分で失敗する
+/// 割り当て器を渡す。
+fn evalOnce(record: ?*Record, src: []const u8, fail_at: u16, backing: std.mem.Allocator) anyerror!Outcome {
+    var failing: OneShotFailure = .{ .backing = backing };
     var interp: sucheme.Interpreter = undefined;
-    try interp.initWithFiles(std.testing.allocator, .{ .limit = heap_limit }, null);
+    try interp.initWithFiles(failing.allocator(), .{ .limit = heap_limit }, null);
     defer interp.deinit();
     interp.setStepLimit(step_limit);
 
@@ -170,16 +260,20 @@ fn run(record: ?*Record, smith: *std.testing.Smith) anyerror!void {
     defer arena.deinit();
     var out_buf: [output_capacity]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
+    failing.arm(fail_at);
     interp.evalPrint(arena.allocator(), src, &out) catch |e| switch (e) {
-        error.OutOfMemory => return e,
+        error.OutOfMemory => if (!failing.induced) return e,
         else => {},
     };
-    if (record) |r| r.end(out.buffered(), interp.diagnostic());
+    // 失敗する前に `evalPrint` が戻ったときは、仕掛けを外す。
+    failing.countdown = null;
+    if (record) |r| r.end(out.buffered(), interp.diagnostic(), failing.induced);
 
     var after_buf: [16]u8 = undefined;
     var after: std.Io.Writer = .fixed(&after_buf);
     try interp.evalPrint(arena.allocator(), "#t", &after);
     try std.testing.expectEqualStrings("#t\n", after.buffered());
+    return .{ .induced = failing.induced, .failed_after = failing.failed_after };
 }
 
 /// Runs the fuzz test on `corpus`.
@@ -201,6 +295,9 @@ test "fuzz: the interpreter ends any input with a value or a specified error, an
     try std.testing.expectEqual(inputs.len + 1, record.count);
     for (inputs, 0..) |text, i| {
         try std.testing.expectEqualSlices(u8, text, record.srcs[i][0..record.lens[i]]);
+        // 初期入力の実行では、確保を失敗させない。
+        try std.testing.expectEqual(0, record.fail_ats[i]);
+        try std.testing.expect(!record.induced[i]);
     }
     try std.testing.expectEqual(0, record.lens[inputs.len]);
     // 入力が届いても、評価されなければ、上の照合は緑のままである。標準環境とヒープの上限が
@@ -212,4 +309,66 @@ test "fuzz: the interpreter ends any input with a value or a specified error, an
         try std.testing.expectEqualStrings(e.out, record.outs[i][0..record.out_lens[i]]);
         try std.testing.expectEqualStrings(e.diagnostic, record.diagnostics[i][0..record.diagnostic_lens[i]]);
     }
+}
+
+test "an allocation that fails in the middle of an input leaves the interpreter usable" {
+    // 初期入力は確保を失敗させずに走るので、失敗を混ぜる経路は、ここで通る。`evalOnce` は、
+    // 失敗のあとに定数を評価できることと、漏れが無いことを見る。失敗したのが何回目かも見る。
+    for ([_]u16{ 1, 50, 200 }) |fail_at| {
+        const outcome = try evalOnce(null, input_fact, fail_at, std.testing.allocator);
+        try std.testing.expect(outcome.induced);
+        // 失敗の前に通った確保は `fail_at - 1` 回である。
+        try std.testing.expectEqual(fail_at - 1, outcome.failed_after.?);
+    }
+    // 0 なら失敗させない。
+    try std.testing.expect(!(try evalOnce(null, input_fact, 0, std.testing.allocator)).induced);
+    // 失敗させる番号に届く前に `evalPrint` が戻っても、仕掛けは定数の評価に持ち越さない。
+    try std.testing.expect(!(try evalOnce(null, "", 1, std.testing.allocator)).induced);
+}
+
+test "a fuzz run makes the allocation the fuzzer chose fail" {
+    // 初期入力は `fail_at` が 0 で届くので、`run` が Smith の値を `evalOnce` に渡すことは、
+    // 初期入力の照合では固定されない。入力の後ろに値を載せて、`run` を直接呼ぶ。Smith は、
+    // 整数を 8 バイトのリトルエンディアンで読む(Zig 0.17.0 の lib/std/testing/Smith.zig)。
+    const bytes = comptime seed(input_fact) ++ std.mem.toBytes(std.mem.nativeToLittle(u64, 50));
+    var smith: std.testing.Smith = .{ .in = bytes };
+    var record: Record = .{};
+    try run(&record, &smith);
+    try std.testing.expectEqual(1, record.count);
+    try std.testing.expectEqual(50, record.fail_ats[0]);
+    try std.testing.expect(record.induced[0]);
+}
+
+test "the chosen allocation fails only once, and the ones before it go through" {
+    var failing: OneShotFailure = .{ .backing = std.testing.allocator };
+    const a = failing.allocator();
+    failing.arm(3);
+    const first = try a.create(u8);
+    defer a.destroy(first);
+    const second = try a.create(u8);
+    defer a.destroy(second);
+    try std.testing.expectError(error.OutOfMemory, a.create(u8));
+    try std.testing.expect(failing.induced);
+    try std.testing.expectEqual(2, failing.failed_after.?);
+    // 失敗のあとの確保は通る。
+    const after = try a.create(u8);
+    defer a.destroy(after);
+    try std.testing.expectEqual(3, failing.passed);
+}
+
+test "an allocation failure that was not chosen is reported as an error" {
+    // 仕掛けていない失敗(上限の外の確保が際限なく増えたときに起きるもの)を、内側の割り当て器
+    // で作る。初期化に要る確保の数を先に数え、評価の途中の確保を1回だけ失敗させる。
+    // Why: 内側を失敗し続ける割り当て器にすると、`evalOnce` が `OutOfMemory` を握りつぶしても、
+    // 続く定数の評価が同じ誤りで落ちるので、握りつぶしを見分けられない。
+    var counting: OneShotFailure = .{ .backing = std.testing.allocator };
+    {
+        var interp: sucheme.Interpreter = undefined;
+        try interp.initWithFiles(counting.allocator(), .{ .limit = heap_limit }, null);
+        interp.deinit();
+    }
+    var failing: OneShotFailure = .{ .backing = std.testing.allocator };
+    failing.arm(counting.passed + 3);
+    try std.testing.expectError(error.OutOfMemory, evalOnce(null, input_fact, 0, failing.allocator()));
+    try std.testing.expect(failing.induced);
 }
