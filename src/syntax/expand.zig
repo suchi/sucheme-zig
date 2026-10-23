@@ -40,7 +40,24 @@ pub const Error = context.Error;
 /// 既定は番地の幅いっぱいの値である。テストは上限に届かせるために、より小さい値を渡す。
 pub const Limits = struct {
     address: u32 = std.math.maxInt(u32),
+    /// The deepest the syntactic environments the expander makes may be nested
+    /// (the length of a chain of them).
+    depth: u32 = max_depth,
 };
+
+/// The deepest the syntactic environments may be nested in what the expander
+/// makes: an implementation restriction (R7RS 1.3.2).
+/// 数えるのは環境の鎖の長さ(`SyntacticEnv.nesting`)で、`lambda` の rib と、rib を持たない
+/// `let-syntax` と `letrec-syntax` の環境の両方である。`lambda` だけの入れ子なら、手続きの
+/// 入れ子の深さと同じになる。
+/// Why: 識別子の解決は、構文環境の鎖を内側からたどるので、鎖の長さに比例する。入れ子の
+/// `lambda` や `let-syntax` を重ねて止まらないマクロは、1段ごとに長さに比例する解決を
+/// 繰り返すので、時間が長さの2乗で伸び、展開がいつまでも終わらない(ヒープの上限に当たる
+/// 前に、時間が尽きる)。鎖の長さに上限を置いて、有界で終わらせる。rib の深さで数えると、
+/// rib を持たない `let-syntax` を重ねる形が止まらない(3p-2 のレビューで見つかった)。
+/// 環境の探索を深さに依存しない形にする案は、新しい機構になるので採らなかった
+/// (docs/plans/0016-phase3-scheme-stdlib.md の 3p の中身)。
+pub const max_depth = 10000;
 
 /// Expands `form`, which is at the top level of a program.
 /// 節点は GC ヒープに確保し、上限に数える(ADR-0040)。展開の実行中だけ要るものは
@@ -753,6 +770,7 @@ const Expander = struct {
         comptime form_name: []const u8,
     ) Error!void {
         const inner = try syntax_env.extend(self.ctx, env);
+        try self.checkDepth(inner);
         var slots: u32 = 0;
         var rest = params_form;
         while (rest.asPair()) |p| : (rest = p.cdr) try self.parameter(inner, &slots, p.car, form_name);
@@ -797,6 +815,13 @@ const Expander = struct {
                 .leave => .{ .form = .unspecified_value, .env = null, .pos = .top, .dest = dest, .op = .leave_file },
             });
         }
+    }
+
+    /// Checks that `env`, an environment the expander has just made, is not
+    /// nested deeper than the limit.
+    fn checkDepth(self: *Expander, env: *const SyntacticEnv) Error!void {
+        if (env.nesting > self.limits.depth)
+            return self.ctx.raise("implementation restriction: scopes are nested more than {d} deep", .{self.limits.depth});
     }
 
     /// Binds the next slot of a call's frame in `rib`, after checking that the
@@ -1156,6 +1181,9 @@ const Expander = struct {
             }
         }
         const rib = try syntax_env.extend(self.ctx, inner);
+        // キーワードの環境と本体の rib の2つが、鎖を伸ばす。フレームを作らないときも、解決は
+        // 両方をたどるので、上限に数える。
+        try self.checkDepth(rib);
         var slots: u32 = 0;
         const scanned = try self.scanBody(items[2..], rib, &slots, form_name);
         if (slots == 0) {
@@ -1610,6 +1638,52 @@ test "an address that does not fit the width is reported, and one that just fits
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a b) a)", limits));
     try std.testing.expectEqualStrings("implementation restriction: a procedure has too many variables", f.ctx.diagnostic());
     try std.testing.expectError(error.Raised, f.expandText("(lambda (a) (define b 1) a)", limits));
+}
+
+test "scopes nested deeper than the limit are an implementation restriction, and the limit itself is not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .depth = 2 };
+    const message = "implementation restriction: scopes are nested more than 2 deep";
+    // 深さ 2 が収まる最後である。
+    try std.testing.expectEqualStrings("(lambda 0 0 (lambda 0 0 (const 1)))", try f.expandText("(lambda () (lambda () 1))", limits));
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (lambda () (lambda () 1)))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // 定義の略記の手続きも、同じく数える。
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (define (g) (lambda () 1)) g)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    try f.expectExpands("(define-syntax m (syntax-rules () ((_) (lambda () (m)))))", "(const #<unspecified>)");
+    try std.testing.expectError(error.Raised, f.expandText("(m)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+}
+
+test "a let-syntax counts its two environments against the limit, whether its body makes a frame or not" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const limits: Limits = .{ .depth = 2 };
+    const message = "implementation restriction: scopes are nested more than 2 deep";
+    // キーワードの環境と本体の rib で 2 つになり、上限 2 に収まる最後である。
+    try std.testing.expectEqualStrings("(const 1)", try f.expandText("(let-syntax () 1)", limits));
+    try std.testing.expectEqualStrings("(call (lambda 0 1 (seq (define-local x 0 0 (const 1)) (local x 0 0))))", try f.expandText("(let-syntax () (define x 1) x)", limits));
+    // 外側にもう1段あれば、本体がフレームを作っても作らなくても、超える。
+    try std.testing.expectError(error.Raised, f.expandText("(lambda () (let-syntax () 1))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.expandText("(let-syntax () (let-syntax () 1))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    try std.testing.expectError(error.Raised, f.expandText("(letrec-syntax () (let-syntax () (define y 2) y))", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+    // フレームを作らない let-syntax を重ねて止まらないマクロも、上限で終わる。
+    try f.expectExpands("(define-syntax s (syntax-rules () ((_) (let-syntax () (s)))))", "(const #<unspecified>)");
+    try std.testing.expectError(error.Raised, f.expandText("(s)", limits));
+    try std.testing.expectEqualStrings(message, f.ctx.diagnostic());
+}
+
+test "the default limit of the depth of scopes is the one the messages and the tests of the scheme side name" {
+    // tests/scheme/0311-expansion-depth.txt と tests/scheme-slow/0025-expansion-depth-scale.txt が、
+    // この値を文言の中に書いている。
+    try std.testing.expectEqual(10000, (Limits{}).depth);
 }
 
 test "a special form at the top level is not a variable or a value to assign" {

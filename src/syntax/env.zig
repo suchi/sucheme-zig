@@ -37,7 +37,7 @@ pub const Error = context.Error;
 pub fn extend(ctx: *Context, parent: ?*SyntacticEnv) Error!*SyntacticEnv {
     const depth = std.math.add(u32, ribDepth(parent), 1) catch
         return ctx.raise("implementation restriction: procedures are nested too deeply", .{});
-    return ctx.create(SyntacticEnv, .{ .parent = parent, .rib_depth = depth, .bindings = null });
+    return ctx.create(SyntacticEnv, .{ .parent = parent, .rib_depth = depth, .nesting = nestingOf(parent) +| 1, .bindings = null });
 }
 
 /// A new environment inside `parent` (null at the top level) that adds bindings
@@ -47,7 +47,12 @@ pub fn extend(ctx: *Context, parent: ?*SyntacticEnv) Error!*SyntacticEnv {
 /// 存在しない rib をたどる(docs/design/frontend.md)。`let-syntax` と `letrec-syntax` が、
 /// マクロの束縛を置くために使う。
 pub fn extendWithoutRib(ctx: *Context, parent: ?*SyntacticEnv) Error!*SyntacticEnv {
-    return ctx.create(SyntacticEnv, .{ .parent = parent, .rib_depth = ribDepth(parent), .bindings = null });
+    return ctx.create(SyntacticEnv, .{ .parent = parent, .rib_depth = ribDepth(parent), .nesting = nestingOf(parent) +| 1, .bindings = null });
+}
+
+/// How many environments the chain from `env` has; the top level is 0.
+pub fn nestingOf(env: ?*const SyntacticEnv) u32 {
+    return if (env) |e| e.nesting else 0;
 }
 
 /// The rib depth of `env`; the top level is 0.

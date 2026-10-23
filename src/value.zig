@@ -1415,6 +1415,11 @@ pub const SyntacticEnv = struct {
     /// 最上位は 0 で、`lambda` の rib は外側より 1 大きい。局所変数の字句アドレスの
     /// 深さは、参照する側の環境のこの値から、束縛した rib のこの値を引いたものである。
     rib_depth: u32,
+    /// How many environments the chain from this one to its outermost has, this
+    /// one included.
+    /// 識別子の解決がたどる長さで、展開器が上限を置く(`src/syntax/expand.zig` の
+    /// `max_depth`)。rib を持たない環境(`let-syntax`)も数える。
+    nesting: u32 = 0,
     /// The bindings, the newest first.
     /// 探索は先頭から線形に進む。同じ識別子を束縛し直すと、後のものが前のものを隠す。
     bindings: ?*SyntacticBinding,
