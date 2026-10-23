@@ -346,12 +346,12 @@ error: wrong number of arguments to number? 1 2
 (define (prime? n) (define (go d) (if (> (* d d) n) #t (if (= (remainder n d) 0) #f (go (+ d 1))))) (if (< n 2) #f (go 2))) (prime? 2)
 #t
 
-# 実演。階乗。20 は収まり、21 はあふれる。あふれても REPL は止まらない。
+# 実演。階乗。20 は fixnum に収まり、21 からは bignum になる。
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20)
 2432902008176640000
 
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 21)
-error: integer overflow in * 21 2432902008176640000
+51090942171709440000
 
 # 実演。10進の桁の和。`quotient` と `modulo` で桁を取り出す。
 (define (digits n) (if (= n 0) 0 (+ (modulo n 10) (digits (quotient n 10))))) (digits 9876)

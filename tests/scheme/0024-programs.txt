@@ -7,11 +7,10 @@
 # それらを組み合わせたときに、結果が正しく、GC を越えても壊れないことを見る。
 # 実行器は全ケースを、1ステップごとに GC するモードでも走らせる。
 
-# 階乗。20 までは固定長整数に収まり、21 で溢れる。溢れる前に出した結果は
-# 出力に残り、エラーはそのあとに報告される。
+# 階乗。20 までは fixnum に収まり、21 からは bignum になる。
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20) (fact 21)
 2432902008176640000
-error: integer overflow in * 21 2432902008176640000
+51090942171709440000
 
 # 末尾再帰は反復と同じで、深さに比例した記憶を使わない。
 (define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc n)))) (loop 100000 0)
@@ -33,7 +32,7 @@ error: integer overflow in * 21 2432902008176640000
 4611686018427387904
 
 (define (power b e) (if (= e 0) 1 (if (= (remainder e 2) 0) (power (* b b) (quotient e 2)) (* b (power b (- e 1)))))) (power 2 63)
-error: integer overflow in * 2 4611686018427387904
+9223372036854775808
 
 (define (digit-sum n) (if (= n 0) 0 (+ (remainder n 10) (digit-sum (quotient n 10))))) (digit-sum 123456789)
 45

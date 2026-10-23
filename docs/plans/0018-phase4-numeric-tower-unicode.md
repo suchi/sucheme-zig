@@ -496,13 +496,15 @@ pub fn digitValue(c: u21) ?u4
 | 4d | マージ済み([suchi/sucheme-zig#134](https://github.com/suchi/sucheme-zig/pull/134)) |
 | 4a | マージ済み([suchi/sucheme-zig#148](https://github.com/suchi/sucheme-zig/pull/148)) |
 | 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
-| 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
-| 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則 |
-| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。ドラフト PR [suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181)。独立レビューの指摘に対応中。4g と 4r の前にマージする |
-| 4f〜4z、4u1〜4u4 | 未着手 |
+| 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため)。実績: PR を作ってからマージまで約 14 時間(2026-10-22 20:37 JST から 2026-10-23 10:32 JST。夜間の待ちを含む) |
+| 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則。実績: PR を作ってから ready まで約 44 分、マージまで約 77 分(2026-10-23 11:24 JST から 12:08 JST、12:41 JST。層2 は約 30 分) |
+| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。マージ済み([suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181))。実績: PR を作ってから ready まで約 57 分、マージまで約 128 分(2026-10-23 13:27 JST から 14:24 JST、15:35 JST。層2 は約 25 分) |
+| 4f | 実装中(ブランチ `feature/phase4-slice-4f-arithmetic`)。四則と比較。compnum の範囲、述語の担当、巨大な bignum の演算の時間は、ユーザーの判断待ち |
+| 4g〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4e-3(読み取りの大きさの上限)の PR を、レビューを経てマージする。4g の `string->number` と 4r のリーダーが `parse` を呼ぶ前に、マージする。
-- 4f(算術)に進む。4f は 4e-2 と並行にできる。
+- 4f(四則と比較)の PR を作り、レビューを経てマージする。
+- 4g(整数と有理数の手続き)と 4h(`(scheme inexact)`)は、4f のマージのあとに並行に進める。
+- 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。
 - Unicode の生成器(4u1)は、数値の層と並行に進められる。

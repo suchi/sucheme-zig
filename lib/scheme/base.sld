@@ -5,7 +5,7 @@
 ;; 残し、ここには入れない。名前の並びは `tests/r7rs-required/base.txt` の順である。
 (define-library (scheme base)
   (import (sucheme core) (sucheme derived) (sucheme procedures))
-  (export * + - ... < <= = => > >= _ and append apply assoc assq assv begin boolean=? boolean?
+  (export * + - ... / < <= = => > >= _ and append apply assoc assq assv begin boolean=? boolean?
           bytevector bytevector-append bytevector-copy bytevector-copy! bytevector-length
           bytevector-u8-ref bytevector-u8-set! bytevector? caar cadr
           call-with-current-continuation call-with-values call/cc car case cdar cddr cdr

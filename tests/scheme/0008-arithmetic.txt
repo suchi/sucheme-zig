@@ -1,5 +1,5 @@
-# Slice 1e: the arithmetic and comparison primitives of fixed-length integers.
-# A result that does not fit is an error until bignums arrive in stage 4. The
+# Slice 1e: the arithmetic and comparison primitives of integers. A result that does
+# not fit a fixnum is a bignum (slice 4f), and it is a fixnum again once it fits. The
 # comparisons take one or more numbers and chain: (< a b c) is (and (< a b) (< b c)).
 
 (- 5)
@@ -111,19 +111,19 @@ yes
 #f
 
 (- 9223372036854775807 -1)
-error: integer overflow in - 9223372036854775807 -1
+9223372036854775808
 
 (- -9223372036854775808)
-error: integer overflow in - -9223372036854775808
+9223372036854775808
 
 (* 4611686018427387904 2)
-error: integer overflow in * 4611686018427387904 2
+9223372036854775808
 
 (* 9223372036854775807 9223372036854775807 9223372036854775807)
-error: integer overflow in * 9223372036854775807 9223372036854775807 9223372036854775807
+784637716923335095224261902710254454442933591094742482943
 
 (* 4294967296 4294967296 4294967296 4294967296)
-error: integer overflow in * 4294967296 4294967296 4294967296 4294967296
+340282366920938463463374607431768211456
 
 (= 1 'a)
 error: wrong type of argument to = 1 a

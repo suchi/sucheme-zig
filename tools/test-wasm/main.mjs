@@ -656,8 +656,18 @@ test("integer division and 128-bit arithmetic agree with the native results in w
     OK,
     "9223372032559808512\n9223372036854775807\n-9223372036854775808\n",
   ]);
-  assert.deepEqual(h.run("(* 3037000500 3037000500)"), [SCHEME_ERROR, "error: integer overflow in * 3037000500 3037000500\n"]);
-  assert.deepEqual(h.run("(+ 9223372036854775807 1)"), [SCHEME_ERROR, "error: integer overflow in + 9223372036854775807 1\n"]);
+  // 結果が 64 ビットに収まらなければ bignum になる。wasm32 では限界値列の 1 要素が 32 ビットである。
+  assert.deepEqual(h.run("(* 3037000500 3037000500) (+ 9223372036854775807 1) (* 4294967296 4294967296 4294967296)"), [
+    OK,
+    "9223372037000250000\n9223372036854775808\n79228162514264337593543950336\n",
+  ]);
+  // bignum が fixnum に戻る。有理数は約分され、分母が 1 なら整数になる。
+  assert.deepEqual(h.run("(- (* 4294967296 4294967296) (* 4294967296 4294967296)) (/ 1 3) (/ 6 4) (/ 6 3) (+ (/ 1 2) (/ 1 3))"), [
+    OK,
+    "0\n1/3\n3/2\n2\n5/6\n",
+  ]);
+  assert.deepEqual(h.run("(< (/ 1 3) (/ 1 2) (+ 9223372036854775807 1)) (= (* 4294967296 4294967296) (* 4294967296 4294967296))"), [OK, "#t\n#t\n"]);
+  assert.deepEqual(h.run("(/ 1 0)"), [SCHEME_ERROR, "error: division by zero in / 1 0\n"]);
 });
 
 test("a tail-recursive loop of 100000 iterations completes", () => {
