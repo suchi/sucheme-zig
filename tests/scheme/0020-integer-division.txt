@@ -1,8 +1,8 @@
 # スライス 1k の単位 K4: 整数除算と `number?`。
 # `quotient` と `remainder` は0に向かう切り捨て除算、`modulo` は床除算である
 # (R7RS 6.2.6)。`remainder` の符号は被除数に、`modulo` の符号は除数に従う。
-# 除数が0なら0除算のエラーである。最小の整数を -1 で割る `quotient` だけは、結果が
-# 固定長整数に収まらないのであふれる。`remainder` と `modulo` は 0 になる。
+# 除数が0なら0除算のエラーである。最小の整数を -1 で割る `quotient` は、結果が
+# fixnum に収まらず bignum になる。`remainder` と `modulo` は 0 になる。
 
 (quotient 7 2)
 3
@@ -141,9 +141,9 @@
 (modulo -9223372036854775808 -9223372036854775808)
 0
 
-# 最小値を -1 で割る。`quotient` だけが結果の 2^63 を表せず、あふれる。
+# 最小値を -1 で割る。`quotient` の結果の 2^63 は fixnum に収まらず、bignum になる。
 (quotient -9223372036854775808 -1)
-error: integer overflow in quotient -9223372036854775808 -1
+9223372036854775808
 
 (remainder -9223372036854775808 -1)
 0

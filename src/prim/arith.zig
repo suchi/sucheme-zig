@@ -2,7 +2,7 @@
 //!
 //! 四則と比較と `number?` は数値塔の実数(fixnum、bignum、ratnum、flonum)を扱い、
 //! 計算は `num/ops.zig` が行う(docs/design/numerics-and-unicode.md)。整数除算の
-//! `quotient` `remainder` `modulo` は、スライス 4g まで fixnum だけを扱う。
+//! 7個と `abs` も同じである。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -25,19 +25,16 @@ pub const primitives = [_]Primitive{
     .{ .name = ">", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.gt) } },
     .{ .name = "<=", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.lte) } },
     .{ .name = ">=", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.gte) } },
-    .{ .name = "quotient", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.quotient) } },
-    .{ .name = "remainder", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.remainder) } },
-    .{ .name = "modulo", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.modulo) } },
+    .{ .name = "quotient", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.truncate_quotient) } },
+    .{ .name = "remainder", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.truncate_remainder) } },
+    .{ .name = "modulo", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.floor_remainder) } },
+    .{ .name = "truncate-quotient", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.truncate_quotient) } },
+    .{ .name = "truncate-remainder", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.truncate_remainder) } },
+    .{ .name = "floor-quotient", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.floor_quotient) } },
+    .{ .name = "floor-remainder", .min_args = 2, .max_args = 2, .body = .{ .pure = division(.floor_remainder) } },
+    .{ .name = "abs", .min_args = 1, .max_args = 1, .body = .{ .pure = &abs } },
     .{ .name = "number?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isNumber } },
 };
-
-/// A result of the wide arithmetic, as a fixnum if it fits.
-///
-/// 整数除算(`quotient` など)は、スライス 4g まで fixnum だけを扱う。R7RS 6.2.3 は、
-/// 表現できない正確な結果を、実装上の制限の違反として報告することを実装に許している。
-fn fromWide(n: i128) Error!Value {
-    return .fromFixnum(std.math.cast(i64, n) orelse return error.IntegerOverflow);
-}
 
 /// Checks that every argument is a real number: a fixnum, a bignum, a ratnum or a flonum.
 ///
@@ -137,40 +134,26 @@ fn orderHolds(order: std.math.Order, comptime op: std.math.CompareOperator) bool
     };
 }
 
-/// Which of the integer divisions a primitive computes.
-const Division = enum { quotient, remainder, modulo };
-
-/// `(quotient n d)`, `(remainder n d)` and `(modulo n d)` (R7RS 6.2.6).
+/// An integer division primitive of the kind `kind` (R7RS 6.2.6).
 ///
-/// `quotient` と `remainder` は0に向かって丸める除算(`truncate-quotient` と
-/// `truncate-remainder`)で、`remainder` の符号は被除数に従う。`modulo` は床除算の
-/// 剰余(`floor-remainder`)で、符号は除数に従う。
-///
-/// 128ビットで計算する。最小の fixnum を -1 で割ると、商の 2^63 は64ビットに収まらないが、
-/// 128ビットなら除算そのものは正しく終わる。収まるかどうかは結果で決め、`quotient` だけが
-/// あふれる。
-///
-/// Why: 最小の fixnum を -1 で割ったときの `remainder` と `modulo` は、数学的な値の 0 を
-/// 返し、エラーにしない。0 は収まるので、R7RS 6.2.3 の「表現できない結果」に当たらない。
+/// 整数は、正確な整数と、整数値の flonum である。どちらかが不正確なら結果も不正確で、
+/// 除数が正確な0でも不正確な0でも `DivisionByZero` になる。bignum も扱う。
 ///
 /// 検査の順序は、型、除数の 0 である。両方の引数の型を先に検査し、エラーが値に左右
 /// されないようにする(`*` と比較の方針)。個数は機械が表で検査する。
-fn division(comptime kind: Division) Primitive.Fn {
+fn division(comptime kind: ops.Division) Primitive.Fn {
     return &struct {
-        fn call(_: *const Services, args: []const Value) Error!Value {
-            const dividend = args[0].asFixnum() orelse return error.WrongType;
-            const divisor = args[1].asFixnum() orelse return error.WrongType;
-            if (divisor == 0) return error.DivisionByZero;
-            const n: i128 = dividend;
-            const d: i128 = divisor;
-            return fromWide(switch (kind) {
-                .quotient => @divTrunc(n, d),
-                .remainder => @rem(n, d),
-                // R7RS の modulo は floor-remainder で、n - d * floor(n / d) と定義される。その定義のまま書く。
-                .modulo => n - d * @divFloor(n, d),
-            });
+        fn call(s: *const Services, args: []const Value) Error!Value {
+            if (!ops.isIntegerNumber(args[0]) or !ops.isIntegerNumber(args[1])) return error.WrongType;
+            return ops.integerDivide(s.heap, kind, args[0], args[1]);
         }
     }.call;
+}
+
+/// `(abs x)`: the absolute value of the real number `x` (R7RS 6.2.6).
+fn abs(s: *const Services, args: []const Value) Error!Value {
+    try requireReals(args);
+    return ops.absNumber(s.heap, args[0]);
 }
 
 /// `(number? obj)`: true when `obj` is a number (R7RS 6.2.6).
@@ -264,6 +247,11 @@ test "the primitives take the numbers of arguments the language gives them" {
         .{ .name = "quotient", .min = 2, .max = 2 },
         .{ .name = "remainder", .min = 2, .max = 2 },
         .{ .name = "modulo", .min = 2, .max = 2 },
+        .{ .name = "truncate-quotient", .min = 2, .max = 2 },
+        .{ .name = "truncate-remainder", .min = 2, .max = 2 },
+        .{ .name = "floor-quotient", .min = 2, .max = 2 },
+        .{ .name = "floor-remainder", .min = 2, .max = 2 },
+        .{ .name = "abs", .min = 1, .max = 1 },
         .{ .name = "number?", .min = 1, .max = 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
@@ -583,16 +571,165 @@ test "the division primitives hold at the ends of the fixnum range" {
     try std.testing.expectEqual(-2, try callInt("remainder", &.{ min_i64, 3 }));
 }
 
-test "quotient reports the one quotient that does not fit, and the others give zero" {
-    // Why: 最小の整数を -1 で割った商は 2^63 で、固定長整数に収まらない。R7RS 6.2.3 は
-    // 表現できない正確な結果を、実装上の制限の違反として報告することを許す。
-    // 剰余は数学的に 0 で収まるので、エラーにしない。
-    try std.testing.expectError(error.IntegerOverflow, call("quotient", &.{ min_i64, -1 }));
-    try std.testing.expectEqual(0, try callInt("remainder", &.{ min_i64, -1 }));
-    try std.testing.expectEqual(0, try callInt("modulo", &.{ min_i64, -1 }));
-    // 隣の値は収まる。
+test "the quotient of the least fixnum and -1 is a bignum, and the remainders are zero" {
+    try expectCallInts("9223372036854775808", "quotient", &.{ min_i64, -1 });
+    try expectCallInts("9223372036854775808", "floor-quotient", &.{ min_i64, -1 });
+    try expectCallInts("9223372036854775808", "truncate-quotient", &.{ min_i64, -1 });
+    for ([_][]const u8{ "remainder", "modulo", "floor-remainder", "truncate-remainder" }) |name| {
+        try expectCallInts("0", name, &.{ min_i64, -1 });
+    }
+    // 隣の値は fixnum に収まる。
     try std.testing.expectEqual(max_i64, try callInt("quotient", &.{ -max_i64, -1 }));
     try std.testing.expectEqual(-max_i64, try callInt("quotient", &.{ max_i64, -1 }));
+}
+
+test "the division primitives take bignums" {
+    const big = "18446744073709551616"; // 2^64
+    try expectCall("4611686018427387904", "quotient", &.{ big, "4" });
+    try expectCall("0", "remainder", &.{ big, "4" });
+    try expectCall("-4611686018427387904", "floor-quotient", &.{ "-" ++ big, "4" });
+    try expectCall("-4611686018427387905", "floor-quotient", &.{ "-18446744073709551617", "4" });
+    try expectCall("-4611686018427387904", "truncate-quotient", &.{ "-18446744073709551617", "4" });
+    try expectCall("3", "modulo", &.{ "-18446744073709551617", "4" });
+    try expectCall("-1", "remainder", &.{ "-18446744073709551617", "4" });
+    try expectCall("-3", "modulo", &.{ "18446744073709551617", "-4" });
+    try expectCall("0", "quotient", &.{ "5", big });
+    try expectCall("5", "remainder", &.{ "5", big });
+    try expectCall("18446744073709551611", "modulo", &.{ "-5", big });
+    try expectCall("-18446744073709551611", "modulo", &.{ "5", "-" ++ big });
+    try expectCall("1", "quotient", &.{ big, big });
+}
+
+test "the division primitives take integral flonums, and give flonums" {
+    // R7RS 6.2.6: (truncate/ -5.0 -2) は 2.0 と -1.0 を返す。
+    try expectCall("2.0", "truncate-quotient", &.{ "-5.0", "-2" });
+    try expectCall("-1.0", "truncate-remainder", &.{ "-5.0", "-2" });
+    try expectCall("2.0", "floor-quotient", &.{ "-5.0", "-2" });
+    try expectCall("-3.0", "floor-quotient", &.{ "5.0", "-2.0" });
+    try expectCall("-1.0", "floor-remainder", &.{ "5.0", "-2.0" });
+    try expectCall("1.0", "modulo", &.{ "-5", "2.0" });
+    try expectCall("-2.0", "quotient", &.{ "-5", "2.0" });
+    try expectCall("3.0", "quotient", &.{ "7.0", "2" });
+}
+
+test "the division primitives give the signed zero the rules of the signs give" {
+    try expectCall("0.0", "quotient", &.{ "1.0", "5.0" });
+    try expectCall("-0.0", "quotient", &.{ "1.0", "-5.0" });
+    try expectCall("-0.0", "quotient", &.{ "-1.0", "5.0" });
+    try expectCall("0.0", "quotient", &.{ "-1.0", "-5.0" });
+    try expectCall("0.0", "remainder", &.{ "4.0", "2.0" });
+    try expectCall("-0.0", "remainder", &.{ "-4.0", "2.0" });
+    try expectCall("0.0", "modulo", &.{ "4.0", "2.0" });
+    try expectCall("-0.0", "modulo", &.{ "4.0", "-2.0" });
+    try expectCall("-0.0", "modulo", &.{ "-4.0", "-2.0" });
+    try expectCall("0.0", "modulo", &.{ "-0.0", "2.0" });
+    try expectCall("0.0", "quotient", &.{ "-0.0", "-2.0" });
+    try expectCall("-0.0", "quotient", &.{ "-0.0", "2.0" });
+    try expectCall("0.0", "modulo", &.{ "-4", "2.0" });
+}
+
+test "the division primitives are exact for flonums beyond 2^53" {
+    // 2^60 は flonum に正確に表せる。
+    // 2^60 mod 3 = 1。2^60 / 3 は正確には表せないが、剰余は正確である。
+    try expectCall("1.0", "remainder", &.{ "1152921504606846976.0", "3.0" });
+    try expectCall("-1.0", "remainder", &.{ "-1152921504606846976.0", "3.0" });
+    try expectCall("2.0", "modulo", &.{ "-1152921504606846976.0", "3.0" });
+    try expectCall("-2.0", "modulo", &.{ "1152921504606846976.0", "-3.0" });
+    try expectCall("0.0", "remainder", &.{ "1152921504606846976.0", "1024.0" });
+    try expectCall("1125899906842624.0", "quotient", &.{ "1152921504606846976.0", "1024" });
+    try expectCall("0.0", "quotient", &.{ "5.0", "1152921504606846976.0" });
+    try expectCall("-0.0", "quotient", &.{ "-5.0", "1152921504606846976.0" });
+    try expectCall("-1.0", "floor-quotient", &.{ "-5.0", "1152921504606846976.0" });
+}
+
+test "floor-quotient rounds down for fixnums of every sign" {
+    try expectCallInts("-3", "floor-quotient", &.{ -5, 2 });
+    try expectCallInts("-3", "floor-quotient", &.{ 5, -2 });
+    try expectCallInts("2", "floor-quotient", &.{ -5, -2 });
+    try expectCallInts("2", "floor-quotient", &.{ 5, 2 });
+    try expectCallInts("-1", "floor-quotient", &.{ -1, 5 });
+    try expectCallInts("-3", "truncate-quotient", &.{ -7, 2 });
+}
+
+test "a flonum above 2^53 is divided exactly, not by the flonum quotient" {
+    // 2^60 / 1025 は、浮動小数点の商 2^60 / 1025 では整数にならない。
+    try expectCall("1124801467909119.0", "quotient", &.{ "1152921504606846976.0", "1025.0" });
+    try expectCall("1.0", "remainder", &.{ "1152921504606846976.0", "1025.0" });
+    // 2^54 の近くでは、被除数から余りを引く浮動小数点の引き算が丸められ、商が整数にならない。
+    try expectCall("3002399751580331.0", "quotient", &.{ "18014398509481988.0", "6.0" });
+    try expectCall("2.0", "remainder", &.{ "18014398509481988.0", "6.0" });
+    // 除数だけが 2^53 以上の場合は、被除数が小さい。
+    try expectCall("0.0", "quotient", &.{ "1025.0", "1152921504606846976.0" });
+}
+
+test "the signed zero of a division through the exact path follows the signs" {
+    const two60 = "1152921504606846976.0";
+    const two61 = "2305843009213693952.0";
+    try expectCall("-0.0", "quotient", &.{ "-" ++ two60, two61 });
+    try expectCall("-0.0", "quotient", &.{ two60, "-" ++ two61 });
+    try expectCall("0.0", "quotient", &.{ "-" ++ two60, "-" ++ two61 });
+    try expectCall("0.0", "quotient", &.{ two60, two61 });
+    try expectCall("-0.0", "remainder", &.{ "-" ++ two61, two60 });
+    try expectCall("0.0", "remainder", &.{ two61, "-" ++ two60 });
+    try expectCall("0.0", "modulo", &.{ "-" ++ two61, two60 });
+    try expectCall("-0.0", "modulo", &.{ two61, "-" ++ two60 });
+    try expectCall("-0.0", "modulo", &.{ "-" ++ two61, "-" ++ two60 });
+    // 被除数が bignum(正確)のとき。
+    try expectCall("-0.0", "quotient", &.{ "-18446744073709551616", "1180591620717411303424.0" });
+    try expectCall("0.0", "quotient", &.{ "18446744073709551616", "1180591620717411303424.0" });
+}
+
+test "the division primitives reject a non-integer, an infinity and a NaN" {
+    for ([_][]const u8{ "quotient", "remainder", "modulo", "floor-quotient", "truncate-remainder" }) |name| {
+        for ([_][]const u8{ "1.5", "1/2", "+inf.0", "-inf.0", "+nan.0", "1+2i" }) |bad| {
+            var f: test_support.Fixture = undefined;
+            f.init();
+            defer f.deinit();
+            const v = (try number.parse(f.services.heap, bad, 10)).?;
+            try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ v, .fromFixnum(2) }));
+            try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ .fromFixnum(2), v }));
+            try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ v, .fromFixnum(0) }));
+        }
+    }
+}
+
+test "a zero divisor, exact or not, is an error for every kind of dividend" {
+    for ([_][]const u8{ "quotient", "remainder", "modulo", "floor-quotient", "floor-remainder", "truncate-quotient", "truncate-remainder" }) |name| {
+        for ([_][]const u8{ "0", "5", "-5.0", "18446744073709551616" }) |n| {
+            for ([_][]const u8{ "0", "0.0", "-0.0" }) |z| {
+                var f: test_support.Fixture = undefined;
+                f.init();
+                defer f.deinit();
+                const a = (try number.parse(f.services.heap, n, 10)).?;
+                const b = (try number.parse(f.services.heap, z, 10)).?;
+                try std.testing.expectError(error.DivisionByZero, f.call(&primitives, name, &.{ a, b }));
+            }
+        }
+    }
+}
+
+test "abs gives the magnitude of any real number" {
+    try expectCall("5", "abs", &.{"-5"});
+    try expectCall("5", "abs", &.{"5"});
+    try expectCall("0", "abs", &.{"0"});
+    try expectCall("9223372036854775808", "abs", &.{"-9223372036854775808"});
+    try expectCall("18446744073709551616", "abs", &.{"-18446744073709551616"});
+    try expectCall("18446744073709551616", "abs", &.{"18446744073709551616"});
+    try expectCall("1/3", "abs", &.{"-1/3"});
+    try expectCall("1/3", "abs", &.{"1/3"});
+    try expectCall("2.5", "abs", &.{"-2.5"});
+    try expectCall("0.0", "abs", &.{"-0.0"});
+    try expectCall("+inf.0", "abs", &.{"-inf.0"});
+    try expectCall("+nan.0", "abs", &.{"+nan.0"});
+}
+
+test "abs rejects a complex number" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const z = (try number.parse(f.services.heap, "1+2i", 10)).?;
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "abs", &.{z}));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "abs", &.{.fromBool(true)}));
 }
 
 test "the division primitives report a zero divisor, whatever the dividend" {

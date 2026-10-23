@@ -359,10 +359,10 @@
   (%check-strings (cons s more) "wrong type of argument to string-for-each")
   (apply for-each f (%string-lists (cons s more))))
 
-;; R7RS 6.2.6 の整数の手続きのうち、数値塔を要らないもの(スライス 3s)。`quotient`
-;; `remainder` `modulo` と比較の上に書く。今の数は固定長の整数だけなので、定義は整数の
-;; ものである。段階4で不正確な数が入ったら、不正確な数の扱いを足す。定義と例は、
-;; R7RS 6.2.6 の原文(docs/spec/)で確かめた。
+;; R7RS 6.2.6 の整数の手続きのうち、ネイティブにしないもの(スライス 3s、4g-2)。
+;; 整数除算(`quotient` など7個)と `abs` は、bignum と不正確な整数を扱うネイティブの
+;; プリミティブである。ここの定義は、それらと比較の上に書く。定義と例は、R7RS 6.2.6 の
+;; 原文(docs/spec/)で確かめた。
 ;; 引数の型の誤りは、内側で呼ぶプリミティブ(`<` や `remainder`)の名前で報告される。
 ;; ただし、結果が先に決まる引数の組(`(lcm 0 'a)` は 0)では、残りの引数を確かめない。
 
@@ -371,25 +371,13 @@
 (define (negative? x) (< x 0))
 (define (even? n) (= (remainder n 2) 0))
 (define (odd? n) (not (even? n)))
-(define (abs x) (if (< x 0) (- x) x))
 (define (square z) (* z z))
 
-;; floor の商と余りは、余りが割る数と同じ符号になる(`modulo` と同じ)。商は、切り捨ての
-;; 商から、割り切れず余りと割る数の符号が異なるときに1を引く。余りを引いてから割る形は、
-;; 結果が固定長の整数に収まるのに、引き算があふれる(`(floor-quotient <最小の負の数> 3)`)。
-(define (%floor-adjust q r n2)
-  (if (= r 0)
-      q
-      (if (< r 0)
-          (if (< n2 0) q (- q 1))
-          (if (< n2 0) (- q 1) q))))
-(define (floor-remainder n1 n2) (modulo n1 n2))
-(define (floor-quotient n1 n2) (%floor-adjust (quotient n1 n2) (remainder n1 n2) n2))
-(define (floor/ n1 n2) (values (floor-quotient n1 n2) (modulo n1 n2)))
-
-(define (truncate-quotient n1 n2) (quotient n1 n2))
-(define (truncate-remainder n1 n2) (remainder n1 n2))
-(define (truncate/ n1 n2) (values (quotient n1 n2) (remainder n1 n2)))
+;; `floor/` と `truncate/` は商と余りの2値を返す。純粋なプリミティブは多値を返せないので、
+;; 商と余りのネイティブ(`floor-quotient` `floor-remainder` `truncate-quotient`
+;; `truncate-remainder`)を呼んで `values` に包む。
+(define (floor/ n1 n2) (values (floor-quotient n1 n2) (floor-remainder n1 n2)))
+(define (truncate/ n1 n2) (values (truncate-quotient n1 n2) (truncate-remainder n1 n2)))
 
 (define (%gcd2 a b)
   (if (= b 0)
@@ -402,7 +390,6 @@
       (%gcd-all (%gcd2 acc (car ns)) (cdr ns))))
 
 ;; 引数が無ければ、0(gcd の単位元)である。最初の引数を初期値にして、絶対値は最後に取る。
-;; 0 を初期値にすると、最初の引数の絶対値を先に取り、最小の負の数であふれる。
 (define (gcd . ns)
   (if (null? ns)
       0
