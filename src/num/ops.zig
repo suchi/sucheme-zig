@@ -775,5 +775,47 @@ test "a limit that refuses the work area gives HeapLimit, and leaves nothing cou
     try testing.expect(refused);
     try testing.expectEqual(0, h.external);
     try testing.expect(!h.external_enforced);
-    try testing.expect(!h.external_refused or true);
+}
+
+test "a work area beyond the limit is refused even when the result is small" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const text = try googol(3000);
+    defer testing.allocator.free(text);
+    const a = try read(&h, text);
+    const b = try read(&h, text);
+    const ratio_text = try std.fmt.allocPrint(testing.allocator, "1/{s}", .{text});
+    defer testing.allocator.free(ratio_text);
+    const ratio = try read(&h, ratio_text);
+    // 結果(0 と比較の答え)は小さいが、作業領域(限界値列)は上限に入らない。
+    h.options.limit = h.held() + 256;
+    try testing.expectError(error.HeapLimit, apply(&h, .sub, a, b));
+    try testing.expectError(error.HeapLimit, compare(&h, a, ratio));
+    try testing.expectEqual(0, h.external);
+    try testing.expect(!h.external_enforced);
+    h.options.limit = heap_mod.default_limit;
+    try expectOp(&h, .sub, text, text, "0");
+    try testing.expectEqual(std.math.Order.gt, (try compare(&h, a, ratio)).?);
+}
+
+test "a backing allocator that fails is OutOfMemory, even after a refusal by the limit" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    var h: Heap = .init(failing.allocator(), .{});
+    defer h.deinit();
+    const text = try googol(3000);
+    defer testing.allocator.free(text);
+    const a = try read(&h, text);
+    const b = try read(&h, text);
+    // 数を読むのは、`fail_index` を決める前に済ませる(あとでは読むこと自体が失敗する)。
+    const third = try read(&h, "1/3");
+    h.options.limit = h.held() + 256;
+    try testing.expectError(error.HeapLimit, apply(&h, .mul, a, b));
+    h.options.limit = heap_mod.default_limit;
+    failing.fail_index = failing.alloc_index;
+    try testing.expectError(error.OutOfMemory, apply(&h, .mul, a, b));
+    h.options.limit = h.held() + 256;
+    try testing.expectError(error.HeapLimit, compare(&h, a, third));
+    h.options.limit = heap_mod.default_limit;
+    failing.fail_index = failing.alloc_index;
+    try testing.expectError(error.OutOfMemory, compare(&h, a, third));
 }
