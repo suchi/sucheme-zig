@@ -364,6 +364,7 @@
 ;; ものである。段階4で不正確な数が入ったら、不正確な数の扱いを足す。定義と例は、
 ;; R7RS 6.2.6 の原文(docs/spec/)で確かめた。
 ;; 引数の型の誤りは、内側で呼ぶプリミティブ(`<` や `remainder`)の名前で報告される。
+;; ただし、結果が先に決まる引数の組(`(lcm 0 'a)` は 0)では、残りの引数を確かめない。
 
 (define (zero? z) (= z 0))
 (define (positive? x) (> x 0))
@@ -373,12 +374,18 @@
 (define (abs x) (if (< x 0) (- x) x))
 (define (square z) (* z z))
 
-;; floor の商と余りは、余りが割る数と同じ符号になる(`modulo` と同じ)。商は、余りを
-;; 引いてから割れば、割り切れる。
+;; floor の商と余りは、余りが割る数と同じ符号になる(`modulo` と同じ)。商は、切り捨ての
+;; 商から、割り切れず余りと割る数の符号が異なるときに1を引く。余りを引いてから割る形は、
+;; 結果が固定長の整数に収まるのに、引き算があふれる(`(floor-quotient <最小の負の数> 3)`)。
+(define (%floor-adjust q r n2)
+  (if (= r 0)
+      q
+      (if (< r 0)
+          (if (< n2 0) q (- q 1))
+          (if (< n2 0) (- q 1) q))))
 (define (floor-remainder n1 n2) (modulo n1 n2))
-(define (floor-quotient n1 n2) (quotient (- n1 (modulo n1 n2)) n2))
-(define (%floor-values n1 n2 r) (values (quotient (- n1 r) n2) r))
-(define (floor/ n1 n2) (%floor-values n1 n2 (modulo n1 n2)))
+(define (floor-quotient n1 n2) (%floor-adjust (quotient n1 n2) (remainder n1 n2) n2))
+(define (floor/ n1 n2) (values (floor-quotient n1 n2) (modulo n1 n2)))
 
 (define (truncate-quotient n1 n2) (quotient n1 n2))
 (define (truncate-remainder n1 n2) (remainder n1 n2))
@@ -394,8 +401,12 @@
       acc
       (%gcd-all (%gcd2 acc (car ns)) (cdr ns))))
 
-;; 引数が無ければ、0(gcd の単位元)である。
-(define (gcd . ns) (%gcd-all 0 ns))
+;; 引数が無ければ、0(gcd の単位元)である。最初の引数を初期値にして、絶対値は最後に取る。
+;; 0 を初期値にすると、最初の引数の絶対値を先に取り、最小の負の数であふれる。
+(define (gcd . ns)
+  (if (null? ns)
+      0
+      (abs (%gcd-all (car ns) (cdr ns)))))
 
 (define (%lcm2 a b)
   (if (= a 0)

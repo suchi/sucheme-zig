@@ -13,8 +13,8 @@
 (#t #t #f #t #t #f)
 
 # abs と square。
-(list (abs -7) (abs 7) (abs 0) (square 42) (square -3))
-(7 7 0 1764 9)
+(list (abs -7) (abs 7) (abs 0) (abs -1) (square 42) (square -3))
+(7 7 0 1 1764 9)
 
 # floor/ と truncate/ は2つの値を返す。
 (call-with-values (lambda () (floor/ 5 2)) list)
@@ -49,11 +49,22 @@
 (-2 -1 -2 1)
 
 # gcd と lcm は、0個以上の引数を取り、結果は負にならない。
-(list (gcd 32 -36) (gcd) (gcd 0 5) (gcd 7) (gcd -7) (gcd 12 18 8))
-(4 0 5 7 7 2)
+(list (gcd 32 -36) (gcd) (gcd 0 5) (gcd 0 0) (gcd 7) (gcd -7) (gcd 3 -1) (gcd -1) (gcd 12 18 8))
+(4 0 5 0 7 7 1 1 2)
 
-(list (lcm 32 -36) (lcm) (lcm 0 5) (lcm -7) (lcm 2 3 4))
-(288 1 0 7 12)
+(list (lcm 32 -36) (lcm) (lcm 0 5) (lcm 0 0) (lcm -7) (lcm 2 3 4))
+(288 1 0 0 7 12)
+
+# 結果が固定長の整数に収まるなら、途中の値もあふれない。引数の順序で結果は変わらない。
+(list (floor-quotient -9223372036854775808 3) (floor-quotient 9223372036854775807 -2) (gcd -9223372036854775808 6) (gcd 6 -9223372036854775808))
+(-3074457345618258603 -4611686018427387904 2 2)
+
+(call-with-values (lambda () (floor/ -9223372036854775808 3)) list)
+(-3074457345618258603 1)
+
+# 真の値が収まらないときは、誤りである。
+(gcd -9223372036854775808)
+error: integer overflow in - -9223372036854775808
 
 # (scheme base) からエクスポートされ、import の集合で選べる。
 (import (only (scheme base) even? floor/)) (call-with-values (lambda () (floor/ 7 (if (even? 2) 2 3))) list)
@@ -61,6 +72,9 @@
 
 # 割る数が0なら、誤りである(R7RS 6.2.6 は誤りとしている)。
 (floor/ 1 0)
+error: division by zero in quotient 1 0
+
+(floor-remainder 1 0)
 error: division by zero in modulo 1 0
 
 (truncate-quotient 1 0)
