@@ -674,6 +674,15 @@ test "dividing a complex number by an exact zero is an error, and by an inexact 
     try testing.expect(!h.external_enforced);
 }
 
+test "complex arithmetic gives +nan.0 where an exact zero part meets an infinity, and where it divides by a complex zero" {
+    // 設計文書に記録した、R7RS が規定しない結果。実数との積の `(* 0 +inf.0)` と同じ扱いである。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectOp(&h, .mul, "+i", "+inf.0+1.0i", "+nan.0+inf.0i");
+    try expectOp(&h, .div, "+inf.0", "+i", "+nan.0-inf.0i");
+    try expectOp(&h, .div, "1+2i", "0.0+0.0i", "+nan.0+nan.0i");
+}
+
 test "negating a complex number negates both parts, and keeps the sign of an inexact zero" {
     var h: Heap = .init(testing.allocator, .{});
     defer h.deinit();
