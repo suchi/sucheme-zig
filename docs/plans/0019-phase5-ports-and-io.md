@@ -74,7 +74,7 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 | 5o `eval` と環境の値 | L3 | `(eval '(* 7 3) (environment '(scheme base)))` が `21`。`(eval '(define foo 32) (environment '(scheme base)))` が誤りを送出する。`interaction-environment` で定義した名前が REPL から見える。EOF の値と約束を `eval` で定数にするテストが通る | `src/machine.zig` の `MachineOp.eval`、`src/value.zig` の環境の値の型、`src/prim/eval.zig`(新規)、`lib/scheme/eval.sld` `repl.sld`(新規) | T3 | 3o のマージ、5m | 3o とは直列 | 大 |
 | 5p `load` と `(scheme load)` | L3 | `(load "x.scm")` が探索ルートの中の `x.scm` を、指定の環境で評価する。ルートの外の名前を拒否する | `src/prim/eval.zig`、`src/resolve.zig` の第1類の入口、`lib/scheme/load.sld`(新規) | T2 | 5o | L2 と並行 | 小 |
 | 5q `(scheme r5rs)` | L3 | `(import (scheme r5rs))` が通り、`(eval '(+ 1 2) (scheme-report-environment 5))` が `3`。付録Aの全ライブラリが `import` できる | `lib/scheme/r5rs.sld`(新規)、`src/prim/eval.zig` の `null-environment` と `scheme-report-environment` | T2(輸出の転記は T1) | 5k、5l、5n、5p、0018 の `(scheme inexact)` `(scheme complex)` `(scheme char)` | 最後 | 小 |
-| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q、v0.4.0 の公開 | 最後 | 小 |
+| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s、v0.4.0 の公開 | 最後 | 小 |
 
 5e は、L2 が数の構文を足すスライスの名前として 0018 に渡す(下の「数の構文との順序」)。5f は欠番である。
 
@@ -424,22 +424,22 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 - 3o が段階4以降に送られる。このとき、5o、5p、5q を段階6の前に送り、v0.5.0 の完了条件の「付録Aのライブラリすべて」を、`(scheme eval)` `(scheme repl)` `(scheme load)` `(scheme r5rs)` を除いた形に狭めることを諮る(roadmap の完了条件の変更になる)。
 - 5c の目印の置き換えが、GC と計上の不変条件を変える必要に行き当たる。このとき、T3 へ引き継ぐ([0017](0017-parallel-lanes.md) の引き継ぎの条件の4)。
 
-## 位置情報の残りの割り当て(案)
+## 位置情報の残りの割り当て
 
 5d は、展開時の誤りに位置を前置したが、2つを残した(docs/design/frontend.md の「現状(スライス 5d)」、roadmap の「位置情報の残り」)。
 
 - ライブラリのファイルそのものと、ライブラリの宣言(`include`、`include-ci`、`include-library-declarations`)が読むファイルの位置の記録。読む経路が `src/syntax/library.zig` にあり、5d では触れなかった。いまは、その中の誤りが、最上位の `import` の形式の位置になるか、位置が付かない。
 - コアIRの節点への位置の複写と、実行時の誤りへの位置の表示。
 
-前者を、次のスライスとして段階5に置く案である。後者は、読む側(機械が今の節点の位置を引く変更)と一緒に入れると決めた(2026-10-21)ので、0017 の L7 の「エラー位置の表示」の計画書で、段階とスライスを決める。ここでは割り当てない。
+前者を、次のスライス 5s として段階5に置いた(2026-10-22 にユーザーが着手を指示した)。後者は、読む側(機械が今の節点の位置を引く変更)と一緒に入れると決めた(2026-10-21)ので、0017 の L7 の「エラー位置の表示」の計画書で、段階とスライスを決める。ここでは割り当てない。
 
 | スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 5s ライブラリのファイルの位置 | L2 | ライブラリのファイルの本体の誤りと、ライブラリの宣言が読むファイルの中の誤りが、そのファイルの名前と行と桁を添えて報告される。REPL から `import` したライブラリでも付く | `src/syntax/library.zig`(L0 の所有。`readLibraryForm` と `enterIncluded` が、読むファイルの名前を `src/syntax/source.zig` に渡す部分だけ)、`src/syntax/source.zig`(1つのデータを位置つきで読む入口)、`docs/design/frontend.md` の「現状」 | T2 | 5d のマージ。L0 が `src/syntax/library.zig` を触るスライスを進めていないこと(着手の前に親が確かめる) | L3 と並行 | 小 |
+| 5s ライブラリのファイルの位置 | L2 | ライブラリのファイルの本体の誤りと、ライブラリの宣言が読むファイルの中の誤りが、そのファイルの名前と行と桁を添えて報告される。REPL から `import` したライブラリでも付く | `src/syntax/library.zig`(L0 の所有。`readLibraryForm` と `enterIncluded` が、読むファイルの名前を `src/syntax/source.zig` に渡す部分だけ)、`src/syntax/source.zig`(1つのデータを位置つきで読む入口)、`docs/design/frontend.md` の「現状」、`src/sucheme.zig` のテスト(L0 の所有) | T2 | 5d のマージ。L0 が `src/syntax/library.zig` を触るスライスを進めていないこと(着手の前に親が確かめる) | L3 と並行 | 小 |
 
-- 段階: 段階5に置く。リーダの完全化と位置情報の副表を段階5に置いた理由(0014)と同じで、5d の続きだからである。合意したら、段階5の完了(5r)の前提に 5s を加える。
+- 段階: 段階5に置く。リーダの完全化と位置情報の副表を段階5に置いた理由(0014)と同じで、5d の続きだからである。段階5の完了(5r)の前提に 5s を加えた。
 - 名前: 5e は 0018 に渡した名前、5f は欠番で、5g から 5r は L3 が使うので、次の 5s にする。
-- 所有の外のファイル: `src/syntax/library.zig` は L0 の所有なので、5d と同じく、触れる範囲をユーザーの承認で決める。
+- 所有の外のファイル: `src/syntax/library.zig` は L0 の所有なので、5d と同じく、触れる範囲をユーザーの承認で決める。2026-10-22 に、名前を渡す2か所だけと決まった。宣言の誤りの位置と、本体の実行時の誤りの位置は、frontend.md の「現状(スライス 5d)」の既知の制限に書き、3q 以降で直す候補にした。
 - 規模の根拠: 5d で、読む経路に位置を渡す形(`source.readDataFrom`)ができている。`library.zig` の2つの読み手が、同じ形でファイルの名前を渡せば足りる見込みである。見込みで、`library.zig` の読み手を確かめて決めたものではない。
 - `tests/scheme` の番号は、5d の範囲(0530 から 0539)の残りを使う。ハーネスはファイルの名前を渡さないので、位置の確かめは単体テストで行う見込みである。
 
@@ -458,12 +458,12 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5b | マージ済み。縦棒の識別子。エスケープは <symbol element> のものに `\"` と `\\` を足したもので、行継続は無い。畳み込む読み手でも畳み込まない。縦棒を付けて書き出すのは 5j | suchi/sucheme-zig#146 |
 | 5c | マージ済み。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | suchi/sucheme-zig#147 |
 | 5d | マージ済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | suchi/sucheme-zig#160 |
-| 5s | 案(下の「位置情報の残りの割り当て」)。未着手 | - |
+| 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
 | 5g から 5r | 未着手 | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。
-- L2 の 5a から 5d は、すべてマージした。L2 の次のスライスは、下の「位置情報の残りの割り当て」の 5s(案)で、合意してから着手する。
+- L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
 - L3 は、0018 の 4d のマージのあとに 5g から始める。それまで L3 に着手できるスライスは無い(5h 以降はすべて 5g に依存する)。
 - 実装の着手は、親のセッションの指示を待つ。

@@ -1708,6 +1708,23 @@ test "an error raised outside the expander says the place of the top-level form"
     try expectLineFails(&interp, "1\n (define-library (t a)\n (bogus))", "prog.scm:2:2: bad define-library: bogus is not a library declaration");
 }
 
+test "an expansion error in the file of a library, or in a file its declarations read, says the place in that file" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/e.sld", "(define-library (t e) (export) (import (sucheme core))\n (begin\n   (if)))");
+        try tree.write("t/i.sld", "(define-library (t i) (export) (import (sucheme core)) (include \"i-body.scm\"))");
+        try tree.write("t/i-body.scm", "(define x 1)\n\n  (lambda)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // ファイルの名前が無い REPL の行から読み込んでも、ライブラリのファイルの位置が付く。
+        try expectLineFailsInTree(&interp, &tree, "(import (t e))", "t/e.sld:3:4", "bad if: expected (if test consequent) or (if test consequent alternative)");
+        try expectLineFailsInTree(&interp, &tree, "(import (t i))", "t/i-body.scm:3:3", "bad lambda: expected (lambda (name ...) body ...)");
+    }
+}
+
 test "evalPrint describes a reader error, and a later success clears the message" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
