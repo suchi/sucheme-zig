@@ -7,7 +7,8 @@
 //! 「レーンの間の関数の署名」が正である。
 //!
 //! スライス 4e-1 は、複素数を除く4種(fixnum、bignum、ratnum、flonum)の `parse` と
-//! `write` を入れる。複素数の構文と書き出し(compnum)は、スライス 4e-2 で入れる。
+//! `write` を入れた。スライス 4e-2 は、複素数(compnum)の構文と書き出しと、その正規化
+//! (`makeRectangular`)を入れる。
 
 const std = @import("std");
 const value_mod = @import("../value.zig");
@@ -20,6 +21,7 @@ const tier = @import("../tier.zig");
 
 const Value = value_mod.Value;
 const Ratnum = value_mod.Ratnum;
+const Compnum = value_mod.Compnum;
 const Heap = heap_mod.Heap;
 const Const = bigint.Const;
 const Managed = bigint.Managed;
@@ -68,11 +70,82 @@ pub fn makeRatio(h: *Heap, gpa: std.mem.Allocator, numerator: Const, denominator
     return .fromRatnum(ratnum);
 }
 
+/// The complex number `real` + `imag` i, as a real number when `imag` is an exact zero, and as a
+/// compnum otherwise.
+///
+/// `real` と `imag` は、複素数でない数(fixnum、bignum、ratnum、flonum)である。部分の
+/// 正確性が混ざるときは、正確なほうを不正確にして、両方をそろえる。そのため compnum の
+/// 実部と虚部は、どちらも正確か、どちらも flonum である。虚部が不正確な0(`0.0`、`-0.0`)の
+/// ものは、複素数のまま残す(R7RS 6.2.6 の `(real? -2.5+0.0i)` は偽)。
+/// 作業領域は `gpa` から取り、返る前に返す。
+///
+/// Why: 部分の正確性の混在の扱いは、2026-10-22 に、そろえる案で決まった(設計文書
+/// docs/design/numerics-and-unicode.md の複素数の節)。R7RS 6.2.1 は、正確な複素数は正確な
+/// 実部と正確な虚部を持ち、それ以外は不正確な複素数とするだけである。6.2.6 は、
+/// `real-part` と `imag-part` が、`make-rectangular` に正確な引数が渡された不正確な複素数に
+/// 対して、正確な実数を返してよいとする。混在した部分は仕様が許すだけで必須ではないので、
+/// そろえても仕様に反しない。
+pub fn makeRectangular(h: *Heap, gpa: std.mem.Allocator, real: Value, imag: Value) Error!Value {
+    std.debug.assert(isNumber(real) and isNumber(imag));
+    std.debug.assert(real.kind() != .compnum and imag.kind() != .compnum);
+    if (imag.asFixnum()) |n| if (n == 0) return real;
+    var re = real;
+    var im = imag;
+    const real_exact = real.asFlonum() == null;
+    const imag_exact = imag.asFlonum() == null;
+    if (real_exact and !imag_exact) re = .fromFlonum(try toFlonum(gpa, real));
+    if (!real_exact and imag_exact) im = .fromFlonum(try toFlonum(gpa, imag));
+    const compnum = try h.create(Compnum, .{ .real = re, .imag = im });
+    return .fromCompnum(compnum);
+}
+
+/// The complex number of magnitude `magnitude` and angle `angle` (R7RS 6.2.6 `make-polar`), or
+/// null if `exact_required` and it has no exact value.
+///
+/// 角が正確な0なら、結果は大きさそのもの(正確さも保つ)。大きさが正確な0なら、正確な0。
+/// それ以外は、`magnitude * cos(angle)` と `magnitude * sin(angle)` を `f64` で計算した、
+/// 不正確な数である(虚部が不正確な0になれば、複素数のまま残る)。
+fn makePolar(h: *Heap, gpa: std.mem.Allocator, magnitude: Value, angle: Value, exact_required: bool) Error!?Value {
+    if (magnitude.asFixnum()) |n| if (n == 0) return magnitude;
+    if (angle.asFixnum()) |n| if (n == 0) return magnitude;
+    if (exact_required) return null;
+    const m = try toFlonum(gpa, magnitude);
+    const a = try toFlonum(gpa, angle);
+    return try makeRectangular(h, gpa, .fromFlonum(m * @cos(a)), .fromFlonum(m * @sin(a)));
+}
+
+/// The `f64` nearest to the real number `v`.
+fn toFlonum(gpa: std.mem.Allocator, v: Value) Error!f64 {
+    if (v.asFlonum()) |x| return x;
+    if (v.asFixnum()) |n| return @floatFromInt(n);
+    if (v.asBignum()) |big| return exact.ratioToF64(gpa, big.toConst(), one);
+    const ratnum = v.asRatnum().?;
+    var numerator = try integerOf(gpa, ratnum.numerator);
+    defer numerator.deinit();
+    var denominator = try integerOf(gpa, ratnum.denominator);
+    defer denominator.deinit();
+    return exact.ratioToF64(gpa, numerator.toConst(), denominator.toConst());
+}
+
+/// A copy of the integer `v`, a fixnum or a bignum.
+fn integerOf(gpa: std.mem.Allocator, v: Value) Error!Managed {
+    if (v.asFixnum()) |n| return Managed.initSet(gpa, n);
+    var copy = try Managed.init(gpa);
+    errdefer copy.deinit();
+    try copy.copy(v.asBignum().?.toConst());
+    return copy;
+}
+
 /// Reads `text` as a number of R7RS 7.1.1 and returns it, normalized, or null if it is not one.
 ///
 /// `default_radix`(2、8、10、16)は、基数の接頭辞が無いときの基数である。数でないか、表せない
 /// 大きさ(置けない大きさの正確な整数、`#e+inf.0`、分母が0の `1/0`)なら null を返し、内容を
-/// 理由に誤りを送出しない(R7RS 6.2.7)。複素数の綴りは、スライス 4e-2 までは null になる。
+/// 理由に誤りを送出しない(R7RS 6.2.7)。複素数は、直交形式(`a+bi`、`+bi`、`+i`)と極形式
+/// (`a@b`)を読む。部分の正確性が混ざるものは、両方を不正確にそろえる(`makeRectangular`)。
+/// 極形式の角が正確な0でも大きさが0でもなければ、結果は不正確になるので、`#e` の綴りは null になる。
+/// 綴りの桁数が `max_spelling_digits` を超えるもの(整数、分子、分母、0 でない正確な小数)と、
+/// 0 でない正確な小数の10進指数の絶対値が `max_spelling_exponent` を超えるものも null である
+/// (時間の上限。部分ごとに見る)。不正確な小数と正確な 0 は、読む費用が小さいので掛けない。
 ///
 /// 作業領域はヒープの上限に計上する。結果の大きさは、確保の前に(綴りの写しの確保も
 /// 含めて)桁数と指数から見積もり、置けない大きさなら確保せずに null を返す。見積りは、
@@ -81,15 +154,11 @@ pub fn makeRatio(h: *Heap, gpa: std.mem.Allocator, numerator: Const, denominator
 /// 上限にほかの作業が数えられていて断られたときだけ、`HeapLimit` になる。
 pub fn parse(h: *Heap, text: []const u8, default_radix: u8) Error!?Value {
     const literal = syntax.scan(text, default_radix) orelse return null;
-    const real = switch (literal.shape) {
-        .real => |r| r,
-        .rectangular, .polar => return null,
-    };
     h.external_refused = false;
     const before = h.beginCounting(true);
     defer h.endCounting(before);
     var charged: heap_mod.Charged = .{ .heap = h, .backing = h.backing };
-    return parseReal(h, charged.allocator(), text, literal, real) catch |e| switch (e) {
+    return parseShape(h, charged.allocator(), literal) catch |e| switch (e) {
         error.OutOfMemory => if (h.external_refused) error.HeapLimit else error.OutOfMemory,
         error.HeapLimit => error.HeapLimit,
     };
@@ -121,12 +190,52 @@ fn fitsInHeap(h: *const Heap, limbs: usize) bool {
     return limbs *| @sizeOf(value_mod.Limb) *| work_factor +| work_slack <= room;
 }
 
+/// The most digits a spelling may have (a whole number, a numerator, a denominator, or the
+/// whole part and the fraction part of an exact decimal together, leading zeros counted), and
+/// the largest size of the exponent of an exact decimal; a spelling over either is not read.
+/// An inexact decimal and an exact zero are not limited.
+///
+/// Why: 読む時間は、桁数と指数に対して2乗に近く伸びる(`bigint` の桁の読み取り、累乗、
+/// 約分の gcd、除算)。ヒープの上限に収まる綴りでも、既定の上限(256MiB)では、読むのに
+/// 数十秒かかる(ReleaseSafe で `#e1e10000000` が約30秒)。そこで綴りの大きさに上限を置く。
+/// 値は、2026-10-23 に、実測を示して決まった(いずれも ReleaseSafe で、WASM は未測定)。
+/// 1つの実数で、桁数10万と指数±100万のとき、数字が同じ並び(9だけなど)なら約0.6秒、
+/// 乱数の桁なら約1.7秒(`#e` + 乱数99,999桁 + `e-1000000` が1.6秒、乱数100,000桁の分数が
+/// 1.1秒)かかる。複素数と極形式は部分ごとに見るので、部分の数だけ増え、両部が最悪の綴りなら
+/// 約3秒になる。R7RS 6.2.7 は内容を理由に誤りを出さないので、超えた綴りは
+/// 数でないものと同じく null を返す(`string->number` は `#f`)。ヒープの上限と同じ側に倒れる。
+/// 後から緩めるのは、互換を壊さない。
+///
+/// 不正確な小数(`1e999999999`、桁数が多い `1.5`)と、仮数が0の正確な小数(`#e0e999999999`)は
+/// 掛けない。読む費用が桁数に線形で、桁数1000万の小数でも約20ミリ秒だった(2026-10-23、
+/// ReleaseSafe)ので、時間の理由が無い。掛けると、`+inf.0` や 0 と読むのが標準の綴りが
+/// `#f` になる。`#i` つきの整数と有理数は、内部で正確な数を通るので掛ける。
+const max_spelling_digits = 100_000;
+const max_spelling_exponent = 1_000_000;
+
 const one_limbs = [_]value_mod.Limb{1};
 const one: Const = .{ .limbs = &one_limbs, .positive = true };
 const ten_limbs = [_]value_mod.Limb{10};
 const ten: Const = .{ .limbs = &ten_limbs, .positive = true };
 
-fn parseReal(h: *Heap, gpa: std.mem.Allocator, text: []const u8, literal: syntax.Literal, real: syntax.Real) Error!?Value {
+fn parseShape(h: *Heap, gpa: std.mem.Allocator, literal: syntax.Literal) Error!?Value {
+    switch (literal.shape) {
+        .real => |r| return parseReal(h, gpa, literal, r),
+        .rectangular => |c| {
+            // 実部が書かれていなければ、正確な0である(`+2.5i` は 0 + 2.5i)。
+            const real: Value = if (c.real) |r| (try parseReal(h, gpa, literal, r)) orelse return null else .fromFixnum(0);
+            const imag = (try parseReal(h, gpa, literal, c.imag)) orelse return null;
+            return try makeRectangular(h, gpa, real, imag);
+        },
+        .polar => |p| {
+            const magnitude = (try parseReal(h, gpa, literal, p.magnitude)) orelse return null;
+            const angle = (try parseReal(h, gpa, literal, p.angle)) orelse return null;
+            return try makePolar(h, gpa, magnitude, angle, literal.exactness == .exact);
+        },
+    }
+}
+
+fn parseReal(h: *Heap, gpa: std.mem.Allocator, literal: syntax.Literal, real: syntax.Real) Error!?Value {
     const inexact = literal.exactness == .inexact;
     switch (real) {
         .infnan => |kind| {
@@ -138,6 +247,7 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, text: []const u8, literal: syntax
             });
         },
         .integer => |i| {
+            if (i.digits.len > max_spelling_digits) return null;
             if (!fitsInHeap(h, bigint.limbsForDigits(i.digits.len, literal.radix))) return null;
             var n = try bigint.parseDigits(gpa, i.digits, literal.radix);
             defer n.deinit();
@@ -151,6 +261,7 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, text: []const u8, literal: syntax
             return try fromInteger(h, n.toConst());
         },
         .ratio => |r| {
+            if (r.numerator.len > max_spelling_digits or r.denominator.len > max_spelling_digits) return null;
             if (!fitsInHeap(h, bigint.limbsForDigits(r.numerator.len, literal.radix) +| bigint.limbsForDigits(r.denominator.len, literal.radix))) return null;
             var d = try bigint.parseDigits(gpa, r.denominator, literal.radix);
             defer d.deinit();
@@ -163,19 +274,28 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, text: []const u8, literal: syntax
         },
         .decimal => |d| {
             if (literal.exactness == .exact) return try parseExactDecimal(h, gpa, d);
-            // 符号を除いた綴りは、接頭辞と符号のあとの全体である(複素数ではない)。
-            const x = flonum.parseDecimal(unsignedSpelling(text)) catch return null;
+            const x = flonum.parseDecimal(decimalSpelling(d)) catch return null;
             return .fromFlonum(signedF64(d.sign, x));
         },
     }
 }
 
-/// The text of a real number without its prefixes (`#x`, `#e`, ...) and its sign.
-fn unsignedSpelling(text: []const u8) []const u8 {
-    var i: usize = 0;
-    while (i + 1 < text.len and text[i] == '#') i += 2;
-    if (i < text.len and (text[i] == '+' or text[i] == '-')) i += 1;
-    return text[i..];
+/// The spelling of a decimal as written, without its sign: the whole part, the point, the
+/// fraction part and the exponent.
+///
+/// Why: `syntax.scan` は、綴りの全体を渡さず、整数部、小数部、指数部の切片に分ける。
+/// 整数部は常に入力の中を指し(空でも、その位置を指す)、小数部は小数点があれば入力の
+/// 中を、指数部は書かれていれば入力の中を指す。綴りの終わりは、指数部があればその終わり、
+/// 無ければ小数部の終わり(指数部が無い decimal は小数点を持つ)である。この前提は、
+/// このファイルのテスト(「decimalSpelling」)が、書き方ごとに固定する。
+fn decimalSpelling(d: anytype) []const u8 {
+    const start = @intFromPtr(d.whole.ptr);
+    const end = if (d.exponent.len != 0)
+        @intFromPtr(d.exponent.ptr) + d.exponent.len
+    else
+        @intFromPtr(d.fraction.ptr) + d.fraction.len;
+    const first: [*]const u8 = d.whole.ptr;
+    return first[0 .. end - start];
 }
 
 fn signedF64(sign: syntax.Sign, magnitude: f64) f64 {
@@ -219,6 +339,7 @@ fn parseExactDecimal(h: *Heap, gpa: std.mem.Allocator, d: anytype) Error!?Value 
     while (start < total and digitAt(d.whole, d.fraction, start) == '0') start += 1;
     // 0 は、どんな指数でも 0 である。
     if (start == total) return .fromFixnum(0);
+    if (total > max_spelling_digits or @abs(parseExponent(d.exponent)) > max_spelling_exponent) return null;
     const exponent10 = parseExponent(d.exponent) - @as(i64, @intCast(d.fraction.len));
     const power_limbs = bigint.limbsForPow(ten, @abs(exponent10)) orelse return null;
     if (!fitsInHeap(h, bigint.limbsForDigits(total - start, 10) +| power_limbs)) return null;
@@ -246,7 +367,11 @@ fn parseExactDecimal(h: *Heap, gpa: std.mem.Allocator, d: anytype) Error!?Value 
 /// 基数10以外の有限の浮動小数点数は、正確な有理数に直して `#i` を前に付ける(`#i1/10`)。
 /// 無限大と NaN は、基数によらず `+inf.0` `-inf.0` `+nan.0` と書く。それらを基数10以外で
 /// 書くのを誤りにするのは、`number->string`(スライス 4g)の仕事である。
-/// 複素数は、スライス 4e-2 までは仮の表記 `#<number>` で書く。
+///
+/// 複素数は、実部、符号つきの虚部、`i` の順に書く(`1+2i`、`1.5-2.5i`)。実部が正確な0なら実部を
+/// 書かず(`+2i`)、虚部が正確な1と-1なら数を書かない(`+i`、`-i`)。部分が flonum で基数が
+/// 10以外のときは、先頭に `#i` を1つだけ置き、部分は接頭辞なしの正確な有理数で書く
+/// (`#i1/10+1/100i`)。読み戻すと、`#i` が両方の部分に効く。
 pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
     std.debug.assert(isNumber(v));
     std.debug.assert(radix == 2 or radix == 8 or radix == 10 or radix == 16);
@@ -259,8 +384,33 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u
             try writeInteger(out, scratch, ratnum.denominator, radix);
         },
         .flonum => try writeFlonum(out, scratch, v.asFlonum().?, radix),
-        else => try out.writeAll("#<number>"),
+        .compnum => try writeComplex(out, scratch, v.asCompnum().?, radix),
+        else => unreachable,
     }
+}
+
+fn writeComplex(out: *std.Io.Writer, scratch: std.mem.Allocator, c: *const Compnum, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
+    const inexact = c.real.asFlonum() != null;
+    // 部分の `#i` は、全体の先頭に1つだけ置く。基数10の flonum は接頭辞を持たない。
+    if (inexact and radix != 10) try out.writeAll("#i");
+    if (c.real.asFixnum() != 0) try writePart(out, scratch, c.real, radix);
+    if (c.imag.asFixnum()) |n| {
+        if (n == 1) return out.writeAll("+i");
+        if (n == -1) return out.writeAll("-i");
+    }
+    var imag: std.Io.Writer.Allocating = .init(scratch);
+    defer imag.deinit();
+    try writePart(&imag.writer, scratch, c.imag, radix);
+    const text = imag.written();
+    // 符号の無い虚部(`1/10`、`2.5`)には `+` を付ける。`+inf.0` と負の数は、符号を持っている。
+    if (text[0] != '+' and text[0] != '-') try out.writeByte('+');
+    try out.writeAll(text);
+    try out.writeByte('i');
+}
+
+fn writePart(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
+    if (v.asFlonum()) |x| return writeFlonumIn(out, scratch, x, radix, false);
+    try write(out, scratch, v, radix);
 }
 
 fn writeInteger(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
@@ -271,10 +421,15 @@ fn writeInteger(out: *std.Io.Writer, scratch: std.mem.Allocator, v: Value, radix
 }
 
 fn writeFlonum(out: *std.Io.Writer, scratch: std.mem.Allocator, x: f64, radix: u8) (std.Io.Writer.Error || error{OutOfMemory})!void {
+    return writeFlonumIn(out, scratch, x, radix, true);
+}
+
+/// `x` を書く。`with_prefix` が偽なら、基数10以外の `#i` を書かない。
+fn writeFlonumIn(out: *std.Io.Writer, scratch: std.mem.Allocator, x: f64, radix: u8, with_prefix: bool) (std.Io.Writer.Error || error{OutOfMemory})!void {
     if (radix == 10 or !std.math.isFinite(x)) return flonum.write(out, x);
     var value = try exact.fromF64(scratch, x);
     defer value.deinit();
-    try out.writeAll("#i");
+    if (with_prefix) try out.writeAll("#i");
     if (std.math.signbit(x)) try out.writeByte('-');
     const numerator = try bigint.toString(scratch, value.numerator.toConst(), radix);
     defer scratch.free(numerator);
@@ -318,7 +473,7 @@ fn zeros(comptime n: usize) [n]u8 {
     return @splat('0');
 }
 
-const zeros_100000 = zeros(100000);
+const zeros_90000 = zeros(90000);
 
 /// Reads `text` and writes the result in radix 10, or returns null if it is not a number.
 fn readWrite(h: *Heap, text: []const u8, default_radix: u8, out_radix: u8) !?[]u8 {
@@ -475,14 +630,216 @@ test "parse reads the infinities and NaN, and refuses them after #e" {
     try expectReads(&h, null, "#e+nan.0");
 }
 
-test "parse says no to what is not a number, and to a complex number until slice 4e-2" {
+test "parse says no to what is not a number, including what looks like a complex number" {
     var h: Heap = .init(testing.allocator, .{});
     defer h.deinit();
     for ([_][]const u8{ "", "abc", "+", "-", "...", "1/2/3", "--1", "1e", "e1", "inf", "nan", "1_000", "0x10", "#", "#x", "#xg", "#e#e1", "#b2", "1.5/2", "#x1.5" }) |text| {
         try expectReads(&h, null, text);
     }
-    for ([_][]const u8{ "1+2i", "+i", "-i", "1@2", "+inf.0i", "1.5-2.5i" }) |text| {
+    for ([_][]const u8{ "i", "1+2", "1+2j", "1+i+i", "1+2i3", "@", "1@", "@1", "1@2@3", "+i2", "i+1", "1 +2i", "1+ 2i", "1+-2i", "1++2i", "1+2ii", "1i", "1+2I3", "#e+inf.0i", "#e1+nan.0i", "1/0+i", "1+1/0i", "1@1/0", "1/0@1" }) |text| {
         try expectReads(&h, null, text);
+    }
+}
+
+test "parse reads complex numbers in the rectangular form" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_]struct { text: []const u8, expected: []const u8 }{
+        .{ .text = "1+2i", .expected = "1+2i" },
+        .{ .text = "1-2i", .expected = "1-2i" },
+        .{ .text = "-1+2i", .expected = "-1+2i" },
+        .{ .text = "+2i", .expected = "+2i" },
+        .{ .text = "-2i", .expected = "-2i" },
+        .{ .text = "+i", .expected = "+i" },
+        .{ .text = "-i", .expected = "-i" },
+        .{ .text = "+I", .expected = "+i" },
+        .{ .text = "1+i", .expected = "1+i" },
+        .{ .text = "1-i", .expected = "1-i" },
+        .{ .text = "1/2+3/4i", .expected = "1/2+3/4i" },
+        .{ .text = "-1/2-3/4i", .expected = "-1/2-3/4i" },
+        .{ .text = "+1/2i", .expected = "+1/2i" },
+        .{ .text = "6/4+10/4i", .expected = "3/2+5/2i" },
+        .{ .text = "123456789012345678901234567890+98765432109876543210987654321i", .expected = "123456789012345678901234567890+98765432109876543210987654321i" },
+        .{ .text = "1.5+2.5i", .expected = "1.5+2.5i" },
+        .{ .text = "1.5-2.5i", .expected = "1.5-2.5i" },
+        .{ .text = "1e2+3.5e1i", .expected = "100.0+35.0i" },
+        .{ .text = "1E2+3.5E1I", .expected = "100.0+35.0i" },
+        .{ .text = "+1.5i", .expected = "0.0+1.5i" },
+        .{ .text = "-.5e2i", .expected = "0.0-50.0i" },
+        .{ .text = "#x1+eei", .expected = "1+238i" },
+        .{ .text = "#b1+1i", .expected = "1+i" },
+        .{ .text = "#b+i", .expected = "+i" },
+        .{ .text = "#o7-10i", .expected = "7-8i" },
+    }) |case| try expectReads(&h, case.expected, case.text);
+    const z = (try parse(&h, "1+2i", 10)).?;
+    try testing.expectEqual(value_mod.Kind.compnum, z.kind());
+}
+
+test "parse makes an exact zero imaginary part a real number, and an inexact one not" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_]struct { text: []const u8, expected: []const u8, kind: value_mod.Kind }{
+        .{ .text = "3+0i", .expected = "3", .kind = .fixnum },
+        .{ .text = "3-0i", .expected = "3", .kind = .fixnum },
+        .{ .text = "1/2+0i", .expected = "1/2", .kind = .ratnum },
+        .{ .text = "3.5+0i", .expected = "3.5", .kind = .flonum },
+        .{ .text = "+0i", .expected = "0", .kind = .fixnum },
+        .{ .text = "123456789012345678901234567890+0i", .expected = "123456789012345678901234567890", .kind = .bignum },
+        .{ .text = "#e3.5+0.0i", .expected = "7/2", .kind = .ratnum },
+        .{ .text = "3+0.0i", .expected = "3.0+0.0i", .kind = .compnum },
+        .{ .text = "3.5+0.0i", .expected = "3.5+0.0i", .kind = .compnum },
+        .{ .text = "3.5-0.0i", .expected = "3.5-0.0i", .kind = .compnum },
+        .{ .text = "+0.0i", .expected = "0.0+0.0i", .kind = .compnum },
+        .{ .text = "#i3+0i", .expected = "3.0+0.0i", .kind = .compnum },
+    }) |case| {
+        const v = (try parse(&h, case.text, 10)).?;
+        try testing.expectEqual(case.kind, v.kind());
+        var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer aw.deinit();
+        try write(&aw.writer, testing.allocator, v, 10);
+        try testing.expectEqualStrings(case.expected, aw.written());
+    }
+}
+
+test "parse makes both parts inexact when only one is, and keeps both exact when neither is" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_]struct { text: []const u8, expected: []const u8 }{
+        .{ .text = "1.5+2i", .expected = "1.5+2.0i" },
+        .{ .text = "1+2.5i", .expected = "1.0+2.5i" },
+        .{ .text = "1/3+2.5i", .expected = "0.3333333333333333+2.5i" },
+        .{ .text = "1.5-1/4i", .expected = "1.5-0.25i" },
+        .{ .text = "123456789012345678901234567890+1.5i", .expected = "1.2345678901234568e29+1.5i" },
+        .{ .text = "1+inf.0i", .expected = "1.0+inf.0i" },
+        .{ .text = "+inf.0i", .expected = "0.0+inf.0i" },
+        .{ .text = "-inf.0+nan.0i", .expected = "-inf.0+nan.0i" },
+        .{ .text = "+nan.0i", .expected = "0.0+nan.0i" },
+        .{ .text = "1-inf.0i", .expected = "1.0-inf.0i" },
+        .{ .text = "#i1+2i", .expected = "1.0+2.0i" },
+        .{ .text = "#i+i", .expected = "0.0+1.0i" },
+        .{ .text = "#i1/2+1/4i", .expected = "0.5+0.25i" },
+        .{ .text = "#e1.5+2i", .expected = "3/2+2i" },
+        .{ .text = "#e1.5-2.5i", .expected = "3/2-5/2i" },
+        .{ .text = "#e+1.5i", .expected = "+3/2i" },
+        .{ .text = "1+2i", .expected = "1+2i" },
+        // fixnum の実部の変換(2^53 を超えると丸める)。
+        .{ .text = "4294967296+1.5i", .expected = "4294967296.0+1.5i" },
+        .{ .text = "9007199254740993+0.5i", .expected = "9007199254740992.0+0.5i" },
+    }) |case| try expectReads(&h, case.expected, case.text);
+    // 部分の型を、数ごとに確かめる。
+    const z = (try parse(&h, "1+2.5i", 10)).?.asCompnum().?;
+    try testing.expectEqual(value_mod.Kind.flonum, z.real.kind());
+    try testing.expectEqual(value_mod.Kind.flonum, z.imag.kind());
+    const w = (try parse(&h, "1/2+3i", 10)).?.asCompnum().?;
+    try testing.expectEqual(value_mod.Kind.ratnum, w.real.kind());
+    try testing.expectEqual(value_mod.Kind.fixnum, w.imag.kind());
+}
+
+test "parse reads the polar form with the nearest values, and an exact number when the angle is exact zero" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectReads(&h, "1", "1@0");
+    try expectReads(&h, "-3/2", "-3/2@0");
+    try expectReads(&h, "1.5", "1.5@0");
+    try expectReads(&h, "0", "0@5");
+    try expectReads(&h, "0", "0@1.5");
+    try expectReads(&h, "3/2", "#e1.5@0");
+    try expectReads(&h, "0", "#e0@2");
+    try expectReads(&h, "1.0+0.0i", "1@0.0");
+    try expectReads(&h, "1.0+0.0i", "#i1@0");
+    try expectReads(&h, "0.5403023058681398+0.8414709848078965i", "1@1");
+    try expectReads(&h, "-0.4161468365471424+0.9092974268256817i", "1@2");
+    try expectReads(&h, "1.0806046117362795+1.682941969615793i", "2@1");
+    try expectReads(&h, "0.5403023058681398+0.8414709848078965i", "#i1@1");
+    // 不正確な数は、`#e` では表せない。
+    try expectReads(&h, null, "#e1@1");
+    try expectReads(&h, null, "#e1.5@2");
+    // 大きさと角の型は何でもよい。
+    const z = (try parse(&h, "1/2@1/3", 10)).?.asCompnum().?;
+    try testing.expectApproxEqAbs(0.5 * @cos(1.0 / 3.0), z.real.asFlonum().?, 1e-15);
+    try testing.expectApproxEqAbs(0.5 * @sin(1.0 / 3.0), z.imag.asFlonum().?, 1e-15);
+    // 無限大と NaN の大きさと角でも、読める(結果に NaN を含みうる)。
+    try testing.expect((try parse(&h, "+inf.0@1", 10)) != null);
+    try testing.expect((try parse(&h, "1@+inf.0", 10)) != null);
+}
+
+test "makeRectangular makes a real number of an exact zero imaginary part, and unifies the exactness of the parts" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const gpa = testing.allocator;
+    // 虚部が正確な0なら、実部そのもの(型も保つ)。
+    try testing.expectEqual(Value.fromFixnum(3), try makeRectangular(&h, gpa, .fromFixnum(3), .fromFixnum(0)));
+    try testing.expectEqual(Value.fromFlonum(1.5), try makeRectangular(&h, gpa, .fromFlonum(1.5), .fromFixnum(0)));
+    const half = (try parse(&h, "1/2", 10)).?;
+    try testing.expectEqual(half, try makeRectangular(&h, gpa, half, .fromFixnum(0)));
+    // 虚部が不正確な0なら、複素数のまま。
+    const z = try makeRectangular(&h, gpa, .fromFixnum(3), .fromFlonum(0.0));
+    try testing.expectEqual(value_mod.Kind.compnum, z.kind());
+    try testing.expectEqual(Value.fromFlonum(3.0), z.asCompnum().?.real);
+    try testing.expect(std.math.signbit(z.asCompnum().?.imag.asFlonum().?) == false);
+    const n = try makeRectangular(&h, gpa, .fromFixnum(3), .fromFlonum(-0.0));
+    try testing.expect(std.math.signbit(n.asCompnum().?.imag.asFlonum().?));
+    // 実部だけが不正確なら虚部を、虚部だけが不正確なら実部を、不正確にする。
+    const big = (try parse(&h, "123456789012345678901234567890", 10)).?;
+    const mixed = try makeRectangular(&h, gpa, big, .fromFlonum(1.5));
+    try testing.expectEqual(value_mod.Kind.flonum, mixed.asCompnum().?.real.kind());
+    try testing.expectEqual(@as(f64, 1.2345678901234568e29), mixed.asCompnum().?.real.asFlonum().?);
+    const other = try makeRectangular(&h, gpa, .fromFlonum(2.5), half);
+    try testing.expectEqual(Value.fromFlonum(0.5), other.asCompnum().?.imag);
+    // 両方が正確なら、正確なまま(型もそのまま)。
+    const exact_pair = try makeRectangular(&h, gpa, half, big);
+    try testing.expectEqual(half, exact_pair.asCompnum().?.real);
+    try testing.expectEqual(big, exact_pair.asCompnum().?.imag);
+    // 両方が不正確なら、そのまま。
+    const inexact_pair = try makeRectangular(&h, gpa, .fromFlonum(1.0), .fromFlonum(2.0));
+    try testing.expectEqual(Value.fromFlonum(1.0), inexact_pair.asCompnum().?.real);
+    try testing.expectEqual(Value.fromFlonum(2.0), inexact_pair.asCompnum().?.imag);
+}
+
+test "a complex number is as large as its parts, and a part too large for the heap makes it no number" {
+    var h: Heap = .init(testing.allocator, .{ .limit = 64 * 1024 });
+    defer h.deinit();
+    try expectReads(&h, null, "#e1e999999999+1i");
+    try expectReads(&h, null, "1+#e1e999999999i");
+    try expectReads(&h, null, "#e1e999999999@1");
+    try expectReads(&h, null, "#e1+1e999999999i");
+    try testing.expectEqual(0, h.external);
+    try testing.expect(!h.external_enforced);
+    // 不正確な部分は、どんなに大きくても、無限大になるだけで、ヒープを使わない。
+    try expectReads(&h, "+inf.0+inf.0i", "1e999999999+1e999999999i");
+    try expectReads(&h, "0.0+0.0i", "1e-999999999+1e-999999999i");
+}
+
+/// The decimal that stands at `place` in the number `text`, which is spelled the same way as
+/// `expected` says it is.
+fn expectSpelling(text: []const u8, place: enum { whole, real, imag, magnitude, angle }, expected: []const u8) !void {
+    const literal = syntax.scan(text, 10).?;
+    const part: syntax.Real = switch (place) {
+        .whole => literal.shape.real,
+        .real => literal.shape.rectangular.real.?,
+        .imag => literal.shape.rectangular.imag,
+        .magnitude => literal.shape.polar.magnitude,
+        .angle => literal.shape.polar.angle,
+    };
+    try testing.expectEqualStrings(expected, decimalSpelling(part.decimal));
+}
+
+test "decimalSpelling gives the spelling of a decimal, from the pieces that scan hands over" {
+    // 整数部が空、小数点だけ、指数部だけ、すべてあり、のそれぞれを、数の中の各位置で。
+    for ([_][]const u8{ "1.", ".5", "1.5", "1e10", "1E10", "1e-3", "1e+3", "1.e2", ".5e1", "0.0", "123456.789e-12", "1.5e300" }) |spelling| {
+        var buf: [64]u8 = undefined;
+        try expectSpelling(try std.fmt.bufPrint(&buf, "{s}", .{spelling}), .whole, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "+{s}", .{spelling}), .whole, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "-{s}", .{spelling}), .whole, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "#e{s}", .{spelling}), .whole, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "#i-{s}", .{spelling}), .whole, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "{s}+1i", .{spelling}), .real, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "1+{s}i", .{spelling}), .imag, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "1-{s}i", .{spelling}), .imag, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "+{s}i", .{spelling}), .imag, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "{s}@1", .{spelling}), .magnitude, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "1@{s}", .{spelling}), .angle, spelling);
+        try expectSpelling(try std.fmt.bufPrint(&buf, "1@-{s}", .{spelling}), .angle, spelling);
     }
 }
 
@@ -509,12 +866,13 @@ test "parse says no to an exact number too large for the heap, before it allocat
     try testing.expectEqual(0, h.accounted);
     try testing.expect(!h.external_enforced);
     // 桁数が大きい `#e` の小数も、綴りを写す前に見積もって、null になる(整数と同じ)。
-    const big_decimal = try std.fmt.allocPrint(testing.allocator, "#e{s}.5", .{&digits});
+    const big_decimal = try std.fmt.allocPrint(testing.allocator, "#e{s}.5", .{digits[0..99_999]});
     defer testing.allocator.free(big_decimal);
     try expectReads(&h, null, big_decimal);
     try testing.expectEqual(0, h.external);
-    // 桁は先頭の0を数えない。0が大きいだけの綴りは、小さい数として読める。
-    const zeros_text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1e{d}", .{ &zeros_100000, 100000 });
+    // ヒープの見積りは先頭の0を数えない。0が大きいだけの綴りは、小さい数として読める。
+    // (綴りの長さの上限には数える。上限は「parse says no to an exact spelling over the limits」が固定する)
+    const zeros_text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1e{d}", .{ &zeros_90000, 90000 });
     defer testing.allocator.free(zeros_text);
     try expectReads(&h, "1/10", zeros_text);
     // 指数部が大きすぎても、整数があふれない。
@@ -524,6 +882,161 @@ test "parse says no to an exact number too large for the heap, before it allocat
     const expected = "1" ++ zeros(300);
     try expectReads(&h, expected, "#e1e300");
     try testing.expectEqual(0, h.external);
+}
+
+fn filled(len: usize, c: u8) ![]u8 {
+    const s = try testing.allocator.alloc(u8, len);
+    @memset(s, c);
+    return s;
+}
+
+fn expectReadsFormatted(h: *Heap, expected: ?[]const u8, comptime fmt: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(testing.allocator, fmt, args);
+    defer testing.allocator.free(text);
+    try expectReads(h, expected, text);
+}
+
+test "parse says no to an exact spelling over the limits, wherever the heap has room" {
+    // ヒープの上限は既定(十分に大きい)。断る理由は、綴りの長さと指数の上限だけである。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const over = try filled(max_spelling_digits + 1, '7');
+    defer testing.allocator.free(over);
+    const at = over[1..];
+    // 整数、分子、分母。基数と符号と正確さによらない(`#i` も内部で正確な数を作る)。
+    try expectReadsFormatted(&h, null, "{s}", .{over});
+    try expectReadsFormatted(&h, null, "-{s}", .{over});
+    try expectReadsFormatted(&h, null, "#x{s}", .{over});
+    try expectReadsFormatted(&h, null, "#b{s}", .{over});
+    try expectReadsFormatted(&h, null, "#i{s}", .{over});
+    try expectReadsFormatted(&h, null, "#e{s}", .{over});
+    try expectReadsFormatted(&h, null, "{s}/3", .{over});
+    try expectReadsFormatted(&h, null, "3/{s}", .{over});
+    try expectReadsFormatted(&h, null, "#i{s}/3", .{over});
+    try expectReadsFormatted(&h, null, "#i3/{s}", .{over});
+    // 正確な小数の仮数は、整数部と小数部の長さの合計で見る。先頭の0も数える。
+    try expectReadsFormatted(&h, null, "#e{s}.5", .{at});
+    try expectReadsFormatted(&h, null, "#e1.{s}", .{at});
+    try expectReadsFormatted(&h, null, "#e0.{s}", .{over});
+    // 先頭の0も数える: 0 が上限の個数あって 1 が続く綴りは、整数部の 0 と合わせて上限を超える。
+    const zeros_max = try filled(max_spelling_digits, '0');
+    defer testing.allocator.free(zeros_max);
+    try expectReadsFormatted(&h, null, "#e0.{s}1", .{zeros_max});
+    try expectReadsFormatted(&h, null, "#e-0.{s}1", .{zeros_max});
+    // 正確な小数の指数の絶対値。符号によらない。
+    try expectReads(&h, null, "#e1e1000001");
+    try expectReads(&h, null, "#e1e-1000001");
+    try expectReads(&h, null, "#e-1.5e1000001");
+    try expectReads(&h, null, "#e1.5e-1000001");
+    try expectReads(&h, null, "#e1e99999999999999999999");
+    // 複素数の各部と極形式の各部も、それぞれ見る。
+    try expectReadsFormatted(&h, null, "{s}+1i", .{over});
+    try expectReadsFormatted(&h, null, "1+{s}i", .{over});
+    try expectReadsFormatted(&h, null, "+{s}i", .{over});
+    try expectReadsFormatted(&h, null, "#i{s}/3+1i", .{over});
+    try expectReadsFormatted(&h, null, "{s}@1", .{over});
+    try expectReadsFormatted(&h, null, "1@{s}", .{over});
+    try expectReads(&h, null, "#e1e1000001+1i");
+    try expectReads(&h, null, "#e1+1e-1000001i");
+    try expectReads(&h, null, "#e1e1000001@0");
+    // 断ったあとに、数えたものを残さない。
+    try testing.expectEqual(0, h.external);
+    try testing.expectEqual(0, h.accounted);
+}
+
+test "the limits of a spelling are the values the design decided" {
+    // 値を変えるのは設計の判断である(docs/design/numerics-and-unicode.md)。
+    try testing.expectEqual(100_000, max_spelling_digits);
+    try testing.expectEqual(1_000_000, max_spelling_exponent);
+}
+
+test "parse does not limit what costs little: an inexact decimal and an exact zero" {
+    // 不正確な小数は、桁数と指数が線形に読まれるので、上限の外でも読む(`#i` の小数も)。
+    // 正確な 0 は、どんな桁数と指数でも 0 である。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const over = try filled(max_spelling_digits + 1, '7');
+    defer testing.allocator.free(over);
+    const zeros_over = try filled(max_spelling_digits + 1, '0');
+    defer testing.allocator.free(zeros_over);
+    try expectReads(&h, "+inf.0", "1e1000000");
+    try expectReads(&h, "0.0", "1e-1000000");
+    try expectReads(&h, "+inf.0", "1e1000001");
+    try expectReads(&h, "0.0", "1e-1000001");
+    try expectReads(&h, "+inf.0", "#i1e1000001");
+    try expectReads(&h, "0.0", "#i1.5e-1000001");
+    try expectReads(&h, "+inf.0", "1e999999999");
+    try expectReads(&h, "0.0", "1e-999999999");
+    try expectReads(&h, "+inf.0", "1e99999999999999999999");
+    try expectReadsFormatted(&h, "+inf.0", "{s}.5", .{over});
+    try expectReadsFormatted(&h, "+inf.0", "#i{s}.5", .{over});
+    try expectReadsFormatted(&h, "0.0", "#i0.{s}", .{zeros_over});
+    // 複素数と極形式の部分でも同じである。
+    try expectReads(&h, "+inf.0+0.0i", "1e999999999+1e-999999999i");
+    try expectReadsFormatted(&h, "+inf.0+inf.0i", "{s}.5+{s}.5i", .{ over, over });
+    // 正確な 0 は、上限を超える桁数と指数でも 0 である。
+    try expectReads(&h, "0", "#e0e1000001");
+    try expectReads(&h, "0", "#e0e-1000001");
+    try expectReads(&h, "0", "#e0e999999999");
+    try expectReadsFormatted(&h, "0", "#e0.{s}", .{zeros_over});
+    try expectReadsFormatted(&h, "0", "#e0.{s}e1000001", .{zeros_over});
+    try expectReads(&h, "0", "#e0e999999999+0e999999999i");
+    try testing.expectEqual(0, h.external);
+}
+
+test "parse reads an exact spelling just within the limits" {
+    try tier.slow();
+    // 費用は桁数と指数の2乗に比例する。上限ちょうどの正確な数を、縮小せずに読む。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const nines = try filled(max_spelling_digits, '9');
+    defer testing.allocator.free(nines);
+    {
+        const v = (try parse(&h, nines, 10)).?;
+        try testing.expectEqual(value_mod.Kind.bignum, v.kind());
+    }
+    {
+        const text = try std.fmt.allocPrint(testing.allocator, "{s}/7", .{nines});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        const text = try std.fmt.allocPrint(testing.allocator, "3/{s}", .{nines});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        const text = try std.fmt.allocPrint(testing.allocator, "#e{s}", .{nines});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 正確な小数の仮数が上限ちょうど(整数部の 0 と、小数部の 99,999 桁)。
+        const lead = try filled(max_spelling_digits - 2, '0');
+        defer testing.allocator.free(lead);
+        const text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1", .{lead});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 分子と分母がともに上限ちょうど(約分の gcd が最も重い形に近い)。
+        const denominator = try filled(max_spelling_digits, '7');
+        defer testing.allocator.free(denominator);
+        denominator[max_spelling_digits - 1] = '3';
+        const text = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ nines, denominator });
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 仮数が上限ちょうどで、指数も上限ちょうど。
+        const fraction = try filled(max_spelling_digits - 2, '1');
+        defer testing.allocator.free(fraction);
+        const text = try std.fmt.allocPrint(testing.allocator, "#e1.{s}e-1000000", .{fraction});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    try testing.expect((try parse(&h, "#e1e1000000", 10)) != null);
+    try testing.expect((try parse(&h, "#e1e-1000000", 10)) != null);
 }
 
 test "parse compares the estimate with the room that is left, not with the limit" {
@@ -557,6 +1070,8 @@ fn expectEstimateHolds(digits: usize, steps: usize) !void {
         try std.fmt.allocPrint(testing.allocator, "#e1e{d}", .{digits * 4}),
         try std.fmt.allocPrint(testing.allocator, "#e1e-{d}", .{digits * 4}),
         try std.fmt.allocPrint(testing.allocator, "#e{s}.{s}e-{d}", .{ a, b, digits }),
+        try std.fmt.allocPrint(testing.allocator, "{s}/{s}+{s}/{s}i", .{ a, b, b, a }),
+        try std.fmt.allocPrint(testing.allocator, "#i{s}+{s}i", .{ a, b }),
     };
     defer for (texts) |t| testing.allocator.free(t);
     for (texts) |text| {
@@ -735,7 +1250,7 @@ fn expectRoundTrip(h: *Heap, text: []const u8, radix: u8) !void {
 test "write then parse gives the same number in every radix, for the boundary values" {
     var h: Heap = .init(testing.allocator, .{});
     defer h.deinit();
-    for ([_][]const u8{ "0", "1", "-1", "255", "9223372036854775807", "-9223372036854775808", "9223372036854775808", "123456789012345678901234567890", "1/3", "-22/7", "123456789012345678901234567890/7", "0.1", "-0.1", "0.5", "100.0", "1e21", "1e-7", "-0.0", "5e-324", "1.7976931348623157e308", "2.2250738585072014e-308", "4.35", "+inf.0", "-inf.0", "#e1.5", "#i1/3" }) |text| {
+    for ([_][]const u8{ "0", "1", "-1", "255", "9223372036854775807", "-9223372036854775808", "9223372036854775808", "123456789012345678901234567890", "1/3", "-22/7", "123456789012345678901234567890/7", "0.1", "-0.1", "0.5", "100.0", "1e21", "1e-7", "-0.0", "5e-324", "1.7976931348623157e308", "2.2250738585072014e-308", "4.35", "+inf.0", "-inf.0", "#e1.5", "#i1/3", "1+2i", "1-2i", "+2i", "-2i", "+i", "-i", "1+i", "1-i", "1/2-3/4i", "-1/2+3/4i", "123456789012345678901234567890+98765432109876543210987654321i", "1.5+2.5i", "0.5-0.25i", "1+2.5i", "1.5+2i", "+0.5i", "1+0.0i", "1-0.0i", "-0.0+0.0i", "0.1+0.2i", "1e21+1e-7i", "5e-324-1.7976931348623157e308i", "1+inf.0i", "-inf.0+inf.0i", "+nan.0+1.5i", "1.5-nan.0i", "1@1", "2@-1.5", "#i1+2i", "#e1.5-2.5i" }) |text| {
         for ([_]u8{ 2, 8, 10, 16 }) |radix| {
             // 無限大は基数10以外で書けない約束だが、`write` は基数によらず同じ綴りを書く。
             try expectRoundTrip(&h, text, radix);
@@ -762,6 +1277,10 @@ test "write then parse gives the same number for random integers, ratios and flo
         defer aw.deinit();
         try flonum.write(&aw.writer, x);
         try expectRoundTrip(&h, aw.written(), radix);
+        // 実部が分数、虚部が flonum の複素数(部分の正確性が混ざる)。
+        const sign: []const u8 = if (aw.written()[0] == '-') "" else "+";
+        const complex = try std.fmt.bufPrint(&buf, "{d}/{d}{s}{s}i", .{ n, d, sign, aw.written() });
+        try expectRoundTrip(&h, complex, radix);
     }
 }
 

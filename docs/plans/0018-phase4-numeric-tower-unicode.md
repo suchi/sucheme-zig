@@ -299,7 +299,7 @@ pub fn digitValue(c: u21) ?u4
 | 4c 多倍長の薄い層 | `bigint` の各関数が、`i64` の範囲で `i128` の計算と一致し、基数2、8、10、16で `toString` と `parseDigits` が往復する | `src/num/bigint.zig` | T2 | なし | 可 | 中 |
 | 4d 型の骨格 | `Value` に4つの変種、`heap_types` に3つの型が入り、走査と計上の検証項目が通る。プリンタの分岐が `num.write` を呼ぶ(中身は仮) | `src/value.zig` `src/heap.zig` `src/trace.zig` `src/printer.zig`(分岐だけ) `src/num/number.zig`(仮の `write` だけ) | T3 | 合意を求める点の5、6 | 4a〜4c と可。L3 の骨格とは順に(下) | 中 |
 | 4e-1 数の生成と正規化、`parse` と `write`(複素数を除く) | `num.parse` と `num.write` が、fixnum、bignum、ratnum、flonum について、基数2、8、10、16で往復する。純粋な変換(`src/num/exact.zig`)を含む | `src/num/number.zig` `src/num/exact.zig`(新規) | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大の前半 |
-| 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum について往復し、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いの判断 | 4f と可 | 大の後半 |
+| 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum について往復し、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いは、そろえる案に決まった(2026-10-22。設計文書の正規化の規則) | 4f と可 | 大の後半 |
 | 4r リーダの数の構文(L2 の作業) | リーダが `num.parse` で数を読み、`(define inf 1)` と `(define |1_000| 3)` 以外の数の綴りが数になる | `src/reader.zig` | T2 | 4e。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4f 四則と比較 | `+ - * / = < > <= >=` が数値塔の全組合せで動き、作業領域が返る | `src/prim/arith.zig` `src/num/ops.zig`(新規) | T2 | 4e | 4h、4u2 と可 | 大 |
 | 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行の衝突は機械的に解く) | 大 |
@@ -496,10 +496,13 @@ pub fn digitValue(c: u21) ?u4
 | 4d | マージ済み([suchi/sucheme-zig#134](https://github.com/suchi/sucheme-zig/pull/134)) |
 | 4a | マージ済み([suchi/sucheme-zig#148](https://github.com/suchi/sucheme-zig/pull/148)) |
 | 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
-| 4e-1 | PR を作る(このブランチ)。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
-| 4e-2、4f〜4z、4u1〜4u4 | 未着手 |
+| 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
+| 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則 |
+| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。ドラフト PR [suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181)。独立レビューの指摘に対応中。4g と 4r の前にマージする |
+| 4f〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4d のレビューを収束させ、マージする。L3 の型の骨格(計画書 0019)は、4d のあとに main を取り込んで進める。
-- 純粋な層(4a、4b)と Unicode の生成器(4u1)を並行に始める。4e は、4a、4b、4c、4d のマージを待つ。
+- 4e-3(読み取りの大きさの上限)の PR を、レビューを経てマージする。4g の `string->number` と 4r のリーダーが `parse` を呼ぶ前に、マージする。
+- 4f(算術)に進む。4f は 4e-2 と並行にできる。
+- Unicode の生成器(4u1)は、数値の層と並行に進められる。

@@ -5,5 +5,8 @@
   (export append reverse list-tail list-ref list-set! list-copy make-list
           memq memv member assq assv assoc map for-each
           caar cadr cdar cddr boolean=?
-          vector-map vector-for-each string-map string-for-each)
+          vector-map vector-for-each string-map string-for-each
+          zero? positive? negative? even? odd? abs square
+          floor/ floor-quotient floor-remainder truncate/ truncate-quotient truncate-remainder
+          gcd lcm)
   (include "procedures.scm"))
