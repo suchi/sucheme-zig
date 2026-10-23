@@ -128,8 +128,8 @@ Scheme で書けるものは Scheme で書く([ADR-0006](adr/0006-library-system
 | 独自の panic ハンドラが呼ばれない | 宣言名は小文字の `panic` で、値は `std.debug.FullPanic(fn)` |
 | `build.zig.zon` の fingerprint エラー | エラーメッセージが正しい値を教えてくれるので、それを貼る |
 | ランダムな場所でクラッシュする | GC のルート登録漏れ。確保をまたいで保持している `Value`、生のヒープポインタ、シンボル ID を探す |
-| 深い再帰でスタックが溢れる(評価中) | Zig の再帰で Scheme 式を評価している。機械のフレームに載せ替える |
-| 深い再帰でスタックが溢れる(GC・リーダ・プリンタ・`equal?`・展開器・`syntax-rules`) | 入力の深さに比例して進む処理を Zig の再帰で書いている。明示的な作業スタックに載せ替える。対象の一覧は [design/runtime.md](design/runtime.md) にある |
+| 深い再帰でスタックがあふれる(評価中) | Zig の再帰で Scheme 式を評価している。機械のフレームに載せ替える |
+| 深い再帰でスタックがあふれる(GC・リーダ・プリンタ・`equal?`・展開器・`syntax-rules`) | 入力の深さに比例して進む処理を Zig の再帰で書いている。明示的な作業スタックに載せ替える。対象の一覧は [design/runtime.md](design/runtime.md) にある |
 
 詳細は [design/zig-api-notes.md](design/zig-api-notes.md) にある。
 

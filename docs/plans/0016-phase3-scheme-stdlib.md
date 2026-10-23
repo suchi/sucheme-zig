@@ -77,7 +77,7 @@ roadmap の段階3の項目と、スライス(下の「スライス」の表)の
 | REPL で解決した名前ごとに残る未束縛のセル | 3o |
 | 準拠マトリクスの入力に `lib/` のエクスポート節を足す | 3l |
 | `equal?` の循環と共有構造 | 3b |
-| マクロが導入した最上位の定義の衛生化 | 3q(合意を求める点の5)。2026-10-22 に段階6へ送った(下の「3q の中身」) |
+| マクロが導入したトップレベルの定義の衛生化 | 3q(合意を求める点の5)。2026-10-22 に段階6へ送った(下の「3q の中身」) |
 | ファイルの実行 | 3m |
 | シンボル表を弱い表にする | 3c |
 | コアIRを GC ヒープに移し `code_roots` を要らなくする | 3o(合意を求める点の4) |
@@ -93,9 +93,9 @@ roadmap の段階3の項目と、スライス(下の「スライス」の表)の
 | --- | --- | --- | --- | --- |
 | 3a `lib/` の埋め込みと `(sucheme derived)` の種 | `(import (sucheme derived))` のあとで `(when #t 1)` が `1`、`(unless #f 2)` が `2`。ネイティブでも WASM でも通る | 中 | 2〜4 | 3〜6 |
 | 3b 対の変更と、変更が入ると要る3項目 | `set-car!` と `set-cdr!` が動く。循環した2つのリストの `equal?` が止まり、共有構造の深い比較が深さに比例する時間で終わる。`apply` の入れ子の周回と `values` の確保が、ステップの境目を通る | 中 | 2〜4 | 3〜6 |
-| 3c 文字の比較とシンボル | `(eq? 'abc (string->symbol "abc"))` が、作業リストの容量0でも成立し続ける。使われないシンボルが回収される | 中 | 2〜4 | 3〜6 |
+| 3c 文字の比較とシンボル | `(eq? 'abc (string->symbol "abc"))` が、ワークリストの容量0でも成立し続ける。使われないシンボルが回収される | 中 | 2〜4 | 3〜6 |
 | 3d 文字列 | `(string-append "ab" "cd")` が `"abcd"`。文字列の比較、変更、変換のプリミティブが [R7RS 6.7](https://standards.scheme.org/corrected-r7rs/r7rs.html) どおりに動く | 中 | 2〜4 | 3〜6 |
-| 3e ベクタとバイトベクタ | `(vector-fill! (make-vector 3 0) 7)` が動く。`(bytevector-u8-ref (bytevector 1 2 3) 1)` が `2`。`utf8->string` と `string->utf8` が往復する | 中 | 2〜4 | 3〜6 |
+| 3e ベクタとバイトベクタ | `(vector-fill! (make-vector 3 0) 7)` が動く。`(bytevector-u8-ref (bytevector 1 2 3) 1)` が `2`。`utf8->string` と `string->utf8` がラウンドトリップする | 中 | 2〜4 | 3〜6 |
 | 3f EOF の値と約束 | `(eof-object? (eof-object))` が `#t`。`make-promise` `promise?` と `force` の本体が動く | 小 | 1〜2 | 1.5〜3 |
 | 3g リストの手続き | `(append '(1 2) '(3) '())` が `(1 2 3)`。`map` と `for-each` が複数のリストを取り、継続の再入に対して正しい | 中 | 2〜4 | 3〜6 |
 | 3h リーダの略記と派生構文その1 | `` `(1 ,(+ 1 1) ,@(list 3 4)) `` が `(1 2 3 4)`。`cond` `case` `and` `or` `let` `let*` `letrec` `letrec*` `do` `when` `unless` が R7RS 4.2 どおりに動く | 大 | 4〜8 | 6〜12 |
@@ -107,7 +107,7 @@ roadmap の段階3の項目と、スライス(下の「スライス」の表)の
 | 3n Web UI のサンプルと共有リンク | サンプルを選んで実行できる。URL のフラグメントに入れたソースが、開いたときに復元される | 中 | 2〜4 | 3〜6 |
 | 3o コアIRと構文環境を GC ヒープへ | `Context.code_roots` が無い。ライブラリの表と未束縛のセルと失敗した展開の節点が、上限に計上されるか回収される | 大 | 4〜8 | 6〜12 |
 | 3p 本体の定義と `let-syntax` の本体 | `(lambda () (begin (define x 1)) x)` と `(lambda () (cond-expand (r7rs (define x 1))) x)` が動く。`let-syntax` の本体に `define` が置ける。入れ子の `lambda` を重ねる止まらないマクロが、有界で終わる | 中 | 2〜4 | 3〜6 |
-| 3q マクロが導入した最上位の定義の衛生化 | マクロが導入した最上位の `define` が、利用側の同じ綴りの最上位の変数を書き換えない | 中 | 2〜4 | 3〜6 |
+| 3q マクロが導入したトップレベルの定義の衛生化 | マクロが導入したトップレベルの `define` が、利用側の同じ綴りのトップレベルの変数を書き換えない | 中 | 2〜4 | 3〜6 |
 | 3r リリース v0.3.0 と段階の完了 | v0.3.0 が公開され、段階3の完了の手続きが済む | 小 | 1〜2 | 1.5〜3 |
 | 3s 整数の手続き | `(floor/ -5 2)` が 2つの値 `-3` と `1` を返す。合意を求める点の2の15個が `(scheme base)` からエクスポートされる | 小 | 1〜2 | 1.5〜3 |
 
@@ -158,7 +158,7 @@ roadmap の段階3の項目と、スライス(下の「スライス」の表)の
 最も大きく、最も危険なスライスである。
 
 - 構文環境と展開の節点を GC ヒープに移し、`Context.code_roots` を要らなくする([ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md))。
-- ライブラリごとの最上位の環境の表を、ヒープの上限に計上するか、インポートごとの複製をやめて表を共有する形にする。どちらにするかは、設計の判断を要するので、着手前にユーザーに諮る。
+- ライブラリごとのトップレベルの環境の表を、ヒープの上限に計上するか、インポートごとの複製をやめて表を共有する形にする。どちらにするかは、設計の判断を要するので、着手前にユーザーに諮る。
 - REPL で解決した未知の名前ごとの未束縛のセルを、回収するか、数の上限を置く。
 - 失敗した展開の節点が行をまたいで残る問題は、節点が GC ヒープに移ると外れる。
 
@@ -169,18 +169,18 @@ roadmap の段階3の項目と、スライス(下の「スライス」の表)の
 
 2026-10-22 に、ユーザーが3点を決めた。
 
-- 3p を2つの PR に分ける。3p-1 は本体の定義(上の1つ目の項目)、3p-2 は有界化(2つ目の項目)である。どちらも `src/syntax/expand.zig` を触るので、直列に進める。見積りは、3p-1 が ready まで 2〜4 時間、マージまで 3〜6 時間、3p-2 が ready まで 1〜2 時間、マージまで 1.5〜3 時間である。
+- 3p を2つの PR に分ける。3p-1 は本体の定義(上の1つ目の項目)、3p-2 は有界化(2つ目の項目)である。どちらも `src/syntax/expand.zig` を触るので、逐次に進める。見積りは、3p-1 が ready まで 2〜4 時間、マージまで 3〜6 時間、3p-2 が ready まで 1〜2 時間、マージまで 1.5〜3 時間である。
 - `let-syntax` の本体は、自分の有効範囲を持つ。定義は本体の局所変数で、外側の並びに繋ぎ込まない。R7RS 4.3.1 の原文は、キーワードの領域を本体とし、繋ぎ込みを書いていない。
 - 有界化は、展開時の rib の深さ(`lambda` の入れ子の数)に上限を置く。環境の探索を深さに依存しない形にする案は、新しい機構になるので採らない。
 
 ### 3q の中身
 
-- 設計から始める。名前が別名(`Alias`)のままの最上位の定義を、REPL の表にどう持つかを決め、[frontend.md](../design/frontend.md) の解決規則の節と [ADR-0019](../adr/0019-denotations-and-identifier-resolution.md) に、決めた内容を日付つきの追記で足す。実装はそのあとである。設計が ADR-0019 の決定を変えるなら、新しい ADR を書く。
+- 設計から始める。名前が別名(`Alias`)のままのトップレベルの定義を、REPL の表にどう持つかを決め、[frontend.md](../design/frontend.md) の解決規則の節と [ADR-0019](../adr/0019-denotations-and-identifier-resolution.md) に、決めた内容を日付つきの追記で足す。実装はそのあとである。設計が ADR-0019 の決定を変えるなら、新しい ADR を書く。
 
 2026-10-22 に、3q を段階6へ送ることが決まった(ユーザーが判断した)。下の「範囲を狭める線」の3つ目に当たったためである。
 
-- 設計の下調べで分かったこと: 今の解決(`src/syntax/env.zig` の `resolveAt`)は、構文環境に束縛が無ければ別名を剥がし、最後に最上位の表をシンボルの名前で引く。衛生的にするには、別名を剥がす前に、最上位の表を別名そのもので引く段を足すことになる。これは ADR-0019 の解決規則を変える。
-- 仕様: R7RS 4.3 は「Note that a global variable definition may or may not introduce a binding; see section 5.3.」と書き、最上位の定義が束縛を導入するかを実装に委ねている(docs/spec の原文で確かめた)。
+- 設計の下調べで分かったこと: 今の解決(`src/syntax/env.zig` の `resolveAt`)は、構文環境に束縛が無ければ別名を剥がし、最後にトップレベルの表をシンボルの名前で引く。衛生的にするには、別名を剥がす前に、トップレベルの表を別名そのもので引く段を足すことになる。これは ADR-0019 の解決規則を変える。
+- 仕様: R7RS 4.3 は「Note that a global variable definition may or may not introduce a binding; see section 5.3.」と書き、トップレベルの定義が束縛を導入するかを実装に委ねている(docs/spec の原文で確かめた)。
 - 扱い: v0.3.0 に既知の制限として入れ、3r がリリースノートに書く。ADR は書かない(解決規則を変えないため)。段階6の準拠検証で必要になったときに、新しい ADR とともに直す。
 
 ## 依存と実施順
@@ -203,7 +203,7 @@ flowchart TD
     s3n["3n Web UI のサンプル"]
     s3o["3o IR を GC ヒープへ"]
     s3p["3p 本体の定義"]
-    s3q["3q 最上位の衛生化"]
+    s3q["3q トップレベルの衛生化"]
     s3r["3r v0.3.0"]
     s3a --> s3g
     s3a --> s3h
@@ -238,14 +238,14 @@ flowchart TD
 
 ### 重なりの確認
 
-- `src/value.zig`、`src/trace.zig`、`src/printer.zig`: 3d、3e、3f が、新しい変種を、それぞれ末尾に1行ずつ足す。隣り合う行の衝突は機械的に解ける。
+- `src/value.zig`、`src/trace.zig`、`src/printer.zig`: 3d、3e、3f が、新しいバリアントを、それぞれ末尾に1行ずつ足す。隣り合う行のコンフリクトは機械的に解ける。
 - `src/prim/table.zig`: 3b から 3f が、族の行を1行ずつ足す。
 - `src/prim/char.zig`、`string.zig`、`vector.zig`、`symbol.zig`: それぞれ 3c、3d、3e が触る。3c の中でも、文字の比較は `char.zig`、シンボルは `symbol.zig` で、ファイルが分かれる。
 - `docs/status/conformance.md`: 束縛を増やすスライスが、`zig build report` で生成し直す。並行した PR が両方とも生成し直したときは、後からマージするほうが main を取り込んでから生成し直す。手で合わせない。
 - `src/heap.zig`、`src/prim/immutable.zig`(新規)、`src/freeze.zig`(新規): 3d が不変の印と検査の関数を足し、3e が使う。3e は、`heap.isImmutable` と `heap.makeImmutable` の `switch` にバイトベクタの行を足す。
 - `tests/scheme/` の番号: 段階2は 0190 まで使った。3a は 0200 から 0209、3b は 0210 から、のように、スライスの並び順に 10 ずつ進める。
-- `lib/sucheme/derived.scm` と `lib/sucheme/procedures.scm`: 3g、3h、3i、3j が追記する。直列に進めるので衝突しない。
-- `src/syntax/expand.zig`: 3h(略記は `src/reader.zig`)、3o、3p、3q が触る。3o と 3p と 3q は直列に進める。
+- `lib/sucheme/derived.scm` と `lib/sucheme/procedures.scm`: 3g、3h、3i、3j が追記する。逐次に進めるのでコンフリクトしない。
+- `src/syntax/expand.zig`: 3h(略記は `src/reader.zig`)、3o、3p、3q が触る。3o と 3p と 3q は逐次に進める。
 - 進捗の表と roadmap: 各スライスの PR が、この計画書の「進捗」の表の自分の行と、自分が完了させる roadmap の段階3のチェックボックスを、その PR の中で更新する([AGENTS.md](../../AGENTS.md))。
 
 ## 検証項目の割り当て
@@ -271,8 +271,8 @@ flowchart TD
 4. 3o(コアIRと構文環境を GC ヒープへ)を段階3に入れるか。
    - 勧める案: 入れる。ただし最後の大きなスライスとして置き、下の「範囲を狭める線」を引く。ライブラリの表、未束縛のセル、失敗した展開の節点という、上限の外の確保を、まとめて直せる。3o は、[ADR-0031](../adr/0031-gc-at-machine-step-boundaries.md) が前提にしている変更でもある。
    - 別案: 段階4の最初に送る。段階3の完了条件には要らない。v0.3.0 に、上限の外の確保が残る。
-5. 3q(マクロが導入した最上位の定義の衛生化)を段階3に入れるか。
-   - 勧める案: 入れる。ただし、設計から始め、ADR-0019 との関係が変わるなら、新しい ADR を書いてユーザーに諮る。`derived.scm` が最上位の定義を持たないので、v0.3.0 の標準ライブラリには影響しないが、利用者のマクロの正しさに関わる。
+5. 3q(マクロが導入したトップレベルの定義の衛生化)を段階3に入れるか。
+   - 勧める案: 入れる。ただし、設計から始め、ADR-0019 との関係が変わるなら、新しい ADR を書いてユーザーに諮る。`derived.scm` がトップレベルの定義を持たないので、v0.3.0 の標準ライブラリには影響しないが、利用者のマクロの正しさに関わる。
    - 別案: 既知の制限として v0.3.0 に残し、段階6の準拠検証で必要になったときに直す。
 6. パラメータの読み出しの費用(動的点の列の長さに比例する)。
    - 勧める案: スライスを割り当てない。受け入れた制約として残し、見直しの条件(実際のプログラムで読み出しが支配的になったとき)を roadmap の項目に書く。AGENTS.md の「スライス未割り当てなら割り当てる計画を立てる」は、この条件つきの保留で満たす。
@@ -283,7 +283,7 @@ flowchart TD
 
 各スライスの PR を ready にする前に、[AGENTS.md](../../AGENTS.md) の検証コマンド表の「全コミット」の行をすべて通す。段階3で足す検証は次のとおりである。
 
-- 3a: `zig build test-wasm` に、埋め込みのライブラリを WASM で `import` する往復を足す。
+- 3a: `zig build test-wasm` に、埋め込みのライブラリを WASM で `import` するラウンドトリップを足す。
 - 3a から 3j: `zig build test-scheme` の `tests/scheme/` に、スライスごとのケースを足す。入力に比例して確保するものには、規模を試すケースを `tests/scheme-slow/` に足す。
 - 3l: `zig build report` と `zig build check-report` が、`lib/` のエクスポートから生成される表を検査する。
 
@@ -363,7 +363,7 @@ flowchart TD
 | --- | --- | --- |
 | 3a | 実装済み。埋め込み、`(sucheme derived)` の `when` と `unless`、ネイティブと WASM のテストは済み。ライブラリ名の索引は、名前が要るライブラリが現れるまで足さない。マージ済み | [#108](https://github.com/suchi/sucheme-zig/pull/108) |
 | 3b | マージ済み | [#110](https://github.com/suchi/sucheme-zig/pull/110) |
-| 3c | マージ済み。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの持ち主と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
+| 3c | マージ済み。弱いシンボル表(`Heap` が表を持ち、名前の長さに比例する量を計上する)、`char=?` `char<?` `char>?` `char<=?` `char>=?`、`symbol=?` `symbol->string` `string->symbol`。ルートの所有者と計上の範囲は [runtime.md](../design/runtime.md) のインターン表の節に書いた。`symbol->string` の不変の印は 3d が足す | [#112](https://github.com/suchi/sucheme-zig/pull/112) |
 | 3g | マージ済み。`(sucheme procedures)` に、リストの手続きと `boolean=?` と `caar` `cadr` `cdar` `cddr` がある。`map` と `for-each` は複数のリストを取り、継続の再入に対して正しい | [#111](https://github.com/suchi/sucheme-zig/pull/111) |
 | 3h | マージ済み。リーダの `` ` `` `,` `,@` と、`(sucheme derived)` の `cond` `case` `and` `or` `let`(名前つきを含む)`let*` `letrec` `letrec*` `do` `quasiquote` がある。`quasiquote` は `syntax-rules` で書けた(展開器と特殊形式は変えていない)。`(sucheme derived)` は `case` と `quasiquote` のために `(sucheme procedures)` を取り込む | [#115](https://github.com/suchi/sucheme-zig/pull/115) |
 | 3f | マージ済み。EOF の値(`Value` の即値)、約束(ヒープの型 `Promise`)、`eof-object` `eof-object?` `make-promise` `promise?` `force`、内部用の `%make-promise`。設計は [runtime.md](../design/runtime.md) の「EOF の値と約束」に書いた。`delay` と `delay-force` の構文は 3j が足す | [#116](https://github.com/suchi/sucheme-zig/pull/116) |
@@ -372,11 +372,11 @@ flowchart TD
 | 3e | マージ済み。ヒープの型 `Bytevector`(`#u8(...)` のリーダと印字)、バイトベクタの手続きと `utf8->string` `string->utf8`、ベクタの `make-vector` `vector-set!` `vector-fill!` `vector-copy` `vector-copy!` `vector-append` `vector->list` `list->vector`。ベクタとバイトベクタの書き込みが `requireMutable` を呼ぶ | [#119](https://github.com/suchi/sucheme-zig/pull/119) |
 | 3j | マージ済み。`vector-map` `vector-for-each` `string-map` `string-for-each`(`procedures.scm`)と `delay` `delay-force`(`derived.scm`)。`delay-force` は `%make-promise` に展開する | [#121](https://github.com/suchi/sucheme-zig/pull/121) |
 | 3k | マージ済み。`lib/scheme/` に `base.sld` `case-lambda.sld` `cxr.sld` `lazy.sld`。`(scheme base)` は実装のある必須識別子だけをエクスポートする。起動時の展開時間と WASM のサイズは、下の「確かめられなかったこと」の該当の行に測定を書いた | [#122](https://github.com/suchi/sucheme-zig/pull/122) |
-| 3l | マージ済み([#125](https://github.com/suchi/sucheme-zig/pull/125))。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。最上位の初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
+| 3l | マージ済み([#125](https://github.com/suchi/sucheme-zig/pull/125))。`(sucheme core)` の `import` を、埋め込みの標準ライブラリだけに限った。トップレベルの初期環境は `(scheme base)` で、初期化が読み込む。読み込みはヒープの上限に計上する([ADR-0039](../adr/0039-standard-environment-installed-at-init.md))。準拠マトリクスの入力を `lib/` の輸出に替えた。`!` で終わる束縛済みの手続きが定数への書き込みを断ることを、テストのランナーが検査する | - |
 | 3m | マージ済み([#126](https://github.com/suchi/sucheme-zig/pull/126))。`sucheme [-I <dir>]... <file>` がプログラムを実行する。式の値は出さず、実行時エラーは 1、読めないファイルは 66、ファイルの後ろの引数は 64。仕様の3点は、ユーザーが 2026-10-19 に承認した。`main` の配線(引数から終了ステータスまで)は単体テストの外で、手で確かめた | - |
 | 3n | マージ済み([#127](https://github.com/suchi/sucheme-zig/pull/127))。`web/samples.mjs` に6個のサンプル、`web/share.mjs` に共有リンク(`#code=<base64url>`)。リンクを開いても自動では実行しない。サンプルの評価と符号化の検査は `tools/test-wasm`。画面の操作はブラウザで手で確かめた。仕様の4点は、ユーザーが 2026-10-19 に承認した | - |
 | 3s | マージ済み([#178](https://github.com/suchi/sucheme-zig/pull/178))。`(sucheme procedures)` に、整数の手続き `abs` `even?` `odd?` `zero?` `positive?` `negative?` `square` `gcd` `lcm` `floor/` `floor-quotient` `floor-remainder` `truncate/` `truncate-quotient` `truncate-remainder` を Scheme で書き、`(scheme base)` からエクスポートする。割り当ての経緯は「未束縛の識別子の行き先」の表の注。`floor-quotient` と `gcd` は、結果が固定長の整数に収まるときに途中の値があふれない形で書いた | - |
-| 3o | マージ済み(2026-10-21)。5つの PR に分けた(計画書 [0023](0023-slice-3o-ir-to-gc-heap.md))。コアIRの節点は GC ヒープにあり、`Context.code_roots` は無い。最上位の表とライブラリの登録表は常に上限に数える。失敗した展開の節点、到達できなくなったコードの定数、定義に失敗したライブラリの表、コードが指さない未束縛のセルは、回収されるか手放される([ADR-0040](../adr/0040-core-ir-in-the-gc-heap.md)、[ADR-0042](../adr/0042-keep-replaced-cells-without-a-value.md)、[ADR-0043](../adr/0043-loading-library-holds-unbound-cells-strongly.md))。見積りと実績は [0012](0012-schedule-estimates-and-actuals.md) の「3o の内訳」 | [#130](https://github.com/suchi/sucheme-zig/pull/130)、[#139](https://github.com/suchi/sucheme-zig/pull/139)、[#140](https://github.com/suchi/sucheme-zig/pull/140)、[#150](https://github.com/suchi/sucheme-zig/pull/150)、[#159](https://github.com/suchi/sucheme-zig/pull/159)、[#161](https://github.com/suchi/sucheme-zig/pull/161) |
+| 3o | マージ済み(2026-10-21)。5つの PR に分けた(計画書 [0023](0023-slice-3o-ir-to-gc-heap.md))。コアIRの節点は GC ヒープにあり、`Context.code_roots` は無い。トップレベルの表とライブラリのレジストリは常に上限に数える。失敗した展開の節点、到達できなくなったコードの定数、定義に失敗したライブラリの表、コードが指さない未束縛のセルは、回収されるか手放される([ADR-0040](../adr/0040-core-ir-in-the-gc-heap.md)、[ADR-0042](../adr/0042-keep-replaced-cells-without-a-value.md)、[ADR-0043](../adr/0043-loading-library-holds-unbound-cells-strongly.md))。見積りと実績は [0012](0012-schedule-estimates-and-actuals.md) の「3o の内訳」 | [#130](https://github.com/suchi/sucheme-zig/pull/130)、[#139](https://github.com/suchi/sucheme-zig/pull/139)、[#140](https://github.com/suchi/sucheme-zig/pull/140)、[#150](https://github.com/suchi/sucheme-zig/pull/150)、[#159](https://github.com/suchi/sucheme-zig/pull/159)、[#161](https://github.com/suchi/sucheme-zig/pull/161) |
 | 3p-1 | マージ済み([#167](https://github.com/suchi/sucheme-zig/pull/167))。本体の先頭の `include` と `cond-expand` が持つ定義を、定義の並びとして展開する。`let-syntax` と `letrec-syntax` の本体に定義を置ける(本体は自分の有効範囲を持つ)。設計は [frontend.md](../design/frontend.md) の展開器の節と「現状(スライス 3p-1)」 | - |
 | 3p-2 | マージ済み([#171](https://github.com/suchi/sucheme-zig/pull/171))。展開器が作る構文環境の入れ子の深さ(環境の鎖の長さ。`lambda` の rib と、rib を持たない `let-syntax` の環境の両方を数える)に上限(`src/syntax/expand.zig` の `max_depth`、10000)を置き、超えたら実装制限の誤りにする。入れ子の `lambda` や `let-syntax` を重ねる止まらないマクロが、ReleaseSafe で約1秒で終わる(上限に届くまでの時間は深さの2乗で伸び、1000 では 0.02 秒だった)。最初は rib の深さで数えたが、レビューで、`let-syntax` を重ねる形が止まらないことが分かり、鎖の長さに替えた。値は、`let*` の束縛の数(入れ子の `lambda` の数になる)について [frontend.md](../design/frontend.md) が通ると書いている 1500 を下回らないように選んだ | - |
 | 3q | 段階6へ送った(suchi/sucheme-zig#173) | - |

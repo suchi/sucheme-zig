@@ -10,11 +10,11 @@
 
 スライスの進みは、1本の鎖になっている。実装、通常の CI、レビュー、ready、層2、ユーザーのマージ、の順に進み、各段で次の段を待つ。段階3の計画([0016](0016-phase3-scheme-stdlib.md))は、並行できるスライスを書いたが、実際には1つずつ進めた。残りの段階4から8は、まだ計画書が無く、段階3の終わりを待つ形になっている。
 
-測った待ちを、日付つきで残す。出典は、`full.yml` の各ランの `created_at` と `updated_at`、および 2026-10-19 のラン(run_number 159)のジョブごとの時刻である。
+測った待ちを、日付つきで残す。出典は、`full.yml` の各実行の `created_at` と `updated_at`、および 2026-10-19 の実行(run_number 159)のジョブごとの時刻である。
 
-- 層2のラン全体: 24 分(run_number 156)、39 分(157)、22 分(158)。159 は、2026-10-19 21:23 UTC の時点で 31 分を超えて実行中だった。
-- 159 のジョブ別: `tests (windows-latest)` が約 6 分、`dist` が約 5.5 分、`slow tests` の `zig build test -Dslow=true` が約 5 分。`zig build test-scheme -Dslow=true` は、20:58:05 UTC に始まり、21:26:13 UTC に終わった(約 28 分)。続く `zig build test-wasm -Dslow=true` は約 1.5 分で、ランは 21:27 UTC に成功で終わった(約 35 分)。層2の長さを決めているのは、この1ステップである。
-- 層2は、PR を ready にしたときに起動し、ready にするのは、レビューが収束したあとである。そのため、層2の待ちは、レビューの待ちの後ろに直列に並ぶ。
+- 層2の実行全体: 24 分(run_number 156)、39 分(157)、22 分(158)。159 は、2026-10-19 21:23 UTC の時点で 31 分を超えて実行中だった。
+- 159 のジョブ別: `tests (windows-latest)` が約 6 分、`dist` が約 5.5 分、`slow tests` の `zig build test -Dslow=true` が約 5 分。`zig build test-scheme -Dslow=true` は、20:58:05 UTC に始まり、21:26:13 UTC に終わった(約 28 分)。続く `zig build test-wasm -Dslow=true` は約 1.5 分で、実行は 21:27 UTC に成功で終わった(約 35 分)。層2の長さを決めているのは、この1ステップである。
+- 層2は、PR を ready にしたときに起動し、ready にするのは、レビューが収束したあとである。そのため、層2の待ちは、レビューの待ちの後ろに逐次に並ぶ。
 
 資源の制約も測った。
 
@@ -23,7 +23,7 @@
 
 ## 方針
 
-5本の柱で、直列の鎖を並行に組み替える。
+5本の柱で、逐次の鎖を並行に組み替える。
 
 1. レーン分割: 触るファイルが重ならない作業を、レーンとして切り出し、同時に進める。段階をまたぐ。段階の完了条件とリリースは、段階ごとのままにする。
 2. 実行基盤: 重い、または長いレーンは、別セッション(別の VM)で動かす。短い機械的な作業は、このセッションのサブエージェントに任せる。
@@ -62,7 +62,7 @@ flowchart LR
 | L1 | 浮動小数点数、bignum、ratnum、compnum。`number->string`。整数除算などの Scheme の手続き。`(scheme inexact)` `(scheme complex)` | `src/num/`(新規)、`src/prim/arith.zig`、`lib/sucheme/numbers.*`(新規)、`lib/scheme/inexact.sld` `complex.sld`(新規) | 上位(型の骨格と正規化)、標準(演算)、軽量(表の転記) | 計画書 0018。複素数を含めるかの判断([open-questions.md](../design/open-questions.md)) |
 | L2 | リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#u8`、16進エスケープ、`#!fold-case`)、数の構文、位置情報の副表 | `src/reader.zig`、`src/string_syntax.zig`、`src/char_syntax.zig` | 標準 | 数の構文は L1 の解析関数。それ以外は着手できる |
 | L3 | ポート(文字列、バイトベクタ、ファイル)、`write` の3種、`eval` と `exit`、`(scheme file)` などの9ライブラリ | `src/port.zig`(新規)、`src/prim/port.zig`(新規)、`src/printer.zig`、`src/wasm.zig`、`web/sucheme.js` のホスト側、`lib/scheme/*.sld` | 上位(ポートの表現)、標準 | 計画書 0019。ポートのバッファの方針([open-questions.md](../design/open-questions.md)) |
-| L4 | Unicode のテーブルの生成器と生成結果、`(scheme char)`、文字列の大文字小文字 | `tools/unicode-gen/`(新規)、`src/unicode/`(新規)、`src/prim/char.zig` の追加分、`lib/scheme/char.sld` | 標準、軽量(生成器の枠) | 表の大きさの実測が、ASCII に制限する退避案の判断(ユーザーの承認と ADR)の根拠になる |
+| L4 | Unicode のテーブルの生成ツールと生成結果、`(scheme char)`、文字列の大文字小文字 | `tools/unicode-gen/`(新規)、`src/unicode/`(新規)、`src/prim/char.zig` の追加分、`lib/scheme/char.sld` | 標準、軽量(生成ツールの枠) | 表の大きさの実測が、ASCII に制限する退避案の判断(ユーザーの承認と ADR)の根拠になる |
 | L5 | `(chibi test)` 互換の最小実装、`r7rs-tests.scm` の取り込みと、節ごとの実行 | `tests/vendor/`(新規)、`tools/conformance-run/`(新規)、`lib/chibi/`(新規)、`docs/status/` | 標準、軽量 | 計画書 0020。取り込みの ADR(BSD 3条項の第3条項の件、[roadmap.md](../roadmap.md) の段階6) |
 | L6 | 行編集の実装(Emacs バインディング、複数行、履歴、括弧の対応、補完) | `src/line_editor/`(新規)、`src/main.zig` の REPL の入口 | 標準、軽量(キー列の解読などの純粋な部品) | 計画書 0021。自前か既存の C ライブラリかの判断([ADR-0014](../adr/0014-repl-line-editor-boundary.md))。Windows の生モードは層2でしか試せない |
 | L7 | エラー位置の表示と処理の中断、編集の補助、`read` による対話、サンプルの充実、配置先 | `web/*` | 標準、軽量 | 計画書 0021。配置先の判断(ユーザー)。`read` は L3、エラー位置は L2 の位置情報を待つ |
@@ -71,8 +71,8 @@ flowchart LR
 L1 から L4 の先頭の作業は、インタプリタ本体に触れない。純粋なモジュールとして先に作れる。
 
 - L1: 多倍長整数は `std.math.big.int.Managed` を使う方針が、[numerics-and-unicode.md](../design/numerics-and-unicode.md) にある。ヒープの上限への計上の仕方が設計の要である。
-- L1: 浮動小数点数の往復する書式と解析は、標準ライブラリの機能を使えるかを、実機で確かめてから決める(未確認)。
-- L4: 生成器とテーブルは、インタプリタと独立している。WASM のサイズの実測は、ここで先に出せる。
+- L1: 浮動小数点数のラウンドトリップする書式と解析は、標準ライブラリの機能を使えるかを、実機で確かめてから決める(未確認)。
+- L4: 生成ツールとテーブルは、インタプリタと独立している。WASM のサイズの実測は、ここで先に出せる。
 
 ### ファイルの重なり
 
@@ -81,7 +81,7 @@ L1 から L4 の先頭の作業は、インタプリタ本体に触れない。�
 - `src/value.zig`、`src/trace.zig`、`src/heap.zig`: L1(数の型)と L3(ポートの型)が、それぞれ新しい型を足す。どちらも、型の骨格だけを先に小さな PR にして、先にマージする。実体の機能は、その後の PR で足す。
 - `src/reader.zig`: L2 が所有する。L1 は数の構文を、L2 のレーンの中の作業として足してもらう。L1 は解析関数(`src/num/` の中)を渡すだけにする。
 - `src/printer.zig`: L3 が所有する。L1 は書式関数を `src/num/` に置き、L3 が呼ぶ。
-- `src/prim/table.zig`: 全レーンが1行ずつ足す。隣り合う行の衝突は、機械的に解く。
+- `src/prim/table.zig`: 全レーンが1行ずつ足す。隣り合う行のコンフリクトは、機械的に解く。
 - `tests/scheme/` の番号: レーンごとに範囲を分ける。L0 は 0300 台、L1 は 0400 台、L2 は 0500 台、L3 は 0600 台、L4 は 0700 台、L5 は 0800 台とする。`tests/scheme-slow/` も同じ範囲で振る。
 - `docs/status/conformance.md` と `docs/roadmap.md`、各計画書の進捗の表: 後からマージするほうが、main を取り込んでから、生成物は生成し直し、表は行を合わせる。
 - `src/machine.zig`: L0(3o)と L3(`eval` と `exit`)の両方が触りうる。L3 が着手する前に、3o が触る範囲を確かめ、重なるなら順序を決める。
@@ -182,7 +182,7 @@ flowchart TD
 
 ### 合意のあと
 
-- フェーズ1: L1 の型の骨格、L4 の生成器、L5 の取り込みとハーネス、L7 の先頭(エラー表示、中断、編集の補助)、L8 の片付けと共有キャッシュ。L0 は、3n のマージのあと、3o の相談に進む。
+- フェーズ1: L1 の型の骨格、L4 の生成ツール、L5 の取り込みとハーネス、L7 の先頭(エラー表示、中断、編集の補助)、L8 の片付けと共有キャッシュ。L0 は、3n のマージのあと、3o の相談に進む。
 - フェーズ2: L1 の演算、L2、L3(骨格のマージのあと)、L6(判断のあと)。
 - フェーズ3: 段階ごとの完了条件の確認、リリース。リリースは、段階の完了条件でこれまでどおり切る。
 
