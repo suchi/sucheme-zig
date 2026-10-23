@@ -46,22 +46,39 @@ pub const Registry = struct {
     /// Every library whose definition began and has not failed, oldest first.
     list: std.ArrayList(*Library) = .empty,
     /// The tables of the libraries' top levels, indexed by `Library.table`.
-    /// 表はアリーナにあり、定義に失敗したライブラリの表も、中身を残したまま持ち続ける
-    /// (`abandon` が外すのは `list` からだけである)。失敗した本体がほかのライブラリに
-    /// 渡したクロージャが、その表のセルを指し続けうるためである。表の番号を再利用しない
-    /// ので、失敗したライブラリを指す古い識別子が、別のライブラリの表を引くことはない。
+    /// 定義に失敗したライブラリの表は、`abandon` が中身を返し、空のまま残る。表の番号を
+    /// 再利用しないので、失敗したライブラリを指す古い識別子が、別のライブラリの表を引く
+    /// ことはない。
     tables: std.ArrayList(*env_mod.Global) = .empty,
     /// The `define-library` forms being processed, innermost last.
     /// 本体の処理は機械を走らせるので、その間に GC が走る。処理中の宣言は、このリストが
     /// 指す形式の中にあるので、これがルートになる(ADR-0035 の読み込みの作業リスト)。
     loading: std.ArrayList(Value) = .empty,
+    /// The names of the exports that the `define-library` forms being processed
+    /// have declared and not yet resolved (`defineLibrary`).
+    /// 保留の名前は、どの束縛にも、どの節点にも入っていないので、ここがルートになる。
+    pending_names: std.ArrayList(SymbolId) = .empty,
 
-    /// Tells the collector of the libraries, the tables of their top levels and
-    /// the forms being processed.
+    /// Gives back the tables and the lists, which were all taken from `alloc`.
+    /// ライブラリ自身はヒープにあり、ここでは返さない。
+    pub fn deinit(self: *Registry, alloc: std.mem.Allocator) void {
+        for (self.tables.items) |table| {
+            table.deinit(alloc);
+            alloc.destroy(table);
+        }
+        self.tables.deinit(alloc);
+        self.list.deinit(alloc);
+        self.loading.deinit(alloc);
+        self.pending_names.deinit(alloc);
+    }
+
+    /// Tells the collector of the libraries, the tables of their top levels,
+    /// the forms being processed and the names of their pending exports.
     pub fn mark(self: *const Registry, marker: *heap_mod.Marker) void {
         for (self.list.items) |lib| marker.object(Library, lib);
         for (self.tables.items) |table| table.mark(marker);
         for (self.loading.items) |form| marker.value(form);
+        for (self.pending_names.items) |id| marker.symbol(id);
     }
 
     /// The table of the top level of `lib`.
@@ -82,29 +99,37 @@ pub const Registry = struct {
     /// 展開の途中と同じく、この中では GC が走らないので、作ったオブジェクトを登録表に
     /// 載せるまでルートにしなくてよい。
     pub fn begin(self: *Registry, ctx: *Context, name: Value) Error!*Library {
-        const table = try ctx.persist.create(env_mod.Global);
-        table.* = .{};
+        const tables = ctx.resident();
+        const table = try tables.create(env_mod.Global);
+        // 定義の途中は、未束縛のセルを強く持つ(`finish` の未束縛の検査が読む)。
+        table.* = .{ .keep_unbound = true };
+        // 表を `tables` に載せるまでは、`deinit` が返さないので、ここで返す。
+        var listed = false;
+        errdefer if (!listed) tables.destroy(table);
         const id: TableId = @fromBackingInt(@intCast(self.tables.items.len));
         const lib = try ctx.create(Library, .{ .name = name, .state = .loading, .exports = null, .root = null, .table = id });
         lib.root = try ctx.create(value_mod.SyntacticEnv, .{ .parent = null, .rib_depth = 0, .bindings = null, .library = lib });
-        try self.tables.append(ctx.persist, table);
-        try self.list.append(ctx.persist, lib);
+        try self.tables.append(tables, table);
+        listed = true;
+        try self.list.append(tables, lib);
         return lib;
     }
 
-    /// Takes a library whose definition failed out of the registry.
-    /// Why: 表は手放さない。失敗した本体が、実行の途中で、ほかのライブラリの状態にクロージャを
-    /// 残すことがある。そのクロージャのコードは、このライブラリのセルを `global_ref` の節点で
-    /// 指す。GC はコードをたどらないので、表が持ち続けないと、セルが回収されて、あとで
-    /// そのクロージャを呼ぶと解放済みの値を読む。ライブラリだけを登録表から外し、同じ名前で
-    /// もう一度定義できるようにする。
-    pub fn abandon(self: *Registry, lib: *Library) void {
+    /// Takes a library whose definition failed out of the registry, and gives
+    /// back what its table holds.
+    /// 失敗した本体が、実行の途中で、ほかのライブラリの状態にクロージャを残すことがある。
+    /// そのクロージャのコードは、このライブラリのセルを `global_ref` の節点で指すので、
+    /// セルはコードから辿られる(ADR-0040)。表が持ち続ける必要は無い。表そのもの(空の
+    /// `Global`)は `tables` に残し、番号を再利用しないので、失敗したライブラリを指す古い
+    /// 識別子が、別のライブラリの表を引くことはない。同じ名前で、もう一度定義できる。
+    pub fn abandon(self: *Registry, ctx: *Context, lib: *Library) void {
         for (self.list.items, 0..) |item, i| {
             if (item == lib) {
                 _ = self.list.orderedRemove(i);
                 break;
             }
         }
+        self.tableOf(lib).deinit(ctx.resident());
     }
 };
 
@@ -173,12 +198,49 @@ pub fn isCoreName(ctx: *const Context, name: Value) bool {
     return rest.kind() == .empty_list;
 }
 
+/// The work of one `import`, a form at the REPL or a declaration of a library:
+/// the tables of names its sets bring, counted against the limit of the heap
+/// until all the sets are bound (ADR-0040).
+/// Why: 修飾子を入れ子に重ねると、段ごとに名前の全部を写すので、作業が上限を大きく超えうる。
+/// 集合を並べても同じで、どの集合の作業も束縛し終えるまで残るので、`import` の全体の間
+/// 数える。数えたものが上限に収まらなければ、確保は `error.OutOfMemory` で断られ、
+/// `heap.external_refused` が立つ。作業は `scratch` に残り、呼び出し側が丸ごと捨てる。
+/// 使い方: `begin` で始め、`allocator` を集合の評価に渡し、`end` を `defer` で呼ぶ。始めた後は
+/// 動かさない(割り当て器が自分を指す)。
+const ImportWork = struct {
+    charge: heap_mod.Charged,
+    counting: heap_mod.Heap.Counting,
+
+    fn begin(ctx: *Context, scratch: std.mem.Allocator) ImportWork {
+        return .{
+            .charge = .{ .heap = &ctx.heap, .backing = scratch },
+            .counting = ctx.heap.beginCounting(true),
+        };
+    }
+
+    fn allocator(self: *ImportWork) std.mem.Allocator {
+        return self.charge.allocator();
+    }
+
+    fn end(self: *ImportWork) void {
+        self.charge.heap.endCounting(self.counting);
+    }
+};
+
 /// Evaluates the import set `spec` (R7RS 5.2): what it brings, by name.
 /// 入れ子の修飾子の深さに比例して進むので、再帰せず、外側から内側へ修飾子を積み、
 /// 内側から順に適用する。エクスポートの名前の文字列は、ヒープの文字列とシンボル表の
 /// 名前を指す。GC が走るまで有効である。
-pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Error!Names {
+///
+/// 修飾子の作業(名前の表と、`prefix` が作る名前)は `work` から取る。`work` は、1つの `import`
+/// の間ずっと上限に数える割り当て器である(`ImportWork`)。ライブラリのファイルを読む処理は、
+/// 数えない `scratch` で行う(その中の展開と本体の実行は、それぞれの計上に従う)。
+pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, work: std.mem.Allocator, spec: Value) Error!Names {
     const Pending = struct { kind: Modifier, arguments: Value };
+    // Why: 修飾子の列も `work` に置くが、大きさは修飾子の数に比例し、修飾子はどれも読んだ形式の
+    // 対を2つ以上使う。形式はヒープにあり、上限に数えてあるので、列は上限を大きく超えない。
+    // 列を数えることを固定するテストは置いていない(列だけで上限を超える入力は、形式が先に
+    // 上限を超える)。
     var pending: std.ArrayList(Pending) = .empty;
     var current = spec;
     while (current.asPair()) |p| {
@@ -186,16 +248,17 @@ pub fn evalImportSet(ctx: *Context, scratch: std.mem.Allocator, spec: Value) Err
         const kind = std.meta.stringToEnum(Modifier, ctx.heap.symbols.nameOf(head)) orelse break;
         const inner = p.cdr.asPair() orelse
             return ctx.raise("bad import: {s} needs an import set", .{@tagName(kind)});
-        try pending.append(scratch, .{ .kind = kind, .arguments = inner.cdr });
+        try pending.append(work, .{ .kind = kind, .arguments = inner.cdr });
         current = inner.car;
     }
-    var names = try exportsOf(ctx, scratch, current);
-    while (pending.pop()) |m| names = try modify(ctx, scratch, m.kind, m.arguments, names);
+    var names = try exportsOf(ctx, scratch, work, current);
+    while (pending.pop()) |m| names = try modify(ctx, work, m.kind, m.arguments, names);
     return names;
 }
 
-/// What the library named `name` exports.
-fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names {
+/// What the library named `name` exports, in a table taken from `work`.
+/// 見つからないライブラリのファイルは、`scratch` で読む。
+fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, work: std.mem.Allocator, name: Value) Error!Names {
     try checkName(ctx, name);
     var names: Names = .empty;
     if (isCoreName(ctx, name)) {
@@ -206,7 +269,7 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
         var it = ctx.core.entries.keyIterator();
         while (it.next()) |id| {
             const d = (ctx.core.get(&ctx.heap, id.*) catch |e| return ctx.heapFailure(e)).?;
-            try names.put(scratch, ctx.heap.symbols.nameOf(id.*), d);
+            try names.put(work, ctx.heap.symbols.nameOf(id.*), d);
         }
         return names;
     }
@@ -214,7 +277,7 @@ fn exportsOf(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!Names
     if (lib.state == .loading)
         return ctx.raise("bad import: circular import of the library {s}", .{try nameText(ctx, scratch, name)});
     var export_it = lib.exports;
-    while (export_it) |e| : (export_it = e.next) try names.put(scratch, e.name.bytes, e.denotation);
+    while (export_it) |e| : (export_it = e.next) try names.put(work, e.name.bytes, e.denotation);
     return names;
 }
 
@@ -239,7 +302,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
         error.Unreadable => return ctx.raise("cannot load the library {s}: the system refused to open its file", .{text}),
         else => |n| return nameFailure(ctx, text, n),
     };
-    const form = try readLibraryForm(ctx, scratch, opened.source, text);
+    const form = try readLibraryForm(ctx, scratch, opened, text);
     // ファイルシステムは大文字と小文字を区別しないことがある。名前の照合は、定義より前に行う。
     if (form.asPair().?.cdr.asPair()) |rest| {
         if (!sameName(rest.car, name)) return ctx.raise(
@@ -249,7 +312,7 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
     }
     // 本体の `include` は、このファイルのディレクトリを基準にする。同じファイルを含む
     // ことは、含んでいる最中のファイルとして見つけて拒否する。
-    try ctx.sources.append(ctx.persist, opened.origin);
+    try ctx.sources.append(ctx.resident(), opened.origin);
     defer _ = ctx.sources.pop();
     try defineLibrary(ctx, scratch, form);
     return ctx.libraries.find(name).?;
@@ -261,14 +324,16 @@ fn loadFile(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error!*Libra
 /// `max_file_bytes`)をその間も持ち続けると、入れ子の深さ分が同時にメモリに載る。リーダが
 /// 作る値は、内容を指さない(シンボルは永続領域へ、文字列はヒープへ複製する)ので、読み終えた
 /// 時点で手放す。
-fn readLibraryForm(ctx: *Context, scratch: std.mem.Allocator, source: resolve.Source, text: []const u8) Error!Value {
-    defer source_mod.closeSource(ctx.files, source);
+/// 読んだリストの位置は、ファイルの名前とともに `ctx.positions` に記録する。
+fn readLibraryForm(ctx: *Context, scratch: std.mem.Allocator, opened: resolve.Opened, text: []const u8) Error!Value {
+    defer source_mod.closeSource(ctx.files, opened.source);
     const subject = try std.fmt.allocPrint(scratch, "load the library {s}", .{text});
-    const contents = try source_mod.readText(ctx, ctx.files, source, subject);
+    const contents = try source_mod.readText(ctx, ctx.files, opened.source, subject);
     defer ctx.heap.backing.free(contents);
     if (ctx.heap.shouldCollect()) ctx.collectIdle();
     var r: reader.Reader = .init(contents);
-    const form = (try source_mod.readDatum(ctx, &r, scratch, subject)) orelse
+    const to = try source_mod.sinkFrom(ctx, scratch, opened.origin);
+    const form = (try source_mod.readDatumTo(ctx, &r, scratch, to, subject)) orelse
         return ctx.raise("cannot {s}: its file is empty", .{subject});
     if (topLevelForm(ctx, form) != .define_library)
         return ctx.raise("cannot {s}: its file must hold one (define-library ...) form", .{subject});
@@ -354,7 +419,7 @@ fn modify(ctx: *Context, scratch: std.mem.Allocator, kind: Modifier, arguments: 
 /// Binds `names` in `table`, as imported bindings.
 /// REPL では、インポートは同じ名前の今の束縛を置き換える(R7RS 5.2)。ライブラリの本体では、
 /// 同じ識別子を別の束縛で2回インポートすることと、本体が先に定義した名前をインポートすること
-/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_cells` に残り、
+/// は誤りである。インポートより前に参照だけされた名前は、そのセルが `displaced_unbound` に残り、
 /// 本体の終わりに未束縛として報告される(`finish`)。
 pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: expand.Mode) Error!void {
     var it = names.iterator();
@@ -374,23 +439,27 @@ pub fn bindImports(ctx: *Context, table: *env_mod.Global, names: Names, mode: ex
                 else => return ctx.raise("bad import: {s} is defined in this library, and cannot be imported", .{name}),
             }
         };
-        try table.importBinding(ctx.persist, id, entry.value_ptr.*);
+        try table.importBinding(ctx.resident(), id, entry.value_ptr.*);
     }
 }
 
 /// `(import <import set> ...)` at the REPL (R7RS 5.2): imports what the sets bring
 /// into the REPL's top level.
 /// 先にすべての集合を評価し、それから束縛する。集合の誤りで、一部だけがインポート
-/// されることはない。
+/// されることはない。束縛の途中で上限に断られたときも、それまでの束縛を戻す。
 pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Error!void {
     const items = try itemsOf(ctx, scratch, form, "import");
     if (items.len < 2) return ctx.raise("bad import: expected (import <import set> ...)", .{});
     // 集合を評価する間に、ファイルのライブラリを読んで本体を走らせると、GC が走る。
     // この形式は、そのあいだ読み手の外にあるので、作業中の形式としてルートに載せる。
-    try ctx.libraries.loading.append(ctx.persist, form);
+    try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
-    const sets = try scratch.alloc(Names, items.len - 1);
-    for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
+    var import_work: ImportWork = .begin(ctx, scratch);
+    defer import_work.end();
+    const work = import_work.allocator();
+    const sets = try work.alloc(Names, items.len - 1);
+    for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, work, spec);
+    errdefer ctx.globals.undoShadows();
     for (sets) |set| try bindImports(ctx, &ctx.globals, set, .repl);
     ctx.globals.commitShadows();
 }
@@ -414,9 +483,11 @@ pub fn defineLibrary(ctx: *Context, scratch: std.mem.Allocator, form: Value) Err
     if (isCoreName(ctx, name) or ctx.libraries.find(name) != null)
         return ctx.raise("bad define-library: the library {s} is already defined", .{try nameText(ctx, scratch, name)});
     const lib = try ctx.libraries.begin(ctx, name);
-    errdefer ctx.libraries.abandon(lib);
-    try ctx.libraries.loading.append(ctx.persist, form);
+    errdefer ctx.libraries.abandon(ctx, lib);
+    try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
+    const names_before = ctx.libraries.pending_names.items.len;
+    defer ctx.libraries.pending_names.shrinkRetainingCapacity(names_before);
     var pending: std.ArrayList(PendingExport) = .empty;
     for (items[2..]) |declaration| try declare(ctx, scratch, lib, declaration, &pending, 0);
     try finish(ctx, scratch, lib, pending.items);
@@ -438,15 +509,17 @@ fn declare(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, declaration
             // Why: 保留の名前は、本体の各形式の間を Zig の一覧で持ち越す。その間に GC が走る。
             // `include-library-declarations` が読んだ宣言は、読み終えると登録表の `loading` から
             // 外れ、名前を指すものが無くなる。名前を挙げておかないと、ID が回収され、別の名前に
-            // 再利用される。
-            try ctx.keepName(export_spec.internal);
-            try ctx.keepName(export_spec.external);
+            // 再利用される。登録表の `pending_names` が、定義を終えるまで持つ。
+            try ctx.libraries.pending_names.appendSlice(ctx.resident(), &.{ export_spec.internal, export_spec.external });
             try pending.append(scratch, export_spec);
         }
     } else if (std.mem.eql(u8, keyword, "import")) {
-        // 集合を先にすべて評価してから束縛する。
-        const sets = try scratch.alloc(Names, parts.len - 1);
-        for (sets, parts[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, spec);
+        // 集合を先にすべて評価してから束縛する。失敗したら、ライブラリごと登録表から外れる。
+        var import_work: ImportWork = .begin(ctx, scratch);
+        defer import_work.end();
+        const work = import_work.allocator();
+        const sets = try work.alloc(Names, parts.len - 1);
+        for (sets, parts[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, work, spec);
         for (sets) |set| try bindImports(ctx, table, set, .library);
         table.commitShadows();
     } else if (std.mem.eql(u8, keyword, "begin")) {
@@ -496,16 +569,16 @@ fn enterIncluded(ctx: *Context, scratch: std.mem.Allocator, name: Value, what: [
     const text = (name.asString() orelse return ctx.raise("bad {s}: a file name must be a string", .{what})).bytes;
     const opened = try source_mod.openIncluded(ctx, scratch, text, what);
     const subject = try std.fmt.allocPrint(scratch, "{s} {s}", .{ what, text });
-    const data = try source_mod.readData(ctx, scratch, ctx.files, opened.source, subject, fold_case);
+    const data = try source_mod.readDataFrom(ctx, scratch, ctx.files, opened.source, opened.origin, subject, fold_case);
     var list: Value = .empty_list_value;
     var i = data.len;
     while (i > 0) {
         i -= 1;
         list = ctx.heap.cons(data[i], list) catch |e| return ctx.heapFailure(e);
     }
-    try ctx.libraries.loading.append(ctx.persist, list);
+    try ctx.libraries.loading.append(ctx.resident(), list);
     errdefer _ = ctx.libraries.loading.pop();
-    try ctx.sources.append(ctx.persist, opened.origin);
+    try ctx.sources.append(ctx.resident(), opened.origin);
     return list;
 }
 
@@ -563,6 +636,9 @@ fn finish(ctx: *Context, scratch: std.mem.Allocator, lib: *Library, pending: []c
             list.written(),
         });
     }
+    // 検査が済めば、ほかの最上位の表と同じく弱く持つ。エクスポートしたマクロの展開が、
+    // この表に未束縛のセルを作ることがある。
+    table.keep_unbound = false;
     lib.state = .loaded;
 }
 
@@ -582,7 +658,7 @@ fn unboundNames(ctx: *Context, scratch: std.mem.Allocator, table: *const env_mod
             else => {},
         }
     }
-    for (table.displaced_cells.items) |cell| {
+    for (table.displaced_unbound.items) |cell| {
         if (cell.value.kind() == .uninitialized) try names.append(scratch, ctx.heap.symbols.nameOf(cell.name));
     }
     std.mem.sort([]const u8, names.items, {}, struct {
@@ -658,7 +734,7 @@ const Fixture = struct {
         for (names) |n| {
             const id = try self.ctx.intern(n);
             const d = (try self.ctx.core.get(&self.ctx.heap, id)).?;
-            try table.importBinding(self.ctx.persist, id, d);
+            try table.importBinding(self.ctx.resident(), id, d);
         }
         table.commitShadows();
         return lib;
@@ -731,7 +807,7 @@ test "a library whose definition failed leaves the registry, and is collected" {
     try std.testing.expectEqual(2, f.ctx.heap.countOf(Library));
     try std.testing.expectEqual(2, f.ctx.heap.countOf(value_mod.SyntacticEnv));
     const lost_table = f.ctx.libraries.tableOf(lost);
-    f.ctx.libraries.abandon(lost);
+    f.ctx.libraries.abandon(&f.ctx, lost);
     try std.testing.expectEqual(null, f.ctx.libraries.find(try f.read("(t lost)")));
     try std.testing.expectEqual(keep, f.ctx.libraries.find(try f.read("(t keep)")).?);
     f.ctx.collectIdle();
@@ -740,6 +816,23 @@ test "a library whose definition failed leaves the registry, and is collected" {
     // 同じ名前で、もう一度始められる。
     const again = try f.library("(t lost)", &.{});
     try std.testing.expect(f.ctx.libraries.tableOf(again) != lost_table);
+}
+
+test "the table of a library whose definition failed is given back, and its cells go with the code" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const lost = try f.library("(t lost)", &.{ "define", "quote" });
+    _ = try f.expandIn(lost, "(define x '(1 2))");
+    f.ctx.collectIdle();
+    const cells = f.ctx.heap.countOf(value_mod.Cell);
+    const resident = f.ctx.heap.resident;
+    f.ctx.libraries.abandon(&f.ctx, lost);
+    // 表の束縛の分が、常駐の計上から戻る。
+    try std.testing.expect(f.ctx.heap.resident < resident);
+    f.ctx.collectIdle();
+    // `x` のセルは、表のほかに持つものが無いので、回収される。
+    try std.testing.expect(f.ctx.heap.countOf(value_mod.Cell) < cells);
 }
 
 test "the forms being processed and the bindings of a library survive a collection" {
@@ -752,7 +845,7 @@ test "the forms being processed and the bindings of a library survive a collecti
     const x = f.ctx.heap.symbols.lookup("x").?;
     table.lookup(x).?.denotation.global.value = try f.ctx.heap.cons(.fromFixnum(1), .empty_list_value);
     const form = try f.read("(define-library (t a) (export))");
-    try f.ctx.libraries.loading.append(f.ctx.persist, form);
+    try f.ctx.libraries.loading.append(f.ctx.resident(), form);
     _ = try f.ctx.heap.cons(.fromFixnum(9), .empty_list_value);
     f.ctx.collectIdle();
     // 作業中の形式は、読んだペアのまま残る。セルの値も残る。
@@ -837,7 +930,7 @@ test "a macro of a library refers to the library's own variable, where the REPL 
     const repl = f.ctx.globals.lookup(helper).?.denotation.global;
     try std.testing.expect(own != repl);
     // マクロを REPL の最上位に束縛して、使う。
-    try f.ctx.globals.defineSyntax(f.ctx.persist, f.ctx.heap.symbols.lookup("use-helper").?, macro);
+    try f.ctx.globals.defineSyntax(f.ctx.resident(), f.ctx.heap.symbols.lookup("use-helper").?, macro);
     f.ctx.globals.commitShadows();
     const node = try expand.expand(&f.ctx, f.arena.allocator(), try f.read("(use-helper)"));
     try std.testing.expectEqual(own, node.global_ref);
@@ -860,8 +953,8 @@ test "set! through a macro of another library assigns that library's variable an
             return fx.ctx.heap.symbols.lookup(name).?;
         }
     }.of;
-    try f.ctx.globals.defineSyntax(f.ctx.persist, id(&f, "bump!"), table.lookup(id(&f, "bump!")).?.denotation.macro);
-    try f.ctx.globals.defineSyntax(f.ctx.persist, id(&f, "clobber!"), table.lookup(id(&f, "clobber!")).?.denotation.macro);
+    try f.ctx.globals.defineSyntax(f.ctx.resident(), id(&f, "bump!"), table.lookup(id(&f, "bump!")).?.denotation.macro);
+    try f.ctx.globals.defineSyntax(f.ctx.resident(), id(&f, "clobber!"), table.lookup(id(&f, "clobber!")).?.denotation.macro);
     f.ctx.globals.commitShadows();
     const node = try expand.expand(&f.ctx, f.arena.allocator(), try f.read("(bump!)"));
     try std.testing.expectEqual(table.lookup(id(&f, "counter")).?.denotation.global, node.global_set.cell);
@@ -873,7 +966,7 @@ test "set! through a macro of another library assigns that library's variable an
 }
 
 fn expectNames(f: *Fixture, spec: []const u8, expected: []const []const u8) !void {
-    const names = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read(spec));
+    const names = try evalImportSet(&f.ctx, f.arena.allocator(), f.arena.allocator(), try f.read(spec));
     try std.testing.expectEqual(expected.len, names.count());
     for (expected) |name| try std.testing.expect(names.contains(name));
 }
@@ -890,8 +983,8 @@ test "the forms of an import set bring the names they say" {
     // 入れ子は内側から適用する。
     try expectNames(&f, "(only (rename (only (sucheme core) car cdr) (car kar)) kar)", &.{"kar"});
     // `except` は、除いた名前以外のすべてを残す。
-    const all = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read("(sucheme core)"));
-    const less = try evalImportSet(&f.ctx, f.arena.allocator(), try f.read("(except (sucheme core) car cdr)"));
+    const all = try evalImportSet(&f.ctx, f.arena.allocator(), f.arena.allocator(), try f.read("(sucheme core)"));
+    const less = try evalImportSet(&f.ctx, f.arena.allocator(), f.arena.allocator(), try f.read("(except (sucheme core) car cdr)"));
     try std.testing.expectEqual(all.count() - 2, less.count());
     try std.testing.expect(all.contains("car") and !less.contains("car"));
     // 特殊形式と補助構文も、名前を持つ。

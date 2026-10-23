@@ -108,6 +108,11 @@ error: unbound identifier in library (t a): g
 (define-library (t a) (export f) (import (only (scheme base) define)) (begin (define (f) (car 1))) (import (only (scheme base) car)))
 error: unbound identifier in library (t a): car
 
+# 同じ形式の中で定義してから構文に置き換えた名前は、置き換えた時点では値が無くても、
+# 本体の終わりには値を持つので、未束縛と報告しない。前のコードは、その値を読む。
+(define-library (t s) (export f) (import (scheme base)) (begin (define (f) g) (begin (define g 1) (define-syntax g (syntax-rules () ((_) 2)))))) (import (t s)) (f)
+1
+
 # インポートより後の定義への前方参照は、本体の中で通る。
 (define-library (t a) (export f) (import (only (scheme base) define)) (begin (define (f) (g)) (define (g) 2)))
 <no output>

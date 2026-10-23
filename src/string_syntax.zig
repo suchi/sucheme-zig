@@ -1,7 +1,8 @@
 //! The external representation of a string (R7RS 6.7, 7.1.1): what the reader
 //! reads between double quotes and what `write` writes.
 //!
-//! 読みと書きをここにまとめてあるので、エスケープの表は1つである。
+//! 読みと書きをここにまとめてあるので、エスケープの表は1つである。縦棒で囲んだ識別子
+//! (`|a b|`)も同じエスケープを使うので、その名前を読む関数もここに置く。
 //!
 //! スライス1h(文字列)にあたる。リーダの `"` もプリンタも、このファイルを呼ぶ。
 
@@ -51,7 +52,13 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
         i += 1;
         switch (c) {
             '"' => break,
-            '\\' => try readEscape(src, &i, scratch, &bytes),
+            '\\' => try readEscape(src, &i, scratch, &bytes, .string),
+            // Why: R7RS 6.7 は、エスケープでない行の終わりを、綴り(LF、CR LF、CR)に
+            // よらず `\n` 1文字と同じにする。
+            '\r' => {
+                if (i < src.len and src[i] == '\n') i += 1;
+                try bytes.append(scratch, '\n');
+            },
             else => try bytes.append(scratch, c),
         }
     }
@@ -64,11 +71,45 @@ pub fn read(src: []const u8, pos: *usize, scratch: std.mem.Allocator, heap: *Hea
     return .fromString(s);
 }
 
+/// Reads the identifier written between vertical lines that starts at
+/// `src[pos.*]`, which is the opening `|`, moves `pos` past the closing one, and
+/// returns the bytes of its name, which `scratch` holds.
+///
+/// R7RS 7.1.1 の `|` <symbol element>* `|` である。`|` と `\` のほかの文字は、生の行の
+/// 終わりも含めて、そのまま名前に入る。エスケープは、<symbol element> が挙げるもの(16進、
+/// `\a \b \t \n \r`、`\|`)に、`\"` と `\\` を足したものである。足した2つは、R7RS 2.1 の本文が
+/// 文字列と同じエスケープを許すとすることと、準拠スイート(tests/vendor/r7rs-tests.scm)が
+/// `'|\"|` と `'|\\123|` を使うことによる。行継続は、<symbol element> に無く、準拠スイートも
+/// 使わないので読まない。docs/design/frontend.md の「現状(スライス 5b)」を参照。
+/// エラーのときは `pos` を元の位置のままにする。
+pub fn readIdentifier(src: []const u8, pos: *usize, scratch: std.mem.Allocator) ReadError![]const u8 {
+    std.debug.assert(src[pos.*] == '|');
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(scratch);
+    var i = pos.* + 1;
+    while (true) {
+        if (i >= src.len) return error.Incomplete;
+        const c = src[i];
+        i += 1;
+        switch (c) {
+            '|' => break,
+            '\\' => try readEscape(src, &i, scratch, &bytes, .identifier),
+            else => try bytes.append(scratch, c),
+        }
+    }
+    if (!std.unicode.utf8ValidateSlice(bytes.items)) return error.InvalidUtf8;
+    pos.* = i;
+    return bytes.toOwnedSlice(scratch);
+}
+
+/// What an escape is read inside.
+const Literal = enum { string, identifier };
+
 /// Reads the escape whose backslash has just been read, and appends what it
 /// stands for to `bytes`.
 ///
-/// `i` はバックスラッシュの次の添字である。
-fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *std.ArrayList(u8)) ReadError!void {
+/// `i` はバックスラッシュの次の添字である。行継続は文字列の中でだけ読む。
+fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *std.ArrayList(u8), literal: Literal) ReadError!void {
     if (i.* >= src.len) return error.Incomplete;
     const c = src[i.*];
     i.* += 1;
@@ -80,9 +121,35 @@ fn readEscape(src: []const u8, i: *usize, scratch: std.mem.Allocator, bytes: *st
         'r' => '\r',
         '"', '\\', '|' => c,
         'x' => return readHexEscape(src, i, scratch, bytes),
+        ' ', '\t', '\n', '\r' => if (literal == .string) return skipLineContinuation(src, i) else return error.InvalidEscape,
         else => return error.InvalidEscape,
     };
     try bytes.append(scratch, byte);
+}
+
+/// Moves `i` past the rest of a line continuation, whose first character after
+/// the backslash has just been read.
+/// R7RS 6.7 の \<intraline whitespace>*<line ending><intraline whitespace>* で、何も表さない。
+/// 行の終わりの前の空白のあとに、行の終わり以外が来たら、エスケープの誤りである。
+fn skipLineContinuation(src: []const u8, i: *usize) ReadError!void {
+    var at = i.* - 1;
+    while (at < src.len and isIntralineWhitespace(src[at])) at += 1;
+    if (at >= src.len) return error.Incomplete;
+    switch (src[at]) {
+        '\n' => at += 1,
+        '\r' => {
+            at += 1;
+            if (at < src.len and src[at] == '\n') at += 1;
+        },
+        else => return error.InvalidEscape,
+    }
+    while (at < src.len and isIntralineWhitespace(src[at])) at += 1;
+    i.* = at;
+}
+
+// Why: R7RS 7.1.1 の <intraline whitespace> は、スペースとタブである。
+fn isIntralineWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t';
 }
 
 /// Reads the rest of `\x<hex>;`, after the `x`, and appends the character's
@@ -224,8 +291,42 @@ test "read: a backslash that begins no escape is invalid" {
     try expectReadError(error.InvalidEscape, "\"\\q\"");
     try expectReadError(error.InvalidEscape, "\"a\\zb\"");
     try expectReadError(error.InvalidEscape, "\"\\X41;\"");
-    // 行継続はまだ読まない(スライス1h)。
-    try expectReadError(error.InvalidEscape, "\"a\\\nb\"");
+    // 行内の空白のあとに行の終わりが来なければ、行継続ではない。
+    try expectReadError(error.InvalidEscape, "\"a\\ b\"");
+    try expectReadError(error.InvalidEscape, "\"a\\ \t\"");
+}
+
+test "read: a backslash, intraline whitespace and a line ending stand for nothing, with the indentation after them" {
+    // R7RS 6.7 の \<intraline whitespace>*<line ending><intraline whitespace>* である。
+    try expectRead("ab", "\"a\\\nb\"");
+    try expectRead("ab", "\"a\\\n   b\"");
+    try expectRead("ab", "\"a\\ \t \n \t b\"");
+    try expectRead("ab", "\"a\\\r\nb\"");
+    try expectRead("ab", "\"a\\\rb\"");
+    // `\` の直後がタブでも、行内の空白である。
+    try expectRead("ab", "\"a\\\t\nb\"");
+    // 次の行の先頭の空白だけを捨てる。2つ目の改行は文字列の一部である。
+    try expectRead("a\nb", "\"a\\\n\nb\"");
+    try expectRead("a", "\"a\\\n\"");
+    // 続く行の中の空白は、そのまま残る。
+    try expectRead("ab c", "\"a\\\n  b c\"");
+}
+
+test "read: a line ending in a string is a newline, whatever its spelling" {
+    // R7RS 6.7 の「Any other line ending has the same effect as inserting a \n character」。
+    try expectRead("a\nb", "\"a\nb\"");
+    try expectRead("a\nb", "\"a\r\nb\"");
+    try expectRead("a\nb", "\"a\rb\"");
+    try expectRead("a\n\nb", "\"a\r\r\nb\"");
+    // エスケープの `\r` は、行の終わりではなく、CR の文字である。
+    try expectRead("a\r\nb", "\"a\\r\\nb\"");
+}
+
+test "read: a line continuation that the input cuts short is incomplete" {
+    try expectReadError(error.Incomplete, "\"a\\ ");
+    try expectReadError(error.Incomplete, "\"a\\\n");
+    try expectReadError(error.Incomplete, "\"a\\\n  ");
+    try expectReadError(error.Incomplete, "\"a\\\r");
 }
 
 test "read: a string that does not close is incomplete" {
@@ -240,7 +341,8 @@ test "read: a string that does not close is incomplete" {
 
 test "read: a raw newline, a tab and non-ASCII bytes belong to the string" {
     try expectRead("a\nb", "\"a\nb\"");
-    try expectRead("\t\r", "\"\t\r\"");
+    // 生の CR は行の終わりなので、改行になる(下の行の終わりのテスト)。
+    try expectRead("\t\n", "\"\t\r\"");
     try expectRead("\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}", "\"\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\"");
     try expectRead("a \u{3bb} \u{1F600}", "\"a \u{3bb} \u{1F600}\"");
 }
@@ -331,6 +433,31 @@ test "read: a scratch allocation that fails is an out of memory, and nothing lea
     var ok: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     _ = try read("\"abc\"", &pos, ok.allocator(), &heap);
     try std.testing.expectEqual(ok.allocated_bytes, ok.freed_bytes);
+}
+
+test "readIdentifier: an error leaves the position where it was, and nothing leaks" {
+    // 誤りの種類は reader.zig のテストが見る。ここでは、どの誤りでも位置が動かず、
+    // 集めたバイトを返すことを見る(`std.testing.allocator` が漏れを報告する)。
+    for ([_][]const u8{ "|abc", "|a\\q|", "|a\\\nb|", "|a\xffb|", "|a\\x41" }) |src| {
+        var pos: usize = 0;
+        if (readIdentifier(src, &pos, std.testing.allocator)) |name| {
+            std.testing.allocator.free(name);
+            return error.TestUnexpectedResult;
+        } else |_| {}
+        try std.testing.expectEqual(0, pos);
+    }
+}
+
+test "readIdentifier: a scratch allocation that fails is an out of memory, and nothing leaks" {
+    const check = struct {
+        fn run(gpa: std.mem.Allocator, src: []const u8) !void {
+            var pos: usize = 0;
+            const name = try readIdentifier(src, &pos, gpa);
+            defer gpa.free(name);
+            try std.testing.expectEqual(src.len, pos);
+        }
+    }.run;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, check, .{"|H\\x65;llo world|"});
 }
 
 fn expectWritten(expected: []const u8, mode: Mode, bytes: []const u8) !void {

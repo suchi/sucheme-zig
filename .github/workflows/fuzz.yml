@@ -1,4 +1,4 @@
-# リーダのファジング(層3、docs/plans/0007-test-tiers.md)。
+# リーダと評価器のファジング(層3、docs/plans/0007-test-tiers.md)。
 #
 # 週に1回の定期実行と、手動起動(workflow_dispatch)で走る。全コミットの ci.yml
 # には入れない。1回に数分の時間とランナーの分数がかかるためである。
@@ -32,11 +32,12 @@ permissions:
 
 jobs:
   fuzz:
-    name: fuzz reader (ubuntu-latest)
+    name: fuzz reader and evaluator (ubuntu-latest)
     runs-on: ubuntu-latest
     # Why: ファザーが無限ループを検出するかは確かめていない。検出しなければ、
-    # この上限だけがジョブを止める。500K 回の実行は、この環境の測定で数分に収ま
-    # る。ランナーが数倍遅くても超えない値にしてある。
+    # この上限だけがジョブを止める。`--fuzz=<N>` は対象ごとに N 回で、遅いほうの
+    # 評価器の対象が全体の時間を決める。20K 回は、手元の測定(1回約 45 ms)から
+    # 約 15 分の見込みである(計画書 0025 の「測定(6i-1)」)。
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,7 +49,7 @@ jobs:
       # Why: ここには actions/cache の手順を置かない。ci.yml が保存する
       # .zig-cache は単体テストのビルドの結果で、ReleaseSafe のファジング用の
       # キャッシュではない。週に1回の実行では、ビルドの時間を節約する利点も小さい。
-      - run: zig build test --fuzz=500K -Doptimize=ReleaseSafe
+      - run: zig build test --fuzz=20K -Doptimize=ReleaseSafe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-crash

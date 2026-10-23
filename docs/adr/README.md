@@ -73,3 +73,9 @@
 | [0037](0037-core-library-exposed-in-stage-2.md) | `(sucheme core)` を段階2の間だけ利用者に公開し、段階3で隠す | 採用 | 2026-10-14 |
 | [0038](0038-wasm-entry-layer-allocations-outside-the-accounting.md) | WASM の入口層が確保する、計上の外のものを、エントリ層の例外として認める | 採用 | 2026-10-15 |
 | [0039](0039-standard-environment-installed-at-init.md) | 最上位の初期環境は初期化で `(scheme base)` を読み込んで作り、読み込みもヒープの上限に計上する | 採用 | 2026-10-19 |
+| [0040](0040-core-ir-in-the-gc-heap.md) | コアIRの節点を GC ヒープに置き、最上位の表を常に上限に数え、未束縛のセルを弱く持つ | 採用 | 2026-10-20 |
+| [0041](0041-bsd-name-clause-attribution-not-endorsement.md) | 取り込んだ準拠スイートの著者名は出典としてだけ使い、推奨や認定と読める形では使わない | 採用 | 2026-10-20 |
+| [0042](0042-keep-replaced-cells-without-a-value.md) | 値の無いまま置き換えた最上位のセルは、未束縛の報告のために表が持つ | 採用 | 2026-10-21 |
+| [0043](0043-loading-library-holds-unbound-cells-strongly.md) | 定義の途中のライブラリの表は、未束縛のセルを強く持つ | 採用 | 2026-10-21 |
+| [0044](0044-machine-step-limit-not-catchable.md) | 機械の歩数の上限は、周回を数え、ハンドラで捕まえられない誤りで形式を打ち切る | 採用 | 2026-10-21 |
+| [0045](0045-fuzz-the-whole-interpreter.md) | ファジングの対象に、インタプリタ全体を通す対象を足し、別のテストのバイナリに置く | 採用 | 2026-10-23 |

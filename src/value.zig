@@ -93,6 +93,18 @@ pub const Value = union(enum) {
     /// that `force` runs once and remembers.
     /// GC ヒープにある。
     promise: *Promise,
+    /// An inexact real number: an IEEE 754 double (R7RS 6.2.3).
+    /// 即値である。`fixnum` と同じ大きさなので、値の大きさは変わらない。
+    flonum: f64,
+    /// An exact integer outside the range of a fixnum.
+    /// GC ヒープにある。作るのは src/num/ の正規化だけである(段階4で入る)。
+    bignum: *Bignum,
+    /// An exact rational number that is not an integer.
+    /// GC ヒープにある。作るのは src/num/ の正規化だけである(段階4で入る)。
+    ratnum: *Ratnum,
+    /// A complex number whose imaginary part is not an exact zero.
+    /// GC ヒープにある。作るのは src/num/ の正規化だけである(段階4で入る)。
+    compnum: *Compnum,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -180,12 +192,28 @@ pub const Value = union(enum) {
         return .{ .promise = p };
     }
 
+    pub fn fromFlonum(x: f64) Value {
+        return .{ .flonum = x };
+    }
+
+    pub fn fromBignum(b: *Bignum) Value {
+        return .{ .bignum = b };
+    }
+
+    pub fn fromRatnum(r: *Ratnum) Value {
+        return .{ .ratnum = r };
+    }
+
+    pub fn fromCompnum(c: *Compnum) Value {
+        return .{ .compnum = c };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise => true,
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character, .eof => false,
+            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise, .bignum, .ratnum, .compnum => true,
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character, .eof, .flonum => false,
         };
     }
 
@@ -213,6 +241,10 @@ pub const Value = union(enum) {
             .multiple_values => .multiple_values,
             .eof => .eof,
             .promise => .promise,
+            .flonum => .flonum,
+            .bignum => .bignum,
+            .ratnum => .ratnum,
+            .compnum => .compnum,
         };
     }
 
@@ -352,6 +384,38 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The double, or null when the value is not a flonum.
+    pub fn asFlonum(self: Value) ?f64 {
+        return switch (self) {
+            .flonum => |x| x,
+            else => null,
+        };
+    }
+
+    /// The bignum, or null when the value is not one.
+    pub fn asBignum(self: Value) ?*Bignum {
+        return switch (self) {
+            .bignum => |b| b,
+            else => null,
+        };
+    }
+
+    /// The ratnum, or null when the value is not one.
+    pub fn asRatnum(self: Value) ?*Ratnum {
+        return switch (self) {
+            .ratnum => |r| r,
+            else => null,
+        };
+    }
+
+    /// The compnum, or null when the value is not one.
+    pub fn asCompnum(self: Value) ?*Compnum {
+        return switch (self) {
+            .compnum => |c| c,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -395,14 +459,26 @@ pub const Value = union(enum) {
             .multiple_values => |x| b.asMultipleValues() == x,
             .eof => b.kind() == .eof,
             .promise => |x| b.asPromise() == x,
+            // ビット列で比べる。`(eqv? 0.0 -0.0)` は偽で、同じビット列の NaN は真になる
+            // (R7RS 6.1 は NaN どうしを未規定とする)。
+            .flonum => |x| if (b.asFlonum()) |y| @as(u64, @bitCast(x)) == @as(u64, @bitCast(y)) else false,
+            // Why: 骨格の段階(スライス 4d)では、ヒープの数を作るのは単体テストだけで、
+            // 正規化がまだ無い。数としての比較は、正規化と一緒にスライス 4e で入れる
+            // (docs/plans/0018-phase4-numeric-tower-unicode.md)。
+            .bignum => |x| b.asBignum() == x,
+            .ratnum => |x| b.asRatnum() == x,
+            .compnum => |x| b.asCompnum() == x,
         };
     }
 
     /// Whether `a` and `b` are the same value in the sense of `eq?` (R7RS 6.1).
     ///
     /// Why: R7RS 6.1 は、数と文字の `eq?` を実装依存とし、真を返してよいのは `eqv?` が
-    /// 真のときだけとする。段階1の数は固定長整数だけなので、`eqv?` と同じ関数でよい。
-    /// 段階4で数の種類が増えて `eqv?` が分かれたとき、`eq?` はここで別に決める。
+    /// 真のときだけとする。スライス 4d で数の種類が増えたが、ヒープの数を作るのは
+    /// まだ単体テストだけで、`eqv?` もヒープの数を同じオブジェクトかで比べるので、
+    /// 同じ関数でよい。スライス 4e で `eqv?` が数としての比較になったら、`eq?` は
+    /// ここで別に決める(docs/plans/0018-phase4-numeric-tower-unicode.md の合意を求める
+    /// 点の6: ヒープの数は同じオブジェクトか、flonum はビット列で比べる)。
     pub fn isEq(a: Value, b: Value) bool {
         return a.isEqv(b);
     }
@@ -547,6 +623,43 @@ pub const Record = struct {
 /// 計上するペイロードで、GC はそれをたどる。
 pub const MultipleValues = struct {
     items: []Value,
+};
+
+/// A digit of a bignum in base 2 to the power of its bit width.
+pub const Limb = std.math.big.Limb;
+
+/// An exact integer too large for a fixnum: its magnitude, least significant
+/// limb first, and its sign.
+/// 限界値列は、ヒープが所有し、計上するペイロードで、GC はたどらない。作ったあとは
+/// 変えない。演算は `std.math.big.int.Managed` を作業領域で使い、結果をここへ写す。
+/// Why: `Managed` は割り当て器を持つので、走査の分類(src/trace.zig)を通らず、演算の
+/// たびに自分で伸びて上限の照合を受けない。変えない列なら、確保の1回で大きさが決まり、
+/// 文字列と同じ経路で計上できる(docs/plans/0018-phase4-numeric-tower-unicode.md の
+/// 合意を求める点の5)。正規化した数では、`i64` に収まる値を持たない。
+pub const Bignum = struct {
+    limbs: []Limb,
+    positive: bool,
+
+    /// The integer as the standard library reads one.
+    pub fn toConst(self: *const Bignum) std.math.big.int.Const {
+        return .{ .limbs = self.limbs, .positive = self.positive };
+    }
+};
+
+/// An exact rational number: a numerator and a denominator, each a fixnum or
+/// a bignum.
+/// 正規化した数では、分母は正で1でなく、分子と互いに素である。
+pub const Ratnum = struct {
+    numerator: Value,
+    denominator: Value,
+};
+
+/// A complex number in rectangular form: a real part and an imaginary part,
+/// each a real number.
+/// 正規化した数では、虚部は正確な0でない。
+pub const Compnum = struct {
+    real: Value,
+    imag: Value,
 };
 
 /// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
@@ -704,9 +817,10 @@ pub const Address = struct {
 
 /// A node of the core IR: what the expander produces and the machine runs
 /// (docs/design/runtime.md).
-/// ノードは不変で、ノードは配下のノードをポインタで参照する。ノードは展開器が確保
-/// した場所にあり、後のスライスがコードを GC ヒープに置くまでは、そこはインタプリタの
-/// アリーナである。
+/// ノードは不変で、ノードは配下のノードをポインタで参照する。ノードは GC ヒープの
+/// オブジェクトで(ADR-0040)、列(`sequence` と `Call.operands`)は持ち主のノードの
+/// ペイロードとして数え、持ち主と一緒に返す(`Heap.allocAttached`)。列を2つのノードで
+/// 共有しない。
 pub const Node = union(enum) {
     /// A literal, or the datum of a `quote`.
     constant: Value,
@@ -830,15 +944,19 @@ pub const Kont = struct {
 
     pub const Step = union(enum) {
         /// The value is the condition of this `if`.
-        branch: *const If,
-        /// The value is dropped, and these nodes run next.
+        /// 節点は `Node.@"if"` の変種でなければならない。フレームは節点の内部の部分でなく、
+        /// 節点そのものを指す。節点が GC ヒープに移ったときに、フレームから節点を辿れるようにするためである。
+        /// 次の `local_set` `local_define` `global_set` `global_define` `call` も同じである。
+        /// 種類と変種の対応は型では守られず、取り違えると安全ビルドで共用体の変種の検査が止める。
+        branch: *const Node,
+        /// The value is dropped, and the nodes of this sequence run next.
         /// 空にならない。シーケンスの最後のノードは、この継続フレームがすでに無い状態で
         /// 実行される。これにより、末尾位置の呼び出しはフレームを消費しない。
-        sequence: []const *const Node,
-        local_set: *const LocalAssign,
-        local_define: *const LocalAssign,
-        global_set: *const GlobalAssign,
-        global_define: *const GlobalAssign,
+        sequence: SequenceStep,
+        local_set: *const Node,
+        local_define: *const Node,
+        global_set: *const Node,
+        global_define: *const Node,
         /// The value is the next one of the call: the operator first, then each
         /// operand.
         /// `args` には、それより前に届いた値が入る。
@@ -1010,8 +1128,19 @@ pub const Kont = struct {
         continuable: bool,
     };
 
+    /// Where a `sequence` is: the node, and the position of the node that runs next.
+    /// Why: 列の残りを部分スライスで持つと、所有する節点を辿れない。節点と位置で持てば、
+    /// フレームから列の節点に到達できる。
+    pub const SequenceStep = struct {
+        /// A `Node.sequence`.
+        node: *const Node,
+        /// Less than the length of the sequence, and not zero.
+        next: u32,
+    };
+
     pub const CallStep = struct {
-        call: *const Call,
+        /// A `Node.call`.
+        call: *const Node,
         args: ?*const Args,
         /// How many values `args` holds.
         received: usize,
@@ -1215,16 +1344,17 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// The types of the objects that live in the GC heap.
 /// それらへのポインタは、GC がたどる参照である(src/trace.zig)。順序は、ヒープが
 /// 種別に番号を振る順序である。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector };
+/// コアIRの節点(`Node`、`Lambda`、`Parameterize`)もここにある(ADR-0040)。節点は展開器が
+/// 作り、コードを指すもの(機械の制御のレジスタ、クロージャ、継続のフレーム)から辿られる。
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize };
 
-/// The types that are not in the GC heap but are pointed to from it: the core
-/// IR, which until a later slice stays where the expander allocated it, and the
+/// The types that are not in the GC heap but are pointed to from it: the
 /// procedures implemented in Zig.
 /// それらへのポインタはたどらない。
-pub const code_types = [_]type{ Node, Lambda, If, LocalAssign, GlobalAssign, Call, Primitive, Parameterize, ParameterBinding };
+pub const code_types = [_]type{Primitive};
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -1285,6 +1415,11 @@ pub const SyntacticEnv = struct {
     /// 最上位は 0 で、`lambda` の rib は外側より 1 大きい。局所変数の字句アドレスの
     /// 深さは、参照する側の環境のこの値から、束縛した rib のこの値を引いたものである。
     rib_depth: u32,
+    /// How many environments the chain from this one to its outermost has, this
+    /// one included.
+    /// 識別子の解決がたどる長さで、展開器が上限を置く(`src/syntax/expand.zig` の
+    /// `max_depth`)。rib を持たない環境(`let-syntax`)も数える。
+    nesting: u32 = 0,
     /// The bindings, the newest first.
     /// 探索は先頭から線形に進む。同じ識別子を束縛し直すと、後のものが前のものを隠す。
     bindings: ?*SyntacticBinding,
@@ -1354,10 +1489,10 @@ pub const LocalBinding = struct {
 
 /// The location of a global variable (docs/design/runtime.md, the cells of the
 /// global bindings).
-/// GC ヒープにある。コア IR の節点(アリーナにある)はセルを指すが、GC は節点を
-/// たどらない。それでも回収されないのは、作られたセルがすべて、REPL の束縛の表か、
-/// 遮蔽されたインポートの束縛を持ち続ける表か、`define-syntax` が表から外したセルを
-/// 持ち続ける表から到達できるからである(src/env.zig)。
+/// GC ヒープにある。セルに届くのは、最上位の束縛の表と、セルを指すコアIRの節点
+/// (GC ヒープにある。ADR-0040)である。表から外れたセルは、指す節点が持つ。例外は、
+/// 置き換えた時点で値の無かったセルで、ライブラリの本体の終わりに未束縛として報告する
+/// ために、表の `displaced_unbound` が持つ(src/env.zig、ADR-0042)。
 pub const Cell = struct {
     /// The name, for the message of an error.
     name: SymbolId,
@@ -1705,6 +1840,78 @@ test "a promise that holds its state is its own root, and one that shares the st
     try std.testing.expectEqual(&a, c.root());
 }
 
+test "a flonum is an immediate of its own kind, and eqv? compares its bits" {
+    const v: Value = .fromFlonum(1.5);
+    try std.testing.expectEqual(Kind.flonum, v.kind());
+    try std.testing.expectEqual(1.5, v.asFlonum().?);
+    try std.testing.expect(!v.pointsIntoHeap());
+    try std.testing.expect(v.isTrue());
+    try std.testing.expect(v.asFixnum() == null);
+    try std.testing.expect(Value.fromFixnum(1).asFlonum() == null);
+    try std.testing.expect(Value.fromFlonum(1.5).isEqv(.fromFlonum(1.5)));
+    // 正確な 1 と不正確な 1.0 は eqv? でない(R7RS 6.1)。
+    try std.testing.expect(!Value.fromFlonum(1.0).isEqv(.fromFixnum(1)));
+    try std.testing.expect(!Value.fromFixnum(1).isEqv(.fromFlonum(1.0)));
+    // ビット列で比べるので、負のゼロは正のゼロと eqv? でない(R7RS 6.1 の例)。
+    try std.testing.expect(!Value.fromFlonum(0.0).isEqv(.fromFlonum(-0.0)));
+    // NaN どうしは R7RS 6.1 が未規定とする。ビット列が同じなら真である。
+    const nan = std.math.nan(f64);
+    try std.testing.expect(Value.fromFlonum(nan).isEqv(.fromFlonum(nan)));
+}
+
+test "a value takes two words, so a flonum fits beside a fixnum" {
+    // Why: flonum を即値に置くと決めた(docs/plans/0018-phase4-numeric-tower-unicode.md)。
+    // 値が大きくなると、すべてのフレームとベクタの計上が増える。
+    try std.testing.expectEqual(16, @sizeOf(Value));
+}
+
+test "a bignum, a ratnum and a compnum are heap objects, each answering to its own accessor" {
+    var limbs = [_]Limb{ 0, 1 };
+    var b: Bignum = .{ .limbs = &limbs, .positive = false };
+    const bv: Value = .fromBignum(&b);
+    try std.testing.expectEqual(Kind.bignum, bv.kind());
+    try std.testing.expectEqual(&b, bv.asBignum().?);
+    try std.testing.expect(bv.pointsIntoHeap());
+    try std.testing.expect(bv.isTrue());
+    try std.testing.expect(bv.asFixnum() == null);
+    try std.testing.expect(bv.asRatnum() == null);
+    try std.testing.expect(bv.isEqv(.fromBignum(&b)));
+    try std.testing.expect(!bv.isEqv(.fromFixnum(0)));
+    const big = b.toConst();
+    try std.testing.expectEqualSlices(Limb, &limbs, big.limbs);
+    try std.testing.expect(!big.positive);
+
+    var r: Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromFixnum(3) };
+    const rv: Value = .fromRatnum(&r);
+    try std.testing.expectEqual(Kind.ratnum, rv.kind());
+    try std.testing.expectEqual(&r, rv.asRatnum().?);
+    try std.testing.expect(rv.pointsIntoHeap());
+    try std.testing.expect(rv.asBignum() == null);
+    try std.testing.expect(rv.asCompnum() == null);
+    try std.testing.expect(rv.isEqv(.fromRatnum(&r)));
+    try std.testing.expect(!rv.isEqv(bv));
+
+    var c: Compnum = .{ .real = .fromFixnum(1), .imag = .fromFlonum(2.0) };
+    const cv: Value = .fromCompnum(&c);
+    try std.testing.expectEqual(Kind.compnum, cv.kind());
+    try std.testing.expectEqual(&c, cv.asCompnum().?);
+    try std.testing.expect(cv.pointsIntoHeap());
+    try std.testing.expect(cv.asRatnum() == null);
+    try std.testing.expect(cv.asFlonum() == null);
+    try std.testing.expect(cv.isEqv(.fromCompnum(&c)));
+    try std.testing.expect(!cv.isEqv(rv));
+
+    // 暫定: 正規化が入るスライス 4e までは、ヒープの数を同じオブジェクトかで比べるので、
+    // 中身が同じ別のオブジェクトは eqv? でない。4e で数としての比較に替え、この3行を
+    // 反対の期待に書き換える。
+    var b2: Bignum = .{ .limbs = &limbs, .positive = false };
+    var r2: Ratnum = r;
+    var c2: Compnum = c;
+    try std.testing.expect(!bv.isEqv(.fromBignum(&b2)));
+    try std.testing.expect(!rv.isEqv(.fromRatnum(&r2)));
+    try std.testing.expect(!cv.isEqv(.fromCompnum(&c2)));
+}
+
 test "finding the root links the promises it passes straight to the root" {
     var a: Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
     var b: Promise = .{ .done = false, .value = .unspecified_value, .forward = &a };
@@ -1719,10 +1926,11 @@ test "finding the root links the promises it passes straight to the root" {
 
 test "only the frames that take one value ask for exactly one" {
     const node: Node = .{ .constant = .unspecified_value };
-    const if_node: If = .{ .condition = &node, .consequent = &node, .alternative = null };
-    const assign: LocalAssign = .{ .address = .{ .depth = 0, .index = 0 }, .name = @fromBackingInt(@intCast(0)), .value = &node };
-    const global: GlobalAssign = .{ .cell = undefined, .value = &node };
-    const call: Call = .{ .operator = &node, .operands = &.{} };
+    const if_node: Node = .{ .@"if" = .{ .condition = &node, .consequent = &node, .alternative = null } };
+    const assign: Node = .{ .local_set = .{ .address = .{ .depth = 0, .index = 0 }, .name = @fromBackingInt(@intCast(0)), .value = &node } };
+    const global: Node = .{ .global_set = .{ .cell = undefined, .value = &node } };
+    const call: Node = .{ .call = .{ .operator = &node, .operands = &.{} } };
+    const sequence: Node = .{ .sequence = &.{ &node, &node } };
     const point: DynPoint = .{ .parent = null, .depth = 1, .current_handler = null, .kind = .{ .handler_shift = null } };
     const rewind: Rewind = .{ .target = null, .value = .unspecified_value, .ancestor = null };
     var parameter: Parameter = .{ .value = .unspecified_value, .converter = null };
@@ -1743,7 +1951,7 @@ test "only the frames that take one value ask for exactly one" {
     };
     for (asks_one) |step| try std.testing.expect(step.requiresOneValue());
     const takes_any = [_]Kont.Step{
-        .{ .sequence = &.{&node} },
+        .{ .sequence = .{ .node = &sequence, .next = 1 } },
         .{ .dynamic_exit = null },
         .{ .handler_return = .{ .dyn = null, .raised = .unspecified_value, .continuable = true } },
         .{ .wind_before = .{ .point = &point, .thunk = .unspecified_value } },
@@ -1834,8 +2042,9 @@ test "a node tree and a continuation chain can be built from the layouts" {
     const call: Node = .{ .call = .{ .operator = &reference, .operands = &operands } };
     try std.testing.expectEqual(1, call.call.operands[0].constant.asFixnum().?);
     try std.testing.expectEqual(2, call.call.operator.local_ref.address.index);
-    const base: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .branch = &.{ .condition = &one, .consequent = &one, .alternative = null } } };
-    const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call.call, .args = null, .received = 0 } } };
+    const branch: Node = .{ .@"if" = .{ .condition = &one, .consequent = &one, .alternative = null } };
+    const base: Kont = .{ .next = null, .env = null, .depth = 1, .step = .{ .branch = &branch } };
+    const top: Kont = .{ .next = &base, .env = null, .depth = base.depth + 1, .step = .{ .call = .{ .call = &call, .args = null, .received = 0 } } };
     try std.testing.expectEqual(2, top.depth);
     try std.testing.expectEqual(&base, top.next.?);
 }

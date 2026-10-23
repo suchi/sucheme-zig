@@ -26,6 +26,14 @@ const Bytevector = value_mod.Bytevector;
 const Record = value_mod.Record;
 const RecordType = value_mod.RecordType;
 const MultipleValues = value_mod.MultipleValues;
+const Bignum = value_mod.Bignum;
+const Ratnum = value_mod.Ratnum;
+const Compnum = value_mod.Compnum;
+const Limb = value_mod.Limb;
+const Node = value_mod.Node;
+const Lambda = value_mod.Lambda;
+const Parameterize = value_mod.Parameterize;
+const ParameterBinding = value_mod.ParameterBinding;
 const symbol = @import("symbol.zig");
 const SymbolId = symbol.SymbolId;
 const trace = @import("trace.zig");
@@ -49,9 +57,10 @@ pub const Options = struct {
     /// The account at which the first collection is asked for, and the least
     /// that any later one is asked for at.
     min_threshold: usize = 1024 * 1024,
-    /// How many objects the marking keeps to scan.
-    /// これを超えて待つオブジェクトがあっても、マークは止まらず、ヒープを走査し直して
-    /// 拾う(`Marker` を参照)。テストは 0 にして、再走査の経路を走らせる。
+    /// How many objects the marking's list holds at first, and between collections.
+    /// マークの途中で満杯になればリストを伸ばし、伸ばせなければヒープを走査し直して
+    /// 拾う(`Marker` を参照)。0 はリストを使わない設定で、伸ばさない。テストは 0 に
+    /// して、再走査の経路を走らせる。
     work_capacity: usize = 4096,
     /// Ask for a collection at every safe point of the start of a run, and less
     /// and less often as it goes on (see `stress_ramp`).
@@ -247,6 +256,90 @@ test "a request the backing refuses is not left charged" {
     try std.testing.expect(!heap.external_refused);
 }
 
+test "the resident allocator counts against the limit at all times, and gives back what is freed" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Pair) * 4 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    // 展開の計上と違い、検査を始める印が無くても、上限に入る。
+    try std.testing.expect(!heap.external_enforced);
+    // 伸ばすと差分だけ、縮めると差分を戻す。
+    var block = try a.alloc(u8, cellBytes(Pair) * 3);
+    block = try a.realloc(block, cellBytes(Pair) * 2);
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.resident);
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.held());
+    try std.testing.expectEqual(0, heap.external);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    try std.testing.expectError(error.HeapLimit, heap.cons(.empty_list_value, .empty_list_value));
+    // 上限を超える要求は断り、断ったことを残す。計上は変わらない。
+    try std.testing.expect(!heap.external_refused);
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 1));
+    try std.testing.expect(heap.external_refused);
+    try std.testing.expectError(error.OutOfMemory, a.realloc(block, cellBytes(Pair) * 3));
+    try std.testing.expectEqual(cellBytes(Pair) * 2, heap.resident);
+    a.free(block);
+    try std.testing.expectEqual(0, heap.resident);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+}
+
+test "a resident request the backing refuses is not left counted" {
+    // 確保は1回目だけ通し、伸ばす要求はすべて断る下の割り当て器。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(failing.allocator(), .{ .limit = 1 << 20 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    const block = try a.alloc(u8, 100);
+    defer a.free(block);
+    try std.testing.expectEqual(100, heap.resident);
+    // 伸ばす要求は、その場で伸ばせず(resize)、移して伸ばせず(remap)、新しく取れない。
+    try std.testing.expect(!a.resize(block, 200));
+    try std.testing.expectEqual(100, heap.resident);
+    try std.testing.expectError(error.OutOfMemory, a.realloc(block, 300));
+    try std.testing.expectEqual(100, heap.resident);
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 10));
+    try std.testing.expectEqual(100, heap.resident);
+    // 下の割り当て器が断ったのであって、上限が断ったのではない。
+    try std.testing.expect(!heap.external_refused);
+}
+
+test "resizing a resident block in place counts the difference, and a growth past the limit is refused" {
+    // 最後の確保をその場で伸び縮みできる割り当て器を下に置き、`resize` の経路を通す
+    // (`realloc` は先に `remap` を試すので、この経路を通らない)。
+    var buffer: [1024]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var heap: Heap = .init(fixed.allocator(), .{ .limit = 256 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    var block = try a.alloc(u8, 100);
+    try std.testing.expect(a.resize(block, 200));
+    block = block.ptr[0..200];
+    try std.testing.expectEqual(200, heap.resident);
+    try std.testing.expect(a.resize(block, 50));
+    block = block.ptr[0..50];
+    try std.testing.expectEqual(50, heap.resident);
+    // 上限を超える伸び方は、下の割り当て器に頼む前に断る。計上は変わらない。
+    try std.testing.expect(!heap.external_refused);
+    try std.testing.expect(!a.resize(block, 300));
+    try std.testing.expect(heap.external_refused);
+    try std.testing.expectEqual(50, heap.resident);
+    a.free(block);
+    try std.testing.expectEqual(0, heap.resident);
+}
+
+test "a collection keeps the resident account, and counts it as live" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20, .min_threshold = 1 });
+    defer heap.deinit();
+    const a = heap.residentAllocator();
+    const block = try a.alloc(u8, 4096);
+    defer a.free(block);
+    _ = try heap.cons(.empty_list_value, .empty_list_value);
+    heap.collect(TestRoots{});
+    // ペアは回収され、常駐の分は残る。次の GC の閾値は、残った分から決まる。
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(4096, heap.held());
+    try std.testing.expectEqual(4096 * 2, heap.threshold);
+}
+
 test "max_host_limit is 1 GiB" {
     // 値そのものを固定する。大きくすると、wasm32 で 4 GiB に近い上限が通り、
     // 上限に届く前に実メモリが尽きて trap する(`max_host_limit` の説明を参照)。
@@ -368,8 +461,9 @@ pub fn cellBytes(comptime T: type) usize {
 
 /// The bytes the object owns beyond its cell: the slots of a frame, the bytes
 /// of a string, the elements of a vector, the fields of a record, the values of
-/// a multiple-values object.
+/// a multiple-values object, the limbs of a bignum.
 /// ペイロードはセルとは別に確保され、セルと一緒に返される。
+/// ペイロードを持つ型は `ownsPayload` が答える。この switch の分岐と同じ集合である。
 fn payloadBytes(comptime T: type, object: *const T) usize {
     return switch (T) {
         Frame => object.values.len * @sizeOf(Value),
@@ -378,7 +472,25 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Bytevector => object.bytes.len,
         Record => object.fields.len * @sizeOf(Value),
         MultipleValues => object.items.len * @sizeOf(Value),
+        Bignum => object.limbs.len * @sizeOf(Limb),
+        Node => switch (object.*) {
+            .sequence => |nodes| nodes.len * @sizeOf(*const Node),
+            .call => |c| c.operands.len * @sizeOf(*const Node),
+            else => 0,
+        },
+        Parameterize => object.bindings.len * @sizeOf(ParameterBinding),
         else => 0,
+    };
+}
+
+/// Whether objects of type `T` own a payload beyond their cell, so that only
+/// their own `create` function may make them.
+/// 節点(`Node` と `Parameterize`)は、ここに入らない。節点は `create` で作り、列を持つ節点は、
+/// 作った後に `allocAttached` の列を持たせる(展開器が、子を決める前に節点を作るため)。
+fn ownsPayload(comptime T: type) bool {
+    return switch (T) {
+        Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum => true,
+        else => false,
     };
 }
 
@@ -421,6 +533,8 @@ pub const Heap = struct {
     exhausted: bool = false,
     /// How many collections have run.
     collections: usize = 0,
+    /// How many times the markings have rescanned the heap, over all collections.
+    rescans: usize = 0,
     /// How many times `shouldCollect` was asked since the last collection, and
     /// in all.
     /// ストレスモードだけが数える。
@@ -443,7 +557,16 @@ pub const Heap = struct {
     external_enforced: bool = false,
     /// Whether a charge was refused for want of room under the limit, since
     /// whoever started the expansion last cleared it.
+    /// 常駐の割り当て器(`residentAllocator`)が断ったときも立てる。どちらの断りも、呼び出し側
+    /// には `error.OutOfMemory` に見えるので、これで上限の超過と見分ける。
     external_refused: bool = false,
+    /// The bytes outside the heap that count against the limit at all times:
+    /// the tables of the bindings of the top levels and the registry of the
+    /// libraries (`residentAllocator`).
+    /// Why: 表は、セッションの間ずっと残り、インポートした名前の数に比例して伸びる。展開の
+    /// 計上(`external`)と違い、1行ごとに戻すと、上限の外で伸び続ける(ADR-0040)。GC が
+    /// 回収しないので、生きている量として `held` に入れる。
+    resident: usize = 0,
     /// The symbols: each name is interned once, and named by a `SymbolId`.
     symbols: symbol.Table = .{},
 
@@ -490,15 +613,19 @@ pub const Heap = struct {
 
     /// A new object holding `value`.
     ///
-    /// ペイロードを持つオブジェクトは、専用の関数 `createFrame`、`createString`、
-    /// `createVector`、`createRecord`、`createMultipleValuesIn` で作る。
+    /// ペイロードを持つオブジェクト(`ownsPayload`)は、専用の関数 `createFrame`、
+    /// `createString`、`createVector`、`createBytevector`、`createRecord`、
+    /// `createMultipleValuesIn`、`createBignum` で作る。
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
         return self.createIn(.limit, T, value);
     }
 
     /// A new object holding `value`, held to `budget`.
     pub fn createIn(self: *Heap, budget: Budget, comptime T: type, value: T) Error!*T {
-        comptime std.debug.assert(T != Frame and T != String and T != Vector and T != Bytevector and T != Record and T != MultipleValues);
+        // Why: ペイロードを持つ型をここで作ると、ペイロードを計上せず、呼び出し側の切片を
+        // そのまま持つ。スイープがそれを `backing` に返すので、実行時に壊れる。
+        // コンパイル時に断る。
+        comptime std.debug.assert(!ownsPayload(T));
         try self.reserve(budget, cellBytes(T));
         const cell = try self.backing.create(Cell(T));
         cell.value = value;
@@ -657,6 +784,20 @@ pub const Heap = struct {
         return self.linkBytevector(bytes, total);
     }
 
+    /// A new bignum of a copy of the limbs and the sign of `n`.
+    /// 限界値列のコピーがペイロードで、先に確保し、セルを確保できなければ返す。
+    /// `createBytevector` と同じ単位である。`n` が正規化されていること(上位の限界値が
+    /// 0 でないこと、`i64` に収まらないこと)は、呼び出し側の src/num/ が保証する。
+    pub fn createBignum(self: *Heap, n: std.math.big.int.Const) Error!*Bignum {
+        const total = try self.reserveWithPayload(.limit, Bignum, n.limbs.len, @sizeOf(Limb));
+        const copy = try self.backing.dupe(Limb, n.limbs);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(Bignum));
+        cell.value = .{ .limbs = copy, .positive = n.positive };
+        self.link(Bignum, cell, total);
+        return &cell.value;
+    }
+
     /// Puts `bytes`, which the bytevector will own, in a new cell.
     /// セルを確保できなければ、呼び出し側の `errdefer` がペイロードを返す。
     fn linkBytevector(self: *Heap, bytes: []u8, total: usize) Error!*Bytevector {
@@ -694,6 +835,33 @@ pub const Heap = struct {
         return &cell.value;
     }
 
+    /// A list of `len` elements for a node to hold: the nodes of a sequence or the
+    /// operands of a call (`*const Node`), or the bindings of a `parameterize`
+    /// (`ParameterBinding`), with every element unset.
+    /// Why: 展開器は、子を決める前に節点を作り、列もその時点で作る。列は持ち主の節点の
+    /// ペイロードとして数え、持ち主と一緒に返す(`free`)。呼び出し側は、列を受け取ったら、
+    /// ほかの確保をする前に、ちょうど1つの節点に持たせる。持たせる前に展開が失敗すると、
+    /// 列が返らずに残る。持たせた後に失敗すると、節点ごとごみになり、次の GC が返す。
+    /// 要素は未設定のままで、ごみになった節点の要素は読まれない(`free` が読むのは長さだけ
+    /// である)。展開の途中で GC は走らないので(ADR-0031)、生きている節点が未設定の要素を
+    /// 持つことは無い。
+    pub fn allocAttached(self: *Heap, comptime E: type, len: usize) Error![]E {
+        comptime std.debug.assert(E == *const Node or E == ParameterBinding);
+        const bytes = std.math.mul(usize, len, @sizeOf(E)) catch return error.HeapLimit;
+        try self.reserve(.limit, bytes);
+        const list = try self.backing.alloc(E, len);
+        self.accounted += bytes;
+        if (self.accounted > self.peak) self.peak = self.accounted;
+        return list;
+    }
+
+    /// Gives back a list `allocAttached` returned that no node came to hold.
+    /// 持ち主の節点を作れなかったときだけ使う。
+    pub fn freeDetached(self: *Heap, comptime E: type, list: []E) void {
+        self.accounted -= list.len * @sizeOf(E);
+        self.backing.free(list);
+    }
+
     /// Checks that a cell of `T` and `count` payload elements of `size` bytes
     /// fit under the limit, and returns the bytes they account for.
     /// 桁あふれする大きさは、回り込ませず、上限超過として扱う。
@@ -728,7 +896,67 @@ pub const Heap = struct {
     /// The bytes the heap accounts for: the objects, and the symbols a collection
     /// may reclaim. The limit and the threshold are held to this.
     pub fn held(self: *const Heap) usize {
-        return self.accounted +| self.symbols.charged;
+        return self.accounted +| self.symbols.charged +| self.resident;
+    }
+
+    /// An allocator whose requests count against the limit for as long as they
+    /// are held, on `backing`.
+    /// 上限に収まらない要求は `null` を返して断り、`external_refused` を立てる。下の割り当て器は
+    /// 個別に解放できるものでなければならない(アリーナでは、伸ばした表の古い領域が残り、
+    /// 戻した計上が実際より少なくなる)。ヒープを動かすと、作った割り当て器は使えなくなる。
+    pub fn residentAllocator(self: *Heap) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = residentAlloc,
+            .resize = residentResize,
+            .remap = residentRemap,
+            .free = residentFree,
+        } };
+    }
+
+    /// Counts `bytes` more as resident, or refuses them and notes that it did.
+    fn chargeResident(self: *Heap, bytes: usize) error{HeapLimit}!void {
+        self.reserve(.limit, bytes) catch |e| {
+            self.external_refused = true;
+            return e;
+        };
+        self.resident += bytes;
+    }
+
+    fn residentAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        self.chargeResident(len) catch return null;
+        return self.backing.rawAlloc(len, alignment, ret_addr) orelse {
+            self.resident -= len;
+            return null;
+        };
+    }
+
+    fn residentResize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        if (new_len > memory.len) self.chargeResident(new_len - memory.len) catch return false;
+        if (!self.backing.rawResize(memory, alignment, new_len, ret_addr)) {
+            if (new_len > memory.len) self.resident -= new_len - memory.len;
+            return false;
+        }
+        if (new_len < memory.len) self.resident -= memory.len - new_len;
+        return true;
+    }
+
+    fn residentRemap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        if (new_len > memory.len) self.chargeResident(new_len - memory.len) catch return null;
+        const moved = self.backing.rawRemap(memory, alignment, new_len, ret_addr) orelse {
+            if (new_len > memory.len) self.resident -= new_len - memory.len;
+            return null;
+        };
+        if (new_len < memory.len) self.resident -= memory.len - new_len;
+        return moved;
+    }
+
+    fn residentFree(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *Heap = @ptrCast(@alignCast(ptr));
+        self.backing.rawFree(memory, alignment, ret_addr);
+        self.resident -= memory.len;
     }
 
     /// Frees every object that cannot be reached from `roots`.
@@ -742,6 +970,17 @@ pub const Heap = struct {
         var marker: Marker = .{ .heap = self, .work = self.work };
         roots.mark(&marker);
         marker.finish();
+        // 弱く持つ表は、マークが済んでから、掃除の前に、マークされなかったものを外す。
+        var weak = marker.weak;
+        while (weak) |w| {
+            weak = w.next;
+            w.next = null;
+            w.listed = false;
+            w.prune(w, self);
+        }
+        // マークの途中でリストを伸ばしていたら、オプションの大きさに戻す。伸ばした分は
+        // 上限の外のメモリなので、次の GC まで持ち越さない。
+        self.ensureWork();
         self.sweep();
         self.symbols.sweep(self.backing);
         self.collections += 1;
@@ -793,6 +1032,31 @@ pub const Heap = struct {
         self.external -|= bytes;
     }
 
+    /// What the counting of work outside the heap was before a piece of work began
+    /// its own (`beginCounting`).
+    pub const Counting = struct { external: usize, enforced: bool };
+
+    /// Starts a piece of work whose allocations through `Charged` count against the
+    /// limit, held to it from now on when `enforced`; returns what to give back to
+    /// `endCounting`.
+    /// Why: 計上の範囲は入れ子になる。`import` の評価はライブラリのファイルを読み込み、その
+    /// 宣言の `import` の評価を走らせる。内側の `import` の作業は、外側と同じ1行の作業領域に
+    /// 残るので、外側が数えている間は、内側が終わっても数え続ける(`endCounting`)。展開は
+    /// これを使わず、終わったら外側の計上に戻す(`expand.expandIn`)。
+    pub fn beginCounting(self: *Heap, enforced: bool) Counting {
+        const before: Counting = .{ .external = self.external, .enforced = self.external_enforced };
+        self.external_enforced = enforced;
+        return before;
+    }
+
+    /// Ends the piece of work `beginCounting` started.
+    /// 外側に数えている範囲が無ければ、数えた分を戻す(作業領域は、呼び出し側が捨てる)。
+    /// 外側が検査しているなら、数えた分を外側に残す。
+    pub fn endCounting(self: *Heap, before: Counting) void {
+        if (!before.enforced) self.external = before.external;
+        self.external_enforced = before.enforced;
+    }
+
     /// Fails with `HeapLimit` when `bytes` more would pass what `budget` allows.
     fn reserve(self: *const Heap, budget: Budget, bytes: usize) error{HeapLimit}!void {
         const total_held = std.math.add(usize, self.held(), if (self.external_enforced) self.external else 0) catch return error.HeapLimit;
@@ -802,6 +1066,14 @@ pub const Heap = struct {
             .raise_reserve => self.options.limit +| self.options.raise_reserve,
         };
         if (total > ceiling) return error.HeapLimit;
+    }
+
+    /// Whether the marking in progress has reached `pointer`.
+    /// マークの後、掃除の前(`Weak.prune` の中)でだけ意味がある。
+    pub fn isMarked(self: *const Heap, comptime T: type, pointer: *const T) bool {
+        _ = self;
+        const cell: *const Cell(T) = @alignCast(@fieldParentPtr("value", pointer));
+        return cell.header.marked;
     }
 
     /// The number of objects of type `T` in the heap.
@@ -840,6 +1112,13 @@ pub const Heap = struct {
                     Bytevector => self.backing.free(cell.value.bytes),
                     Record => self.backing.free(cell.value.fields),
                     MultipleValues => self.backing.free(cell.value.items),
+                    Bignum => self.backing.free(cell.value.limbs),
+                    Node => switch (cell.value) {
+                        .sequence => |nodes| self.backing.free(nodes),
+                        .call => |c| self.backing.free(c.operands),
+                        else => {},
+                    },
+                    Parameterize => self.backing.free(cell.value.bindings),
                     else => {},
                 }
                 self.backing.destroy(cell);
@@ -850,23 +1129,57 @@ pub const Heap = struct {
     }
 };
 
+/// A table that holds some of its objects weakly (ADR-0040, decision 6).
+/// 表に埋め込み、マークのときに `Marker.holdWeakly` で登録する。`prune` は、`Heap.isMarked`
+/// で生死を見て、マークされなかったものを表から外す。何も確保せず、何も解放しない(解放は
+/// 掃除がする)。
+pub const Weak = struct {
+    next: ?*Weak = null,
+    /// Whether the marking in progress has the table on its list.
+    /// 1回の GC で同じ表を2回登録すると、列が輪になって、途中の表が刈られずに解放済みの
+    /// セルを指したまま残る。`holdWeakly` が表明して防ぐ。
+    listed: bool = false,
+    prune: *const fn (*Weak, *Heap) void,
+};
+
 /// The marking of one collection.
 /// `roots` がプログラムの出発点となる値を渡し、`finish` がそこからたどれるすべてに
 /// 到達する。
 ///
 /// オブジェクトに到達するとマークを付け、余地があれば、後で走査するためのリストに
-/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの容量は、
-/// オプションで決まる。到達したときリストが満杯なら、マークだけ付けて、取りこぼした
+/// 載せる。走査すると、そのオブジェクトの参照先に到達する。リストの初めの容量は、
+/// オプションで決まる。到達したときリストが満杯なら、ヒープの外で倍の大きさに
+/// 確保し直す。確保できないとき(容量0の設定を含む)は、マークだけ付けて、取りこぼした
 /// ことを記録する。`finish` は、取りこぼしがなくなるまで、ヒープ内のマーク済みの
 /// 全オブジェクトを走査し直す。マーク済みのオブジェクトは、リストに載れば順に、
 /// 載らなければ再走査で走査されるので、漏れるものはない。リストの大きさが変えるのは、
 /// マークにかかる時間であって、マークする対象ではない。
+/// Why: 再走査の1回は、オブジェクトの一覧を新しい順に1回なめるだけなので、参照が
+/// 新しいオブジェクトの方向へ伸びる鎖では、1回で進む深さがリストの大きさ程度になり、
+/// 再走査の回数が鎖の長さに比例する。展開器は親の節点を子より先に作るので、深く
+/// 入れ子になったコードがこの形になる(3o-3)。伸ばせば、確保が成功する限り再走査は
+/// 起きない。各オブジェクトは1回しか載らないので、積まれている数はマークされる数を
+/// 超えない。確保の大きさは倍々なのでその2倍まで、`realloc` が写す間は新旧の両方を
+/// 持つので3倍までになる。
 pub const Marker = struct {
     heap: *Heap,
     work: []*Header,
     len: usize = 0,
     /// An object was marked and not put on the list.
     lost: bool = false,
+    /// The tables that hold some of their objects weakly, as `holdWeakly` met them.
+    weak: ?*Weak = null,
+
+    /// Asks that `w` drop what the marking did not reach, once the marking is done
+    /// and before the sweep (`Heap.collect`).
+    /// 表は、弱く持つものをマークせずに、ここで自分を登録する。登録とマークが同じ
+    /// 呼び出しで起きるので、マークを省いた表が刈られずに残ることはない。
+    pub fn holdWeakly(self: *Marker, w: *Weak) void {
+        std.debug.assert(!w.listed);
+        w.listed = true;
+        w.next = self.weak;
+        self.weak = w;
+    }
 
     /// Marks what `v` refers to.
     pub fn value(self: *Marker, v: Value) void {
@@ -896,6 +1209,7 @@ pub const Marker = struct {
         const header = &cell.header;
         if (header.marked) return;
         header.marked = true;
+        if (self.len == self.work.len) self.grow();
         if (self.len < self.work.len) {
             self.work[self.len] = header;
             self.len += 1;
@@ -911,10 +1225,23 @@ pub const Marker = struct {
         self.heap.symbols.mark(id);
     }
 
+    /// Doubles the list, outside the account of the heap, if the memory is there.
+    /// 空のリスト(容量0の設定か、初めの確保の失敗)は伸ばさない。どちらも静的な
+    /// `no_work` を指すので、アロケータが確保したものとして扱わない。確保に失敗したら、
+    /// 元のリストのまま続ける(`realloc` は失敗のとき元を残す)。
+    fn grow(self: *Marker) void {
+        if (self.work.len == 0) return;
+        const len = std.math.mul(usize, self.work.len, 2) catch return;
+        const bigger = self.heap.backing.realloc(self.work, len) catch return;
+        self.work = bigger;
+        self.heap.work = bigger;
+    }
+
     fn finish(self: *Marker) void {
         self.drain();
         while (self.lost) {
             self.lost = false;
+            self.heap.rescans += 1;
             var it = self.heap.objects;
             while (it) |header| : (it = header.next) {
                 if (header.marked) self.scan(header);
@@ -1325,11 +1652,23 @@ test "a collection keeps a record, its type and its fields, and frees them all o
     }
 }
 
-test "deinit frees every object, frames and their slots included" {
+/// The code of a procedure that returns `datum`, made in `heap`: a lambda whose
+/// body is a sequence of two nodes, `datum` twice.
+/// 節点はヒープにあり(ADR-0040)、クロージャと継続のフレームが指す先として、テストが使う。
+fn testLambda(heap: *Heap, datum: Value) !*Lambda {
+    const body = try heap.create(Node, .{ .constant = .unspecified_value });
+    const list = try heap.allocAttached(*const Node, 2);
+    body.* = .{ .sequence = list };
+    for (list) |*n| n.* = try heap.create(Node, .{ .constant = datum });
+    return heap.create(Lambda, .{ .arity = 0, .frame_size = 0, .body = body });
+}
+
+test "deinit frees every object, frames and their slots and the lists of nodes included" {
     var heap: Heap = .init(std.testing.allocator, .{});
     const frame = try heap.createFrame(5, null);
-    _ = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
-    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = &.{} } });
+    const lambda = try testLambda(&heap, .fromFixnum(1));
+    _ = try heap.create(Closure, .{ .lambda = lambda, .env = frame });
+    _ = try heap.create(Kont, .{ .next = null, .env = frame, .depth = 1, .step = .{ .sequence = .{ .node = lambda.body, .next = 1 } } });
     _ = try heap.cons(.empty_list_value, .empty_list_value);
     heap.deinit();
     try std.testing.expectEqual(0, heap.accounted);
@@ -1369,22 +1708,85 @@ test "what a root reaches through pairs, closures, frames and continuations surv
     const deep = try heap.cons(.fromFixnum(7), .empty_list_value);
     const frame = try heap.createFrame(2, null);
     frame.values[0] = deep;
-    const closure = try heap.create(Closure, .{ .lambda = undefined, .env = frame });
+    // クロージャのコードは、ヒープの節点を通して、データ(`code_datum`)を指す。
+    const code_datum = try heap.cons(.fromFixnum(8), .empty_list_value);
+    const lambda = try testLambda(&heap, code_datum);
+    const closure = try heap.create(Closure, .{ .lambda = lambda, .env = frame });
     const arg = try heap.create(Args, .{ .value = .{ .closure = closure }, .next = null });
-    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = &.{} } });
-    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = undefined, .args = arg, .received = 1 } } });
+    const outer = try heap.create(Kont, .{ .next = null, .env = null, .depth = 1, .step = .{ .sequence = .{ .node = lambda.body, .next = 1 } } });
+    // 呼び出しの節点は、オペランドの列を持つ。演算子とオペランドは、本体の2つの節点である。
+    const call = try heap.create(Node, .{ .constant = .unspecified_value });
+    const operands = try heap.allocAttached(*const Node, 1);
+    call.* = .{ .call = .{ .operator = lambda.body.sequence[0], .operands = operands } };
+    operands[0] = lambda.body.sequence[1];
+    const top = try heap.create(Kont, .{ .next = outer, .env = frame, .depth = 2, .step = .{ .call = .{ .call = call, .args = arg, .received = 1 } } });
     _ = try heap.cons(.fromFixnum(0), .empty_list_value);
     const garbage_frame = try heap.createFrame(100, null);
     _ = garbage_frame;
+    _ = try testLambda(&heap, .fromFixnum(9));
     const before = heap.count;
-    // ルートは継続だけで、残りはそこからたどって到達する。
+    // ルートは継続だけで、残りはそこからたどって到達する。ごみは、ペア、フレーム、使われない
+    // コード(lambda、本体、2つの節点)の6つである。
     heap.collect(TestRoots{ .kont = top });
-    try std.testing.expectEqual(before - 2, heap.count);
+    try std.testing.expectEqual(before - 6, heap.count);
     try std.testing.expectEqual(7, frame.values[0].asPair().?.car.asFixnum().?);
     try std.testing.expectEqual(frame, closure.env.?);
     try std.testing.expectEqual(arg, top.step.call.args.?);
-    try std.testing.expectEqual(cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
-        cellBytes(Args) + 2 * cellBytes(Kont), heap.accounted);
+    try std.testing.expectEqual(8, closure.lambda.body.sequence[0].constant.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(2 * cellBytes(Pair) + cellBytes(Frame) + 2 * @sizeOf(Value) + cellBytes(Closure) +
+        cellBytes(Args) + 2 * cellBytes(Kont) + cellBytes(Lambda) + 4 * cellBytes(Node) + 3 * @sizeOf(*const Node), heap.accounted);
+}
+
+test "a node gives back the list it holds when it is collected, and a list no node came to hold can be given back" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const lambda = try testLambda(&heap, .fromFixnum(1));
+    _ = lambda;
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node), heap.accounted);
+    const bindings = try heap.allocAttached(ParameterBinding, 3);
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node) + 3 * @sizeOf(ParameterBinding), heap.accounted);
+    heap.freeDetached(ParameterBinding, bindings);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+    // `parameterize` の節点は、束縛の列を持ち、回収されるときに列ごと計上から外れる。
+    const body = try testLambda(&heap, .fromFixnum(2));
+    const held_bindings = try heap.allocAttached(ParameterBinding, 2);
+    _ = try heap.create(Parameterize, .{ .bindings = held_bindings, .body = body });
+    for (held_bindings) |*b| b.* = .{ .param = body.body, .value = body.body };
+    try std.testing.expectEqual(cellBytes(Lambda) + 3 * cellBytes(Node) + 2 * @sizeOf(*const Node) +
+        cellBytes(Parameterize) + 2 * @sizeOf(ParameterBinding), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+    // 呼び出しの節点も、オペランドの列ごと計上から外れる。
+    const operator = try heap.create(Node, .{ .constant = .fromFixnum(3) });
+    const call = try heap.create(Node, .{ .constant = .unspecified_value });
+    const operands = try heap.allocAttached(*const Node, 4);
+    call.* = .{ .call = .{ .operator = operator, .operands = operands } };
+    for (operands) |*o| o.* = operator;
+    try std.testing.expectEqual(2 * cellBytes(Node) + 4 * @sizeOf(*const Node), heap.accounted);
+    heap.collect(TestRoots{});
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a list for a node is counted against the limit, and the peak follows it" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1024 });
+    defer heap.deinit();
+    // 上限を超える長さは、確保せずに `HeapLimit` で断り、計上を変えない。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, 1024));
+    try std.testing.expectEqual(0, heap.accounted);
+    // バイト数の計算が桁あふれする長さも、同じく断る。この長さは、あふれを回り込ませると
+    // 8バイトになり、上限の内に収まって見える。
+    try std.testing.expectError(error.HeapLimit, heap.allocAttached(*const Node, std.math.maxInt(usize) / @sizeOf(*const Node) + 2));
+    try std.testing.expectEqual(0, heap.accounted);
+    const list = try heap.allocAttached(ParameterBinding, 2);
+    try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.accounted);
+    try std.testing.expectEqual(heap.accounted, heap.peak);
+    heap.freeDetached(ParameterBinding, list);
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(2 * @sizeOf(ParameterBinding), heap.peak);
 }
 
 test "an unreachable frame takes its slots off the account with it" {
@@ -1506,6 +1908,76 @@ test "when the marking list cannot be allocated the marking rescans and still fi
     heap.backing = std.testing.allocator;
     try std.testing.expectEqual(0, heap.work.len);
     try std.testing.expectEqual(2, heap.count);
+}
+
+/// Makes a spine of `n` pairs, each holding a leaf pair, whose links all run to
+/// newer pairs, and returns its head.
+/// 背骨のペアを先に作ってから葉と次の背骨をつなぐので、すべての参照が新しいペアへ
+/// 向く。再走査の1回は新しい順にしか進まないので、リストがあふれると、再走査の回数が
+/// 背骨の長さに比例する。
+fn spineToNewer(heap: *Heap, comptime n: usize) !Value {
+    var spine: [n]Value = undefined;
+    for (&spine) |*s| s.* = try heap.cons(.empty_list_value, .empty_list_value);
+    for (spine, 0..) |s, i| {
+        s.asPair().?.car = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+        if (i + 1 < n) s.asPair().?.cdr = spine[i + 1];
+    }
+    return spine[0];
+}
+
+/// Makes a frame of 16 slots: the first holds `head`, and each other a pair of its own.
+/// 走査すると16個を一度に積むので、容量1のリストは何度か伸びなければ収まらない。
+fn wideFrame(heap: *Heap, head: Value) !*Frame {
+    const frame = try heap.createFrame(16, null);
+    frame.values[0] = head;
+    for (frame.values[1..], 1..) |*v, i| v.* = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+    return frame;
+}
+
+test "the marking list grows when it fills, so a spine to newer objects needs no rescan, and goes back to its size" {
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    const frame = try wideFrame(&heap, try spineToNewer(&heap, 50));
+    heap.collect(TestRoots{ .frame = frame });
+    try std.testing.expectEqual(1 + 15 + 100, heap.count);
+    try std.testing.expectEqual(0, heap.rescans);
+    try std.testing.expectEqual(1, heap.work.len);
+}
+
+test "when the marking list cannot grow the marking rescans, as many times as the spine is long, and still finishes" {
+    // 最初のリストの確保は通し、伸ばすための確保(その場の伸長と、新しい確保)を失敗させる。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    const frame = try wideFrame(&heap, try spineToNewer(&heap, 50));
+    heap.backing = failing.allocator();
+    heap.collect(TestRoots{ .frame = frame });
+    heap.backing = std.testing.allocator;
+    try std.testing.expectEqual(1 + 15 + 100, heap.count);
+    try std.testing.expect(heap.rescans >= 40);
+    try std.testing.expectEqual(1, heap.work.len);
+}
+
+test "an object a rescan puts on the list is scanned before the rescan ends" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1, .resize_fail_index = 0 });
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 1 });
+    defer heap.deinit();
+    // `y` が最も古く、`z`、`w` の順に新しい。`r` の走査で `y` があふれ、再走査が `y` から
+    // `z` をリストに積む。`w` は `z` の走査でしか届かず、`y` より新しいので、再走査は
+    // 新しい順に進むから、もう過ぎている。再走査の後でリストを空にしなければ、`w` は
+    // マークされない。
+    const y = try heap.cons(.empty_list_value, .empty_list_value);
+    const z = try heap.cons(.empty_list_value, .empty_list_value);
+    const w = try heap.cons(.fromFixnum(4), .empty_list_value);
+    y.asPair().?.car = z;
+    z.asPair().?.car = w;
+    const x = try heap.cons(.fromFixnum(1), .empty_list_value);
+    const r = try heap.cons(x, y);
+    heap.backing = failing.allocator();
+    heap.collect(TestRoots{ .values = &.{r} });
+    heap.backing = std.testing.allocator;
+    try std.testing.expectEqual(5, heap.count);
+    try std.testing.expectEqual(4, w.asPair().?.car.asFixnum().?);
 }
 
 test "in stress mode every safe point of a short run collects, and the gap grows as the run goes on" {
@@ -1965,4 +2437,78 @@ test "createBytevectorFilled reserves the bytes before it fills them, and accoun
     try std.testing.expectEqual(cellBytes(Bytevector) + 2, heap.accounted);
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.accounted);
+}
+
+test "a bignum accounts for its limbs as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]Limb{ 7, 1 };
+    const b = try heap.createBignum(.{ .limbs = &source, .positive = false });
+    source[0] = 9;
+    try std.testing.expectEqualSlices(Limb, &.{ 7, 1 }, b.limbs);
+    try std.testing.expect(!b.positive);
+    try std.testing.expectEqual(cellBytes(Bignum) + 2 * @sizeOf(Limb), heap.accounted);
+}
+
+test "a collection keeps a bignum a ratnum or a compnum reaches, and frees it with its limbs once nothing does" {
+    for ([_]usize{ 0, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const limbs = [_]Limb{ 7, 1 };
+        const b = try heap.createBignum(.{ .limbs = &limbs, .positive = true });
+        const big = cellBytes(Bignum) + 2 * @sizeOf(Limb);
+        const r = try heap.create(Ratnum, .{ .numerator = .fromBignum(b), .denominator = .fromFixnum(3) });
+        heap.collect(TestRoots{ .values = &.{.fromRatnum(r)} });
+        try std.testing.expectEqual(2, heap.count);
+        try std.testing.expectEqual(cellBytes(Ratnum) + big, heap.accounted);
+        try std.testing.expectEqualSlices(Limb, &limbs, b.limbs);
+        // 実部でも虚部でも、たどる。
+        for ([_]bool{ false, true }) |in_imag| {
+            const part: Value = .fromBignum(b);
+            const c = try heap.create(Compnum, if (in_imag)
+                .{ .real = .fromFixnum(0), .imag = part }
+            else
+                .{ .real = part, .imag = .fromFlonum(1.0) });
+            heap.collect(TestRoots{ .values = &.{.fromCompnum(c)} });
+            try std.testing.expectEqual(2, heap.count);
+            try std.testing.expectEqual(cellBytes(Compnum) + big, heap.accounted);
+        }
+        // 何からも届かなければ、限界値列ごと計上から外れる。
+        heap.collect(TestRoots{});
+        try std.testing.expectEqual(0, heap.count);
+        try std.testing.expectEqual(0, heap.accounted);
+    }
+}
+
+test "a bignum is held to the limit by its limbs, and a failure leaves the account as it was" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Bignum) + 2 * @sizeOf(Limb) });
+    defer heap.deinit();
+    const three = [_]Limb{ 1, 2, 3 };
+    try std.testing.expectError(error.HeapLimit, heap.createBignum(.{ .limbs = &three, .positive = true }));
+    try std.testing.expectEqual(0, heap.accounted);
+    _ = try heap.createBignum(.{ .limbs = three[0..2], .positive = true });
+    try std.testing.expectEqual(cellBytes(Bignum) + 2 * @sizeOf(Limb), heap.accounted);
+}
+
+test "create refuses exactly the heap types that own a payload" {
+    // 期待する集合は `ownsPayload` から導かず、手で挙げる。導くと、一覧の漏れを検出できない。
+    const with_payload = [_]type{ Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum };
+    inline for (object_types) |T| {
+        const expected = comptime for (with_payload) |U| {
+            if (U == T) break true;
+        } else false;
+        try std.testing.expectEqual(expected, comptime ownsPayload(T));
+    }
+}
+
+test "when the cell cannot be allocated the limbs of a bignum are given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    // 1回目の確保は限界値列、2回目はセルで、これが失敗する。
+    const limbs = [_]Limb{ 1, 2 };
+    try std.testing.expectError(error.OutOfMemory, heap.createBignum(.{ .limbs = &limbs, .positive = true }));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(1, failing.deallocations);
 }

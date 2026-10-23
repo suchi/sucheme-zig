@@ -21,6 +21,7 @@ pub const version = build_options.version;
 pub const heap = @import("heap.zig");
 
 const reader = @import("reader.zig");
+const positions_mod = @import("positions.zig");
 
 /// Whether `source` ends inside a datum that more input could finish.
 ///
@@ -36,6 +37,13 @@ const context = @import("context.zig");
 const printer = @import("printer.zig");
 const value = @import("value.zig");
 const tier = @import("tier.zig");
+// Why: 4c の純粋な層は、まだ呼び手が無い。単体テストの集合に載せるためだけの参照で、
+// 4e が number.zig から呼ぶようになったら、この行は要らなくなる。
+const bigint = @import("num/bigint.zig");
+// Why: 4b の flonum.zig も同じ。4e が number.zig から呼ぶまでの、単体テストの集合に載せる参照。
+const flonum = @import("num/flonum.zig");
+// Why: 4e-1 の exact.zig も同じ。number.zig が呼ぶまでの、単体テストの集合に載せる参照。
+const exact = @import("num/exact.zig");
 const embedded_lib = @import("embedded_lib");
 
 /// The files under `lib/`, which every interpreter searches before the files beneath
@@ -59,11 +67,13 @@ pub const Error = reader.Error || expand.Error || machine.Error || printer.Error
 
 /// One interpreter: what outlives a single line of input.
 ///
-/// リーダが作るデータとプログラムが実行中に作るものは GC ヒープにあり、そのヒープは
-/// `gpa` が供給し、オプションが上限を定める。シンボルテーブル、グローバル環境、
-/// コードは、インタプリタ専用のアリーナにある。これは docs/design/architecture.md
-/// が例外として記録している。コンテキストはアリーナの中を指すので、インタプリタは
-/// その場で初期化し、あとでコピーしない。
+/// リーダが作るデータ、展開器が作るコード、プログラムが実行中に作るものは GC ヒープに
+/// あり、そのヒープは `gpa` が供給し、オプションが上限を定める。シンボルテーブルは、
+/// ヒープが `gpa` から確保する。大域環境とライブラリの表は、`gpa` から確保して上限に
+/// 数える(`Context.resident`)。
+/// インタプリタ専用のアリーナにあるのは、`(sucheme core)` の表(`Context.core`)である。
+/// コンテキストはアリーナの中を指すので、インタプリタはその場で初期化し、あとで
+/// コピーしない。
 pub const Interpreter = struct {
     arena: std.heap.ArenaAllocator,
     ctx: context.Context,
@@ -75,6 +85,16 @@ pub const Interpreter = struct {
     /// What `diagnostic` returns: the contents of `diagnostic_buffer`, or a fixed
     /// text when the buffer could not hold the description.
     diagnostic_text: []const u8,
+    /// The name of the file the input of `evalPrint` is read from, or null for the
+    /// lines of the REPL and of WASM.
+    /// 名前があれば、展開時のエラーの説明に、その形式を読んだ位置を前置する。文字列は
+    /// 呼び出し側が持つ。
+    file_name: ?[]const u8,
+    /// Where in a file the error the last `evalPrint` returned was raised, if
+    /// it is known.
+    error_at: ?ErrorAt,
+
+    const ErrorAt = struct { file: []const u8, location: positions_mod.Location };
 
     pub fn init(self: *Interpreter, gpa: std.mem.Allocator) error{OutOfMemory}!void {
         return self.initWithOptions(gpa, .{});
@@ -130,6 +150,8 @@ pub const Interpreter = struct {
         self.ctx.embedded = embedded;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
+        self.file_name = null;
+        self.error_at = null;
     }
 
     /// Replaces the top level that imports `(sucheme core)` with one that imports
@@ -167,13 +189,13 @@ pub const Interpreter = struct {
     ///
     /// 最初のエラーで止まる。それより前に書いた結果は書かれたままで、エラーは
     /// `diagnostic` が説明する。この呼び出しが実行中にだけ要るものは `arena` から
-    /// 取り、呼び出し側が丸ごと解放する。リーダが作るデータはヒープにあり、何かが
-    /// 参照している間は生きる。シンボルとコードはインタプリタ専用のアリーナに確保し、
-    /// `deinit` まで生きる。
+    /// 取り、呼び出し側が丸ごと解放する。リーダが作るデータと展開器が作るコードは
+    /// ヒープにあり、何かが参照している間は生きる。
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         // 前の行が送出した値は、ここで手放す。この行の GC が回収する。
         self.ctx.clearDiagnostic();
         self.diagnostic_text = "";
+        self.error_at = null;
         self.run(arena, source, out) catch |e| {
             self.keepDiagnostic(arena, e);
             return e;
@@ -195,12 +217,21 @@ pub const Interpreter = struct {
     fn keepDiagnostic(self: *Interpreter, scratch: std.mem.Allocator, e: Error) void {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
-        const written = if (self.ctx.raised) |v|
-            describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v)
-        else
-            w.writer.writeAll(describe(e));
+        const written = if (self.ctx.raised) |v| blk: {
+            if (self.error_at) |at| w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column }) catch |failed| break :blk failed;
+            break :blk describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v);
+        } else w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
         self.diagnostic_text = if (written) |_| self.diagnostic_buffer.items else |_| "out of memory";
+    }
+
+    /// Sets the most steps one top-level form may take, or null for no limit.
+    ///
+    /// 上限に達した形式は、`evalPrint` が `error.StepLimit` を返して終わる。ハンドラでは
+    /// 捕まえられない。準拠スイートの実行器が、止まらないテストを打ち切るために使う
+    /// (計画書 0024)。既定は上限なしである。
+    pub fn setStepLimit(self: *Interpreter, limit: ?u64) void {
+        self.ctx.step_limit = limit;
     }
 
     /// Whether `identifier` is bound: a global binding, or a special form.
@@ -220,9 +251,17 @@ pub const Interpreter = struct {
         // 使い、不正になりうる形を並べたりしない(docs/design/platform-and-web.md)。
         if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
         var r: reader.Reader = .init(source);
+        // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
+        // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
+        var table: positions_mod.Table = .init(arena);
+        self.ctx.positions = &table;
+        defer self.ctx.positions = null;
+        const recording: ?reader.Sink.Recording = if (self.file_name) |file| .{ .table = &table, .file = try table.addFile(file) } else null;
         // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
-        const sink: reader.Sink = .{ .heap = &self.ctx.heap };
+        const sink: reader.Sink = .{ .heap = &self.ctx.heap, .positions = recording };
         while (true) {
+            // 前の形式の位置は、もう引かない。鍵のペアを、ルートとして持ち続けないためでもある。
+            table.by_pair.clearRetainingCapacity();
             // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
             // このためここもセーフポイントである。エラーで終わった行のゴミも、
             // 次の行を読む前にここで回収される。
@@ -230,13 +269,17 @@ pub const Interpreter = struct {
             const form = try r.next(arena, sink) orelse break;
             // `import` と `define-library` は最上位の形式で、何も表示しない。
             if (library.topLevelForm(&self.ctx, form)) |kind| {
-                switch (kind) {
-                    .import => try library.importIntoRepl(&self.ctx, arena, form),
-                    .define_library => try library.defineLibrary(&self.ctx, arena, form),
-                }
+                // 表と作業領域は上限に数える(ADR-0040)。断られた確保は `OutOfMemory` に見えるので、
+                // 上限の超過に変える。
+                self.ctx.heap.external_refused = false;
+                const done = switch (kind) {
+                    .import => library.importIntoRepl(&self.ctx, arena, form),
+                    .define_library => library.defineLibrary(&self.ctx, arena, form),
+                };
+                done catch |e| return self.located(self.ctx.limitFailure(e), &table, form);
                 continue;
             }
-            const node = try expand.expand(&self.ctx, arena, form);
+            const node = expand.expand(&self.ctx, arena, form) catch |e| return self.located(e, &table, form);
             var m: machine.Machine = .init(&self.ctx, arena);
             const v = try m.run(node);
             // 最上位の REPL は、複数値を受け取る(docs/design/runtime.md の複数値の表)。
@@ -245,6 +288,17 @@ pub const Interpreter = struct {
                 for (multiple.items) |item| try self.printResult(out, arena, item);
             } else try self.printResult(out, arena, v);
         }
+    }
+
+    /// `e`, the error that processing the top-level form `form` failed with, after
+    /// keeping where it was raised for `diagnostic`.
+    /// 展開器がより内側の形式の位置を記録していなければ、最上位の形式の位置にする。ライブラリの
+    /// 宣言の誤りなど、展開器の外で送出したものは、こちらになる。
+    fn located(self: *Interpreter, e: Error, table: *const positions_mod.Table, form: value.Value) Error {
+        if (e != error.Raised) return e;
+        self.ctx.noteRaisedAt(table.of(form));
+        if (self.ctx.raisedPosition()) |p| self.error_at = .{ .file = table.fileName(p.file), .location = p.location };
+        return e;
     }
 
     /// Writes `v`, a result of a form, and a newline, unless it is the
@@ -334,23 +388,33 @@ fn describe(e: Error) []const u8 {
         error.Incomplete,
         error.UnexpectedCloseParen,
         error.MissingDatum,
+        error.MissingCommentedDatum,
         error.UnexpectedDot,
         error.InvalidEscape,
+        error.InvalidSymbolEscape,
         error.InvalidCharacter,
         error.InvalidUtf8,
         error.InvalidToken,
         error.IntegerOutOfRange,
         error.InvalidByte,
+        error.UndefinedLabel,
+        error.DuplicateLabel,
+        error.MissingLabeledDatum,
+        error.CircularCode,
         => |syntax| reader.describe(syntax),
         error.OutOfMemory => "out of memory",
         // 予約も尽きて条件を作れなかったときも、上限に達したことを伝える。
         error.HeapLimit, error.ReserveExhausted => context.heap_limit_message,
+        error.StepLimit => "step limit exceeded",
         else => @errorName(e),
     };
 }
 
 test {
     std.testing.refAllDecls(@This());
+    _ = bigint;
+    _ = flonum;
+    _ = exact;
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {
@@ -460,8 +524,9 @@ test "a closure that a failed library handed to a live library keeps reaching it
         // (t b) は、自分のセル x を指すクロージャを (t a) に渡してから失敗する。
         try expectLineFails(&interp, "(define-library (t b) (export) (import (sucheme core) (t a)) (begin (define x (list 42)) (register! (lambda () (car x))) (car 5)))", "wrong type of argument to car 5");
         try expectLinePrints(&interp, "(import (t a))", "");
-        // Why: 失敗した (t b) の表を手放すと、x のセルは、どこからも指されない。GC はコードを
-        // たどらないので、回収されて、次の行が解放済みの値を読む。
+        // Why: x のセルを指すのは、失敗した (t b) の表と、(t a) が持つクロージャのコードである。
+        // どちらかがセルを持ち続けなければ、回収されて、次の行が解放済みの値を読む(スライス
+        // 3o-3 から、コードは GC ヒープにあり、クロージャのコードからセルが辿られる)。
         interp.ctx.collectIdle();
         interp.ctx.collectIdle();
         try expectLinePrints(&interp, "(run-all)", "42\n");
@@ -700,6 +765,26 @@ test "a name that only a pending export of an included declaration file holds su
     }
 }
 
+test "a pending export name survives a library that the declarations load on the way" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        // 宣言の途中で、別のライブラリをファイルから読み込む。その定義が終わっても、外側の
+        // ライブラリの保留の名前は残っていなければならない。
+        try tree.write("t/lib.sld", "(define-library (t lib) (include-library-declarations \"decls.scm\") (import (t other)) (begin (define (f) (g))) (include \"body.scm\"))");
+        try tree.write("t/decls.scm", "(export (rename f exported-name)) (import (sucheme core))");
+        try tree.write("t/other.sld", "(define-library (t other) (export g) (import (sucheme core)) (begin (define (g) 1)))");
+        try tree.write("t/body.scm", "(define y1 1) (define y2 2) (define y3 3) (define y4 4)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t lib)) (exported-name)", "1\n");
+        // 定義が終われば、保留の名前は残らない。
+        try std.testing.expectEqual(0, interp.ctx.libraries.pending_names.items.len);
+    }
+}
+
 test "the internal name of an export that nothing defines is still the name when the body ends" {
     for ([_]bool{ false, true }) |stress| {
         var tree: resolve.Tree = undefined;
@@ -712,6 +797,8 @@ test "the internal name of an export that nothing defines is still the name when
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
         try expectLineFails(&interp, "(import (t lib))", "unbound identifier in library (t lib): undefined-internal");
+        // 失敗した定義も、保留の名前を残さない。
+        try std.testing.expectEqual(0, interp.ctx.libraries.pending_names.items.len);
     }
 }
 
@@ -756,6 +843,53 @@ test "the symbols a program holds survive the collections, whatever holds them" 
     }
 }
 
+test "a library whose definition fails gives back everything its table took" {
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    // 参照してからインポートした `car` は、値の無いまま置き換えたセルとして表が持ち、本体の
+    // 終わりに未束縛として報告される。その失敗で、表は束縛も2つのリストも返す。
+    try expectLineFails(&interp, "(define-library (t a) (export f) (import (only (sucheme core) define)) (begin (define (f) (car 1))) (import (only (sucheme core) car)))", "unbound identifier in library (t a): car");
+    const tables = interp.ctx.libraries.tables.items;
+    const table = tables[tables.len - 1];
+    try std.testing.expectEqual(0, table.bindings.count());
+    try std.testing.expectEqual(0, table.bindings.capacity());
+    try std.testing.expectEqual(0, table.displaced_unbound.capacity);
+    try std.testing.expectEqual(0, table.replaced.capacity);
+}
+
+test "a variable that a define-syntax replaced is still there for the code made before" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define (g) (cons 'old-g 1)) (define (h) (g))", "");
+        // `g` の表の束縛はマクロになる。前に展開した `h` のコードは、元のセルを指し続ける
+        // (R7RS 5.4)。セルを持つのは、そのコードだけである。
+        try expectLinePrints(&interp, "(define-syntax g (syntax-rules () ((_) 'macro)))", "");
+        try churnSymbols(&interp);
+        try expectLinePrints(&interp, "(h) (g)", "(old-g . 1)\nmacro\n");
+    }
+}
+
+test "a circular constant of the code is marked once, survives the collections, and goes with the code" {
+    for ([_]bool{ false, true }) |stress| {
+        for ([_]usize{ 4096, 1, 0 }) |capacity| {
+            var interp: Interpreter = undefined;
+            try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress, .work_capacity = capacity });
+            defer interp.deinit();
+            // 定数の循環するリスト(R7RS 2.4)は、コードの節点だけが持つ。マークは印で循環を止める。
+            try expectLinePrints(&interp, "(define (f) '#0=(1 circular-only . #0#))", "");
+            try churnSymbols(&interp);
+            try expectLinePrints(&interp, "(car (cdr (cdr (cdr (f))))) (eq? (f) (cdr (cdr (f))))", "circular-only\n#t\n");
+            // 手続きを置き換えると、循環するリストを持つものは無くなり、名前ごと回収される。
+            try expectLinePrints(&interp, "(set! f #f)", "");
+            interp.ctx.collectIdle();
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("circular-only") == null);
+        }
+    }
+}
+
 test "a symbol made from a string stays the symbol of its name at every work list capacity" {
     for ([_]bool{ false, true }) |stress| {
         for ([_]usize{ 4096, 1, 0 }) |capacity| {
@@ -769,10 +903,11 @@ test "a symbol made from a string stays the symbol of its name at every work lis
             try churnSymbols(&interp);
             try expectLinePrints(&interp, "(eq? 'abc (string->symbol \"abc\")) (symbol->string z) (eq? z (vector-ref v 0))", "#t\n\"only-by-string\"\n#t\n");
             try expectLinePrints(&interp, "(eq? z (string->symbol \"only-by-string\")) (eq? z 'only-by-string)", "#t\n#t\n");
-            // 値を手放しても、コードの定数 `'only-by-string` が名前を持つので、残る。
+            // 値を手放すと、名前を持つのは、走り終えた行のコードの定数 `'only-by-string` だけになる。
+            // コードは GC ヒープにあり、届くものが無いので、名前ごと回収される(ADR-0040)。
             try expectLinePrints(&interp, "(set! z #f) (set! v #f)", "");
             interp.ctx.collectIdle();
-            try std.testing.expect(interp.ctx.heap.symbols.lookup("only-by-string") != null);
+            try std.testing.expect(interp.ctx.heap.symbols.lookup("only-by-string") == null);
         }
     }
 }
@@ -784,9 +919,10 @@ test "a symbol that is not held is reclaimed, with the memory its name took" {
     const before = interp.ctx.heap.held();
     try expectLinePrints(&interp, "(quote some-name-nothing-keeps)", "some-name-nothing-keeps\n");
     try std.testing.expect(interp.ctx.heap.held() > before);
-    // 定数は、コードを作った行のあとも、コンテキストが持つ(`code_roots`)。
+    // 定数を持つのは、その行のコードだけである。行が終わればコードに届くものは無く、
+    // 定数の名前も回収される(ADR-0040)。
     interp.ctx.collectIdle();
-    try std.testing.expect(interp.ctx.heap.symbols.lookup("some-name-nothing-keeps") != null);
+    try std.testing.expect(interp.ctx.heap.symbols.lookup("some-name-nothing-keeps") == null);
     // 読まれただけで、何にも使われない名前は、回収される。展開に失敗した形式の名前が、その例である。
     try expectLineFails(&interp, "(if read-only-name)", "bad if: expected (if test consequent) or (if test consequent alternative)");
     try std.testing.expect(interp.ctx.heap.symbols.lookup("read-only-name") != null);
@@ -807,11 +943,12 @@ test "a file that includes itself, or is included by a file it includes, is refu
     var interp: Interpreter = undefined;
     try initOnTree(&interp, &tree, false);
     defer interp.deinit();
-    try expectLineFails(&interp, "(include \"self.scm\")", "bad include: self.scm includes itself, directly or through other files");
-    try expectLineFails(&interp, "(include \"a.scm\")", "bad include: ./a.scm includes itself, directly or through other files");
+    // 含んだファイルの中の誤りは、REPL の行でも、そのファイルの中の位置を前置する。
+    try expectLineFailsInTree(&interp, &tree, "(include \"self.scm\")", "self.scm:1:1", "bad include: self.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "(include \"a.scm\")", "b.scm:1:14", "bad include: ./a.scm includes itself, directly or through other files");
     // ライブラリのファイル自身を含むことも、同じ鎖である。
     try expectLineFails(&interp, "(import (t lib))", "bad include: lib.sld includes itself, directly or through other files");
-    try expectLineFails(&interp, "(import (t via))", "bad include: ../t/via.sld includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "(import (t via))", "t/loop.scm:1:1", "bad include: ../t/via.sld includes itself, directly or through other files");
     // 失敗のあとは、読んでいる最中のファイルが空に戻り、同じ名前をもう一度含める。
     try std.testing.expectEqual(0, interp.ctx.sources.items.len);
     try tree.write("self.scm", "(define fixed 1)");
@@ -840,7 +977,8 @@ test "the same file may be included twice, one after the other, but a chain of f
     defer interp.deinit();
     try expectLinePrints(&interp, "(include \"once.scm\" \"once.scm\") n", "1\n");
     var expected: [128]u8 = undefined;
-    try expectLineFails(&interp, "(include \"c0.scm\")", try std.fmt.bufPrint(&expected, "implementation restriction: files include one another more than {d} deep, at c{d}.scm", .{ max, max }));
+    var where: [32]u8 = undefined;
+    try expectLineFailsInTree(&interp, &tree, "(include \"c0.scm\")", try std.fmt.bufPrint(&where, "c{d}.scm:1:1", .{max - 1}), try std.fmt.bufPrint(&expected, "implementation restriction: files include one another more than {d} deep, at c{d}.scm", .{ max, max }));
     // 1つ短い鎖は読める。
     try tree.write(try std.fmt.bufPrint(&name_buf, "c{d}.scm", .{max - 1}), "(define end 1)");
     try expectLinePrints(&interp, "(include \"c0.scm\") end", "1\n");
@@ -1192,7 +1330,7 @@ test "include-ci refuses a file name and a file as include does, and says its ow
     try expectLineFails(&interp, "(include-ci \"../x.scm\")", "bad include-ci: ../x.scm: the file name goes up out of the directory the files are searched in");
     try expectLineFails(&interp, "(include-ci \"open.scm\")", "cannot include-ci open.scm: unexpected end of input");
     try expectLineFails(&interp, "(include-ci \"hash.scm\")", "cannot include-ci hash.scm: unreadable token");
-    try expectLineFails(&interp, "(include-ci \"self.scm\")", "bad include-ci: self.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "(include-ci \"self.scm\")", "self.scm:1:1", "bad include-ci: self.scm includes itself, directly or through other files");
     // ASCII でない文字の識別子は、畳み込む読み手も畳み込まない読み手も、まだ読めない。
     try expectLineFails(&interp, "(include-ci \"greek.scm\")", "cannot include-ci greek.scm: unreadable token");
     try expectLineFails(&interp, "(include \"greek.scm\")", "cannot include greek.scm: unreadable token");
@@ -1216,6 +1354,100 @@ test "the clause of a cond-expand that applies may include a file, in an express
     defer interp.deinit();
     try expectLinePrints(&interp, "(cond-expand ((and r7rs (not wasm)) (include \"native.scm\")) (else (include \"other.scm\"))) where", "native\n");
     try expectLinePrints(&interp, "(import (t lib)) w", "from-the-clause\n");
+}
+
+test "the definitions of a file an include reads at the start of a body are definitions of the body" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("defs.scm", "(define a 1) (define b 2)");
+        try tree.write("tail.scm", "(define c 3) (+ c 1)");
+        try tree.write("more.scm", "(define d (+ a b))");
+        try tree.write("empty.scm", "; nothing\n");
+        try tree.write("ci.scm", "(DEFINE (F) 7)");
+        try tree.write("late.scm", "(define e 5)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // 最初の失敗するテスト。
+        try expectLinePrints(&interp, "((lambda () (include \"defs.scm\") (+ a b)))", "3\n");
+        // ファイルの定義のあとの式は、本体の式である。
+        try expectLinePrints(&interp, "((lambda () (include \"tail.scm\")))", "4\n");
+        // 複数のファイルは書いた順に読まれ、前の定義と後の定義が同じ本体に並ぶ。
+        try expectLinePrints(&interp, "((lambda () (define z 0) (include \"defs.scm\" \"more.scm\") (list z d)))", "(0 3)\n");
+        try expectLinePrints(&interp, "((lambda () (include \"empty.scm\") (define y 1) y))", "1\n");
+        try expectLinePrints(&interp, "((lambda () (include-ci \"ci.scm\") (f)))", "7\n");
+        // 本体の局所変数なので、最上位には現れない。
+        try expectLineFails(&interp, "a", "unbound variable: a");
+        // cond-expand の節の include も、本体の定義になる。
+        try expectLinePrints(&interp, "((lambda () (cond-expand (r7rs (include \"defs.scm\"))) (+ a b)))", "3\n");
+        // 式の後ろの定義は、ファイルから来ても誤りである。
+        try expectLineFailsInTree(&interp, &tree, "((lambda () 0 (include \"late.scm\") e))", "late.scm:1:1", "bad define: a definition is only allowed at the top level or at the start of a body");
+        try expectLineFailsInTree(&interp, &tree, "((lambda () (define a 0) (include \"defs.scm\") a))", "defs.scm:1:1", "bad define: a is already defined earlier in this body");
+        // ファイルの中身が式だけでも、今までどおり値になる。
+        try tree.write("e.scm", "(+ n 1)");
+        try expectLinePrints(&interp, "((lambda (n) (include \"e.scm\")) 5)", "6\n");
+        try expectLinePrints(&interp, "(let-syntax () (include \"defs.scm\") (+ a b))", "3\n");
+    }
+}
+
+test "a file an include reads at the start of a body is the base of the names its forms include, then and later" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        // 本体を走査するあいだに読むファイル(`inner.scm`)と、走査のあとで定義の値を展開する
+        // ときに読むファイル(`val.scm`)の両方が、`sub/` を基準にする。
+        try tree.write("sub/outer.scm", "(include \"inner.scm\") (define (g) (include \"val.scm\")) (define c (+ i 1))");
+        try tree.write("sub/inner.scm", "(define i 1)");
+        try tree.write("sub/val.scm", "42");
+        try tree.write("val.scm", "'top");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "((lambda () (include \"sub/outer.scm\") (list c (g))))", "(2 42)\n");
+        // ファイルのあとの形式は、含んだ側の基準に戻る。
+        try expectLinePrints(&interp, "((lambda () (include \"sub/outer.scm\") (define (h) (include \"val.scm\")) (list (g) (h))))", "(42 top)\n");
+        // 定義の並びがファイルの途中で終わっても、残りの形式はファイルを基準にする。
+        try tree.write("sub/mid.scm", "(define j 1) (list j (include \"val.scm\"))");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\")))", "(1 42)\n");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/mid.scm\") (include \"val.scm\")))", "top\n");
+        // 走査がファイルを読み終えて続くと、次の include は含んだ側の基準に戻る。
+        try tree.write("sub/a.scm", "(define p 2)");
+        try tree.write("sub/b.scm", "'sub-b");
+        try tree.write("b.scm", "'top-b");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/a.scm\") (include \"b.scm\")))", "top-b\n");
+        // 名前が複数の include で、定義の並びが前のファイルで終わっても、まだ走査していない後ろの
+        // ファイルの形式は、そのファイルを基準にし、そのあとは含んだ側に戻る。
+        try tree.write("sub/t1.scm", "1");
+        try tree.write("sub/t2.scm", "(include \"b.scm\")");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/t1.scm\" \"sub/t2.scm\")))", "sub-b\n");
+        try expectLinePrints(&interp, "((lambda () (include \"sub/t1.scm\" \"sub/t2.scm\") (include \"b.scm\")))", "top-b\n");
+        try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+        try expectLinePrints(&interp, "(include \"sub/t1.scm\")", "1\n");
+        // 空のファイルだけを含む本体には、式が無い。
+        try tree.write("empty.scm", "; nothing\n");
+        try expectLineFails(&interp, "((lambda () (include \"empty.scm\")))", "bad lambda: a body needs an expression after its definitions");
+    }
+}
+
+test "an include at the start of a body refuses a file that includes itself, and says where in the file" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("loop.scm", "(define q 1) (include \"loop.scm\")");
+    try tree.write("bad.scm", "(define r 1) (define)");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLineFailsInTree(&interp, &tree, "((lambda () (include \"loop.scm\") q))", "loop.scm:1:14", "bad include: loop.scm includes itself, directly or through other files");
+    try expectLineFailsInTree(&interp, &tree, "((lambda () (include \"bad.scm\") r))", "bad.scm:1:14", "bad define: expected (define name expression)");
+    try expectLineFails(&interp, "((lambda () (include \"missing.scm\") 1))", "bad include: missing.scm: no such file");
+    // 失敗のあとは、読んでいる最中のファイルが空に戻る。
+    try std.testing.expectEqual(0, interp.ctx.sources.items.len);
+    try tree.write("loop.scm", "(define q 1)");
+    try expectLinePrints(&interp, "((lambda () (include \"loop.scm\") q))", "1\n");
 }
 
 test "features returns the identifiers of the build in the order of its list, as a new list each time" {
@@ -1424,6 +1656,78 @@ test "evalPrint stops at the first error and describes it" {
     try std.testing.expectEqualStrings("unbound variable: foo", interp.diagnostic());
 }
 
+test "an error the expander raises in a named file says where, at the innermost form read" {
+    // ストレスモードでは、形式の間の機械のステップごとに GC が走る。表の鍵のペアは、そのたびに
+    // ルートとして残る。
+    for ([_]bool{ false, true }) |stress| try expectPlacesOfErrors(stress);
+}
+
+fn expectPlacesOfErrors(stress: bool) !void {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{ .stress = stress });
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    const cases = [_]struct { line: []const u8, message: []const u8 }{
+        // 誤りのある形式そのものの位置。2つ目の形式は2行目にある。
+        .{ .line = "(define x 1)\n  (if)", .message = "prog.scm:2:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // 外側の形式でなく、内側の形式の位置。
+        .{ .line = "(define (f)\n  (lambda (x x) x))", .message = "prog.scm:2:3: bad lambda: duplicate parameter: x" },
+        // ペアでない形式は位置を持たないので、それを含む形式の位置。
+        .{ .line = "(define y\n   (car if))", .message = "prog.scm:2:4: if is a syntactic keyword and cannot be used as a variable" },
+        // マクロの出力は位置を持たないので、マクロを使った形式の位置。
+        .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(m)", .message = "prog.scm:2:1: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // マクロの引数として渡した形式は、読んだペアのままなので、その位置。
+        .{ .line = "(define-syntax n (syntax-rules () ((_ e) (list e))))\n(n\n (lambda))", .message = "prog.scm:3:2: bad lambda: expected (lambda (name ...) body ...)" },
+        // 本体の先頭の形式(定義と、定義かどうかを決めるマクロの使用)も、内側の形式の位置。
+        .{ .line = "(define (f)\n  (define))", .message = "prog.scm:2:3: bad define: expected (define name expression)" },
+        .{ .line = "(define (f)\n  (define a 1)\n  (define a 2) a)", .message = "prog.scm:3:3: bad define: a is already defined earlier in this body" },
+        .{ .line = "(define (f)\n  (begin\n   (define)) 1)", .message = "prog.scm:3:4: bad define: expected (define name expression)" },
+        .{ .line = "(define-syntax m (syntax-rules () ((_) (if))))\n(define (f)\n  (m))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        .{ .line = "(define-syntax b (syntax-rules () ((_) (begin (if)))))\n(define (f)\n  (b))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+        // 本体の先頭の cond-expand の節の中身も、begin と同じく、cond-expand の形式の位置。
+        .{ .line = "(define-syntax c (syntax-rules () ((_) (cond-expand (r7rs (if))))))\n(define (f)\n  (c))", .message = "prog.scm:3:3: bad if: expected (if test consequent) or (if test consequent alternative)" },
+    };
+    for (cases) |c| try expectLineFails(&interp, c.line, c.message);
+}
+
+test "a runtime error, a reader error and a line of the REPL say no place" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // 実行時の誤りは、節点が位置を持たないので、位置を付けない(docs/design/frontend.md)。
+    try expectLineFails(&interp, "(define x 1)\n(car x)", "wrong type of argument to car 1");
+    // ファイルの名前が無い入力(REPL と WASM の行)は、展開時の誤りにも位置を付けない。
+    interp.file_name = null;
+    try expectLineFails(&interp, "\n  (if)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+}
+
+test "an error raised outside the expander says the place of the top-level form" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // ライブラリの宣言の誤りは、展開器の外で送出するので、最上位の形式の位置になる。
+    try expectLineFails(&interp, "1\n (define-library (t a)\n (bogus))", "prog.scm:2:2: bad define-library: bogus is not a library declaration");
+}
+
+test "an expansion error in the file of a library, or in a file its declarations read, says the place in that file" {
+    for ([_]bool{ false, true }) |stress| {
+        var tree: resolve.Tree = undefined;
+        try tree.init(std.testing.allocator);
+        defer tree.deinit(std.testing.allocator);
+        try tree.write("t/e.sld", "(define-library (t e) (export) (import (sucheme core))\n (begin\n   (if)))");
+        try tree.write("t/i.sld", "(define-library (t i) (export) (import (sucheme core)) (include \"i-body.scm\"))");
+        try tree.write("t/i-body.scm", "(define x 1)\n\n  (lambda)");
+        var interp: Interpreter = undefined;
+        try initOnTree(&interp, &tree, stress);
+        defer interp.deinit();
+        // ファイルの名前が無い REPL の行から読み込んでも、ライブラリのファイルの位置が付く。
+        try expectLineFailsInTree(&interp, &tree, "(import (t e))", "t/e.sld:3:4", "bad if: expected (if test consequent) or (if test consequent alternative)");
+        try expectLineFailsInTree(&interp, &tree, "(import (t i))", "t/i-body.scm:3:3", "bad lambda: expected (lambda (name ...) body ...)");
+    }
+}
+
 test "evalPrint describes a reader error, and a later success clears the message" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1562,6 +1866,213 @@ test "a datum too large for the heap is refused with the same message" {
     try std.testing.expectEqualStrings("(1 2)\n", w.buffered());
 }
 
+/// The source of a library `(t big)` that exports `count` variables named `n0`,
+/// `n1`, and so on, in memory owned by `a`.
+fn bigLibrary(a: std.mem.Allocator, count: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    try out.writer.writeAll("(define-library (t big) (export");
+    for (0..count) |i| try out.writer.print(" n{d}", .{i});
+    try out.writer.writeAll(") (import (sucheme core)) (begin");
+    for (0..count) |i| try out.writer.print(" (define n{d} {d})", .{ i, i });
+    try out.writer.writeAll("))");
+    return out.toOwnedSlice();
+}
+
+test "the tables of the libraries count against the limit, and one that does not fit is the error heap limit exceeded" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, 200), &discard.writer);
+    // インポートしただけのライブラリも、名前の全部を自分の表に写す。その表が計上に入る。
+    const before = interp.ctx.heap.resident;
+    try interp.evalPrint(a, "(define-library (u 0) (export) (import (t big)))", &discard.writer);
+    try std.testing.expect(interp.ctx.heap.resident >= before + 200 * @sizeOf(@import("symbol.zig").SymbolId));
+    // 表は回収されないので、同じ定義を重ねると、いつか上限に収まらなくなる。
+    var failed = false;
+    for (1..1000) |i| {
+        const src = try std.fmt.allocPrint(a, "(define-library (u {d}) (export) (import (t big)))", .{i});
+        interp.evalPrint(a, src, &discard.writer) catch |e| {
+            try std.testing.expectEqual(error.Raised, e);
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            failed = true;
+            break;
+        };
+    }
+    // 表は生きているデータと同じで、回収されない。上限はほぼ埋まったままになり、以後の行は、
+    // 生きているデータで上限が埋まったときと同じく、上限の超過で終わる。
+    try std.testing.expect(failed);
+    try std.testing.expect(interp.ctx.heap.held() <= interp.ctx.heap.options.limit + interp.ctx.heap.options.raise_reserve);
+}
+
+test "the work of nested modifiers of an import counts against the limit" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, 200), &discard.writer);
+    // 段ごとに 200 個の名前を写すので、作業は段の数に比例して伸びる。上限は 512 KiB である。
+    var spec: std.Io.Writer.Allocating = .init(a);
+    try spec.writer.writeAll("(import ");
+    for (0..400) |_| try spec.writer.writeAll("(prefix ");
+    try spec.writer.writeAll("(t big)");
+    for (0..400) |_| try spec.writer.writeAll(" p)");
+    try spec.writer.writeAll(")");
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, spec.written(), &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    // 数えた作業は、行が終われば数えない。浅い入れ子は通る。
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+    try interp.evalPrint(a, "(import (prefix (prefix (t big) p) q))", &discard.writer);
+    var buf: [16]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(a, "qpn7", &w);
+    try std.testing.expectEqualStrings("7\n", w.buffered());
+}
+
+/// An import set of `(t big)` under `depth` nested `prefix` modifiers, in memory
+/// owned by `a`.
+fn deepPrefix(a: std.mem.Allocator, depth: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    for (0..depth) |_| try out.writer.writeAll("(prefix ");
+    try out.writer.writeAll("(t big)");
+    for (0..depth) |_| try out.writer.writeAll(" p)");
+    return out.toOwnedSlice();
+}
+
+/// The deepest nesting of `prefix` over `(t big)` that one import of one set can
+/// take under the limit of `interp`, found by trying deeper sets until one is
+/// refused.
+fn deepestPrefix(interp: *Interpreter, a: std.mem.Allocator) !usize {
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    var depth: usize = 8;
+    while (depth < 4096) : (depth += 8) {
+        const src = try std.fmt.allocPrint(a, "(import {s})", .{try deepPrefix(a, depth)});
+        interp.evalPrint(a, src, &discard.writer) catch {
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            return depth - 8;
+        };
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "the work of all the sets of one import counts against the limit until they are bound" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, 200), &discard.writer);
+    const depth = (try deepestPrefix(&interp, a)) / 4;
+    // 1つの集合の作業は上限の4分の1ほどで、1つなら通る。
+    const one = try deepPrefix(a, depth);
+    try interp.evalPrint(a, try std.fmt.allocPrint(a, "(import {s})", .{one}), &discard.writer);
+    // 同じ集合を8つ並べると、どの集合の作業も束縛し終えるまで残るので、上限に収まらない。
+    var many: std.Io.Writer.Allocating = .init(a);
+    try many.writer.writeAll("(import");
+    for (0..8) |_| try many.writer.print(" {s}", .{one});
+    try many.writer.writeAll(")");
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, many.written(), &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+}
+
+test "the imports of libraries that one import loads from their files count together" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/big.sld", try bigLibrary(a, 200));
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithFiles(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    defer interp.deinit();
+    const depth = (try deepestPrefix(&interp, a)) / 2;
+    // 4つのライブラリが、それぞれ上限の半分ほどの作業をする `import` を宣言する。1つの
+    // `import` がそれらを読み込むと、内側の作業は同じ1行の作業領域に残るので、外側に数え続ける。
+    for (1..5) |i| {
+        const path = try std.fmt.allocPrint(a, "t/a{d}.sld", .{i});
+        const src = try std.fmt.allocPrint(a, "(define-library (t a{d}) (export) (import {s}))", .{ i, try deepPrefix(a, depth) });
+        try tree.write(path, src);
+    }
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, "(import (t a1))", &discard.writer);
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, "(import (t a2) (t a3) (t a4))", &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try std.testing.expectEqual(0, interp.ctx.heap.external);
+}
+
+/// How many names the library of the test of a refused import exports.
+const prefixed_import_names = 500;
+
+test "an import the limit refuses part way through binding binds none of its names" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithOptions(std.testing.allocator, .{ .limit = 8 * 1024 * 1024 });
+    defer interp.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try interp.evalPrint(a, try bigLibrary(a, prefixed_import_names), &discard.writer);
+    // ライブラリを定義した後で、上限を、生きている量のすぐ上から少しずつ上げて、同じ
+    // `import` を試す。断られる場所は、はじめは集合の評価の途中で、上限が上がると束縛の途中
+    // (表を伸ばす確保)になり、最後に通る。どの回でも、REPL の最上位に新しい名前が1つも
+    // 残ってはならない。
+    // Why: 上限ごとにインタプリタを作り直してライブラリを定義すると、GC の閾値の効き方で
+    // 定義が通る上限が単調でなく、試す回数も多くなる。
+    var refused: usize = 0;
+    var room: usize = 0;
+    while (room < 1024 * 1024) : (room += 256) {
+        interp.ctx.collectIdle();
+        interp.ctx.heap.options.limit = interp.ctx.heap.held() + room;
+        interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
+            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            refused += 1;
+            for (0..prefixed_import_names) |i| {
+                const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
+                const id = interp.ctx.heap.symbols.lookup(prefixed) orelse continue;
+                try std.testing.expectEqual(null, interp.ctx.globals.lookup(id));
+            }
+            continue;
+        };
+        break;
+    }
+    try std.testing.expect(refused > 0);
+    try std.testing.expect(room < 1024 * 1024);
+}
+
+test "the work of nested modifiers counts against the limit when the library they modify is loaded from its file by the same import" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/big.sld", try bigLibrary(a, 200));
+    var interp: Interpreter = undefined;
+    try interp.initCoreWithFiles(std.testing.allocator, .{ .limit = 512 * 1024, .min_threshold = 16 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    defer interp.deinit();
+    // ライブラリのファイルの読み込みは、本体を展開して走らせる。展開が外側の計上と検査の状態を
+    // 戻さなければ、読み込みのあとの修飾子の作業は、検査されずに伸びる。
+    var spec: std.Io.Writer.Allocating = .init(a);
+    try spec.writer.writeAll("(import ");
+    for (0..400) |_| try spec.writer.writeAll("(prefix ");
+    try spec.writer.writeAll("(t big)");
+    for (0..400) |_| try spec.writer.writeAll(" p)");
+    try spec.writer.writeAll(")");
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    try std.testing.expectError(error.Raised, interp.evalPrint(a, spec.written(), &discard.writer));
+    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+}
+
 test "the data of a quoted list survives the collections between the lines that use it" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1604,6 +2115,13 @@ fn expectLineFails(interp: *Interpreter, line: []const u8, message: []const u8) 
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line, &w));
     try std.testing.expectEqualStrings(message, interp.diagnostic());
+}
+
+/// Evaluates `line` on `interp` and expects it to fail with `message`, raised
+/// in the file of `tree` at `where` (`<path>:<line>:<column>`).
+fn expectLineFailsInTree(interp: *Interpreter, tree: *const resolve.Tree, line: []const u8, where: []const u8, message: []const u8) !void {
+    var buf: [512]u8 = undefined;
+    try expectLineFails(interp, line, try std.fmt.bufPrint(&buf, "{s}/{s}: {s}", .{ tree.path, where, message }));
 }
 
 /// Evaluates `line` on `interp` and expects it to write `output`.
@@ -1943,4 +2461,154 @@ test "a macro that nests what it expands to ends at the limit of the heap" {
 test "slow: a macro that never stops ends at the limit of the default heap" {
     try tier.slow();
     try expectBoundedExpansion("(define-syntax f (syntax-rules () ((_) (f))))", "(f)", heap.default_limit);
+}
+
+test "a form that does not stop ends at the step limit, and the next form runs" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (loop))", &w));
+    try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
+    // 残りは形式ごとに戻るので、上限に達した次の形式も、上限いっぱいまで走れる。
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+    try std.testing.expectEqualStrings("", interp.diagnostic());
+}
+
+test "a handler does not catch the step limit" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 捕まえられる誤りにすると、(chibi test) の test のように誤りを捕まえて続ける式が止まらない。
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(guard (e (#t 'caught)) (let loop () (loop)))", &w));
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(with-exception-handler (lambda (e) 'caught) (lambda () (let loop () (loop))))", &w));
+    // 送出を捕まえるたびに続けるループも止まる。ハンドラへの受け渡しで残りを戻すと、ここが止まらない。
+    interp.setStepLimit(100000);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (guard (e (#t 0)) (car '())) (loop))", &w));
+    try std.testing.expectEqualStrings("", w.buffered());
+}
+
+test "the step limit ends a form without calling the after of a dynamic-wind" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define x 0)", &w);
+    interp.setStepLimit(1000);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(dynamic-wind (lambda () #f) (lambda () (let loop () (loop))) (lambda () (set! x 1)))", &w));
+    // 打ち切りは巻き戻しを通らない(ADR-0044)。
+    try interp.evalPrint(arena.allocator(), "x", &w);
+    try std.testing.expectEqualStrings("0\n", w.buffered());
+}
+
+test "the step limit lets a form take exactly that many steps" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // `(+ 1 2)` は、今の機械で 8 歩かかる(周回を数えて確かめた)。上限がその数なら通り、
+    // 1つ少なければ止まる。機械の周回の作りが変わってこの数が変われば、ここも直す。
+    const steps_for_sum = 8;
+    interp.setStepLimit(steps_for_sum);
+    try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
+    try std.testing.expectEqualStrings("3\n", w.buffered());
+    interp.setStepLimit(steps_for_sum - 1);
+    try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(+ 1 2)", &w));
+}
+
+test "with no step limit, a long loop runs to its end" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1))))", &w);
+    // 既定は上限なしである。`(count 1000)` は1回あたり 20 歩ほどで、下で外す上限の 1000 歩を
+    // 十分に超える。歩数に比例して時間がかかるので、大きい既定の上限まで見る 100 万回の版は
+    // 層2に置く。上限ちょうどの境目は "the step limit lets a form take exactly that many steps" が見る。
+    try interp.evalPrint(arena.allocator(), "(count 1000)", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
+    interp.setStepLimit(1000);
+    interp.setStepLimit(null);
+    try interp.evalPrint(arena.allocator(), "(count 1000)", &w);
+    try std.testing.expectEqualStrings("done\ndone\n", w.buffered());
+}
+
+test "slow: with no step limit, a loop of a million calls runs to its end" {
+    try tier.slow();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(define (count n) (if (= n 0) 'done (count (- n 1)))) (count 1000000)", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
+}
+
+test "lines that refer to unknown names do not leave a cell each after a collection, and a name code still refers to keeps its cell" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(define (later) unknown-later)", "");
+        interp.ctx.collectIdle();
+        const cells = interp.ctx.heap.countOf(value.Cell);
+        var buf: [48]u8 = undefined;
+        for (0..50) |i| try expectLinePrints(&interp, std.fmt.bufPrint(&buf, "(if #f unknown-{d})", .{i}) catch unreachable, "");
+        interp.ctx.collectIdle();
+        // 行のコードは死んでいるので、未束縛のセルと名前は表から外れて回収される。
+        try std.testing.expectEqual(cells, interp.ctx.heap.countOf(value.Cell));
+        try std.testing.expect(interp.ctx.heap.symbols.lookup("unknown-7") == null);
+        // 生きている手続きが指す名前は、表に残り、後の定義がそのセルに値を入れる。
+        try expectLinePrints(&interp, "(define unknown-later 5) (later)", "5\n");
+    }
+}
+
+test "an unbound cell that an exported macro makes in a loaded library goes once no code points at it" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        // マクロの出力の自由な名前は、ライブラリの最上位で解決される。定義を終えたライブラリの
+        // 表にできる未束縛のセルも、指すコードが無くなれば外れる。名前そのものは、マクロの
+        // 規則のデータが持つので残る。
+        try expectLinePrints(&interp, "(define-library (t m) (export m) (import (sucheme core)) (begin (define-syntax m (syntax-rules () ((_) (if #f lib-only-unknown))))))", "");
+        try expectLinePrints(&interp, "(import (t m)) (m)", "");
+        const lib = interp.ctx.libraries.list.items[interp.ctx.libraries.list.items.len - 1];
+        const table = interp.ctx.libraries.tableOf(lib);
+        const id = interp.ctx.heap.symbols.lookup("lib-only-unknown").?;
+        // ストレスモードでは、行の途中の GC が、もう外している。
+        if (!stress) try std.testing.expect(table.lookup(id) != null);
+        interp.ctx.collectIdle();
+        try std.testing.expectEqual(null, table.lookup(id));
+    }
+}
+
+test "a library still reports a name that only dead code of its body refers to, whenever the collections run" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCoreWithOptions(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        try expectLineFails(&interp, "(define-library (t a) (export) (import (sucheme core)) (begin (if #f car-typo)) (begin (define y1 1) (define y2 2)))", "unbound identifier in library (t a): car-typo");
+    }
 }

@@ -62,9 +62,22 @@ pub fn sink(ctx: *Context) reader.Sink {
     return .{ .heap = &ctx.heap };
 }
 
+/// The sink the reader makes the data of the file `origin` names in, keeping the
+/// positions of its lists in `ctx.positions` when there is a table.
+pub fn sinkFrom(ctx: *Context, scratch: std.mem.Allocator, origin: resolve.Origin) Error!reader.Sink {
+    var to = sink(ctx);
+    if (ctx.positions) |table| to.positions = .{ .table = table, .file = try table.addFile(try displayName(scratch, origin)) };
+    return to;
+}
+
 /// The next datum of the file `r` reads, or null at its end.
 pub fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, subject: []const u8) Error!?Value {
-    return r.next(scratch, sink(ctx)) catch |e| switch (e) {
+    return readDatumTo(ctx, r, scratch, sink(ctx), subject);
+}
+
+/// The next datum of the file `r` reads into `to`, or null at its end.
+pub fn readDatumTo(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, to: reader.Sink, subject: []const u8) Error!?Value {
+    return r.next(scratch, to) catch |e| switch (e) {
         error.OutOfMemory, error.HeapLimit => |heap_error| ctx.heapFailure(heap_error),
         else => |syntax| ctx.raise("cannot {s}: {s}", .{ subject, reader.describe(syntax) }),
     };
@@ -74,14 +87,39 @@ pub fn readDatum(ctx: *Context, r: *reader.Reader, scratch: std.mem.Allocator, s
 /// ファイルの内容は、データを読み終えた時点で手放す。データは内容を指さない。
 /// `fold_case` が真なら、リーダは識別子と文字名を畳み込む(`include-ci`)。
 pub fn readData(ctx: *Context, scratch: std.mem.Allocator, files: ?resolve.Files, source: resolve.Source, subject: []const u8, fold_case: bool) Error![]const Value {
+    return readDataFrom(ctx, scratch, files, source, null, subject, fold_case);
+}
+
+/// Every datum of `source`, as `readData` reads them, with the positions of their
+/// lists kept in `ctx.positions` when `origin` names the file and there is a table.
+pub fn readDataFrom(ctx: *Context, scratch: std.mem.Allocator, files: ?resolve.Files, source: resolve.Source, origin: ?resolve.Origin, subject: []const u8, fold_case: bool) Error![]const Value {
     defer closeSource(files, source);
     const text = try readText(ctx, files, source, subject);
     defer ctx.heap.backing.free(text);
     var r: reader.Reader = .init(text);
     r.fold_case = fold_case;
+    const to = if (origin) |o| try sinkFrom(ctx, scratch, o) else sink(ctx);
     var data: std.ArrayList(Value) = .empty;
-    while (try readDatum(ctx, &r, scratch, subject)) |datum| try data.append(scratch, datum);
+    while (try readDatumTo(ctx, &r, scratch, to, subject)) |datum| try data.append(scratch, datum);
     return data.items;
+}
+
+/// The name of the file `origin` names, as the messages of errors show it: the
+/// components of its path after its root, unless the root is the working directory.
+/// 埋め込みのファイルの根は `<embedded>` である。
+fn displayName(scratch: std.mem.Allocator, origin: resolve.Origin) error{OutOfMemory}![]const u8 {
+    var name: std.ArrayList(u8) = .empty;
+    // ルートの末尾の `/`(`-I lib/`)は落とし、区切りを1つにする。
+    const root = std.mem.trimEnd(u8, origin.root, "/");
+    if (!std.mem.eql(u8, root, ".")) {
+        try name.appendSlice(scratch, root);
+        try name.append(scratch, '/');
+    }
+    for (origin.path, 0..) |component, i| {
+        if (i != 0) try name.append(scratch, '/');
+        try name.appendSlice(scratch, component);
+    }
+    return name.items;
 }
 
 /// Closes the file of `source`, if it has one.
@@ -135,4 +173,18 @@ pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8,
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "the name of a file for a message is its root and its path, without the working directory" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { root: []const u8, name: []const u8 }{
+        .{ .root = ".", .name = "sub/x.scm" },
+        .{ .root = "lib", .name = "lib/sub/x.scm" },
+        .{ .root = "lib/", .name = "lib/sub/x.scm" },
+        .{ .root = "/abs//", .name = "/abs/sub/x.scm" },
+        .{ .root = resolve.embedded_root, .name = "<embedded>/sub/x.scm" },
+    };
+    for (cases) |c| try std.testing.expectEqualStrings(c.name, try displayName(a, .{ .root = c.root, .path = &.{ "sub", "x.scm" } }));
 }

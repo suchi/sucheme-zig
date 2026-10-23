@@ -1,6 +1,6 @@
 //! What the expander and the machine share between the lines of a session: the
-//! GC heap (which holds the symbols) and the arena beside it, the bindings of the top level,
-//! the constants of the code, and the value the most recent error raised.
+//! GC heap (which holds the symbols and the code) and the arena beside it, the bindings
+//! of the top level, and the value the most recent error raised.
 
 const std = @import("std");
 const symbol = @import("symbol.zig");
@@ -10,6 +10,7 @@ const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
 const library = @import("syntax/library.zig");
 const resolve = @import("resolve.zig");
+const positions_mod = @import("positions.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
 
@@ -19,26 +20,27 @@ const Value = value_mod.Value;
 /// `OutOfMemory` はホストのメモリが尽きたこと、`ReserveExhausted` は上限に達した状態で
 /// 送出のための予約領域も尽き、条件オブジェクトを作れなかったことを表す。どちらも
 /// `raised` を空のまま返し、その行を終える(docs/design/runtime.md の上限超過と確保の失敗)。
+/// `StepLimit` は、1つの最上位の形式が `step_limit` の歩数を使い切ったことを表す。ハンドラに
+/// 渡さず、`dynamic-wind` の `after` も呼ばずに、その形式を終える(計画書 0024)。
 /// ヒープの `HeapLimit` はこの集合に入れない。ヒープの確保を素の `try` で返すと
 /// コンパイルエラーになり、`heapFailure` を通して送出することを型が強いる。
-pub const Error = error{ OutOfMemory, Raised, ReserveExhausted };
+pub const Error = error{ OutOfMemory, Raised, ReserveExhausted, StepLimit };
 
 /// What the error is called when the heap cannot hold more.
 /// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。
 pub const heap_limit_message = "heap limit exceeded";
 
 /// What the interpreter carries between lines: the heap and the arena, the
-/// global bindings, the constants of the code, and the value the most recent error
-/// raised.
+/// global bindings, and the value the most recent error raised.
 pub const Context = struct {
-    /// Where what the reader and the machine make is allocated, and collected:
-    /// the pairs, the closures, the frames of calls, the continuations, the
-    /// argument lists, the strings, the vectors and the conditions.
+    /// Where what the reader, the expander and the machine make is allocated, and
+    /// collected: the pairs, the core IR, the closures, the frames of calls, the
+    /// continuations, the argument lists, the strings, the vectors and the conditions.
     heap: Heap,
-    /// Where what the heap does not hold is allocated: the table of the bindings of
-    /// the top level and the core IR the expander builds.
-    /// 大域変数のセルそのものは GC ヒープにある。
-    /// この中のものは、インタプリタが解放されるまで解放されない。
+    /// Where what the heap does not hold, and does not count, is allocated: the
+    /// table of `(sucheme core)`.
+    /// 大域変数のセルとコアIRの節点は GC ヒープにある。最上位の束縛の表は、ここでなく
+    /// `resident` にある。この中のものは、インタプリタが解放されるまで解放されない。
     persist: std.mem.Allocator,
     /// The bindings of the REPL's top level: what it imports from `core`, and the
     /// variables and macros it defines (src/env.zig).
@@ -71,21 +73,29 @@ pub const Context = struct {
     /// や `lambda` をインポートで得る必要がある。製品の経路は、これを立てない
     /// (docs/adr/0037-core-library-exposed-in-stage-2.md の段階3の取り消し)。
     core_open: bool = false,
-    /// The constants of the code that refer to the heap: a quoted list, say.
-    /// コードはまだヒープにないので、GC はコードを通してそれらを見つけられない。
-    /// そのため展開器がここに挙げる。コードをヒープに移すスライスでは、このリストは
-    /// 要らなくなる。
-    code_roots: std.ArrayList(Value) = .empty,
     /// The value the most recent error raised, if the line was cut short by
     /// one.
     /// 段階2のスライス 2b からは、条件オブジェクトに限らない `Value` である(R7RS 6.11 は
     /// 何でも送出できるとする)。ヒープを指しうるので GC のルートであり(`mark`)、
     /// `clearDiagnostic` で空にするまで回収されない。
     raised: ?Value = null,
+    /// Where in a file the expander was when it raised a value, and the value.
+    /// 位置は、`raised` がその値であるときだけ意味を持つ(`raisedPosition`)。値も GC の
+    /// ルートにする。回収された値の番地が新しい条件に使い回されると、無関係な位置を指すため
+    /// である。
+    raised_at: ?RaisedAt = null,
+    /// The positions of the pairs of the form being read and expanded
+    /// (src/positions.zig), or null when none are kept.
+    /// 表の鍵のペアは GC のルートである(`mark`)。
+    positions: ?*positions_mod.Table = null,
     /// The mark the next application of a macro takes.
     /// 対話の全体で1つの通し番号で、周回させない(`newMark`)。マクロの定義は行をまたいで
     /// 残り、その規則が別名を含みうるので、行ごとに数え直すことはできない。
     next_mark: u64 = 0,
+    /// The most steps one run of the machine may take, or null for no limit.
+    /// 機械は、`Machine.run` の1回ごとに残りをこの値に戻す(src/machine.zig)。既定は上限なしで、
+    /// 準拠スイートの実行器だけが置く(計画書 0024)。
+    step_limit: ?u64 = null,
 
     /// A context whose top level imports everything `(sucheme core)` exports.
     /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
@@ -116,8 +126,33 @@ pub const Context = struct {
         return ctx;
     }
 
+    /// Frees the heap, and the tables that count against its limit.
+    /// アリーナにあるもの(`core`)は、アリーナの持ち主が捨てる。
     pub fn deinit(self: *Context) void {
+        const tables = self.resident();
+        self.globals.deinit(tables);
+        self.libraries.deinit(tables);
+        self.sources.deinit(tables);
         self.heap.deinit();
+    }
+
+    /// Where the tables of the top levels, the registry of the libraries and the
+    /// files being read are allocated: they count against the limit of the heap
+    /// for as long as they are held (ADR-0040).
+    /// Why: 表は、インポートした名前の数に比例して伸び、セッションの間ずっと残る。永続
+    /// アリーナに置くと、上限の外で伸び続ける。断られた確保は `error.OutOfMemory` に見えるので、
+    /// 最上位の入口が `limitFailure` で上限の超過に変える。
+    pub fn resident(self: *Context) std.mem.Allocator {
+        return self.heap.residentAllocator();
+    }
+
+    /// The error `e` is, once a refusal of the limit is told apart from the host's
+    /// memory running out: "heap limit exceeded" when the heap refused a charged
+    /// allocation, which its caller saw as `error.OutOfMemory`.
+    /// 判定に使う印は、入口が処理を始める前に `heap.external_refused` を下ろしておくこと。
+    pub fn limitFailure(self: *Context, e: Error) Error {
+        if (e == error.OutOfMemory and self.heap.external_refused) return self.raise(heap_limit_message, .{});
+        return e;
     }
 
     /// Whether the program being processed may import `(sucheme core)`.
@@ -132,16 +167,35 @@ pub const Context = struct {
     }
 
     /// Tells the collector of the roots the context holds: the cells of the
-    /// global variables and of `core`, the libraries, the constants of the code and
-    /// the value raised.
-    /// 機械は自分のルートを加える。機械の実行をまたいでヒープの値を持つものは、
-    /// すべてここに挙げる(ADR-0035)。
+    /// global variables and of `core`, the libraries, and the value raised.
+    /// 機械は自分のルート(制御のレジスタを含む)を加える。機械の実行をまたいでヒープの値を
+    /// 持つものは、すべてここに挙げる(ADR-0035、ADR-0040)。コードの定数と名前は、節点から
+    /// 辿られる。
     pub fn mark(self: *const Context, marker: *heap_mod.Marker) void {
         self.globals.mark(marker);
         self.core.mark(marker);
         self.libraries.mark(marker);
-        for (self.code_roots.items) |v| marker.value(v);
         if (self.raised) |v| marker.value(v);
+        if (self.raised_at) |at| marker.value(at.value);
+        if (self.positions) |kept| kept.mark(marker);
+    }
+
+    pub const RaisedAt = struct { value: Value, position: positions_mod.Position };
+
+    /// Keeps that the value just raised was raised at `position`, unless a
+    /// place has been kept for it already: the innermost form keeps it first.
+    pub fn noteRaisedAt(self: *Context, position: ?positions_mod.Position) void {
+        const at = position orelse return;
+        const v = self.raised orelse return;
+        if (self.raisedPosition() != null) return;
+        self.raised_at = .{ .value = v, .position = at };
+    }
+
+    /// Where the value raised was raised, when it is known.
+    pub fn raisedPosition(self: *const Context) ?positions_mod.Position {
+        const at = self.raised_at orelse return null;
+        const v = self.raised orelse return null;
+        return if (v.isEq(at.value)) at.position else null;
     }
 
     /// A mark that no application of a macro has had (docs/design/frontend.md).
@@ -153,20 +207,6 @@ pub const Context = struct {
             return self.raise("implementation restriction: too many macro applications", .{});
         defer self.next_mark += 1;
         return self.next_mark;
-    }
-
-    /// Keeps `v`, a constant of some code, alive for as long as the context is.
-    /// シンボルの定数も、ヒープを指す定数と同じく、コードの外から見えないので、ここに挙げる。
-    /// 挙げないと、シンボルが回収され、ID が別の名前に再利用される。
-    pub fn keepConstant(self: *Context, v: Value) error{OutOfMemory}!void {
-        if (v.pointsIntoHeap() or v.kind() == .symbol) try self.code_roots.append(self.persist, v);
-    }
-
-    /// Keeps the symbol `name`, which a node of some code holds, alive for as long as
-    /// the context is.
-    /// 局所変数の節点は、名前を、未初期化の変数を読んだときのメッセージのために持つ。
-    pub fn keepName(self: *Context, name: symbol.SymbolId) error{OutOfMemory}!void {
-        try self.code_roots.append(self.persist, .fromSymbol(name));
     }
 
     /// The symbol named `name`, interned first if it is new; a name the limit
@@ -245,6 +285,7 @@ pub const Context = struct {
 
     pub fn clearDiagnostic(self: *Context) void {
         self.raised = null;
+        self.raised_at = null;
     }
 
     /// Raises an error: makes the condition with the message and keeps it in
@@ -297,13 +338,13 @@ test "coreImportable is true only inside an embedded library, or when the contex
     // REPL の行は、`sources` に何も載せない。
     try std.testing.expect(!ctx.coreImportable());
     // 実ファイルのライブラリ。
-    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"a.sld"} });
+    try ctx.sources.append(ctx.resident(), .{ .root = "libs", .path = &.{"a.sld"} });
     try std.testing.expect(!ctx.coreImportable());
     // 埋め込みのライブラリ。
-    try ctx.sources.append(ctx.persist, .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
+    try ctx.sources.append(ctx.resident(), .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
     try std.testing.expect(ctx.coreImportable());
     // 一番内側が決める。埋め込みのライブラリが、実ファイルを含むことはないが、判定は内側だけを見る。
-    try ctx.sources.append(ctx.persist, .{ .root = "libs", .path = &.{"b.sld"} });
+    try ctx.sources.append(ctx.resident(), .{ .root = "libs", .path = &.{"b.sld"} });
     try std.testing.expect(!ctx.coreImportable());
     ctx.sources.clearRetainingCapacity();
     ctx.core_open = true;
@@ -326,6 +367,50 @@ test "raise keeps a condition with the message, and returns Raised" {
     ctx.clearDiagnostic();
     try std.testing.expect(ctx.raised == null);
     try std.testing.expectEqualStrings("", ctx.diagnostic());
+}
+
+test "the place of a raise belongs to the value raised, and the innermost place is kept" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    const inner: positions_mod.Position = .{ .file = 0, .location = .{ .line = 2, .column = 3 } };
+    const outer: positions_mod.Position = .{ .file = 0, .location = .{ .line = 1, .column = 1 } };
+    // 何も送出していなければ、位置を持たない。
+    ctx.noteRaisedAt(inner);
+    try std.testing.expect(ctx.raisedPosition() == null);
+    try std.testing.expectEqual(error.Raised, ctx.raise("first", .{}));
+    ctx.noteRaisedAt(null);
+    try std.testing.expect(ctx.raisedPosition() == null);
+    ctx.noteRaisedAt(inner);
+    ctx.noteRaisedAt(outer);
+    try std.testing.expectEqual(inner, ctx.raisedPosition().?);
+    // 別の値を送出したら、前の位置はその値のものではない。
+    try std.testing.expectEqual(error.Raised, ctx.raise("second", .{}));
+    try std.testing.expect(ctx.raisedPosition() == null);
+    ctx.noteRaisedAt(outer);
+    try std.testing.expectEqual(outer, ctx.raisedPosition().?);
+    ctx.clearDiagnostic();
+    try std.testing.expect(ctx.raised_at == null);
+}
+
+test "the pairs of the table of positions are roots while the context holds it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    var kept: positions_mod.Table = .init(std.testing.allocator);
+    defer kept.deinit();
+    const file = try kept.addFile("a.scm");
+    // 表だけが持つペアは、表をコンテキストに置いている間は回収されず、外せば回収される。
+    const pair = try ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+    try kept.record(pair.asPair().?, .{ .file = file, .location = .{} });
+    ctx.positions = &kept;
+    ctx.collectIdle();
+    const held = ctx.heap.count;
+    ctx.positions = null;
+    ctx.collectIdle();
+    try std.testing.expectEqual(held - 1, ctx.heap.count);
 }
 
 test "a message as long as the REPL's line is kept whole" {
@@ -359,7 +444,7 @@ test "a context binds each primitive to its name" {
     try std.testing.expect(ctx.globals.isBound(id));
     // 初期化はヒープに何も作らない。プリミティブのセルは、名前を解決したときに作る。
     try std.testing.expectEqual(0, ctx.heap.count);
-    const cell = (try ctx.globals.resolve(ctx.persist, &ctx.heap, id)).global;
+    const cell = (try ctx.globals.resolve(ctx.resident(), &ctx.heap, id)).global;
     try std.testing.expectEqualStrings("+", cell.value.asPrimitive().?.name);
 }
 

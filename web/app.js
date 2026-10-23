@@ -5,6 +5,8 @@
 // 定義はすべて失われる。
 
 import { Status } from "./sucheme.js";
+import { samples } from "./samples.mjs";
+import { encodeFragment, decodeFragment } from "./share.mjs";
 
 const form = document.getElementById("form");
 const source = document.getElementById("source");
@@ -13,6 +15,10 @@ const stopButton = document.getElementById("stop");
 const resetButton = document.getElementById("reset");
 const output = document.getElementById("output");
 const versionLabel = document.getElementById("version");
+const sampleSelect = document.getElementById("samples");
+const shareButton = document.getElementById("share");
+const shareUrl = document.getElementById("share-url");
+const shareStatus = document.getElementById("share-status");
 
 // sucheme.wasm は、このファイルと同じ階層から相対パスで取る。
 const wasmUrl = new URL("./sucheme.wasm", import.meta.url).href;
@@ -154,5 +160,56 @@ source.addEventListener("keydown", (event) => {
     form.requestSubmit();
   }
 });
+
+// サンプル: 選ぶと入力欄に入る。実行はしない。選び直せるよう、選択は先頭に戻す。
+for (const sample of samples) {
+  const option = document.createElement("option");
+  option.value = sample.id;
+  option.textContent = sample.title;
+  sampleSelect.append(option);
+}
+
+sampleSelect.addEventListener("change", () => {
+  const sample = samples.find((s) => s.id === sampleSelect.value);
+  sampleSelect.value = "";
+  if (sample === undefined) return;
+  source.value = sample.source;
+  shareStatus.textContent = "";
+  source.focus();
+});
+
+// 共有リンク: 入力欄の内容を URL のフラグメントに入れる。リンクを開いたときは、入力欄に戻すだけで、
+// 実行しない。他人が作ったリンクを開いただけで、無限ループなどのコードが走らないようにするためである。
+function restoreFromFragment() {
+  if (location.hash === "") return;
+  const restored = decodeFragment(location.hash);
+  if (restored === null) {
+    shareStatus.textContent = "共有リンクを読み取れなかったので、入力欄はそのままです。";
+    return;
+  }
+  source.value = restored;
+  shareStatus.textContent = "共有リンクから入力を戻しました。内容を確かめてから「実行」を押してください。";
+}
+
+shareButton.addEventListener("click", async () => {
+  const fragment = encodeFragment(source.value);
+  if (fragment === null) {
+    shareStatus.textContent = "入力が長すぎて、共有リンクにできません。";
+    return;
+  }
+  history.replaceState(null, "", fragment);
+  shareUrl.value = location.href;
+  try {
+    await navigator.clipboard.writeText(location.href);
+    shareStatus.textContent = "リンクをコピーしました。";
+  } catch {
+    // クリップボードが使えない文脈では、欄を選んで、手でコピーしてもらう。
+    shareUrl.select();
+    shareStatus.textContent = "欄のリンクをコピーしてください。";
+  }
+});
+
+window.addEventListener("hashchange", restoreFromFragment);
+restoreFromFragment();
 
 startWorker();

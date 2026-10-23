@@ -318,7 +318,20 @@ pub fn build(b: *std.Build) void {
     // 準拠マトリクスの生成器は、必須の識別子が束縛済みかをインタプリタに尋ねる。
     // そのため、実行ファイルと同じソースに対して、ホスト向けに作る。
     coverage.root_module.addImport("sucheme", sucheme_host);
-    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage };
+    // 準拠スイートの実行器(スライス 6e)。スイートの全節を評価するので、test-scheme と同じ理由で
+    // ReleaseSafe にし、実行ファイルと同じソースに対してホスト向けに作る。
+    const conformance = tool(b, "conformance-run", .ReleaseSafe);
+    conformance.root_module.addImport("sucheme", sucheme_host);
+    // 準拠マトリクスの生成器は、実行器と同じ runSuite で節ごとの数を出す(スライス 6f)。
+    // run.zig のテストは、実行器の main.zig から届くので、このモジュールはテストの対象にしない。
+    const conformance_run = b.createModule(.{
+        .root_source_file = b.path("tools/conformance-run/run.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    conformance_run.addImport("sucheme", sucheme_host);
+    coverage.root_module.addImport("conformance", conformance_run);
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage, conformance };
 
     const run_check_docs = b.addRunArtifact(check_docs);
     // run step が引き継ぐのは build root ではなく `zig build` を起動したディレクトリ
@@ -343,6 +356,14 @@ pub fn build(b: *std.Build) void {
     run_check_report.setCwd(b.path("."));
     const check_report_step = b.step("check-report", "check docs/status/conformance.md against the interpreter");
     check_report_step.dependOn(&run_check_report.step);
+
+    // 準拠スイート(tests/vendor/r7rs-tests.scm)の実行。ランナーは引数を取らず、スイートを
+    // 自分で読む。段階6までは CI で走らせない(AGENTS.md の検証コマンド表の「使えるようになる
+    // 段階」)。末尾の checkStepRuns の呼び出しを参照。
+    const run_conformance = b.addRunArtifact(conformance);
+    run_conformance.setCwd(b.path("."));
+    const test_conformance_step = b.step("test-conformance", "run the vendored R7RS conformance suite");
+    test_conformance_step.dependOn(&run_conformance.step);
 
     const run_report = b.addRunArtifact(coverage);
     run_report.setCwd(b.path("."));
@@ -446,6 +467,17 @@ pub fn build(b: *std.Build) void {
     for (tools) |t| {
         targets.append(b.allocator, .of(b, t.root_module)) catch @panic("OOM");
     }
+    // 評価器のファジング(計画書 0025)。テストだけのモジュールで、実行ファイルは作らない。
+    // リーダのファジングと別のバイナリにするのは、1つのバイナリに `std.testing.fuzz` を呼ぶ
+    // テストを2つ置くと、探索の実行でファザーが進まなくなるからである。`-Doptimize` に従うので、
+    // fuzz.yml の `-Doptimize=ReleaseSafe` がこのバイナリにも効く。
+    const fuzz_eval = b.createModule(.{
+        .root_source_file = b.path("tools/fuzz-eval/fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "sucheme", .module = sucheme }},
+    });
+    targets.append(b.allocator, .of(b, fuzz_eval)) catch @panic("OOM");
 
     // ループも一覧も1つ。テストと check-docs に伝えるパスは同じモジュールから来るので、
     // どちらか一方だけを落としたり重複させたりできない。
@@ -525,6 +557,8 @@ pub fn build(b: *std.Build) void {
     // これもちょうどその artifact だけ。フィルタや狭いディレクトリは、引数から
     // 入り込む。
     checkStepRuns(test_scheme_step, test_scheme, 1);
+    // 準拠スイートの実行も、ちょうどその artifact だけ。理由は test-scheme と同じである。
+    checkStepRuns(test_conformance_step, conformance, 1);
     // wasm のファイルは引数で、スクリプトは固定である。3つめの引数は、より狭い
     // テストの選択を入り込ませる手段になる。
     checkSystemStepRuns(test_wasm_step, test_wasm_script, &install_wasm.step, 3);

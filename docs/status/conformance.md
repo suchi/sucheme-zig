@@ -8,7 +8,7 @@
 
 | ライブラリ | 束縛済み | 全体 |
 | --- | ---: | ---: |
-| `(scheme base)` | 164 | 238 |
+| `(scheme base)` | 179 | 238 |
 | `(scheme case-lambda)` | 1 | 1 |
 | `(scheme char)` | 0 | 22 |
 | `(scheme complex)` | 0 | 6 |
@@ -24,4 +24,37 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 194 | 339 |
+| 一意の識別子の合計 | 209 | 339 |
+
+## 準拠スイートの結果
+
+取り込んだ準拠スイート `tests/vendor/r7rs-tests.scm` を、節ごとに走らせた結果である。取り込んだ版は [tests/vendor/README.md](../../tests/vendor/README.md) にある。分類の定義は [docs/plans/0020-conformance-harness-early.md](../plans/0020-conformance-harness-early.md) の「分類」にあり、落ちたものと走らせなかったものの一覧は `zig build test-conformance` が出す。
+
+- 「通った」と「落ちた」はテストの数である。ほかの列は、走らせなかったか、それ自体が誤りを上げた最上位の形式の数である。ただし「連鎖」は、同じ外側の節(入れ子の節を含む)に評価しなかったか誤りで終わった形式があるときにテストの中で上がった未束縛の誤りを、テストの数で含む。単位が違うので足さない。
+- 入れ子の節(「Read syntax」と「Numeric syntax」)は、親の節(6.13)と別の行に数える。
+
+| 節 | 通った | 落ちた | 誤り | 読めない | 未実装 | 連鎖 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4.1 Primitive expression types | 27 | 0 | 0 | 0 | 0 | 0 |
+| 4.2 Derived expression types | 58 | 0 | 0 | 0 | 12 | 4 |
+| 4.3 Macros | 26 | 0 | 0 | 0 | 0 | 0 |
+| 5 Program structure | 15 | 0 | 0 | 0 | 0 | 0 |
+| 6.1 Equivalence Predicates | 25 | 0 | 0 | 0 | 0 | 0 |
+| 6.2 Numbers | 60 | 0 | 0 | 29 | 131 | 0 |
+| 6.3 Booleans | 18 | 0 | 0 | 0 | 0 | 0 |
+| 6.4 Lists | 62 | 0 | 0 | 1 | 2 | 0 |
+| 6.5 Symbols | 17 | 0 | 0 | 0 | 0 | 0 |
+| 6.6 Characters | 20 | 0 | 0 | 0 | 59 | 0 |
+| 6.7 Strings | 78 | 0 | 0 | 0 | 52 | 0 |
+| 6.8 Vectors | 42 | 0 | 0 | 0 | 1 | 0 |
+| 6.9 Bytevectors | 31 | 0 | 0 | 8 | 0 | 0 |
+| 6.10 Control Features | 28 | 0 | 0 | 0 | 6 | 0 |
+| 6.11 Exceptions | 16 | 0 | 0 | 0 | 11 | 0 |
+| 6.12 Environments and evaluation | 0 | 0 | 0 | 0 | 4 | 0 |
+| 6.13 Input and output | 1 | 0 | 0 | 0 | 59 | 0 |
+| Read syntax | 0 | 0 | 0 | 0 | 72 | 24 |
+| Numeric syntax | 0 | 0 | 0 | 0 | 37 | 75 |
+| 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
+| 合計 | 526 | 0 | 0 | 38 | 456 | 103 |
+
+スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme inexact)` `(scheme complex)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
