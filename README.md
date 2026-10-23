@@ -1,6 +1,6 @@
 # sucheme-zig
 
-sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Scheme インタプリタです。衛生的マクロ、完全な継続、適切な末尾再帰、完全な数値塔までの準拠を目指します。
+sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Scheme インタプリタです。衛生的マクロ、第一級継続、適切な末尾再帰、完全な数値塔までの準拠を目指します。
 
 単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールの両方を、同一のコアから生成することを目指しています。現在の到達点は [docs/roadmap.md](docs/roadmap.md) の「現在地」にあります。
 
@@ -33,7 +33,7 @@ macOS は GitHub Actions の課金単位が他の10倍であるためです。�
 
 aarch64 はランナー自体は使えます。段階1の見直しで、対象に加えないと決めました([ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。aarch64 では、ビルドが成功することを手元で確かめただけで、実行はしていません。CI でのビルドは、`zig build dist` を `full.yml` が PR を ready にしたときと手動の起動で、`release.yml` がタグの push で走らせます(全コミットでも `main` への push でも走りません)。v0.1.0 以降のリリースで配る aarch64 の Linux と Windows の実行ファイルは、実行して確かめていないものです。実行して確かめる仕組みは、実行環境が要ると分かった時点で足します。
 
-WebAssembly の自動テストは Node.js 上でエクスポートを呼び出す往復テストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
+WebAssembly の自動テストは Node.js 上でエクスポートを呼び出すラウンドトリップテストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
 
 これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
 
@@ -42,7 +42,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 ## 特徴として目指すもの
 
 - R7RS-small の16ライブラリすべての実装
-- 衛生的マクロ(`syntax-rules`)、多重起動可能な完全な継続、適切な末尾再帰
+- 衛生的マクロ(`syntax-rules`)、多重起動可能な第一級継続、適切な末尾再帰
 - 完全な数値塔(多倍長整数、有理数、浮動小数点数、複素数)と Unicode 対応
 - 複数行編集と Emacs バインディングを備えた REPL
 - ブラウザ上で動く Web UI
@@ -59,7 +59,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 | [docs/adr/](docs/adr/) | 技術選択と設計判断の記録 |
 | [docs/status/](docs/status/) | R7RS 準拠マトリクス(生成物。段階1の最小版) |
 
-設計の中心となる判断は次の3つです。評価器は明示的な継続を持つ CEK 機械とし([ADR-0004](docs/adr/0004-cek-machine-evaluator.md))、GC は非移動型の精密マーク・スイープとし([ADR-0003](docs/adr/0003-precise-mark-sweep-gc.md))、コア言語で表現できるものは Scheme で書きます([ADR-0006](docs/adr/0006-library-system-and-scheme-level-stdlib.md))。いずれも WebAssembly を一級の対象とする制約から導かれています。
+設計の中心となる判断は次の3つです。評価器は明示的な継続を持つ CEK 機械とし([ADR-0004](docs/adr/0004-cek-machine-evaluator.md))、GC は非移動型の正確なマーク・スイープとし([ADR-0003](docs/adr/0003-precise-mark-sweep-gc.md))、コア言語で表現できるものは Scheme で書きます([ADR-0006](docs/adr/0006-library-system-and-scheme-level-stdlib.md))。いずれも WebAssembly を一級の対象とする制約から導かれています。
 
 ## ライセンス
 

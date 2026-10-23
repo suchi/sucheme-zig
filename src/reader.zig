@@ -2033,6 +2033,16 @@ const fuzz_inputs = [_][]const u8{
     // 識別子、文字名、16 進の `X`、ASCII でない識別子と、畳み込みで名前にならないもの。
     "(DEFINE Foo #\\NEWLINE #\\X41 x) ",
     "(DEFINE Foo λ) #\\X41g #\\Newlin ",
+    // 評価器の入力に出る綴り(計画書 0025 のスライス 6i-3)。データの注釈と、それを重ねた形、
+    // 入れ子のブロック注釈と閉じないもの、読み手の畳み込みの指令、文字の名前の残り。
+    "(1 #;(ignored) 2 #;#;a b 3) #; ",
+    "#| outer #| inner |# still |# x #| open #| only |#",
+    "#!fold-case ABC #!no-fold-case Abc #!unknown",
+    "#\\tab #\\return #\\escape #\\backspace #\\TAB",
+    // バイトベクタと、基数や正確さの接頭辞、指数、無限大と NaN の数の綴り。
+    "#u8(1 2 255) #u8(256) #u8( #x1F #b101 #o17 #e1.5 #i1/2 1e3 -2.5e-2 +inf.0 -nan.0",
+    // 行の続きのエスケープと、文字列のエスケープの残り。
+    "\"line1 \\\n   continued\" \"\\a\\b\\t\\n\\r\\\"\\\\\"",
 };
 
 /// `fuzz_inputs` as corpus entries.

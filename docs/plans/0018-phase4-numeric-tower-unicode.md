@@ -8,7 +8,7 @@
 
 ## 解こうとしている問題
 
-段階3までの数は、固定長の整数(`Value.fixnum`)だけである。`src/value.zig` の `Value` には、浮動小数点数の変種も無い。演算が `i64` からあふれると `IntegerOverflow` の Scheme のエラーになり(`src/prim/arith.zig` の `fromWide`)、リーダは `[+-]?[0-9]+` の形の整数しか数として読まない(`src/reader.zig` の `isDecimalInteger`)。`+inf.0` などの、識別子の形をした数の綴りは、識別子として束縛されないように、リーダが拒否している(`isUnsupportedNumber`)。
+段階3までの数は、固定長の整数(`Value.fixnum`)だけである。`src/value.zig` の `Value` には、浮動小数点数のバリアントも無い。演算が `i64` からあふれると `IntegerOverflow` の Scheme のエラーになり(`src/prim/arith.zig` の `fromWide`)、リーダは `[+-]?[0-9]+` の形の整数しか数として読まない(`src/reader.zig` の `isDecimalInteger`)。`+inf.0` などの、識別子の形をした数の綴りは、識別子として束縛されないように、リーダが拒否している(`isUnsupportedNumber`)。
 
 文字は Unicode のスカラ値を持てるが、属性と大文字小文字の表が無い。`(scheme char)` は無く、リーダは ASCII でない識別子を読めない。
 
@@ -19,7 +19,7 @@
 [roadmap.md](../roadmap.md) の段階4の完了条件が正である。この計画は次のように読む。
 
 - `features` が `exact-closed` `ratios` `exact-complex` `ieee-float` を返し、それぞれが表すことが、`tests/scheme/` の 0400 台で確かめられている(`exact-complex` は、合意を求める点の3で複素数を段階4に含める場合)。
-- 浮動小数点数の往復性のテスト(基数10の無作為な値と、基数2、8、16)が通る。
+- 浮動小数点数のラウンドトリップ性のテスト(基数10の無作為な値と、基数2、8、16)が通る。
 - `(scheme char)` `(scheme inexact)` `(scheme complex)` の識別子が、準拠マトリクスで束縛済みになる。
 - roadmap の段階4の作業項目のすべてに、スライスの割り当てがある(下の「roadmap の項目の割り当て」)。
 - リリース v0.4.0 を出す。
@@ -33,7 +33,7 @@
 - `(scheme base)` の数の手続きのうち、段階3で未束縛のまま残したもの(0016 の「未束縛の識別子の行き先」の「段階4」の行)。
 - `(scheme inexact)` と `(scheme complex)`。
 - `eq?` と `eqv?` の分離と、`memq` と `memv` などを区別するテスト(roadmap の項目)。
-- Unicode の表の生成器と生成結果、`(scheme char)`、文字列の大文字小文字の手続き、リーダの ASCII でない識別子と、その畳み込み。
+- Unicode の表の生成ツールと生成結果、`(scheme char)`、文字列の大文字小文字の手続き、リーダの ASCII でない識別子と、その畳み込み。
 - リリース v0.4.0。
 
 含めないもの(送り先は括弧の中):
@@ -46,7 +46,7 @@
 
 計画の前提にしたコードの事実を挙げる。行番号は書かない。
 
-- `Value` は `union(enum)` で、変種の `fixnum: i64` が即値である。`f64` も同じ大きさなので、`flonum: f64` を即値の変種として足しても、`Value` の大きさは変わらない見込みである(未確認。骨格のスライスで `@sizeOf(Value)` を固定するテストを足して確かめる)。
+- `Value` は `union(enum)` で、バリアントの `fixnum: i64` が即値である。`f64` も同じ大きさなので、`flonum: f64` を即値のバリアントとして足しても、`Value` の大きさは変わらない見込みである(未確認。骨格のスライスで `@sizeOf(Value)` を固定するテストを足して確かめる)。
 - ヒープのオブジェクトの型は `value.heap_types` に並び、`heap.zig` の `payloadBytes` と `Heap.free` が、型ごとにペイロードの大きさと解放を `switch` で持つ。スイープは `free` を呼ぶので、新しい型のペイロードは、この2つに1行ずつ足せば、スイープで解放され、計上から引かれる。
 - `trace.zig` の分類は、`std.mem.Allocator` を持つ構造体を分類できない(中の `*anyopaque` がヒープの型でも code の型でもないので、コンパイルエラーになる)。`[]Limb` のような整数の切片は「無視する」に分類される。
 - `Heap.Charged` は、確保をヒープの上限に計上する割り当て器である。上限に照らすのは `Heap.external_enforced` が立っている間だけで、`equal?` と展開器が、その間だけ立てている。
@@ -60,18 +60,18 @@
 
 [numerics-and-unicode.md](../design/numerics-and-unicode.md) の表のとおりに、5種を持つ。`Value` への足し方を、ここで決める。
 
-| 表現 | `Value` の変種 | ヒープの型 | ペイロード |
+| 表現 | `Value` のバリアント | ヒープの型 | ペイロード |
 | --- | --- | --- | --- |
 | fixnum | `fixnum: i64`(既存) | - | - |
 | flonum | `flonum: f64`(即値) | - | - |
-| bignum | `bignum: *Bignum` | `Bignum`(`limbs: []Limb` と `positive: bool`) | 限界値列 |
+| bignum | `bignum: *Bignum` | `Bignum`(`limbs: []Limb` と `positive: bool`) | limbs(多倍長整数の桁の配列) |
 | ratnum | `ratnum: *Ratnum` | `Ratnum`(`numerator: Value` と `denominator: Value`) | なし |
 | compnum | `compnum: *Compnum` | `Compnum`(`real: Value` と `imag: Value`) | なし |
 
-bignum は作ったあとに変えない。演算の途中は `std.math.big.int.Managed` を作業領域で使い、結果の限界値列だけを、ヒープのペイロードに写す。設計文書は「`Managed` をオブジェクトに持ち、sweep で `deinit` を呼ぶ」と書いているが、この計画はそれを変える提案をする(合意を求める点の5)。理由は次のとおりである。
+bignum は作ったあとに変えない。演算の途中は `std.math.big.int.Managed` を作業領域で使い、結果の limbs だけを、ヒープのペイロードに写す。設計文書は「`Managed` をオブジェクトに持ち、sweep で `deinit` を呼ぶ」と書いているが、この計画はそれを変える提案をする(合意を求める点の5)。理由は次のとおりである。
 
 - `Managed` は割り当て器を持つので、`trace.zig` の分類を通らない。通すには、分類に例外を足すことになる。
-- `Managed` は、演算のたびに自分の限界値列を伸ばしうる。伸びた分は `payloadBytes` から読めても、確保の時点で上限に照らされない。変えない限界値列なら、確保の1回で大きさが決まり、文字列やベクタと同じ `reserveWithPayload` の経路で計上できる。
+- `Managed` は、演算のたびに自分の limbs を伸ばしうる。伸びた分は `payloadBytes` から読めても、確保の時点で上限に照らされない。変えない limbs なら、確保の1回で大きさが決まり、文字列やベクタと同じ `reserveWithPayload` の経路で計上できる。
 - 数は変えられない値なので、オブジェクトを変える必要がない。
 
 ratnum と compnum は、`Value` を2つ持つだけで、ペイロードを持たない。`trace.zig` の分類は `Value` のフィールドを辿るので、追加の作業は無い。
@@ -149,7 +149,7 @@ pub fn scan(text: []const u8, default_radix: u8) ?Literal
 
 ```zig
 /// 有限か無限か NaN の x を、R7RS 6.2.7 の基数10の書式で書く。
-/// 最短の往復する桁列に、小数点を必ず置き、指数部が範囲の外なら指数表記にする。
+/// 最短のラウンドトリップする桁列に、小数点を必ず置き、指数部が範囲の外なら指数表記にする。
 /// +inf.0 -inf.0 +nan.0 と -0.0 を専用に書く。確保しない。
 pub fn write(out: *std.Io.Writer, x: f64) std.Io.Writer.Error!void
 
@@ -220,9 +220,9 @@ pub fn isNumber(v: Value) bool
 
 ### ペイロードと sweep
 
-- bignum の限界値列は、文字列のバイト列と同じく、オブジェクトのペイロードとして数える。`payloadBytes` に `Bignum => object.limbs.len * @sizeOf(Limb)` を、`Heap.free` に `Bignum => self.backing.free(cell.value.limbs)` を足す。確保は `reserveWithPayload` を通し、セルより先に限界値列を確保して、セルの確保が失敗したら返す(`createString` と同じ単位)。
+- bignum の limbs は、文字列のバイト列と同じく、オブジェクトのペイロードとして数える。`payloadBytes` に `Bignum => object.limbs.len * @sizeOf(Limb)` を、`Heap.free` に `Bignum => self.backing.free(cell.value.limbs)` を足す。確保は `reserveWithPayload` を通し、セルより先に limbs を確保して、セルの確保が失敗したら返す(`createString` と同じ単位)。
 - ratnum と compnum はペイロードを持たない。セルの大きさだけを数える。
-- 限界値列は変えないので、計上した大きさと、スイープで引く大きさは、常に一致する。
+- limbs は変えないので、計上した大きさと、スイープで引く大きさは、常に一致する。
 
 ### 演算の作業領域
 
@@ -238,7 +238,7 @@ GC は機械のステップの境目でしか走らない([ADR-0031](../adr/0031
 
 ### 検証
 
-- [runtime.md](../design/runtime.md) の走査関数の検証項目: `Bignum` `Ratnum` `Compnum` について、辿るフィールドの集合と、手で列挙した期待集合が一致すること。bignum だけを到達できなくして GC を走らせると、計上量が限界値列の分だけ減ること(4d)。
+- [runtime.md](../design/runtime.md) の走査関数の検証項目: `Bignum` `Ratnum` `Compnum` について、辿るフィールドの集合と、手で列挙した期待集合が一致すること。bignum だけを到達できなくして GC を走らせると、計上量が limbs の分だけ減ること(4d)。
 - 作業領域が返ること: 大きな bignum の演算を繰り返したあと、`Heap.external` が0に戻ること(4f)。
 
 ### 規模を試すテストの置き方
@@ -249,17 +249,17 @@ GC は機械のステップの境目でしか走らない([ADR-0031](../adr/0031
 | --- | --- | --- |
 | bignum の繰り返しの演算で計上が戻ること | `(do ...)` で大きな `expt` を多数回(`tests/scheme-slow/`) | 同じ式を数回(`tests/scheme/`) |
 | `string->number` が大きすぎる綴りに `#f` を返し、確保しないこと | 指数部が大きい `#e1e...` を、上限の小さいランナーで | 上限の手前と先の2点 |
-| 浮動小数点数の往復性 | 無作為な `f64` を多数(`tier.slow()`) | 境界の値の表(最小の非正規化数、最大値、0.1、1/3 など) |
-| 多倍長の除算と基数変換 | 大きな桁数の無作為な値(`tier.slow()`) | 境界(`i64` の前後、限界値の境目の前後) |
-| Unicode の表の全域の検査 | 全符号位置について、生成器の入力と表の答えが一致すること(`tier.slow()`) | 代表の符号位置の表 |
+| 浮動小数点数のラウンドトリップ性 | 無作為な `f64` を多数(`tier.slow()`) | 境界の値の表(最小の非正規化数、最大値、0.1、1/3 など) |
+| 多倍長の除算と基数変換 | 大きな桁数の無作為な値(`tier.slow()`) | 境界(`i64` の前後、limb の境目の前後) |
+| Unicode の表の全域の検査 | 全符号位置について、生成ツールの入力と表の答えが一致すること(`tier.slow()`) | 代表の符号位置の表 |
 
 規模を試すテストの件数と上限は、実装のときに1件あたりの時間を測ってから決める(層2の長さは [0017](0017-parallel-lanes.md) の「待ちの短縮」の1で測っている)。
 
 ## Unicode
 
-### 生成器と生成結果
+### 生成ツールと生成結果
 
-- 生成器: `tools/unicode-gen/`(Zig のプログラム)。UCD のファイルを読み、多段の表を Zig のソースとして書き出す。[numerics-and-unicode.md](../design/numerics-and-unicode.md) は置き場所を `tools/unicode/` と書いているが、[0017](0017-parallel-lanes.md) は `tools/unicode-gen/` と書いている。新しい 0017 に合わせ、4u1 で設計文書を直す。
+- 生成ツール: `tools/unicode-gen/`(Zig のプログラム)。UCD のファイルを読み、多段の表を Zig のソースとして書き出す。[numerics-and-unicode.md](../design/numerics-and-unicode.md) は置き場所を `tools/unicode/` と書いているが、[0017](0017-parallel-lanes.md) は `tools/unicode-gen/` と書いている。新しい 0017 に合わせ、4u1 で設計文書を直す。
 - 入力: UCD のファイル(`UnicodeData.txt`、`DerivedCoreProperties.txt`、`PropList.txt`、`SpecialCasing.txt`、`CaseFolding.txt`)。リポジトリに取り込むか、取得の手順だけを置くかは、合意を求める点の7で決める。
 - 生成結果: `src/unicode/tables.zig`(生成物、手で編集しない)と、引く関数の `src/unicode/props.zig`(手で書く)。生成元の Unicode の版とファイル名を、生成物の先頭のコメントに書く。
 - 生成物が入力から導かれたことは、既存の `check-extract` と同じ形の比較モードで検査する。検証コマンドの表に行を足すかは、4u1 で `build.zig` の step を作ってから決める(表の行は、step が実在するときに足す規則)。
@@ -295,31 +295,31 @@ pub fn digitValue(c: u21) ?u4
 | スライス | 完了条件(1行) | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 4a 数の字句 | `syntax.scan` が R7RS 7.1.1 の `<number>` を受理し、[numerics-and-unicode.md](../design/numerics-and-unicode.md) の `parseFloat` の表の綴りを拒否する | `src/num/syntax.zig` | T2 | なし | 可(4b、4c、4u1 と) | 中 |
-| 4b 浮動小数点数の書式と解析 | `flonum.write` が設計文書の表のとおりに書き、`parseDecimal` と合わせて境界の値が往復する | `src/num/flonum.zig` | T2 | 合意を求める点の4(指数表記の範囲) | 可 | 小 |
-| 4c 多倍長の薄い層 | `bigint` の各関数が、`i64` の範囲で `i128` の計算と一致し、基数2、8、10、16で `toString` と `parseDigits` が往復する | `src/num/bigint.zig` | T2 | なし | 可 | 中 |
-| 4d 型の骨格 | `Value` に4つの変種、`heap_types` に3つの型が入り、走査と計上の検証項目が通る。プリンタの分岐が `num.write` を呼ぶ(中身は仮) | `src/value.zig` `src/heap.zig` `src/trace.zig` `src/printer.zig`(分岐だけ) `src/num/number.zig`(仮の `write` だけ) | T3 | 合意を求める点の5、6 | 4a〜4c と可。L3 の骨格とは順に(下) | 中 |
-| 4e-1 数の生成と正規化、`parse` と `write`(複素数を除く) | `num.parse` と `num.write` が、fixnum、bignum、ratnum、flonum について、基数2、8、10、16で往復する。純粋な変換(`src/num/exact.zig`)を含む | `src/num/number.zig` `src/num/exact.zig`(新規) | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大の前半 |
-| 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum について往復し、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いは、そろえる案に決まった(2026-10-22。設計文書の正規化の規則) | 4f と可 | 大の後半 |
+| 4b 浮動小数点数の書式と解析 | `flonum.write` が設計文書の表のとおりに書き、`parseDecimal` と合わせて境界の値がラウンドトリップする | `src/num/flonum.zig` | T2 | 合意を求める点の4(指数表記の範囲) | 可 | 小 |
+| 4c 多倍長の薄い層 | `bigint` の各関数が、`i64` の範囲で `i128` の計算と一致し、基数2、8、10、16で `toString` と `parseDigits` がラウンドトリップする | `src/num/bigint.zig` | T2 | なし | 可 | 中 |
+| 4d 型の骨格 | `Value` に4つのバリアント、`heap_types` に3つの型が入り、走査と計上の検証項目が通る。プリンタの分岐が `num.write` を呼ぶ(中身は仮) | `src/value.zig` `src/heap.zig` `src/trace.zig` `src/printer.zig`(分岐だけ) `src/num/number.zig`(仮の `write` だけ) | T3 | 合意を求める点の5、6 | 4a〜4c と可。L3 の骨格とは順に(下) | 中 |
+| 4e-1 数の生成と正規化、`parse` と `write`(複素数を除く) | `num.parse` と `num.write` が、fixnum、bignum、ratnum、flonum について、基数2、8、10、16でラウンドトリップする。純粋な変換(`src/num/exact.zig`)を含む | `src/num/number.zig` `src/num/exact.zig`(新規) | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大の前半 |
+| 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum についてラウンドトリップし、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いは、そろえる案に決まった(2026-10-22。設計文書の正規化の規則) | 4f と可 | 大の後半 |
 | 4r リーダの数の構文(L2 の作業) | リーダが `num.parse` で数を読み、`(define inf 1)` と `(define |1_000| 3)` 以外の数の綴りが数になる | `src/reader.zig` | T2 | 4e。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4f 四則と比較 | `+ - * / = < > <= >=` が数値塔の全組合せで動き、作業領域が返る | `src/prim/arith.zig` `src/num/ops.zig`(新規) | T2 | 4e | 4h、4u2 と可 | 大 |
-| 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行の衝突は機械的に解く) | 大 |
+| 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行のコンフリクトは機械的に解く) | 大 |
 | 4h `(scheme inexact)` | `exp` `log` `sin` ほか12の識別子が束縛され、R7RS 6.2.6 の例が通る | `src/prim/inexact.zig`(新規) `lib/scheme/inexact.sld`(新規) | T2 | 4f | 4g と可 | 小 |
 | 4i `(scheme complex)` と compnum の演算 | 6つの識別子が束縛され、四則と `sqrt` `exp` `log` が複素数で動く | `src/num/complex.zig`(新規) `src/prim/complex.zig`(新規) `lib/scheme/complex.sld`(新規) | T2 | 4g、4h。合意を求める点の3 | 不可 | 中〜大 |
 | 4j `eq?` と `eqv?` の分離とフィーチャ | `memq` と `memv`、`assq` と `assv` を区別するテストが通り、`features` が4つのフィーチャを返す | `src/value.zig`(`isEq` だけ) `src/features.zig` `tests/scheme/` | T1 | 4g(4i を含めるなら 4i) | 不可 | 小 |
-| 4u1 Unicode の生成器 | `tools/unicode-gen/` が UCD から表を生成し、比較モードで生成物の同期を検査する | `tools/unicode-gen/`(新規) `build.zig`(step の追加だけ) | T2(枠は T1) | 合意を求める点の1、7 | 可(4a〜4c と) | 中 |
-| 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成器の入力と一致し、`ReleaseSmall` の WASM の大きさが記録される | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
+| 4u1 Unicode の生成ツール | `tools/unicode-gen/` が UCD から表を生成し、比較モードで生成物の同期を検査する | `tools/unicode-gen/`(新規) `build.zig`(step の追加だけ) | T2(枠は T1) | 合意を求める点の1、7 | 可(4a〜4c と) | 中 |
+| 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
 | 4u3 `(scheme char)` と文字列の大文字小文字 | `(scheme char)` の識別子が束縛され、R7RS 6.6 と 6.7 の例(`(char-alphabetic? #\x03B1)` など)が通る | `src/prim/char.zig` の追加分 `src/prim/string_case.zig`(新規) `lib/scheme/char.sld`(新規) | T2 | 4u2。合意を求める点の2 | 可 | 中 |
 | 4u4 リーダの ASCII でない識別子(L2 の作業) | リーダが ASCII でない識別子を読み、`#!fold-case` が Unicode の表で畳み込む | `src/reader.zig` | T2 | 4u2。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4z リリース v0.4.0 と段階の完了 | v0.4.0 が公開され、段階4の完了の手続きが済む | リリース関係の文書 | T2 | ほかのすべて | 不可 | 小 |
 
-`src/prim/table.zig` は、4f、4g、4h、4i、4u3 が1行ずつ足す。隣り合う行の衝突は、後からマージする側が機械的に解く([0017](0017-parallel-lanes.md) のファイルの重なり)。
+`src/prim/table.zig` は、4f、4g、4h、4i、4u3 が1行ずつ足す。隣り合う行のコンフリクトは、後からマージする側が機械的に解く([0017](0017-parallel-lanes.md) のファイルの重なり)。
 
 ### 4d の中身(型の骨格)
 
-骨格は、型の変種と確保の関数と走査の検証だけを足し、演算を足さない。L3 の骨格(ポートの型)と同じファイルを触るので、どちらか一方を先にマージし、後の側が main を取り込む。順序は親のセッションが決める。
+骨格は、型のバリアントと確保の関数と走査の検証だけを足し、演算を足さない。L3 の骨格(ポートの型)と同じファイルを触るので、どちらか一方を先にマージし、後の側が main を取り込む。順序は親のセッションが決める。
 
-- `Value` に `flonum` `bignum` `ratnum` `compnum` の変種と、`fromFlonum` などの構築と `asFlonum` などのアクセサ、`Kind` の4つの値を足す。`pointsIntoHeap` と `kind` と `isEqv` の `switch` に分岐を足す(`isEqv` の数の分岐は、4e までは仮に同じオブジェクトか、ビット列で比べる)。
-- `heap_types` に `Bignum` `Ratnum` `Compnum` を足す。`heap.zig` に `payloadBytes` と `free` の分岐と、`createBignum`(限界値列を写して作る)、`createRatnum`、`createCompnum` を足す。
+- `Value` に `flonum` `bignum` `ratnum` `compnum` のバリアントと、`fromFlonum` などの構築と `asFlonum` などのアクセサ、`Kind` の4つの値を足す。`pointsIntoHeap` と `kind` と `isEqv` の `switch` に分岐を足す(`isEqv` の数の分岐は、4e までは仮に同じオブジェクトか、ビット列で比べる)。
+- `heap_types` に `Bignum` `Ratnum` `Compnum` を足す。`heap.zig` に `payloadBytes` と `free` の分岐と、`createBignum`(limbs を写して作る)、`createRatnum`、`createCompnum` を足す。
 - `printer.zig` の数の分岐は `num.write` を呼ぶ。4d の `num.write` は仮で、flonum とヒープの数を `#<number>` と書く。`printer.zig` を触るのはこの1回だけにし、4e は `num.write` の中身だけを変える。
 - `@sizeOf(Value)` が変わらないことを単体テストで固定する。
 
@@ -337,7 +337,7 @@ pub fn digitValue(c: u21) ?u4
 | `number->string` と `string->number` の全範囲 | 4a、4b、4e(本体)、4g(手続き) |
 | リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加 | 4r(L2) |
 | リーダの ASCII でない識別子の畳み込みに Unicode の表を使う | 4u4(L2) |
-| Unicode テーブルの生成器と生成結果 | 4u1、4u2 |
+| Unicode テーブルの生成ツールと生成結果 | 4u1、4u2 |
 | `(scheme char)` `(scheme complex)` `(scheme inexact)` | 4u3、4i、4h |
 | `eq?` と `eqv?` が別になるときの `memq` と `memv` などの区別のテスト | 4j |
 
@@ -352,7 +352,7 @@ pub fn digitValue(c: u21) ?u4
 | 0420〜0429 | 四則と比較の全組合せ、不正確さの伝播、`max` と `min` | R7RS 6.2.2、6.2.6 | 4f、4g |
 | 0430〜0439 | 整数除算の全組、符号の4通りと不正確な整数(`(truncate/ -5.0 -2)`) | R7RS 6.2.6 の例 | 4g |
 | 0440〜0449 | `floor` `ceiling` `round` `truncate`、`rationalize` の例(`(rationalize .3 1/10)` が `#i1/3`)、`exact-integer-sqrt`、`expt`、`numerator` と `denominator` | R7RS 6.2.6 の例 | 4g |
-| 0450〜0459 | `number->string` と `string->number` の往復(基数2、8、10、16)、`"#o177"` を第2引数2で読むと127 | R7RS 6.2.7 | 4g |
+| 0450〜0459 | `number->string` と `string->number` のラウンドトリップ(基数2、8、10、16)、`"#o177"` を第2引数2で読むと127 | R7RS 6.2.7 | 4g |
 | 0460〜0469 | `(scheme inexact)` の例 | R7RS 6.2.6 | 4h |
 | 0470〜0479 | `(scheme complex)` の例、compnum の正規化 | R7RS 6.2.6 | 4i |
 | 0480〜0489 | `eq?` と `eqv?`、`memq` と `memv`、`assq` と `assv`。`(eqv? 0.0 -0.0)`、`(eqv? 100000000 100000000)`。`features` と `cond-expand` | R7RS 6.1、4.2.1 | 4j |
@@ -365,18 +365,18 @@ pub fn digitValue(c: u21) ?u4
 
 ## 浮動小数点数の書式と解析の実験
 
-課題: Zig 0.17.0 の標準ライブラリで、(1) 最短の往復する桁列を取り出せるか、(2) R7RS の `<decimal 10>` の綴り(`1.` `.5` `1e10` `1.5e-3`)を `std.fmt.parseFloat` が正しく丸めて読むか、を確かめる。
+課題: Zig 0.17.0 の標準ライブラリで、(1) 最短のラウンドトリップする桁列を取り出せるか、(2) R7RS の `<decimal 10>` の綴り(`1.` `.5` `1e10` `1.5e-3`)を `std.fmt.parseFloat` が正しく丸めて読むか、を確かめる。
 
-設計文書には、`{d}` と `{e}` が最短往復表現を与えること、`parseFloat` の受理集合が Scheme より広いことを、実機で確かめた記録がある([numerics-and-unicode.md](../design/numerics-and-unicode.md))。この計画が新たに要る4点を、2026-10-20 に Zig 0.17.0(Debug ビルド、x86_64 の Linux)で確かめた。実験のコードはコミットしていない。同じことを確かめるときは、4b の単体テストとして書く。
+設計文書には、`{d}` と `{e}` が最短ラウンドトリップ表現を与えること、`parseFloat` の受理集合が Scheme より広いことを、実機で確かめた記録がある([numerics-and-unicode.md](../design/numerics-and-unicode.md))。この計画が新たに要る4点を、2026-10-20 に Zig 0.17.0(Debug ビルド、x86_64 の Linux)で確かめた。実験のコードはコミットしていない。同じことを確かめるときは、4b の単体テストとして書く。
 
 1. 桁列と指数を、書式の文字列を介さずに取り出せる。`std.fmt.float.binaryToDecimal(u64, bits, mantissa_bits, exponent_bits, false, &std.fmt.float.Backend64_TablesFull)` が公開されていて、値を「仮数の整数 × 10 の指数乗」と符号で返す。末尾の0は仮数に残らない(100.0 は仮数1、指数2。1/3 は仮数 3333333333333333、指数 -16)。`std.fmt.float.render` の既定(指数表記)が、同じ値から書いている。4b は、この仮数と指数から、小数点の位置と指数表記への切り替えを自前で決める。
    - 注意: この関数は公開されているが、文書のある利用者向けの API かは確かめていない(未確認)。Zig の版を上げるときに、名前と引数が変わる見込みがある。4b は呼び出しを1つの関数に閉じ、版の更新で直す箇所を1つにする。
    - `ReleaseSmall` では `render` が `Backend64_TablesSmall` を使う。4b も同じ選び方にするかは、4u2 の WASM の大きさの実測と並べて決める。
 2. `parseFloat` は `1.` `.5` `1.e2` `.5e1` `1E10` を受理し、期待どおりの値を返した。R7RS の `<decimal 10>` の綴りは、符号を除いてそのまま渡せる。
 3. 丸めは、試した境目で最も近い値を与えた。`2.2250738585072011e-308` は最大の非正規化数(ビット列 `000fffffffffffff`)に、`9007199254740993` は偶数への丸めで 2 の53乗になった。
-4. 最小の非正規化数は、`4.9e-324` を読んでビット列 `1` になり、最短の桁は `5e-324` である。最大値 `1.7976931348623157e308` は往復した。`1e400` は無限大、`1e-400` は0になった(誤りにならない)。
+4. 最小の非正規化数は、`4.9e-324` を読んでビット列 `1` になり、最短の桁は `5e-324` である。最大値 `1.7976931348623157e308` はラウンドトリップした。`1e400` は無限大、`1e-400` は0になった(誤りにならない)。
 
-あわせて、無作為なビット列の有限の `f64` を、`render` の既定の書式で書き、`parseFloat` で読み直して、ビット列が一致することを確かめた(失敗は無かった。件数は、4b の単体テストで定める)。これは Zig の書式についての確認で、4b が作る Scheme の書式の往復性は、4b のテストで改めて確かめる。
+あわせて、無作為なビット列の有限の `f64` を、`render` の既定の書式で書き、`parseFloat` で読み直して、ビット列が一致することを確かめた(失敗は無かった。件数は、4b の単体テストで定める)。これは Zig の書式についての確認で、4b が作る Scheme の書式のラウンドトリップ性は、4b のテストで改めて確かめる。
 
 ## ECMA-262 の Number::toString の確認
 
@@ -397,9 +397,9 @@ pub fn digitValue(c: u21) ?u4
 
 1. Unicode の表の圧縮方式と段数。
    - 勧める案: 2段の表(上位のビットで区画を引き、同じ内容の区画を共有する)から始め、属性の5つはビット束にまとめる。完全写像と十進数字の値は、例外の少ない表なので、整列した区間表を二分探索する。4u2 で `ReleaseSmall` の WASM の大きさを測り、段数を増やすかを決める。
-     - メリット: 生成器と引く関数が単純で、誤りが入りにくい。2段の表は、多くの処理系と標準ライブラリが採る形である(どの処理系かは未確認)。
+     - メリット: 生成ツールと引く関数が単純で、誤りが入りにくい。2段の表は、多くの処理系と標準ライブラリが採る形である(どの処理系かは未確認)。
      - デメリット: 3段より大きくなりうる。大きさは測るまで分からない。
-   - 別案A: 最初から3段にする。小さくなる見込みだが、生成器と検査が複雑になる。
+   - 別案A: 最初から3段にする。小さくなる見込みだが、生成ツールと検査が複雑になる。
    - 別案B: すべてを区間表にする。最も単純だが、引くのが二分探索になり、文字列の大文字小文字の変換が遅くなる。
 2. 文字のレパートリを ASCII に制限する退避案を採るか。
    - 勧める案: 採らない。設計文書のとおり、圧縮で解けない場合も、先に `(scheme char)` を提供しない案を検討する。判断は 4u2 の実測のあとで、採る場合だけユーザーの承認と ADR を求める。
@@ -417,7 +417,7 @@ pub fn digitValue(c: u21) ?u4
      - デメリット: ほかの Scheme 処理系と揃うかは確かめていない(未確認。Chez Scheme、Chibi、Gauche のソースで確かめる案もあるが、処理系ごとに違う見込み)。
    - 別案: 主な Scheme 処理系の1つのソースを読み、その範囲に合わせる。設計文書の「一般的な Scheme 処理系に合わせる」に字義どおり従えるが、どれを基準にするかの判断が別に要る。
 5. bignum の表現(データ形式)。
-   - 勧める案: 変えない限界値列(`limbs: []Limb` と `positive: bool`)をペイロードに持ち、演算の作業は `Managed` を計上つきの作業領域で行う(上の「値の表現」)。設計文書と ADR-0007 の「sweep で `deinit` を呼ぶ」の記述は、4d で、この形に合わせて追記する。
+   - 勧める案: 変えない limbs(`limbs: []Limb` と `positive: bool`)をペイロードに持ち、演算の作業は `Managed` を計上つきの作業領域で行う(上の「値の表現」)。設計文書と ADR-0007 の「sweep で `deinit` を呼ぶ」の記述は、4d で、この形に合わせて追記する。
      - メリット: 走査の分類に例外が要らない。計上が確保の1回で決まり、文字列と同じ経路になる。
      - デメリット: 演算のたびに結果を写す。大きな数の加算で、写す分の時間が増える。
    - 別案: 設計文書のとおり `Managed` をオブジェクトに持つ。写さずに済むが、`trace.zig` の分類と計上の両方に例外が要る。
@@ -448,7 +448,7 @@ pub fn digitValue(c: u21) ?u4
 | `src/num/number.zig`(新規) | 数の生成と正規化、`parse` と `write` | 4d(仮)、4e |
 | `src/num/ops.zig`(新規) | 階層を揃えた四則と比較 | 4f |
 | `src/num/complex.zig`(新規) | compnum の演算 | 4i |
-| `src/value.zig` | 4つの変種と3つのヒープの型、`isEqv` と `isEq` | 4d、4j |
+| `src/value.zig` | 4つのバリアントと3つのヒープの型、`isEqv` と `isEq` | 4d、4j |
 | `src/heap.zig` | 3つの型の確保、ペイロードの計上と解放 | 4d |
 | `src/trace.zig` | 走査の期待集合のテスト | 4d |
 | `src/printer.zig` | 数の分岐から `num.write` を呼ぶ | 4d |
@@ -463,17 +463,17 @@ pub fn digitValue(c: u21) ?u4
 | `src/features.zig` | 数のフィーチャ | 4j |
 | `src/unicode/tables.zig`(新規、生成物) | Unicode の表 | 4u2 |
 | `src/unicode/props.zig`(新規) | 表を引く関数 | 4u2 |
-| `tools/unicode-gen/`(新規) | 表の生成器と UCD の入力 | 4u1 |
+| `tools/unicode-gen/`(新規) | 表の生成ツールと UCD の入力 | 4u1 |
 | `lib/scheme/base.sld` | 数の手続きのエクスポート | 4g |
 | `lib/scheme/inexact.sld` `complex.sld` `char.sld`(新規) | 3つのライブラリ | 4h、4i、4u3 |
 | `tests/scheme/04xx-*.txt` `07xx-*.txt`、`tests/scheme-slow/` の同じ範囲 | Scheme の振る舞いのテスト | 各スライス |
-| `docs/design/numerics-and-unicode.md` | bignum の表現の追記、生成器の置き場所の修正 | 4d、4u1 |
+| `docs/design/numerics-and-unicode.md` | bignum の表現の追記、生成ツールの置き場所の修正 | 4d、4u1 |
 
 ## 確かめた事実と、確かめられなかったこと
 
 確かめた事実(この計画の下書きで、コードと原文を読んで確かめた):
 
-- `Value` に浮動小数点数の変種が無いこと、リーダが整数だけを数として読むこと、`isUnsupportedNumber` が `<infnan>` と `+i` `-i` を拒否していること(`src/value.zig`、`src/reader.zig`)。
+- `Value` に浮動小数点数のバリアントが無いこと、リーダが整数だけを数として読むこと、`isUnsupportedNumber` が `<infnan>` と `+i` `-i` を拒否していること(`src/value.zig`、`src/reader.zig`)。
 - ヒープの型ごとのペイロードの計上と解放が `payloadBytes` と `Heap.free` の `switch` にあること、`Heap.Charged` が `external_enforced` の間だけ上限に照らすこと(`src/heap.zig`)。
 - `trace.zig` の分類が、整数の切片を無視し、ヒープの型でも code の型でもない型へのポインタをコンパイルエラーにすること(`src/trace.zig` の `classifyAt`)。
 - R7RS が数の綴りの大文字小文字を区別しないこと(2.1、7.1)、`(eqv? 0.0 -0.0)` を `#f`、`(eqv? +nan.0 +nan.0)` を未規定としていること(6.1)。原文は `docs/spec/` の PDF で引いた。
@@ -483,7 +483,7 @@ pub fn digitValue(c: u21) ?u4
 確かめられなかったこと:
 
 - `std.fmt.float.binaryToDecimal` が、版をまたいで保たれる API かどうか。
-- `@sizeOf(Value)` が flonum の変種を足しても変わらないこと(同じ形の小さな共用体では変わらなかった)。
+- `@sizeOf(Value)` が flonum のバリアントを足しても変わらないこと(同じ形の小さな共用体では変わらなかった)。
 - ほかの Scheme 処理系の指数表記の範囲と、Unicode の表の段数の慣行。
 - UCD のライセンスの表示の要件。
 - `string-downcase` の語末のシグマの扱いを R7RS 6.7 が求めるか。
@@ -505,4 +505,4 @@ pub fn digitValue(c: u21) ?u4
 
 - 4e-3(読み取りの大きさの上限)の PR を、レビューを経てマージする。4g の `string->number` と 4r のリーダーが `parse` を呼ぶ前に、マージする。
 - 4f(算術)に進む。4f は 4e-2 と並行にできる。
-- Unicode の生成器(4u1)は、数値の層と並行に進められる。
+- Unicode の生成ツール(4u1)は、数値の層と並行に進められる。
