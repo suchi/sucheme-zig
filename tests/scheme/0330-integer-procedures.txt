@@ -62,9 +62,9 @@
 (call-with-values (lambda () (floor/ -9223372036854775808 3)) list)
 (-3074457345618258603 1)
 
-# 真の値が収まらないときは、誤りである。
+# 真の値が fixnum に収まらないときは、bignum になる(4f から。以前は誤りだった)。
 (gcd -9223372036854775808)
-error: integer overflow in - -9223372036854775808
+9223372036854775808
 
 # (scheme base) からエクスポートされ、import の集合で選べる。
 (import (only (scheme base) even? floor/)) (call-with-values (lambda () (floor/ 7 (if (even? 2) 2 3))) list)

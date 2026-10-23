@@ -1392,7 +1392,7 @@ test "the errors of a call keep the messages the evaluator gave" {
     defer f.deinit();
     try f.expectFails("not a procedure", "(1 2)");
     try f.expectFails("wrong type of argument to +", "(+ 1 #t)");
-    try f.expectFails("integer overflow in +", "(+ 9223372036854775807 1)");
+    try f.expectFails("integer overflow in quotient", "(quotient -9223372036854775808 -1)");
     try f.expectFails("wrong number of arguments to -", "(-)");
     try f.expectFails("wrong number of arguments: expected 1, got 2", "((lambda (x) x) 1 2)");
     try f.expectFails("wrong number of arguments: expected 2, got 1", "((lambda (x y) x) 1)");

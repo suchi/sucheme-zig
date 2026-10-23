@@ -301,10 +301,10 @@ pub fn digitValue(c: u21) ?u4
 | 4e-1 数の生成と正規化、`parse` と `write`(複素数を除く) | `num.parse` と `num.write` が、fixnum、bignum、ratnum、flonum について、基数2、8、10、16でラウンドトリップする。純粋な変換(`src/num/exact.zig`)を含む | `src/num/number.zig` `src/num/exact.zig`(新規) | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大の前半 |
 | 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum についてラウンドトリップし、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いは、そろえる案に決まった(2026-10-22。設計文書の正規化の規則) | 4f と可 | 大の後半 |
 | 4r リーダの数の構文(L2 の作業) | リーダが `num.parse` で数を読み、`(define inf 1)` と `(define |1_000| 3)` 以外の数の綴りが数になる | `src/reader.zig` | T2 | 4e。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
-| 4f 四則と比較 | `+ - * / = < > <= >=` が数値塔の全組合せで動き、作業領域が返る | `src/prim/arith.zig` `src/num/ops.zig`(新規) | T2 | 4e | 4h、4u2 と可 | 大 |
+| 4f 四則と比較 | `+ - * /` と `=` が数値塔の5種の全組合せ(compnum を含む)で、`< > <= >=` が実数で動き、作業領域が返る。`number?` が塔のすべての数に真になる(2026-10-23 に決まった。下の「4f の決定」) | `src/prim/arith.zig` `src/num/ops.zig`(新規) | T2 | 4e | 4h、4u2 と可 | 大 |
 | 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行のコンフリクトは機械的に解く) | 大 |
 | 4h `(scheme inexact)` | `exp` `log` `sin` ほか12の識別子が束縛され、R7RS 6.2.6 の例が通る | `src/prim/inexact.zig`(新規) `lib/scheme/inexact.sld`(新規) | T2 | 4f | 4g と可 | 小 |
-| 4i `(scheme complex)` と compnum の演算 | 6つの識別子が束縛され、四則と `sqrt` `exp` `log` が複素数で動く | `src/num/complex.zig`(新規) `src/prim/complex.zig`(新規) `lib/scheme/complex.sld`(新規) | T2 | 4g、4h。合意を求める点の3 | 不可 | 中〜大 |
+| 4i `(scheme complex)` と compnum の演算 | 6つの識別子が束縛され、`sqrt` `exp` `log` が複素数で動く(複素数の四則と `=` は 4f) | `src/num/complex.zig`(新規) `src/prim/complex.zig`(新規) `lib/scheme/complex.sld`(新規) | T2 | 4g、4h。合意を求める点の3 | 不可 | 中〜大 |
 | 4j `eq?` と `eqv?` の分離とフィーチャ | `memq` と `memv`、`assq` と `assv` を区別するテストが通り、`features` が4つのフィーチャを返す | `src/value.zig`(`isEq` だけ) `src/features.zig` `tests/scheme/` | T1 | 4g(4i を含めるなら 4i) | 不可 | 小 |
 | 4u1 Unicode の生成ツール | `tools/unicode-gen/` が UCD から表を生成し、比較モードで生成物の同期を検査する | `tools/unicode-gen/`(新規) `build.zig`(step の追加だけ) | T2(枠は T1) | 合意を求める点の1、7 | 可(4a〜4c と) | 中 |
 | 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
@@ -313,6 +313,14 @@ pub fn digitValue(c: u21) ?u4
 | 4z リリース v0.4.0 と段階の完了 | v0.4.0 が公開され、段階4の完了の手続きが済む | リリース関係の文書 | T2 | ほかのすべて | 不可 | 小 |
 
 `src/prim/table.zig` は、4f、4g、4h、4i、4u3 が1行ずつ足す。隣り合う行のコンフリクトは、後からマージする側が機械的に解く([0017](0017-parallel-lanes.md) のファイルの重なり)。
+
+### 4f の決定
+
+2026-10-23 に、ユーザーが次の3点を、勧める案どおりに決めた。
+
+- compnum の範囲: 4f の `ops.zig` が、compnum を含む5種の四則と `=` を扱う。和と差は部分ごと、積は `(ac-bd) + (ad+bc)i`、商は分母の共役を掛けて割る。片方が実数なら、各部に掛けるか割る。正確性は部分で同じにそろえる規則のとおり。`< > <= >=` は実数だけで、複素数は `WrongType`。4i は `(scheme complex)` の手続きと `sqrt` `exp` `log` だけを持つ。
+- 数の述語の担当: 4f は `number?` の更新だけ。`zero?` `positive?` `negative?` `odd?` `even?` `abs` `max` `min` とそのほかの述語は 4g が持つ。
+- 巨大な bignum の演算の時間: 時間の上限は置かず、ヒープの上限の見積りだけにする。1回の乗算は、機械の歩数の上限(計画書 0024、ADR-0044)にもヒープの上限にも抑えられない。測定値と、置くなら見積りで断る案は、[open-questions.md](../design/open-questions.md) にある。
 
 ### 4d の中身(型の骨格)
 
@@ -447,7 +455,7 @@ pub fn digitValue(c: u21) ?u4
 | `src/num/bigint.zig`(新規) | `std.math.big.int` の上の薄い層と、大きさの見積り | 4c |
 | `src/num/number.zig`(新規) | 数の生成と正規化、`parse` と `write` | 4d(仮)、4e |
 | `src/num/ops.zig`(新規) | 階層を揃えた四則と比較 | 4f |
-| `src/num/complex.zig`(新規) | compnum の演算 | 4i |
+| `src/num/complex.zig`(新規) | compnum の `sqrt` `exp` `log` など(四則と `=` は `ops.zig`) | 4i |
 | `src/value.zig` | 4つのバリアントと3つのヒープの型、`isEqv` と `isEq` | 4d、4j |
 | `src/heap.zig` | 3つの型の確保、ペイロードの計上と解放 | 4d |
 | `src/trace.zig` | 走査の期待集合のテスト | 4d |
@@ -496,13 +504,17 @@ pub fn digitValue(c: u21) ?u4
 | 4d | マージ済み([suchi/sucheme-zig#134](https://github.com/suchi/sucheme-zig/pull/134)) |
 | 4a | マージ済み([suchi/sucheme-zig#148](https://github.com/suchi/sucheme-zig/pull/148)) |
 | 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
-| 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
-| 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則 |
-| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。ドラフト PR [suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181)。独立レビューの指摘に対応中。4g と 4r の前にマージする |
-| 4f〜4z、4u1〜4u4 | 未着手 |
+| 4e-1 | マージ済み([suchi/sucheme-zig#175](https://github.com/suchi/sucheme-zig/pull/175))。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため)。実績: PR を作ってからマージまで約 14 時間(2026-10-22 20:37 JST から 2026-10-23 10:32 JST。夜間の待ちを含む) |
+| 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則。実績: PR を作ってから ready まで約 44 分、マージまで約 77 分(2026-10-23 11:24 JST から 12:08 JST、12:41 JST。層2 は約 30 分) |
+| 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。マージ済み([suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181))。実績: PR を作ってから ready まで約 57 分、マージまで約 128 分(2026-10-23 13:27 JST から 14:24 JST、15:35 JST。層2 は約 25 分) |
+| 4f | ドラフト PR [suchi/sucheme-zig#182](https://github.com/suchi/sucheme-zig/pull/182)。四則と比較。compnum の範囲、述語の担当、巨大な bignum の演算の時間は、2026-10-23 に決まった(下の「4f の決定」) |
+| 4g〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4e-3(読み取りの大きさの上限)の PR を、レビューを経てマージする。4g の `string->number` と 4r のリーダーが `parse` を呼ぶ前に、マージする。
-- 4f(算術)に進む。4f は 4e-2 と並行にできる。
+- 4f(四則と比較)の PR を作り、レビューを経てマージする。
+- 4g(整数と有理数の手続き)と 4h(`(scheme inexact)`)は、4f のマージのあとに並行に進める。
+- 4g で確かめる(4f の独立レビューで見つかった。4f 以前からかは未確認): `(lcm -9223372036854775808 3)` が「wrong type of argument to remainder 9223372036854775808 3」の誤りになること。`(remainder 9223372036854775808 1)` が「integer out of range」で、文言が他の誤りと揃っていないこと。整数除算が bignum を取るようになる 4g で、まとめて直す。
+- 4g で、`lib/sucheme/procedures.scm` の整数手続き(`gcd` `floor/` など)の Scheme の実装を置き換えるとき、`+ - *` があふれなくなって古くなったコメント(379 行付近と 405 行付近の「あふれる」)も直す。
+- 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。
 - Unicode の生成ツール(4u1)は、数値の層と並行に進められる。

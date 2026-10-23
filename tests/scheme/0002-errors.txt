@@ -20,8 +20,8 @@ error: not a procedure
 ()
 error: empty combination
 
-(+ 9223372036854775807 1)
-error: integer overflow in + 9223372036854775807 1
+(quotient -9223372036854775808 -1)
+error: integer overflow in quotient -9223372036854775808 -1
 
 
 (+ 1 2

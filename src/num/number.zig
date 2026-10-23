@@ -115,7 +115,7 @@ fn makePolar(h: *Heap, gpa: std.mem.Allocator, magnitude: Value, angle: Value, e
 }
 
 /// The `f64` nearest to the real number `v`.
-fn toFlonum(gpa: std.mem.Allocator, v: Value) Error!f64 {
+pub fn toFlonum(gpa: std.mem.Allocator, v: Value) Error!f64 {
     if (v.asFlonum()) |x| return x;
     if (v.asFixnum()) |n| return @floatFromInt(n);
     if (v.asBignum()) |big| return exact.ratioToF64(gpa, big.toConst(), one);

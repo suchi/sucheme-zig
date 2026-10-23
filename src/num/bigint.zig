@@ -30,6 +30,14 @@ pub const DivResult = struct { q: Managed, r: Managed };
 
 const limb_bits = @bitSizeOf(Limb);
 
+/// The number of limbs of the shorter factor above which the standard library multiplies by
+/// Karatsuba's method (`llmulacc` in std/math/big/int.zig).
+const karatsuba_threshold = 48;
+
+/// The limbs the temporaries of the recursion may take beyond the sum of the factors' limbs: one
+/// limb of rounding at each level of the recursion.
+const karatsuba_slack = 64;
+
 /// 長さ capacity の限界値列を持つ零を作る。
 fn zeroed(gpa: Allocator, capacity: usize) Error!Managed {
     return Managed.initCapacity(gpa, capacity);
@@ -63,9 +71,26 @@ pub fn sub(gpa: Allocator, a: Const, b: Const) Error!Managed {
 }
 
 /// Returns `a * b`.
+///
+/// Why: 標準ライブラリの乗算は、桁数が `karatsuba_threshold` を超えると Karatsuba 法で一時領域を
+/// 確保するが、その確保が断られると、エラーにせず 2乗の学校式に黙って切り替える。ヒープの上限
+/// が一時領域を断る場面では、結果の確保も断られるので、長い時間を使ったあとに失敗する
+/// (上限の近くの 18万バイト級の平方で、成功なら約2秒のところ、断るまでに約15秒かかった。
+/// 2026-10-23 の独立レビュー)。そこで、先頭の段の一時領域(2つの因数の桁数の和に収まる)を
+/// 先に試し取りして、断られたら計算の前に `OutOfMemory` にする。
+///
+/// 保証するのは先頭の段の分だけである。因数の桁数が偏ると、再帰の入れ子の段の一時領域の
+/// 合計が桁数の和を超える(2026-10-23 の独立レビューの測定では、10万桁と1万桁で、一時領域の
+/// 最大が約74万桁で、和の約6.7倍)。入れ子の段が断られたら、その部分積だけが標準ライブラリの
+/// 学校式に切り替わる。結果は正しく、測定した遅さは小さかった(3万桁と2万桁で、約417ミリ秒対
+/// 約315ミリ秒)。釣り合った因数(2万桁どうし)では、一時領域は桁数の和に収まる。
 pub fn mul(gpa: Allocator, a: Const, b: Const) Error!Managed {
     var r = try zeroed(gpa, a.limbs.len + b.limbs.len);
     errdefer r.deinit();
+    if (@min(a.limbs.len, b.limbs.len) > karatsuba_threshold) {
+        const probe = try gpa.alloc(Limb, a.limbs.len + b.limbs.len + karatsuba_slack);
+        gpa.free(probe);
+    }
     var m = r.toMutable();
     m.mulNoAlias(a, b, gpa);
     finish(&r, m);
@@ -326,6 +351,50 @@ fn refGcd(a: u128, b: u128) i128 {
         y = t;
     }
     return @intCast(x);
+}
+
+test "mul refuses before it computes when the temporaries of Karatsuba's method are refused" {
+    // 結果の確保(1回目)は通り、一時領域(2回目)は断られる。断られたら、2乗の方法に黙って
+    // 切り替えず、エラーにする。
+    const limbs = 100;
+    var storage: [limbs]Limb = undefined;
+    @memset(&storage, std.math.maxInt(Limb));
+    const a: Const = .{ .limbs = &storage, .positive = true };
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    try std.testing.expectError(error.OutOfMemory, mul(failing.allocator(), a, a));
+    // 小さい乗算は一時領域を取らないので、同じ条件でも通る。
+    var small_failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var small = try mul(small_failing.allocator(), .{ .limbs = storage[0..48], .positive = true }, .{ .limbs = storage[0..48], .positive = true });
+    small.deinit();
+    // 断られなければ、積は正しい: (2^(64n) - 1)^2 = 2^(128n) - 2^(64n+1) + 1。
+    var product = try mul(std.testing.allocator, a, a);
+    defer product.deinit();
+    try std.testing.expectEqual(2 * limbs, product.len());
+    try std.testing.expectEqual(@as(Limb, 1), product.limbs[0]);
+    try std.testing.expectEqual(@as(Limb, 0), product.limbs[1]);
+    try std.testing.expectEqual(std.math.maxInt(Limb) - 1, product.limbs[limbs]);
+    try std.testing.expectEqual(std.math.maxInt(Limb), product.limbs[2 * limbs - 1]);
+}
+
+test "mul asks for the whole probe, and only when the shorter factor is long enough" {
+    // 大きさで断る割り当て器(2000 バイトの固定の領域)を使い、試し取りの大きさと条件を固定する。
+    var storage: [100]Limb = undefined;
+    @memset(&storage, std.math.maxInt(Limb));
+    const long: Const = .{ .limbs = &storage, .positive = true };
+    const short: Const = .{ .limbs = storage[0..10], .positive = true };
+    var buffer: [2000]u8 align(@alignOf(Limb)) = undefined;
+    // 100 桁 x 100 桁: 結果は 200 桁(1600 バイト)で入るが、試し取り(264 桁)は入らない。
+    {
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        try std.testing.expectError(error.OutOfMemory, mul(fixed.allocator(), long, long));
+    }
+    // 100 桁 x 10 桁: 短い方が閾値以下なので、試し取りをしない。学校式で、領域は結果の分だけ。
+    {
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+        var product = try mul(fixed.allocator(), long, short);
+        defer product.deinit();
+        try std.testing.expectEqual(110, product.len());
+    }
 }
 
 test "add, sub, mul, divide and gcd agree with i128 on the edge values" {

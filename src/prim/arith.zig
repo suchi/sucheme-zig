@@ -1,6 +1,8 @@
 //! Arithmetic primitives.
 //!
-//! 段階4までは固定長の整数だけを扱う(docs/design/runtime.md, ADR-0007)。
+//! 四則と比較と `number?` は数値塔の実数(fixnum、bignum、ratnum、flonum)を扱い、
+//! 計算は `num/ops.zig` が行う(docs/design/numerics-and-unicode.md)。整数除算の
+//! `quotient` `remainder` `modulo` は、スライス 4g まで fixnum だけを扱う。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -8,6 +10,8 @@ const Value = value.Value;
 const Primitive = value.Primitive;
 const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
+const number = @import("../num/number.zig");
+const ops = @import("../num/ops.zig");
 
 pub const Error = PrimitiveError;
 
@@ -15,6 +19,7 @@ pub const primitives = [_]Primitive{
     .{ .name = "+", .min_args = 0, .max_args = null, .body = .{ .pure = &add } },
     .{ .name = "-", .min_args = 1, .max_args = null, .body = .{ .pure = &subtract } },
     .{ .name = "*", .min_args = 0, .max_args = null, .body = .{ .pure = &multiply } },
+    .{ .name = "/", .min_args = 1, .max_args = null, .body = .{ .pure = &divide } },
     .{ .name = "=", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.eq) } },
     .{ .name = "<", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.lt) } },
     .{ .name = ">", .min_args = 1, .max_args = null, .body = .{ .pure = comparison(.gt) } },
@@ -28,54 +33,72 @@ pub const primitives = [_]Primitive{
 
 /// A result of the wide arithmetic, as a fixnum if it fits.
 ///
-/// R7RS 6.2.3 は、表現できない正確な結果を、実装上の制限の違反として報告する
-/// ことを実装に許している。多倍長整数は段階4で入る。
+/// 整数除算(`quotient` など)は、スライス 4g まで fixnum だけを扱う。R7RS 6.2.3 は、
+/// 表現できない正確な結果を、実装上の制限の違反として報告することを実装に許している。
 fn fromWide(n: i128) Error!Value {
     return .fromFixnum(std.math.cast(i64, n) orelse return error.IntegerOverflow);
 }
 
+/// Checks that every argument is a real number: a fixnum, a bignum, a ratnum or a flonum.
+///
+/// 値によらず、すべての引数の型を先に検査する。エラーが、前の引数まででもう答えが決まった
+/// かどうかや、途中の計算の結果に左右されないようにするためである。
+fn requireReals(args: []const Value) Error!void {
+    for (args) |a| switch (a.kind()) {
+        .fixnum, .bignum, .ratnum, .flonum => {},
+        else => return error.WrongType,
+    };
+}
+
+/// Checks that every argument is a number, a complex one included.
+fn requireNumbers(args: []const Value) Error!void {
+    for (args) |a| if (!number.isNumber(a)) return error.WrongType;
+}
+
 /// `(+ z1 ...)`.
 ///
-/// 引数がなければ和は 0 である(R7RS 6.2.6)。
-fn add(_: *const Services, args: []const Value) Error!Value {
-    // プログラムが作れるどの引数リストでもあふれない幅にしてある。このため
-    // fixnum の範囲に収めるのは結果だけで、`(+ max 1 -1)` は `max` になる。
-    var sum: i128 = 0;
-    for (args) |a| sum += a.asFixnum() orelse return error.WrongType;
-    return .fromFixnum(std.math.cast(i64, sum) orelse return error.IntegerOverflow);
+/// 引数がなければ和は 0 である(R7RS 6.2.6)。1つなら、その引数そのもの(`(+ -0.0)` は
+/// `-0.0`)。
+fn add(services: *const Services, args: []const Value) Error!Value {
+    try requireNumbers(args);
+    if (args.len == 0) return .fromFixnum(0);
+    var sum = args[0];
+    for (args[1..]) |a| sum = try ops.apply(services.heap, .add, sum, a);
+    return sum;
 }
 
 /// `(- z)` negates, and `(- z1 z2 ...)` subtracts the rest from the first
 /// (R7RS 6.2.6).
 ///
 /// 引数は1つ以上要る。個数は機械が表の下限で検査するので、`args[0]` を読んでよい。
-fn subtract(_: *const Services, args: []const Value) Error!Value {
-    const first = args[0].asFixnum() orelse return error.WrongType;
-    // 最小の fixnum の符号反転は収まらない。`(- 0 min)` も同じである。
-    if (args.len == 1) return fromWide(-@as(i128, first));
-    var difference: i128 = first;
-    for (args[1..]) |a| difference -= a.asFixnum() orelse return error.WrongType;
-    return fromWide(difference);
+fn subtract(services: *const Services, args: []const Value) Error!Value {
+    try requireNumbers(args);
+    if (args.len == 1) return ops.negate(services.heap, args[0]);
+    var difference = args[0];
+    for (args[1..]) |a| difference = try ops.apply(services.heap, .sub, difference, a);
+    return difference;
 }
 
 /// `(* z1 ...)`.
 ///
 /// 引数がなければ積は 1 である(R7RS 6.2.6)。
+fn multiply(services: *const Services, args: []const Value) Error!Value {
+    try requireNumbers(args);
+    if (args.len == 0) return .fromFixnum(1);
+    var product = args[0];
+    for (args[1..]) |a| product = try ops.apply(services.heap, .mul, product, a);
+    return product;
+}
+
+/// `(/ z)` is the reciprocal, and `(/ z1 z2 ...)` divides the first by the rest (R7RS 6.2.6).
 ///
-/// 積は128ビットで保持する。fixnum に収まらない部分積を、`(* big big 0)` のように
-/// 後の因数で収まる値に戻せるようにするためである。128ビットに収まらない部分積は、
-/// 後に 0 が来れば結果が収まる場合でも、エラーとして報告する。
-fn multiply(_: *const Services, args: []const Value) Error!Value {
-    // 先にすべての引数を検査する。エラーが、前の因数がすでにあふれたかどうかに
-    // 左右されないようにするためである。
-    for (args) |a| _ = a.asFixnum() orelse return error.WrongType;
-    var product: i128 = 1;
-    for (args) |a| {
-        const r = @mulWithOverflow(product, @as(i128, a.asFixnum().?));
-        if (r[1] != 0) return error.IntegerOverflow;
-        product = r[0];
-    }
-    return fromWide(product);
+/// 正確な0で割ると `DivisionByZero` である。被除数が不正確でも同じ。引数は1つ以上要る。
+fn divide(services: *const Services, args: []const Value) Error!Value {
+    try requireNumbers(args);
+    if (args.len == 1) return ops.apply(services.heap, .div, .fromFixnum(1), args[0]);
+    var quotient = args[0];
+    for (args[1..]) |a| quotient = try ops.apply(services.heap, .div, quotient, a);
+    return quotient;
 }
 
 /// `(= z1 z2 z3 ...)` and its relatives (R7RS 6.2.6): true when `op` holds for
@@ -83,18 +106,35 @@ fn multiply(_: *const Services, args: []const Value) Error!Value {
 ///
 /// 引数が1つなら真、なしならエラー(機械が表の下限で報告する)である。最初に成り
 /// 立たなかった組より後のものも含め、すべての引数が数であることを検査する。エラーが
-/// 値に左右されないようにするためである。
+/// 値に左右されないようにするためである。NaN を含む組は、どの比較でも偽である。
+/// `=` は複素数も取る。順序を決める `<` `>` `<=` `>=` は実数だけで、複素数は `WrongType`。
 fn comparison(comptime op: std.math.CompareOperator) Primitive.Fn {
     return &struct {
-        fn call(_: *const Services, args: []const Value) Error!Value {
-            for (args) |a| _ = a.asFixnum() orelse return error.WrongType;
+        fn call(services: *const Services, args: []const Value) Error!Value {
+            if (op == .eq) try requireNumbers(args) else try requireReals(args);
             var holds = true;
             for (args[0 .. args.len - 1], args[1..]) |a, b| {
-                if (!std.math.compare(a.asFixnum().?, op, b.asFixnum().?)) holds = false;
+                if (op == .eq) {
+                    if (!try ops.numEqual(services.heap, a, b)) holds = false;
+                    continue;
+                }
+                const order = try ops.compare(services.heap, a, b);
+                if (order == null or !orderHolds(order.?, op)) holds = false;
             }
             return .fromBool(holds);
         }
     }.call;
+}
+
+fn orderHolds(order: std.math.Order, comptime op: std.math.CompareOperator) bool {
+    return switch (op) {
+        // `=` は `numEqual` で比べるので、順序を決める演算子だけがここに来る。
+        .eq, .neq => unreachable,
+        .lt => order == .lt,
+        .lte => order != .gt,
+        .gt => order == .gt,
+        .gte => order != .lt,
+    };
 }
 
 /// Which of the integer divisions a primitive computes.
@@ -135,10 +175,9 @@ fn division(comptime kind: Division) Primitive.Fn {
 
 /// `(number? obj)`: true when `obj` is a number (R7RS 6.2.6).
 ///
-/// 数の型の述語は、数でない引数にも使え、偽を返す。段階4までは数が fixnum だけなので、
-/// fixnum なら真である。数値塔が入っても意味は変わらない(docs/plans/0010)。
+/// 数の型の述語は、数でない引数にも使え、偽を返す。
 fn isNumber(_: *const Services, args: []const Value) Error!Value {
-    return .fromBool(args[0].asFixnum() != null);
+    return .fromBool(number.isNumber(args[0]));
 }
 
 test {
@@ -175,12 +214,48 @@ fn callWith(name: []const u8, args: []const Value) Error!Value {
     return f.call(&primitives, name, args);
 }
 
+/// Whether the number `v` is written as `expected`.
+fn expectShown(expected: []const u8, v: Value) !void {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try number.write(&aw.writer, std.testing.allocator, v, 10);
+    try std.testing.expectEqualStrings(expected, aw.written());
+}
+
+/// Calls `name` with the fixnums `ns`, and expects the result to be written as `expected`.
+/// 結果の bignum は、ヒープが生きている間に確かめる。
+fn expectCallInts(expected: []const u8, name: []const u8, ns: []const i64) !void {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var args: [8]Value = undefined;
+    for (ns, 0..) |n, i| args[i] = .fromFixnum(n);
+    try expectShown(expected, try f.call(&primitives, name, args[0..ns.len]));
+}
+
+/// Calls `name` with the numbers written as `texts`, and expects the result to be written as
+/// `expected`; or, for `expected` of `#t` or `#f`, to be that boolean.
+fn expectCall(expected: []const u8, name: []const u8, texts: []const []const u8) !void {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var args: [8]Value = undefined;
+    for (texts, 0..) |t, i| args[i] = (try number.parse(f.services.heap, t, 10)) orelse return error.NotANumber;
+    const v = try f.call(&primitives, name, args[0..texts.len]);
+    if (v.kind() == .boolean) {
+        try std.testing.expectEqualStrings(expected, if (v.isTrue()) "#t" else "#f");
+        return;
+    }
+    try expectShown(expected, v);
+}
+
 test "the primitives take the numbers of arguments the language gives them" {
     const Arity = struct { name: []const u8, min: u8, max: ?u8 };
     const expected = [_]Arity{
         .{ .name = "+", .min = 0, .max = null },
         .{ .name = "-", .min = 1, .max = null },
         .{ .name = "*", .min = 0, .max = null },
+        .{ .name = "/", .min = 1, .max = null },
         .{ .name = "=", .min = 1, .max = null },
         .{ .name = "<", .min = 1, .max = null },
         .{ .name = ">", .min = 1, .max = null },
@@ -210,9 +285,9 @@ test "+ adds its arguments, and of none is 0" {
     try std.testing.expectEqual(-5, try callInt("+", &.{ 2, -7 }));
 }
 
-test "+ reports a sum that does not fit rather than wrapping" {
-    try std.testing.expectError(error.IntegerOverflow, call("+", &.{ std.math.maxInt(i64), 1 }));
-    try std.testing.expectError(error.IntegerOverflow, call("+", &.{ std.math.minInt(i64), -1 }));
+test "+ makes a bignum of a sum that does not fit, rather than wrapping" {
+    try expectCallInts("9223372036854775808", "+", &.{ std.math.maxInt(i64), 1 });
+    try expectCallInts("-9223372036854775809", "+", &.{ std.math.minInt(i64), -1 });
 }
 
 test "+ holds only the result to the fixnum range, not a partial sum" {
@@ -232,11 +307,11 @@ test "- negates one argument and subtracts the rest from the first" {
     try std.testing.expectEqual(-5, try callInt("-", &.{ 0, 5 }));
 }
 
-test "- reports a result that does not fit" {
-    try std.testing.expectError(error.IntegerOverflow, call("-", &.{std.math.minInt(i64)}));
-    try std.testing.expectError(error.IntegerOverflow, call("-", &.{ 0, std.math.minInt(i64) }));
-    try std.testing.expectError(error.IntegerOverflow, call("-", &.{ std.math.maxInt(i64), -1 }));
-    // 結果が範囲に戻るなら、途中の差は fixnum の範囲を出てよい。
+test "- makes a bignum of a result that does not fit" {
+    try expectCallInts("9223372036854775808", "-", &.{std.math.minInt(i64)});
+    try expectCallInts("9223372036854775808", "-", &.{ 0, std.math.minInt(i64) });
+    try expectCallInts("9223372036854775808", "-", &.{ std.math.maxInt(i64), -1 });
+    // 結果が範囲に戻るなら、途中の差は fixnum の範囲を出てよく、結果は fixnum である。
     try std.testing.expectEqual(std.math.maxInt(i64), try callInt("-", &.{ std.math.maxInt(i64), -1, 1 }));
 }
 
@@ -248,15 +323,15 @@ test "* multiplies, and of none is 1" {
     try std.testing.expectEqual(0, try callInt("*", &.{ 0, 5 }));
 }
 
-test "* reports a product that does not fit, but lets a zero bring a partial one back" {
-    try std.testing.expectError(error.IntegerOverflow, call("*", &.{ std.math.maxInt(i64), 2 }));
-    try std.testing.expectError(error.IntegerOverflow, call("*", &.{ std.math.minInt(i64), -1 }));
+test "* makes a bignum of a product that does not fit, and a zero brings a partial one back" {
+    try expectCallInts("18446744073709551614", "*", &.{ std.math.maxInt(i64), 2 });
+    try expectCallInts("9223372036854775808", "*", &.{ std.math.minInt(i64), -1 });
     const big = std.math.maxInt(i64);
     try std.testing.expectEqual(0, try callInt("*", &.{ big, big, 0 }));
-    try std.testing.expectError(error.IntegerOverflow, call("*", &.{ big, big, big }));
-    // 2^128 は128ビットでは 0 に巻き戻り、fixnum に収まってしまう。
+    try expectCallInts("784637716923335095224261902710254454442933591094742482943", "*", &.{ big, big, big });
+    // 2^128 は128ビットでは 0 に巻き戻って fixnum に収まるが、bignum では巻き戻らない。
     const two_32 = 1 << 32;
-    try std.testing.expectError(error.IntegerOverflow, call("*", &.{ two_32, two_32, two_32, two_32 }));
+    try expectCallInts("340282366920938463463374607431768211456", "*", &.{ two_32, two_32, two_32, two_32 });
 }
 
 test "* checks every argument before it multiplies" {
@@ -292,6 +367,143 @@ test "a comparison checks the type of every argument, however the pairs came out
         const args = [_]Value{ .fromFixnum(2), .fromFixnum(1), .unspecified_value };
         try std.testing.expectError(error.WrongType, callWith(name, &args));
     }
+}
+
+test "/ divides exact numbers into a ratio, and takes the reciprocal of one argument" {
+    try expectCall("1/2", "/", &.{ "1", "2" });
+    try expectCall("2", "/", &.{"1/2"});
+    try expectCall("1/3", "/", &.{"3"});
+    try expectCall("-1/3", "/", &.{"-3"});
+    // R7RS 6.2.6 の例。
+    try expectCall("3/20", "/", &.{ "3", "4", "5" });
+    try expectCall("1/3", "/", &.{ "1", "3" });
+    try expectCall("3", "/", &.{ "6", "2" });
+    try expectCall("1/18446744073709551616", "/", &.{"18446744073709551616"});
+}
+
+test "/ gives an inexact result when an argument is inexact, and an infinity for an inexact zero" {
+    try expectCall("0.5", "/", &.{ "1", "2.0" });
+    try expectCall("+inf.0", "/", &.{ "1", "0.0" });
+    try expectCall("-inf.0", "/", &.{ "1", "-0.0" });
+    try expectCall("+inf.0", "/", &.{"0.0"});
+    try expectCall("2.0", "/", &.{"0.5"});
+}
+
+test "/ reports an exact zero divisor, whatever the dividend, and checks the types first" {
+    for ([_][]const []const u8{
+        &.{"0"},
+        &.{ "1", "0" },
+        &.{ "1.5", "0" },
+        &.{ "1/2", "0" },
+        &.{ "18446744073709551616", "0" },
+        &.{ "1", "2", "0" },
+        &.{ "0.0", "0" },
+    }) |texts| {
+        var f: test_support.Fixture = undefined;
+        f.init();
+        defer f.deinit();
+        var args: [4]Value = undefined;
+        for (texts, 0..) |t, i| args[i] = (try number.parse(f.services.heap, t, 10)).?;
+        try std.testing.expectError(error.DivisionByZero, f.call(&primitives, "/", args[0..texts.len]));
+    }
+    const bad = [_]Value{ .fromFixnum(1), .fromFixnum(0), .unspecified_value };
+    try std.testing.expectError(error.WrongType, callWith("/", &bad));
+}
+
+test "an exact and an inexact number give an inexact result, and the sign of an inexact zero is kept" {
+    try expectCall("3.0", "+", &.{ "1.5", "1", "1/2" });
+    try expectCall("2", "*", &.{ "1/2", "4" });
+    try expectCall("-1.5", "-", &.{"1.5"});
+    try expectCall("-0.0", "-", &.{"0.0"});
+    try expectCall("0.0", "-", &.{"-0.0"});
+    try expectCall("-0.0", "+", &.{"-0.0"});
+    try expectCall("-0.0", "*", &.{"-0.0"});
+    try expectCall("0.0", "+", &.{ "-0.0", "0" });
+    try expectCall("19/2", "-", &.{ "10", "1/2" });
+    try expectCall("9.5", "-", &.{ "10", "0.5" });
+    try expectCall("+nan.0", "*", &.{ "0", "+inf.0" });
+}
+
+test "an operation on bignums and ratios stays exact, and normalizes" {
+    try expectCall("18446744073709551616", "*", &.{ "4294967296", "4294967296" });
+    try expectCall("1", "-", &.{ "18446744073709551617", "18446744073709551616" });
+    try expectCall("1", "+", &.{ "1/3", "1/3", "1/3" });
+    try expectCall("5/6", "+", &.{ "1/2", "1/3" });
+    try expectCall("0", "*", &.{ "1/3", "0", "18446744073709551616" });
+}
+
+test "comparisons are exact across exactness, so that = is transitive" {
+    try expectCall("#t", "=", &.{ "1", "1.0", "2/2" });
+    try expectCall("#f", "=", &.{ "9007199254740993", "9007199254740992.0" });
+    try expectCall("#t", "<", &.{ "9007199254740992.0", "9007199254740993" });
+    try expectCall("#t", "<", &.{ "1", "2.5", "3", "7/2", "+inf.0" });
+    try expectCall("#f", "<", &.{ "1", "2.5", "2.5" });
+    try expectCall("#t", "<=", &.{ "1", "1.0", "3/2" });
+    try expectCall("#t", ">", &.{ "+inf.0", "18446744073709551616", "1/2", "-0.5", "-inf.0" });
+    try expectCall("#t", ">=", &.{ "2", "2.0", "1" });
+    try expectCall("#t", "=", &.{ "0", "-0.0", "0.0" });
+    try expectCall("#t", "=", &.{ "18446744073709551616", "1.8446744073709552e19" });
+}
+
+test "a comparison with a NaN is false, whatever the operator and the other arguments" {
+    for ([_][]const u8{ "=", "<", ">", "<=", ">=" }) |name| {
+        try expectCall("#f", name, &.{ "+nan.0", "+nan.0" });
+        try expectCall("#f", name, &.{ "1", "+nan.0" });
+        try expectCall("#f", name, &.{ "+nan.0", "18446744073709551616" });
+        try expectCall("#f", name, &.{ "1", "+nan.0", "1" });
+    }
+    // 組が1つでも成り立たなければ偽。NaN が前にあっても、後の組を含めて検査する。
+    try expectCall("#f", "<", &.{ "1", "+nan.0", "3" });
+}
+
+test "arithmetic checks the type of every argument" {
+    for ([_][]const u8{ "-", "/", "*", "+" }) |name| {
+        const args = [_]Value{ .fromFixnum(1), .fromFixnum(2), .unspecified_value };
+        try std.testing.expectError(error.WrongType, callWith(name, &args));
+        const first = [_]Value{.empty_list_value};
+        try std.testing.expectError(error.WrongType, callWith(name, &first));
+    }
+}
+
+test "+ - * / take complex numbers, and the result is real when the imaginary part comes to zero" {
+    try expectCall("4+6i", "+", &.{ "1+2i", "3+4i" });
+    try expectCall("3+3i", "+", &.{ "1+2i", "1", "1+i" });
+    try expectCall("2", "+", &.{ "1+2i", "1-2i" });
+    try expectCall("-5+10i", "*", &.{ "1+2i", "3+4i" });
+    try expectCall("5", "*", &.{ "1+2i", "1-2i" });
+    try expectCall("-2-2i", "-", &.{ "1+2i", "3+4i" });
+    try expectCall("-1-2i", "-", &.{"1+2i"});
+    try expectCall("1+2i", "+", &.{"1+2i"});
+    try expectCall("11/25+2/25i", "/", &.{ "1+2i", "3+4i" });
+    try expectCall("-i", "/", &.{"+i"});
+    try expectCall("1/5-2/5i", "/", &.{"1+2i"});
+    try expectCall("1.5+2.0i", "+", &.{ "1+2i", "0.5" });
+}
+
+test "= takes complex numbers, and the order comparisons take real numbers only" {
+    try expectCall("#t", "=", &.{ "1+2i", "1+2i", "1+2i" });
+    try expectCall("#f", "=", &.{ "1+2i", "1+2i", "1+3i" });
+    try expectCall("#f", "=", &.{ "1+2i", "1" });
+    try expectCall("#t", "=", &.{ "1+2i", "1.0+2.0i" });
+    try expectCall("#t", "=", &.{"1+2i"});
+    for ([_][]const u8{ "<", ">", "<=", ">=" }) |name| {
+        var f: test_support.Fixture = undefined;
+        f.init();
+        defer f.deinit();
+        const z = (try number.parse(f.services.heap, "1+2i", 10)).?;
+        try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ .fromFixnum(0), z }));
+        try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{z}));
+        // 型は、組の答えが決まっていても、すべての引数について検査する。
+        try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{ .fromFixnum(2), .fromFixnum(1), z }));
+    }
+}
+
+test "a complex number divided by an exact zero is an error" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const z = (try number.parse(f.services.heap, "1+2i", 10)).?;
+    try std.testing.expectError(error.DivisionByZero, f.call(&primitives, "/", &.{ z, .fromFixnum(0) }));
 }
 
 const min_i64 = std.math.minInt(i64);
@@ -405,9 +617,17 @@ test "the division primitives check the type of both arguments before the diviso
     }
 }
 
-test "number? is true of a fixnum and false of anything else" {
+test "number? is true of every number of the tower and false of anything else" {
     for ([_]i64{ 0, 1, -1, min_i64, max_i64 }) |n| {
         try std.testing.expect(try callBool("number?", &.{n}));
+    }
+    for ([_][]const u8{ "1.5", "18446744073709551616", "1/3", "1+2i", "+inf.0", "+nan.0" }) |text| {
+        var f: test_support.Fixture = undefined;
+        f.init();
+        defer f.deinit();
+        const v = (try number.parse(f.services.heap, text, 10)).?;
+        const r = try f.call(&primitives, "number?", &.{v});
+        try std.testing.expect(r.isTrue());
     }
     const others = [_]Value{ .unspecified_value, .fromBool(true), .fromBool(false), .empty_list_value };
     for (others) |v| {

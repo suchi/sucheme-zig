@@ -2185,7 +2185,7 @@ test "an error of each kind leaves the interpreter and its definitions usable" {
             .{ .line = "(quotient 1 0)", .message = "division by zero in quotient 1 0" },
             .{ .line = "(modulo 1 0)", .message = "division by zero in modulo 1 0" },
             .{ .line = "(quotient -9223372036854775808 -1)", .message = "integer overflow in quotient -9223372036854775808 -1" },
-            .{ .line = "(* 9223372036854775807 2)", .message = "integer overflow in * 9223372036854775807 2" },
+            .{ .line = "(/ 1 0)", .message = "division by zero in / 1 0" },
             .{ .line = "(length (cons 1 2))", .message = "wrong type of argument to length (1 . 2)" },
             .{ .line = "(len 5)", .message = "wrong type of argument to cdr 5" },
             .{ .line = "(vector-ref (vector 1) 4294967296)", .message = "argument out of range in vector-ref #(1) 4294967296" },
