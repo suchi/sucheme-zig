@@ -143,6 +143,9 @@ fn integerOf(gpa: std.mem.Allocator, v: Value) Error!Managed {
 /// 理由に誤りを送出しない(R7RS 6.2.7)。複素数は、直交形式(`a+bi`、`+bi`、`+i`)と極形式
 /// (`a@b`)を読む。部分の正確性が混ざるものは、両方を不正確にそろえる(`makeRectangular`)。
 /// 極形式の角が正確な0でも大きさが0でもなければ、結果は不正確になるので、`#e` の綴りは null になる。
+/// 綴りの桁数が `max_spelling_digits` を超えるもの(整数、分子、分母、0 でない正確な小数)と、
+/// 0 でない正確な小数の10進指数の絶対値が `max_spelling_exponent` を超えるものも null である
+/// (時間の上限。部分ごとに見る)。不正確な小数と正確な 0 は、読む費用が小さいので掛けない。
 ///
 /// 作業領域はヒープの上限に計上する。結果の大きさは、確保の前に(綴りの写しの確保も
 /// 含めて)桁数と指数から見積もり、置けない大きさなら確保せずに null を返す。見積りは、
@@ -187,6 +190,29 @@ fn fitsInHeap(h: *const Heap, limbs: usize) bool {
     return limbs *| @sizeOf(value_mod.Limb) *| work_factor +| work_slack <= room;
 }
 
+/// The most digits a spelling may have (a whole number, a numerator, a denominator, or the
+/// whole part and the fraction part of an exact decimal together, leading zeros counted), and
+/// the largest size of the exponent of an exact decimal; a spelling over either is not read.
+/// An inexact decimal and an exact zero are not limited.
+///
+/// Why: 読む時間は、桁数と指数に対して2乗に近く伸びる(`bigint` の桁の読み取り、累乗、
+/// 約分の gcd、除算)。ヒープの上限に収まる綴りでも、既定の上限(256MiB)では、読むのに
+/// 数十秒かかる(ReleaseSafe で `#e1e10000000` が約30秒)。そこで綴りの大きさに上限を置く。
+/// 値は、2026-10-23 に、実測を示して決まった(いずれも ReleaseSafe で、WASM は未測定)。
+/// 1つの実数で、桁数10万と指数±100万のとき、数字が同じ並び(9だけなど)なら約0.6秒、
+/// 乱数の桁なら約1.7秒(`#e` + 乱数99,999桁 + `e-1000000` が1.6秒、乱数100,000桁の分数が
+/// 1.1秒)かかる。複素数と極形式は部分ごとに見るので、部分の数だけ増え、両部が最悪の綴りなら
+/// 約3秒になる。R7RS 6.2.7 は内容を理由に誤りを出さないので、超えた綴りは
+/// 数でないものと同じく null を返す(`string->number` は `#f`)。ヒープの上限と同じ側に倒れる。
+/// 後から緩めるのは、互換を壊さない。
+///
+/// 不正確な小数(`1e999999999`、桁数が多い `1.5`)と、仮数が0の正確な小数(`#e0e999999999`)は
+/// 掛けない。読む費用が桁数に線形で、桁数1000万の小数でも約20ミリ秒だった(2026-10-23、
+/// ReleaseSafe)ので、時間の理由が無い。掛けると、`+inf.0` や 0 と読むのが標準の綴りが
+/// `#f` になる。`#i` つきの整数と有理数は、内部で正確な数を通るので掛ける。
+const max_spelling_digits = 100_000;
+const max_spelling_exponent = 1_000_000;
+
 const one_limbs = [_]value_mod.Limb{1};
 const one: Const = .{ .limbs = &one_limbs, .positive = true };
 const ten_limbs = [_]value_mod.Limb{10};
@@ -221,6 +247,7 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, literal: syntax.Literal, real: sy
             });
         },
         .integer => |i| {
+            if (i.digits.len > max_spelling_digits) return null;
             if (!fitsInHeap(h, bigint.limbsForDigits(i.digits.len, literal.radix))) return null;
             var n = try bigint.parseDigits(gpa, i.digits, literal.radix);
             defer n.deinit();
@@ -234,6 +261,7 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, literal: syntax.Literal, real: sy
             return try fromInteger(h, n.toConst());
         },
         .ratio => |r| {
+            if (r.numerator.len > max_spelling_digits or r.denominator.len > max_spelling_digits) return null;
             if (!fitsInHeap(h, bigint.limbsForDigits(r.numerator.len, literal.radix) +| bigint.limbsForDigits(r.denominator.len, literal.radix))) return null;
             var d = try bigint.parseDigits(gpa, r.denominator, literal.radix);
             defer d.deinit();
@@ -311,6 +339,7 @@ fn parseExactDecimal(h: *Heap, gpa: std.mem.Allocator, d: anytype) Error!?Value 
     while (start < total and digitAt(d.whole, d.fraction, start) == '0') start += 1;
     // 0 は、どんな指数でも 0 である。
     if (start == total) return .fromFixnum(0);
+    if (total > max_spelling_digits or @abs(parseExponent(d.exponent)) > max_spelling_exponent) return null;
     const exponent10 = parseExponent(d.exponent) - @as(i64, @intCast(d.fraction.len));
     const power_limbs = bigint.limbsForPow(ten, @abs(exponent10)) orelse return null;
     if (!fitsInHeap(h, bigint.limbsForDigits(total - start, 10) +| power_limbs)) return null;
@@ -444,7 +473,7 @@ fn zeros(comptime n: usize) [n]u8 {
     return @splat('0');
 }
 
-const zeros_100000 = zeros(100000);
+const zeros_90000 = zeros(90000);
 
 /// Reads `text` and writes the result in radix 10, or returns null if it is not a number.
 fn readWrite(h: *Heap, text: []const u8, default_radix: u8, out_radix: u8) !?[]u8 {
@@ -837,12 +866,13 @@ test "parse says no to an exact number too large for the heap, before it allocat
     try testing.expectEqual(0, h.accounted);
     try testing.expect(!h.external_enforced);
     // 桁数が大きい `#e` の小数も、綴りを写す前に見積もって、null になる(整数と同じ)。
-    const big_decimal = try std.fmt.allocPrint(testing.allocator, "#e{s}.5", .{&digits});
+    const big_decimal = try std.fmt.allocPrint(testing.allocator, "#e{s}.5", .{digits[0..99_999]});
     defer testing.allocator.free(big_decimal);
     try expectReads(&h, null, big_decimal);
     try testing.expectEqual(0, h.external);
-    // 桁は先頭の0を数えない。0が大きいだけの綴りは、小さい数として読める。
-    const zeros_text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1e{d}", .{ &zeros_100000, 100000 });
+    // ヒープの見積りは先頭の0を数えない。0が大きいだけの綴りは、小さい数として読める。
+    // (綴りの長さの上限には数える。上限は「parse says no to an exact spelling over the limits」が固定する)
+    const zeros_text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1e{d}", .{ &zeros_90000, 90000 });
     defer testing.allocator.free(zeros_text);
     try expectReads(&h, "1/10", zeros_text);
     // 指数部が大きすぎても、整数があふれない。
@@ -852,6 +882,161 @@ test "parse says no to an exact number too large for the heap, before it allocat
     const expected = "1" ++ zeros(300);
     try expectReads(&h, expected, "#e1e300");
     try testing.expectEqual(0, h.external);
+}
+
+fn filled(len: usize, c: u8) ![]u8 {
+    const s = try testing.allocator.alloc(u8, len);
+    @memset(s, c);
+    return s;
+}
+
+fn expectReadsFormatted(h: *Heap, expected: ?[]const u8, comptime fmt: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(testing.allocator, fmt, args);
+    defer testing.allocator.free(text);
+    try expectReads(h, expected, text);
+}
+
+test "parse says no to an exact spelling over the limits, wherever the heap has room" {
+    // ヒープの上限は既定(十分に大きい)。断る理由は、綴りの長さと指数の上限だけである。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const over = try filled(max_spelling_digits + 1, '7');
+    defer testing.allocator.free(over);
+    const at = over[1..];
+    // 整数、分子、分母。基数と符号と正確さによらない(`#i` も内部で正確な数を作る)。
+    try expectReadsFormatted(&h, null, "{s}", .{over});
+    try expectReadsFormatted(&h, null, "-{s}", .{over});
+    try expectReadsFormatted(&h, null, "#x{s}", .{over});
+    try expectReadsFormatted(&h, null, "#b{s}", .{over});
+    try expectReadsFormatted(&h, null, "#i{s}", .{over});
+    try expectReadsFormatted(&h, null, "#e{s}", .{over});
+    try expectReadsFormatted(&h, null, "{s}/3", .{over});
+    try expectReadsFormatted(&h, null, "3/{s}", .{over});
+    try expectReadsFormatted(&h, null, "#i{s}/3", .{over});
+    try expectReadsFormatted(&h, null, "#i3/{s}", .{over});
+    // 正確な小数の仮数は、整数部と小数部の長さの合計で見る。先頭の0も数える。
+    try expectReadsFormatted(&h, null, "#e{s}.5", .{at});
+    try expectReadsFormatted(&h, null, "#e1.{s}", .{at});
+    try expectReadsFormatted(&h, null, "#e0.{s}", .{over});
+    // 先頭の0も数える: 0 が上限の個数あって 1 が続く綴りは、整数部の 0 と合わせて上限を超える。
+    const zeros_max = try filled(max_spelling_digits, '0');
+    defer testing.allocator.free(zeros_max);
+    try expectReadsFormatted(&h, null, "#e0.{s}1", .{zeros_max});
+    try expectReadsFormatted(&h, null, "#e-0.{s}1", .{zeros_max});
+    // 正確な小数の指数の絶対値。符号によらない。
+    try expectReads(&h, null, "#e1e1000001");
+    try expectReads(&h, null, "#e1e-1000001");
+    try expectReads(&h, null, "#e-1.5e1000001");
+    try expectReads(&h, null, "#e1.5e-1000001");
+    try expectReads(&h, null, "#e1e99999999999999999999");
+    // 複素数の各部と極形式の各部も、それぞれ見る。
+    try expectReadsFormatted(&h, null, "{s}+1i", .{over});
+    try expectReadsFormatted(&h, null, "1+{s}i", .{over});
+    try expectReadsFormatted(&h, null, "+{s}i", .{over});
+    try expectReadsFormatted(&h, null, "#i{s}/3+1i", .{over});
+    try expectReadsFormatted(&h, null, "{s}@1", .{over});
+    try expectReadsFormatted(&h, null, "1@{s}", .{over});
+    try expectReads(&h, null, "#e1e1000001+1i");
+    try expectReads(&h, null, "#e1+1e-1000001i");
+    try expectReads(&h, null, "#e1e1000001@0");
+    // 断ったあとに、数えたものを残さない。
+    try testing.expectEqual(0, h.external);
+    try testing.expectEqual(0, h.accounted);
+}
+
+test "the limits of a spelling are the values the design decided" {
+    // 値を変えるのは設計の判断である(docs/design/numerics-and-unicode.md)。
+    try testing.expectEqual(100_000, max_spelling_digits);
+    try testing.expectEqual(1_000_000, max_spelling_exponent);
+}
+
+test "parse does not limit what costs little: an inexact decimal and an exact zero" {
+    // 不正確な小数は、桁数と指数が線形に読まれるので、上限の外でも読む(`#i` の小数も)。
+    // 正確な 0 は、どんな桁数と指数でも 0 である。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const over = try filled(max_spelling_digits + 1, '7');
+    defer testing.allocator.free(over);
+    const zeros_over = try filled(max_spelling_digits + 1, '0');
+    defer testing.allocator.free(zeros_over);
+    try expectReads(&h, "+inf.0", "1e1000000");
+    try expectReads(&h, "0.0", "1e-1000000");
+    try expectReads(&h, "+inf.0", "1e1000001");
+    try expectReads(&h, "0.0", "1e-1000001");
+    try expectReads(&h, "+inf.0", "#i1e1000001");
+    try expectReads(&h, "0.0", "#i1.5e-1000001");
+    try expectReads(&h, "+inf.0", "1e999999999");
+    try expectReads(&h, "0.0", "1e-999999999");
+    try expectReads(&h, "+inf.0", "1e99999999999999999999");
+    try expectReadsFormatted(&h, "+inf.0", "{s}.5", .{over});
+    try expectReadsFormatted(&h, "+inf.0", "#i{s}.5", .{over});
+    try expectReadsFormatted(&h, "0.0", "#i0.{s}", .{zeros_over});
+    // 複素数と極形式の部分でも同じである。
+    try expectReads(&h, "+inf.0+0.0i", "1e999999999+1e-999999999i");
+    try expectReadsFormatted(&h, "+inf.0+inf.0i", "{s}.5+{s}.5i", .{ over, over });
+    // 正確な 0 は、上限を超える桁数と指数でも 0 である。
+    try expectReads(&h, "0", "#e0e1000001");
+    try expectReads(&h, "0", "#e0e-1000001");
+    try expectReads(&h, "0", "#e0e999999999");
+    try expectReadsFormatted(&h, "0", "#e0.{s}", .{zeros_over});
+    try expectReadsFormatted(&h, "0", "#e0.{s}e1000001", .{zeros_over});
+    try expectReads(&h, "0", "#e0e999999999+0e999999999i");
+    try testing.expectEqual(0, h.external);
+}
+
+test "parse reads an exact spelling just within the limits" {
+    try tier.slow();
+    // 費用は桁数と指数の2乗に比例する。上限ちょうどの正確な数を、縮小せずに読む。
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const nines = try filled(max_spelling_digits, '9');
+    defer testing.allocator.free(nines);
+    {
+        const v = (try parse(&h, nines, 10)).?;
+        try testing.expectEqual(value_mod.Kind.bignum, v.kind());
+    }
+    {
+        const text = try std.fmt.allocPrint(testing.allocator, "{s}/7", .{nines});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        const text = try std.fmt.allocPrint(testing.allocator, "3/{s}", .{nines});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        const text = try std.fmt.allocPrint(testing.allocator, "#e{s}", .{nines});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 正確な小数の仮数が上限ちょうど(整数部の 0 と、小数部の 99,999 桁)。
+        const lead = try filled(max_spelling_digits - 2, '0');
+        defer testing.allocator.free(lead);
+        const text = try std.fmt.allocPrint(testing.allocator, "#e0.{s}1", .{lead});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 分子と分母がともに上限ちょうど(約分の gcd が最も重い形に近い)。
+        const denominator = try filled(max_spelling_digits, '7');
+        defer testing.allocator.free(denominator);
+        denominator[max_spelling_digits - 1] = '3';
+        const text = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ nines, denominator });
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    {
+        // 仮数が上限ちょうどで、指数も上限ちょうど。
+        const fraction = try filled(max_spelling_digits - 2, '1');
+        defer testing.allocator.free(fraction);
+        const text = try std.fmt.allocPrint(testing.allocator, "#e1.{s}e-1000000", .{fraction});
+        defer testing.allocator.free(text);
+        try testing.expect((try parse(&h, text, 10)) != null);
+    }
+    try testing.expect((try parse(&h, "#e1e1000000", 10)) != null);
+    try testing.expect((try parse(&h, "#e1e-1000000", 10)) != null);
 }
 
 test "parse compares the estimate with the room that is left, not with the limit" {
