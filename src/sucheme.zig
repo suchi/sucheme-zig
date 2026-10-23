@@ -42,6 +42,8 @@ const tier = @import("tier.zig");
 const bigint = @import("num/bigint.zig");
 // Why: 4b の flonum.zig も同じ。4e が number.zig から呼ぶまでの、単体テストの集合に載せる参照。
 const flonum = @import("num/flonum.zig");
+// Why: 4e-1 の exact.zig も同じ。number.zig が呼ぶまでの、単体テストの集合に載せる参照。
+const exact = @import("num/exact.zig");
 const embedded_lib = @import("embedded_lib");
 
 /// The files under `lib/`, which every interpreter searches before the files beneath
@@ -412,6 +414,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = bigint;
     _ = flonum;
+    _ = exact;
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {

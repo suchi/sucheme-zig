@@ -160,7 +160,7 @@ pub fn write(out: *std.Io.Writer, x: f64) std.Io.Writer.Error!void
 pub fn parseDecimal(text: []const u8) error{InvalidSpelling}!f64
 ```
 
-4b の実装で、`parseDecimal` の署名を、当初の3つの切片(整数部、小数部、指数部)から、1つの切片に変えた。3つに分けると、`std.fmt.parseFloat` に渡す前に連結が要り、桁数に上限のない入力では、確保するか、桁を切り詰めて丸めの判定を自前で持つことになる。1つの切片なら、標準ライブラリがそのまま読む。4e が呼ぶときは、`Literal` の `decimal` の切片が指す元の文字列から、符号を除いた範囲を渡す。誤りを返す形にしたのは、`parseFloat` が符号、`inf`、`0x`、`_` も受理するため、約束が破れたときに別の値を黙って返さないようにするためである。
+4b の実装で、`parseDecimal` の署名を、当初の3つの切片(整数部、小数部、指数部)から、1つの切片に変えた。3つに分けると、`std.fmt.parseFloat` に渡す前に連結が要り、桁数に上限のない入力では、確保するか、桁を切り詰めて丸めの判定を自前で持つことになる。1つの切片なら、標準ライブラリがそのまま読む。`syntax.scan` の `decimal` の切片は、部分が無いとき(`1e5` の小数部、`1.5` の指数部)に入力を指さない空文字列になるので、切片のポインタから範囲を作らない。4e-1 の `parse` は、元の文字列から接頭辞(`#x` など)と符号を除いたものを渡す。誤りを返す形にしたのは、`parseFloat` が符号、`inf`、`0x`、`_` も受理するため、約束が破れたときに別の値を黙って返さないようにするためである。
 
 `src/num/bigint.zig`(スライス 4c): `std.math.big.int` の上に、この処理系が要る演算だけを薄く置く。入力は `std.math.big.int.Const`、出力は呼び出し側が渡した割り当て器で確保した `Managed` である。
 
@@ -298,7 +298,8 @@ pub fn digitValue(c: u21) ?u4
 | 4b 浮動小数点数の書式と解析 | `flonum.write` が設計文書の表のとおりに書き、`parseDecimal` と合わせて境界の値が往復する | `src/num/flonum.zig` | T2 | 合意を求める点の4(指数表記の範囲) | 可 | 小 |
 | 4c 多倍長の薄い層 | `bigint` の各関数が、`i64` の範囲で `i128` の計算と一致し、基数2、8、10、16で `toString` と `parseDigits` が往復する | `src/num/bigint.zig` | T2 | なし | 可 | 中 |
 | 4d 型の骨格 | `Value` に4つの変種、`heap_types` に3つの型が入り、走査と計上の検証項目が通る。プリンタの分岐が `num.write` を呼ぶ(中身は仮) | `src/value.zig` `src/heap.zig` `src/trace.zig` `src/printer.zig`(分岐だけ) `src/num/number.zig`(仮の `write` だけ) | T3 | 合意を求める点の5、6 | 4a〜4c と可。L3 の骨格とは順に(下) | 中 |
-| 4e 数の生成と正規化、`parse` と `write` | `num.parse` と `num.write` が、5種(複素数を除く場合は4種)について往復する | `src/num/number.zig` | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大 |
+| 4e-1 数の生成と正規化、`parse` と `write`(複素数を除く) | `num.parse` と `num.write` が、fixnum、bignum、ratnum、flonum について、基数2、8、10、16で往復する。純粋な変換(`src/num/exact.zig`)を含む | `src/num/number.zig` `src/num/exact.zig`(新規) | T3 | 4a、4b、4c、4d | 不可(下の鎖の要) | 大の前半 |
+| 4e-2 複素数の構文と書き出し | `num.parse` と `num.write` が compnum について往復し、正規化の規則(虚部が正確な0なら実数)が通る | `src/num/number.zig` | T3 | 4e-1。部分の正確性が混ざる複素数の扱いの判断 | 4f と可 | 大の後半 |
 | 4r リーダの数の構文(L2 の作業) | リーダが `num.parse` で数を読み、`(define inf 1)` と `(define |1_000| 3)` 以外の数の綴りが数になる | `src/reader.zig` | T2 | 4e。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4f 四則と比較 | `+ - * / = < > <= >=` が数値塔の全組合せで動き、作業領域が返る | `src/prim/arith.zig` `src/num/ops.zig`(新規) | T2 | 4e | 4h、4u2 と可 | 大 |
 | 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行の衝突は機械的に解く) | 大 |
@@ -346,7 +347,7 @@ pub fn digitValue(c: u21) ?u4
 
 | 番号 | 中身 | 出典 | スライス |
 | --- | --- | --- | --- |
-| 0400〜0409 | 数の構文の受理と拒否(`string->number` 経由)。設計文書の `parseFloat` の表、`<infnan>` の4つ、`#e0.1` と `#e1e400`、`1/0`、大文字小文字(`#X1a`) | R7RS 7.1.1、6.2.7。[numerics-and-unicode.md](../design/numerics-and-unicode.md) の表 | 4e(4r の後はリーダの側も) |
+| 0400〜0409 | 数の構文の受理と拒否(`string->number` 経由)。設計文書の `parseFloat` の表、`<infnan>` の4つ、`#e0.1` と `#e1e400`、`1/0`、大文字小文字(`#X1a`) | R7RS 7.1.1、6.2.7。[numerics-and-unicode.md](../design/numerics-and-unicode.md) の表 | 4g、4r(`string->number` とリーダが入るまで、Scheme からは試せない。4e-1 は Zig の単体テスト) |
 | 0410〜0419 | 数の述語と正確性(`number?` `complex?` `real?` `rational?` `integer?` `exact?` `inexact?` `exact-integer?` `finite?` `infinite?` `nan?`)。`(real? -2.5+0i)` と `(real? -2.5+0.0i)` | R7RS 6.2.6 の例 | 4f、4g |
 | 0420〜0429 | 四則と比較の全組合せ、不正確さの伝播、`max` と `min` | R7RS 6.2.2、6.2.6 | 4f、4g |
 | 0430〜0439 | 整数除算の全組、符号の4通りと不正確な整数(`(truncate/ -5.0 -2)`) | R7RS 6.2.6 の例 | 4g |
@@ -493,9 +494,10 @@ pub fn digitValue(c: u21) ?u4
 | --- | --- |
 | 4c | マージ済み([suchi/sucheme-zig#136](https://github.com/suchi/sucheme-zig/pull/136))。Zig 0.17.0 の `Const.toString` が基数8と32で桁を誤るため、2のべきの基数の書き出しは自前にした |
 | 4d | マージ済み([suchi/sucheme-zig#134](https://github.com/suchi/sucheme-zig/pull/134)) |
-| 4a | 実装済み。ドラフトの PR で、自前の敵対的レビュー中 |
-| 4b | 実装済み。ドラフトの PR で、自前の敵対的レビュー待ち。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
-| 4e〜4z、4u1〜4u4 | 未着手 |
+| 4a | マージ済み([suchi/sucheme-zig#148](https://github.com/suchi/sucheme-zig/pull/148)) |
+| 4b | マージ済み([suchi/sucheme-zig#163](https://github.com/suchi/sucheme-zig/pull/163))。境界の値は原文で確かめた(上の「ECMA-262 の Number::toString の確認」) |
+| 4e-1 | PR を作る(このブランチ)。4e を 4e-1 と 4e-2 に分けた(レビューを小さくするため) |
+| 4e-2、4f〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 

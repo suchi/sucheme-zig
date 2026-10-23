@@ -252,18 +252,18 @@ test "write and display hand the other numbers to src/num, also inside a list" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    // 書式の本体はスライス 4e で入る。ここでは、分岐が src/num の `write` に届くことだけを
-    // 固定する(仮の表記は src/num/number.zig のテストが持つ)。
+    // 書式の本体は src/num/number.zig が持つ。ここでは、分岐が src/num の `write` に届くことだけを
+    // 固定する。複素数の書き出しは、スライス 4e-2 までは仮の表記である。
     const l = try f.list(&.{ .fromFixnum(1), .fromFlonum(0.5) }, .empty_list_value);
-    try std.testing.expectEqualStrings("(1 #<number>)", try f.written(&buf, l));
-    try std.testing.expectEqualStrings("(1 #<number>)", try f.displayed(&buf, l));
+    try std.testing.expectEqualStrings("(1 0.5)", try f.written(&buf, l));
+    try std.testing.expectEqualStrings("(1 0.5)", try f.displayed(&buf, l));
     // ヒープの3種も同じ分岐を通る。
     var limbs = [_]value_mod.Limb{ 0, 1 };
     var b: value_mod.Bignum = .{ .limbs = &limbs, .positive = true };
     var r: value_mod.Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromFixnum(3) };
     var c: value_mod.Compnum = .{ .real = .fromFixnum(1), .imag = .fromFixnum(2) };
     const heap_numbers = try f.list(&.{ .fromBignum(&b), .fromRatnum(&r), .fromCompnum(&c) }, .empty_list_value);
-    try std.testing.expectEqualStrings("(#<number> #<number> #<number>)", try f.written(&buf, heap_numbers));
+    try std.testing.expectEqualStrings("(18446744073709551616 1/3 #<number>)", try f.written(&buf, heap_numbers));
 }
 
 test "write shows an uninitialized marker that leaked" {

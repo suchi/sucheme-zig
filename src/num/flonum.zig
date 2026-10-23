@@ -13,7 +13,7 @@ const tier = @import("../tier.zig");
 /// Writes `x` in the base-10 spelling of R7RS 6.2.7.
 ///
 /// 有限の値は、最短の往復する桁列に小数点を必ず置いて書く(`100.0`、`0.5`)。
-/// ECMA-262 の Number::toString(原文は docs/plans/0018 の 4b の節に記録した版)の
+/// ECMA-262 の Number::toString(確認の記録は docs/plans/0018 の「ECMA-262 の Number::toString の確認」)の
 /// n を、`x = s × 10^(n-k)`(s は k 桁の整数で10で割り切れない)を満たす整数とし、
 /// n が -5 以上 21 以下なら小数で、それ以外なら指数表記で書く。指数表記の仮数部にも
 /// 小数点を置く(`1.0e21`、`1.5e-7`)。指数部の正の符号は書かない。`+inf.0` `-inf.0`
@@ -187,6 +187,8 @@ test "parseDecimal reads the spellings of <decimal 10>" {
     try std.testing.expectEqual(@as(f64, 1.5e-3), try parseDecimal("1.5e-3"));
     try std.testing.expectEqual(@as(f64, 1500.0), try parseDecimal("1.5e+3"));
     try std.testing.expectEqual(@as(f64, 0.0), try parseDecimal("0.0"));
+    // 数字だけの綴りも受理する。`syntax.scan` はそれを integer と判定するので、呼び出し側は decimal にだけ渡す約束だが、この関数の契約として固定する。
+    try std.testing.expectEqual(@as(f64, 11.0), try parseDecimal("11"));
 }
 
 test "parseDecimal rounds to nearest even, and saturates instead of failing" {
