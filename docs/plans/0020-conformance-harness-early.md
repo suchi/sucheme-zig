@@ -394,8 +394,8 @@ flowchart LR
 | 6e | 完了(suchi/sucheme-zig#149) |
 | 6f | 完了(suchi/sucheme-zig#151) |
 | 6g | 完了。ユーザーの承認を得て、main の e0ce204 の結果から5件を作った: L2 は suchi/sucheme-zig#152、L0 は suchi/sucheme-zig#153(誤りの1件、bug)、L4 は suchi/sucheme-zig#154、L1 は suchi/sucheme-zig#155、L3 は suchi/sucheme-zig#156 |
+| 6h | 完了。無限に回るテストへの備え(「節と、インタプリタの単位」の開いた問い)は、計画書 [0024](0024-step-limit-for-the-conformance-run.md) のスライス 6h-1(suchi/sucheme-zig#162)と 6h-2(suchi/sucheme-zig#169)で入った |
 
 ## 次にやること
 
 - 各レーンの PR がマージされたら、「失敗の一覧を、各レーンの作業項目に流す手順」の5のとおり、issue のチェックを更新する。
-- 無限に回るテストへの備えを、段階6の完了の前に決める(「節と、インタプリタの単位」の開いた問い)。
