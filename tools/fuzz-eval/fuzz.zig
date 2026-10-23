@@ -50,7 +50,8 @@ const input_fact = "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 
 /// 作らずにコアだけで作ると、未束縛になって結果が出ない。
 const input_assv = "(cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none))";
 /// An input that passes the heap limit in one step.
-/// ヒープの上限が効いて、Scheme の条件になることを固定する。
+/// ヒープの上限が効いて、診断が `heap limit exceeded` になることを固定する。条件として
+/// 送出されたか、ホストの誤りで返ったかは、診断の文では見分けない。
 const input_heap = "(make-vector 100000000)";
 
 /// What `zig build test` checks the runs of some inputs ended with.
