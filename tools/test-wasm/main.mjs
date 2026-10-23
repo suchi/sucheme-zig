@@ -345,7 +345,7 @@ test("the standard libraries of slice 3k can be imported in wasm", () => {
     h.run("(import (scheme base) (scheme cxr) (scheme lazy) (scheme case-lambda)) (list (cadr '(1 2 3)) (caddr '(1 2 3)) (force (delay 4)) ((case-lambda ((a) a) ((a b) (+ a b))) 1 2))"),
     [OK, "(2 3 4 3)\n"],
   );
-  assert.deepEqual(h.run("(import (only (scheme base) abs))"), [SCHEME_ERROR, "error: bad import: abs is not exported by the import set\n"]);
+  assert.deepEqual(h.run("(import (only (scheme base) exact))"), [SCHEME_ERROR, "error: bad import: exact is not exported by the import set\n"]);
 });
 
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
