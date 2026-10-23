@@ -16,6 +16,9 @@
 (list (exact-integer? 32) (exact-integer? (* 4294967296 4294967296)) (exact-integer? (inexact 32)))
 (#t #t #f)
 
+(list (integer? (* 4294967296 4294967296)) (integer? (/ (* 4294967296 4294967296) 3)) (rational? (* 4294967296 4294967296)))
+(#t #f #t)
+
 (list (integer? (inexact 3)) (integer? (inexact (/ 7 2))) (rational? (inexact (/ 7 2))) (real? (inexact 3)))
 (#t #f #t #t)
 

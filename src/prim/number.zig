@@ -290,8 +290,10 @@ test "numerator and denominator, with the examples of R7RS 6.2.6" {
         var f: test_support.Fixture = undefined;
         f.init();
         defer f.deinit();
-        const inf = (try number.parse(f.services.heap, "+inf.0", 10)).?;
-        try std.testing.expectError(error.OutOfRange, f.call(&primitives, name, &.{inf}));
+        for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0" }) |text| {
+            const bad = (try number.parse(f.services.heap, text, 10)).?;
+            try std.testing.expectError(error.OutOfRange, f.call(&primitives, name, &.{bad}));
+        }
         const z = (try number.parse(f.services.heap, "1+2i", 10)).?;
         try std.testing.expectError(error.WrongType, f.call(&primitives, name, &.{z}));
         try std.testing.expectError(error.WrongType, callWith(name, &.{.unspecified_value}));

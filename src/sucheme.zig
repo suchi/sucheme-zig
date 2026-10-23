@@ -1054,11 +1054,18 @@ test "the data of an include are held to the limit of the heap, from the first f
     defer std.testing.allocator.free(ones);
     for (ones, 0..) |*b, i| b.* = if (i % 2 == 0) '1' else ' ';
     try tree.write("ones.scm", ones);
+    // Why: 標準環境の初期化が使うヒープは、束縛が増えるにつれて増える。固定の上限だと、束縛を足すたびに
+    // 初期化が収まらなくなる(4g-1 で 512 KiB が足りなくなった)。上限は、既定の上限で初期化した
+    // 直後の使用量に余裕を足して決める。余裕は、100 KB の式の並び(約 50000 個の節点)では超える大きさにする。
+    const base_held = blk: {
+        var baseline: Interpreter = undefined;
+        try baseline.initWithFiles(std.testing.allocator, .{}, .{ .io = std.testing.io, .roots = &tree.roots });
+        defer baseline.deinit();
+        break :blk baseline.ctx.heap.held();
+    };
+    const margin = 128 * 1024;
     var small: Interpreter = undefined;
-    // Why: 標準環境の初期化が使うヒープは、束縛が増えるにつれて増える。上限は、初期化に余裕を持たせ、
-    // 100 KB の式の並び(約 50000 個の節点)では超える大きさにする。512 KiB は、4g-1 で束縛を17個
-    // 足した時点で、初期化が収まらなくなった。
-    try small.initWithFiles(std.testing.allocator, .{ .limit = 640 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    try small.initWithFiles(std.testing.allocator, .{ .limit = base_held + margin }, .{ .io = std.testing.io, .roots = &tree.roots });
     defer small.deinit();
     // 小さい上限では、マクロの適用が無くても、ヒープの上限のエラーで終わり、次の行は読める。
     try expectLineFails(&small, "(include \"ones.scm\")", "heap limit exceeded");
