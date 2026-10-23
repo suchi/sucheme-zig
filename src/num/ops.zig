@@ -28,7 +28,9 @@ const Managed = bigint.Managed;
 const Limb = bigint.Limb;
 const Mutable = std.math.big.int.Mutable;
 
-pub const Error = heap_mod.Error || error{DivisionByZero};
+/// `OutOfRange` is an argument of the right type that the operation cannot take, such as the
+/// exact value of an infinity.
+pub const Error = heap_mod.Error || error{ DivisionByZero, OutOfRange };
 
 /// The four arithmetic operations.
 pub const Op = enum { add, sub, mul, div };
@@ -393,6 +395,182 @@ fn integerConst(v: Value, buffer: *[fixnum_limbs]Limb) Const {
     return v.asBignum().?.toConst();
 }
 
+// ---- predicates, exactness, rounding, extremes (slice 4g-1) ----
+
+/// Whether the number `v` is exact. A complex number is exact when its parts are (they are
+/// both exact or both flonums).
+pub fn isExact(v: Value) bool {
+    std.debug.assert(number.isNumber(v));
+    if (v.asCompnum()) |c| return c.real.asFlonum() == null;
+    return v.asFlonum() == null;
+}
+
+/// Whether `v` is a number with no imaginary part: R7RS 6.2.6 `real?`. A complex number with an
+/// inexact zero imaginary part is not (`(real? -2.5+0.0i)` is false).
+pub fn isRealNumber(v: Value) bool {
+    return isReal(v);
+}
+
+/// Whether `v` is a rational number: an exact real, or a finite flonum.
+pub fn isRationalNumber(v: Value) bool {
+    if (v.asFlonum()) |x| return std.math.isFinite(x);
+    return isReal(v);
+}
+
+/// Whether `v` is an integer: an exact integer, or a finite flonum with an integral value.
+pub fn isIntegerNumber(v: Value) bool {
+    if (v.asFlonum()) |x| return std.math.isFinite(x) and x == @floor(x);
+    return v.kind() == .fixnum or v.kind() == .bignum;
+}
+
+/// Whether `v` is an exact integer.
+pub fn isExactInteger(v: Value) bool {
+    return v.kind() == .fixnum or v.kind() == .bignum;
+}
+
+/// The exact number equal to `v`: R7RS 6.2.6 `exact`.
+///
+/// 無限大と NaN には正確な値が無いので `OutOfRange` である(R7RS 6.2.6 は、そのような引数
+/// を誤りとする実装を許す)。複素数は、実部と虚部のそれぞれを正確にする。
+pub fn toExact(h: *Heap, v: Value) Error!Value {
+    std.debug.assert(number.isNumber(v));
+    if (isExact(v)) return v;
+    return counted(Value, toExactWork, h, .{v});
+}
+
+fn toExactWork(h: *Heap, gpa: std.mem.Allocator, v: Value) Error!Value {
+    if (v.asCompnum()) |c| {
+        const re = try exactFromFloat(h, gpa, c.real.asFlonum().?);
+        const im = try exactFromFloat(h, gpa, c.imag.asFlonum().?);
+        return number.makeRectangular(h, gpa, re, im);
+    }
+    return exactFromFloat(h, gpa, v.asFlonum().?);
+}
+
+fn exactFromFloat(h: *Heap, gpa: std.mem.Allocator, x: f64) Error!Value {
+    if (!std.math.isFinite(x)) return error.OutOfRange;
+    if (x == @trunc(x) and @abs(x) < 9223372036854775808.0) return .fromFixnum(@intFromFloat(x));
+    var m = try exact.fromF64(gpa, x);
+    defer m.deinit();
+    if (std.math.signbit(x)) m.numerator.negate();
+    return number.makeRatio(h, gpa, m.numerator.toConst(), m.denominator.toConst());
+}
+
+/// The inexact number nearest to `v`: R7RS 6.2.6 `inexact`.
+///
+/// 巨大な正確数は無限大になりうる。複素数は、実部と虚部のそれぞれを不正確にする。
+pub fn toInexact(h: *Heap, v: Value) Error!Value {
+    std.debug.assert(number.isNumber(v));
+    if (!isExact(v)) return v;
+    if (v.asFixnum()) |n| return .fromFlonum(@floatFromInt(n));
+    return counted(Value, toInexactWork, h, .{v});
+}
+
+fn toInexactWork(h: *Heap, gpa: std.mem.Allocator, v: Value) Error!Value {
+    if (v.asCompnum()) |c| {
+        const re: Value = .fromFlonum(try number.toFlonum(gpa, c.real));
+        const im: Value = .fromFlonum(try number.toFlonum(gpa, c.imag));
+        return number.makeRectangular(h, gpa, re, im);
+    }
+    return .fromFlonum(try number.toFlonum(gpa, v));
+}
+
+/// How a real number is rounded to an integer (R7RS 6.2.6).
+pub const Rounding = enum { floor, ceiling, truncate, round };
+
+/// `v` rounded to an integer, exact if `v` is exact and inexact if it is a flonum.
+///
+/// `round` は、同じ近さの2つの整数のうち偶数のほうへ丸める(`(round 2.5)` は 2.0、
+/// `(round 7/2)` は 4。R7RS 6.2.6)。
+pub fn roundNumber(h: *Heap, mode: Rounding, v: Value) Error!Value {
+    std.debug.assert(isReal(v));
+    if (v.asFlonum()) |x| return .fromFlonum(roundFloat(mode, x));
+    if (v.kind() != .ratnum) return v;
+    return counted(Value, roundRatioWork, h, .{ mode, v });
+}
+
+fn roundFloat(mode: Rounding, x: f64) f64 {
+    return switch (mode) {
+        .floor => @floor(x),
+        .ceiling => @ceil(x),
+        .truncate => @trunc(x),
+        // 同じ近さのときは、x / 2 を丸めた2倍が偶数の側である(2.5 は 2、3.5 は 4、-0.5 は -0.0)。
+        .round => if (@abs(x - @trunc(x)) == 0.5) 2.0 * @round(x / 2.0) else @round(x),
+    };
+}
+
+fn roundRatioWork(h: *Heap, gpa: std.mem.Allocator, mode: Rounding, v: Value) Error!Value {
+    var r: Rational = undefined;
+    r.set(v);
+    var qr = try bigint.divide(gpa, r.n, r.d, .floor);
+    defer qr.q.deinit();
+    defer qr.r.deinit();
+    // 比は整数でないので、0 < 剰余 < 分母。商は床である。
+    const up = switch (mode) {
+        .floor => false,
+        .ceiling => true,
+        .truncate => !r.n.positive,
+        .round => blk: {
+            var twice = try bigint.add(gpa, qr.r.toConst(), qr.r.toConst());
+            defer twice.deinit();
+            break :blk switch (twice.toConst().order(r.d)) {
+                .lt => false,
+                .gt => true,
+                .eq => qr.q.toConst().isOdd(),
+            };
+        },
+    };
+    if (!up) return number.fromInteger(h, qr.q.toConst());
+    var next = try bigint.add(gpa, qr.q.toConst(), one);
+    defer next.deinit();
+    return number.fromInteger(h, next.toConst());
+}
+
+/// The numerator of the rational number `v` (R7RS 6.2.6). The numerator of a flonum is a flonum.
+pub fn numeratorOf(h: *Heap, v: Value) Error!Value {
+    std.debug.assert(isRationalNumber(v));
+    if (v.asRatnum()) |r| return r.numerator;
+    if (v.asFlonum() == null) return v;
+    const exact_value = try toExact(h, v);
+    return toInexact(h, try numeratorOf(h, exact_value));
+}
+
+/// The denominator of the rational number `v` (R7RS 6.2.6). The denominator of a flonum is a
+/// flonum.
+pub fn denominatorOf(h: *Heap, v: Value) Error!Value {
+    std.debug.assert(isRationalNumber(v));
+    if (v.asRatnum()) |r| return r.denominator;
+    if (v.asFlonum() == null) return .fromFixnum(1);
+    const exact_value = try toExact(h, v);
+    return toInexact(h, try denominatorOf(h, exact_value));
+}
+
+/// Which end `extreme` finds.
+pub const End = enum { max, min };
+
+/// The largest or smallest of the real numbers `args` (at least one): R7RS 6.2.6 `max` and `min`.
+///
+/// 引数に不正確な数があれば、結果は不正確である(`(max 3 2.0)` は 3.0)。NaN があれば NaN
+/// である(R7RS 6.2.6 は規定しない)。比較は正確な値で行う。
+pub fn extreme(h: *Heap, end: End, args: []const Value) Error!Value {
+    std.debug.assert(args.len >= 1);
+    var best = args[0];
+    var inexact = false;
+    var has_nan = false;
+    for (args) |a| {
+        if (a.asFlonum()) |x| {
+            inexact = true;
+            if (std.math.isNan(x)) has_nan = true;
+        }
+    }
+    if (has_nan) return .fromFlonum(std.math.nan(f64));
+    for (args[1..]) |a| {
+        const order = (try compare(h, a, best)).?;
+        if (order == (if (end == .max) std.math.Order.gt else std.math.Order.lt)) best = a;
+    }
+    return if (inexact) toInexact(h, best) else best;
+}
+
 // ---- tests ----
 
 test {
@@ -735,6 +913,239 @@ test "the work area of a complex operation is given back" {
     }
     try testing.expectEqual(0, h.external);
     try testing.expect(!h.external_enforced);
+}
+
+fn expectUnary(h: *Heap, comptime f: anytype, input: []const u8, expected: []const u8) !void {
+    const got = try f(h, try read(h, input));
+    const text = try show(got);
+    defer testing.allocator.free(text);
+    testing.expectEqualStrings(expected, text) catch |e| {
+        std.debug.print("{s}: expected {s}, got {s}\n", .{ input, expected, text });
+        return e;
+    };
+}
+
+fn roundWith(comptime mode: Rounding) fn (*Heap, Value) Error!Value {
+    return struct {
+        fn call(h: *Heap, v: Value) Error!Value {
+            return roundNumber(h, mode, v);
+        }
+    }.call;
+}
+
+test "exact gives the exact value of a flonum, and of the parts of a complex number" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][2][]const u8{
+        .{ "0.5", "1/2" },
+        .{ "-1.5", "-3/2" },
+        .{ "0.1", "3602879701896397/36028797018963968" },
+        .{ "2.0", "2" },
+        .{ "-0.0", "0" },
+        .{ "1e20", "100000000000000000000" },
+        .{ "9223372036854775808.0", "9223372036854775808" },
+        .{ "-9223372036854775808.0", "-9223372036854775808" },
+        .{ "1/3", "1/3" },
+        .{ "18446744073709551616", "18446744073709551616" },
+        .{ "1.5+2.5i", "3/2+5/2i" },
+        .{ "1.0+0.0i", "1" },
+        .{ "1+2i", "1+2i" },
+    }) |case| try expectUnary(&h, toExact, case[0], case[1]);
+    const big = try toExact(&h, try read(&h, "1e300"));
+    try testing.expectEqual(value_mod.Kind.bignum, big.kind());
+    const small = try toExact(&h, try read(&h, "4611686018427387904.0"));
+    try testing.expectEqual(value_mod.Kind.fixnum, small.kind());
+}
+
+test "exact refuses an infinity and a NaN, in either part of a complex number" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "1.0+inf.0i", "+nan.0+1.0i" }) |text| {
+        try testing.expectError(error.OutOfRange, toExact(&h, try read(&h, text)));
+    }
+    try testing.expectEqual(0, h.external);
+    try testing.expect(!h.external_enforced);
+}
+
+test "inexact gives the nearest flonum, and an infinity for a number too large" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][2][]const u8{
+        .{ "1/3", "0.3333333333333333" },
+        .{ "5", "5.0" },
+        .{ "-7", "-7.0" },
+        .{ "9007199254740993", "9007199254740992.0" },
+        .{ "9007199254740995", "9007199254740996.0" },
+        .{ "18446744073709551616", "18446744073709552000.0" },
+        .{ "0.5", "0.5" },
+        .{ "1+2i", "1.0+2.0i" },
+        .{ "1/2+1/4i", "0.5+0.25i" },
+        .{ "1.5+2.5i", "1.5+2.5i" },
+    }) |case| try expectUnary(&h, toInexact, case[0], case[1]);
+    const text = try googol(400);
+    defer testing.allocator.free(text);
+    const huge = try toInexact(&h, try read(&h, text));
+    try testing.expect(std.math.isInf(huge.asFlonum().?));
+}
+
+test "floor, ceiling and truncate of flonums and of ratios" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][4][]const u8{
+        // 入力, floor, ceiling, truncate
+        .{ "2.5", "2.0", "3.0", "2.0" },
+        .{ "-2.5", "-3.0", "-2.0", "-2.0" },
+        .{ "-0.5", "-1.0", "-0.0", "-0.0" },
+        .{ "3.0", "3.0", "3.0", "3.0" },
+        .{ "+inf.0", "+inf.0", "+inf.0", "+inf.0" },
+        .{ "-inf.0", "-inf.0", "-inf.0", "-inf.0" },
+        .{ "7/2", "3", "4", "3" },
+        .{ "-7/2", "-4", "-3", "-3" },
+        .{ "1/3", "0", "1", "0" },
+        .{ "-1/3", "-1", "0", "0" },
+        .{ "5", "5", "5", "5" },
+        .{ "-18446744073709551616", "-18446744073709551616", "-18446744073709551616", "-18446744073709551616" },
+        .{ "36893488147419103233/2", "18446744073709551616", "18446744073709551617", "18446744073709551616" },
+        .{ "-36893488147419103233/2", "-18446744073709551617", "-18446744073709551616", "-18446744073709551616" },
+    }) |case| {
+        try expectUnary(&h, roundWith(.floor), case[0], case[1]);
+        try expectUnary(&h, roundWith(.ceiling), case[0], case[2]);
+        try expectUnary(&h, roundWith(.truncate), case[0], case[3]);
+    }
+    const nan = try roundNumber(&h, .round, try read(&h, "+nan.0"));
+    try testing.expect(std.math.isNan(nan.asFlonum().?));
+    // 結果が fixnum に収まれば fixnum である。
+    const back = try roundNumber(&h, .floor, try read(&h, "9223372036854775809/2"));
+    try testing.expectEqual(value_mod.Kind.fixnum, back.kind());
+}
+
+test "round goes to the even integer when two are as near" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const round = roundWith(.round);
+    for ([_][2][]const u8{
+        .{ "2.5", "2.0" },
+        .{ "3.5", "4.0" },
+        .{ "-2.5", "-2.0" },
+        .{ "-3.5", "-4.0" },
+        .{ "0.5", "0.0" },
+        .{ "1.5", "2.0" },
+        .{ "-0.5", "-0.0" },
+        .{ "-0.4", "-0.0" },
+        .{ "2.4999999999999996", "2.0" },
+        .{ "2.5000000000000004", "3.0" },
+        .{ "4503599627370497.0", "4503599627370497.0" },
+        .{ "7/2", "4" },
+        .{ "5/2", "2" },
+        .{ "-7/2", "-4" },
+        .{ "-5/2", "-2" },
+        .{ "1/2", "0" },
+        .{ "3/2", "2" },
+        .{ "-1/2", "0" },
+        .{ "1/3", "0" },
+        .{ "2/3", "1" },
+        .{ "-2/3", "-1" },
+        .{ "-1/3", "0" },
+        .{ "36893488147419103233/2", "18446744073709551616" },
+        .{ "36893488147419103235/2", "18446744073709551618" },
+        .{ "7", "7" },
+    }) |case| try expectUnary(&h, round, case[0], case[1]);
+}
+
+test "numerator and denominator of a ratio, an integer and a flonum" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][3][]const u8{
+        .{ "6/4", "3", "2" },
+        .{ "-3/2", "-3", "2" },
+        .{ "5", "5", "1" },
+        .{ "-18446744073709551616", "-18446744073709551616", "1" },
+        .{ "1/18446744073709551616", "1", "18446744073709551616" },
+        .{ "0.5", "1.0", "2.0" },
+        .{ "-0.75", "-3.0", "4.0" },
+        .{ "6.0", "6.0", "1.0" },
+        .{ "0.0", "0.0", "1.0" },
+    }) |case| {
+        try expectUnary(&h, numeratorOf, case[0], case[1]);
+        try expectUnary(&h, denominatorOf, case[0], case[2]);
+    }
+}
+
+fn expectExtreme(h: *Heap, end: End, inputs: []const []const u8, expected: []const u8) !void {
+    var values: [8]Value = undefined;
+    for (inputs, 0..) |t, i| values[i] = try read(h, t);
+    const text = try show(try extreme(h, end, values[0..inputs.len]));
+    defer testing.allocator.free(text);
+    testing.expectEqualStrings(expected, text) catch |e| {
+        std.debug.print("{s} of {s}: expected {s}, got {s}\n", .{ @tagName(end), inputs[0], expected, text });
+        return e;
+    };
+}
+
+test "max and min compare exactly, and give an inexact result when an argument is inexact" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    try expectExtreme(&h, .max, &.{"5"}, "5");
+    try expectExtreme(&h, .max, &.{ "1", "2", "3" }, "3");
+    try expectExtreme(&h, .max, &.{ "3", "2", "1" }, "3");
+    try expectExtreme(&h, .min, &.{ "3", "1", "2" }, "1");
+    try expectExtreme(&h, .min, &.{ "1/2", "1/3" }, "1/3");
+    try expectExtreme(&h, .max, &.{ "1/2", "1/3" }, "1/2");
+    try expectExtreme(&h, .max, &.{ "1", "2.0" }, "2.0");
+    try expectExtreme(&h, .max, &.{ "3", "2.0" }, "3.0");
+    try expectExtreme(&h, .min, &.{ "1", "2.0" }, "1.0");
+    try expectExtreme(&h, .min, &.{ "3", "2.0" }, "2.0");
+    try expectExtreme(&h, .max, &.{ "18446744073709551616", "5" }, "18446744073709551616");
+    try expectExtreme(&h, .max, &.{ "18446744073709551616", "1e30" }, "1.0e30");
+    try expectExtreme(&h, .max, &.{ "-inf.0", "-5" }, "-5.0");
+    try expectExtreme(&h, .min, &.{ "+inf.0", "5" }, "5.0");
+    // 正確な比較: 2^53 + 1 は 2^53.0 より大きい。
+    // 引数がすべて正確で、2^53 を超えて近接する整数は、正確な値で比べる。
+    try expectExtreme(&h, .max, &.{ "18446744073709551616", "18446744073709551617" }, "18446744073709551617");
+    try expectExtreme(&h, .min, &.{ "18446744073709551617", "18446744073709551616" }, "18446744073709551616");
+    try expectExtreme(&h, .max, &.{ "9007199254740993", "9007199254740992.0" }, "9007199254740992.0");
+    try expectExtreme(&h, .min, &.{ "9007199254740993", "9007199254740994.0" }, "9007199254740992.0");
+    // NaN は、どの位置でも結果を NaN にする。
+    try expectExtreme(&h, .max, &.{ "1", "+nan.0", "3" }, "+nan.0");
+    try expectExtreme(&h, .min, &.{ "+nan.0", "1" }, "+nan.0");
+    try expectExtreme(&h, .max, &.{ "1", "2", "+nan.0" }, "+nan.0");
+}
+
+test "the predicates of the numeric tower" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    const Row = struct { text: []const u8, exact: bool, real: bool, rational: bool, integer: bool, exact_integer: bool };
+    for ([_]Row{
+        .{ .text = "5", .exact = true, .real = true, .rational = true, .integer = true, .exact_integer = true },
+        .{ .text = "18446744073709551616", .exact = true, .real = true, .rational = true, .integer = true, .exact_integer = true },
+        .{ .text = "1/3", .exact = true, .real = true, .rational = true, .integer = false, .exact_integer = false },
+        .{ .text = "2.0", .exact = false, .real = true, .rational = true, .integer = true, .exact_integer = false },
+        .{ .text = "2.5", .exact = false, .real = true, .rational = true, .integer = false, .exact_integer = false },
+        .{ .text = "-0.0", .exact = false, .real = true, .rational = true, .integer = true, .exact_integer = false },
+        .{ .text = "1e300", .exact = false, .real = true, .rational = true, .integer = true, .exact_integer = false },
+        .{ .text = "+inf.0", .exact = false, .real = true, .rational = false, .integer = false, .exact_integer = false },
+        .{ .text = "-inf.0", .exact = false, .real = true, .rational = false, .integer = false, .exact_integer = false },
+        .{ .text = "+nan.0", .exact = false, .real = true, .rational = false, .integer = false, .exact_integer = false },
+        .{ .text = "1+2i", .exact = true, .real = false, .rational = false, .integer = false, .exact_integer = false },
+        .{ .text = "1.5+2.5i", .exact = false, .real = false, .rational = false, .integer = false, .exact_integer = false },
+        // R7RS 6.2.6: `(real? -2.5+0.0i)` は偽である。
+        .{ .text = "-2.5+0.0i", .exact = false, .real = false, .rational = false, .integer = false, .exact_integer = false },
+    }) |row| {
+        const v = try read(&h, row.text);
+        testing.expectEqual(row.exact, isExact(v)) catch |e| {
+            std.debug.print("exact? {s}\n", .{row.text});
+            return e;
+        };
+        try testing.expectEqual(row.real, isRealNumber(v));
+        try testing.expectEqual(row.rational, isRationalNumber(v));
+        try testing.expectEqual(row.integer, isIntegerNumber(v));
+        try testing.expectEqual(row.exact_integer, isExactInteger(v));
+    }
+    // 数でない値は、どの述語でも偽である。
+    try testing.expect(!isRealNumber(.unspecified_value));
+    try testing.expect(!isRationalNumber(.fromBool(true)));
+    try testing.expect(!isIntegerNumber(.empty_list_value));
+    try testing.expect(!isExactInteger(.fromCharacter('a')));
 }
 
 fn googol(len: usize) ![]u8 {

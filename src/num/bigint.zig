@@ -377,13 +377,15 @@ test "mul refuses before it computes when the temporaries of Karatsuba's method 
 }
 
 test "mul asks for the whole probe, and only when the shorter factor is long enough" {
-    // 大きさで断る割り当て器(2000 バイトの固定の領域)を使い、試し取りの大きさと条件を固定する。
+    // 大きさで断る割り当て器(250 limb 分の固定の領域。`Limb` の幅によらない)を使い、試し取りの
+    // 大きさと条件を固定する。
     var storage: [100]Limb = undefined;
     @memset(&storage, std.math.maxInt(Limb));
     const long: Const = .{ .limbs = &storage, .positive = true };
     const short: Const = .{ .limbs = storage[0..10], .positive = true };
-    var buffer: [2000]u8 align(@alignOf(Limb)) = undefined;
-    // 100 桁 x 100 桁: 結果は 200 桁(1600 バイト)で入るが、試し取り(264 桁)は入らない。
+    const budget_limbs = 250;
+    var buffer: [budget_limbs * @sizeOf(Limb)]u8 align(@alignOf(Limb)) = undefined;
+    // 100 桁 x 100 桁: 結果は 200 桁で入るが、試し取り(264 桁)は入らない。
     {
         var fixed = std.heap.FixedBufferAllocator.init(&buffer);
         try std.testing.expectError(error.OutOfMemory, mul(fixed.allocator(), long, long));
