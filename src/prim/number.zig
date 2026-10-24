@@ -159,8 +159,8 @@ fn integerSqrtOf(services: *const Services, args: []const Value) Error!Value {
 
 /// The radix `args` give, or 10 if they give none: 2, 8, 10 or 16.
 ///
-/// 基数が整数でなければ `WrongType`、2、8、10、16 以外なら `OutOfRange` である。R7RS 6.2.7 は、
-/// 基数を2、8、10、16に限ってよいとする。
+/// 基数が正確な整数でなければ(不正確な整数 `2.0` を含む)`WrongType`、正確な整数で 2、8、10、16
+/// 以外なら(bignum を含む)`OutOfRange` である。R7RS 6.2.7 は、基数を2、8、10、16に限ってよいとする。
 fn radixOf(args: []const Value) Error!u8 {
     if (args.len == 0) return 10;
     // 基数は正確な整数である。bignum は整数だが、許す値のどれでもない。
@@ -649,6 +649,12 @@ test "number->string writes a number in the radix, ten by default" {
     try expectWritten("1+2i", "1+2i", null);
     try expectWritten("1.5-0.5i", "1.5-0.5i", null);
     try expectWritten("#i1/10", "0.5", 2);
+    // 複素数の部分が非有限でも、実部が flonum なら `#i` が付き、有限の部分は正確な有理数で書かれる。
+    try expectWritten("#i1+inf.0i", "1.0+inf.0i", 16);
+    try expectWritten("#i+nan.0+1i", "+nan.0+1.0i", 16);
+    try expectWritten("#i+inf.0-inf.0i", "+inf.0-inf.0i", 2);
+    try expectWritten("1/11+1/100i", "1/3+1/4i", 2);
+    try expectWritten("1.0+inf.0i", "1.0+inf.0i", 10);
 }
 
 test "number->string reports a radix it does not take" {
