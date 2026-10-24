@@ -258,7 +258,7 @@ pub fn build(b: *std.Build) void {
     // `zig build test --summary all` の概要に出る。
     const slow = b.option(bool, "slow", "also run the tests that check a scale (slow)") orelse false;
     // Why: `-Dslow=true` で `-Doptimize` を付けないときは、ReleaseSafe を既定にする
-    // (ADR-0046)。規模を試す単体テストは Debug では数倍遅く、ReleaseSafe は安全検査を残す。
+    // (ADR-0047)。規模を試す単体テストは Debug では数倍遅く、ReleaseSafe は安全検査を残す。
     // Debug の未初期化メモリの埋め込みは、Debug のまま走る全コミットの縮小版が受け持つ。
     // `-Doptimize` を付けたときは、その値が優先する。`--release` は、slow のときは読まない。
     const optimize: std.builtin.OptimizeMode = if (slow)
