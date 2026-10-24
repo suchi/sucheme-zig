@@ -334,7 +334,7 @@ pub fn digitValue(c: u21) ?u4
 ### 4e の中身
 
 - `num.parse`: `syntax.scan` の結果から値を組み立てる。`#e` の小数は、桁列と指数から有理数を直接作る(`parseFloat` を通さない)。分母0の `1/0` は `null`。`#i` と小数点のある綴りは `flonum.parseDecimal`。大きさの見積りは上の「演算の作業領域」のとおり。
-- `num.write`: 正確な整数は `bigint.toString`、ratnum は分子と分母、flonum の基数10は `flonum.write`、基数10以外の有限の flonum は、正確な有理数に直して `#i` を前に付ける(設計文書の `(number->string 0.5 2)` が `"#i1/10"` の例)。無限大と NaN の基数10以外は、4g の `number->string` が Scheme の誤りにする(R7RS 6.2.7 の Note)。
+- `num.write`: 正確な整数は `bigint.toString`、ratnum は分子と分母、flonum の基数10は `flonum.write`、基数10以外の有限の flonum は、正確な有理数に直して `#i` を前に付ける(設計文書の `(number->string 0.5 2)` が `"#i1/10"` の例)。無限大と NaN は、基数によらず `+inf.0` などと書く(4e の時点では、基数10以外を 4g の `number->string` が Scheme の誤りにする案だった。4g-4 のレビューで、`string->number` がどの基数でも読み戻せると分かり、2026-10-24 にユーザーが承認して、誤りにしない決定に改めた)。
 - 正規化の関数(`normalizeInteger`、`makeRatio`、`makeRectangular`)を、ここに閉じる。
 
 ## roadmap の項目の割り当て

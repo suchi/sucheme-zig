@@ -174,21 +174,12 @@ fn radixOf(args: []const Value) Error!u8 {
 /// `(number->string z [radix])`: the external representation of `z` in `radix`, as a new string
 /// (R7RS 6.2.7).
 ///
-/// 無限大と NaN は、基数10以外では書き戻せない(`string->number` が読めない)ので、`OutOfRange`
-/// である。R7RS 6.2.7 の注は、書き戻せない数を誤りとする。書き出しの作業領域と文字列の
-/// 組み立ては、ヒープの上限に計上される。
+/// 無限大と NaN は、基数によらず `+inf.0` `-inf.0` `+nan.0` と書く(`string->number` は、どの基数
+/// でも読み戻せる)。書き出しの作業領域と文字列の組み立ては、ヒープの上限に計上される。
 fn numberToString(services: *const Services, args: []const Value) Error!Value {
     if (!number.isNumber(args[0])) return error.WrongType;
     const radix = try radixOf(args[1..]);
-    if (radix != 10 and !isFiniteNumber(args[0])) return error.OutOfRange;
     return ops.counted(Value, writeToString, services.heap, .{ args[0], radix });
-}
-
-/// Whether every part of the number `v` is finite.
-fn isFiniteNumber(v: Value) bool {
-    if (v.asCompnum()) |c| return isFiniteNumber(c.real) and isFiniteNumber(c.imag);
-    if (v.asFlonum()) |x| return std.math.isFinite(x);
-    return true;
 }
 
 fn writeToString(h: *heap_mod.Heap, gpa: std.mem.Allocator, v: Value, radix: u8) ops.Error!Value {
@@ -660,7 +651,7 @@ test "number->string writes a number in the radix, ten by default" {
     try expectWritten("#i1/10", "0.5", 2);
 }
 
-test "number->string reports a radix it does not take and a number it cannot write back" {
+test "number->string reports a radix it does not take" {
     var f: test_support.Fixture = undefined;
     f.init();
     defer f.deinit();
@@ -671,12 +662,29 @@ test "number->string reports a radix it does not take and a number it cannot wri
     try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{ n, .fromBool(true) }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{ .fromBool(true), n }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{.unspecified_value}));
-    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "1+inf.0i", "+nan.0+1.0i" }) |text| {
-        const v = (try number.parse(f.services.heap, text, 10)).?;
-        for ([_]i64{ 2, 8, 16 }) |radix| {
-            try std.testing.expectError(error.OutOfRange, f.call(&primitives, "number->string", &.{ v, .fromFixnum(radix) }));
+}
+
+test "number->string writes an infinity and a NaN in any radix, and string->number reads them back" {
+    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "1.0+inf.0i", "+nan.0+1.0i", "+inf.0-inf.0i", "1.0-nan.0i" }) |text| {
+        for ([_]i64{ 2, 8, 10, 16 }) |radix| {
+            var f: test_support.Fixture = undefined;
+            f.init();
+            defer f.deinit();
+            const v = (try number.parse(f.services.heap, text, 10)).?;
+            const written = try f.call(&primitives, "number->string", &.{ v, .fromFixnum(radix) });
+            const back = (try f.call(&primitives, "string->number", &.{ written, .fromFixnum(radix) }));
+            var a: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer a.deinit();
+            try number.write(&a.writer, std.testing.allocator, v, 10);
+            var b: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer b.deinit();
+            try number.write(&b.writer, std.testing.allocator, back, 10);
+            try std.testing.expectEqualStrings(a.written(), b.written());
         }
     }
+    try expectWritten("+inf.0", "+inf.0", 2);
+    try expectWritten("-inf.0", "-inf.0", 8);
+    try expectWritten("+nan.0", "+nan.0", 16);
 }
 
 test "string->number reads a number in the radix, or gives false" {

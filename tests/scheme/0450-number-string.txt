@@ -31,9 +31,12 @@ error: wrong type of argument to number->string 10 a
 (number->string 'a)
 error: wrong type of argument to number->string a
 
-# 無限大と NaN は、基数10以外では書き戻せない。
-(number->string (/ (inexact 1) (inexact 0)) 16)
-error: argument out of range in number->string +inf.0 16
+# 無限大と NaN は、どの基数でも同じ綴りで書き、読み戻せる。
+(list (number->string (/ (inexact 1) (inexact 0)) 16) (number->string (/ (inexact -1) (inexact 0)) 2) (number->string (/ (inexact 0) (inexact 0)) 8))
+("+inf.0" "-inf.0" "+nan.0")
+
+(string->number (number->string (/ (inexact 1) (inexact 0)) 16) 16)
++inf.0
 
 (number->string (/ (inexact 1) (inexact 0)))
 "+inf.0"
