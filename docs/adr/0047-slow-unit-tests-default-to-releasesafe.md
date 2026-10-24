@@ -5,7 +5,7 @@
 
 ## 背景
 
-層2(`full.yml`)の slow tests のジョブは、CI で約 33 分かかり、そのうち `zig build test -Dslow=true` が約 11 分を占めていた。単体テストは `-Doptimize` を付けないと Debug でビルドされる。規模を試すテスト(100万回の呼び出し、10万段の再帰)は、Debug では数倍遅い。`test-scheme` と `test-wasm` は、`build.zig` がすでに ReleaseSafe に固定している。
+層2(`full.yml`)の slow tests のジョブは、CI で約 33 分かかり、そのうち `zig build test -Dslow=true` が約 11 分を占めていた。たとえば 2026-10-23 の `full.yml` の実行(run_number 219)では、この step は 13:28:37 UTC に始まり 13:40:33 UTC に終わった。[計画書 0017](../plans/0017-parallel-lanes.md) が記録した run_number 159 では約 5 分だった。差の理由は調べていない。単体テストは `-Doptimize` を付けないと Debug でビルドされる。規模を試すテスト(100万回の呼び出し、10万段の再帰)は、Debug では数倍遅い。`test-scheme` と `test-wasm` は、`build.zig` がすでに ReleaseSafe に固定している。
 
 親のセッションの手元の測定(4 vCPU、2026-10-24)では、`zig build test -Dslow=true` の壁時計は、Debug で 558 秒、`-Doptimize=ReleaseSafe` で 166 秒だった。両者で、テスト名の集合と結果(全件が通る)は同じだった。
 
