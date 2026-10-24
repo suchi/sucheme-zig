@@ -202,7 +202,8 @@ pub fn rationalize(h: *Heap, x: Value, y: Value) Error!Value {
 /// The simplest rational number in the closed interval from `lo` to `hi`, `0 < lo <= hi`.
 ///
 /// 連分数の項を前から集め、最後に後ろから畳む。再帰にしないのは、巨大な有理数の連分数が
-/// 長く、再帰の深さが入力の大きさに比例するためである。
+/// 長く、再帰の深さが入力の大きさに比例するためである。時間の上限ではない(上限に収まる範囲の
+/// 時間は、項数と項ごとの簡約の積で伸びる。docs/design/open-questions.md)。
 fn simplestBetween(h: *Heap, lo_start: Value, hi_start: Value) Error!Value {
     var terms: std.ArrayList(Value) = .empty;
     defer terms.deinit(h.backing);

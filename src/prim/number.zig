@@ -389,7 +389,7 @@ test "expt of 0, 1 and -1 is computed for any integer exponent" {
 }
 
 test "expt of exact 0 to a negative power is a division by zero" {
-    for ([_][]const u8{ "-1", "-" ++ big_even, "-1/2" }) |e| {
+    for ([_][]const u8{ "-1", "-" ++ big_even, "-1/2", "-inf.0" }) |e| {
         var f: test_support.Fixture = undefined;
         f.init();
         defer f.deinit();
@@ -423,6 +423,7 @@ test "expt of exact 0 to a positive rational or inexact power" {
     try expectCall("0.0", "expt", &.{ "0", "0.5" });
     try expectCall("1.0", "expt", &.{ "0", "0.0" });
     try expectCall("0.0", "expt", &.{ "0.0", "2" });
+    try expectCall("0.0", "expt", &.{ "0", "+inf.0" });
 }
 
 test "expt of a negative number to a power that is not an integer is a complex number" {

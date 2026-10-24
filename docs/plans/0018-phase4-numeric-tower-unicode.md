@@ -511,7 +511,7 @@ pub fn digitValue(c: u21) ?u4
 | 4f | マージ済み([suchi/sucheme-zig#182](https://github.com/suchi/sucheme-zig/pull/182))。四則と比較(compnum を含む)。実績: PR を作ってから ready まで約 5.5 時間、マージまで約 7 時間(2026-10-23 17:31 JST から 23:03 JST、翌 00:27 JST。独立レビュー 3 巡と main の取り込みを含む。層2 は約 32 分) |
 | 4g-1 | マージ済み([suchi/sucheme-zig#188](https://github.com/suchi/sucheme-zig/pull/188))。述語、`exact` `inexact`、`floor` 系、`numerator` `denominator`、`max` `min`。4g は 4g-1(これ)、4g-2(整数除算と `abs` など)、4g-3(`expt` `exact-integer-sqrt` `rationalize`)、4g-4(`number->string` `string->number`)の4つの PR に分ける(2026-10-23。大きいので、レビューを小さくするため) |
 | 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。マージ済み([suchi/sucheme-zig#189](https://github.com/suchi/sucheme-zig/pull/189))。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main` |
-| 4g-3 | `expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`(4g-2 のマージ後の main から切った)。ローカルで層1 が緑 |
+| 4g-3 | `expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`(4g-2 のマージ後の main から切った)。準拠マトリクスに失敗が1件出る(`tests/vendor/r7rs-tests.scm` の `(test (expt 2 140) (square root))`)。`expt` が束縛されて、これまで未実装として数えられていた項目が実行されるようになったためで、bignum の `eqv?` と `equal?` が同一のオブジェクトで比べる欠落(4j が直す)が原因である。この PR の回帰ではない |
 | 4g-4、4h〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
