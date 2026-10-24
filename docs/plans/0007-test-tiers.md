@@ -70,7 +70,7 @@ flowchart LR
 
 CI の置き場所は、2 つの案を比べる。
 
-1. 層2 を別のワークフロー(`full.yml`)にする。起動は `pull_request` の `ready_for_review`、`workflow_dispatch`(当初は `main` への push も含めたが、[ADR-0036](../adr/0036-windows-tests-in-the-slow-tier.md) で外した)。層3 のファジングは、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の計画どおり、別のワークフローをスケジュールで動かす。
+1. 層2 を別のワークフロー(`full.yml`)にする。起動は `pull_request` の `ready_for_review`、`workflow_dispatch`(当初は `main` への push も含めたが、[ADR-0036](../adr/0036-windows-tests-in-the-slow-tier.md) で外した)。文書だけの PR では、ready にしても起動しない([ADR-0046](../adr/0046-skip-slow-tier-for-docs-only-prs.md))。層3 のファジングは、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の計画どおり、別のワークフローをスケジュールで動かす。
    - 長所: 層1 の CI が速いまま保たれる。
    - 短所: ready にする前の push では、層2 の誤りが見えない。
 2. 層2 も全コミットで走らせる。
