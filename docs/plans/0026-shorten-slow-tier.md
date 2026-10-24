@@ -178,9 +178,9 @@ S3(suchi/sucheme-zig#196)の敵対的レビューで見つかり、直さなか�
 | --- | --- |
 | S1 | 完了(suchi/sucheme-zig#195、2026-10-24 にマージ)。`build.zig` の変更と ADR-0047。敵対的レビューは必須 0 件。層2 の実行(run 226、先頭 `abea62d`)で、slow tests のジョブは約 18 分 35 秒(以前は約 33 分)。内訳は、`zig build test -Dslow=true` が約 4 分 27 秒(Debug の run 227 では約 12 分 53 秒)、`zig build test-scheme -Dslow=true` が約 12 分 40 秒、`zig build test-wasm -Dslow=true` が約 1 分 8 秒 |
 | S2 | 完了。仮説 A は否定され、コードは直していない(上の「S2 の調査の結果」)。積み上がりの修正は S3 に含める |
-| S3 | suchi/sucheme-zig#196。ファイルの並列の実行と、ケースの作業用の確保の修正。手元で、件数と報告の順が直列と同じこと、ミューテーション7件の検出、壁時計を確かめた(数は PR 本文)。敵対的レビューと層2 の記録が残っている |
+| S3 | 完了(suchi/sucheme-zig#196、2026-10-24 にマージ)。ファイルの並列の実行と、ケースの作業用の確保の修正。手元の確かめは PR 本文にある。層2 の実行(run 228、先頭 `3032045`)で、`zig build test-scheme -Dslow=true` は約 12 分 7 秒で、S1 の run 226 の約 12 分 40 秒からほとんど縮まなかった。windows ジョブの `zig build test-scheme` は約 3 分 25 秒で、run 219 の約 4 分 57 秒から縮んだ。run 228 の先頭は S1 を含まないので、`zig build test -Dslow=true` は Debug で約 14 分だった |
 
 ## 次にやること
 
 - S1 の層2 の結果を見て、slow tests のジョブの `zig build test -Dslow=true` の時間を記録する。
-- S3(suchi/sucheme-zig#196)の敵対的レビューを受け、ready にしたときの層2 の slow tests と windows ジョブの時間を記録する。
+- この計画のスライスは S3 で終わる。CI の `zig build test-scheme -Dslow=true` が、手元(2 CPU で約 35% 短縮)ほど縮まなかった理由は調べていない。ランナーの CPU の数が確かめられていないこと(上の「確かめられなかったこと」)と合わせて、調べるかを決める。
