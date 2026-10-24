@@ -129,17 +129,13 @@ pub fn main(init: std.process.Init) !void {
     // ファイルの評価だけを、複数のスレッドに分ける。インタプリタはスレッドの間で状態を
     // 共有しない(docs/plans/0026-shorten-slow-tier.md の案3)。
     try runFiles(items.items, threadCount(std.Thread.getCpuCount() catch 1, items.items.len));
-    const counts = try writeReports(items.items, err);
-    var passed = counts.passed;
-    var failed = counts.failed;
-
+    const files = try writeReports(items.items, err);
     const mutation = try checkMutators(gpa, io, err);
-    passed += mutation.passed;
-    failed += mutation.failed;
+    const total = addCounts(files, mutation);
 
-    try err.print("test-scheme: {d} passed, {d} failed\n", .{ passed, failed });
+    try err.print("test-scheme: {d} passed, {d} failed\n", .{ total.passed, total.failed });
     try err.flush();
-    const status = exitStatus(passed, failed);
+    const status = exitStatus(total.passed, total.failed);
     if (status != 0) std.process.exit(status);
 }
 
@@ -181,6 +177,11 @@ fn threadCount(cpus: usize, files: usize) usize {
 /// The counts of a run.
 const Counts = struct { passed: usize, failed: usize };
 
+/// The counts of two parts of a run together.
+fn addCounts(a: Counts, b: Counts) Counts {
+    return .{ .passed = a.passed + b.passed, .failed = a.failed + b.failed };
+}
+
 /// Writes the reports of `items` in order and adds up their counts.
 fn writeReports(items: []const Item, w: *std.Io.Writer) std.Io.Writer.Error!Counts {
     var counts: Counts = .{ .passed = 0, .failed = 0 };
@@ -192,17 +193,17 @@ fn writeReports(items: []const Item, w: *std.Io.Writer) std.Io.Writer.Error!Coun
     return counts;
 }
 
-/// Runs the files among `items` on `threads` threads, the calling one among them.
-fn runFiles(items: []Item, threads: usize) error{ OutOfMemory, SystemResources }!void {
+/// Runs the files among `items` on up to `threads` threads, the calling one among them.
+/// スレッドを起動できなかったときは、起動できた本数で続ける。呼び出し側のスレッドが
+/// 必ず加わるので、1本も起動できなくても全部のファイルを走らせる。途中で戻ると、
+/// 起動済みのスレッドが、このスタックの `queue` を指したまま走り続けるからである。
+fn runFiles(items: []Item, threads: usize) error{OutOfMemory}!void {
     var queue: Queue = .{ .items = items };
     var spawned: std.ArrayList(std.Thread) = .empty;
     defer spawned.deinit(std.heap.smp_allocator);
     try spawned.ensureTotalCapacity(std.heap.smp_allocator, threads - 1);
     for (1..threads) |_| {
-        const t = std.Thread.spawn(.{}, Queue.work, .{&queue}) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.SystemResources,
-        };
+        const t = std.Thread.spawn(.{}, Queue.work, .{&queue}) catch break;
         spawned.appendAssumeCapacity(t);
     }
     queue.work();
@@ -535,7 +536,7 @@ fn checkMutators(
     gpa: std.mem.Allocator,
     io: std.Io,
     err: *std.Io.Writer,
-) !struct { passed: usize, failed: usize } {
+) !Counts {
     var passed: usize = 0;
     var failed: usize = 0;
     var required: std.StringHashMapUnmanaged(void) = .empty;
@@ -829,6 +830,37 @@ test "runFiles runs every file once, keeps the order, and leaves the other entri
     try std.testing.expect(std.mem.startsWith(u8, items[2].report, "c.txt:1: (+ 1 2)\n"));
     try std.testing.expectEqual(1, items[3].failed);
     try std.testing.expectEqualStrings("d.txt: no case found in this file\n", items[3].report);
+}
+
+test "runFiles counts a failure for each defect of a file's form" {
+    var items = [_]Item{
+        .{ .file = .{ .path = "e.txt", .body = "(+ 1 2)\n\n" } },
+        .{ .file = .{ .path = "f.txt", .body = "# modes: fast\n1\n1\n" } },
+        .{ .file = .{ .path = "g.txt", .body = "# modes: default\n1\n1\n" } },
+        .{ .file = .{ .path = "h.txt", .body = "# modes: stress\n1\n1\n" } },
+    };
+    defer for (items) |item| std.heap.smp_allocator.free(item.report);
+    try runFiles(&items, 2);
+    // 形式の誤りのファイルは、ケースを1つも走らせずに1件の失敗になる。
+    try std.testing.expectEqual(1, items[0].failed);
+    try std.testing.expectEqual(0, items[0].passed);
+    try std.testing.expectEqualStrings("e.txt: a case has an input and no expected output\n", items[0].report);
+    try std.testing.expectEqual(1, items[1].failed);
+    try std.testing.expectEqual(0, items[1].passed);
+    try std.testing.expectEqualStrings("f.txt: a `# modes:` line names a mode other than `default` or `stress`\n", items[1].report);
+    // 対の無いモードの指示は、ケースを走らせたうえで1件の失敗になる。
+    try std.testing.expectEqual(1, items[2].failed);
+    try std.testing.expectEqual(1, items[2].passed);
+    try std.testing.expect(std.mem.startsWith(u8, items[2].report, "g.txt:2: a `# modes: default` case has no `# modes: stress` case right after it"));
+    try std.testing.expectEqual(1, items[3].failed);
+    try std.testing.expectEqual(1, items[3].passed);
+    try std.testing.expect(std.mem.startsWith(u8, items[3].report, "h.txt:2: a `# modes: stress` case does not follow a `# modes: default` case"));
+}
+
+test "addCounts adds both the passed and the failed counts" {
+    const total = addCounts(.{ .passed = 3, .failed = 1 }, .{ .passed = 20, .failed = 2 });
+    try std.testing.expectEqual(23, total.passed);
+    try std.testing.expectEqual(3, total.failed);
 }
 
 test "exitStatus fails on a failure and on a run that read no case" {
