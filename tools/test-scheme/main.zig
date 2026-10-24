@@ -39,6 +39,11 @@
 //! 通す、1行で済む手口になるからである。同じ理由で、tests/scheme/ の中の
 //! `.txt` でないエントリ、ケースのないファイル、ケースが1つもない実行は、
 //! 失敗とする。
+//!
+//! ファイルは、CPU の数(上限 `max_threads`)のスレッドに振り分けて走らせる。1つの
+//! ファイルのケースは、1つのスレッドで順に走る。報告は、全部が終わってから、
+//! ディレクトリごとに名前の順で書く。並列にしても、走らせるケースとモードと報告の順は
+//! 変わらない(docs/plans/0026-shorten-slow-tier.md の案3)。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -80,8 +85,8 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
 
-    var failed: usize = 0;
-    var passed: usize = 0;
+    // ファイルを読むまでは、1つのスレッドで順に進める。報告の順は、この一覧の順である。
+    var items: std.ArrayList(Item) = .empty;
     const dirs: []const []const u8 = if (tier.slow) &.{ tests_dir, slow_dir } else &.{tests_dir};
     for (dirs) |dir_name| {
         var names: std.ArrayList([]const u8) = .empty;
@@ -97,8 +102,10 @@ pub fn main(init: std.process.Init) !void {
             // `0002.scm` として、あるいはサブディレクトリの中に保存されたテストは、
             // 報告しなければ、step が緑のまま一度も走らない。
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".txt")) {
-                try err.print("{s}/{s}: not a `.txt` file, so its cases would never run\n", .{ dir_name, entry.name });
-                failed += 1;
+                try items.append(gpa, .{
+                    .report = try std.fmt.allocPrint(gpa, "{s}/{s}: not a `.txt` file, so its cases would never run\n", .{ dir_name, entry.name }),
+                    .failed = 1,
+                });
                 continue;
             }
             try names.append(gpa, try gpa.dupe(u8, entry.name));
@@ -109,56 +116,22 @@ pub fn main(init: std.process.Init) !void {
         for (names.items) |name| {
             const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir_name, name });
             const body = cwd.readFileAlloc(io, path, gpa, .unlimited) catch |e| {
-                try err.print("{s}: cannot be read ({t})\n", .{ path, e });
-                failed += 1;
+                try items.append(gpa, .{
+                    .report = try std.fmt.allocPrint(gpa, "{s}: cannot be read ({t})\n", .{ path, e }),
+                    .failed = 1,
+                });
                 continue;
             };
-            var cases: std.ArrayList(Case) = .empty;
-            parse(gpa, body, &cases) catch |e| switch (e) {
-                error.MissingExpected => {
-                    try err.print("{s}: a case has an input and no expected output\n", .{path});
-                    failed += 1;
-                    continue;
-                },
-                error.UnknownMode => {
-                    try err.print("{s}: a `# modes:` line names a mode other than `default` or `stress`\n", .{path});
-                    failed += 1;
-                    continue;
-                },
-                error.OutOfMemory => return e,
-            };
-            if (unpairedDefaultOnly(cases.items)) |i| {
-                try err.print("{s}:{d}: a `# modes: default` case has no `# modes: stress` case right after it, so it would never run under stress\n", .{ path, cases.items[i].line });
-                failed += 1;
-            }
-            if (unpairedStressOnly(cases.items)) |i| {
-                try err.print("{s}:{d}: a `# modes: stress` case does not follow a `# modes: default` case\n", .{ path, cases.items[i].line });
-                failed += 1;
-            }
-            if (hasCoreDirective(body)) for (cases.items) |*c| {
-                c.core = true;
-            };
-            // ケースのないファイルは、ファイルが欠けているのと同じくらい疑わしい。
-            // コメントだけのファイルや、すべてをコメントとして解析してしまう形式の
-            // 変更が考えられる。
-            if (cases.items.len == 0) {
-                try err.print("{s}: no case found in this file\n", .{path});
-                failed += 1;
-            }
-            for (cases.items) |c| {
-                for (modes) |mode| {
-                    if (!c.only.runsIn(mode.options.stress)) continue;
-                    if (try runCaseWith(gpa, mode.options, c)) |got| {
-                        try err.print(
-                            "{s}:{d}: {s}\n  mode:     {s}\n  expected: {s}\n  got:      {s}\n",
-                            .{ path, c.line, c.input, mode.name, c.expected, got },
-                        );
-                        failed += 1;
-                    } else passed += 1;
-                }
-            }
+            try items.append(gpa, .{ .file = .{ .path = path, .body = body } });
         }
     }
+
+    // ファイルの評価だけを、複数のスレッドに分ける。インタプリタはスレッドの間で状態を
+    // 共有しない(docs/plans/0026-shorten-slow-tier.md の案3)。
+    try runFiles(items.items, threadCount(std.Thread.getCpuCount() catch 1, items.items.len));
+    const counts = try writeReports(items.items, err);
+    var passed = counts.passed;
+    var failed = counts.failed;
 
     const mutation = try checkMutators(gpa, io, err);
     passed += mutation.passed;
@@ -177,6 +150,146 @@ pub fn main(init: std.process.Init) !void {
 fn exitStatus(passed: usize, failed: usize) u8 {
     if (failed != 0 or passed == 0) return 1;
     return 0;
+}
+
+/// One entry of the report: a test file to run, or a problem found before running.
+///
+/// 報告は、一覧の順に、全部の評価が終わってから書く。スレッドが終わる順は、報告の順に
+/// 影響しない。
+const Item = struct {
+    /// The file to run, or null when the entry is only `report`.
+    file: ?struct { path: []const u8, body: []const u8 } = null,
+    /// What the entry writes to the report.
+    /// 評価したファイルでは、`runFile` が `std.heap.smp_allocator` に作る。プロセスの
+    /// 終わりまで持つので、解放しない。
+    report: []const u8 = "",
+    passed: usize = 0,
+    failed: usize = 0,
+};
+
+/// The most threads `runFiles` uses.
+/// Why: 1つのスレッドが、規模を試すケースで数百 MB のヒープを持つことがある
+/// (docs/plans/0026-shorten-slow-tier.md の S2)。スレッドの数を CPU の数だけで決めると、
+/// 多くのコアを持つ開発機でメモリが足りなくなる。
+const max_threads = 4;
+
+/// How many threads to run `files` entries on with `cpus` CPUs.
+fn threadCount(cpus: usize, files: usize) usize {
+    return @max(1, @min(@min(cpus, max_threads), files));
+}
+
+/// The counts of a run.
+const Counts = struct { passed: usize, failed: usize };
+
+/// Writes the reports of `items` in order and adds up their counts.
+fn writeReports(items: []const Item, w: *std.Io.Writer) std.Io.Writer.Error!Counts {
+    var counts: Counts = .{ .passed = 0, .failed = 0 };
+    for (items) |item| {
+        try w.writeAll(item.report);
+        counts.passed += item.passed;
+        counts.failed += item.failed;
+    }
+    return counts;
+}
+
+/// Runs the files among `items` on `threads` threads, the calling one among them.
+fn runFiles(items: []Item, threads: usize) error{ OutOfMemory, SystemResources }!void {
+    var queue: Queue = .{ .items = items };
+    var spawned: std.ArrayList(std.Thread) = .empty;
+    defer spawned.deinit(std.heap.smp_allocator);
+    try spawned.ensureTotalCapacity(std.heap.smp_allocator, threads - 1);
+    for (1..threads) |_| {
+        const t = std.Thread.spawn(.{}, Queue.work, .{&queue}) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.SystemResources,
+        };
+        spawned.appendAssumeCapacity(t);
+    }
+    queue.work();
+    for (spawned.items) |t| t.join();
+    if (queue.out_of_memory.load(.monotonic)) return error.OutOfMemory;
+}
+
+/// The entries the threads of `runFiles` take one at a time.
+const Queue = struct {
+    items: []Item,
+    next: std.atomic.Value(usize) = .init(0),
+    out_of_memory: std.atomic.Value(bool) = .init(false),
+
+    fn work(self: *Queue) void {
+        while (true) {
+            const i = self.next.fetchAdd(1, .monotonic);
+            if (i >= self.items.len) return;
+            runFile(&self.items[i]) catch {
+                self.out_of_memory.store(true, .monotonic);
+                return;
+            };
+        }
+    }
+};
+
+/// Runs the cases of the file of `item`, and writes its report and counts there.
+/// ファイルでない項目は、そのまま残す。
+fn runFile(item: *Item) error{OutOfMemory}!void {
+    const file = item.file orelse return;
+    const path = file.path;
+    var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    var report: std.Io.Writer.Allocating = .init(std.heap.smp_allocator);
+    defer report.deinit();
+    const w = &report.writer;
+    runFileInto(gpa, path, file.body, w, item) catch |e| switch (e) {
+        error.OutOfMemory, error.WriteFailed => return error.OutOfMemory,
+    };
+    item.report = try report.toOwnedSlice();
+}
+
+fn runFileInto(gpa: std.mem.Allocator, path: []const u8, body: []const u8, w: *std.Io.Writer, item: *Item) error{ OutOfMemory, WriteFailed }!void {
+    var cases: std.ArrayList(Case) = .empty;
+    parse(gpa, body, &cases) catch |e| switch (e) {
+        error.MissingExpected => {
+            try w.print("{s}: a case has an input and no expected output\n", .{path});
+            item.failed += 1;
+            return;
+        },
+        error.UnknownMode => {
+            try w.print("{s}: a `# modes:` line names a mode other than `default` or `stress`\n", .{path});
+            item.failed += 1;
+            return;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    if (unpairedDefaultOnly(cases.items)) |i| {
+        try w.print("{s}:{d}: a `# modes: default` case has no `# modes: stress` case right after it, so it would never run under stress\n", .{ path, cases.items[i].line });
+        item.failed += 1;
+    }
+    if (unpairedStressOnly(cases.items)) |i| {
+        try w.print("{s}:{d}: a `# modes: stress` case does not follow a `# modes: default` case\n", .{ path, cases.items[i].line });
+        item.failed += 1;
+    }
+    if (hasCoreDirective(body)) for (cases.items) |*c| {
+        c.core = true;
+    };
+    // ケースのないファイルは、ファイルが欠けているのと同じくらい疑わしい。
+    // コメントだけのファイルや、すべてをコメントとして解析してしまう形式の
+    // 変更が考えられる。
+    if (cases.items.len == 0) {
+        try w.print("{s}: no case found in this file\n", .{path});
+        item.failed += 1;
+    }
+    for (cases.items) |c| {
+        for (modes) |mode| {
+            if (!c.only.runsIn(mode.options.stress)) continue;
+            if (try runCaseWith(gpa, mode.options, c)) |got| {
+                try w.print(
+                    "{s}:{d}: {s}\n  mode:     {s}\n  expected: {s}\n  got:      {s}\n",
+                    .{ path, c.line, c.input, mode.name, c.expected, got },
+                );
+                item.failed += 1;
+            } else item.passed += 1;
+        }
+    }
 }
 
 fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -345,9 +458,13 @@ fn runCaseWith(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) e
 /// The text a case prints: what the input writes, then the error if it ends with one.
 /// The result is a copy in `gpa`.
 fn evaluate(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) error{OutOfMemory}![]const u8 {
-    var arena: std.heap.ArenaAllocator = .init(gpa);
+    // Why: 呼び出し側の `gpa` はアリーナで、返したメモリを再利用しない。ケースの作業用の
+    // 確保をそこに置くと、1つのファイルの間、全ケースの分が積み上がる(計画書 0026 の S2
+    // で、1 プロセスの最大常駐メモリが約 2.5 倍になった)。ケースの終わりに返す確保は、
+    // 返したメモリを再利用する `smp_allocator` に置く。
+    var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
     defer arena.deinit();
-    var out: std.Io.Writer.Allocating = .init(gpa);
+    var out: std.Io.Writer.Allocating = .init(std.heap.smp_allocator);
     defer out.deinit();
     var interp: sucheme.Interpreter = undefined;
     // ヒープはコレクタが死んでいると判断したものを解放するので、メモリを返す
@@ -667,6 +784,51 @@ test "runCase compares the whole output, not a prefix or a trimmed form" {
         defer if (got) |g| gpa.free(g);
         try std.testing.expect(got != null);
     }
+}
+
+test "threadCount uses the CPUs up to a limit, and no more threads than files" {
+    try std.testing.expectEqual(1, threadCount(1, 10));
+    try std.testing.expectEqual(2, threadCount(2, 10));
+    try std.testing.expectEqual(max_threads, threadCount(max_threads + 4, 100));
+    try std.testing.expectEqual(3, threadCount(max_threads, 3));
+    // ファイルが無くても、CPU の数を読めなくても、1つは走らせる。
+    try std.testing.expectEqual(1, threadCount(max_threads, 0));
+    try std.testing.expectEqual(1, threadCount(0, 10));
+}
+
+test "writeReports writes every report in the order of the items and adds up the counts" {
+    const items = [_]Item{
+        .{ .report = "a\n", .passed = 3 },
+        .{ .report = "", .passed = 5, .failed = 1 },
+        .{ .report = "c\n", .failed = 2 },
+    };
+    var buf: [16]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const counts = try writeReports(&items, &w);
+    try std.testing.expectEqualStrings("a\nc\n", w.buffered());
+    try std.testing.expectEqual(8, counts.passed);
+    try std.testing.expectEqual(3, counts.failed);
+}
+
+test "runFiles runs every file once, keeps the order, and leaves the other entries alone" {
+    var items = [_]Item{
+        .{ .file = .{ .path = "a.txt", .body = "(+ 1 2)\n3\n" } },
+        .{ .report = "b: not a `.txt` file\n", .failed = 1 },
+        .{ .file = .{ .path = "c.txt", .body = "(+ 1 2)\n4\n" } },
+        .{ .file = .{ .path = "d.txt", .body = "# no case\n" } },
+    };
+    defer for (items) |item| if (item.file != null) std.heap.smp_allocator.free(item.report);
+    try runFiles(&items, 2);
+    // 1つ目は両方のモードで通る。
+    try std.testing.expectEqual(2, items[0].passed);
+    try std.testing.expectEqual(0, items[0].failed);
+    try std.testing.expectEqualStrings("", items[0].report);
+    try std.testing.expectEqual(1, items[1].failed);
+    // 3つ目は両方のモードで落ち、報告はそのファイルの項目に入る。
+    try std.testing.expectEqual(2, items[2].failed);
+    try std.testing.expect(std.mem.startsWith(u8, items[2].report, "c.txt:1: (+ 1 2)\n"));
+    try std.testing.expectEqual(1, items[3].failed);
+    try std.testing.expectEqualStrings("d.txt: no case found in this file\n", items[3].report);
 }
 
 test "exitStatus fails on a failure and on a run that read no case" {
