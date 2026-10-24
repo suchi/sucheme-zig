@@ -426,14 +426,16 @@ pub fn integerDivide(h: *Heap, kind: Division, a: Value, b: Value) Error!Value {
     };
     if (a.asFlonum() != null or b.asFlonum() != null) {
         if (isZeroNumber(b)) return error.DivisionByZero;
-        if (fastFloat(a)) |x| if (fastFloat(b)) |y| if (@abs(x) < two_53 and @abs(y) < two_53) {
+        if (fastFloat(a)) |x| if (fastFloat(b)) |y| if (@abs(x) < two_53) {
             return .fromFlonum(floatDivide(kind, x, y));
         };
     }
     return counted(Value, integerDivideWork, h, .{ kind, a, b });
 }
 
-/// 2^53。これ未満の整数は、`f64` で正確に表せ、その差と商も正確に計算できる。
+/// 2^53。これ未満の整数は、`f64` で正確に表せ、その差と商も正確に計算できる。除数の大きさは問わない
+/// (被除数が小さければ、商は 0 で、余りは被除数か、除数を足した値になり、除数が大きくても
+/// 正確な計算を丸めた値と一致する)。
 const two_53: f64 = 9007199254740992.0;
 
 fn isZeroNumber(v: Value) bool {
@@ -458,7 +460,7 @@ fn fixnumDivide(kind: Division, x: i64, y: i64) i64 {
     return @intCast(result);
 }
 
-/// The division of two integral `f64`s of magnitude below 2^53.
+/// The division of two integral `f64`s, the dividend of magnitude below 2^53.
 ///
 /// 剰余の `@rem` は正確で、被除数から剰余を引いた値は除数の倍数だから、商は正確に求まる。
 /// 零の符号は、商では被除数と除数の符号が異なれば負、剰余では truncate なら被除数、

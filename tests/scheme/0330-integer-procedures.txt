@@ -104,3 +104,19 @@ error: division by zero in truncate-quotient 1 0
 
 (odd? (inexact 4))
 #f
+
+# 整数でない引数は、呼んだ手続きの名前で型の誤りになる。
+(floor-quotient 'a 2)
+error: wrong type of argument to floor-quotient a 2
+
+(floor-remainder 7 'a)
+error: wrong type of argument to floor-remainder 7 a
+
+(truncate-quotient (/ 1 2) 2)
+error: wrong type of argument to truncate-quotient 1/2 2
+
+(truncate-remainder 3 (inexact (/ 1 2)))
+error: wrong type of argument to truncate-remainder 3 0.5
+
+(abs 'a)
+error: wrong type of argument to abs a

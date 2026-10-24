@@ -628,6 +628,15 @@ test "the division primitives give the signed zero the rules of the signs give" 
     try expectCall("0.0", "modulo", &.{ "-4", "2.0" });
 }
 
+test "the remainders take their sign from the dividend or from the divisor" {
+    try expectCallInts("-1", "truncate-remainder", &.{ -5, 2 });
+    try expectCallInts("1", "floor-remainder", &.{ -5, 2 });
+    try expectCallInts("1", "truncate-remainder", &.{ 5, -2 });
+    try expectCallInts("-1", "floor-remainder", &.{ 5, -2 });
+    try expectCallInts("-1", "remainder", &.{ -5, 2 });
+    try expectCallInts("1", "modulo", &.{ -5, 2 });
+}
+
 test "a floor remainder that a flonum cannot hold is rounded" {
     // 真の値 1e25 - 5 は flonum で表せないので、補正した余りは 1e25 に丸まる。
     try expectCall("1.0e25", "modulo", &.{ "-5", "1e25" });
