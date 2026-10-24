@@ -786,6 +786,11 @@ const allowed_workflow_keys = [_][]const u8{
     "cancel-in-progress",
     "types",
     "workflow_dispatch",
+    // 変更したファイルがすべて一致する PR では、ワークフローを起動しない。full.yml と
+    // preview.yml が、文書だけの PR を外すために使う(docs/adr/0046-skip-slow-tier-for-docs-only-prs.md)。
+    // 時機を絞るキーなので、コミットごとのワークフローには置けない(`isTriggerNarrowing`)。
+    // `paths` は入れていない。どのワークフローにも置けず、置くと未知のキーとして赤になる。
+    "paths-ignore",
     // 定期実行。fuzz.yml が使う。`cron` は `schedule` の下にだけ置ける。
     "schedule",
     "cron",
@@ -849,6 +854,7 @@ fn keyIsAllowed(key: []const u8) bool {
 fn isTriggerNarrowing(key: []const u8) bool {
     return std.mem.eql(u8, key, "types") or
         std.mem.eql(u8, key, "workflow_dispatch") or
+        std.mem.eql(u8, key, "paths-ignore") or
         std.mem.eql(u8, key, "schedule") or
         std.mem.eql(u8, key, "tags");
 }
@@ -2673,6 +2679,20 @@ test "keyIsAllowed: the job of the preview workflow is known, and its trigger na
     // 近い綴りは通らない。
     try std.testing.expect(!keyIsAllowed("previews"));
     try std.testing.expect(!keyIsAllowed("Preview"));
+}
+
+test "isForbiddenInPerCommit: a path filter may skip the slow tier, not the per-commit checks" {
+    // full.yml と preview.yml は、文書だけの PR で起動しないように `paths-ignore` を持つ。
+    try std.testing.expect(keyIsAllowed("paths-ignore"));
+    // コミットごとのワークフローが持つと、文書だけの PR で check-docs などが黙って
+    // 走らなくなる。
+    try std.testing.expect(isTriggerNarrowing("paths-ignore"));
+    try std.testing.expect(isForbiddenInPerCommit("paths-ignore"));
+    // `paths` は、どのワークフローにも置けない。置くと未知のキーとして報告される。
+    try std.testing.expect(!keyIsAllowed("paths"));
+    // 近い綴りは通らない。
+    try std.testing.expect(!keyIsAllowed("paths_ignore"));
+    try std.testing.expect(!keyIsAllowed("branches-ignore"));
 }
 
 test "keyIsAllowed: the inputs of the cache step are known" {

@@ -27,6 +27,13 @@
 #
 # slow ジョブと dist ジョブは Linux だけで走らせる。論理は Windows でも同じだからである。
 #
+# 変更したファイルがすべて `paths-ignore` に一致する PR(文書だけの PR)では、ready に
+# しても起動しない(docs/adr/0046-skip-slow-tier-for-docs-only-prs.md)。一覧は、実行
+# ファイルとテストと検査の結果に影響しない文書だけにする。文書の検査(check-docs など)は、
+# ci.yml が全 PR で走らせる。この一覧が、文書だけの PR の定義の正である(AGENTS.md は
+# ここを参照し、綴りを複製しない)。手動の起動(`workflow_dispatch`)には効かないと
+# 見ている(公式文書に到達できず未確認。ADR-0046)。
+#
 # The Zig version below is a copy; .zigversion is the source of truth.
 
 name: Full
@@ -34,6 +41,7 @@ name: Full
 on:
   pull_request:
     types: [ready_for_review]
+    paths-ignore: ["docs/**", "**/*.md", ".agents/**"]
   workflow_dispatch:
 
 permissions:
