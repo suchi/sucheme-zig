@@ -1015,7 +1015,6 @@ pub const Machine = struct {
         };
         return switch (e) {
             error.WrongType => raiseWith(ctx, irritants, "wrong type of argument to {s}", .{prim.name}),
-            error.IntegerOverflow => raiseWith(ctx, irritants, "integer overflow in {s}", .{prim.name}),
             error.WrongArgumentCount => raiseWith(ctx, irritants, "wrong number of arguments to {s}", .{prim.name}),
             error.DivisionByZero => raiseWith(ctx, irritants, "division by zero in {s}", .{prim.name}),
             error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
@@ -1392,7 +1391,7 @@ test "the errors of a call keep the messages the evaluator gave" {
     defer f.deinit();
     try f.expectFails("not a procedure", "(1 2)");
     try f.expectFails("wrong type of argument to +", "(+ 1 #t)");
-    try f.expectFails("integer overflow in quotient", "(quotient -9223372036854775808 -1)");
+    try f.expectFails("division by zero in quotient", "(quotient 5 0)");
     try f.expectFails("wrong number of arguments to -", "(-)");
     try f.expectFails("wrong number of arguments: expected 1, got 2", "((lambda (x) x) 1 2)");
     try f.expectFails("wrong number of arguments: expected 2, got 1", "((lambda (x y) x) 1)");
@@ -1772,7 +1771,6 @@ test "the failures of a primitive become the conditions with their messages" {
     const cases = [_]struct { failure: value_mod.PrimitiveError, message: []const u8 }{
         .{ .failure = error.WrongType, .message = "wrong type of argument to probe" },
         .{ .failure = error.WrongArgumentCount, .message = "wrong number of arguments to probe" },
-        .{ .failure = error.IntegerOverflow, .message = "integer overflow in probe" },
         .{ .failure = error.DivisionByZero, .message = "division by zero in probe" },
         .{ .failure = error.OutOfRange, .message = "argument out of range in probe" },
         .{ .failure = error.Immutable, .message = "cannot modify a constant in probe" },

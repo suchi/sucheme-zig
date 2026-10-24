@@ -395,6 +395,134 @@ fn integerConst(v: Value, buffer: *[fixnum_limbs]Limb) Const {
     return v.asBignum().?.toConst();
 }
 
+// ---- integer division and abs (slice 4g-2) ----
+
+/// Which of the integer divisions `integerDivide` computes.
+///
+/// `truncate_*` は0に向かって丸める除算で、余りの符号は被除数に従う(R7RS の `quotient`
+/// `remainder`)。`floor_*` は負の無限大に向かって丸める除算で、余りの符号は除数に従う
+/// (R7RS の `modulo`)。
+pub const Division = enum { truncate_quotient, truncate_remainder, floor_quotient, floor_remainder };
+
+fn isFloorDivision(kind: Division) bool {
+    return kind == .floor_quotient or kind == .floor_remainder;
+}
+
+fn isQuotient(kind: Division) bool {
+    return kind == .truncate_quotient or kind == .floor_quotient;
+}
+
+/// The integer division `kind` of the integers `a` and `b` (R7RS 6.2.6).
+///
+/// 引数は整数(`isIntegerNumber`)で、型の検査は呼び出し側が行う。片方でも不正確(flonum)
+/// なら結果も不正確である(`(truncate/ -5.0 -2)` の商は 2.0、余りは -1.0)。除数が正確な
+/// 0でも不正確な0でも `DivisionByZero` である。bignum も扱い、最小の fixnum を -1 で割った
+/// 商 2^63 は bignum になる。
+pub fn integerDivide(h: *Heap, kind: Division, a: Value, b: Value) Error!Value {
+    std.debug.assert(isIntegerNumber(a) and isIntegerNumber(b));
+    if (a.asFixnum()) |x| if (b.asFixnum()) |y| {
+        if (y == 0) return error.DivisionByZero;
+        if (x != std.math.minInt(i64) or y != -1) return .fromFixnum(fixnumDivide(kind, x, y));
+    };
+    if (a.asFlonum() != null or b.asFlonum() != null) {
+        if (isZeroNumber(b)) return error.DivisionByZero;
+        if (fastFloat(a)) |x| if (fastFloat(b)) |y| if (@abs(x) < two_53) {
+            return .fromFlonum(floatDivide(kind, x, y));
+        };
+    }
+    return counted(Value, integerDivideWork, h, .{ kind, a, b });
+}
+
+/// 2^53。これ未満の整数は、`f64` で正確に表せ、その差と商も正確に計算できる。除数の大きさは問わない
+/// (被除数が小さければ、商は 0 で、余りは被除数か、除数を足した値になり、除数が大きくても
+/// 正確な計算を丸めた値と一致する)。
+const two_53: f64 = 9007199254740992.0;
+
+fn isZeroNumber(v: Value) bool {
+    if (v.asFlonum()) |x| return x == 0;
+    return v.asFixnum() == 0;
+}
+
+/// `x` divided by `y` for fixnums that are not `minInt(i64) / -1`; `y` is not zero.
+fn fixnumDivide(kind: Division, x: i64, y: i64) i64 {
+    // 128ビットで計算する。最小の fixnum を -1 で割ったときの剰余は 0 で、64ビットでは
+    // 除算そのものがあふれる。ここには来ないが、床除算の剰余の定義式の積も 64ビットでは
+    // あふれうる。
+    const n: i128 = x;
+    const d: i128 = y;
+    const result: i128 = switch (kind) {
+        .truncate_quotient => @divTrunc(n, d),
+        .truncate_remainder => @rem(n, d),
+        .floor_quotient => @divFloor(n, d),
+        // R7RS の floor-remainder(`modulo`)は n - d * floor(n / d) と定義される。
+        .floor_remainder => n - d * @divFloor(n, d),
+    };
+    return @intCast(result);
+}
+
+/// The division of two integral `f64`s, the dividend of magnitude below 2^53.
+///
+/// 剰余の `@rem` は正確で、被除数から剰余を引いた値は除数の倍数だから、商は正確に求まる。
+/// 零の符号は、商では被除数と除数の符号が異なれば負、剰余では truncate なら被除数、
+/// floor なら除数に従う。
+fn floatDivide(kind: Division, x: f64, y: f64) f64 {
+    var r = @rem(x, y);
+    var q = (x - r) / y;
+    if (isFloorDivision(kind) and r != 0 and (r < 0) != (y < 0)) {
+        r += y;
+        q -= 1;
+    }
+    if (isQuotient(kind)) {
+        return if (q == 0) (if (std.math.signbit(x) != std.math.signbit(y)) -0.0 else 0.0) else q;
+    }
+    if (r == 0) {
+        const sign_of = if (isFloorDivision(kind)) y else x;
+        return if (std.math.signbit(sign_of)) -0.0 else 0.0;
+    }
+    return r;
+}
+
+fn integerDivideWork(h: *Heap, gpa: std.mem.Allocator, kind: Division, a: Value, b: Value) Error!Value {
+    const inexact = a.asFlonum() != null or b.asFlonum() != null;
+    const ea = if (a.asFlonum()) |x| try exactFromFloat(h, gpa, x) else a;
+    const eb = if (b.asFlonum()) |x| try exactFromFloat(h, gpa, x) else b;
+    var buf_a: [fixnum_limbs]Limb = undefined;
+    var buf_b: [fixnum_limbs]Limb = undefined;
+    const ca = integerConst(ea, &buf_a);
+    const cb = integerConst(eb, &buf_b);
+    if (cb.eqlZero()) return error.DivisionByZero;
+    var qr = try bigint.divide(gpa, ca, cb, if (isFloorDivision(kind)) .floor else .truncate);
+    defer qr.q.deinit();
+    defer qr.r.deinit();
+    const picked = if (isQuotient(kind)) qr.q else qr.r;
+    if (!inexact) return number.fromInteger(h, picked.toConst());
+    const x = try exact.ratioToF64(gpa, picked.toConst(), one);
+    if (x != 0) return .fromFlonum(x);
+    // 結果が0のときの符号は、浮動小数点の場合(`floatDivide`)と同じ規則に従う。
+    const negative = if (isQuotient(kind))
+        isNegativeInteger(a) != isNegativeInteger(b)
+    else
+        isNegativeInteger(if (isFloorDivision(kind)) b else a);
+    return .fromFlonum(if (negative) -0.0 else 0.0);
+}
+
+fn isNegativeInteger(v: Value) bool {
+    if (v.asFlonum()) |x| return std.math.signbit(x);
+    if (v.asFixnum()) |n| return n < 0;
+    return !v.asBignum().?.toConst().positive;
+}
+
+/// The absolute value of the real number `v` (R7RS 6.2.6).
+///
+/// `(abs -0.0)` は `0.0` である。最小の fixnum の絶対値は bignum になる。
+pub fn absNumber(h: *Heap, v: Value) Error!Value {
+    std.debug.assert(isReal(v));
+    if (v.asFlonum()) |x| return .fromFlonum(@abs(x));
+    if (v.asFixnum()) |n| if (n >= 0) return v;
+    if (v.kind() != .fixnum and (try compare(h, v, .fromFixnum(0))).? != .lt) return v;
+    return negate(h, v);
+}
+
 // ---- predicates, exactness, rounding, extremes (slice 4g-1) ----
 
 /// Whether the number `v` is exact. A complex number is exact when its parts are (they are

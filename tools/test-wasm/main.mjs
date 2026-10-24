@@ -647,8 +647,8 @@ test("integer division and 128-bit arithmetic agree with the native results in w
     OK,
     "0\n0\n-4611686018427387904\n",
   ]);
-  // 最小の整数を -1 で割る quotient は、結果が 64 ビットに収まらない。
-  assert.deepEqual(h.run("(quotient -9223372036854775808 -1)"), [SCHEME_ERROR, "error: integer overflow in quotient -9223372036854775808 -1\n"]);
+  // 最小の整数を -1 で割る quotient は、結果が 64 ビットに収まらず、bignum になる。
+  assert.deepEqual(h.run("(quotient -9223372036854775808 -1)"), [OK, "9223372036854775808\n"]);
   assert.deepEqual(h.run("(quotient 1 0)"), [SCHEME_ERROR, "error: division by zero in quotient 1 0\n"]);
   assert.deepEqual(h.run("(modulo -9223372036854775808 0)"), [SCHEME_ERROR, "error: division by zero in modulo -9223372036854775808 0\n"]);
   // 128 ビットの積と和。途中の値が 64 ビットを超えても、結果が収まれば値を返す。

@@ -677,10 +677,6 @@ pub fn isScalarValue(cp: u32) bool {
 pub const PrimitiveError = error{
     /// An argument is not of the type the primitive takes.
     WrongType,
-    /// The exact result does not fit a fixnum.
-    /// R7RS 6.2.3 は、処理系がこれを実装制限の違反として報告してよいとしている。
-    /// 多倍長整数(bignum)は段階4で入る。
-    IntegerOverflow,
     /// A number of arguments the primitive does not take, such as `(-)`.
     /// 機械が、`Primitive` の個数の範囲から返す。プリミティブの本体は、その範囲を検査
     /// しない。例外は、受け取る個数がほかの引数で決まるプリミティブで、本体がそれを

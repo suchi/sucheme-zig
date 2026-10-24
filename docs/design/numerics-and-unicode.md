@@ -66,6 +66,18 @@ flowchart LR
 
 R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder` `truncate/` `truncate-quotient` `truncate-remainder`、および別名の `quotient` `remainder` `modulo`。符号の扱いを間違えやすいので、`floor` 系と `truncate` 系の違いを明示したテストを負数の全組合せで持つ。
 
+実装(スライス 4g-2、`src/num/ops.zig` の `integerDivide` と `absNumber`、`src/prim/arith.zig`)は、次の規則で計算する。
+
+- 整数除算の7個(`quotient` `remainder` `modulo` と、`floor-` `truncate-` の商と余り)と `abs` は、Zig のネイティブで実装する。`floor/` と `truncate/` は、純粋なプリミティブが多値を返せないので、Scheme で商と余りのネイティブを `values` に包む。`gcd` `lcm` `zero?` `positive?` `negative?` `odd?` `even?` `square` は Scheme のままである(ネイティブにする範囲は、親セッションの指示で入れたものである)。
+- 引数は、正確な整数と、整数値の有限の flonum である。それ以外(非整数、無限大、NaN、複素数、数でない値)は `WrongType` にする(R7RS 6.2.6 は、`floor/` などの引数を整数とする)。型は両方の引数について先に検査し、そのあとで除数の 0 を検査する。
+- 片方でも flonum なら、結果は flonum である(`(truncate/ -5.0 -2)` は 2.0 と -1.0。原文の例)。除数が正確な0でも不正確な0でも `DivisionByZero` である(`(/ 1 0.0)` は無限大だが、整数除算は 0 による除算を誤りとする)。
+- bignum を取る。最小の fixnum を -1 で割った商 2^63 は bignum になり、`IntegerOverflow` は無くなった(エラーの種類ごと削除した)。
+- flonum の経路は、被除数の絶対値が 2^53 未満で、除数が `f64` に正確に直せるもの(flonum、または絶対値が 2^53 以下の fixnum)なら、`@rem` で余りを正確に求め、被除数から余りを引いた値を除数で割って商を求める。それ以外は、正確な整数に直して bigint で割り、flonum に戻す。商が 53 ビットに収まらないときは丸まる。truncate 系の余りは常に正確である。floor 系の余りは、符号が合わないときに除数を足して補正するので、丸まることがある(`(modulo -5 1e25)` は `1.0e25`、`(modulo -5.0 18446744073709551616)` は除数と等しい値になり、`0 <= r < |d|` に反する。真の値が flonum で表せないためで、原文は不正確な数の結果を規定しない)。
+- 結果が 0 のときの符号は、商では被除数と除数の符号が異なれば `-0.0`、余りでは truncate 系が被除数、floor 系が除数の符号に従う。原文は 0 の符号を規定しないので、IEEE 754 の `fmod` と除算の規則に合わせた。
+- `abs` は実数を取り、複素数は `WrongType` である。`(abs -0.0)` は `0.0`、最小の fixnum の絶対値は bignum になる。
+
+なお、リーダは 2^63 以上の整数の綴りを読めない(スライス 4r が直す)。`(remainder 9223372036854775808 1)` の「integer out of range」は、リーダの誤りであり、整数除算の誤りではない。
+
 ### 表示と解析
 
 `number->string` は基数2、8、10、16に対応する。

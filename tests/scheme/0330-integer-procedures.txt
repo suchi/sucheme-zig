@@ -1,7 +1,7 @@
-# Slice 3s: the integer procedures of R7RS 6.2.6 that need no numeric tower, written
-# in Scheme over quotient, remainder, modulo and the comparisons. The examples are
-# those of R7RS 6.2.6 (docs/spec/), on exact integers. 段階4で数値塔が入ったら、
-# 不正確な数の例(`(lcm 32.0 -36)` など)を足す。
+# Slices 3s and 4g-2: the integer procedures of R7RS 6.2.6. The division procedures and
+# abs are native; the rest are written in Scheme over them. The examples are those of
+# R7RS 6.2.6 (docs/spec/). リーダは flonum の綴りを読めない(スライス 4r)ので、不正確な
+# 数は `inexact` で作る。
 #
 # 1ケースは1行で、エラーはその行の残りを打ち切る。
 
@@ -72,10 +72,51 @@
 
 # 割る数が0なら、誤りである(R7RS 6.2.6 は誤りとしている)。
 (floor/ 1 0)
-error: division by zero in quotient 1 0
+error: division by zero in floor-quotient 1 0
 
 (floor-remainder 1 0)
-error: division by zero in modulo 1 0
+error: division by zero in floor-remainder 1 0
 
 (truncate-quotient 1 0)
-error: division by zero in quotient 1 0
+error: division by zero in truncate-quotient 1 0
+
+(truncate/ 1 0)
+error: division by zero in truncate-quotient 1 0
+
+# 不正確な整数と bignum。原文の例: (lcm 32.0 -36) は 288.0、(truncate/ -5.0 -2) は 2.0 と -1.0。
+(list (lcm (inexact 32) -36) (gcd (inexact 32) -36) (abs (inexact -7)))
+(288.0 4.0 7.0)
+
+(call-with-values (lambda () (truncate/ (inexact -5) -2)) list)
+(2.0 -1.0)
+
+(call-with-values (lambda () (floor/ (inexact 5) -2)) list)
+(-3.0 -1.0)
+
+(let ((big (* 4294967296 4294967296))) (list (quotient big 3) (modulo (- big) 7) (abs (- big)) (gcd big 6) (even? big) (odd? (+ big 1))))
+(6148914691236517205 5 18446744073709551616 2 #t #t)
+
+(zero? (inexact 0))
+#t
+
+(even? (inexact 4))
+#t
+
+(odd? (inexact 4))
+#f
+
+# 整数でない引数は、呼んだ手続きの名前で型の誤りになる。
+(floor-quotient 'a 2)
+error: wrong type of argument to floor-quotient a 2
+
+(floor-remainder 7 'a)
+error: wrong type of argument to floor-remainder 7 a
+
+(truncate-quotient (/ 1 2) 2)
+error: wrong type of argument to truncate-quotient 1/2 2
+
+(truncate-remainder 3 (inexact (/ 1 2)))
+error: wrong type of argument to truncate-remainder 3 0.5
+
+(abs 'a)
+error: wrong type of argument to abs a
