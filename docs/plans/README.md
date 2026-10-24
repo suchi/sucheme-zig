@@ -29,6 +29,7 @@
 | [0023-slice-3o-ir-to-gc-heap.md](0023-slice-3o-ir-to-gc-heap.md) | スライス 3o(コアIRを GC ヒープへ移し、上限の外の確保を閉じる)の設計と PR の分け方 |
 | [0024-step-limit-for-the-conformance-run.md](0024-step-limit-for-the-conformance-run.md) | 機械の歩数の上限: 準拠スイートの実行で止まらない形式を打ち切る設計と、L0 と L3 との調整(レーン L5) |
 | [0025-fuzzing-the-evaluator.md](0025-fuzzing-the-evaluator.md) | ファジングの拡充: 評価器を通しで試す対象と、入力コーパス(レーン L5) |
+| [0026-shorten-slow-tier.md](0026-shorten-slow-tier.md) | 層2の slow tests を、検査を減らさずに短くする案(単体テストの最適化、test-scheme のランナーの遅れと並列の実行) |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
