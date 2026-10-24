@@ -628,6 +628,16 @@ test "the division primitives give the signed zero the rules of the signs give" 
     try expectCall("0.0", "modulo", &.{ "-4", "2.0" });
 }
 
+test "a floor remainder that a flonum cannot hold is rounded" {
+    // 真の値 1e25 - 5 は flonum で表せないので、補正した余りは 1e25 に丸まる。
+    try expectCall("1.0e25", "modulo", &.{ "-5", "1e25" });
+    try expectCall("-1.0e25", "modulo", &.{ "5", "-1e25" });
+    // 結果が除数と等しくなる(0 <= r < |d| に反する)。
+    try expectCall("18446744073709552000.0", "modulo", &.{ "-5.0", "18446744073709551616" });
+    // truncate 系の余りは、この場合も正確である。
+    try expectCall("-5.0", "remainder", &.{ "-5.0", "18446744073709551616" });
+}
+
 test "the division primitives are exact for flonums beyond 2^53" {
     // 2^60 は flonum に正確に表せる。
     // 2^60 mod 3 = 1。2^60 / 3 は正確には表せないが、剰余は正確である。
