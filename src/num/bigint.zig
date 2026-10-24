@@ -165,6 +165,23 @@ pub fn pow(gpa: Allocator, base: Const, exponent: u64) Error!Managed {
     return r;
 }
 
+/// Returns the integer square root of `a`: the largest `s` with `s * s <= a`.
+///
+/// `a` は負でない。確保は、結果用(`a` の限界値数の約半分)と、std が示す作業用で、
+/// 作業用は返る前に解放する。
+pub fn sqrt(gpa: Allocator, a: Const) Error!Managed {
+    std.debug.assert(a.positive or a.eqlZero());
+    if (a.eqlZero()) return Managed.initSet(gpa, 0);
+    var r = try zeroed(gpa, (a.limbs.len - 1) / 2 + 1);
+    errdefer r.deinit();
+    const scratch = try gpa.alloc(Limb, std.math.big.int.calcSqrtLimbsBufferLen(a.bitCountAbs()));
+    defer gpa.free(scratch);
+    var m = r.toMutable();
+    m.sqrt(a, scratch);
+    finish(&r, m);
+    return r;
+}
+
 /// 0、1、-1 のいずれか。
 fn isUnit(a: Const) bool {
     return a.eqlZero() or (a.limbs.len == 1 and a.limbs[0] == 1);
@@ -577,6 +594,25 @@ test "log2_radix_x1024 is the smallest upper bound of log2(radix) * 1024" {
         try lower.shiftLeft(&lower, log2_radix_x1024[r] - 1);
         try testing.expect(p.toConst().order(upper.toConst()) != .gt);
         try testing.expectEqual(std.math.Order.gt, p.toConst().order(lower.toConst()));
+    }
+}
+
+test "sqrt gives the largest root whose square does not exceed the number" {
+    var zero = try fromInt(@as(i64, 0));
+    defer zero.deinit();
+    var r0 = try sqrt(tgpa, zero.toConst());
+    defer r0.deinit();
+    try expectValue(0, r0);
+    var k: i128 = 1;
+    while (k < (1 << 60)) : (k = k * 3 + 1) {
+        for ([_]i128{ k * k - 1, k * k, k * k + 1 }) |n| {
+            var mn = try Managed.initSet(tgpa, n);
+            defer mn.deinit();
+            var r = try sqrt(tgpa, mn.toConst());
+            defer r.deinit();
+            const expected: i128 = @intCast(std.math.sqrt(@as(u128, @intCast(n))));
+            try expectValue(expected, r);
+        }
     }
 }
 

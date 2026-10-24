@@ -410,3 +410,8 @@
 ;; 引数が無ければ、1(lcm の単位元)である。
 (define (lcm . ns) (%lcm-all 1 ns))
 
+;; `exact-integer-sqrt` は、根と、`k - 根 * 根` の2つの値を返す(R7RS 6.2.6)。純粋な
+;; プリミティブは多値を返せないので、根を求めるプリミティブ(`%exact-integer-sqrt`)の結果を
+;; `values` に包む。引数の型の誤りは、プリミティブの名前で報告される。
+(define (%exact-integer-sqrt-values k root) (values root (- k (* root root))))
+(define (exact-integer-sqrt k) (%exact-integer-sqrt-values k (%exact-integer-sqrt k)))
