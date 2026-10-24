@@ -334,7 +334,7 @@ pub fn digitValue(c: u21) ?u4
 ### 4e の中身
 
 - `num.parse`: `syntax.scan` の結果から値を組み立てる。`#e` の小数は、桁列と指数から有理数を直接作る(`parseFloat` を通さない)。分母0の `1/0` は `null`。`#i` と小数点のある綴りは `flonum.parseDecimal`。大きさの見積りは上の「演算の作業領域」のとおり。
-- `num.write`: 正確な整数は `bigint.toString`、ratnum は分子と分母、flonum の基数10は `flonum.write`、基数10以外の有限の flonum は、正確な有理数に直して `#i` を前に付ける(設計文書の `(number->string 0.5 2)` が `"#i1/10"` の例)。無限大と NaN の基数10以外は、4g の `number->string` が Scheme の誤りにする(R7RS 6.2.7 の Note)。
+- `num.write`: 正確な整数は `bigint.toString`、ratnum は分子と分母、flonum の基数10は `flonum.write`、基数10以外の有限の flonum は、正確な有理数に直して `#i` を前に付ける(設計文書の `(number->string 0.5 2)` が `"#i1/10"` の例)。無限大と NaN は、基数によらず `+inf.0` などと書く(4e の時点では、基数10以外を 4g の `number->string` が Scheme の誤りにする案だった。4g-4 のレビューで、`string->number` がどの基数でも読み戻せると分かり、2026-10-24 にユーザーが承認して、誤りにしない決定に改めた)。
 - 正規化の関数(`normalizeInteger`、`makeRatio`、`makeRectangular`)を、ここに閉じる。
 
 ## roadmap の項目の割り当て
@@ -462,7 +462,8 @@ pub fn digitValue(c: u21) ?u4
 | `src/printer.zig` | 数の分岐から `num.write` を呼ぶ | 4d |
 | `src/reader.zig` | 数の綴りを `num.parse` で読む、ASCII でない識別子 | 4r、4u4(L2) |
 | `src/prim/arith.zig` | 四則と比較、整数除算 | 4f、4g |
-| `src/prim/number.zig`(新規) | 正確性の変換、丸め、`number->string` と `string->number` ほか | 4g |
+| `src/prim/number.zig`(新規) | 正確性の変換、丸め、`expt` ほか、`number->string` と `string->number` | 4g |
+| `src/num/power.zig`(新規) | `expt` `exact-integer-sqrt` の根 `rationalize` | 4g-3 |
 | `src/prim/inexact.zig`(新規) | `(scheme inexact)` のプリミティブ | 4h |
 | `src/prim/complex.zig`(新規) | `(scheme complex)` のプリミティブ | 4i |
 | `src/prim/char.zig` | `(scheme char)` の文字の手続き | 4u3 |
@@ -508,13 +509,15 @@ pub fn digitValue(c: u21) ?u4
 | 4e-2 | マージ済み([suchi/sucheme-zig#179](https://github.com/suchi/sucheme-zig/pull/179))。複素数の構文と書き出し、部分の正確性をそろえる規則。実績: PR を作ってから ready まで約 44 分、マージまで約 77 分(2026-10-23 11:24 JST から 12:08 JST、12:41 JST。層2 は約 30 分) |
 | 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。マージ済み([suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181))。実績: PR を作ってから ready まで約 57 分、マージまで約 128 分(2026-10-23 13:27 JST から 14:24 JST、15:35 JST。層2 は約 25 分) |
 | 4f | マージ済み([suchi/sucheme-zig#182](https://github.com/suchi/sucheme-zig/pull/182))。四則と比較(compnum を含む)。実績: PR を作ってから ready まで約 5.5 時間、マージまで約 7 時間(2026-10-23 17:31 JST から 23:03 JST、翌 00:27 JST。独立レビュー 3 巡と main の取り込みを含む。層2 は約 32 分) |
-| 4g-1 | マージ済み([suchi/sucheme-zig#188](https://github.com/suchi/sucheme-zig/pull/188))。述語、`exact` `inexact`、`floor` 系、`numerator` `denominator`、`max` `min`。4g は 4g-1(これ)、4g-2(整数除算と `abs` など)、4g-3(`expt` `exact-integer-sqrt` `rationalize`)、4g-4(`number->string` `string->number`)の4つの PR に分ける(2026-10-23。大きいので、レビューを小さくするため) |
-| 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main`(4g-1 のマージ後の main から切った)。2026-10-24 に層1 が緑 |
-| 4g-3、4g-4、4h〜4z、4u1〜4u4 | 未着手 |
+| 4g-1 | マージ済み([suchi/sucheme-zig#188](https://github.com/suchi/sucheme-zig/pull/188))。述語、`exact` `inexact`、`floor` 系、`numerator` `denominator`、`max` `min`。4g は 4g-1(これ)、4g-2(整数除算と `abs` など)、4g-3(`expt` `exact-integer-sqrt` `rationalize`)、4g-4(`number->string` `string->number`)の4つの PR に分ける(2026-10-23。大きいので、レビューを小さくするため)。実績: PR を作ってから ready まで約 3.4 時間、マージまで約 5.1 時間(2026-10-24 02:02 JST から 05:25 JST、07:11 JST。独立レビュー 2 本の指摘への修正 1 回を含む) |
+| 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。マージ済み([suchi/sucheme-zig#189](https://github.com/suchi/sucheme-zig/pull/189))。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main`。実績: PR を作ってから ready まで約 1.4 時間、マージまで約 2.2 時間(2026-10-24 07:52 JST から 09:18 JST、10:01 JST。独立レビュー 2 本の指摘への修正 2 回(2 回目は設計書の 1 文だけ)を含む) |
+| 4g-3 | マージ済み([suchi/sucheme-zig#191](https://github.com/suchi/sucheme-zig/pull/191))。`expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`。準拠マトリクスに失敗が1件出る(`tests/vendor/r7rs-tests.scm` の `(test (expt 2 140) (square root))`)。`expt` が束縛されて、これまで未実装として数えられていた項目が実行されるようになったためで、bignum の `eqv?` と `equal?` が同一のオブジェクトで比べる欠落(4j が直す)が原因である。この PR の回帰ではない。実績: PR を作ってから ready まで約 1.8 時間、マージまで約 5.4 時間(2026-10-24 10:09 JST から 11:54 JST、15:35 JST。独立レビュー 2 本の指摘への修正 1 回を含む。層2 とユーザーのマージの待ちを含む) |
+| 4g-4 | `number->string`、`string->number`。ブランチ `feature/phase4-slice-4g-4-number-string-conversion-main`(4g-3 のマージ後の main から切った)。ローカルで層1 が緑 |
+| 4h〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4g-2(整数除算と `abs`)の PR を作り、レビューを経てマージする。続けて 4g-3、4g-4 の順に進める。4h(`(scheme inexact)`)は、4g と並行に進められる。
+- 4g-4(`number->string` `string->number`)の PR を作り、レビューを経てマージする。これで 4g が終わる。4g が終わったら、スライス 4g の見積りと実績を [0012](0012-schedule-estimates-and-actuals.md) の規則で記録する。4h(`(scheme inexact)`)は、4g と並行に進められる。
 - 4g-2 で解決した: `(lcm -9223372036854775808 3)` は 27670116110564327424 を返す。`(remainder 9223372036854775808 1)` の「integer out of range」は、整数除算ではなくリーダが 2^63 以上の綴りを読めないことの誤りで、4r が直す。`procedures.scm` の古い「あふれる」のコメントも直した。
 - 改善案(4g-4 の振り返りで検討する。実装はしない): `src/sucheme.zig` の include の上限のテストは、既定の上限で初期化した使用量に余裕(128 KiB)を足す形に直した。残る課題は、束縛を足すたびに初期化の使用量が増えることそのもので、未束縛の手続きがすべて入ると、ヒープの既定の上限に対する初期化の割合がどうなるかを、段階の終わりに測る。
 - 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。

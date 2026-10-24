@@ -250,7 +250,6 @@ pub fn build(b: *std.Build) void {
     const manifest = parseManifest(b);
 
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
 
     // Why: 規模を確かめるテスト(10万段の再帰、100万ステップ)は、実行時間の大半を
     // 占め、入力の大きさとともに増える誤りを見つける。これらは `-Dslow=true` で
@@ -258,6 +257,14 @@ pub fn build(b: *std.Build) void {
     // (docs/plans/0007-test-tiers.md)。飛ばしたテストの数は、
     // `zig build test --summary all` の概要に出る。
     const slow = b.option(bool, "slow", "also run the tests that check a scale (slow)") orelse false;
+    // Why: `-Dslow=true` で `-Doptimize` を付けないときは、ReleaseSafe を既定にする
+    // (ADR-0047)。規模を試す単体テストは Debug では数倍遅く、ReleaseSafe は安全検査を残す。
+    // Debug の未初期化メモリの埋め込みは、Debug のまま走る全コミットの縮小版が受け持つ。
+    // `-Doptimize` を付けたときは、その値が優先する。`--release` は、slow のときは読まない。
+    const optimize: std.builtin.OptimizeMode = if (slow)
+        b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size") orelse .ReleaseSafe
+    else
+        b.standardOptimizeOption(.{});
 
     const options = b.addOptions();
     options.addOption(bool, "slow", slow);
