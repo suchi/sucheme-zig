@@ -8,7 +8,7 @@
 
 | ライブラリ | 束縛済み | 全体 |
 | --- | ---: | ---: |
-| `(scheme base)` | 200 | 238 |
+| `(scheme base)` | 202 | 238 |
 | `(scheme case-lambda)` | 1 | 1 |
 | `(scheme char)` | 0 | 22 |
 | `(scheme complex)` | 0 | 6 |
@@ -24,7 +24,7 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 230 | 339 |
+| 一意の識別子の合計 | 232 | 339 |
 
 ## 準拠スイートの結果
 
@@ -36,11 +36,11 @@
 | 節 | 通った | 落ちた | 誤り | 読めない | 未実装 | 連鎖 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 4.1 Primitive expression types | 27 | 0 | 0 | 0 | 0 | 0 |
-| 4.2 Derived expression types | 66 | 1 | 0 | 1 | 2 | 4 |
+| 4.2 Derived expression types | 69 | 1 | 0 | 1 | 1 | 1 |
 | 4.3 Macros | 26 | 0 | 0 | 0 | 0 | 0 |
 | 5 Program structure | 15 | 0 | 0 | 0 | 0 | 0 |
 | 6.1 Equivalence Predicates | 25 | 0 | 0 | 0 | 0 | 0 |
-| 6.2 Numbers | 80 | 0 | 0 | 82 | 57 | 1 |
+| 6.2 Numbers | 83 | 0 | 0 | 83 | 53 | 1 |
 | 6.3 Booleans | 18 | 0 | 0 | 0 | 0 | 0 |
 | 6.4 Lists | 62 | 0 | 0 | 2 | 1 | 0 |
 | 6.5 Symbols | 17 | 0 | 0 | 0 | 0 | 0 |
@@ -55,6 +55,6 @@
 | Read syntax | 0 | 0 | 0 | 0 | 72 | 24 |
 | Numeric syntax | 0 | 0 | 0 | 0 | 29 | 83 |
 | 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
-| 合計 | 557 | 1 | 0 | 93 | 360 | 112 |
+| 合計 | 563 | 1 | 0 | 94 | 355 | 109 |
 
 スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme inexact)` `(scheme complex)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`

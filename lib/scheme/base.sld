@@ -18,10 +18,10 @@
           integer? lambda lcm length let let* let*-values let-syntax let-values letrec
           letrec* letrec-syntax list list->string list->vector list-copy list-ref list-set!
           list-tail list? make-bytevector make-list make-parameter make-string make-vector
-          map max member memq memv min modulo negative? not null? number? numerator odd? or
+          map max member memq memv min modulo negative? not null? number->string number? numerator odd? or
           pair? parameterize positive? procedure? quasiquote quote quotient raise
           raise-continuable rational? rationalize read-error? real? remainder reverse round set!
-          set-car! set-cdr! square string string->list string->symbol string->utf8
+          set-car! set-cdr! square string string->list string->number string->symbol string->utf8
           string->vector string-append string-copy string-copy! string-fill! string-for-each
           string-length string-map string-ref string-set! string<=? string<? string=?
           string>=? string>? string? substring symbol->string symbol=? symbol? syntax-error
