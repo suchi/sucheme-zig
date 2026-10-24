@@ -176,7 +176,7 @@ S3(suchi/sucheme-zig#196)の敵対的レビューで見つかり、直さなか�
 
 | スライス | 状態 |
 | --- | --- |
-| S1 | 完了(suchi/sucheme-zig#195、2026-10-24 にマージ)。`build.zig` の変更と ADR-0047。敵対的レビューは必須 0 件 |
+| S1 | 完了(suchi/sucheme-zig#195、2026-10-24 にマージ)。`build.zig` の変更と ADR-0047。敵対的レビューは必須 0 件。層2 の実行(run 226、先頭 `abea62d`)で、slow tests のジョブは約 18 分 35 秒(以前は約 33 分)。内訳は、`zig build test -Dslow=true` が約 4 分 27 秒(Debug の run 227 では約 12 分 53 秒)、`zig build test-scheme -Dslow=true` が約 12 分 40 秒、`zig build test-wasm -Dslow=true` が約 1 分 8 秒 |
 | S2 | 完了。仮説 A は否定され、コードは直していない(上の「S2 の調査の結果」)。積み上がりの修正は S3 に含める |
 | S3 | suchi/sucheme-zig#196。ファイルの並列の実行と、ケースの作業用の確保の修正。手元で、件数と報告の順が直列と同じこと、ミューテーション7件の検出、壁時計を確かめた(数は PR 本文)。敵対的レビューと層2 の記録が残っている |
 
