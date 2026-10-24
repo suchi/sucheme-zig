@@ -68,7 +68,7 @@ R7RS 6.2.6 の全組を実装する。`floor/` `floor-quotient` `floor-remainder
 
 実装(スライス 4g-2、`src/num/ops.zig` の `integerDivide` と `absNumber`、`src/prim/arith.zig`)は、次の規則で計算する。
 
-- 整数除算の7個(`quotient` `remainder` `modulo` と、`floor-` `truncate-` の商と余り)と `abs` は、Zig のネイティブで実装する。`floor/` と `truncate/` は、純粋なプリミティブが多値を返せないので、Scheme で商と余りのネイティブを `values` に包む。`gcd` `lcm` `zero?` `positive?` `negative?` `odd?` `even?` `square` は Scheme のままである(ネイティブにする範囲は、ユーザーが案として承認した。承認は親セッション経由で受け取った)。
+- 整数除算の7個(`quotient` `remainder` `modulo` と、`floor-` `truncate-` の商と余り)と `abs` は、Zig のネイティブで実装する。`floor/` と `truncate/` は、純粋なプリミティブが多値を返せないので、Scheme で商と余りのネイティブを `values` に包む。`gcd` `lcm` `zero?` `positive?` `negative?` `odd?` `even?` `square` は Scheme のままである(ネイティブにする範囲は、親セッションの指示で入れたものである)。
 - 引数は、正確な整数と、整数値の有限の flonum である。それ以外(非整数、無限大、NaN、複素数、数でない値)は `WrongType` にする(R7RS 6.2.6 は、`floor/` などの引数を整数とする)。型は両方の引数について先に検査し、そのあとで除数の 0 を検査する。
 - 片方でも flonum なら、結果は flonum である(`(truncate/ -5.0 -2)` は 2.0 と -1.0。原文の例)。除数が正確な0でも不正確な0でも `DivisionByZero` である(`(/ 1 0.0)` は無限大だが、整数除算は 0 による除算を誤りとする)。
 - bignum を取る。最小の fixnum を -1 で割った商 2^63 は bignum になり、`IntegerOverflow` は無くなった(エラーの種類ごと削除した)。
