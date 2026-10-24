@@ -32,7 +32,8 @@ pub const Error = ops.Error || error{WrongType};
 /// 底に対する整数でない指数は、`exp` と `log` が入るまで `WrongType` にする(スライス 4i)。
 ///
 /// 結果が上限を超える正確なべき乗は、`HeapLimit` である。確保の前に大きさを見積もるので、
-/// `(expt 2 (expt 10 12))` で長い計算を続けない。
+/// `(expt 2 (expt 10 12))` で長い計算を続けない。断るのはメモリの上限だけで、上限に収まる
+/// 範囲の時間は、結果の桁数の約2乗で伸びる(docs/design/open-questions.md)。
 pub fn expt(h: *Heap, base: Value, exponent: Value) Error!Value {
     std.debug.assert(number.isNumber(base) and number.isNumber(exponent));
     if (exponent.asFixnum()) |n| if (n == 0) return .fromFixnum(1);
