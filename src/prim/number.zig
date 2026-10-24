@@ -15,6 +15,7 @@ const PrimitiveError = value.PrimitiveError;
 const number = @import("../num/number.zig");
 const ops = @import("../num/ops.zig");
 const power = @import("../num/power.zig");
+const heap_mod = @import("../heap.zig");
 
 pub const Error = PrimitiveError;
 
@@ -39,6 +40,8 @@ pub const primitives = [_]Primitive{
     .{ .name = "expt", .min_args = 2, .max_args = 2, .body = .{ .pure = &exptOf } },
     .{ .name = "rationalize", .min_args = 2, .max_args = 2, .body = .{ .pure = &rationalizeOf } },
     .{ .name = "%exact-integer-sqrt", .min_args = 1, .max_args = 1, .body = .{ .pure = &integerSqrtOf } },
+    .{ .name = "number->string", .min_args = 1, .max_args = 2, .body = .{ .pure = &numberToString } },
+    .{ .name = "string->number", .min_args = 1, .max_args = 2, .body = .{ .pure = &stringToNumber } },
 };
 
 /// `(complex? obj)`: true of every number. A real number is complex (R7RS 6.2.6).
@@ -154,6 +157,58 @@ fn integerSqrtOf(services: *const Services, args: []const Value) Error!Value {
     return power.integerSqrt(services.heap, k);
 }
 
+/// The radix `args` give, or 10 if they give none: 2, 8, 10 or 16.
+///
+/// 基数が整数でなければ `WrongType`、2、8、10、16 以外なら `OutOfRange` である。R7RS 6.2.7 は、
+/// 基数を2、8、10、16に限ってよいとする。
+fn radixOf(args: []const Value) Error!u8 {
+    if (args.len == 0) return 10;
+    const radix = args[0].asFixnum() orelse return error.WrongType;
+    return switch (radix) {
+        2, 8, 10, 16 => @intCast(radix),
+        else => error.OutOfRange,
+    };
+}
+
+/// `(number->string z [radix])`: the external representation of `z` in `radix`, as a new string
+/// (R7RS 6.2.7).
+///
+/// 無限大と NaN は、基数10以外では書き戻せない(`string->number` が読めない)ので、`OutOfRange`
+/// である。R7RS 6.2.7 の注は、書き戻せない数を誤りとする。書き出しの作業領域と文字列の
+/// 組み立ては、ヒープの上限に計上される。
+fn numberToString(services: *const Services, args: []const Value) Error!Value {
+    if (!number.isNumber(args[0])) return error.WrongType;
+    const radix = try radixOf(args[1..]);
+    if (radix != 10 and !isFiniteNumber(args[0])) return error.OutOfRange;
+    return ops.counted(Value, writeToString, services.heap, .{ args[0], radix });
+}
+
+/// Whether every part of the number `v` is finite.
+fn isFiniteNumber(v: Value) bool {
+    if (v.asCompnum()) |c| return isFiniteNumber(c.real) and isFiniteNumber(c.imag);
+    if (v.asFlonum()) |x| return std.math.isFinite(x);
+    return true;
+}
+
+fn writeToString(h: *heap_mod.Heap, gpa: std.mem.Allocator, v: Value, radix: u8) ops.Error!Value {
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    number.write(&aw.writer, gpa, v, radix) catch return error.OutOfMemory;
+    return .fromString(try h.createString(aw.written()));
+}
+
+/// `(string->number string [radix])`: the number `string` spells, or false if it spells none
+/// (R7RS 6.2.7).
+///
+/// 数でない綴りと、表せない大きさの綴りは `#f` である(誤りにしない)。`string` が数の綴りの
+/// 前に基数の接頭辞を持てば、接頭辞が `radix` に優先する。
+fn stringToNumber(services: *const Services, args: []const Value) Error!Value {
+    const text = args[0].asString() orelse return error.WrongType;
+    const radix = try radixOf(args[1..]);
+    const parsed = try number.parse(services.heap, text.bytes, radix);
+    return parsed orelse .fromBool(false);
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
@@ -210,6 +265,8 @@ test "the primitives take the numbers of arguments the language gives them" {
         .{ .name = "expt", .min = 2, .max = 2 },
         .{ .name = "rationalize", .min = 2, .max = 2 },
         .{ .name = "%exact-integer-sqrt", .min = 1, .max = 1 },
+        .{ .name = "number->string", .min = 1, .max = 2 },
+        .{ .name = "string->number", .min = 1, .max = 2 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
     for (expected, 0..) |e, i| {
@@ -551,4 +608,123 @@ test "the root behind exact-integer-sqrt takes only a non-negative exact integer
         try std.testing.expectError(error.WrongType, f.call(&primitives, "%exact-integer-sqrt", &.{v}));
     }
     try std.testing.expectError(error.WrongType, callWith("%exact-integer-sqrt", &.{.unspecified_value}));
+}
+
+/// Calls `name` with the string `text` and the radix `radix`, if any, and expects a string
+/// (`number->string`) or a number or false (`string->number`) written as `expected`.
+fn callOnString(expected: []const u8, name: []const u8, text: []const u8, radix: ?i64) !void {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const s: Value = .fromString(try f.services.heap.createString(text));
+    var args: [2]Value = .{ s, if (radix) |r| .fromFixnum(r) else .unspecified_value };
+    const v = try f.call(&primitives, name, args[0..if (radix != null) 2 else 1]);
+    if (v.kind() == .boolean) {
+        try std.testing.expectEqualStrings(expected, if (v.isTrue()) "#t" else "#f");
+        return;
+    }
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try number.write(&aw.writer, std.testing.allocator, v, 10);
+    try std.testing.expectEqualStrings(expected, aw.written());
+}
+
+/// `number->string` of the number written `text`, in `radix`, is the string `expected`.
+fn expectWritten(expected: []const u8, text: []const u8, radix: ?i64) !void {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const n = (try number.parse(f.services.heap, text, 10)).?;
+    var args: [2]Value = .{ n, if (radix) |r| .fromFixnum(r) else .unspecified_value };
+    const v = try f.call(&primitives, "number->string", args[0..if (radix != null) 2 else 1]);
+    try std.testing.expectEqualStrings(expected, v.asString().?.bytes);
+}
+
+test "number->string writes a number in the radix, ten by default" {
+    try expectWritten("255", "255", null);
+    try expectWritten("ff", "255", 16);
+    try expectWritten("11111111", "255", 2);
+    try expectWritten("377", "255", 8);
+    try expectWritten("-ff", "-255", 16);
+    try expectWritten("1/3", "1/3", null);
+    try expectWritten("1/11", "1/3", 2);
+    try expectWritten("18446744073709551616", "18446744073709551616", null);
+    try expectWritten("10000000000000000", "18446744073709551616", 16);
+    try expectWritten("0.5", "0.5", null);
+    try expectWritten("1.0e30", "1e30", null);
+    try expectWritten("+inf.0", "+inf.0", null);
+    try expectWritten("+nan.0", "+nan.0", 10);
+    try expectWritten("1+2i", "1+2i", null);
+    try expectWritten("1.5-0.5i", "1.5-0.5i", null);
+    try expectWritten("#i1/10", "0.5", 2);
+}
+
+test "number->string reports a radix it does not take and a number it cannot write back" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const n: Value = .fromFixnum(10);
+    for ([_]i64{ 0, 1, 3, 7, 9, 11, 15, 17, 36, -2, -10 }) |radix| {
+        try std.testing.expectError(error.OutOfRange, f.call(&primitives, "number->string", &.{ n, .fromFixnum(radix) }));
+    }
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{ n, .fromBool(true) }));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{ .fromBool(true), n }));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{.unspecified_value}));
+    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "1+inf.0i", "+nan.0+1.0i" }) |text| {
+        const v = (try number.parse(f.services.heap, text, 10)).?;
+        for ([_]i64{ 2, 8, 16 }) |radix| {
+            try std.testing.expectError(error.OutOfRange, f.call(&primitives, "number->string", &.{ v, .fromFixnum(radix) }));
+        }
+    }
+}
+
+test "string->number reads a number in the radix, or gives false" {
+    try callOnString("100", "string->number", "100", null);
+    try callOnString("256", "string->number", "100", 16);
+    try callOnString("127", "string->number", "#o177", 2);
+    try callOnString("127", "string->number", "#o177", null);
+    try callOnString("-255", "string->number", "-ff", 16);
+    try callOnString("255", "string->number", "FF", 16);
+    try callOnString("1/3", "string->number", "1/3", null);
+    try callOnString("100.0", "string->number", "1e2", null);
+    try callOnString("1+2i", "string->number", "1+2i", null);
+    try callOnString("1/10", "string->number", "#e0.1", null);
+    try callOnString("+inf.0", "string->number", "+inf.0", null);
+    try callOnString("18446744073709551616", "string->number", "18446744073709551616", null);
+    for ([_][]const u8{ "", "abc", "1/0", " 1", "1 ", "1.2.3", "+", "-", "1e", "#b2", "#xg", "12", "99999999999999999999999999999999.1e99999999" ++ "z" }) |bad| {
+        try callOnString("#f", "string->number", bad, if (std.mem.eql(u8, bad, "12")) 2 else null);
+    }
+}
+
+test "string->number reports a radix it does not take and an argument that is not a string" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const s: Value = .fromString(try f.services.heap.createString("10"));
+    for ([_]i64{ 0, 1, 3, 36, -16 }) |radix| {
+        try std.testing.expectError(error.OutOfRange, f.call(&primitives, "string->number", &.{ s, .fromFixnum(radix) }));
+    }
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "string->number", &.{ s, .fromBool(true) }));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "string->number", &.{.fromFixnum(10)}));
+}
+
+test "string->number and number->string round trip over the radixes" {
+    for ([_][]const u8{ "0", "255", "-4096", "1/3", "-7/16", "18446744073709551616", "0.1", "-2.5e-7", "1.0e300", "-0.0" }) |text| {
+        for ([_]i64{ 2, 8, 16 }) |radix| {
+            var f: test_support.Fixture = undefined;
+            f.init();
+            defer f.deinit();
+            const n = (try number.parse(f.services.heap, text, 10)).?;
+            const written = try f.call(&primitives, "number->string", &.{ n, .fromFixnum(radix) });
+            const back = try f.call(&primitives, "string->number", &.{ written, .fromFixnum(radix) });
+            // 正確さも含めて等しい(eqv? 相当): 同じ書式に書き戻せる。
+            var a: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer a.deinit();
+            try number.write(&a.writer, std.testing.allocator, n, 10);
+            var b: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer b.deinit();
+            try number.write(&b.writer, std.testing.allocator, back, 10);
+            try std.testing.expectEqualStrings(a.written(), b.written());
+        }
+    }
 }
