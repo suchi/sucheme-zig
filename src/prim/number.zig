@@ -656,7 +656,7 @@ test "number->string reports a radix it does not take" {
     f.init();
     defer f.deinit();
     const n: Value = .fromFixnum(10);
-    for ([_]i64{ 0, 1, 3, 7, 9, 11, 15, 17, 36, -2, -10 }) |radix| {
+    for ([_]i64{ 0, 1, 3, 4, 7, 9, 11, 15, 17, 32, 36, -2, -10 }) |radix| {
         try std.testing.expectError(error.OutOfRange, f.call(&primitives, "number->string", &.{ n, .fromFixnum(radix) }));
     }
     try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{ n, .fromBool(true) }));
@@ -710,7 +710,7 @@ test "string->number reports a radix it does not take and an argument that is no
     f.init();
     defer f.deinit();
     const s: Value = .fromString(try f.services.heap.createString("10"));
-    for ([_]i64{ 0, 1, 3, 36, -16 }) |radix| {
+    for ([_]i64{ 0, 1, 3, 4, 32, 36, -16 }) |radix| {
         try std.testing.expectError(error.OutOfRange, f.call(&primitives, "string->number", &.{ s, .fromFixnum(radix) }));
     }
     try std.testing.expectError(error.WrongType, f.call(&primitives, "string->number", &.{ s, .fromBool(true) }));
@@ -743,4 +743,21 @@ test "string->number and number->string round trip over the radixes" {
             try std.testing.expectEqualStrings(a.written(), b.written());
         }
     }
+}
+
+test "number->string counts its work area and its string against the limit of the heap" {
+    var heap = heap_mod.Heap.init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const services: Services = .{ .heap = &heap, .scratch = std.testing.allocator };
+    var digits: [60000]u8 = undefined;
+    @memset(&digits, '7');
+    const n = (try number.parse(&heap, &digits, 10)).?;
+    // 60,000 桁の整数を基数16で書くと、約5万字の文字列になる。作業領域の計上を外すと、文字列
+    // だけが計上されて、この上限に収まる。
+    heap.options.limit = heap.held() + 60_000;
+    try std.testing.expectError(error.HeapLimit, numberToString(&services, &.{ n, .fromFixnum(16) }));
+    // 上限に余裕があれば、書ける。
+    heap.options.limit = heap_mod.default_limit;
+    const written = try numberToString(&services, &.{ n, .fromFixnum(16) });
+    try std.testing.expect(written.asString().?.bytes.len > 40000);
 }
