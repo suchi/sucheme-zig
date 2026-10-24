@@ -74,3 +74,10 @@ error: wrong type of argument to string->number 10
 
 (let ((n (* 4294967296 4294967296 4294967296))) (let ((m (string->number (number->string n 8) 8))) (list (= n m) (exact? m))))
 (#t #t)
+
+# 書いた綴りが、読み側の桁数の上限(100,000 桁)を超えると、読み戻しは #f になる。
+(string->number (number->string (string->number "#e1e100000")))
+#f
+
+(let ((n (string->number "#e1e99999"))) (= n (string->number (number->string n))))
+#t

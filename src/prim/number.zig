@@ -163,7 +163,8 @@ fn integerSqrtOf(services: *const Services, args: []const Value) Error!Value {
 /// 基数を2、8、10、16に限ってよいとする。
 fn radixOf(args: []const Value) Error!u8 {
     if (args.len == 0) return 10;
-    const radix = args[0].asFixnum() orelse return error.WrongType;
+    // 基数は正確な整数である。bignum は整数だが、許す値のどれでもない。
+    const radix = args[0].asFixnum() orelse return if (ops.isExactInteger(args[0])) error.OutOfRange else error.WrongType;
     return switch (radix) {
         2, 8, 10, 16 => @intCast(radix),
         else => error.OutOfRange,
@@ -705,6 +706,13 @@ test "string->number reports a radix it does not take and an argument that is no
         try std.testing.expectError(error.OutOfRange, f.call(&primitives, "string->number", &.{ s, .fromFixnum(radix) }));
     }
     try std.testing.expectError(error.WrongType, f.call(&primitives, "string->number", &.{ s, .fromBool(true) }));
+    // 基数は正確な整数に限る。不正確な整数は型の誤り、bignum は範囲の誤りである。
+    const two_float = (try number.parse(f.services.heap, "2.0", 10)).?;
+    const big = (try number.parse(f.services.heap, big_even, 10)).?;
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "string->number", &.{ s, two_float }));
+    try std.testing.expectError(error.OutOfRange, f.call(&primitives, "string->number", &.{ s, big }));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "number->string", &.{ .fromFixnum(10), two_float }));
+    try std.testing.expectError(error.OutOfRange, f.call(&primitives, "number->string", &.{ .fromFixnum(10), big }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "string->number", &.{.fromFixnum(10)}));
 }
 
