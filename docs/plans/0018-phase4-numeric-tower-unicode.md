@@ -462,7 +462,8 @@ pub fn digitValue(c: u21) ?u4
 | `src/printer.zig` | 数の分岐から `num.write` を呼ぶ | 4d |
 | `src/reader.zig` | 数の綴りを `num.parse` で読む、ASCII でない識別子 | 4r、4u4(L2) |
 | `src/prim/arith.zig` | 四則と比較、整数除算 | 4f、4g |
-| `src/prim/number.zig`(新規) | 正確性の変換、丸め、`number->string` と `string->number` ほか | 4g |
+| `src/prim/number.zig`(新規) | 正確性の変換、丸め、`expt` ほか、`number->string` と `string->number` | 4g |
+| `src/num/power.zig`(新規) | `expt` `exact-integer-sqrt` の根 `rationalize` | 4g-3 |
 | `src/prim/inexact.zig`(新規) | `(scheme inexact)` のプリミティブ | 4h |
 | `src/prim/complex.zig`(新規) | `(scheme complex)` のプリミティブ | 4i |
 | `src/prim/char.zig` | `(scheme char)` の文字の手続き | 4u3 |
@@ -509,12 +510,13 @@ pub fn digitValue(c: u21) ?u4
 | 4e-3 | 読み取りの大きさの上限(桁数 100,000、指数の絶対値 1,000,000)。値は 2026-10-23 に決まった。マージ済み([suchi/sucheme-zig#181](https://github.com/suchi/sucheme-zig/pull/181))。実績: PR を作ってから ready まで約 57 分、マージまで約 128 分(2026-10-23 13:27 JST から 14:24 JST、15:35 JST。層2 は約 25 分) |
 | 4f | マージ済み([suchi/sucheme-zig#182](https://github.com/suchi/sucheme-zig/pull/182))。四則と比較(compnum を含む)。実績: PR を作ってから ready まで約 5.5 時間、マージまで約 7 時間(2026-10-23 17:31 JST から 23:03 JST、翌 00:27 JST。独立レビュー 3 巡と main の取り込みを含む。層2 は約 32 分) |
 | 4g-1 | マージ済み([suchi/sucheme-zig#188](https://github.com/suchi/sucheme-zig/pull/188))。述語、`exact` `inexact`、`floor` 系、`numerator` `denominator`、`max` `min`。4g は 4g-1(これ)、4g-2(整数除算と `abs` など)、4g-3(`expt` `exact-integer-sqrt` `rationalize`)、4g-4(`number->string` `string->number`)の4つの PR に分ける(2026-10-23。大きいので、レビューを小さくするため) |
-| 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main`(4g-1 のマージ後の main から切った)。2026-10-24 に層1 が緑 |
-| 4g-3、4g-4、4h〜4z、4u1〜4u4 | 未着手 |
+| 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。マージ済み([suchi/sucheme-zig#189](https://github.com/suchi/sucheme-zig/pull/189))。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main` |
+| 4g-3 | `expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`(4g-2 のマージ後の main から切った)。準拠マトリクスに失敗が1件出る(`tests/vendor/r7rs-tests.scm` の `(test (expt 2 140) (square root))`)。`expt` が束縛されて、これまで未実装として数えられていた項目が実行されるようになったためで、bignum の `eqv?` と `equal?` が同一のオブジェクトで比べる欠落(4j が直す)が原因である。この PR の回帰ではない |
+| 4g-4、4h〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4g-2(整数除算と `abs`)の PR を作り、レビューを経てマージする。続けて 4g-3、4g-4 の順に進める。4h(`(scheme inexact)`)は、4g と並行に進められる。
+- 4g-3(`expt` `exact-integer-sqrt` `rationalize`)の PR を作り、レビューを経てマージする。続けて 4g-4 に進める。4h(`(scheme inexact)`)は、4g と並行に進められる。
 - 4g-2 で解決した: `(lcm -9223372036854775808 3)` は 27670116110564327424 を返す。`(remainder 9223372036854775808 1)` の「integer out of range」は、整数除算ではなくリーダが 2^63 以上の綴りを読めないことの誤りで、4r が直す。`procedures.scm` の古い「あふれる」のコメントも直した。
 - 改善案(4g-4 の振り返りで検討する。実装はしない): `src/sucheme.zig` の include の上限のテストは、既定の上限で初期化した使用量に余裕(128 KiB)を足す形に直した。残る課題は、束縛を足すたびに初期化の使用量が増えることそのもので、未束縛の手続きがすべて入ると、ヒープの既定の上限に対する初期化の割合がどうなるかを、段階の終わりに測る。
 - 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。

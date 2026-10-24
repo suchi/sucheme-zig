@@ -1,0 +1,59 @@
+# Slice 4g-3: `expt`, `exact-integer-sqrt` and `rationalize` (R7RS 6.2.6). The reader does not
+# read flonums or ratios yet (slice 4r), so the numbers are made by `/` and `inexact`.
+
+# expt: 正確な底と正確な整数の指数は、正確である。
+(list (expt 2 10) (expt 2 -2) (expt (/ 1 2) 3) (expt -2 3) (expt -2 4) (expt 5 0) (expt 0 0) (expt 0 3))
+(1024 1/4 1/8 -8 16 1 1 0)
+
+(expt 2 100)
+1267650600228229401496703205376
+
+(list (expt (/ -3 2) 3) (expt (/ -3 2) -2) (expt 1 (* 4294967296 4294967296)) (expt -1 (+ (* 4294967296 4294967296) 1)))
+(-27/8 4/9 1 -1)
+
+# 指数が正確な 0 なら、底によらず正確な 1 である。
+(list (expt (inexact 5) 0) (expt (/ 1 2) 0))
+(1 1)
+
+(expt 0 -1)
+error: division by zero in expt 0 -1
+
+# 不正確な底や指数は、不正確な数を返す。
+(list (expt (inexact 2) 3) (expt (inexact 2) -3) (expt 2 (inexact 3)) (expt 4 (/ 1 2)))
+(8.0 0.125 8.0 2.0)
+
+(expt (inexact 10) 400)
++inf.0
+
+# 結果が上限を超える正確なべき乗は、確保の前に断られる。
+(expt 2 (expt 10 12))
+error: heap limit exceeded
+
+(expt 2 'a)
+error: wrong type of argument to expt 2 a
+
+# exact-integer-sqrt は根と余りを返す(R7RS 6.2.6 の例)。
+(call-with-values (lambda () (exact-integer-sqrt 4)) list)
+(2 0)
+
+(call-with-values (lambda () (exact-integer-sqrt 5)) list)
+(2 1)
+
+(call-with-values (lambda () (exact-integer-sqrt (* (expt 10 20) (expt 10 20)))) list)
+(100000000000000000000 0)
+
+(call-with-values (lambda () (exact-integer-sqrt (- (* (expt 10 20) (expt 10 20)) 1))) list)
+(99999999999999999999 199999999999999999998)
+
+(exact-integer-sqrt -1)
+error: wrong type of argument to %exact-integer-sqrt -1
+
+# rationalize は、与えた距離の中で最も単純な有理数を返す(R7RS 6.2.6 の例)。
+(list (rationalize (/ 3 10) (/ 1 10)) (rationalize (inexact (/ 3 10)) (/ 1 10)))
+(1/3 0.3333333333333333)
+
+(list (rationalize (/ 1 3) 0) (rationalize (/ 1 10) (/ 1 2)) (rationalize (/ -3 10) (/ 1 10)))
+(1/3 0 -1/3)
+
+(rationalize 'a 1)
+error: wrong type of argument to rationalize a 1

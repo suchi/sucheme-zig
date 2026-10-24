@@ -62,7 +62,7 @@ fn applyWork(h: *Heap, gpa: std.mem.Allocator, op: Op, a: Value, b: Value) Error
 ///
 /// Why: 作業領域の計上は入れ子になる(`Heap.beginCounting`)。この関数は、作業領域を使う
 /// 入口だけが呼ぶ。
-fn counted(comptime T: type, comptime f: anytype, h: *Heap, args: anytype) Error!T {
+pub fn counted(comptime T: type, comptime f: anytype, h: *Heap, args: anytype) Error!T {
     h.external_refused = false;
     const before = h.beginCounting(true);
     defer h.endCounting(before);
@@ -363,13 +363,13 @@ fn orderRational(gpa: std.mem.Allocator, a: Rational, b: Rational) Error!std.mat
     return left.toConst().order(right.toConst());
 }
 
-const fixnum_limbs = std.math.big.int.calcTwosCompLimbCount(@bitSizeOf(i64));
-const one_limbs = [_]Limb{1};
-const one: Const = .{ .limbs = &one_limbs, .positive = true };
+pub const fixnum_limbs = std.math.big.int.calcTwosCompLimbCount(@bitSizeOf(i64));
+pub const one_limbs = [_]Limb{1};
+pub const one: Const = .{ .limbs = &one_limbs, .positive = true };
 
 /// An exact real number as a numerator and a positive denominator, not necessarily in lowest
 /// terms; the limbs of a fixnum are kept in the struct.
-const Rational = struct {
+pub const Rational = struct {
     n: Const,
     d: Const,
     integer: bool,
@@ -377,7 +377,7 @@ const Rational = struct {
     d_limbs: [fixnum_limbs]Limb = undefined,
 
     /// Makes `self` the exact number `v`: a fixnum, a bignum or a ratnum.
-    fn set(self: *Rational, v: Value) void {
+    pub fn set(self: *Rational, v: Value) void {
         if (v.asRatnum()) |r| {
             self.n = integerConst(r.numerator, &self.n_limbs);
             self.d = integerConst(r.denominator, &self.d_limbs);
@@ -390,7 +390,7 @@ const Rational = struct {
     }
 };
 
-fn integerConst(v: Value, buffer: *[fixnum_limbs]Limb) Const {
+pub fn integerConst(v: Value, buffer: *[fixnum_limbs]Limb) Const {
     if (v.asFixnum()) |n| return Mutable.init(buffer, n).toConst();
     return v.asBignum().?.toConst();
 }
