@@ -396,7 +396,9 @@ const slow_paths_ignore = "[\"docs/**\", \"**/*.md\", \".agents/**\"]";
 ///
 /// 層2のワークフローが走る時機と、Windows のテストを決めるキーと値(ADR-0036、
 /// ADR-0046)。どれか1つを落とすか変えると、層2か Windows のテストが、AGENTS.md の
-/// 言う時機に走らなくなる。
+/// 言う時機に走らなくなる。`paths-ignore` だけは向きが逆で、行を落とすと、文書だけの
+/// PR でも層2 が走る(分数が余分にかかるだけで、検証は止まらない)。広げると、コードの
+/// PR で層2 が走らなくなる。どちらも AGENTS.md の言う時機と食い違うので、固定する。
 const slow_workflow_pins = [_]struct { key: []const u8, value: []const u8 }{
     .{ .key = "pull_request", .value = "" },
     .{ .key = "types", .value = "[ready_for_review]" },
@@ -661,7 +663,7 @@ fn checkCiRunsTheTable(
             if (std.mem.eql(u8, got.key, want.key) and std.mem.eql(u8, got.value, want.value)) found = true;
         }
         if (!found) rep.fail(
-            "{s} has no `{s}: {s}`, so the Windows tests or the slow tier do not run when AGENTS.md says they do",
+            "{s} has no `{s}: {s}`, so the Windows tests or the slow tier do not run when AGENTS.md says they do (or, for `paths-ignore`, run on docs-only PRs that AGENTS.md exempts)",
             .{ slow_workflow, want.key, want.value },
         );
     }

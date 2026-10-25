@@ -59,7 +59,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 - PR を ready にする前と `main` へのマージ前: 規模を試すテスト(`-Dslow=true`)、変更したファイルのミューテーションテスト、敵対的レビュー。
   - ミューテーションテストは網羅を目指さない。変更した判定の分岐ごとに、代表的な書き換えを数件試す。
   - PR はドラフトで開き、ready にしたときに層2 が走る。`full.yml` の起動は `ready_for_review` と手動(`workflow_dispatch`)だけで、`main` への push では走らない(実行分数の節約。[docs/plans/0015-ci-minutes-reduction.md](docs/plans/0015-ci-minutes-reduction.md))。最初から ready で開いた PR では、層2 が走らないので、手動で走らせる。ready にしたあとに push したとき(指摘の修正、main の取り込み)も、層2 は起動しない。マージの承認を求める前に、PR の先頭のコミットに対して手動で層2 を走らせる(文書だけの PR を除く。次の項目)。層2 は、レビューが終わってから ready にして逐次に待つのが既定である。急ぐスライスだけ、レビューと並行して手動で起動してよい。
-  - 文書だけの PR の例外([ADR-0046](docs/adr/0046-skip-slow-tier-for-docs-only-prs.md))。文書だけの PR は、変更したファイルが、`docs/` の下のファイル、`.agents/` の下のファイル、拡張子が `.md` のファイルだけの PR である。判断は、PR の変更ファイルの一覧で行い、ワークフローの設定からは導かない。`src/`、`lib/`、`tests/`、`tools/`、`web/`、`build.zig`、`build.zig.zon`、`.zigversion`、`.github/workflows/` の下のファイルを1つでも変えた PR は、文書だけに数えない。
+  - 文書だけの PR の例外([ADR-0046](docs/adr/0046-skip-slow-tier-for-docs-only-prs.md))。文書だけの PR は、変更したファイルが、`docs/` の下のファイル、`.agents/` の下のファイル、拡張子が `.md` のファイルだけの PR である。判断は、PR の変更ファイルの一覧で行い、ワークフローの設定からは導かない。拡張子が `.md` でなく、`docs/` と `.agents/` の外にあるファイル(コード、テストの入力、ワークフロー、`build.zig` など)を1つでも変えた PR は、文書だけに数えない。`.md` のファイルは、どのディレクトリの下にあっても文書に数える(`tools/` や `tests/` の下の `.md` も含む)。
     - 文書だけの PR では、ready にしても層2 と Preview は起動しない(`full.yml` と `preview.yml` の `paths-ignore` による)。層2 を手動で走らせず、層2 の結果の確認も求めない。この節と「PR・レビュー・マージ」の節で、層2 を走らせる、待つ、確かめる、と書いた規則は、文書だけの PR には当てはまらない。層1(`ci.yml`)は、文書だけの PR でも走る。
     - 文書だけでない PR で、ready にしても層2 が起動しないときは、`paths-ignore` の一覧が上の定義から外れている。手動で層2 を走らせ、一覧の食い違いを報告する。
   - Windows のテストは、全 push の CI(`ci.yml`)でなく、層2(`full.yml` の `windows` ジョブ)で走る。draft の間の push では、Windows の不具合は見えない。
