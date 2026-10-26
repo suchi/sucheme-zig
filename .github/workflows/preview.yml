@@ -25,6 +25,9 @@ name: Preview
 
 on:
   pull_request:
+    # 文書だけの PR では起動しない。成果物の中身(wasm と web/)が変わらないからである。
+    # 一覧は full.yml と同じにする(docs/adr/0046-skip-slow-tier-for-docs-only-prs.md)。
+    paths-ignore: ["docs/**", "**/*.md", ".agents/**"]
 
 permissions:
   contents: read

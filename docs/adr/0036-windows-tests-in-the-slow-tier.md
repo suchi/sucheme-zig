@@ -3,6 +3,8 @@
 - ステータス: 採用
 - 日付: 2026-10-13
 
+> 2026-10-24 追記: 層2 の起動に、変更したファイルによる絞り込みを足した。変更したファイルがすべて文書の PR では、ready にしても層2 は起動しない([ADR-0046](0046-skip-slow-tier-for-docs-only-prs.md))。この ADR の決定(Windows のテストを層2 で走らせること、`main` への push で層2 を走らせないこと)は変わらない。
+
 ## 背景
 
 [ADR-0010](0010-ci-cd-and-release-strategy.md) は、CI の自動テストを `ubuntu-latest` と `windows-latest` に限り、全コミットの CI(`ci.yml`)で両方を走らせると定めた。層2(`full.yml`)は、PR を ready にしたときと `main` への push で走っていた。

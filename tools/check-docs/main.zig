@@ -383,6 +383,30 @@ const slow_commands = [_][]const u8{
     "zig build dist",
 };
 
+/// The files a pull request may change without starting the slow tier.
+///
+/// `full.yml` の `paths-ignore` の値を綴りごと固定する(ADR-0046)。一覧を広げる
+/// (`**` など)と、コードを変えた PR でも層2 が起動しなくなるのに、ほかの検査は
+/// 緑のままだった。一覧を正当に変えるときも、ここで赤になる。そのときは、新しい
+/// 一覧が文書だけの PR の意味をどう変えるかを決めてから、ここを変える。
+const slow_paths_ignore = "[\"docs/**\", \"**/*.md\", \".agents/**\"]";
+
+/// The keys and values that decide when the slow tier runs, which
+/// `slow_workflow` has to carry.
+///
+/// 層2のワークフローが走る時機と、Windows のテストを決めるキーと値(ADR-0036、
+/// ADR-0046)。どれか1つを落とすか変えると、層2か Windows のテストが、AGENTS.md の
+/// 言う時機に走らなくなる。`paths-ignore` だけは向きが逆で、行を落とすと、文書だけの
+/// PR でも層2 が走る(分数が余分にかかるだけで、検証は止まらない)。広げると、コードの
+/// PR で層2 が走らなくなる。どちらも AGENTS.md の言う時機と食い違うので、固定する。
+const slow_workflow_pins = [_]struct { key: []const u8, value: []const u8 }{
+    .{ .key = "pull_request", .value = "" },
+    .{ .key = "types", .value = "[ready_for_review]" },
+    .{ .key = "paths-ignore", .value = slow_paths_ignore },
+    .{ .key = "workflow_dispatch", .value = "" },
+    .{ .key = "runs-on", .value = "windows-latest" },
+};
+
 /// A row of the verification command table, as this check reads it.
 ///
 /// この検査が読み取る、検証コマンド表の1行。
@@ -633,19 +657,23 @@ fn checkCiRunsTheTable(
     // 綴りの一致なので、windows ジョブを matrix の形(`runs-on: ${{ matrix.os }}` と
     // `os: [windows-latest]`)に書き換える正当な編集も赤になり、そのときのメッセージは
     // Windows のテストが走らないと言うが、実際は走る。
-    for ([_]struct { key: []const u8, value: []const u8 }{
-        .{ .key = "pull_request", .value = "" },
-        .{ .key = "types", .value = "[ready_for_review]" },
-        .{ .key = "workflow_dispatch", .value = "" },
-        .{ .key = "runs-on", .value = "windows-latest" },
-    }) |want| {
+    for (slow_workflow_pins) |want| {
         var found = false;
         for (slow_seen.items) |got| {
             if (std.mem.eql(u8, got.key, want.key) and std.mem.eql(u8, got.value, want.value)) found = true;
         }
         if (!found) rep.fail(
-            "{s} has no `{s}: {s}`, so the Windows tests or the slow tier do not run when AGENTS.md says they do",
+            "{s} has no `{s}: {s}`, so the Windows tests or the slow tier do not run when AGENTS.md says they do (or, for `paths-ignore`, run on docs-only PRs that AGENTS.md exempts)",
             .{ slow_workflow, want.key, want.value },
+        );
+    }
+    // `paths-ignore` は、上の照合で1つ一致しても、別の値の行が並べば素通りする。
+    // 層2のワークフローの `paths-ignore` は、どれも固定した値でなければならない。
+    for (slow_seen.items) |got| {
+        if (!std.mem.eql(u8, got.key, "paths-ignore")) continue;
+        if (!std.mem.eql(u8, got.value, slow_paths_ignore)) rep.fail(
+            "{s}: `paths-ignore:` is `{s}`, and this check only knows `{s}`; a wider list stops the slow tier on PRs that change code. Decide what the new list means (ADR-0046) before changing it",
+            .{ slow_workflow, got.value, slow_paths_ignore },
         );
     }
 
@@ -786,6 +814,11 @@ const allowed_workflow_keys = [_][]const u8{
     "cancel-in-progress",
     "types",
     "workflow_dispatch",
+    // 変更したファイルがすべて一致する PR では、ワークフローを起動しない。full.yml と
+    // preview.yml が、文書だけの PR を外すために使う(docs/adr/0046-skip-slow-tier-for-docs-only-prs.md)。
+    // 時機を絞るキーなので、コミットごとのワークフローには置けない(`isTriggerNarrowing`)。
+    // `paths` は入れていない。どのワークフローにも置けず、置くと未知のキーとして赤になる。
+    "paths-ignore",
     // 定期実行。fuzz.yml が使う。`cron` は `schedule` の下にだけ置ける。
     "schedule",
     "cron",
@@ -849,6 +882,7 @@ fn keyIsAllowed(key: []const u8) bool {
 fn isTriggerNarrowing(key: []const u8) bool {
     return std.mem.eql(u8, key, "types") or
         std.mem.eql(u8, key, "workflow_dispatch") or
+        std.mem.eql(u8, key, "paths-ignore") or
         std.mem.eql(u8, key, "schedule") or
         std.mem.eql(u8, key, "tags");
 }
@@ -2673,6 +2707,40 @@ test "keyIsAllowed: the job of the preview workflow is known, and its trigger na
     // 近い綴りは通らない。
     try std.testing.expect(!keyIsAllowed("previews"));
     try std.testing.expect(!keyIsAllowed("Preview"));
+}
+
+test "isForbiddenInPerCommit: a path filter may skip the slow tier, not the per-commit checks" {
+    // full.yml と preview.yml は、文書だけの PR で起動しないように `paths-ignore` を持つ。
+    try std.testing.expect(keyIsAllowed("paths-ignore"));
+    // コミットごとのワークフローが持つと、文書だけの PR で check-docs などが黙って
+    // 走らなくなる。
+    try std.testing.expect(isTriggerNarrowing("paths-ignore"));
+    try std.testing.expect(isForbiddenInPerCommit("paths-ignore"));
+    // `paths` は、どのワークフローにも置けない。置くと未知のキーとして報告される。
+    try std.testing.expect(!keyIsAllowed("paths"));
+    // 近い綴りは通らない。
+    try std.testing.expect(!keyIsAllowed("paths_ignore"));
+    try std.testing.expect(!keyIsAllowed("branches-ignore"));
+}
+
+test "slow_workflow_pins: the slow tier's path filter is pinned to the docs-only list" {
+    // 一覧を広げても検査が緑のままにならないよう、値を固定している(ADR-0046)。
+    var pinned = false;
+    for (slow_workflow_pins) |pin| {
+        if (std.mem.eql(u8, pin.key, "paths-ignore")) {
+            try std.testing.expectEqualStrings(slow_paths_ignore, pin.value);
+            pinned = true;
+        }
+    }
+    try std.testing.expect(pinned);
+    // 一覧は文書だけを持つ。コードやワークフローのディレクトリは入らない。
+    try std.testing.expectEqualStrings("[\"docs/**\", \"**/*.md\", \".agents/**\"]", slow_paths_ignore);
+    // 層2が走る時機の他の値も残る。
+    var types_pinned = false;
+    for (slow_workflow_pins) |pin| {
+        if (std.mem.eql(u8, pin.key, "types") and std.mem.eql(u8, pin.value, "[ready_for_review]")) types_pinned = true;
+    }
+    try std.testing.expect(types_pinned);
 }
 
 test "keyIsAllowed: the inputs of the cache step are known" {
