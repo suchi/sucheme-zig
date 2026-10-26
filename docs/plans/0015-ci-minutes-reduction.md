@@ -137,6 +137,15 @@ Full の 1 実行は、2026-10-11 の約 4 分から、10-20 以降の約 50 分
 5. コードを1行でも変えた PR では、Preview と Full が今までどおり起動することを、次のコードの PR で確かめる。
 6. 結果を、この計画書の進捗の表に書く。
 
+#### 確かめた結果(2026-10-26)
+
+ワークフローの実行の一覧と、PR の check run の一覧で確かめた。
+
+- 文書だけの PR(suchi/sucheme-zig#192、suchi/sucheme-zig#193、suchi/sucheme-zig#197)を ready にしたが、Full の新しい実行は起動しなかった(Full の実行の総数は 229 のままだった)。Preview も起動しなかった。CI は起動して成功した。
+- suchi/sucheme-zig#192 の mergeable_state は、ready にしたあとで clean だった。
+- コードを変える PR(suchi/sucheme-zig#198)では、ready にしたときに Full が起動して成功した(実行 229)。
+- 上の「未確認のまま残る」点のうち、`ready_for_review` と `paths-ignore` の組み合わせは、この観測で確かめられた。`workflow_dispatch` への効き方は、未確認のままである。
+
 ### 残っていること
 
 - `preview.yml` の一覧が `full.yml` の一覧と同じであることを見る検査は無い。`tools/check-docs` が固定するのは `full.yml` の値だけである。食い違うと、Preview だけが余分に走るか、成果物の添付が無くなる(検証は止まらない)。
@@ -158,6 +167,6 @@ Full の 1 実行は、2026-10-11 の約 4 分から、10-20 以降の約 50 分
 | 案 B の B1 と B2 | [#86](https://github.com/suchi/sucheme-zig/pull/86) で入った |
 | 実績の確認 | 未了。Billing の使用量レポートで確かめ、この計画書に足す |
 | 2026-10-24 の追補の測定 | 実行とジョブの一覧からの概算を、上の追補に足した(Billing の値ではない) |
-| 案 2(文書だけの PR で層2 と Preview を起動しない) | この PR で入れる([ADR-0046](../adr/0046-skip-slow-tier-for-docs-only-prs.md)) |
-| 案 2 の挙動の確認 | 未了。最初の文書だけの PR で、上の手順で確かめる |
+| 案 2(文書だけの PR で層2 と Preview を起動しない) | suchi/sucheme-zig#198 で入った([ADR-0046](../adr/0046-skip-slow-tier-for-docs-only-prs.md)) |
+| 案 2 の挙動の確認 | 2026-10-26 に確かめた(上の「確かめた結果」)。`workflow_dispatch` への効き方は未確認 |
 | 案 1(層2 を ReleaseSafe で走らせる) | ユーザーが 2026-10-24 に承認し、[ADR-0047](../adr/0047-slow-unit-tests-default-to-releasesafe.md) で採った |
