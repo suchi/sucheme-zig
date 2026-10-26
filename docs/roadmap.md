@@ -144,7 +144,7 @@
 ### 段階4: 数値塔とUnicode
 
 - [ ] 浮動小数点数、bignum、ratnum、compnum
-- [ ] `number->string` と `string->number` の全範囲
+- [x] `number->string` と `string->number` の全範囲(スライス 4a・4b・4e・4g-4。リーダの数の綴りは 4r)
 - [ ] リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加
 - [ ] リーダが ASCII でない文字の識別子を読めるようにするとき、畳み込む読み手の畳み込みに Unicode の表を使う(段階4。それまで、リーダはそうした識別子を読めず、畳み込む読み手の `folded` が ASCII だけを assert する。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)
 - [ ] Unicode テーブルの生成ツールと生成結果
