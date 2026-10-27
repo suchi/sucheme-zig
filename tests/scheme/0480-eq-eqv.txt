@@ -91,3 +91,19 @@ numbers
 
 (cond-expand (full-unicode 'full) (else 'not-yet))
 not-yet
+
+# 部分が bignum または ratnum の複素数と有理数は、部分を値で比べる(部分を eq? で比べると偽になる)。
+(import (scheme complex)) (list (eqv? (make-rectangular (expt 2 100) 1) (make-rectangular (expt 2 100) 1)) (eqv? (make-rectangular 1 (expt 2 100)) (make-rectangular 1 (expt 2 100))) (eqv? (make-rectangular 1/3 1/5) (make-rectangular 1/3 1/5)))
+(#t #t #t)
+
+(list (eqv? (/ 1 (expt 2 100)) (/ 1 (expt 2 100))) (eqv? (/ (expt 2 100) 3) (/ (expt 2 100) 3)) (eqv? (/ (expt 2 100) 3) (/ (expt 2 100) 5)))
+(#t #t #f)
+
+# case の最後の節(else なし)も eqv? で比べる。
+(list (case (expt 2 100) ((1267650600228229401496703205376) 'big)) (case 1/2 ((1/2) 'half)) (case 1+2i ((1+2i) 'z)) (case 2.5 ((2.5) 'f)))
+(big half z f)
+
+# flonum は即値なので、eq? でも値(ビット列)で比べる。R7RS 6.1 は数の eq? を実装依存とし、
+# 真を返してよいのは eqv? が真のときだけとする。この実装は、eqv? が真の flonum に真を返す。
+(list (eq? 1.5 1.5) (let ((x 2.5)) (eq? x x)) (eq? 1.5 2.5) (memq 3.4 '(1.3 3.4)))
+(#t #t #f (3.4))

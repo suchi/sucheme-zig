@@ -17,3 +17,7 @@
 # 定数は、リストとベクタの中にも書ける。テンプレートに書いた数は、そのまま出力される。
 (define-syntax pick (syntax-rules () ((_ (1/2 x)) x) ((_ #(1.5 x)) (quote (x 100000000000000000000))))) (list (pick (1/2 'a)) (pick #(1.5 b)))
 (a (b 100000000000000000000))
+
+# バイトベクタは `<pattern datum>` にない。
+(define-syntax m (syntax-rules () ((_ #u8(1)) 1)))
+error: bad syntax-rules: this datum cannot be a pattern

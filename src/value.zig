@@ -1932,6 +1932,38 @@ test "a bignum, a ratnum and a compnum are heap objects, each answering to its o
     try std.testing.expect(!cv.isEqv(.fromCompnum(&c5)));
 }
 
+test "ratnum and compnum parts that are equal bignums in different objects are eqv?, and not eq?" {
+    var limbs = [_]Limb{ 0, 1 };
+    var b1: Bignum = .{ .limbs = &limbs, .positive = true };
+    var b2: Bignum = .{ .limbs = &limbs, .positive = true };
+    // 部分は `eqv?` で比べる。`eq?` で比べると、別のオブジェクトの bignum が別になる。
+    var r1: Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromBignum(&b1) };
+    var r2: Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromBignum(&b2) };
+    try std.testing.expect(Value.fromRatnum(&r1).isEqv(.fromRatnum(&r2)));
+    try std.testing.expect(!Value.fromRatnum(&r1).isEq(.fromRatnum(&r2)));
+    var r3: Ratnum = .{ .numerator = .fromBignum(&b1), .denominator = .fromFixnum(3) };
+    var r4: Ratnum = .{ .numerator = .fromBignum(&b2), .denominator = .fromFixnum(3) };
+    try std.testing.expect(Value.fromRatnum(&r3).isEqv(.fromRatnum(&r4)));
+    try std.testing.expect(!Value.fromRatnum(&r3).isEq(.fromRatnum(&r4)));
+    var c1: Compnum = .{ .real = .fromBignum(&b1), .imag = .fromFixnum(1) };
+    var c2: Compnum = .{ .real = .fromBignum(&b2), .imag = .fromFixnum(1) };
+    try std.testing.expect(Value.fromCompnum(&c1).isEqv(.fromCompnum(&c2)));
+    try std.testing.expect(!Value.fromCompnum(&c1).isEq(.fromCompnum(&c2)));
+    var c3: Compnum = .{ .real = .fromFixnum(1), .imag = .fromBignum(&b1) };
+    var c4: Compnum = .{ .real = .fromFixnum(1), .imag = .fromBignum(&b2) };
+    try std.testing.expect(Value.fromCompnum(&c3).isEqv(.fromCompnum(&c4)));
+    try std.testing.expect(!Value.fromCompnum(&c3).isEq(.fromCompnum(&c4)));
+}
+
+test "eq? holds of a flonum with the same bits, and of nothing else that differs" {
+    // Why: R7RS 6.1 は数の `eq?` を実装依存とする。flonum は即値なので、`eqv?` と同じく
+    // ビット列で比べる。
+    try std.testing.expect(Value.fromFlonum(1.5).isEq(.fromFlonum(1.5)));
+    try std.testing.expect(!Value.fromFlonum(1.5).isEq(.fromFlonum(2.5)));
+    try std.testing.expect(!Value.fromFlonum(0.0).isEq(.fromFlonum(-0.0)));
+    try std.testing.expect(!Value.fromFlonum(1.0).isEq(.fromFixnum(1)));
+}
+
 test "finding the root links the promises it passes straight to the root" {
     var a: Promise = .{ .done = false, .value = .unspecified_value, .forward = null };
     var b: Promise = .{ .done = false, .value = .unspecified_value, .forward = &a };
