@@ -151,7 +151,7 @@
 - [x] `(scheme inexact)`(スライス 4h。12個の識別子が束縛される。テストは `tests/scheme/0460-inexact.txt`)
 - [x] `(scheme complex)`(スライス 4i。6個の識別子が束縛される。テストは `tests/scheme/0470-complex.txt`)
 - [ ] `(scheme char)`(スライス 4u3)
-- [ ] `eq?` と `eqv?` が別の関数になるとき(浮動小数点数と bignum が入るとき)、`lib/sucheme/procedures.scm` の `memq` と `memv`、`assq` と `assv` の区別を固定するテストを足す。今は `eq?` と `eqv?` が同じ関数なので、入れ替えるミューテーションを検出するテストが書けない(スライス 3g のレビューの指摘)
+- [x] (スライス 4j。テストは `tests/scheme/0480-eq-eqv.txt`)`eq?` と `eqv?` が別の関数になるとき(浮動小数点数と bignum が入るとき)、`lib/sucheme/procedures.scm` の `memq` と `memv`、`assq` と `assv` の区別を固定するテストを足す。今は `eq?` と `eqv?` が同じ関数なので、入れ替えるミューテーションを検出するテストが書けない(スライス 3g のレビューの指摘)
 
 完了条件: `exact-closed` `ratios` `exact-complex` `ieee-float` のフィーチャを真にできる。浮動小数点数のラウンドトリップ性テストが通る。リリース v0.4.0 を出す。
 
