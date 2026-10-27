@@ -113,12 +113,9 @@ error: argument out of range in atan 0 0
 (import (scheme inexact)) (list (log -1) (real? (log -1)))
 (0.0+3.141592653589793i #f)
 
-# 定義域の外の `asin` と `acos` は、誤りにする(複素数は 4i が扱う)。
-(import (scheme inexact)) (asin 2)
-error: argument out of range in asin 2
-
-(import (scheme inexact)) (acos (- (inexact 3) (inexact 5)))
-error: argument out of range in acos -2.0
+# 定義域の外の `asin` と `acos` は複素数である(値はスライス 4i の 0470 で確かめる)。
+(import (scheme inexact)) (list (real? (asin 2)) (real? (acos (- (inexact 3) (inexact 5)))))
+(#f #f)
 
 # 型。
 (import (scheme inexact)) (sin 'a)
@@ -130,8 +127,9 @@ error: wrong type of argument to atan 1 a
 (import (scheme inexact)) (sqrt "4")
 error: wrong type of argument to sqrt "4"
 
+# 複素数の引数は取れる(スライス 4i)。
 (import (scheme inexact)) (exp (sqrt -1))
-error: wrong type of argument to exp +i
+0.5403023058681398+0.8414709848078965i
 
 # 個数。
 (import (scheme inexact)) (sin)

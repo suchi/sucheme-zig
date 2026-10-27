@@ -105,7 +105,7 @@ pub fn makeRectangular(h: *Heap, gpa: std.mem.Allocator, real: Value, imag: Valu
 /// 角が正確な0なら、結果は大きさそのもの(正確さも保つ)。大きさが正確な0なら、正確な0。
 /// それ以外は、`magnitude * cos(angle)` と `magnitude * sin(angle)` を `f64` で計算した、
 /// 不正確な数である(虚部が不正確な0になれば、複素数のまま残る)。
-fn makePolar(h: *Heap, gpa: std.mem.Allocator, magnitude: Value, angle: Value, exact_required: bool) Error!?Value {
+pub fn makePolar(h: *Heap, gpa: std.mem.Allocator, magnitude: Value, angle: Value, exact_required: bool) Error!?Value {
     if (magnitude.asFixnum()) |n| if (n == 0) return magnitude;
     if (angle.asFixnum()) |n| if (n == 0) return magnitude;
     if (exact_required) return null;
