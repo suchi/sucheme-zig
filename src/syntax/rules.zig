@@ -349,7 +349,9 @@ const Spec = struct {
                 const shape = try self.shapeOfVector(item.form, .pattern);
                 for (shape.elems) |e| try stack.append(self.scratch, .{ .form = e.form, .depth = item.depth + e.ellipses });
             },
-            // 定数は何も束縛しない。リーダが作るのは、この4種類だけである。
+            // 定数は何も束縛しない。パターンに置けるのは、この4種類だけである。リーダは
+            // スライス 4r から flonum、bignum、ratnum、compnum も作るが、それらは下の
+            // `else` で拒否される(docs/plans/0018-phase4-numeric-tower-unicode.md の 4j)。
             .fixnum, .boolean, .character, .string => {},
             else => return self.ctx.raise("bad syntax-rules: this datum cannot be a pattern", .{}),
         };

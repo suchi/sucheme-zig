@@ -647,7 +647,9 @@ pub const Reader = struct {
         const token = self.src[start..self.pos];
         if (booleanOf(token)) |b| return .fromBool(b);
         // Why: fixnum に収まる十進整数は、確保も計上も要らないので、`num.parse` を通さない。
-        if (isDecimalInteger(token)) {
+        // 先頭の 0 を含めて 20 字までに限る(i64 の最小値 `-9223372036854775808` が 20 字)。
+        // 長い綴りは、桁数の上限を課す `num.parse` に任せる。
+        if (token.len <= max_fast_integer_len and isDecimalInteger(token)) {
             if (std.fmt.parseInt(i64, token, 10)) |n| return .fromFixnum(n) else |_| {}
         }
         // 数の綴りは R7RS 7.1.1 の <number> で、<peculiar identifier> の形をしたもの
@@ -934,6 +936,9 @@ fn isDelimiter(c: u8) bool {
     return isWhitespace(c) or c == '|' or c == '(' or c == ')' or c == '"' or c == ';';
 }
 
+/// The longest spelling the fast path of `atom` reads as a fixnum.
+const max_fast_integer_len = 20;
+
 /// `[+-]?[0-9]+`.
 /// fixnum の速い経路の判定である。ほかの数の構文は `num.parse` が読む。
 fn isDecimalInteger(token: []const u8) bool {
@@ -1114,6 +1119,22 @@ test "next refuses a number whose spelling is longer than the limit of reading" 
     defer std.testing.allocator.free(edge);
     @memset(edge, '9');
     try std.testing.expect((try f.readOne(edge)).asBignum() != null);
+}
+
+test "next gives a spelling padded with zeros past the limit of reading the same answer as num.parse" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // 先頭の 0 は、20 字を超えても値を変えない。
+    try std.testing.expectEqualStrings("1", try f.roundTrip("0000000000000000000000000000001", &buf));
+    try std.testing.expectEqualStrings("-12", try f.roundTrip("-000000000000000000000000012", &buf));
+    // 桁数の上限(100,000)には、先頭の 0 も数える。速い経路で 1 と読まず、`num.parse` と
+    // 同じく読めない綴りにする。
+    const padded = try std.testing.allocator.alloc(u8, 100_001);
+    defer std.testing.allocator.free(padded);
+    @memset(padded, '0');
+    padded[padded.len - 1] = '1';
+    try std.testing.expectError(error.InvalidToken, f.readOne(padded));
 }
 
 test "next reports the heap limit when the work of reading a number is refused" {
