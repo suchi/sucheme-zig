@@ -229,3 +229,7 @@ test "render is stable and already formatted" {
     try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
     try std.testing.expectEqualStrings(first, try tree.renderAlloc(arena));
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

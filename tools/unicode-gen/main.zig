@@ -164,6 +164,7 @@ test "verifySum accepts the matching line only" {
 }
 
 test {
+    std.testing.refAllDecls(@This());
     _ = ucd;
     _ = emit;
 }
