@@ -1041,10 +1041,95 @@ test "next reads integers with and without a sign" {
     try std.testing.expectEqual(std.math.minInt(i64), (try f.readOne("-9223372036854775808")).asFixnum().?);
 }
 
-test "next reports an integer outside the fixnum range" {
+test "next reads an integer outside the fixnum range as a bignum" {
     var f: Fixture = .init();
     defer f.deinit();
-    try std.testing.expectError(error.IntegerOutOfRange, f.readOne("9223372036854775808"));
+    var buf: [64]u8 = undefined;
+    try std.testing.expect((try f.readOne("9223372036854775808")).asBignum() != null);
+    try std.testing.expectEqualStrings("9223372036854775808", try f.roundTrip("9223372036854775808", &buf));
+    try std.testing.expectEqualStrings("-9223372036854775809", try f.roundTrip("-9223372036854775809", &buf));
+    // 範囲の端は、fixnum のままである。
+    try std.testing.expectEqual(std.math.maxInt(i64), (try f.readOne("9223372036854775807")).asFixnum().?);
+}
+
+test "next reads the numbers of R7RS 7.1.1 that are not plain decimal integers" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    // 入力と、書き戻した結果(`num.write` の正規形)。
+    const rows = [_][2][]const u8{
+        // 基数の接頭辞(大文字小文字を区別しない)。
+        .{ "#x1F", "31" },        .{ "#X-1f", "-31" },       .{ "#b101", "5" },
+        .{ "#o17", "15" },        .{ "#d10", "10" },
+        // 正確性の接頭辞と、基数との組(順序は両方)。
+        .{ "#e1.5", "3/2" },      .{ "#i3", "3.0" },         .{ "#x#e10", "16" },
+        .{ "#e#x10", "16" },      .{ "#I#B11", "3.0" },
+        // 分数。
+        .{ "1/2", "1/2" },        .{ "-6/4", "-3/2" },       .{ "4/2", "2" },
+        // 小数と指数。
+        .{ "1.5", "1.5" },        .{ ".5", "0.5" },          .{ "-1.", "-1.0" },
+        .{ "1e3", "1000.0" },     .{ "1E-2", "0.01" },       .{ "#e1e3", "1000" },
+        // <infnan>(大文字小文字を区別しない)。
+        .{ "+inf.0", "+inf.0" },  .{ "-INF.0", "-inf.0" },   .{ "+nan.0", "+nan.0" },
+        .{ "-NaN.0", "+nan.0" },
+        // 複素数。
+        .{ "+i", "+i" },          .{ "-i", "-i" },           .{ "1+2i", "1+2i" },
+        .{ "1.5-2.5i", "1.5-2.5i" }, .{ "+2i", "+2i" },      .{ "1+0i", "1" },
+        .{ "1@0", "1" },
+    };
+    for (rows) |row| {
+        const got = f.roundTrip(row[0], &buf) catch |e| {
+            std.debug.print("{s}: {s}\n", .{ row[0], @errorName(e) });
+            return e;
+        };
+        try std.testing.expectEqualStrings(row[1], got);
+    }
+    // 数は区切り文字までのトークンなので、後ろに続く括弧は別の文字である。
+    try std.testing.expectEqualStrings("(1/2 31 -1.5)", try f.roundTrip("(1/2 #x1F -1.5)", &buf));
+}
+
+test "next keeps the spellings that are not numbers as identifiers" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // 識別子の形で、数でないもの(`+` `-` `...` `1+` は <peculiar identifier> か <initial> で始まる)。
+    for ([_][]const u8{ "+", "-", "...", "-x", "+inf", "inf", "nan.0", "e1", "x1F", "+ia", "1+" }) |src| {
+        try std.testing.expectEqualStrings(src, try f.roundTrip(src, &buf));
+    }
+    // 数にも識別子にもならない綴り。
+    for ([_][]const u8{ "1/0", "#e+inf.0", "#e+nan.0", "#xg", "#b2", "1..2", "1e", "#e1@2", "1+i+i", "#z", "1x" }) |src| {
+        try std.testing.expectError(error.InvalidToken, f.readOne(src));
+    }
+}
+
+test "next refuses a number whose spelling is longer than the limit of reading" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 桁数の上限は 100,000、指数の絶対値の上限は 1,000,000(src/num/number.zig の
+    // `max_spelling_digits` と `max_spelling_exponent`。非公開なので、値を写している)。
+    const max_spelling_digits = 100_000;
+    const long = try std.testing.allocator.alloc(u8, max_spelling_digits + 1);
+    defer std.testing.allocator.free(long);
+    @memset(long, '9');
+    try std.testing.expectError(error.InvalidToken, f.readOne(long));
+    try std.testing.expectError(error.InvalidToken, f.readOne("#e1e1000001"));
+    // 上限ちょうどは読める。
+    const edge = try std.testing.allocator.alloc(u8, max_spelling_digits);
+    defer std.testing.allocator.free(edge);
+    @memset(edge, '9');
+    try std.testing.expect((try f.readOne(edge)).asBignum() != null);
+}
+
+test "next reports the heap limit when the work of reading a number is refused" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 外側の作業が上限のすぐ手前まで数えているところへ、読む。
+    f.heap.external = f.heap.options.limit - 8;
+    try std.testing.expectError(error.HeapLimit, f.readOne("123456789012345678901234567890"));
+    f.heap.external = 0;
+    // 上限より大きくなる数は、確保せずに断られる(`num.parse` の null)。
+    f.heap.options.limit = 1024;
+    try std.testing.expectError(error.InvalidToken, f.readOne("1" ++ "0" ** 5000));
 }
 
 test "next reads the four spellings of a boolean" {
