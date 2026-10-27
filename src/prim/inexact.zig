@@ -200,7 +200,12 @@ fn exactRoot(h: *Heap, v: Value) Error!?Value {
 /// The square root of the exact non-negative rational number `v` as an `f64`.
 fn inexactRoot(h: *Heap, v: Value) Error!f64 {
     const x = try flonumOf(h, v);
-    if (std.math.isFinite(x) or v.asRatnum() != null) return @sqrt(x);
+    if (v.asRatnum()) |r| {
+        if (std.math.isFinite(x) and x != 0) return @sqrt(x);
+        // 比が `f64` で無限大か 0 になるときは、分子と分母の根を別々に求めて割る。
+        return try inexactRoot(h, r.numerator) / try inexactRoot(h, r.denominator);
+    }
+    if (std.math.isFinite(x)) return @sqrt(x);
     // 整数が `f64` の範囲を超えるときは、整数の平方根を `f64` にする(根の誤差は相対で 2^-53 以下)。
     return flonumOf(h, try power.integerSqrt(h, v));
 }
@@ -336,6 +341,24 @@ test "sqrt of anything else is a flonum" {
     @memset(&digits, '0');
     digits[0] = '1';
     try expectNear(3.1622776601683795e199, "sqrt", &.{&digits});
+}
+
+test "sqrt of a rational number that does not fit an f64 is finite" {
+    const gpa = std.testing.allocator;
+    var zeros: [400]u8 = undefined;
+    @memset(&zeros, '0');
+    // 10^400 / 3 の根は 1e200 / sqrt(3)。比が `f64` で無限大になる。
+    const big = try std.fmt.allocPrint(gpa, "1{s}/3", .{zeros[0..400]});
+    defer gpa.free(big);
+    try expectNear(5.773502691896258e199, "sqrt", &.{big});
+    // 1 / (10^400 + 1) の根は約 1e-200。比が `f64` で 0 になる。
+    const small = try std.fmt.allocPrint(gpa, "1/1{s}1", .{zeros[0..399]});
+    defer gpa.free(small);
+    try expectNear(1.0e-200, "sqrt", &.{small});
+    // (10^400 + 1) / 3 も同じ。
+    const odd = try std.fmt.allocPrint(gpa, "1{s}1/3", .{zeros[0..399]});
+    defer gpa.free(odd);
+    try expectNear(5.773502691896258e199, "sqrt", &.{odd});
 }
 
 test "sqrt of a negative real number is an imaginary number" {

@@ -32,6 +32,13 @@ error: bad import: finite? is not exported by the import set
 (import (scheme inexact)) (< (abs (- (sqrt (+ (expt 10 400) 1)) (expt 10 200))) (expt 10 185))
 #t
 
+# f64 に収まらない有理数の根は、分子と分母の根を別々に求めるので、有限である。
+(import (scheme inexact)) (let ((r (sqrt (/ (expt 10 400) 3)))) (list (finite? r) (< 5 (/ r (expt 10 199)) 6)))
+(#t #t)
+
+(import (scheme inexact)) (let ((r (sqrt (/ 1 (+ (expt 10 400) 1))))) (list (> r 0) (< r (/ 1 (expt 10 199)))))
+(#t #t)
+
 # 述語。
 (import (scheme inexact)) (list (finite? 3) (finite? (/ 1 3)) (finite? (inexact 3)) (finite? (/ (inexact 1) (inexact 0))) (finite? (- (/ (inexact 1) (inexact 0)))))
 (#t #t #t #f #f)
