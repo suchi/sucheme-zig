@@ -513,11 +513,12 @@ pub fn digitValue(c: u21) ?u4
 | 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。マージ済み([suchi/sucheme-zig#189](https://github.com/suchi/sucheme-zig/pull/189))。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main`。実績: PR を作ってから ready まで約 1.4 時間、マージまで約 2.2 時間(2026-10-24 07:52 JST から 09:18 JST、10:01 JST。独立レビュー 2 本の指摘への修正 2 回(2 回目は設計書の 1 文だけ)を含む) |
 | 4g-3 | マージ済み([suchi/sucheme-zig#191](https://github.com/suchi/sucheme-zig/pull/191))。`expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`。準拠マトリクスに失敗が1件出る(`tests/vendor/r7rs-tests.scm` の `(test (expt 2 140) (square root))`)。`expt` が束縛されて、これまで未実装として数えられていた項目が実行されるようになったためで、bignum の `eqv?` と `equal?` が同一のオブジェクトで比べる欠落(4j が直す)が原因である。この PR の回帰ではない。実績: PR を作ってから ready まで約 1.8 時間、マージまで約 5.4 時間(2026-10-24 10:09 JST から 11:54 JST、15:35 JST。独立レビュー 2 本の指摘への修正 1 回を含む。層2 とユーザーのマージの待ちを含む) |
 | 4g-4 | マージ済み([suchi/sucheme-zig#194](https://github.com/suchi/sucheme-zig/pull/194))。`number->string`、`string->number`。ブランチ `feature/phase4-slice-4g-4-number-string-conversion-main`。実績: PR を作ってから ready まで約 2.7 時間、マージまで約 5.2 時間(2026-10-24 15:44 JST から 18:27 JST、20:55 JST。独立レビュー 3 本(挙動、ミューテーション、2 巡目の差分)の指摘への修正 2 回と、ユーザーの設計判断 1 件(無限大と NaN の基数)を含む)。これで 4g が終わった |
-| 4h〜4z、4u1〜4u4 | 未着手 |
+| 4h | 実装済み、ドラフトの PR で確認中。`(scheme inexact)` の12個の識別子(`src/prim/inexact.zig`、`lib/scheme/inexact.sld`)。ブランチ `feature/phase4-slice-4h-scheme-inexact`。範囲の決め方は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「超越関数と平方根」 |
+| 4i〜4z、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
-- 4g(整数と有理数の手続き)は、4g-1 から 4g-4 のマージで終わった。スライスごとの実績は上の表にあり、段階4の見積りとの比較は、段階4の終わりに [0012](0012-schedule-estimates-and-actuals.md) の規則で記録する。次は 4h(`(scheme inexact)`)で、4g のマージで着手できる。
+- 4g(整数と有理数の手続き)は、4g-1 から 4g-4 のマージで終わった。スライスごとの実績は上の表にあり、段階4の見積りとの比較は、段階4の終わりに [0012](0012-schedule-estimates-and-actuals.md) の規則で記録する。4h(`(scheme inexact)`)は実装を終え、PR のレビューに入る。複素数の引数を取る `sqrt` `exp` `log` などと、定義域の外の `asin` と `acos` は、4i が置き換える(4h は複素数の引数を `WrongType`、定義域の外を `OutOfRange` にしている)。
 - 4g-2 で解決した: `(lcm -9223372036854775808 3)` は 27670116110564327424 を返す。`(remainder 9223372036854775808 1)` の「integer out of range」は、整数除算ではなくリーダが 2^63 以上の綴りを読めないことの誤りで、4r が直す。`procedures.scm` の古い「あふれる」のコメントも直した。
 - 改善案(段階4の終わりの振り返りで検討する。実装はしない): `src/sucheme.zig` の include の上限のテストは、既定の上限で初期化した使用量に余裕(128 KiB)を足す形に直した。残る課題は、束縛を足すたびに初期化の使用量が増えることそのもので、未束縛の手続きがすべて入ると、ヒープの既定の上限に対する初期化の割合がどうなるかを、段階の終わりに測る。
 - 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。

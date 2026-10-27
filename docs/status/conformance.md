@@ -15,7 +15,7 @@
 | `(scheme cxr)` | 24 | 24 |
 | `(scheme eval)` | 0 | 2 |
 | `(scheme file)` | 0 | 10 |
-| `(scheme inexact)` | 0 | 12 |
+| `(scheme inexact)` | 12 | 12 |
 | `(scheme lazy)` | 5 | 5 |
 | `(scheme load)` | 0 | 1 |
 | `(scheme process-context)` | 0 | 5 |
@@ -24,7 +24,7 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 232 | 339 |
+| 一意の識別子の合計 | 244 | 339 |
 
 ## 準拠スイートの結果
 
@@ -36,25 +36,25 @@
 | 節 | 通った | 落ちた | 誤り | 読めない | 未実装 | 連鎖 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 4.1 Primitive expression types | 27 | 0 | 0 | 0 | 0 | 0 |
-| 4.2 Derived expression types | 69 | 1 | 0 | 1 | 1 | 1 |
+| 4.2 Derived expression types | 69 | 1 | 0 | 2 | 0 | 0 |
 | 4.3 Macros | 26 | 0 | 0 | 0 | 0 | 0 |
 | 5 Program structure | 15 | 0 | 0 | 0 | 0 | 0 |
 | 6.1 Equivalence Predicates | 25 | 0 | 0 | 0 | 0 | 0 |
-| 6.2 Numbers | 83 | 0 | 0 | 83 | 53 | 1 |
+| 6.2 Numbers | 86 | 0 | 0 | 122 | 6 | 6 |
 | 6.3 Booleans | 18 | 0 | 0 | 0 | 0 | 0 |
 | 6.4 Lists | 62 | 0 | 0 | 2 | 1 | 0 |
 | 6.5 Symbols | 17 | 0 | 0 | 0 | 0 | 0 |
 | 6.6 Characters | 20 | 0 | 0 | 0 | 59 | 0 |
 | 6.7 Strings | 78 | 0 | 0 | 0 | 52 | 0 |
-| 6.8 Vectors | 42 | 0 | 0 | 0 | 1 | 0 |
+| 6.8 Vectors | 43 | 0 | 0 | 0 | 0 | 0 |
 | 6.9 Bytevectors | 31 | 0 | 0 | 8 | 0 | 0 |
 | 6.10 Control Features | 31 | 0 | 0 | 0 | 3 | 0 |
-| 6.11 Exceptions | 16 | 0 | 0 | 0 | 11 | 0 |
+| 6.11 Exceptions | 17 | 0 | 0 | 0 | 10 | 0 |
 | 6.12 Environments and evaluation | 0 | 0 | 0 | 0 | 4 | 0 |
 | 6.13 Input and output | 1 | 0 | 0 | 0 | 59 | 0 |
 | Read syntax | 0 | 0 | 0 | 0 | 72 | 24 |
 | Numeric syntax | 0 | 0 | 0 | 0 | 29 | 83 |
 | 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
-| 合計 | 563 | 1 | 0 | 94 | 355 | 109 |
+| 合計 | 568 | 1 | 0 | 134 | 305 | 113 |
 
-スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme inexact)` `(scheme complex)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
+スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme complex)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
