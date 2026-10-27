@@ -305,7 +305,7 @@ pub fn digitValue(c: u21) ?u4
 | 4g 整数と有理数の手続き | `exact` `inexact` `floor` 系、整数除算の全組、`numerator` `denominator` `rationalize` `exact-integer-sqrt` `expt` `max` `min` `number->string` `string->number` が R7RS 6.2.6 と 6.2.7 の例どおり | `src/prim/arith.zig` `src/prim/number.zig`(新規) `lib/scheme/base.sld` | T2 | 4f | 4h と可(`table.zig` の行のコンフリクトは機械的に解く) | 大 |
 | 4h `(scheme inexact)` | `exp` `log` `sin` ほか12の識別子が束縛され、R7RS 6.2.6 の例が通る | `src/prim/inexact.zig`(新規) `lib/scheme/inexact.sld`(新規) | T2 | 4f | 4g と可 | 小 |
 | 4i `(scheme complex)` と compnum の演算 | 6つの識別子が束縛され、`sqrt` `exp` `log` が複素数で動く(複素数の四則と `=` は 4f) | `src/num/complex.zig`(新規) `src/prim/complex.zig`(新規) `lib/scheme/complex.sld`(新規) | T2 | 4g、4h。合意を求める点の3 | 不可 | 中〜大 |
-| 4j `eq?` と `eqv?` の分離とフィーチャ | `memq` と `memv`、`assq` と `assv` を区別するテストが通り、`features` が4つのフィーチャを返す | `src/value.zig`(`isEq` だけ) `src/features.zig` `tests/scheme/` | T1 | 4g(4i を含めるなら 4i) | 不可 | 小 |
+| 4j `eq?` と `eqv?` の分離とフィーチャ | `memq` と `memv`、`assq` と `assv` を区別するテストが通り、`features` が4つのフィーチャを返す。bignum、ratnum、compnum が `eqv?` と `equal?` で値として比べられ、`case` が `(case 1/2 ((1/2) 'a) (else 'b))` で `a` を返す。`syntax-rules` のパターンに、flonum、bignum、ratnum、compnum を書ける(4r で読めるようになったが、`src/syntax/rules.zig` が拒否する。R7RS 7.1.3 の `<pattern datum>` は `<number>` を含む) | `src/value.zig`(`isEq` と `isEqv`) `src/syntax/rules.zig`(パターンの定数の分岐だけ) `src/features.zig` `tests/scheme/` | T1 | 4g(4i を含めるなら 4i) | 不可 | 小 |
 | 4u1 Unicode の生成ツール | `tools/unicode-gen/` が UCD から表を生成し、比較モードで生成物の同期を検査する | `tools/unicode-gen/`(新規) `build.zig`(step の追加だけ) | T2(枠は T1) | 合意を求める点の1、7 | 可(4a〜4c と) | 中 |
 | 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
 | 4u3 `(scheme char)` と文字列の大文字小文字 | `(scheme char)` の識別子が束縛され、R7RS 6.6 と 6.7 の例(`(char-alphabetic? #\x03B1)` など)が通る | `src/prim/char.zig` の追加分 `src/prim/string_case.zig`(新規) `lib/scheme/char.sld`(新規) | T2 | 4u2。合意を求める点の2 | 可 | 中 |
@@ -514,7 +514,8 @@ pub fn digitValue(c: u21) ?u4
 | 4g-3 | マージ済み([suchi/sucheme-zig#191](https://github.com/suchi/sucheme-zig/pull/191))。`expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`。準拠マトリクスに失敗が1件出る(`tests/vendor/r7rs-tests.scm` の `(test (expt 2 140) (square root))`)。`expt` が束縛されて、これまで未実装として数えられていた項目が実行されるようになったためで、bignum の `eqv?` と `equal?` が同一のオブジェクトで比べる欠落(4j が直す)が原因である。この PR の回帰ではない。実績: PR を作ってから ready まで約 1.8 時間、マージまで約 5.4 時間(2026-10-24 10:09 JST から 11:54 JST、15:35 JST。独立レビュー 2 本の指摘への修正 1 回を含む。層2 とユーザーのマージの待ちを含む) |
 | 4g-4 | マージ済み([suchi/sucheme-zig#194](https://github.com/suchi/sucheme-zig/pull/194))。`number->string`、`string->number`。ブランチ `feature/phase4-slice-4g-4-number-string-conversion-main`。実績: PR を作ってから ready まで約 2.7 時間、マージまで約 5.2 時間(2026-10-24 15:44 JST から 18:27 JST、20:55 JST。独立レビュー 3 本(挙動、ミューテーション、2 巡目の差分)の指摘への修正 2 回と、ユーザーの設計判断 1 件(無限大と NaN の基数)を含む)。これで 4g が終わった |
 | 4h | 実装済み、ドラフトの PR で確認中。`(scheme inexact)` の12個の識別子(`src/prim/inexact.zig`、`lib/scheme/inexact.sld`)。ブランチ `feature/phase4-slice-4h-scheme-inexact`。範囲の決め方は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「超越関数と平方根」 |
-| 4i〜4z、4u1〜4u4 | 未着手 |
+| 4r | 実装済み。ブランチ `feature/phase4-slice-4r-reader-numbers`。リーダの `atom` が、fixnum に収まる十進整数以外を `num.parse` で読む。値を持たない綴り(`1/0`、`#e+inf.0`)と、読み取りの大きさの上限を超える綴りは `InvalidToken` になる。`IntegerOutOfRange` はリーダが返さなくなったが、`src/sucheme.zig` の `switch` のために誤りの集合に残している。準拠マトリクスの「落ちた」が 9 件増えたのは、読めるようになった bignum、ratnum、compnum を `eqv?` が同じオブジェクトかで比べる欠落(4j が直す)と、`(expt 0.0 0)` が `1.0` でなく `1` を返す `expt` の挙動による。受け入れた制約: 上限の内側でも、`#e1e1000000` を並べた入力は 1 個あたり約 0.25 秒かかる。上限を超えた正しい数(9 を 100,001 個並べた整数、`#e1e1000001`)は `unreadable token` になる |
+| 4i〜4z(4r を除く)、4u1〜4u4 | 未着手 |
 
 ## 次にやること
 
@@ -527,5 +528,6 @@ pub fn digitValue(c: u21) ?u4
   - 平方数でなく `f64` を超える整数の `sqrt` は、`integerSqrt` を2回呼ぶ(`inexactRoot` の判定と値の取得)。10 万桁で約 10 秒かかる。`integerSqrt` 自体は 4g-3 の既存の実装で、メモリは増えない。
 - 4g-2 で解決した: `(lcm -9223372036854775808 3)` は 27670116110564327424 を返す。`(remainder 9223372036854775808 1)` の「integer out of range」は、整数除算ではなくリーダが 2^63 以上の綴りを読めないことの誤りで、4r が直す。`procedures.scm` の古い「あふれる」のコメントも直した。
 - 改善案(段階4の終わりの振り返りで検討する。実装はしない): `src/sucheme.zig` の include の上限のテストは、既定の上限で初期化した使用量に余裕(128 KiB)を足す形に直した。残る課題は、束縛を足すたびに初期化の使用量が増えることそのもので、未束縛の手続きがすべて入ると、ヒープの既定の上限に対する初期化の割合がどうなるかを、段階の終わりに測る。
-- 4r(リーダーの数)は L2 の作業で、4e のマージで着手できる。
+- 4r(リーダの数)は実装済みで、PR のレビューとマージを待つ。次の L2 の作業は 4u4(4u2 のあと)。
+- 別の変更で足す(4r のミューテーションレビューの指摘): `src/num/number.zig` の指数の上限の判定(`@abs(parseExponent(d.exponent)) > max_spelling_exponent`)の `>` を `>=` にしても、全テストが通る。`parse` のテストに、`#e1e1000000` が bignum を返し `#e1e1000001` が null になる境界の組を足す。読む時間は `ReleaseSafe` で約 0.6 秒なので、`tier.slow()` に置く。
 - Unicode の生成ツール(4u1)は、数値の層と並行に進められる。
