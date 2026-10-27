@@ -513,7 +513,8 @@ pub fn digitValue(c: u21) ?u4
 | 4g-2 | 整数除算の7個と `abs` のネイティブ化(bignum と不正確な整数、`-0.0`)、`IntegerOverflow` の削除。マージ済み([suchi/sucheme-zig#189](https://github.com/suchi/sucheme-zig/pull/189))。ブランチ `feature/phase4-slice-4g-2-integer-division-and-abs-main`。実績: PR を作ってから ready まで約 1.4 時間、マージまで約 2.2 時間(2026-10-24 07:52 JST から 09:18 JST、10:01 JST。独立レビュー 2 本の指摘への修正 2 回(2 回目は設計書の 1 文だけ)を含む) |
 | 4g-3 | マージ済み([suchi/sucheme-zig#191](https://github.com/suchi/sucheme-zig/pull/191))。`expt`、`exact-integer-sqrt`、`rationalize`。ブランチ `feature/phase4-slice-4g-3-expt-sqrt-rationalize-main`。準拠マトリクスに失敗が1件出る(`tests/vendor/r7rs-tests.scm` の `(test (expt 2 140) (square root))`)。`expt` が束縛されて、これまで未実装として数えられていた項目が実行されるようになったためで、bignum の `eqv?` と `equal?` が同一のオブジェクトで比べる欠落(4j が直す)が原因である。この PR の回帰ではない。実績: PR を作ってから ready まで約 1.8 時間、マージまで約 5.4 時間(2026-10-24 10:09 JST から 11:54 JST、15:35 JST。独立レビュー 2 本の指摘への修正 1 回を含む。層2 とユーザーのマージの待ちを含む) |
 | 4g-4 | マージ済み([suchi/sucheme-zig#194](https://github.com/suchi/sucheme-zig/pull/194))。`number->string`、`string->number`。ブランチ `feature/phase4-slice-4g-4-number-string-conversion-main`。実績: PR を作ってから ready まで約 2.7 時間、マージまで約 5.2 時間(2026-10-24 15:44 JST から 18:27 JST、20:55 JST。独立レビュー 3 本(挙動、ミューテーション、2 巡目の差分)の指摘への修正 2 回と、ユーザーの設計判断 1 件(無限大と NaN の基数)を含む)。これで 4g が終わった |
-| 4h〜4z、4u1〜4u4 | 未着手 |
+| 4u1 | 作業中。生成器(`tools/unicode-gen/`)の読み取り、2段の表の組み立て、整形済みの出力、比較モード、`check-unicode` と `generate-unicode` の step は実装済み。UCD の取り込み(取得元 www.unicode.org への接続が環境の規則で拒否されていた)と、検証コマンド表の行(CI の変更が要るため承認待ち)が残る。生成物 `src/unicode/tables.zig` は 4u2 が置くので、それまで `check-unicode` は CI に入れない |
+| 4h〜4z、4u2〜4u4 | 未着手 |
 
 ## 次にやること
 
