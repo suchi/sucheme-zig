@@ -241,3 +241,22 @@ error: division by zero in expt 0 +i
 # atan: |y| が 1 のすぐ外と内で、1 - y^2 を (1-y)(1+y) で求める(1 - y*y だと実部の相対誤差が 1e-9 になる)。cmath の値。
 (import (scheme inexact) (scheme complex)) (let ((rel? (lambda (a b) (< (abs (- a b)) (* 1e-12 (abs b)))))) (map (lambda (z re im) (let ((r (atan z))) (list (rel? (real-part r) re) (rel? (imag-part r) im)))) (list 1e-12+1.0000000001i 1e-12+0.9999999999i -1e-12-1.0000000001i 3e-9+1.000001i) '(1.5657964938654745 0.0049998329299221645 -1.5657964938654745 1.5692963320447486) '(11.859474015159071 11.85947401510907 -11.859474015159071 7.254326869313305)))
 ((#t #t) (#t #t) (#t #t) (#t #t))
+
+# sqrt: 正確な虚部が f64 で 0 に潰れるのに、根の虚部は f64 に収まる場合(閉じた式: 虚部 = im / (2 sqrt(re)))。
+(import (scheme inexact) (scheme complex)) (let ((rel? (lambda (a b) (< (abs (- a b)) (* 1e-12 (abs b)))))) (map (lambda (z re im) (let ((r (sqrt z))) (list (rel? (real-part r) re) (rel? (imag-part r) im)))) (list (make-rectangular (/ 1 (expt 10 200)) (/ 1 (expt 10 400))) (make-rectangular (/ 1 (expt 10 200)) (/ -1 (expt 10 380))) (make-rectangular (expt 10 400) (expt 10 80))) '(1e-100 1e-100 1e200) '(5e-301 -5e-281 5e-121)))
+((#t #t) (#t #t) (#t #t))
+
+# sqrt: 根が f64 の最大を超えるとき(2^1400)は無限大、虚部は 0 に潰れる。縮めた実部が 1 を下回る入力でも有限(2^-700.5)。
+(import (scheme inexact) (scheme complex)) (sqrt (make-rectangular (expt 4 1400) 1))
++inf.0+0.0i
+
+(import (scheme inexact) (scheme complex)) (let ((r (sqrt (make-rectangular (/ 1 (expt 2 1401)) (/ 1 (expt 2 3000)))))) (list (< (abs (- (real-part r) 1.3442747381838626e-211)) 1e-222) (imag-part r)))
+(#t 0.0)
+
+# atan: 大きさが 8.9e307 を超える引数は縮める枝を通る(cmath: 実部 1.5707963267948966)。
+(import (scheme inexact) (scheme complex)) (list (< (abs (- (real-part (atan 1e308+1e308i)) 1.5707963267948966)) 1e-14) (< (abs (- (real-part (atan 1.7e308-1.7e308i)) 1.5707963267948966)) 1e-14) (< (abs (- (imag-part (atan 1e200+1e200i)) 5e-201)) 1e-212))
+(#t #t #t)
+
+# NaN の引数は、NaN を返し、異常終了しない。log は実部が無限大なら無限大。
+(import (scheme inexact)) (list (sqrt +nan.0+nan.0i) (asin +nan.0+nan.0i) (acos +nan.0+nan.0i) (log +inf.0+nan.0i) (log +nan.0+nan.0i))
+(+nan.0+nan.0i +nan.0+nan.0i +nan.0+nan.0i +inf.0+nan.0i +nan.0+nan.0i)
