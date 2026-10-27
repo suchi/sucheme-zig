@@ -11,6 +11,7 @@ const heap_mod = @import("../heap.zig");
 const bigint = @import("bigint.zig");
 const number = @import("number.zig");
 const ops = @import("ops.zig");
+const complex = @import("complex.zig");
 
 const Value = value_mod.Value;
 const Heap = heap_mod.Heap;
@@ -29,7 +30,7 @@ pub const Error = ops.Error || error{WrongType};
 ///
 /// 指数が有理数か flonum なら、底の実数を flonum にして `std.math.pow` で計算する(結果は
 /// 不正確な数)。負の底と整数でない指数は、極形式で複素数になる。複素数の指数と、複素数の
-/// 底に対する整数でない指数は、`exp` と `log` が入るまで `WrongType` にする(スライス 4i)。
+/// 底に対する整数でない指数は、`exp(z2 log z1)` で計算する(`complex.expt`)。
 ///
 /// 結果が上限を超える正確なべき乗は、`HeapLimit` である。確保の前に大きさを見積もるので、
 /// `(expt 2 (expt 10 12))` で長い計算を続けない。断るのはメモリの上限だけで、上限に収まる
@@ -37,7 +38,7 @@ pub const Error = ops.Error || error{WrongType};
 pub fn expt(h: *Heap, base: Value, exponent: Value) Error!Value {
     std.debug.assert(number.isNumber(base) and number.isNumber(exponent));
     if (exponent.asFixnum()) |n| if (n == 0) return .fromFixnum(1);
-    if (exponent.kind() == .compnum) return error.WrongType;
+    if (exponent.kind() == .compnum) return complex.expt(h, base, exponent);
     if (ops.isExactInteger(exponent)) return exptInteger(h, base, exponent);
     if (base.kind() == .compnum) return exptComplexByFloat(h, base, exponent);
     return ops.counted(Value, exptRealWork, h, .{ base, exponent });
@@ -97,10 +98,11 @@ fn exptComplex(h: *Heap, base: Value, n: i64) Error!Value {
     return result;
 }
 
-/// A complex `base` to a rational or inexact power: only an integral flonum can be taken.
+/// A complex `base` to a rational or inexact power: an integral flonum is taken by repeated
+/// squaring, anything else by `exp` and `log`.
 fn exptComplexByFloat(h: *Heap, base: Value, exponent: Value) Error!Value {
-    const y = exponent.asFlonum() orelse return error.WrongType;
-    if (!std.math.isFinite(y) or y != @floor(y) or @abs(y) >= 9223372036854775808.0) return error.WrongType;
+    const y = exponent.asFlonum() orelse return complex.expt(h, base, exponent);
+    if (!std.math.isFinite(y) or y != @floor(y) or @abs(y) >= 9223372036854775808.0) return complex.expt(h, base, exponent);
     const power = try exptComplex(h, base, @intFromFloat(y));
     return ops.toInexact(h, power);
 }

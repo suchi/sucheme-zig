@@ -8,6 +8,7 @@ const Primitive = @import("../value.zig").Primitive;
 const arith = @import("arith.zig");
 const number = @import("number.zig");
 const inexact = @import("inexact.zig");
+const complex = @import("complex.zig");
 const pair = @import("pair.zig");
 const equiv = @import("equiv.zig");
 const boolean = @import("boolean.zig");
@@ -27,6 +28,7 @@ const families = [_][]const Primitive{
     &arith.primitives,
     &number.primitives,
     &inexact.primitives,
+    &complex.primitives,
     &pair.primitives,
     &equiv.primitives,
     &boolean.primitives,

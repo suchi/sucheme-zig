@@ -1,0 +1,177 @@
+# Slice 4i: `(scheme complex)` (R7RS 6.2.6), and the complex arguments of `(scheme inexact)`.
+# 超越関数の値は最後の桁が実装でずれうるので、桁を固定しないものは、差の大きさで比べる。
+
+# 6個の識別子がすべて `(scheme complex)` から入る。
+(import (only (scheme complex) angle imag-part magnitude make-polar make-rectangular real-part)) (real-part 1)
+1
+
+# `(scheme base)` は、これらを持たない。
+(import (only (scheme base) magnitude))
+error: bad import: magnitude is not exported by the import set
+
+(import (only (scheme base) make-rectangular))
+error: bad import: make-rectangular is not exported by the import set
+
+# make-rectangular: 虚部が正確な 0 なら実数、部分の正確性はそろう。
+(import (scheme complex)) (list (make-rectangular 1 2) (make-rectangular 1 0) (make-rectangular 1/2 -3/4))
+(1+2i 1 1/2-3/4i)
+
+(import (scheme complex)) (list (make-rectangular 1.0 2) (make-rectangular 1 2.0) (make-rectangular 1.0 0.0) (make-rectangular 1.0 0))
+(1.0+2.0i 1.0+2.0i 1.0+0.0i 1.0)
+
+(import (scheme base) (scheme complex)) (list (real? (make-rectangular 1 0)) (real? (make-rectangular 1 0.0)) (complex? (make-rectangular 1 2)))
+(#t #f #t)
+
+(import (scheme complex)) (make-rectangular 1+2i 3)
+error: wrong type of argument to make-rectangular 1+2i 3
+
+(import (scheme complex)) (make-rectangular 1 'a)
+error: wrong type of argument to make-rectangular 1 a
+
+# real-part と imag-part: 実数の虚部は正確な 0。
+(import (scheme complex)) (list (real-part 1+2i) (imag-part 1+2i) (real-part 5) (imag-part 5) (real-part -1.5) (imag-part -1.5))
+(1 2 5 0 -1.5 0)
+
+(import (scheme complex)) (list (real-part 1.5+2.5i) (imag-part 1.5+2.5i) (real-part 1/2+1/3i) (imag-part 1/2+1/3i))
+(1.5 2.5 1/2 1/3)
+
+(import (scheme complex)) (real-part 'a)
+error: wrong type of argument to real-part a
+
+(import (scheme complex)) (imag-part "1")
+error: wrong type of argument to imag-part "1"
+
+# magnitude: 実数なら abs、正確な複素数の根は、平方数なら正確。
+(import (scheme complex)) (list (magnitude -5) (magnitude 5) (magnitude -1/3) (magnitude -2.5))
+(5 5 1/3 2.5)
+
+(import (scheme complex)) (list (magnitude 3+4i) (magnitude -3-4i) (magnitude 5/13+12/13i) (magnitude +i) (magnitude 3.0+4.0i))
+(5 5 1 1 5.0)
+
+(import (scheme complex)) (magnitude 1+2i)
+2.23606797749979
+
+(import (scheme complex)) (list (exact? (magnitude 3+4i)) (exact? (magnitude 1+2i)))
+(#t #f)
+
+(import (scheme complex) (scheme inexact)) (let ((m (magnitude 1e200+1e200i))) (list (finite? m) (< 1.41e200 m 1.42e200)))
+(#t #t)
+
+# angle: 実数は 0 か pi、複素数は atan2。
+(import (scheme complex)) (list (angle 1) (angle 0) (angle 1/2) (angle -1) (angle 1.0) (angle -1.0))
+(0 0 0 3.141592653589793 0.0 3.141592653589793)
+
+(import (scheme complex)) (list (angle +i) (angle -i) (angle 1+i) (angle -1+i) (angle -1-i))
+(1.5707963267948966 -1.5707963267948966 0.7853981633974483 2.356194490192345 -2.356194490192345)
+
+(import (scheme complex)) (angle 1+2i)
+1.1071487177940904
+
+# make-polar: 大きさか角が正確な 0 なら正確、それ以外は不正確な複素数。
+(import (scheme complex)) (list (make-polar 1 0) (make-polar 0 5) (make-polar 2.5 0) (make-polar 3 0))
+(1 0 2.5 3)
+
+(import (scheme complex)) (make-polar 1 1)
+0.5403023058681398+0.8414709848078965i
+
+# R7RS 6.2.6: z = x1 + x2 i = x3 e^(i x4) のとき、各手続きが x1..x4 を返す。
+(import (scheme complex) (scheme inexact)) (let* ((z (make-polar 3 0.5)) (w (make-rectangular (real-part z) (imag-part z)))) (list (< (abs (- (magnitude z) 3)) 1e-15) (< (abs (- (angle z) 0.5)) 1e-15) (= z w)))
+(#t #t #t)
+
+(import (scheme complex)) (make-polar 'a 1)
+error: wrong type of argument to make-polar a 1
+
+(import (scheme complex)) (make-polar 1 +i)
+error: wrong type of argument to make-polar 1 +i
+
+(import (scheme complex)) (angle 'a)
+error: wrong type of argument to angle a
+
+(import (scheme complex)) (magnitude "x")
+error: wrong type of argument to magnitude "x"
+
+# 複素数の sqrt: 正確な根があれば正確。
+(import (scheme inexact)) (list (sqrt -4) (sqrt +2i) (sqrt 3+4i) (sqrt -3-4i) (sqrt -3+4i) (sqrt +1/2i))
+(+2i 1+i 2+i 1-2i 1+2i 1/2+1/2i)
+
+(import (scheme inexact)) (list (exact? (sqrt 3+4i)) (exact? (sqrt 1+2i)) (exact? (sqrt 3.0+4.0i)))
+(#t #f #f)
+
+(import (scheme inexact) (scheme complex)) (let ((r (sqrt 1+2i))) (list (< (abs (- (real-part r) 1.272019649514069)) 1e-14) (< (abs (- (imag-part r) 0.7861513777574233)) 1e-14)))
+(#t #t)
+
+# sqrt の主値: 実部は正、または 0 で虚部は非負。
+(import (scheme inexact) (scheme complex)) (map (lambda (z) (let ((r (sqrt z))) (or (> (real-part r) 0) (and (= (real-part r) 0) (>= (imag-part r) 0))))) '(-4 -4+1i 1-1i -1-1i 1+2i -1.5+0.5i))
+(#t #t #t #t #t #t)
+
+# exp、log: 複素数。
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (exp +i) 0.5403023058681398+0.8414709848078965i) (near? (exp 1+2i) -1.1312043837568135+2.4717266720048188i) (near? (exp (* +i 3.141592653589793)) -1.0)))
+(#t #t #t)
+
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (log +i) 0.0+1.5707963267948966i) (near? (log 1+i) 0.34657359027997264+0.7853981633974483i) (near? (log 3-4i) 1.6094379124341003-0.9272952180016122i)))
+(#t #t #t)
+
+# 負の実数の log、-0.0 の log。
+(import (scheme inexact)) (list (log -1) (log -0.0) (log 0.0) (log 0))
+(0.0+3.141592653589793i -inf.0+3.141592653589793i -inf.0 -inf.0)
+
+# 逆関数は元に戻す。
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-13)))) (map (lambda (z) (list (near? (exp (log z)) z) (near? (sin (asin z)) z) (near? (cos (acos z)) z) (near? (tan (atan z)) z) (near? (* (sqrt z) (sqrt z)) z))) '(1+2i -1+0.5i 0.3-0.7i 2+3i -3-4i)))
+((#t #t #t #t #t) (#t #t #t #t #t) (#t #t #t #t #t) (#t #t #t #t #t) (#t #t #t #t #t))
+
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (sin 1+i) 1.2984575814159773+0.6349639147847361i) (near? (cos 1+i) 0.8337300251311491-0.9888977057628651i) (near? (tan 1+i) 0.2717525853195118+1.0839233273386946i) (near? (atan 1+i) 1.0172219678978514+0.4023594781085251i)))
+(#t #t #t #t)
+
+# 正確な複素数の引数は、特別な点でも不正確な結果になる。
+(import (scheme inexact) (scheme base)) (list (exact? (sin +i)) (exact? (cos +i)) (exact? (exp +i)))
+(#f #f #f)
+
+# asin と acos は、[-1, 1] の外の実数で複素数を返す。
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (asin 2) 1.5707963267948966-1.3169578969248166i) (near? (asin -2) -1.5707963267948966+1.3169578969248166i) (near? (acos 2) 0.0+1.3169578969248166i) (near? (acos -2) 3.141592653589793-1.3169578969248166i)))
+(#t #t #t #t)
+
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (real? (asin 1)) (real? (asin 0.5)) (real? (acos -1)) (real? (asin 2)) (near? (asin 1) 1.5707963267948966)))
+(#t #t #t #f #t)
+
+(import (scheme inexact)) (list (asin 0) (acos 1) (asin 0.0))
+(0 0 0.0)
+
+# log の2引数: 底が 10 と 2 の冪は正確。
+(import (scheme inexact)) (list (log 1000 10) (log 8 2) (log 1024 2) (log 0.001 10) (log 0.0 2))
+(3.0 3.0 10.0 -3.0 -inf.0)
+
+(import (scheme inexact) (scheme complex)) (let ((r (log -8 2))) (list (< (abs (- (real-part r) 3)) 1e-14) (< (abs (- (imag-part r) 4.532360141827194)) 1e-14)))
+(#t #t)
+
+# f64 の範囲を超える正確な数。
+(import (scheme inexact)) (list (< (abs (- (log (expt 10 400)) 921.0340371976183)) 1e-10) (< (abs (+ (log (/ 1 (expt 10 400))) 921.0340371976183)) 1e-10) (< (abs (- (log (expt 10 400) 10) 400)) 1e-12))
+(#t #t #t)
+
+(import (scheme inexact)) (list (< (abs (- (atan (expt 10 400) (expt 10 399)) 1.4711276743037347)) 1e-15) (atan (expt 10 400) (expt 10 400)) (atan (- (expt 10 400)) 1) (atan 1 (- (expt 10 400))))
+(#t 0.7853981633974483 -1.5707963267948966 3.141592653589793)
+
+# 型の検査。
+(import (scheme inexact)) (exp 'a)
+error: wrong type of argument to exp a
+
+(import (scheme inexact)) (atan 1+i 2)
+error: wrong type of argument to atan 1+i 2
+
+(import (scheme inexact)) (log 1 'a)
+error: wrong type of argument to log 1 a
+
+(import (scheme inexact)) (sqrt "4")
+error: wrong type of argument to sqrt "4"
+
+# expt: 複素数の指数と、複素数の底の整数でない指数は、exp と log で計算する。
+(import (scheme base) (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (expt 2 +i) 0.7692389013639721+0.6389612763136348i) (near? (expt +i +i) 0.20787957635076193) (near? (expt 1+2i 1+i) -0.24720004426291722+0.6964504870825432i) (near? (expt 1+2i 1/2) (sqrt 1+2i)) (near? (expt 1+2i 0.5) (sqrt 1+2i)) (near? (expt 1+2i -0.5) (/ 1 (sqrt 1+2i)))))
+(#t #t #t #t #t #t)
+
+(import (scheme base)) (list (expt 1+2i 2) (expt +i 4) (expt 0 1+i))
+(-3+4i 1 0)
+
+(import (scheme base)) (expt 0 -1+i)
+error: division by zero in expt 0 -1+i
+
+(import (scheme base)) (expt 0 +i)
+error: division by zero in expt 0 +i

@@ -11,7 +11,7 @@
 | `(scheme base)` | 202 | 238 |
 | `(scheme case-lambda)` | 1 | 1 |
 | `(scheme char)` | 0 | 22 |
-| `(scheme complex)` | 0 | 6 |
+| `(scheme complex)` | 6 | 6 |
 | `(scheme cxr)` | 24 | 24 |
 | `(scheme eval)` | 0 | 2 |
 | `(scheme file)` | 0 | 10 |
@@ -24,7 +24,7 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 244 | 339 |
+| 一意の識別子の合計 | 250 | 339 |
 
 ## 準拠スイートの結果
 
@@ -40,7 +40,7 @@
 | 4.3 Macros | 26 | 0 | 0 | 0 | 0 | 0 |
 | 5 Program structure | 15 | 0 | 0 | 0 | 0 | 0 |
 | 6.1 Equivalence Predicates | 25 | 0 | 0 | 0 | 0 | 0 |
-| 6.2 Numbers | 190 | 23 | 0 | 0 | 6 | 0 |
+| 6.2 Numbers | 193 | 26 | 0 | 0 | 0 | 0 |
 | 6.3 Booleans | 18 | 0 | 0 | 0 | 0 | 0 |
 | 6.4 Lists | 64 | 0 | 0 | 0 | 1 | 0 |
 | 6.5 Symbols | 17 | 0 | 0 | 0 | 0 | 0 |
@@ -53,8 +53,8 @@
 | 6.12 Environments and evaluation | 0 | 0 | 0 | 0 | 4 | 0 |
 | 6.13 Input and output | 1 | 0 | 0 | 0 | 59 | 0 |
 | Read syntax | 0 | 0 | 0 | 0 | 72 | 24 |
-| Numeric syntax | 0 | 0 | 0 | 0 | 29 | 83 |
+| Numeric syntax | 0 | 0 | 0 | 0 | 2 | 110 |
 | 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
-| 合計 | 683 | 27 | 0 | 0 | 305 | 107 |
+| 合計 | 686 | 30 | 0 | 0 | 272 | 134 |
 
-スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme complex)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
+スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`

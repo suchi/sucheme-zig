@@ -490,22 +490,7 @@ test "expt of a complex base is repeated multiplication for an integer power" {
     try expectCall("-3.0+4.0i", "expt", &.{ "1.0+2.0i", "2" });
 }
 
-test "expt takes only a few kinds of complex arguments" {
-    for ([_][2][]const u8{
-        .{ "1+2i", "0.5" },
-        .{ "1+2i", "1/2" },
-        .{ "1+2i", "+inf.0" },
-        .{ "1+2i", "1+i" },
-        .{ "2", "+i" },
-        .{ "1+2i", "2.5" },
-    }) |case| {
-        var f: test_support.Fixture = undefined;
-        f.init();
-        defer f.deinit();
-        const a = (try number.parse(f.services.heap, case[0], 10)).?;
-        const b = (try number.parse(f.services.heap, case[1], 10)).?;
-        try std.testing.expectError(error.WrongType, f.call(&primitives, "expt", &.{ a, b }));
-    }
+test "expt of a complex base to a huge exponent, and of other arguments, is refused" {
     var f: test_support.Fixture = undefined;
     f.init();
     defer f.deinit();
