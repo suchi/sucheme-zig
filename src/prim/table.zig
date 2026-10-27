@@ -7,6 +7,7 @@ const std = @import("std");
 const Primitive = @import("../value.zig").Primitive;
 const arith = @import("arith.zig");
 const number = @import("number.zig");
+const inexact = @import("inexact.zig");
 const pair = @import("pair.zig");
 const equiv = @import("equiv.zig");
 const boolean = @import("boolean.zig");
@@ -25,6 +26,7 @@ const promise = @import("promise.zig");
 const families = [_][]const Primitive{
     &arith.primitives,
     &number.primitives,
+    &inexact.primitives,
     &pair.primitives,
     &equiv.primitives,
     &boolean.primitives,

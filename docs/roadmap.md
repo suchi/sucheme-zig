@@ -148,7 +148,8 @@
 - [x] リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加(スライス 4r)
 - [ ] リーダが ASCII でない文字の識別子を読めるようにするとき、畳み込む読み手の畳み込みに Unicode の表を使う(段階4。それまで、リーダはそうした識別子を読めず、畳み込む読み手の `folded` が ASCII だけを assert する。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)
 - [ ] Unicode テーブルの生成ツールと生成結果
-- [ ] `(scheme char)` `(scheme complex)` `(scheme inexact)`
+- [x] `(scheme inexact)`(スライス 4h。12個の識別子が束縛される。テストは `tests/scheme/0460-inexact.txt`)
+- [ ] `(scheme char)` `(scheme complex)`(スライス 4u3、4i)
 - [ ] `eq?` と `eqv?` が別の関数になるとき(浮動小数点数と bignum が入るとき)、`lib/sucheme/procedures.scm` の `memq` と `memv`、`assq` と `assv` の区別を固定するテストを足す。今は `eq?` と `eqv?` が同じ関数なので、入れ替えるミューテーションを検出するテストが書けない(スライス 3g のレビューの指摘)
 
 完了条件: `exact-closed` `ratios` `exact-complex` `ieee-float` のフィーチャを真にできる。浮動小数点数のラウンドトリップ性テストが通る。リリース v0.4.0 を出す。
