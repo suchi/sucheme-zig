@@ -15,6 +15,7 @@ const heap_mod = @import("../heap.zig");
 const number = @import("number.zig");
 const ops = @import("ops.zig");
 const elementary = @import("elementary.zig");
+const power = @import("power.zig");
 
 const Value = value_mod.Value;
 const Heap = heap_mod.Heap;
@@ -39,21 +40,123 @@ pub const Fn = enum { sqrt, exp, log, sin, cos, tan, asin, acos, atan };
 pub fn apply(h: *Heap, f: Fn, z: Value) Error!Value {
     if (f == .sqrt) if (z.asCompnum()) |c| {
         if (try sqrtExact(h, c.real, c.imag)) |root| return root;
+        if (c.real.asFlonum() == null) {
+            const beyond = try toC(h, z);
+            const m = @max(@abs(beyond.re), @abs(beyond.im));
+            if (!std.math.isFinite(m) or m < 1e-100) return fromC(h, try sqrtBeyondF64(h, c.real, c.imag));
+        }
     };
     const is_real = z.kind() != .compnum;
     const c = try toC(h, z);
     const r: C = switch (f) {
-        .sqrt => cx.sqrt(c),
+        .sqrt => sqrtC(c),
         .exp => cx.exp(c),
         .log => try logOf(h, z),
         .sin => cx.sin(c),
         .cos => cx.cos(c),
         .tan => cx.tan(c),
-        .atan => cx.atan(c),
-        .asin => if (is_real and @abs(c.re) > 1.0) asinOutside(c.re) else cx.asin(c),
-        .acos => if (is_real and @abs(c.re) > 1.0) acosOutside(c.re) else cx.acos(c),
+        .atan => atanC(c),
+        .asin => if (is_real and @abs(c.re) > 1.0) asinOutside(c.re) else asinC(c),
+        .acos => if (is_real and @abs(c.re) > 1.0) acosOutside(c.re) else acosC(c),
     };
     return fromC(h, r);
+}
+
+/// The principal square root of `c`.
+///
+/// 大きさが 1e-100 から 1e100 の外の引数は、2 の偶数乗で縮めてから `std.math.complex.sqrt` に
+/// 渡し、根を戻す(2 の冪の掛け算は正確で、根は指数を半分にする)。`std.math.complex` の根は、
+/// 非正規化数の虚部(`0.0+5e-324i`)や、大きすぎる引数で、答えが `f64` に収まるのに無限大を返す。
+fn sqrtC(c: C) C {
+    const m = @max(@abs(c.re), @abs(c.im));
+    if (m == 0 or !std.math.isFinite(m) or (m > 1e-100 and m < 1e100)) return cx.sqrt(c);
+    const half: i32 = @divTrunc(std.math.ilogb(m), 2);
+    const r = cx.sqrt(C.init(scale2(c.re, -2 * half), scale2(c.im, -2 * half)));
+    return .init(scale2(r.re, half), scale2(r.im, half));
+}
+
+/// `x * 2^k`.
+///
+/// Why: `std.math.ldexp`(Zig 0.17.0)は、0 を渡すと 0 でない値を返す(`ldexp(0.0, 664)` が
+/// 9.45e-125 になった)。2 の冪の掛け算で求める。
+fn scale2(x: f64, k: i32) f64 {
+    if (x == 0 or !std.math.isFinite(x)) return x;
+    var r = x;
+    var n = k;
+    while (n > 1000) : (n -= 1000) r *= 0x1p1000;
+    while (n < -1000) : (n += 1000) r *= 0x1p-1000;
+    return r * @as(f64, @bitCast(@as(u64, @intCast(n + 1023)) << 52));
+}
+
+/// The square root of the exact complex number `re + im i` whose parts do not fit an `f64`
+/// (`(sqrt (make-rectangular (expt 10 400) (expt 10 400)))`), as `f64`.
+///
+/// 部分を正確な `2^(2k)` で割って `f64` に収まる大きさにし、根を `2^k` 倍する。
+fn sqrtBeyondF64(h: *Heap, re: Value, im: Value) Error!C {
+    const l = @max(try lnAbs(h, re), try lnAbs(h, im));
+    const e: i64 = @intFromFloat(@floor(l / std.math.ln2));
+    const half = @divTrunc(e, 2);
+    const factor = try power.expt(h, .fromFixnum(2), .fromFixnum(2 * half));
+    const scaled: C = .init(
+        try elementary.toF64(h, try ops.apply(h, .div, re, factor)),
+        try elementary.toF64(h, try ops.apply(h, .div, im, factor)),
+    );
+    const r = sqrtC(scaled);
+    const k: i32 = @intCast(half);
+    return .init(scale2(r.re, k), scale2(r.im, k));
+}
+
+/// `log |v|` of the exact real number `v`; `-inf` for 0.
+fn lnAbs(h: *Heap, v: Value) Error!f64 {
+    if (isZero(v)) return -std.math.inf(f64);
+    return elementary.ln(h, try ops.absNumber(h, v));
+}
+
+/// The arctangent of `c`: `0.5 atan2(2x, 1 - x^2 - y^2) + 0.25 i log((x^2 + (y+1)^2) / (x^2 + (y-1)^2))`.
+///
+/// `std.math.complex.atan` は、実部が小さいか虚部が大きいとき、虚部の絶対値が 1 を超える入力で実部の
+/// 符号を取り違えたり、虚部が NaN になったりする(`(atan 0.0+2.0i)`)。ここでは、分母の `1 - y^2`
+/// を `(1 - y)(1 + y)` で桁落ちなく求め、大きさが 1e8 以上の引数は 1/s で縮めて桁あふれを避ける。
+/// 虚部は、`±i` の近くでは2つの距離の対数の差、それ以外は `log1p` で求める。
+fn atanC(c: C) C {
+    const x = c.re;
+    const y = c.im;
+    const s = @max(1.0, @max(@abs(x), @abs(y)));
+    const u = x / s;
+    const v = y / s;
+    const re = if (s < 1e8)
+        0.5 * std.math.atan2(2.0 * x, (1.0 - y) * (1.0 + y) - x * x)
+    else
+        0.5 * std.math.atan2(2.0 * u / s, 1.0 / (s * s) - u * u - v * v);
+    const near = std.math.hypot(x, y + 1.0);
+    const far = std.math.hypot(x, y - 1.0);
+    const im = if (near < 0.5 or far < 0.5)
+        0.5 * (@log(near) - @log(far))
+    else blk: {
+        const w = (y - 1.0) / s;
+        break :blk 0.25 * std.math.log1p(4.0 * v / (s * (u * u + w * w)));
+    };
+    return .init(re, im);
+}
+
+/// The arcsine of `c`: `atan2(x, Re(s1 s2)) + i asinh(Im(conj(s1) s2))`, with `s1 = sqrt(1 - c)` and
+/// `s2 = sqrt(1 + c)` (Kahan の式)。
+///
+/// `std.math.complex.asin` は、小さい引数で虚部を失い(`(asin 1e-20+1e-20i)`)、大きい引数で
+/// 有限の答えがあるのに無限大を返す。Kahan の式は、`iz + sqrt(1 - z^2)` の桁落ちが無く、
+/// 平面の全体で `cmath` の値と一致した。実軸の外側(`x > 1`)で虚部が `+0.0` の引数は、実数の
+/// `asin` と同じ側(虚部が負)に切れる。
+fn asinC(c: C) C {
+    const s1 = sqrtC(C.init(1.0 - c.re, -c.im));
+    const s2 = sqrtC(C.init(1.0 + c.re, c.im));
+    return .init(std.math.atan2(c.re, s1.mul(s2).re), std.math.asinh(C.init(s1.re, -s1.im).mul(s2).im));
+}
+
+/// The arccosine of `c`: `2 atan2(Re s1, Re s2) + i asinh(Im(conj(s2) s1))`.
+fn acosC(c: C) C {
+    const s1 = sqrtC(C.init(1.0 - c.re, -c.im));
+    const s2 = sqrtC(C.init(1.0 + c.re, c.im));
+    return .init(2.0 * std.math.atan2(s1.re, s2.re), std.math.asinh(C.init(s2.re, -s2.im).mul(s1).im));
 }
 
 /// `asin x` for a real `x` with `|x| > 1`: `±pi/2 - i sgn(x) acosh |x|`.
@@ -106,20 +209,23 @@ pub fn logBase(h: *Heap, z: Value, base: Value) Error!Value {
 /// `z1` raised to the power `z2`, for numbers of which at least one is complex, or the power is not
 /// an integer: `exp(z2 log z1)` (R7RS 6.2.6). The result is inexact.
 ///
-/// 底が 0 のとき、指数の実部が正なら 0 で、それ以外は `DivisionByZero` にする(原文は、
+/// 底が 0(`0.0+0.0i` を含む)のとき、指数が 0 なら 1(不正確なら 1.0)、指数の実部が正なら 0 で、それ以外は `DivisionByZero` にする(原文は、
 /// 0 の `z` 乗を『実部が正なら 0、そうでなければ誤り』とする)。正確な 0 は正確な 0、不正確な 0 は
 /// 0.0 を返す。
 pub fn expt(h: *Heap, base: Value, exponent: Value) Error!Value {
     if (isZero(base)) {
+        // 0 の 0 乗は 1(原文の `0^z` は `(zero? z)` で 1)。どちらかが不正確なら 1.0。
+        if (isZero(exponent)) return if (ops.isExact(base) and ops.isExact(exponent)) .fromFixnum(1) else .fromFlonum(1.0);
         const re = if (exponent.asCompnum()) |c| c.real else exponent;
         if ((try ops.compare(h, re, .fromFixnum(0))) != .gt) return error.DivisionByZero;
-        return if (base.asFlonum() != null) .fromFlonum(0.0) else base;
+        return if (ops.isExact(base)) base else .fromFlonum(0.0);
     }
     const logarithm = try logOf(h, base);
     return fromC(h, cx.exp(logarithm.mul(try toC(h, exponent))));
 }
 
 fn isZero(v: Value) bool {
+    if (v.asCompnum()) |c| return isZero(c.real) and isZero(c.imag);
     if (v.asFlonum()) |x| return x == 0;
     return if (v.asFixnum()) |n| n == 0 else false;
 }

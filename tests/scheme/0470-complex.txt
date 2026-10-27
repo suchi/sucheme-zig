@@ -175,3 +175,33 @@ error: division by zero in expt 0 -1+i
 
 (import (scheme base)) (expt 0 +i)
 error: division by zero in expt 0 +i
+
+# atan: 実部が小さいか虚部が大きい引数でも、符号と有限性が保たれる(C99 の catan と同じ値)。
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) (* 1e-13 (+ 1 (magnitude b))))))) (list (near? (atan 0.0+2.0i) 1.5707963267948966+0.5493061443340549i) (near? (atan 1e-300+2.0i) 1.5707963267948966+0.5493061443340549i) (near? (atan 1.0+1e10i) 1.5707963267948966+1e-10i) (near? (atan 2+1e300i) 1.5707963267948966+1e-300i) (near? (atan -0.0+2.0i) -1.5707963267948966+0.5493061443340549i)))
+(#t #t #t #t #t)
+
+# asin と acos: 虚部が大きくても有限の答えを返す。
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) (* 1e-12 (+ 1 (magnitude b))))))) (list (near? (asin 0.0+1e8i) 0.0+19.11382792451231i) (near? (asin 1.0+1e10i) 1e-10+23.7189981105004i) (near? (acos 1.0+1e10i) 1.5707963266948965-23.7189981105004i) (near? (asin 0.0+1e200i) 0.0+461.2101657793691i) (near? (acos -3.0+1e5i) 1.570826326794886-12.206072646005174i) (near? (asin 5000.0-20000.0i) 0.24497866285004752-10.626947044523321i)))
+(#t #t #t #t #t #t)
+
+# sqrt: f64 に収まらない部分でも、答えが収まるなら有限。
+(import (scheme inexact) (scheme complex)) (let* ((r (sqrt (make-rectangular (expt 10 400) (expt 10 400)))) (re (/ (real-part r) 1e200)) (im (/ (imag-part r) 1e200))) (list (< (abs (- re 1.09868411346781)) 1e-13) (< (abs (- im 0.4550898605622273)) 1e-13)))
+(#t #t)
+
+(import (scheme inexact) (scheme complex)) (let* ((r (sqrt (make-rectangular (- (expt 10 400)) (* 3 (expt 10 400))))) (re (/ (real-part r) 1e200)) (im (/ (imag-part r) 1e200))) (list (< (abs (- re 1.0397782600555705)) 1e-13) (< (abs (- im 1.4426152744526828)) 1e-13)))
+(#t #t)
+
+(import (scheme inexact) (scheme complex)) (let* ((r (sqrt (make-rectangular (/ 1 (expt 10 400)) (/ 1 (expt 10 400))))) (re (* (real-part r) 1e200)) (im (* (imag-part r) 1e200))) (list (< (abs (- re 1.09868411346781)) 1e-13) (< (abs (- im 0.4550898605622273)) 1e-13)))
+(#t #t)
+
+# 非正規化数の虚部。
+(import (scheme inexact) (scheme complex)) (let ((r (sqrt 0.0+5e-324i))) (list (< (abs (- (/ (real-part r) 1e-162) 1.5717277847026288)) 1e-12) (< (abs (- (/ (imag-part r) 1e-162) 1.5717277847026285)) 1e-12)))
+(#t #t)
+
+# expt の 0: 指数が 0 なら 1(不正確なら 1.0)。
+(import (scheme base) (scheme complex)) (list (expt 0 0+0.0i) (expt 0.0+0.0i 0.0+0.0i) (expt 0.0 0+0.0i) (expt 0+0.0i 1+i))
+(1.0 1.0 1.0 0.0)
+
+# 小さい引数の asin と acos は、虚部を失わない。
+(import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) (* 1e-13 (magnitude b)))))) (list (near? (asin 1e-20+1e-20i) 1e-20+1e-20i) (near? (asin -1e-20+1e-20i) -1e-20+1e-20i) (near? (asin 0.0+1e-20i) 0.0+1e-20i)))
+(#t #t #t)
