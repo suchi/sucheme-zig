@@ -205,3 +205,35 @@ error: division by zero in expt 0 +i
 # 小さい引数の asin と acos は、虚部を失わない。
 (import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) (* 1e-13 (magnitude b)))))) (list (near? (asin 1e-20+1e-20i) 1e-20+1e-20i) (near? (asin -1e-20+1e-20i) -1e-20+1e-20i) (near? (asin 0.0+1e-20i) 0.0+1e-20i)))
 (#t #t #t)
+
+# 数値の安定化の分岐を固定する。期待値は Python の cmath と、閉じた式で得た(根拠は各行の前)。
+# sqrt: 部分が f64 に収まらない正確な複素数。小さい方の部分も精度を保つ(im / (2 sqrt(re)) の閉じた式)。
+(import (scheme inexact) (scheme complex)) (let ((rel? (lambda (a b) (< (abs (- a b)) (* 1e-12 (abs b)))))) (map (lambda (z re im) (let ((r (sqrt z))) (list (rel? (real-part r) re) (rel? (imag-part r) im)))) (list (make-rectangular (expt 10 400) 1) (make-rectangular (- (expt 10 400)) 1) (make-rectangular (expt 10 400) -1) (make-rectangular (- (expt 10 400)) -1) (make-rectangular 1 (expt 10 400))) '(1e200 5e-201 1e200 5e-201 7.071067811865475e199) '(5e-201 1e200 -5e-201 -1e200 7.071067811865475e199)))
+((#t #t) (#t #t) (#t #t) (#t #t) (#t #t))
+
+# sqrt: 大きさ 1e100 と 1e-100 の前後、f64 の最大に近い値、0。
+(import (scheme inexact) (scheme complex)) (let ((rel? (lambda (a b) (< (abs (- a b)) (* 1e-12 (abs b)))))) (map (lambda (z re im) (let ((r (sqrt z))) (list (rel? (real-part r) re) (rel? (imag-part r) im)))) (list 1e305+1e305i 1.7e308+1.7e308i -1e305+1e305i 1e99+1e99i 1e101+1e101i 1e-99+1e-99i 1e-101+1e-101i 1e-200+1e-200i) '(3.474344227601156e152 1.4325088230154573e154 1.4391204994250744e152 3.474344227601156e49 3.4743442276011563e50 3.474344227601156e-50 3.474344227601156e-51 1.09868411346781e-100) '(1.4391204994250744e152 5.933645827121221e153 3.474344227601156e152 1.4391204994250743e49 1.4391204994250743e50 1.4391204994250744e-50 1.4391204994250744e-51 4.550898605622273e-101)))
+((#t #t) (#t #t) (#t #t) (#t #t) (#t #t) (#t #t) (#t #t) (#t #t))
+
+(import (scheme inexact)) (sqrt 0.0+0.0i)
+0.0+0.0i
+
+# 正確な小さい複素数。
+(import (scheme inexact) (scheme complex)) (let* ((r (sqrt (make-rectangular (/ 1 (expt 10 400)) (/ 1 (expt 10 400))))) (re (* (real-part r) 1e200)) (im (* (imag-part r) 1e200))) (list (< (abs (- re 1.09868411346781)) 1e-12) (< (abs (- im 0.4550898605622273)) 1e-12)))
+(#t #t)
+
+# atan: |y| が 1 に非常に近い値は、(1-y)(1+y) で桁落ちを避ける(cmath: 0.7853981658974483)。±i の近くは2つの距離の対数の差(cmath: 虚部 345.73433753938684)。
+(import (scheme inexact) (scheme complex)) (let ((rel? (lambda (a b) (< (abs (- a b)) (* 1e-12 (abs b)))))) (map (lambda (z re im) (let ((r (atan z))) (list (rel? (real-part r) re) (rel? (imag-part r) im)))) (list 1e-8+1.0i 1e-8-1.0i 1e-300+1.0i -1e-300-1.0i) '(0.7853981658974483 0.7853981658974483 0.7853981633974483 -0.7853981633974483) '(9.556913962256155 -9.556913962256155 345.73433753938684 -345.73433753938684)))
+((#t #t) (#t #t) (#t #t) (#t #t))
+
+# atan: 実部と虚部が 1e8 の前後。cmath の値。
+(import (scheme inexact) (scheme complex)) (let ((r (atan 1e9+1e9i)) (q (atan 1e7+1e7i))) (list (< (abs (- (real-part r) 1.5707963262948966)) 1e-12) (< (abs (- (imag-part r) 5e-10)) 1e-20) (< (abs (- (real-part q) 1.5707962767948966)) 1e-12) (< (abs (- (imag-part q) 5e-8)) 1e-18)))
+(#t #t #t #t)
+
+# log: 0 と無限大。
+(import (scheme inexact)) (list (log 0.0+0.0i) (log +inf.0+inf.0i) (log +inf.0+1.0i))
+(-inf.0+0.0i +inf.0+0.7853981633974483i +inf.0+0.0i)
+
+# expt: 2^63 ちょうどの flonum の指数と、その前後(整数に直せる最大と、直せない最小)。
+(import (scheme base)) (list (expt 2.0+3.0i 9223372036854774784.0) (expt 2.0+3.0i 9223372036854775808.0) (expt 2.0+3.0i 9223372036854777856.0))
+(+nan.0+nan.0i -inf.0-inf.0i -inf.0-inf.0i)

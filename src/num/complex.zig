@@ -103,7 +103,15 @@ fn sqrtBeyondF64(h: *Heap, re: Value, im: Value) Error!C {
     );
     const r = sqrtC(scaled);
     const k: i32 = @intCast(half);
-    return .init(scale2(r.re, k), scale2(r.im, k));
+    var root: C = .init(scale2(r.re, k), scale2(r.im, k));
+    // 縮めた虚部が `f64` で 0 か非正規化数になる(実部に比べて極端に小さい)ときは、根の小さい方の
+    // 部分を、正確な値 `im / 2^half` を、大きい方の部分(縮めた根)の2倍で割って求める
+    // (`(sqrt (make-rectangular (expt 10 400) 1))` の虚部は約 5.0e-201)。
+    if (@abs(scaled.im) < 1e-300) {
+        const small = try elementary.toF64(h, try ops.apply(h, .div, im, try power.expt(h, .fromFixnum(2), .fromFixnum(half))));
+        if (scaled.re > 0) root.im = small / (2.0 * r.re) else root.re = @abs(small) / (2.0 * @abs(r.im));
+    }
+    return root;
 }
 
 /// `log |v|` of the exact real number `v`; `-inf` for 0.
