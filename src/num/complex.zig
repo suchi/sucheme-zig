@@ -64,12 +64,13 @@ pub fn apply(h: *Heap, f: Fn, z: Value) Error!Value {
 
 /// The principal square root of `c`.
 ///
-/// 大きさが 1e-100 から 1e100 の外の引数は、2 の偶数乗で縮めてから `std.math.complex.sqrt` に
-/// 渡し、根を戻す(2 の冪の掛け算は正確で、根は指数を半分にする)。`std.math.complex` の根は、
-/// 非正規化数の虚部(`0.0+5e-324i`)や、大きすぎる引数で、答えが `f64` に収まるのに無限大を返す。
+/// 大きさが 1e-100 以下の引数は、2 の偶数乗で拡大してから `std.math.complex.sqrt` に渡し、根を戻す
+/// (2 の冪の掛け算は正確で、根は指数を半分にする)。`std.math.complex` の根は、非正規化数の
+/// 虚部(`0.0+5e-324i`)のように小さい引数で、答えが `f64` に収まるのに無限大か 0 を返す。
+/// 大きい引数(`f64` の最大に近い値を含む)は、そのまま正しい値を返すことを、テストで確かめた。
 fn sqrtC(c: C) C {
     const m = @max(@abs(c.re), @abs(c.im));
-    if (m == 0 or !std.math.isFinite(m) or (m > 1e-100 and m < 1e100)) return cx.sqrt(c);
+    if (m == 0 or !std.math.isFinite(m) or m > 1e-100) return cx.sqrt(c);
     const half: i32 = @divTrunc(std.math.ilogb(m), 2);
     const r = cx.sqrt(C.init(scale2(c.re, -2 * half), scale2(c.im, -2 * half)));
     return .init(scale2(r.re, half), scale2(r.im, half));

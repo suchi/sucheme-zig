@@ -237,3 +237,7 @@ error: division by zero in expt 0 +i
 # expt: 2^63 ちょうどの flonum の指数と、その前後(整数に直せる最大と、直せない最小)。
 (import (scheme base)) (list (expt 2.0+3.0i 9223372036854774784.0) (expt 2.0+3.0i 9223372036854775808.0) (expt 2.0+3.0i 9223372036854777856.0))
 (+nan.0+nan.0i -inf.0-inf.0i -inf.0-inf.0i)
+
+# atan: |y| が 1 のすぐ外と内で、1 - y^2 を (1-y)(1+y) で求める(1 - y*y だと実部の相対誤差が 1e-9 になる)。cmath の値。
+(import (scheme inexact) (scheme complex)) (let ((rel? (lambda (a b) (< (abs (- a b)) (* 1e-12 (abs b)))))) (map (lambda (z re im) (let ((r (atan z))) (list (rel? (real-part r) re) (rel? (imag-part r) im)))) (list 1e-12+1.0000000001i 1e-12+0.9999999999i -1e-12-1.0000000001i 3e-9+1.000001i) '(1.5657964938654745 0.0049998329299221645 -1.5657964938654745 1.5692963320447486) '(11.859474015159071 11.85947401510907 -11.859474015159071 7.254326869313305)))
+((#t #t) (#t #t) (#t #t) (#t #t))
