@@ -25,6 +25,7 @@ const Heap = @import("heap.zig").Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
 const positions_mod = @import("positions.zig");
+const num = @import("num/number.zig");
 
 /// What the reader cannot read: the input is not a datum.
 pub const SyntaxError = error{
@@ -57,8 +58,8 @@ pub const SyntaxError = error{
     /// それでもリーダは、生のバイトから文字列を作る前に自分で確かめる。
     InvalidUtf8,
     /// A decimal integer outside the fixnum range.
-    /// R7RS 6.2.3 は、段階4で多倍長整数(bignum)を入れるまで、これを実装上の制限として
-    /// 報告してよいとしている。
+    /// 数の綴りを `num.parse` で読むようになってから、リーダはこれを返さない。
+    /// `src/sucheme.zig` の `switch` が参照しているので、誤りの集合には残している。
     IntegerOutOfRange,
     /// An element of a `#u8(` that is not an integer from 0 to 255 (R7RS 7.1.2, <byte>).
     InvalidByte,
@@ -645,11 +646,17 @@ pub const Reader = struct {
         }
         const token = self.src[start..self.pos];
         if (booleanOf(token)) |b| return .fromBool(b);
-        if (isDecimalInteger(token)) {
-            const n = std.fmt.parseInt(i64, token, 10) catch return error.IntegerOutOfRange;
-            return .fromFixnum(n);
+        // Why: fixnum に収まる十進整数は、確保も計上も要らないので、`num.parse` を通さない。
+        // 先頭の 0 を含めて 20 字までに限る(i64 の最小値 `-9223372036854775808` が 20 字)。
+        // 長い綴りは、桁数の上限を課す `num.parse` に任せる。
+        if (token.len <= max_fast_integer_len and isDecimalInteger(token)) {
+            if (std.fmt.parseInt(i64, token, 10)) |n| return .fromFixnum(n) else |_| {}
         }
-        if (isUnsupportedNumber(token)) return error.InvalidToken;
+        // 数の綴りは R7RS 7.1.1 の <number> で、<peculiar identifier> の形をしたもの
+        // (`+inf.0`、`+i`)も数である。識別子より先に尋ねる。null は、数でないか、
+        // 読み取りの大きさの上限を超えるか、ヒープの上限に収まらないか、`1/0` のような
+        // 値を持たない綴りである。
+        if (try num.parse(sink.heap, token, 10)) |n| return n;
         if (isIdentifier(token)) return .fromSymbol(try sink.heap.intern(try self.folded(scratch, token)));
         return error.InvalidToken;
     }
@@ -929,8 +936,11 @@ fn isDelimiter(c: u8) bool {
     return isWhitespace(c) or c == '|' or c == '(' or c == ')' or c == '"' or c == ';';
 }
 
+/// The longest spelling the fast path of `atom` reads as a fixnum.
+const max_fast_integer_len = 20;
+
 /// `[+-]?[0-9]+`.
-/// ほかの数の構文は、数値タワーと一緒に入る。
+/// fixnum の速い経路の判定である。ほかの数の構文は `num.parse` が読む。
 fn isDecimalInteger(token: []const u8) bool {
     const digits = if (token[0] == '+' or token[0] == '-') token[1..] else token;
     if (digits.len == 0) return false;
@@ -938,23 +948,11 @@ fn isDecimalInteger(token: []const u8) bool {
     return true;
 }
 
-/// Numbers whose syntax matches a <peculiar identifier> but which R7RS 7.1.1
-/// reads as numbers: <infnan> and the complex units `+i` and `-i`.
-/// これらは段階4で数値タワーと一緒に入る。それまでは、プログラムが束縛できる識別子として
-/// 読まずに、拒否する。ほかの数の構文(`1.5`、`1/2`、`#x1F`)は識別子の形をしていないので、
-/// `isIdentifier` がすでに拒否している。
-fn isUnsupportedNumber(token: []const u8) bool {
-    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i" }) |n| {
-        if (std.ascii.eqlIgnoreCase(token, n)) return true;
-    }
-    return false;
-}
-
 // Why: R7RS 7.1.1 の <identifier> を、ASCII に限り、`|...|` の形を除いて実装している。
 // `|...|` の形は `next` が `string_syntax.readIdentifier` で読む。
 // <initial> に <subsequent> が続くものか、<peculiar identifier> である。整数は、
-// これを尋ねる前に判別してあり、識別子の形をしたほかの数は `isUnsupportedNumber` が
-// 引き受ける。
+// これを尋ねる前に判別してあり、識別子の形をした数(`+inf.0`、`+i`)は、
+// `atom` が先に `num.parse` で数として読む。
 fn isIdentifier(token: []const u8) bool {
     if (isInitial(token[0])) return allSubsequent(token[1..]);
     // <peculiar identifier>
@@ -1041,10 +1039,117 @@ test "next reads integers with and without a sign" {
     try std.testing.expectEqual(std.math.minInt(i64), (try f.readOne("-9223372036854775808")).asFixnum().?);
 }
 
-test "next reports an integer outside the fixnum range" {
+test "next reads an integer outside the fixnum range as a bignum" {
     var f: Fixture = .init();
     defer f.deinit();
-    try std.testing.expectError(error.IntegerOutOfRange, f.readOne("9223372036854775808"));
+    var buf: [64]u8 = undefined;
+    try std.testing.expect((try f.readOne("9223372036854775808")).asBignum() != null);
+    try std.testing.expectEqualStrings("9223372036854775808", try f.roundTrip("9223372036854775808", &buf));
+    try std.testing.expectEqualStrings("-9223372036854775809", try f.roundTrip("-9223372036854775809", &buf));
+    // 範囲の端は、fixnum のままである。
+    try std.testing.expectEqual(std.math.maxInt(i64), (try f.readOne("9223372036854775807")).asFixnum().?);
+}
+
+test "next reads the numbers of R7RS 7.1.1 that are not plain decimal integers" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [128]u8 = undefined;
+    // 入力と、書き戻した結果(`num.write` の正規形)。
+    const rows = [_][2][]const u8{
+        // 基数の接頭辞(大文字小文字を区別しない)。
+        .{ "#x1F", "31" },       .{ "#X-1f", "-31" },     .{ "#b101", "5" },
+        .{ "#o17", "15" },       .{ "#d10", "10" },
+        // 正確性の接頭辞と、基数との組(順序は両方)。
+              .{ "#e1.5", "3/2" },
+        .{ "#i3", "3.0" },       .{ "#x#e10", "16" },     .{ "#e#x10", "16" },
+        .{ "#I#B11", "3.0" },
+        // 分数。
+           .{ "1/2", "1/2" },       .{ "-6/4", "-3/2" },
+        .{ "4/2", "2" },
+        // 小数と指数。
+                .{ "1.5", "1.5" },       .{ ".5", "0.5" },
+        .{ "-1.", "-1.0" },      .{ "1e3", "1000.0" },    .{ "1E-2", "0.01" },
+        .{ "#e1e3", "1000" },
+        // <infnan>(大文字小文字を区別しない)。
+           .{ "+inf.0", "+inf.0" }, .{ "-INF.0", "-inf.0" },
+        .{ "+nan.0", "+nan.0" }, .{ "-NaN.0", "+nan.0" },
+        // 複素数。
+        .{ "+i", "+i" },
+        .{ "-i", "-i" },         .{ "1+2i", "1+2i" },     .{ "1.5-2.5i", "1.5-2.5i" },
+        .{ "+2i", "+2i" },       .{ "1+0i", "1" },        .{ "1@0", "1" },
+    };
+    for (rows) |row| {
+        const got = f.roundTrip(row[0], &buf) catch |e| {
+            std.debug.print("{s}: {s}\n", .{ row[0], @errorName(e) });
+            return e;
+        };
+        try std.testing.expectEqualStrings(row[1], got);
+    }
+    // 数は区切り文字までのトークンなので、後ろに続く括弧は別の文字である。
+    try std.testing.expectEqualStrings("(1/2 31 -1.5)", try f.roundTrip("(1/2 #x1F -1.5)", &buf));
+}
+
+test "next keeps the spellings that are not numbers as identifiers" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // 識別子の形で、数でないもの(`+` `-` `...` `1+` は <peculiar identifier> か <initial> で始まる)。
+    for ([_][]const u8{ "+", "-", "...", "-x", "+inf", "inf", "nan.0", "e1", "x1F", "+ia" }) |src| {
+        try std.testing.expectEqualStrings(src, try f.roundTrip(src, &buf));
+    }
+    // 数にも識別子にもならない綴り。
+    for ([_][]const u8{ "1/0", "#e+inf.0", "#e+nan.0", "#xg", "#b2", "1..2", "1e", "#e1@2", "1+i+i", "#z", "1x", "1+" }) |src| {
+        try std.testing.expectError(error.InvalidToken, f.readOne(src));
+    }
+}
+
+test "next refuses a number whose spelling is longer than the limit of reading" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 桁数の上限は 100,000、指数の絶対値の上限は 1,000,000(src/num/number.zig の
+    // `max_spelling_digits` と `max_spelling_exponent`。非公開なので、値を写している)。
+    const max_spelling_digits = 100_000;
+    const long = try std.testing.allocator.alloc(u8, max_spelling_digits + 1);
+    defer std.testing.allocator.free(long);
+    @memset(long, '9');
+    try std.testing.expectError(error.InvalidToken, f.readOne(long));
+    try std.testing.expectError(error.InvalidToken, f.readOne("#e1e1000001"));
+    // 上限ちょうどは読める。
+    const edge = try std.testing.allocator.alloc(u8, max_spelling_digits);
+    defer std.testing.allocator.free(edge);
+    @memset(edge, '9');
+    try std.testing.expect((try f.readOne(edge)).asBignum() != null);
+}
+
+test "next gives a spelling padded with zeros past the limit of reading the same answer as num.parse" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // 先頭の 0 は、20 字を超えても値を変えない。
+    try std.testing.expectEqualStrings("1", try f.roundTrip("0000000000000000000000000000001", &buf));
+    try std.testing.expectEqualStrings("-12", try f.roundTrip("-000000000000000000000000012", &buf));
+    // 桁数の上限(100,000)には、先頭の 0 も数える。速い経路で 1 と読まず、`num.parse` と
+    // 同じく読めない綴りにする。
+    const padded = try std.testing.allocator.alloc(u8, 100_001);
+    defer std.testing.allocator.free(padded);
+    @memset(padded, '0');
+    padded[padded.len - 1] = '1';
+    try std.testing.expectError(error.InvalidToken, f.readOne(padded));
+}
+
+test "next reports the heap limit when the work of reading a number is refused" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // 外側の作業が上限のすぐ手前まで数えているところへ、読む。
+    f.heap.external = f.heap.options.limit - 8;
+    try std.testing.expectError(error.HeapLimit, f.readOne("123456789012345678901234567890"));
+    f.heap.external = 0;
+    // 上限より大きくなる数は、確保せずに断られる(`num.parse` の null)。
+    f.heap.options.limit = 1024;
+    var big: [5001]u8 = undefined;
+    @memset(&big, '0');
+    big[0] = '1';
+    try std.testing.expectError(error.InvalidToken, f.readOne(&big));
 }
 
 test "next reads the four spellings of a boolean" {
@@ -1270,7 +1375,7 @@ test "next reports a quote with nothing to quote" {
 test "next rejects text that is neither an integer, a boolean nor an identifier" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", "+.1", "a'b" }) |src| {
+    for ([_][]const u8{ "1+", "12a", "#tru", "#T", "#", "#)", "a'b" }) |src| {
         try std.testing.expectError(error.InvalidToken, f.readOne(src));
     }
 }
@@ -1560,11 +1665,11 @@ test "a line comment ends at a carriage return as well as at a newline" {
     try std.testing.expectEqualStrings("(a b)", try f.roundTrip("(a ; x\r\nb)", &buf));
 }
 
-test "next rejects the numbers that are spelled like peculiar identifiers" {
+test "next reads the numbers that are spelled like peculiar identifiers as numbers" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i", "+INF.0" }) |src| {
-        try std.testing.expectError(error.InvalidToken, f.readOne(src));
+    for ([_][]const u8{ "+inf.0", "-inf.0", "+nan.0", "-nan.0", "+i", "-i", "+INF.0", "+.1" }) |src| {
+        try std.testing.expect((try f.readOne(src)).kind() != .symbol);
     }
     // 綴りの近いものは、識別子のままである。
     for ([_][]const u8{ "+in", "-inf", "+inf.01", "+ia", "i" }) |src| {
