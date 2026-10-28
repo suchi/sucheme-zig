@@ -93,6 +93,11 @@ pub const Interpreter = struct {
     /// Where in a file the error the last `evalPrint` returned was raised, if
     /// it is known.
     error_at: ?ErrorAt,
+    /// Where what the program writes to the console goes, or null for the writer that
+    /// `evalPrint` writes the results to.
+    /// ファイルの実行は、式の値を捨てるが、プログラムの出力は標準出力に出す(src/main.zig の
+    /// `runFile`)。REPL と WASM と test-scheme は null のままで、結果と出力が同じ順に並ぶ。
+    console_out: ?*std.Io.Writer,
 
     const ErrorAt = struct { file: []const u8, location: positions_mod.Location };
 
@@ -152,6 +157,7 @@ pub const Interpreter = struct {
         self.diagnostic_text = "";
         self.file_name = null;
         self.error_at = null;
+        self.console_out = null;
     }
 
     /// Replaces the top level that imports `(sucheme core)` with one that imports
@@ -250,6 +256,11 @@ pub const Interpreter = struct {
         // バイト列が入ってくるのはここ1か所だけである。検査は標準ライブラリのものを
         // 使い、不正になりうる形を並べたりしない(docs/design/platform-and-web.md)。
         if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
+        // コンソールのポートは、実行の間だけ、この書き手に書く(src/port.zig)。結果の表示と
+        // 同じ書き手なので、書いた順に並ぶ。
+        const previous_sink = self.ctx.console.sink;
+        self.ctx.console.sink = self.console_out orelse out;
+        defer self.ctx.console.sink = previous_sink;
         var r: reader.Reader = .init(source);
         // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
         // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。

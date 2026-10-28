@@ -710,7 +710,13 @@ pub const Port = struct {
     pub const Backing = union(enum) {
         /// The bytes of a string port or a bytevector port, held in the port.
         memory: Memory,
+        /// One of the console's streams: standard input, output or error (R7RS 6.13.1).
+        /// 領域を持たない。書き込みは、`Console.sink` に直接書く(src/port.zig)。
+        console: Stream,
     };
+
+    /// Which of the console's streams a console port is.
+    pub const Stream = enum { input, output, error_output };
 
     /// The data of a port that reads from or writes to memory.
     /// Why: 入力のポートは、開くときに、文字列の UTF-8 のバイト列(またはバイトベクタの中身)を
@@ -760,6 +766,9 @@ pub const PrimitiveError = error{
     Immutable,
     /// The port to read from or write to has been closed (R7RS 6.13.1 `close-port`).
     PortClosed,
+    /// The host could not take what was written to the console.
+    /// 条件にならない。機械はそのまま返す(WASM の出力バッファが満杯のときなど)。
+    WriteFailed,
     /// The allocation would take the heap past its limit.
     /// `Heap` のエラーと同じ名前である。そのまま返してよい。
     HeapLimit,
@@ -781,6 +790,24 @@ pub const Services = struct {
     /// frees what it takes before it returns, in the reverse order of taking it.
     /// 1行ぶんのアリーナなので、`free` が効くのは最後の確保だけである。
     scratch: std.mem.Allocator,
+    /// The console's ports and where what is written to them goes, or null when there
+    /// is no console (the tests of the primitives).
+    console: ?*Console = null,
+    /// The dynamic point the call is made at, which decides the values of the
+    /// parameters (`parameterValue`).
+    /// ポートを省略した呼び出しは、ここから現在のポートを引く(R7RS 6.13.1)。
+    dyn: ?*const DynPoint = null,
+};
+
+/// The parameters that are the current ports, and where the console's output goes.
+/// `Context` が持ち、パラメータを GC のルートにする。パラメータは、最初に求められたときに作る
+/// (null はまだ作っていないこと)。`sink` は、`Interpreter` が実行の間だけ置く。標準出力と
+/// 標準エラーは、どちらも `sink` に書く(docs/plans/0019-phase5-ports-and-io.md の 5i の既知の制限)。
+pub const Console = struct {
+    input: ?*Parameter = null,
+    output: ?*Parameter = null,
+    error_output: ?*Parameter = null,
+    sink: ?*std.Io.Writer = null,
 };
 
 /// A procedure implemented in Zig.

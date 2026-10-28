@@ -424,3 +424,10 @@
       (call-with-values (lambda () (proc port))
         (lambda vals (close-port port) (apply values vals)))
       (error "wrong type of argument to call-with-port" port)))
+
+;; 現在のポートは、パラメータオブジェクトである(R7RS 6.13.1)。パラメータとその値のコンソールの
+;; ポートは、インタプリタが1組だけ持ち、`%console-parameter` が返す(src/prim/port.zig)。ポートを
+;; 省略した手続きは、同じパラメータの、その時点の値を使う。`parameterize` で差し替えられる。
+(define current-input-port (%console-parameter 0))
+(define current-output-port (%console-parameter 1))
+(define current-error-port (%console-parameter 2))

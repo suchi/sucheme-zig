@@ -30,13 +30,13 @@
 (import (only (scheme base) quasiquote unquote unquote-splicing list)) `(1 ,(+ 1 1) ,@(list 3 4))
 (1 2 3 4)
 
-# 実装の無いもの、内部用の名前、別のライブラリの名前は、エクスポートしない。
-# 現在のポートは、スライス 5i が入れるまで実装が無い。
-(import (only (scheme base) current-input-port))
-error: bad import: current-input-port is not exported by the import set
+# 内部用の名前と、別のライブラリの名前は、エクスポートしない。`display` は `(scheme write)`、
+# `read` は `(scheme read)` の名前である。
+(import (only (scheme base) display))
+error: bad import: display is not exported by the import set
 
-(import (only (scheme base) current-output-port))
-error: bad import: current-output-port is not exported by the import set
+(import (only (scheme base) read))
+error: bad import: read is not exported by the import set
 
 (import (only (scheme base) %make-promise))
 error: bad import: %make-promise is not exported by the import set

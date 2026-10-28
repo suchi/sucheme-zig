@@ -9,5 +9,5 @@
           zero? positive? negative? even? odd? square
           floor/ truncate/
           gcd lcm exact-integer-sqrt
-          call-with-port)
+          call-with-port current-input-port current-output-port current-error-port)
   (include "procedures.scm"))

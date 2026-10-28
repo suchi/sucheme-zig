@@ -1,8 +1,12 @@
 //! Reading from and writing to ports (R7RS 6.13).
 //!
 //! ポートの手続き(`prim/port.zig`)と、後のスライスの `read`(5l)とプリンタ(5j)が、ここを通して
-//! ポートを読み書きする。今の裏付けは、文字列ポートとバイトベクタポートの `memory` だけである
-//! (docs/plans/0019-phase5-ports-and-io.md)。
+//! ポートを読み書きする。今の裏付けは、文字列ポートとバイトベクタポートの `memory` と、コンソールの
+//! `console` である(docs/plans/0019-phase5-ports-and-io.md)。
+//!
+//! コンソールの出力ポート(標準出力と標準エラー)は、書いたバイトを、そのまま `sink` に書く。
+//! 領域を持たないので、評価の結果の表示と同じ書き手に、書いた順に並ぶ。コンソールの入力ポートは、
+//! スライス 5i では、最初から終わりにある(標準入力を読むのは 5l)。
 //!
 //! `Port.Memory` の `pos <= len <= bytes.len` は、型では保証されない。ここの関数が保つ。
 //! 入力のポートは、開いたときの写しを最後まで使い、伸ばさない。出力のポートは、書くたびに
@@ -22,6 +26,8 @@ pub const Error = heap_mod.Error || error{
     WrongDirection,
     /// A character operation on a binary port, or a byte operation on a textual one.
     WrongKind,
+    /// The writer the console writes to could not take the bytes.
+    WriteFailed,
 };
 
 /// Checks that `port` is open, flows in `direction` and carries `element`.
@@ -37,7 +43,7 @@ fn check(port: *const Port, direction: Port.Direction, element: Port.Element) Er
 /// `heap` は、ファイルのポートが入力を足すとき(5k)に使う。文字列ポートでは使わない。
 pub fn readChar(heap: *Heap, port: *Port) Error!?u21 {
     const next = try peekCharWidth(heap, port) orelse return null;
-    port.backing.memory.pos += next.width;
+    consume(port, next.width);
     return next.char;
 }
 
@@ -65,7 +71,7 @@ fn peekCharWidth(heap: *Heap, port: *Port) Error!?struct { char: u21, width: usi
 /// the end.
 pub fn readByte(heap: *Heap, port: *Port) Error!?u8 {
     const byte = try peekByte(heap, port) orelse return null;
-    port.backing.memory.pos += 1;
+    consume(port, 1);
     return byte;
 }
 
@@ -82,16 +88,23 @@ pub fn peekByte(heap: *Heap, port: *Port) Error!?u8 {
 /// The bytes of the input port `port` that have not been read.
 /// 向きと開閉は、呼び出し側が先に検査する。
 pub fn pending(port: *const Port) []const u8 {
-    const memory = &port.backing.memory;
-    return memory.bytes[memory.pos..memory.len];
+    return switch (port.backing) {
+        .memory => |*memory| memory.bytes[memory.pos..memory.len],
+        // 標準入力は、5i では最初から終わりにある。
+        .console => "",
+    };
 }
 
 /// Reads past `n` of the bytes `pending` gives, which for a textual port must end
 /// at the boundary of a character.
 pub fn consume(port: *Port, n: usize) void {
-    const memory = &port.backing.memory;
-    std.debug.assert(n <= memory.len - memory.pos);
-    memory.pos += n;
+    switch (port.backing) {
+        .memory => |*memory| {
+            std.debug.assert(n <= memory.len - memory.pos);
+            memory.pos += n;
+        },
+        .console => std.debug.assert(n == 0),
+    }
 }
 
 /// Appends `bytes` to the output port `port`; for a textual port they must be
@@ -101,10 +114,19 @@ pub fn consume(port: *Port, n: usize) void {
 /// 倍に伸ばすと上限を超えるときは、要る分だけで伸ばし直す。上限の近くで、収まるはずの
 /// 書き込みが断られないようにするためである。どちらの失敗でも、ポートは元のままである
 /// (`Heap.growPortBytes`)。
-pub fn writeBytes(heap: *Heap, port: *Port, bytes: []const u8) Error!void {
+///
+/// コンソールのポートは、`sink` に書く。`sink` が null(コンソールを持たない単体テスト)なら、
+/// 書いたものは捨てる。
+pub fn writeBytes(heap: *Heap, sink: ?*std.Io.Writer, port: *Port, bytes: []const u8) Error!void {
     if (port.direction != .output) return error.WrongDirection;
     if (!port.open) return error.PortClosed;
-    const memory = &port.backing.memory;
+    const memory = switch (port.backing) {
+        .memory => |*memory| memory,
+        .console => {
+            if (sink) |w| w.writeAll(bytes) catch return error.WriteFailed;
+            return;
+        },
+    };
     const needed = std.math.add(usize, memory.len, bytes.len) catch return error.HeapLimit;
     if (needed > memory.bytes.len) {
         const doubled = std.math.mul(usize, memory.bytes.len, 2) catch needed;
@@ -117,7 +139,8 @@ pub fn writeBytes(heap: *Heap, port: *Port, bytes: []const u8) Error!void {
     memory.len = needed;
 }
 
-/// What has been written to the output port `port`.
+/// What has been written to the output port `port`, which must be a string or a
+/// bytevector port.
 pub fn written(port: *const Port) []const u8 {
     const memory = &port.backing.memory;
     return memory.bytes[0..memory.len];
@@ -233,13 +256,13 @@ test "writeBytes appends to an output port, growing it, and keeps what was writt
     f.init();
     defer f.deinit();
     const p = try f.output(.textual);
-    try writeBytes(&f.heap, p, "ab");
-    try writeBytes(&f.heap, p, "");
-    try writeBytes(&f.heap, p, "λ");
+    try writeBytes(&f.heap, null, p, "ab");
+    try writeBytes(&f.heap, null, p, "");
+    try writeBytes(&f.heap, null, p, "λ");
     try std.testing.expectEqualStrings("abλ", written(p));
     // 1バイトずつ多く書いても、伸ばすのは倍ずつなので、確保の回数は書いた量の対数で済む。
     const q = try f.output(.binary);
-    for (0..1000) |i| try writeBytes(&f.heap, q, &.{@truncate(i)});
+    for (0..1000) |i| try writeBytes(&f.heap, null, q, &.{@truncate(i)});
     try std.testing.expectEqual(1000, written(q).len);
     for (written(q), 0..) |b, i| try std.testing.expectEqual(@as(u8, @truncate(i)), b);
     try std.testing.expect(q.backing.memory.bytes.len < 2 * 1000 + 64);
@@ -250,11 +273,11 @@ test "writeBytes refuses an input port and a closed port, and leaves the port as
     f.init();
     defer f.deinit();
     const in = try f.input(.binary, "a");
-    try std.testing.expectError(error.WrongDirection, writeBytes(&f.heap, in, "x"));
+    try std.testing.expectError(error.WrongDirection, writeBytes(&f.heap, null, in, "x"));
     const out = try f.output(.binary);
-    try writeBytes(&f.heap, out, "a");
+    try writeBytes(&f.heap, null, out, "a");
     close(out);
-    try std.testing.expectError(error.PortClosed, writeBytes(&f.heap, out, "x"));
+    try std.testing.expectError(error.PortClosed, writeBytes(&f.heap, null, out, "x"));
     try std.testing.expectEqualStrings("a", written(out));
 }
 
@@ -263,12 +286,12 @@ test "writeBytes at the limit of the heap reports the limit and keeps what was w
     var heap: Heap = .init(std.testing.allocator, .{ .limit = limit });
     defer heap.deinit();
     const p = try heap.createMemoryPort(.output, .binary, "");
-    try writeBytes(&heap, p, "0123456789");
+    try writeBytes(&heap, null, p, "0123456789");
     // 倍の 20 バイトには伸ばせないが、要る 16 バイトなら上限に収まるので、書き込みは通る。
-    try writeBytes(&heap, p, "abcdef");
+    try writeBytes(&heap, null, p, "abcdef");
     try std.testing.expectEqualStrings("0123456789abcdef", written(p));
     try std.testing.expectEqual(limit, heap.accounted);
-    try std.testing.expectError(error.HeapLimit, writeBytes(&heap, p, "x"));
+    try std.testing.expectError(error.HeapLimit, writeBytes(&heap, null, p, "x"));
     try std.testing.expectEqualStrings("0123456789abcdef", written(p));
     try std.testing.expectEqual(limit, heap.accounted);
 }
@@ -294,7 +317,7 @@ test "writeBytes regrows the storage a number of times that is logarithmic in wh
     var regrowths: usize = 0;
     var capacity = p.backing.memory.bytes.len;
     for (0..1000) |_| {
-        try writeBytes(&f.heap, p, "x");
+        try writeBytes(&f.heap, null, p, "x");
         if (p.backing.memory.bytes.len != capacity) {
             regrowths += 1;
             capacity = p.backing.memory.bytes.len;
@@ -318,4 +341,49 @@ test "the reading functions check the direction, then the kind, then whether the
     const text = try f.input(.textual, "a");
     close(text);
     try std.testing.expectError(error.WrongKind, readByte(&f.heap, text));
+}
+
+test "a console output port writes to the sink as it is written to, and to nothing without one" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const out = try f.heap.createConsolePort(.output);
+    const err = try f.heap.createConsolePort(.error_output);
+    var buf: [16]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&buf);
+    try writeBytes(&f.heap, &sink, out, "ab");
+    try writeBytes(&f.heap, &sink, err, "λ");
+    try writeBytes(&f.heap, &sink, out, "c");
+    try std.testing.expectEqualStrings("abλc", sink.buffered());
+    // 書き手が無ければ捨てる。領域を持たないので、計上は変わらない。
+    const before = f.heap.accounted;
+    try writeBytes(&f.heap, null, out, "dropped");
+    try std.testing.expectEqual(before, f.heap.accounted);
+    try std.testing.expectEqualStrings("abλc", sink.buffered());
+    // 閉じたら書けない。
+    close(out);
+    try std.testing.expectError(error.PortClosed, writeBytes(&f.heap, &sink, out, "x"));
+}
+
+test "a console output port reports a writer that cannot take the bytes" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const out = try f.heap.createConsolePort(.output);
+    var buf: [2]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.WriteFailed, writeBytes(&f.heap, &sink, out, "abc"));
+}
+
+test "the console input port is at its end from the start" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const in = try f.heap.createConsolePort(.input);
+    try std.testing.expectEqual(null, try readChar(&f.heap, in));
+    try std.testing.expectEqual(null, try peekChar(&f.heap, in));
+    try std.testing.expectEqualStrings("", pending(in));
+    consume(in, 0);
+    try std.testing.expectError(error.WrongKind, readByte(&f.heap, in));
+    try std.testing.expectError(error.WrongDirection, writeBytes(&f.heap, null, in, "x"));
 }
