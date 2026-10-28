@@ -949,9 +949,10 @@ fn runProgramToBoth(text: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) 
 
 test "runFile writes stderr out, after what the program wrote to stdout" {
     // 実行時エラー: プログラムの出力が先に見え、説明がそのあとに続く。
+    // 標準エラーの領域は、説明が書き出すまで残るよう、説明より大きくする。
     var t1: Terminal = .{};
     var ob1: [16]u8 = undefined;
-    var eb1: [16]u8 = undefined;
+    var eb1: [128]u8 = undefined;
     var out1: TerminalWriter = .init(&t1, &ob1);
     var err1: TerminalWriter = .init(&t1, &eb1);
     const s1 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out1.interface, &err1.interface);
@@ -960,7 +961,7 @@ test "runFile writes stderr out, after what the program wrote to stdout" {
     // 標準出力に書けない: 診断は書き出されている。
     var t2: Terminal = .{};
     var ob2: [4]u8 = undefined;
-    var eb2: [16]u8 = undefined;
+    var eb2: [128]u8 = undefined;
     var out2 = failingStdout(&ob2);
     var err2: TerminalWriter = .init(&t2, &eb2);
     const s2 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n", &out2, &err2.interface);
@@ -969,7 +970,7 @@ test "runFile writes stderr out, after what the program wrote to stdout" {
     // 実行時エラーと重なる: 2つの説明が、どちらも書き出されている。
     var t3: Terminal = .{};
     var ob3: [64]u8 = undefined;
-    var eb3: [16]u8 = undefined;
+    var eb3: [128]u8 = undefined;
     var out3 = failingStdout(&ob3);
     var err3: TerminalWriter = .init(&t3, &eb3);
     const s3 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out3, &err3.interface);
