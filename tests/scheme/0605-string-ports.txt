@@ -1,0 +1,58 @@
+# スライス 5h: 文字列ポート(R7RS 6.13.1、6.13.2、6.13.3)。ポートの引数は、現在のポートが入る
+# スライス 5i までは省略できない。
+
+# 計画書 0019 の 5h の完了条件。
+(let ((p (open-input-string "ab"))) (list (read-char p) (peek-char p) (read-char p) (eof-object? (read-char p))))
+(#\a #\b #\b #t)
+
+# 書いたものを get-output-string が返す。
+(let ((p (open-output-string))) (write-char #\a p) (write-string "λb" p) (newline p) (write-string "xyz" p 1 2) (get-output-string p))
+"aλb\ny"
+
+# 書いた文字列を読み返すと、同じ文字が同じ順で出る。
+(let ((out (open-output-string))) (write-string "aλ😀" out) (let ((in (open-input-string (get-output-string out)))) (list (read-char in) (read-char in) (read-char in) (eof-object? (read-char in)))))
+(#\a #\λ #\😀 #t)
+
+(let ((p (open-input-string "ab\ncd\r\nef"))) (list (read-line p) (read-line p) (read-line p) (eof-object? (read-line p))))
+("ab" "cd" "ef" #t)
+
+(let ((p (open-input-string "abcde"))) (list (read-string 2 p) (read-string 10 p) (eof-object? (read-string 1 p))))
+("ab" "cde" #t)
+
+(let ((p (open-input-string ""))) (list (char-ready? p) (eof-object? (peek-char p))))
+(#t #t)
+
+# 述語。
+(let ((i (open-input-string "")) (o (open-output-string))) (list (port? i) (input-port? i) (output-port? i) (textual-port? i) (binary-port? i) (input-port? o) (output-port? o) (port? "a")))
+(#t #t #f #t #f #f #t #f)
+
+# 閉じたポートは、開いていない。閉じ直しても何も起きない。
+(let ((i (open-input-string "a")) (o (open-output-string))) (close-port i) (close-port i) (close-output-port o) (list (input-port-open? i) (output-port-open? o)))
+(#f #f)
+
+# 閉じたあとも、書いたものは get-output-string で読める。
+(let ((o (open-output-string))) (write-char #\a o) (close-port o) (get-output-string o))
+"a"
+
+# ポートは同一性で比べる(R7RS 6.1)。
+(let ((p (open-input-string "a"))) (list (eqv? p p) (eqv? p (open-input-string "a")) (equal? p (open-input-string "a"))))
+(#t #f #f)
+
+(open-input-string "a")
+#<port>
+
+# 向きと種類の違うポートは、型の誤りである。
+(read-char (open-output-string))
+error: wrong type of argument to read-char #<port>
+
+(write-char #\a (open-input-string ""))
+error: wrong type of argument to write-char #\a #<port>
+
+(get-output-string (open-output-bytevector))
+error: wrong type of argument to get-output-string #<port>
+
+(close-input-port (open-output-string))
+error: wrong type of argument to close-input-port #<port>
+
+(read-string -1 (open-input-string "a"))
+error: argument out of range in read-string -1 #<port>

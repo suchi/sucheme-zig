@@ -415,3 +415,12 @@
 ;; `values` に包む。引数の型の誤りは、プリミティブの名前で報告される。
 (define (%exact-integer-sqrt-values k root) (values root (- k (* root root))))
 (define (exact-integer-sqrt k) (%exact-integer-sqrt-values k (%exact-integer-sqrt k)))
+
+;; `call-with-port` は、`proc` を `port` で呼び、`proc` が戻ったらポートを閉じて、`proc` の値を
+;; そのまま返す(R7RS 6.13.1)。`proc` が戻らない(継続で抜ける)ときは閉じない。原文は、二度と
+;; 使われないと示せる場合を除いて閉じてはならないとする。ポートでない引数は、`proc` を呼ぶ前に断る。
+(define (call-with-port port proc)
+  (if (port? port)
+      (call-with-values (lambda () (proc port))
+        (lambda vals (close-port port) (apply values vals)))
+      (error "wrong type of argument to call-with-port" port)))

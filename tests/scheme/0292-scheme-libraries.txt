@@ -31,11 +31,12 @@
 (1 2 3 4)
 
 # 実装の無いもの、内部用の名前、別のライブラリの名前は、エクスポートしない。
-(import (only (scheme base) open-input-string))
-error: bad import: open-input-string is not exported by the import set
+# 現在のポートは、スライス 5i が入れるまで実装が無い。
+(import (only (scheme base) current-input-port))
+error: bad import: current-input-port is not exported by the import set
 
-(import (only (scheme base) newline))
-error: bad import: newline is not exported by the import set
+(import (only (scheme base) current-output-port))
+error: bad import: current-output-port is not exported by the import set
 
 (import (only (scheme base) %make-promise))
 error: bad import: %make-promise is not exported by the import set

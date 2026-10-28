@@ -504,6 +504,7 @@ const mutators = [_]Mutator{
     .{ .name = "bytevector-copy!", .input = "(bytevector-copy! #u8(1 2) 0 #u8(3))" },
     .{ .name = "bytevector-u8-set!", .input = "(bytevector-u8-set! #u8(1 2) 0 0)" },
     .{ .name = "list-set!", .input = "(list-set! '(0 1 2) 1 \"oops\")", .refused_by = "set-car!" },
+    .{ .name = "read-bytevector!", .input = "(read-bytevector! #u8(0 0) (open-input-bytevector #u8(1)))" },
     .{ .name = "set-car!", .input = "(set-car! '(1 2) 0)" },
     .{ .name = "set-cdr!", .input = "(set-cdr! '(1 2) 0)" },
     .{ .name = "string-copy!", .input = "(string-copy! \"abc\" 0 \"xy\")" },

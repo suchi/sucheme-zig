@@ -8,5 +8,6 @@
           vector-map vector-for-each string-map string-for-each
           zero? positive? negative? even? odd? square
           floor/ truncate/
-          gcd lcm exact-integer-sqrt)
+          gcd lcm exact-integer-sqrt
+          call-with-port)
   (include "procedures.scm"))
