@@ -302,6 +302,8 @@ pub fn build(b: *std.Build) void {
     const check_docs = tool(b, "check-docs", .Debug);
     const extractor = tool(b, "extract-r7rs-required", .Debug);
     const coverage = tool(b, "coverage-report", .Debug);
+    // Unicode の表の生成器(スライス 4u1)。全符号位置の配列を作るので、ReleaseSafe にする。
+    const unicode_gen = tool(b, "unicode-gen", .ReleaseSafe);
     // Why: ランナーは100万ステップのプログラムを評価するので、Debug ビルドでは
     // 数分かかる。ReleaseSafe は検査(境界・オーバーフロー・アサーション)を残したまま、
     // インタプリタを数倍速く動かす。下のモジュールは、それを import する
@@ -338,7 +340,7 @@ pub fn build(b: *std.Build) void {
     });
     conformance_run.addImport("sucheme", sucheme_host);
     coverage.root_module.addImport("conformance", conformance_run);
-    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage, conformance };
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage, conformance, unicode_gen };
 
     const run_check_docs = b.addRunArtifact(check_docs);
     // run step が引き継ぐのは build root ではなく `zig build` を起動したディレクトリ
@@ -353,6 +355,21 @@ pub fn build(b: *std.Build) void {
     run_check_extract.setCwd(b.path("."));
     const check_extract_step = b.step("check-extract", "check the generated lists against the input");
     check_extract_step.dependOn(&run_check_extract.step);
+
+    // Unicode の表(src/unicode/tables.zig)。`check-unicode` は、コミット済みの UCD の
+    // ファイルから生成器が作るものと比べる。書き込むのは `generate-unicode` だけで、
+    // `--write` を渡す。比較が既定なので、引数を落としても検査が書き換えに変わらない
+    // (check-extract と同じ形)。
+    const run_check_unicode = b.addRunArtifact(unicode_gen);
+    run_check_unicode.setCwd(b.path("."));
+    const check_unicode_step = b.step("check-unicode", "check src/unicode/tables.zig against the vendored UCD files");
+    check_unicode_step.dependOn(&run_check_unicode.step);
+
+    const run_generate_unicode = b.addRunArtifact(unicode_gen);
+    run_generate_unicode.setCwd(b.path("."));
+    run_generate_unicode.addArg("--write");
+    const generate_unicode_step = b.step("generate-unicode", "write src/unicode/tables.zig from the vendored UCD files");
+    generate_unicode_step.dependOn(&run_generate_unicode.step);
 
     // 準拠マトリクス(docs/status/conformance.md)。`check-report` はツールの既定の
     // 動作である比較を走らせ、コミット済みのファイルがツールの生成結果と違えば
@@ -558,6 +575,8 @@ pub fn build(b: *std.Build) void {
     // ちょうどその artifact だけ。ここに引数を足すと、比較を書き換えに変える唯一の
     // 手段になる理由は、checkStepRuns を参照。
     checkStepRuns(check_extract_step, extractor, 1);
+    // Unicode の表の比較も、ちょうどその artifact だけ。書き込みの `--write` は別の step が持つ。
+    checkStepRuns(check_unicode_step, unicode_gen, 1);
     // 引数なしで、成果物だけを走らせる。理由は同じで、比較が生成器の既定であり、
     // 書き込みには `--write` が要る。
     checkStepRuns(check_report_step, coverage, 1);

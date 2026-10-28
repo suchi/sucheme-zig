@@ -264,6 +264,18 @@ GC は機械のステップの境目でしか走らない([ADR-0031](../adr/0031
 - 生成結果: `src/unicode/tables.zig`(生成物、手で編集しない)と、引く関数の `src/unicode/props.zig`(手で書く)。生成元の Unicode の版とファイル名を、生成物の先頭のコメントに書く。
 - 生成物が入力から導かれたことは、既存の `check-extract` と同じ形の比較モードで検査する。検証コマンドの表に行を足すかは、4u1 で `build.zig` の step を作ってから決める(表の行は、step が実在するときに足す規則)。
 
+### 4u1 のミューテーション査読の記録
+
+生成器のミューテーション 33 件のうち、実データのテストと出力側の表明(R1)、F 行の昇順のテスト(R3)を足して対応した。再査読では、区画の同一判定を長さの比較だけにする書き換え(M26)だけが生き残った。合成した入力は区画が数個で、判定の誤りが出力に現れないためである。実データを二段表に通して全符号位置で値が戻ることを見るテストを足し、M26 を検出することを確かめた(O3)。残りは次のとおり、足さない理由と一緒に記録する。
+
+- R2(4u2 の前提条件): `main.zig` の流れの検査を、4u2 が `check-unicode` を CI に入れる前に足す。検査するのは、引数なしが比較であること、表が無いときと不一致のときに非ゼロで終わること、`--write` だけが書くこと、`SHA256SUMS` の不一致で非ゼロになること、表を 1 バイト書き換えた状態で `zig build check-unicode` が失敗すること。足さないまま CI に入れると、`check_only` の既定を false にしても、比較が先頭の半分だけでも、`SHA256SUMS` の不一致を無視しても、緑のままになる(検証が黙って止まる)。いまは CI に入れないので、このスライスでは足さない。
+- O1(任意): `parseProperties` のテストに、範囲の始端と終端、`Other_White_Space` のような別名の行を足す。実データでは R1 の既知値のテストが同じ経路を通るので、足さない。
+- O2(任意): 想定外の入力に対する保護(`First`/`Last` 行の判定、数字の並びの値と連続、`digit_starts` の昇順、`hi < lo`、0x10FFFF 超、`DuplicateMapping`、`SpecialCasing` の大文字側の食い違い、`VersionMismatch`、F の結果が 1 文字)のテストを足す。実データではこれらを書き換えても出力が変わらず、保護が働くのは入力が壊れたときだけで、誤った表は出さず止まるだけなので、足さない。
+- O3(足した): 実データの4つの配列(印、大文字、小文字、畳み込み)を `buildTwoStage` に通し、全符号位置で `lookup` が元の値を返すことを見るテストを `tools/unicode-gen/real_data.zig` に足した。当初は、R1 と出力側の表明で足りるとして足さない扱いにしたが、再査読で誤りと分かった。出力側の表明は合成した入力で、R1 は `parseAll` の結果しか見ない。区画の同一判定を長さの比較だけにする書き換え(M26)は、合成した入力では区画が数個で出力が変わらず、実データでは出力が壊れる。足したテストは M26 で落ちることを確かめた。
+- O4(任意): `verifySum` に、バイナリ指定の `*` が付く書式(`<hex> *A.txt`)のケースを足す。取り込んだ `SHA256SUMS` は空白 2 つの書式だけを使うので、足さない。
+- F1(任意): `finishFull` の `list.items[1..]` は、空のリストで範囲外になり panic する。実データには空の表が無く、止まるだけで誤った表は出さないので、直さない。
+- F2(任意): `build.zig` の `checkStepRuns(check_unicode_step, unicode_gen, 1)` は step の引数の数を固定するが、`main.zig` の既定は固定しない。`check-extract` と同じ構造なので、直さない。
+
 ### 表が答えること
 
 設計文書の5種(単純大文字小文字写像、単純ケースフォールディング、完全大文字小文字写像、属性の真偽値、十進数字の値)を、`src/unicode/props.zig` の関数として出す。
@@ -307,7 +319,7 @@ pub fn digitValue(c: u21) ?u4
 | 4i `(scheme complex)` と compnum の演算 | 6つの識別子が束縛され、`sqrt` `exp` `log` が複素数で動く(複素数の四則と `=` は 4f) | `src/num/complex.zig`(新規) `src/prim/complex.zig`(新規) `lib/scheme/complex.sld`(新規) | T2 | 4g、4h。合意を求める点の3 | 不可 | 中〜大 |
 | 4j `eq?` と `eqv?` の分離とフィーチャ | `memq` と `memv`、`assq` と `assv` を区別するテストが通り、`features` が4つのフィーチャを返す。bignum、ratnum、compnum が `eqv?` と `equal?` で値として比べられ、`case` が `(case 1/2 ((1/2) 'a) (else 'b))` で `a` を返す。`syntax-rules` のパターンに、flonum、bignum、ratnum、compnum を書ける(4r で読めるようになったが、`src/syntax/rules.zig` が拒否する。R7RS 7.1.3 の `<pattern datum>` は `<number>` を含む) | `src/value.zig`(`isEq` と `isEqv`) `src/syntax/rules.zig`(パターンの定数の分岐だけ) `src/features.zig` `tests/scheme/` | T1 | 4g(4i を含めるなら 4i) | 不可 | 小 |
 | 4u1 Unicode の生成ツール | `tools/unicode-gen/` が UCD から表を生成し、比較モードで生成物の同期を検査する | `tools/unicode-gen/`(新規) `build.zig`(step の追加だけ) | T2(枠は T1) | 合意を求める点の1、7 | 可(4a〜4c と) | 中 |
-| 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
+| 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される。4u1 からの引き継ぎ: `src/unicode/tables.zig` を置き、`props.zig` から参照してテストの根に入れる。そのうえで `zig build check-unicode` を `ci.yml` と `full.yml` の `windows` ジョブに足し、検証コマンドの表に行を足す。その前に、生成器の `main.zig` の流れの検査(「4u1 のミューテーション査読の記録」の R2)を足す | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
 | 4u3 `(scheme char)` と文字列の大文字小文字 | `(scheme char)` の識別子が束縛され、R7RS 6.6 と 6.7 の例(`(char-alphabetic? #\x03B1)` など)が通る | `src/prim/char.zig` の追加分 `src/prim/string_case.zig`(新規) `lib/scheme/char.sld`(新規) | T2 | 4u2。合意を求める点の2 | 可 | 中 |
 | 4u4 リーダの ASCII でない識別子(L2 の作業) | リーダが ASCII でない識別子を読み、`#!fold-case` が Unicode の表で畳み込む | `src/reader.zig` | T2 | 4u2。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4z リリース v0.4.0 と段階の完了 | v0.4.0 が公開され、段階4の完了の手続きが済む | リリース関係の文書 | T2 | ほかのすべて | 不可 | 小 |
@@ -488,13 +500,13 @@ pub fn digitValue(c: u21) ?u4
 - R7RS が数の綴りの大文字小文字を区別しないこと(2.1、7.1)、`(eqv? 0.0 -0.0)` を `#f`、`(eqv? +nan.0 +nan.0)` を未規定としていること(6.1)。原文は `docs/spec/` の PDF で引いた。
 
 - 浮動小数点数の書式と解析の4点(上の「浮動小数点数の書式と解析の実験」)。Zig 0.17.0 で実行して確かめた。
+- UCD のライセンスの表示の要件。Unicode License V3 の原文(<https://www.unicode.org/license.txt>)を 2026-10-28 に読んだ。条件は、著作権と許諾の通知を複製に添えることだけである(4u1)。
 
 確かめられなかったこと:
 
 - `std.fmt.float.binaryToDecimal` が、版をまたいで保たれる API かどうか。
 - `@sizeOf(Value)` が flonum のバリアントを足しても変わらないこと(同じ形の小さな共用体では変わらなかった)。
 - ほかの Scheme 処理系の指数表記の範囲と、Unicode の表の段数の慣行。
-- UCD のライセンスの表示の要件。
 - `string-downcase` の語末のシグマの扱いを R7RS 6.7 が求めるか。
 
 ## 進捗
@@ -516,8 +528,9 @@ pub fn digitValue(c: u21) ?u4
 | 4h | マージ済み([suchi/sucheme-zig#202](https://github.com/suchi/sucheme-zig/pull/202))。`(scheme inexact)` の12個の識別子(`src/prim/inexact.zig`、`lib/scheme/inexact.sld`)。範囲の決め方は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「超越関数と平方根」 |
 | 4r | 実装済み。ブランチ `feature/phase4-slice-4r-reader-numbers`。リーダの `atom` が、fixnum に収まる十進整数以外を `num.parse` で読む。値を持たない綴り(`1/0`、`#e+inf.0`)と、読み取りの大きさの上限を超える綴りは `InvalidToken` になる。`IntegerOutOfRange` はリーダが返さなくなったが、`src/sucheme.zig` の `switch` のために誤りの集合に残している。準拠マトリクスの「落ちた」が 9 件増えたのは、読めるようになった bignum、ratnum、compnum を `eqv?` が同じオブジェクトかで比べる欠落(4j が直す)と、`(expt 0.0 0)` が `1.0` でなく `1` を返す `expt` の挙動による。受け入れた制約: 上限の内側でも、`#e1e1000000` を並べた入力は 1 個あたり約 0.25 秒かかる。上限を超えた正しい数(9 を 100,001 個並べた整数、`#e1e1000001`)は `unreadable token` になる |
 | 4i | 実装済み、ドラフトの PR で確認中。`(scheme complex)` の6個の識別子(`src/prim/complex.zig`、`lib/scheme/complex.sld`)、複素数の `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` と `expt`(`src/num/complex.zig`)、`f64` の範囲を超える正確な数の `log` と `atan`(`src/num/elementary.zig`)。ブランチ `feature/phase4-slice-4i-scheme-complex`。範囲の決め方は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「超越関数と平方根」と「複素数の初等関数」 |
+| 4u1 | 作業中。生成器(`tools/unicode-gen/`)の読み取り、2段の表の組み立て、整形済みの出力、比較モード、`check-unicode` と `generate-unicode` の step は実装済み。UCD 18.0.0 の5ファイルは `tools/unicode-gen/ucd/` に取り込んだ(出典、ハッシュ、公開日の根拠は同じ場所の `SOURCE.md`)。この入力から生成器が `src/unicode/tables.zig` を作り、`check-unicode` が一致を確かめることはローカルで確認した。検証コマンド表の行(CI の変更が要るため承認待ち)が残る。生成物 `src/unicode/tables.zig` は 4u2 が置くので、それまで `check-unicode` は CI に入れない |
 | 4j | 実装済み、ドラフトの PR で確認中。`isEqv` が bignum、ratnum、compnum を値で比べ、`isEq` はこの3つを同一性で比べる。`features` が `exact-closed` `exact-complex` `ratios` `ieee-float` を返す。テストは `tests/scheme/0480-eq-eqv.txt`。ブランチ `feature/phase4-slice-4j-eq-eqv-features`。準拠マトリクスの「落ちた」は 30 件から 18 件に減った。残る 18 件は 4j の外である(桁数を丸めて書いた期待値 16 件(`4.2` の `b` を含む)、`(sqrt -1.0-0.0i)`、`(expt 0.0 0)`)。`syntax-rules` のパターンに flonum、bignum、ratnum、compnum を書けるようにした(`src/syntax/rules.zig` の定数の分岐。照合は `equal?` のまま。テストは `tests/scheme/0481-pattern-number-constants.txt`)。 |
-| 4k〜4z、4u1〜4u4 | 未着手 |
+| 4k〜4z、4u2〜4u4 | 未着手 |
 
 ## 次にやること
 

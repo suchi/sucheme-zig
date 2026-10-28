@@ -258,7 +258,7 @@ R7RS 6.6 は「Given a Unicode character, char->integer returns an exact integer
 
 ### テーブルの生成方針
 
-Unicode Character Database のファイルから多段テーブルを生成する Zig プログラムを `tools/unicode/` に置き、生成結果の `.zig` ファイルをリポジトリにコミットする。
+Unicode Character Database のファイルから多段テーブルを生成する Zig プログラムを `tools/unicode-gen/` に置き、生成結果の `.zig` ファイルをリポジトリにコミットする。
 
 この方式を採る理由は次のとおり。
 
