@@ -357,6 +357,8 @@ test("the console ports write to the output buffer in order with the results", (
     [OK, "hi\nx1\n"],
   );
   assert.deepEqual(h.run("(eof-object? (read-char))"), [OK, "#t\n"]);
+  // 出力バッファの書き手は、書き出しで失敗しない(固定の書き手の flush は何もしない)。
+  assert.deepEqual(h.run("(write-string \"y\") (flush-output-port) 2"), [OK, "y2\n"]);
   // 出力が残っていても、エラーの行はそのあとに書かれる。
   assert.deepEqual(h.run("(write-string \"a\") (car 1)"), [SCHEME_ERROR, "aerror: wrong type of argument to car 1\n"]);
 });
