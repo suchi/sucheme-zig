@@ -44,6 +44,9 @@ const bigint = @import("num/bigint.zig");
 const flonum = @import("num/flonum.zig");
 // Why: 4e-1 の exact.zig も同じ。number.zig が呼ぶまでの、単体テストの集合に載せる参照。
 const exact = @import("num/exact.zig");
+// Why: 4u2 の Unicode の表を引く関数にも、まだ呼び手が無い。4u3 の `(scheme char)` が
+// 呼ぶまでの、単体テストの集合に載せる参照。
+const unicode = @import("unicode/props.zig");
 const embedded_lib = @import("embedded_lib");
 
 /// The files under `lib/`, which every interpreter searches before the files beneath
@@ -415,6 +418,7 @@ test {
     _ = bigint;
     _ = flonum;
     _ = exact;
+    _ = unicode;
 }
 
 fn evalPrinted(src: []const u8) ![]const u8 {
