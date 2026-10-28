@@ -1,0 +1,21 @@
+# スライス 5h を規模で試す。文字列ポートとバイトベクタポートの領域が、書いた量に比例する
+# 手間で伸びること、上限を超える書き込みが止まらずに誤りになること、使い終えたポートの領域が
+# 回収されること。実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ走る
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0608-port-size.txt と src/port.zig の単体テストにある。1ケースは既定と
+# 1ステップごとに GC するモードの2回走る。ランナーの上限は 64 MiB である。
+
+# 1文字ずつ書いても、領域を倍ずつ伸ばすので、写しの量は書いた量に比例する。
+(define (fill n) (let ((o (open-output-string))) (do ((i 0 (+ i 1))) ((= i n) (get-output-string o)) (write-char #\λ o)))) (define (count-chars p) (let loop ((n 0)) (if (eof-object? (read-char p)) n (loop (+ n 1))))) (list (string-length (fill 200000)) (count-chars (open-input-string (fill 200000))))
+(200000 200000)
+
+(define (fill n) (let ((o (open-output-bytevector))) (do ((i 0 (+ i 1))) ((= i n) (get-output-bytevector o)) (write-u8 7 o)))) (bytevector-length (fill 200000))
+200000
+
+# 上限を超える書き込みは、上限の誤りになる。
+(define big (make-string 1000000 #\a)) (let ((o (open-output-string))) (let loop ((i 0)) (write-string big o) (loop (+ i 1))))
+error: heap limit exceeded
+
+# 使い終えたポートの領域は回収される。合計は上限を超えるが、同時に生きるのは1つだけである。
+(define big (make-string 1000000 #\a)) (let loop ((i 0)) (if (< i 100) (let ((o (open-output-string))) (write-string big o) (write-string big o) (loop (+ i 1))) 'done))
+done

@@ -1,0 +1,24 @@
+# スライス 5h: バイトベクタポート(R7RS 6.13.1、6.13.2、6.13.3)。
+
+(let ((p (open-input-bytevector (bytevector 1 2 3)))) (list (peek-u8 p) (read-u8 p) (read-u8 p) (read-u8 p) (eof-object? (read-u8 p))))
+(1 1 2 3 #t)
+
+# 書いたものを get-output-bytevector が返し、読み返すと同じバイトが出る。
+(let ((out (open-output-bytevector))) (write-u8 1 out) (write-bytevector (bytevector 2 3 4) out) (write-bytevector (bytevector 5 6 7) out 1 2) (let ((b (get-output-bytevector out))) (list b (read-bytevector 10 (open-input-bytevector b)))))
+(#u8(1 2 3 4 6) #u8(1 2 3 4 6))
+
+(let ((p (open-input-bytevector (bytevector 1 2 3))) (b (make-bytevector 4 0))) (list (read-bytevector! b p 1) b (eof-object? (read-bytevector! b p))))
+(3 #u8(0 1 2 3) #t)
+
+(let ((p (open-input-bytevector (bytevector)))) (list (u8-ready? p) (eof-object? (read-bytevector 1 p)) (binary-port? p) (textual-port? p)))
+(#t #t #t #f)
+
+# 定数のバイトベクタには読み込まない(R7RS 3.4)。
+(read-bytevector! #u8(0 0) (open-input-bytevector (bytevector 1)))
+error: cannot modify a constant in read-bytevector! #u8(0 0) #<port>
+
+(write-u8 256 (open-output-bytevector))
+error: wrong type of argument to write-u8 256 #<port>
+
+(read-u8 (open-input-string "a"))
+error: wrong type of argument to read-u8 #<port>

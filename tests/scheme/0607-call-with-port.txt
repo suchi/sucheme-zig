@@ -1,0 +1,14 @@
+# スライス 5h: `call-with-port`(R7RS 6.13.1)。`proc` が戻ったらポートを閉じ、`proc` の値を返す。
+
+(let ((p (open-input-string "ab"))) (list (call-with-port p read-char) (input-port-open? p)))
+(#\a #f)
+
+(call-with-values (lambda () (call-with-port (open-input-string "") (lambda (p) (values 1 2)))) list)
+(1 2)
+
+# 継続で抜けたときは閉じない。
+(let ((p (open-input-string "a"))) (call/cc (lambda (k) (call-with-port p (lambda (q) (k #f))))) (input-port-open? p))
+#t
+
+(call-with-port 1 (lambda (p) p))
+error: wrong type of argument to call-with-port 1

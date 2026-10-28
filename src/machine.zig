@@ -1019,6 +1019,7 @@ pub const Machine = struct {
             error.DivisionByZero => raiseWith(ctx, irritants, "division by zero in {s}", .{prim.name}),
             error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
             error.Immutable => raiseWith(ctx, irritants, "cannot modify a constant in {s}", .{prim.name}),
+            error.PortClosed => raiseWith(ctx, irritants, "port is closed in {s}", .{prim.name}),
             error.HeapLimit, error.OutOfMemory => unreachable,
         };
     }

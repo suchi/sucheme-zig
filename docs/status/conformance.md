@@ -8,7 +8,7 @@
 
 | ライブラリ | 束縛済み | 全体 |
 | --- | ---: | ---: |
-| `(scheme base)` | 202 | 238 |
+| `(scheme base)` | 235 | 238 |
 | `(scheme case-lambda)` | 1 | 1 |
 | `(scheme char)` | 0 | 22 |
 | `(scheme complex)` | 6 | 6 |
@@ -24,7 +24,7 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 0 | 4 |
-| 一意の識別子の合計 | 250 | 339 |
+| 一意の識別子の合計 | 283 | 339 |
 
 ## 準拠スイートの結果
 
@@ -49,12 +49,12 @@
 | 6.8 Vectors | 43 | 0 | 0 | 0 | 0 | 0 |
 | 6.9 Bytevectors | 39 | 0 | 0 | 0 | 0 | 0 |
 | 6.10 Control Features | 31 | 0 | 0 | 0 | 3 | 0 |
-| 6.11 Exceptions | 17 | 0 | 0 | 0 | 10 | 0 |
+| 6.11 Exceptions | 17 | 0 | 0 | 0 | 6 | 4 |
 | 6.12 Environments and evaluation | 0 | 0 | 0 | 0 | 4 | 0 |
-| 6.13 Input and output | 1 | 0 | 0 | 0 | 59 | 0 |
-| Read syntax | 0 | 0 | 0 | 0 | 72 | 24 |
+| 6.13 Input and output | 50 | 0 | 0 | 0 | 13 | 0 |
+| Read syntax | 0 | 0 | 0 | 0 | 68 | 28 |
 | Numeric syntax | 0 | 0 | 0 | 0 | 2 | 110 |
 | 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
-| 合計 | 698 | 18 | 0 | 0 | 272 | 134 |
+| 合計 | 747 | 18 | 0 | 0 | 218 | 142 |
 
 スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme write)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`

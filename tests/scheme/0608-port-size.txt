@@ -1,0 +1,13 @@
+# スライス 5h: 文字列ポートとバイトベクタポートの大きさ。規模を試す双子は
+# tests/scheme-slow/0605-port-scale.txt にある。ここでは同じ論理を小さい規模で通す。
+
+# 1文字ずつ書いて伸ばした領域から、書いた文字をすべて読み返す。
+(define (fill n) (let ((o (open-output-string))) (do ((i 0 (+ i 1))) ((= i n) (get-output-string o)) (write-char #\λ o)))) (define (count-chars p) (let loop ((n 0)) (if (eof-object? (read-char p)) n (loop (+ n 1))))) (list (string-length (fill 1000)) (count-chars (open-input-string (fill 1000))))
+(1000 1000)
+
+(define (fill n) (let ((o (open-output-bytevector))) (do ((i 0 (+ i 1))) ((= i n) (get-output-bytevector o)) (write-u8 7 o)))) (bytevector-length (fill 1000))
+1000
+
+# 使い終えたポートを作り続けても止まらない(回収が上限を超えないことは、規模の双子が見る)。
+(define big (make-string 1000 #\a)) (let loop ((i 0)) (if (< i 20) (let ((o (open-output-string))) (write-string big o) (write-string big o) (loop (+ i 1))) 'done))
+done
