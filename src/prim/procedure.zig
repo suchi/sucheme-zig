@@ -125,4 +125,5 @@ test "procedure? is false of everything that is not a procedure" {
     try std.testing.expect(!try callWith(.fromVector(try f.heap.createVector(&.{}))));
     try std.testing.expect(!try callWith(.fromBytevector(try f.heap.createBytevector(&.{}))));
     try std.testing.expect(!try callWith(try f.heap.cons(.fromFixnum(1), .fromFixnum(2))));
+    try std.testing.expect(!try callWith(.fromPort(try f.heap.createMemoryPort(.output, .textual, ""))));
 }

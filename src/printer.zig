@@ -350,6 +350,10 @@ test "write and display show a port as #<port>, whatever it holds" {
     try std.testing.expectEqualStrings("#<port>", try f.displayed(&buf, .fromPort(&p)));
     const l = try f.list(&.{ .fromPort(&p), .fromFixnum(1) }, .empty_list_value);
     try std.testing.expectEqualStrings("(#<port> 1)", try f.written(&buf, l));
+    // 向きも、種類も、開閉の状態も書かない。
+    var q: value_mod.Port = .{ .direction = .output, .element = .binary, .open = false, .backing = .{ .memory = .{ .bytes = &bytes, .len = 0 } } };
+    try std.testing.expectEqualStrings("#<port>", try f.written(&buf, .fromPort(&q)));
+    try std.testing.expectEqualStrings("#<port>", try f.displayed(&buf, .fromPort(&q)));
 }
 
 test "write prints the unspecified value as #<unspecified>" {

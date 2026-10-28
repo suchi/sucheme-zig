@@ -447,6 +447,21 @@ test "equal? holds eqv? things equal" {
     try std.testing.expect(!try callWith(&f, "equal?", .fromPrimitive(&primitives[0]), .fromPrimitive(&primitives[1])));
 }
 
+test "equal? compares ports as eqv? does, also inside a list and a vector" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // R7RS 6.1 は、ポートに対する equal? を eqv? と同じとする。中身が同じ別のポートは等しくない。
+    const a: Value = .fromPort(try f.heap.createMemoryPort(.input, .textual, "ab"));
+    const b: Value = .fromPort(try f.heap.createMemoryPort(.input, .textual, "ab"));
+    try std.testing.expect(try callWith(&f, "equal?", a, a));
+    try std.testing.expect(!try callWith(&f, "equal?", a, b));
+    try std.testing.expect(try callWith(&f, "equal?", try cons(&f, a, .empty_list_value), try cons(&f, a, .empty_list_value)));
+    try std.testing.expect(!try callWith(&f, "equal?", try cons(&f, a, .empty_list_value), try cons(&f, b, .empty_list_value)));
+    try std.testing.expect(try callWith(&f, "equal?", try vec(&f, &.{a}), try vec(&f, &.{a})));
+    try std.testing.expect(!try callWith(&f, "equal?", try vec(&f, &.{a}), try vec(&f, &.{b})));
+}
+
 /// A circular list holding `items` in turn, from the first pair on.
 fn ringOf(f: *test_support.Fixture, items: []const Value) !Value {
     const head = try cons(f, items[0], .empty_list_value);

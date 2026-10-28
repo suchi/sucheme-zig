@@ -2638,6 +2638,8 @@ test "growing the bytes of a memory port keeps what it holds, and accounts for t
     try std.testing.expectEqual(3, p.backing.memory.len);
     try std.testing.expectEqualStrings("abc", p.backing.memory.bytes[0..3]);
     try std.testing.expectEqual(cellBytes(Port) + 10, heap.accounted);
+    // 伸ばした分は、最大の計上量にも入る。
+    try std.testing.expectEqual(heap.accounted, heap.peak);
     // 今の大きさ以下を求めても、縮めない。
     try heap.growPortBytes(p, 5);
     try std.testing.expectEqual(10, p.backing.memory.bytes.len);
@@ -2657,6 +2659,18 @@ test "growing the bytes of a memory port past the limit leaves the port and the 
     try std.testing.expectEqual(8, p.backing.memory.bytes.len);
     try std.testing.expectEqualStrings("ab", p.backing.memory.bytes[0..2]);
     try std.testing.expectEqual(cellBytes(Port) + 8, heap.accounted);
+}
+
+test "growing the bytes of a memory port is held to the limit by the bytes it adds, not by the new size" {
+    // 上限はちょうど 16 バイトの領域の分である。8 から 16 に伸ばすとき、照らすのは
+    // 増える 8 バイトで、新しい大きさの 16 バイトを足すと上限を超える。
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) + 16 });
+    defer heap.deinit();
+    const p = try heap.createMemoryPort(.output, .binary, "");
+    try heap.growPortBytes(p, 8);
+    try heap.growPortBytes(p, 16);
+    try std.testing.expectEqual(16, p.backing.memory.bytes.len);
+    try std.testing.expectEqual(cellBytes(Port) + 16, heap.accounted);
 }
 
 test "when the new bytes cannot be allocated a memory port keeps its old ones" {

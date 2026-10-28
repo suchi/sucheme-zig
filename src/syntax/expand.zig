@@ -1383,6 +1383,16 @@ test "a literal is a constant, and a name is a global variable when nothing bind
     try f.expectExpands("+", "(global +)");
 }
 
+test "a port that reaches the expander as a form is a constant of itself" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // リーダはポートを作らないので、ヒープに作った値をそのまま渡す。
+    const port: Value = .fromPort(try f.ctx.heap.createMemoryPort(.input, .textual, "x"));
+    const node = try expandWith(&f.ctx, f.arena.allocator(), port, .{});
+    try std.testing.expect(node.constant.isEq(port));
+}
+
 test "quote gives its datum unexpanded" {
     var f: Fixture = undefined;
     try f.init();

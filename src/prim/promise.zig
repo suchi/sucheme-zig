@@ -159,6 +159,7 @@ test "%make-promise takes a boolean mark, and a procedure when the promise is no
     try std.testing.expectError(error.WrongType, f.call(&primitives, "%make-promise", &.{ .fromFixnum(1), .fromFixnum(2) }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "%make-promise", &.{ .empty_list_value, .fromPrimitive(&primitives[0]) }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "%make-promise", &.{ .fromBool(false), .fromFixnum(5) }));
+    try std.testing.expectError(error.WrongType, f.call(&primitives, "%make-promise", &.{ .fromBool(false), .fromPort(try f.heap.createMemoryPort(.output, .textual, "")) }));
     try std.testing.expectError(error.WrongType, f.call(&primitives, "%make-promise", &.{ .fromBool(false), try f.heap.cons(.fromFixnum(1), .empty_list_value) }));
 }
 
