@@ -462,25 +462,30 @@ pub const Value = union(enum) {
             // ビット列で比べる。`(eqv? 0.0 -0.0)` は偽で、同じビット列の NaN は真になる
             // (R7RS 6.1 は NaN どうしを未規定とする)。
             .flonum => |x| if (b.asFlonum()) |y| @as(u64, @bitCast(x)) == @as(u64, @bitCast(y)) else false,
-            // Why: 骨格の段階(スライス 4d)では、ヒープの数を作るのは単体テストだけで、
-            // 正規化がまだ無い。数としての比較は、正規化と一緒にスライス 4e で入れる
-            // (docs/plans/0018-phase4-numeric-tower-unicode.md)。
-            .bignum => |x| b.asBignum() == x,
-            .ratnum => |x| b.asRatnum() == x,
-            .compnum => |x| b.asCompnum() == x,
+            // 正規化した数は、同じ値なら表現も同じである(bignum は fixnum の範囲に入らず、
+            // ratnum の分母は1でなく互いに素、compnum の虚部は正確な0でない)。だから部分を
+            // `eqv?` で比べれば足りる。正確さが違う部分(`1+2i` と `1.0+2i`)は、部分の
+            // `eqv?` が偽にするので、数としても eqv? でない(R7RS 6.1)。
+            .bignum => |x| if (b.asBignum()) |y| x == y or x.toConst().eql(y.toConst()) else false,
+            .ratnum => |x| if (b.asRatnum()) |y| x == y or (x.numerator.isEqv(y.numerator) and x.denominator.isEqv(y.denominator)) else false,
+            .compnum => |x| if (b.asCompnum()) |y| x == y or (x.real.isEqv(y.real) and x.imag.isEqv(y.imag)) else false,
         };
     }
 
     /// Whether `a` and `b` are the same value in the sense of `eq?` (R7RS 6.1).
     ///
     /// Why: R7RS 6.1 は、数と文字の `eq?` を実装依存とし、真を返してよいのは `eqv?` が
-    /// 真のときだけとする。スライス 4d で数の種類が増えたが、ヒープの数を作るのは
-    /// まだ単体テストだけで、`eqv?` もヒープの数を同じオブジェクトかで比べるので、
-    /// 同じ関数でよい。スライス 4e で `eqv?` が数としての比較になったら、`eq?` は
-    /// ここで別に決める(docs/plans/0018-phase4-numeric-tower-unicode.md の合意を求める
-    /// 点の6: ヒープの数は同じオブジェクトか、flonum はビット列で比べる)。
+    /// 真のときだけとする。fixnum と flonum は即値なので値(flonum はビット列)で比べ、
+    /// bignum、ratnum、compnum は同じオブジェクトかで比べる。中身が同じ別のオブジェクトは
+    /// `eqv?` が真で `eq?` が偽になる(docs/plans/0018-phase4-numeric-tower-unicode.md の
+    /// 合意を求める点の6)。
     pub fn isEq(a: Value, b: Value) bool {
-        return a.isEqv(b);
+        return switch (a) {
+            .bignum => |x| b.asBignum() == x,
+            .ratnum => |x| b.asRatnum() == x,
+            .compnum => |x| b.asCompnum() == x,
+            else => a.isEqv(b),
+        };
     }
 };
 
@@ -1897,15 +1902,66 @@ test "a bignum, a ratnum and a compnum are heap objects, each answering to its o
     try std.testing.expect(cv.isEqv(.fromCompnum(&c)));
     try std.testing.expect(!cv.isEqv(rv));
 
-    // 暫定: 正規化が入るスライス 4e までは、ヒープの数を同じオブジェクトかで比べるので、
-    // 中身が同じ別のオブジェクトは eqv? でない。4e で数としての比較に替え、この3行を
-    // 反対の期待に書き換える。
+    // 中身が同じ別のオブジェクトは eqv? で、eq? でない(スライス 4j)。
     var b2: Bignum = .{ .limbs = &limbs, .positive = false };
     var r2: Ratnum = r;
     var c2: Compnum = c;
-    try std.testing.expect(!bv.isEqv(.fromBignum(&b2)));
-    try std.testing.expect(!rv.isEqv(.fromRatnum(&r2)));
-    try std.testing.expect(!cv.isEqv(.fromCompnum(&c2)));
+    try std.testing.expect(bv.isEqv(.fromBignum(&b2)));
+    try std.testing.expect(rv.isEqv(.fromRatnum(&r2)));
+    try std.testing.expect(cv.isEqv(.fromCompnum(&c2)));
+    try std.testing.expect(!bv.isEq(.fromBignum(&b2)));
+    try std.testing.expect(!rv.isEq(.fromRatnum(&r2)));
+    try std.testing.expect(!cv.isEq(.fromCompnum(&c2)));
+    try std.testing.expect(bv.isEq(.fromBignum(&b)));
+    // 中身が違えば eqv? でない。
+    var limbs3 = [_]Limb{ 1, 1 };
+    var b3: Bignum = .{ .limbs = &limbs3, .positive = false };
+    var b4: Bignum = .{ .limbs = &limbs, .positive = true };
+    try std.testing.expect(!bv.isEqv(.fromBignum(&b3)));
+    try std.testing.expect(!bv.isEqv(.fromBignum(&b4)));
+    var r3: Ratnum = .{ .numerator = .fromFixnum(2), .denominator = .fromFixnum(3) };
+    var r4: Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromFixnum(5) };
+    try std.testing.expect(!rv.isEqv(.fromRatnum(&r3)));
+    try std.testing.expect(!rv.isEqv(.fromRatnum(&r4)));
+    // 複素数は実部と虚部を eqv? で比べる。正確さが違えば別である。
+    var c3: Compnum = .{ .real = .fromFixnum(2), .imag = .fromFlonum(2.0) };
+    var c4: Compnum = .{ .real = .fromFixnum(1), .imag = .fromFlonum(3.0) };
+    var c5: Compnum = .{ .real = .fromFlonum(1.0), .imag = .fromFlonum(2.0) };
+    try std.testing.expect(!cv.isEqv(.fromCompnum(&c3)));
+    try std.testing.expect(!cv.isEqv(.fromCompnum(&c4)));
+    try std.testing.expect(!cv.isEqv(.fromCompnum(&c5)));
+}
+
+test "ratnum and compnum parts that are equal bignums in different objects are eqv?, and not eq?" {
+    var limbs = [_]Limb{ 0, 1 };
+    var b1: Bignum = .{ .limbs = &limbs, .positive = true };
+    var b2: Bignum = .{ .limbs = &limbs, .positive = true };
+    // 部分は `eqv?` で比べる。`eq?` で比べると、別のオブジェクトの bignum が別になる。
+    var r1: Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromBignum(&b1) };
+    var r2: Ratnum = .{ .numerator = .fromFixnum(1), .denominator = .fromBignum(&b2) };
+    try std.testing.expect(Value.fromRatnum(&r1).isEqv(.fromRatnum(&r2)));
+    try std.testing.expect(!Value.fromRatnum(&r1).isEq(.fromRatnum(&r2)));
+    var r3: Ratnum = .{ .numerator = .fromBignum(&b1), .denominator = .fromFixnum(3) };
+    var r4: Ratnum = .{ .numerator = .fromBignum(&b2), .denominator = .fromFixnum(3) };
+    try std.testing.expect(Value.fromRatnum(&r3).isEqv(.fromRatnum(&r4)));
+    try std.testing.expect(!Value.fromRatnum(&r3).isEq(.fromRatnum(&r4)));
+    var c1: Compnum = .{ .real = .fromBignum(&b1), .imag = .fromFixnum(1) };
+    var c2: Compnum = .{ .real = .fromBignum(&b2), .imag = .fromFixnum(1) };
+    try std.testing.expect(Value.fromCompnum(&c1).isEqv(.fromCompnum(&c2)));
+    try std.testing.expect(!Value.fromCompnum(&c1).isEq(.fromCompnum(&c2)));
+    var c3: Compnum = .{ .real = .fromFixnum(1), .imag = .fromBignum(&b1) };
+    var c4: Compnum = .{ .real = .fromFixnum(1), .imag = .fromBignum(&b2) };
+    try std.testing.expect(Value.fromCompnum(&c3).isEqv(.fromCompnum(&c4)));
+    try std.testing.expect(!Value.fromCompnum(&c3).isEq(.fromCompnum(&c4)));
+}
+
+test "eq? holds of a flonum with the same bits, and of nothing else that differs" {
+    // Why: R7RS 6.1 は数の `eq?` を実装依存とする。flonum は即値なので、`eqv?` と同じく
+    // ビット列で比べる。
+    try std.testing.expect(Value.fromFlonum(1.5).isEq(.fromFlonum(1.5)));
+    try std.testing.expect(!Value.fromFlonum(1.5).isEq(.fromFlonum(2.5)));
+    try std.testing.expect(!Value.fromFlonum(0.0).isEq(.fromFlonum(-0.0)));
+    try std.testing.expect(!Value.fromFlonum(1.0).isEq(.fromFixnum(1)));
 }
 
 test "finding the root links the promises it passes straight to the root" {
@@ -2264,9 +2320,8 @@ test "the same object is eqv? to itself, but an object with the same contents is
 }
 
 test "eq? agrees with eqv? on every pair of the samples" {
-    // Why: R7RS 6.1 は、`eq?` が真を返してよいのは `eqv?` が真のときだけとする。段階1の
-    // 値では2つは一致する。段階4で数の種類が増えて `eqv?` が分かれたとき、この対応を
-    // どちらに寄せるかを決め直す。
+    // Why: R7RS 6.1 は、`eq?` が真を返してよいのは `eqv?` が真のときだけとする。サンプルには
+    // 中身が同じ別のヒープの数が無いので、2つは一致する。分かれる組は、数の種類ごとのテストで確かめる。
     var s: Samples = .{};
     s.link();
     const all = s.all();
