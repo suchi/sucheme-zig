@@ -107,3 +107,7 @@ not-yet
 # 真を返してよいのは eqv? が真のときだけとする。この実装は、eqv? が真の flonum に真を返す。
 (list (eq? 1.5 1.5) (let ((x 2.5)) (eq? x x)) (eq? 1.5 2.5) (memq 3.4 '(1.3 3.4)))
 (#t #t #f (3.4))
+
+# `=>` の節が最後のときも、case は eqv? で比べる(キーが bignum と ratnum)。
+(list (case (expt 2 100) ((1267650600228229401496703205376) => (lambda (x) 'big))) (case 1/2 ((1/2) => (lambda (x) 'half))))
+(big half)
