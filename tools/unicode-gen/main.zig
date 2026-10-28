@@ -513,6 +513,70 @@ test "run: a missing input directory and an unknown argument exit with their own
     try expectRun(arena, &tmp, &.{ "--check", "--wite" }, 2, "usage: unicode-gen");
 }
 
+test "run: a missing SHA256SUMS or a missing input file exits 1 and names the file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    const texts = realTexts();
+
+    // 入力のディレクトリはあるが、ハッシュの一覧が無い。
+    var bare = std.testing.tmpDir(.{});
+    defer bare.cleanup();
+    try bare.dir.createDirPath(io, ucd_dir);
+    try expectRun(arena, &bare, &.{}, 1, "cannot read tools/unicode-gen/ucd/SHA256SUMS");
+
+    // 入力が1つ無い。どれが無くても、そのファイルの名前で止まる。
+    for (input_names, 0..) |name, missing| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.createDirPath(io, ucd_dir);
+        var dir = try tmp.dir.openDir(io, ucd_dir, .{});
+        defer dir.close(io);
+        try dir.writeFile(io, .{ .sub_path = sums_name, .data = real_data.sums });
+        for (input_names, texts, 0..) |present, text, i| {
+            if (i != missing) try dir.writeFile(io, .{ .sub_path = present, .data = text });
+        }
+        const message = try std.fmt.allocPrint(arena, "cannot read {s}/{s}", .{ ucd_dir, name });
+        try expectRun(arena, &tmp, &.{}, 1, message);
+    }
+}
+
+test "run: a SHA256SUMS that lacks a line for an input exits 1 and names the file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // 先頭ではない行(PropList.txt)を落とす。
+    var kept: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, real_data.sums, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "PropList.txt") != null) continue;
+        try kept.print(arena, "{s}\n", .{line});
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try layOut(&tmp, realTexts(), null);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ucd_dir ++ "/" ++ sums_name, .data = kept.items });
+    try expectRun(arena, &tmp, &.{}, 1, "does not list PropList.txt");
+    try expectRun(arena, &tmp, &.{"--write"}, 1, "does not list PropList.txt");
+}
+
+test "run: --write leaves nothing of an older table that was longer" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const table = try generatedTable(arena);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try layOut(&tmp, realTexts(), try std.mem.concat(arena, u8, &.{ table, "tail" }));
+    try expectRun(arena, &tmp, &.{"--write"}, 0, "wrote");
+    const written = try tmp.dir.readFileAlloc(std.testing.io, out_path, arena, .unlimited);
+    try std.testing.expectEqualStrings(table, written);
+}
+
 test {
     std.testing.refAllDecls(@This());
     _ = ucd;

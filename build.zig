@@ -520,6 +520,13 @@ pub fn build(b: *std.Build) void {
         run_check_docs.addArg("--root");
         run_check_docs.addArg(t.path);
     }
+    // 生成器の `main` が `run` の戻り値を終了コードにしていることの検査。単体テストは `run` を
+    // 呼ぶので、`main` が戻り値を捨てて 0 を返しても落ちず、表が違う状態の `check-unicode` が
+    // 緑になる。未知の引数は、入力にも表にも触れずに 2 で終わるので、この run だけで確かめられる。
+    const run_unicode_exit = b.addRunArtifact(unicode_gen);
+    run_unicode_exit.addArg("--bogus");
+    run_unicode_exit.expectExitCode(2);
+    test_step.dependOn(&run_unicode_exit.step);
     // 実行ファイルそのものに大きなリストを通す。単体テストと Scheme のテストは、実行ファイルの
     // `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられない(大きなリストを
     // 複数リストの `map` に渡すと、`SafeAllocator` の `munmap` が失敗して落ちた)。

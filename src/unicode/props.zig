@@ -220,6 +220,8 @@ test "full mappings" {
     try expectFull(fullUpcase, 0x0149, &.{ 0x02BC, 'N' });
     try expectFull(fullUpcase, 0x0390, &.{ 0x0399, 0x0308, 0x0301 });
     try expectFull(fullUpcase, 0xFB00, &.{ 'F', 'F' });
+    // 完全写像の表の最後の行(二分探索の端)。
+    try expectFull(fullUpcase, 0x1DF95, &.{ 'S', 'S' });
     // 完全写像を持たない文字は、単純写像の1文字になる。
     try expectFull(fullUpcase, 'a', &.{'A'});
     try expectFull(fullUpcase, '1', &.{'1'});
