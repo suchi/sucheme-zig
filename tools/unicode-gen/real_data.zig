@@ -187,6 +187,20 @@ test "real data: decimal digit runs agree with the Numeric flag" {
     }
 }
 
+test "real data: two-stage tables return every value" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const d = try load(arena);
+    const emit = @import("emit.zig");
+    // 合成した入力では区画が数個しかなく、区画の同一判定の誤りが出ない。実データの全符号位置で戻す。
+    inline for (.{ d.flags, d.upper, d.lower, d.fold }) |values| {
+        const T = @typeInfo(@TypeOf(values)).pointer.child;
+        const t = try emit.buildTwoStage(T, arena, values);
+        for (values, 0..) |v, cp| try std.testing.expectEqual(v, emit.lookup(T, t, @intCast(cp)));
+    }
+}
+
 test "real data: the version is the vendored one" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
