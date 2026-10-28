@@ -264,6 +264,18 @@ GC は機械のステップの境目でしか走らない([ADR-0031](../adr/0031
 - 生成結果: `src/unicode/tables.zig`(生成物、手で編集しない)と、引く関数の `src/unicode/props.zig`(手で書く)。生成元の Unicode の版とファイル名を、生成物の先頭のコメントに書く。
 - 生成物が入力から導かれたことは、既存の `check-extract` と同じ形の比較モードで検査する。検証コマンドの表に行を足すかは、4u1 で `build.zig` の step を作ってから決める(表の行は、step が実在するときに足す規則)。
 
+### 4u1 のミューテーション査読の記録
+
+生成器のミューテーション 33 件のうち、実データのテストと出力側の表明(R1)、F 行の昇順のテスト(R3)を足して対応した。残りは次のとおり、足さない理由と一緒に記録する。
+
+- R2(4u2 の前提条件): `main.zig` の流れの検査を、4u2 が `check-unicode` を CI に入れる前に足す。検査するのは、引数なしが比較であること、表が無いときと不一致のときに非ゼロで終わること、`--write` だけが書くこと、`SHA256SUMS` の不一致で非ゼロになること、表を 1 バイト書き換えた状態で `zig build check-unicode` が失敗すること。足さないまま CI に入れると、`check_only` の既定を false にしても、比較が先頭の半分だけでも、`SHA256SUMS` の不一致を無視しても、緑のままになる(検証が黙って止まる)。いまは CI に入れないので、このスライスでは足さない。
+- O1(任意): `parseProperties` のテストに、範囲の始端と終端、`Other_White_Space` のような別名の行を足す。実データでは R1 の既知値のテストが同じ経路を通るので、足さない。
+- O2(任意): 想定外の入力に対する保護(`First`/`Last` 行の判定、数字の並びの値と連続、`digit_starts` の昇順、`hi < lo`、0x10FFFF 超、`DuplicateMapping`、`SpecialCasing` の大文字側の食い違い、`VersionMismatch`、F の結果が 1 文字)のテストを足す。実データではこれらを書き換えても出力が変わらず、保護が働くのは入力が壊れたときだけで、誤った表は出さず止まるだけなので、足さない。
+- O3(任意): 内容の違う区画を数百並べ、`lookup` で復元できることを見るテストを足す。実データの全符号位置を R1 と出力側の表明で見ており、区画の重複排除の誤りはそちらで見えるので、足さない。
+- O4(任意): `verifySum` に、バイナリ指定の `*` が付く書式(`<hex> *A.txt`)のケースを足す。取り込んだ `SHA256SUMS` は空白 2 つの書式だけを使うので、足さない。
+- F1(任意): `finishFull` の `list.items[1..]` は、空のリストで範囲外になり panic する。実データには空の表が無く、止まるだけで誤った表は出さないので、直さない。
+- F2(任意): `build.zig` の `checkStepRuns(check_unicode_step, unicode_gen, 1)` は step の引数の数を固定するが、`main.zig` の既定は固定しない。`check-extract` と同じ構造なので、直さない。
+
 ### 表が答えること
 
 設計文書の5種(単純大文字小文字写像、単純ケースフォールディング、完全大文字小文字写像、属性の真偽値、十進数字の値)を、`src/unicode/props.zig` の関数として出す。
@@ -307,7 +319,7 @@ pub fn digitValue(c: u21) ?u4
 | 4i `(scheme complex)` と compnum の演算 | 6つの識別子が束縛され、`sqrt` `exp` `log` が複素数で動く(複素数の四則と `=` は 4f) | `src/num/complex.zig`(新規) `src/prim/complex.zig`(新規) `lib/scheme/complex.sld`(新規) | T2 | 4g、4h。合意を求める点の3 | 不可 | 中〜大 |
 | 4j `eq?` と `eqv?` の分離とフィーチャ | `memq` と `memv`、`assq` と `assv` を区別するテストが通り、`features` が4つのフィーチャを返す。bignum、ratnum、compnum が `eqv?` と `equal?` で値として比べられ、`case` が `(case 1/2 ((1/2) 'a) (else 'b))` で `a` を返す。`syntax-rules` のパターンに、flonum、bignum、ratnum、compnum を書ける(4r で読めるようになったが、`src/syntax/rules.zig` が拒否する。R7RS 7.1.3 の `<pattern datum>` は `<number>` を含む) | `src/value.zig`(`isEq` と `isEqv`) `src/syntax/rules.zig`(パターンの定数の分岐だけ) `src/features.zig` `tests/scheme/` | T1 | 4g(4i を含めるなら 4i) | 不可 | 小 |
 | 4u1 Unicode の生成ツール | `tools/unicode-gen/` が UCD から表を生成し、比較モードで生成物の同期を検査する | `tools/unicode-gen/`(新規) `build.zig`(step の追加だけ) | T2(枠は T1) | 合意を求める点の1、7 | 可(4a〜4c と) | 中 |
-| 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される。4u1 からの引き継ぎ: `src/unicode/tables.zig` を置き、`props.zig` から参照してテストの根に入れる。そのうえで `zig build check-unicode` を `ci.yml` と `full.yml` の `windows` ジョブに足し、検証コマンドの表に行を足す | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
+| 4u2 生成結果と引く関数、サイズの実測 | `src/unicode/` の表が全符号位置で生成ツールの入力と一致し、`ReleaseSmall` の WASM の大きさが記録される。4u1 からの引き継ぎ: `src/unicode/tables.zig` を置き、`props.zig` から参照してテストの根に入れる。そのうえで `zig build check-unicode` を `ci.yml` と `full.yml` の `windows` ジョブに足し、検証コマンドの表に行を足す。その前に、生成器の `main.zig` の流れの検査(「4u1 のミューテーション査読の記録」の R2)を足す | `src/unicode/`(新規) | T2 | 4u1 | 可 | 中 |
 | 4u3 `(scheme char)` と文字列の大文字小文字 | `(scheme char)` の識別子が束縛され、R7RS 6.6 と 6.7 の例(`(char-alphabetic? #\x03B1)` など)が通る | `src/prim/char.zig` の追加分 `src/prim/string_case.zig`(新規) `lib/scheme/char.sld`(新規) | T2 | 4u2。合意を求める点の2 | 可 | 中 |
 | 4u4 リーダの ASCII でない識別子(L2 の作業) | リーダが ASCII でない識別子を読み、`#!fold-case` が Unicode の表で畳み込む | `src/reader.zig` | T2 | 4u2。L2 のレーンが実装する | L2 のほかの作業と順に | 小 |
 | 4z リリース v0.4.0 と段階の完了 | v0.4.0 が公開され、段階4の完了の手続きが済む | リリース関係の文書 | T2 | ほかのすべて | 不可 | 小 |
@@ -488,13 +500,13 @@ pub fn digitValue(c: u21) ?u4
 - R7RS が数の綴りの大文字小文字を区別しないこと(2.1、7.1)、`(eqv? 0.0 -0.0)` を `#f`、`(eqv? +nan.0 +nan.0)` を未規定としていること(6.1)。原文は `docs/spec/` の PDF で引いた。
 
 - 浮動小数点数の書式と解析の4点(上の「浮動小数点数の書式と解析の実験」)。Zig 0.17.0 で実行して確かめた。
+- UCD のライセンスの表示の要件。Unicode License V3 の原文(<https://www.unicode.org/license.txt>)を 2026-10-28 に読んだ。条件は、著作権と許諾の通知を複製に添えることだけである(4u1)。
 
 確かめられなかったこと:
 
 - `std.fmt.float.binaryToDecimal` が、版をまたいで保たれる API かどうか。
 - `@sizeOf(Value)` が flonum のバリアントを足しても変わらないこと(同じ形の小さな共用体では変わらなかった)。
 - ほかの Scheme 処理系の指数表記の範囲と、Unicode の表の段数の慣行。
-- UCD のライセンスの表示の要件。
 - `string-downcase` の語末のシグマの扱いを R7RS 6.7 が求めるか。
 
 ## 進捗
