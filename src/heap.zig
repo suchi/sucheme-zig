@@ -30,6 +30,7 @@ const Bignum = value_mod.Bignum;
 const Ratnum = value_mod.Ratnum;
 const Compnum = value_mod.Compnum;
 const Limb = value_mod.Limb;
+const Port = value_mod.Port;
 const Node = value_mod.Node;
 const Lambda = value_mod.Lambda;
 const Parameterize = value_mod.Parameterize;
@@ -461,7 +462,7 @@ pub fn cellBytes(comptime T: type) usize {
 
 /// The bytes the object owns beyond its cell: the slots of a frame, the bytes
 /// of a string, the elements of a vector, the fields of a record, the values of
-/// a multiple-values object, the limbs of a bignum.
+/// a multiple-values object, the limbs of a bignum, the bytes of a port.
 /// ペイロードはセルとは別に確保され、セルと一緒に返される。
 /// ペイロードを持つ型は `ownsPayload` が答える。この switch の分岐と同じ集合である。
 fn payloadBytes(comptime T: type, object: *const T) usize {
@@ -473,6 +474,9 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Record => object.fields.len * @sizeOf(Value),
         MultipleValues => object.items.len * @sizeOf(Value),
         Bignum => object.limbs.len * @sizeOf(Limb),
+        Port => switch (object.backing) {
+            .memory => |m| m.bytes.len,
+        },
         Node => switch (object.*) {
             .sequence => |nodes| nodes.len * @sizeOf(*const Node),
             .call => |c| c.operands.len * @sizeOf(*const Node),
@@ -489,7 +493,7 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
 /// 作った後に `allocAttached` の列を持たせる(展開器が、子を決める前に節点を作るため)。
 fn ownsPayload(comptime T: type) bool {
     return switch (T) {
-        Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum => true,
+        Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum, Port => true,
         else => false,
     };
 }
@@ -615,7 +619,7 @@ pub const Heap = struct {
     ///
     /// ペイロードを持つオブジェクト(`ownsPayload`)は、専用の関数 `createFrame`、
     /// `createString`、`createVector`、`createBytevector`、`createRecord`、
-    /// `createMultipleValuesIn`、`createBignum` で作る。
+    /// `createMultipleValuesIn`、`createBignum`、`createMemoryPort` で作る。
     pub fn create(self: *Heap, comptime T: type, value: T) Error!*T {
         return self.createIn(.limit, T, value);
     }
@@ -796,6 +800,44 @@ pub const Heap = struct {
         cell.value = .{ .limbs = copy, .positive = n.positive };
         self.link(Bignum, cell, total);
         return &cell.value;
+    }
+
+    /// A new open port reading from or writing to memory, holding a copy of
+    /// `contents`, which for a textual port must be valid UTF-8 (ADR-0008).
+    /// コピーがペイロードで、先に確保し、セルを確保できなければ返す(`createBytevector` と
+    /// 同じ単位である)。入力のポートは、文字列の UTF-8 のバイト列かバイトベクタの中身を
+    /// 渡す。出力のポートは空で作り、書くときに `growPortBytes` で伸ばす。
+    pub fn createMemoryPort(self: *Heap, direction: Port.Direction, element: Port.Element, contents: []const u8) Error!*Port {
+        if (element == .textual) std.debug.assert(std.unicode.utf8ValidateSlice(contents));
+        const total = try self.reserveWithPayload(.limit, Port, contents.len, 1);
+        const copy = try self.backing.dupe(u8, contents);
+        errdefer self.backing.free(copy);
+        const cell = try self.backing.create(Cell(Port));
+        cell.value = .{ .direction = direction, .element = element, .backing = .{ .memory = .{ .bytes = copy, .len = copy.len } } };
+        self.link(Port, cell, total);
+        return &cell.value;
+    }
+
+    /// Gives the memory port `port` room for at least `capacity` bytes,
+    /// keeping the bytes it holds.
+    ///
+    /// Why: 出力の文字列ポートとバイトベクタポートは、書くたびに伸びる領域を持つ
+    /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の3)。`replaceStringBytes`
+    /// と同じく、新しい領域を先に確保して写してから差し替えるので、失敗したときは
+    /// ポートも計上も元のままである。上限の検査は増える分だけを見る。伸ばし方(倍にするか)は
+    /// 呼び出し側が `capacity` で決める。今の大きさ以下を求められたら、何もしない。
+    /// 入力のポートは、領域のすべてにデータを持つので、伸ばさない。
+    pub fn growPortBytes(self: *Heap, port: *Port, capacity: usize) Error!void {
+        std.debug.assert(port.direction == .output);
+        const memory = &port.backing.memory;
+        if (capacity <= memory.bytes.len) return;
+        try self.reserve(.limit, capacity - memory.bytes.len);
+        const new = try self.backing.alloc(u8, capacity);
+        @memcpy(new[0..memory.len], memory.bytes[0..memory.len]);
+        self.accounted = self.accounted - memory.bytes.len + capacity;
+        if (self.accounted > self.peak) self.peak = self.accounted;
+        self.backing.free(memory.bytes);
+        memory.bytes = new;
     }
 
     /// Puts `bytes`, which the bytevector will own, in a new cell.
@@ -1113,6 +1155,9 @@ pub const Heap = struct {
                     Record => self.backing.free(cell.value.fields),
                     MultipleValues => self.backing.free(cell.value.items),
                     Bignum => self.backing.free(cell.value.limbs),
+                    Port => switch (cell.value.backing) {
+                        .memory => |m| self.backing.free(m.bytes),
+                    },
                     Node => switch (cell.value) {
                         .sequence => |nodes| self.backing.free(nodes),
                         .call => |c| self.backing.free(c.operands),
@@ -2492,7 +2537,7 @@ test "a bignum is held to the limit by its limbs, and a failure leaves the accou
 
 test "create refuses exactly the heap types that own a payload" {
     // 期待する集合は `ownsPayload` から導かず、手で挙げる。導くと、一覧の漏れを検出できない。
-    const with_payload = [_]type{ Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum };
+    const with_payload = [_]type{ Frame, String, Vector, Bytevector, Record, MultipleValues, Bignum, Port };
     inline for (object_types) |T| {
         const expected = comptime for (with_payload) |U| {
             if (U == T) break true;
@@ -2511,4 +2556,116 @@ test "when the cell cannot be allocated the limbs of a bignum are given back" {
     try std.testing.expectEqual(0, heap.accounted);
     try std.testing.expectEqual(0, heap.count);
     try std.testing.expectEqual(1, failing.deallocations);
+}
+
+test "a memory port accounts for its bytes as well as its cell, and keeps a copy of them" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    var source = [_]u8{ 'h', 'i' };
+    const p = try heap.createMemoryPort(.input, .textual, &source);
+    source[0] = 'x';
+    try std.testing.expectEqualStrings("hi", p.backing.memory.bytes);
+    try std.testing.expectEqual(2, p.backing.memory.len);
+    try std.testing.expectEqual(0, p.backing.memory.pos);
+    try std.testing.expectEqual(.input, p.direction);
+    try std.testing.expectEqual(.textual, p.element);
+    try std.testing.expect(p.open);
+    try std.testing.expect(!p.fold_case);
+    try std.testing.expectEqual(cellBytes(Port) + 2, heap.accounted);
+    // 出力のポートは空で始まり、領域もまだ持たない。
+    const q = try heap.createMemoryPort(.output, .binary, "");
+    try std.testing.expectEqual(0, q.backing.memory.len);
+    try std.testing.expectEqual(.output, q.direction);
+    try std.testing.expectEqual(.binary, q.element);
+    try std.testing.expectEqual(2 * cellBytes(Port) + 2, heap.accounted);
+}
+
+test "a collection keeps a port a value reaches, and frees it with its bytes once nothing does" {
+    for ([_]usize{ 0, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const p = try heap.createMemoryPort(.output, .textual, "abc");
+        // ペアの中からでも、たどる。
+        const held = try heap.cons(.fromPort(p), .empty_list_value);
+        heap.collect(TestRoots{ .values = &.{held} });
+        try std.testing.expectEqual(2, heap.count);
+        try std.testing.expectEqual(cellBytes(Pair) + cellBytes(Port) + 3, heap.accounted);
+        try std.testing.expectEqualStrings("abc", p.backing.memory.bytes);
+        // 伸ばした領域も、回収のときに計上ごと返る。
+        try heap.growPortBytes(p, 16);
+        heap.collect(TestRoots{ .values = &.{.fromPort(p)} });
+        try std.testing.expectEqual(1, heap.count);
+        try std.testing.expectEqual(cellBytes(Port) + 16, heap.accounted);
+        // 何からも届かなければ、領域ごと計上から外れる。
+        heap.collect(TestRoots{});
+        try std.testing.expectEqual(0, heap.count);
+        try std.testing.expectEqual(0, heap.accounted);
+    }
+}
+
+test "a memory port is held to the limit by its bytes, and a failure leaves the account as it was" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) + 2 });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createMemoryPort(.input, .binary, "abc"));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(0, heap.count);
+    _ = try heap.createMemoryPort(.input, .binary, "ab");
+    try std.testing.expectEqual(cellBytes(Port) + 2, heap.accounted);
+}
+
+test "when the cell cannot be allocated the bytes of a memory port are given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    // 1回目の確保はバイト列、2回目はセルで、これが失敗する。
+    try std.testing.expectError(error.OutOfMemory, heap.createMemoryPort(.input, .textual, "ab"));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(1, failing.deallocations);
+}
+
+test "growing the bytes of a memory port keeps what it holds, and accounts for the new room" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const p = try heap.createMemoryPort(.output, .textual, "");
+    try heap.growPortBytes(p, 4);
+    try std.testing.expectEqual(4, p.backing.memory.bytes.len);
+    try std.testing.expectEqual(0, p.backing.memory.len);
+    @memcpy(p.backing.memory.bytes[0..3], "abc");
+    p.backing.memory.len = 3;
+    try heap.growPortBytes(p, 10);
+    try std.testing.expectEqual(10, p.backing.memory.bytes.len);
+    try std.testing.expectEqual(3, p.backing.memory.len);
+    try std.testing.expectEqualStrings("abc", p.backing.memory.bytes[0..3]);
+    try std.testing.expectEqual(cellBytes(Port) + 10, heap.accounted);
+    // 今の大きさ以下を求めても、縮めない。
+    try heap.growPortBytes(p, 5);
+    try std.testing.expectEqual(10, p.backing.memory.bytes.len);
+    try std.testing.expectEqual(cellBytes(Port) + 10, heap.accounted);
+}
+
+test "growing the bytes of a memory port past the limit leaves the port and the account as they were" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) + 8 });
+    defer heap.deinit();
+    const p = try heap.createMemoryPort(.output, .binary, "");
+    try heap.growPortBytes(p, 8);
+    @memcpy(p.backing.memory.bytes[0..2], "ab");
+    p.backing.memory.len = 2;
+    const before = p.backing.memory.bytes;
+    try std.testing.expectError(error.HeapLimit, heap.growPortBytes(p, 9));
+    try std.testing.expectEqual(before.ptr, p.backing.memory.bytes.ptr);
+    try std.testing.expectEqual(8, p.backing.memory.bytes.len);
+    try std.testing.expectEqualStrings("ab", p.backing.memory.bytes[0..2]);
+    try std.testing.expectEqual(cellBytes(Port) + 8, heap.accounted);
+}
+
+test "when the new bytes cannot be allocated a memory port keeps its old ones" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 2 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    // 1回目はバイト列、2回目はセル、3回目は伸ばした領域で、これが失敗する。
+    const p = try heap.createMemoryPort(.output, .binary, "ab");
+    try std.testing.expectError(error.OutOfMemory, heap.growPortBytes(p, 8));
+    try std.testing.expectEqualStrings("ab", p.backing.memory.bytes);
+    try std.testing.expectEqual(cellBytes(Port) + 2, heap.accounted);
 }

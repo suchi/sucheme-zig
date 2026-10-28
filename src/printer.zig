@@ -109,6 +109,8 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             // 約束も、R7RS 4.2.5 は外部表現を決めていない。強制済みかは書かない(書くと、`write` が
             // 約束の状態を読む表記を作ってしまう)。
             .promise => try out.writeAll("#<promise>"),
+            // ポートも、R7RS 6.13 は外部表現を決めていない。向きや開閉の状態は書かない。
+            .port => try out.writeAll("#<port>"),
             // 複数値のオブジェクトは、1個を要求する継続に届くと誤りになるので、データの中には
             // 入らない。最上位の値は `Interpreter` が1つずつ書く。漏れたときに分かるよう、
             // それでも書く。
@@ -336,6 +338,18 @@ test "write and display show a continuation as #<continuation>" {
     try std.testing.expectEqualStrings("#<continuation>", try f.displayed(&buf, .fromContinuation(&k)));
     const l = try f.list(&.{ .fromContinuation(&k), .fromFixnum(1) }, .empty_list_value);
     try std.testing.expectEqualStrings("(#<continuation> 1)", try f.written(&buf, l));
+}
+
+test "write and display show a port as #<port>, whatever it holds" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var bytes = [_]u8{ 'h', 'i' };
+    var p: value_mod.Port = .{ .direction = .input, .element = .textual, .backing = .{ .memory = .{ .bytes = &bytes, .len = 2 } } };
+    try std.testing.expectEqualStrings("#<port>", try f.written(&buf, .fromPort(&p)));
+    try std.testing.expectEqualStrings("#<port>", try f.displayed(&buf, .fromPort(&p)));
+    const l = try f.list(&.{ .fromPort(&p), .fromFixnum(1) }, .empty_list_value);
+    try std.testing.expectEqualStrings("(#<port> 1)", try f.written(&buf, l));
 }
 
 test "write prints the unspecified value as #<unspecified>" {
