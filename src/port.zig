@@ -448,6 +448,24 @@ test "the port writer writes what goes through it to the port, in order, past it
     try std.testing.expectEqual(null, w.failure);
 }
 
+test "the port writer writes a vector and a splat larger than its buffer once each" {
+    // `drain` が、繰り返しの全回と、繰り返しより前の要素を書き、その数を返すことを固定する。
+    // 返す数が足りないと、`writeVecAll` と `writeSplatAll` が同じ要素を二度書く。
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try f.output(.textual);
+    var buf: [4]u8 = undefined;
+    var w: Writer = .init(&f.heap, null, p, &buf);
+    var vec = [_][]const u8{ "12", "345", "6789" };
+    try w.interface.writeVecAll(&vec);
+    var splat = [_][]const u8{ "x", "ab" };
+    try w.interface.writeSplatAll(&splat, 5);
+    try w.interface.flush();
+    try std.testing.expectEqualStrings("123456789xababababab", written(p));
+    try std.testing.expectEqual(null, w.failure);
+}
+
 test "the port writer keeps the error of the port, and reports WriteFailed to the printer" {
     var f: Fixture = undefined;
     f.init();
