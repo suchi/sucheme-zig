@@ -11,7 +11,8 @@
 //! | `-I` が最後の引数で、ディレクトリが続かない | stderr にそのオプションの名前を出す | 64 |
 //! | なし、または `-I <dir>` だけ(繰り返せる) | stdin が尽きるまで REPL を走らせる | 0 |
 //! | `<file>`(`-I <dir>` が前にあってもよい) | ファイルのプログラムを最後まで実行する | 0 |
-//! | 同上で、実行時エラーが起きた | stderr に `error: ` と説明を出して、そこで止める | 1 |
+//! | 同上で、実行時エラーが起きた | stderr に `error: ` と説明を出して、そこで止める。プログラムの出力も stdout に書けなければ、続けて `error: cannot write to standard output` を出す | 1 |
+//! | 同上で、プログラムの出力を stdout に書けない(閉じている、満杯、パイプの先が閉じた) | stderr に `error: cannot write to standard output` を出して、そこで止める | 74 |
 //! | 同上で、ファイルを開けない・読めない・大きすぎる | stderr に `cannot read <file>: ` と理由を出す | 66 |
 //! | `<file>` の後ろに引数が続く | stderr に説明を出す(プログラムへの引数は段階5) | 64 |
 //! | `-` だけ | オプションでなく名前として扱う。標準入力のプログラムは未実装と伝える | 69 |
@@ -30,7 +31,9 @@
 //!
 //! ファイルのプログラムは、REPL と同じ初期環境(`(scheme base)`)で、先頭から1つずつ
 //! 評価する。R7RS 5.1 のプログラムは `import` で始まるが、始まらなくてもよい。式の値は
-//! 出力しない。出力の手段(`display`)は段階5で入る。標準ライブラリのファイルは `-I` の
+//! 出力しない。プログラムが現在の出力ポートに書いたもの(`display`、`write-string` など)は
+//! stdout に出る。`current-error-port` への書き込みも、いまは stdout に出る(標準エラーに分ける
+//! のは後の段階)。標準入力は、プログラムからは読めない(最初から終わりにある)。標準ライブラリのファイルは `-I` の
 //! 探索ルートから読まれる(作業ディレクトリが先頭で、プログラムのファイルのあるディレクトリは
 //! 足されない)。ファイルの大きさの上限は 1 MiB(`max_program_bytes`)で、
 //! UTF-8 でなければ実行時エラーである。
@@ -141,7 +144,8 @@ pub fn main(init: std.process.Init) !void {
             try out.print(
                 "{s} {s}\n\nUsage: {s} [--version] [--help|-h] [-I <dir>]... [<file>]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
-                    "With a file, runs the program in it and prints nothing but errors.\n" ++
+                    "With a file, runs the program in it; what the program writes goes to stdout,\n" ++
+                    "and the values of its expressions are not printed.\n" ++
                     "-I <dir> adds a directory to search for the files of libraries; the working\n" ++
                     "directory is searched first.\n" ++
                     "Only the core of the language is bound for now; see docs/roadmap.md.\n",
@@ -218,6 +222,11 @@ pub const exit_no_input: u8 = 66;
 ///
 /// 64 は sysexits.h の EX_USAGE で、ここで慣習に最も近いものである。
 pub const exit_usage: u8 = 64;
+
+/// Exit status for a program whose output could not be written to stdout.
+///
+/// 74 は sysexits.h の EX_IOERR である。
+pub const exit_io_error: u8 = 74;
 
 /// The option that adds a directory to search for the files of libraries.
 pub const include_option = "-I";
@@ -387,17 +396,34 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     interp.console_out = out;
     var discard: std.Io.Writer.Discarding = .init(&.{});
     interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
-        error.WriteFailed => return e,
+        // 式の値は捨てているので、ここに来る書き込みの失敗は、プログラムの出力の標準出力である。
+        error.WriteFailed => return cannotWriteOutput(err),
         else => {
             // 端末では、プログラムの出力がエラーの説明より前に見えるよう、先に書き出す。
-            try out.flush();
+            // 書き出せなくても、元のエラーの説明は隠さない。終了コードは実行時エラーのままにする。
+            const flushed = if (out.flush()) true else |_| false;
             try err.print("error: {s}\n", .{interp.diagnostic()});
+            if (!flushed) try err.writeAll(cannot_write_output);
             try err.flush();
             return exit_runtime_error;
         },
     };
-    try out.flush();
+    out.flush() catch return cannotWriteOutput(err);
     return 0;
+}
+
+/// What the diagnostic is when the program's output cannot be written to stdout.
+const cannot_write_output = "error: cannot write to standard output\n";
+
+/// Reports that the program's output could not be written, and gives the exit status.
+/// Why: 標準出力が閉じているか満杯か、パイプの先が読み終えている(`| head -c 0`)。どれも
+/// プログラムの誤りでなく出力先の失敗なので、実行時エラー(1)と分けて、入出力の誤り(74)にする。
+/// パイプの先が閉じた場合も、黙らずに同じ診断を出す。失敗の種類を見分けずに済み、出力が
+/// 欠けたことが分かるからである。
+fn cannotWriteOutput(err: *std.Io.Writer) !u8 {
+    try err.writeAll(cannot_write_output);
+    try err.flush();
+    return exit_io_error;
 }
 
 test "classify recognises --version" {
@@ -849,9 +875,59 @@ fn runProgramWithOutput(text: []const u8, out_buf: []u8, err_buf: []u8) !struct 
     const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
     defer std.testing.allocator.free(path);
     var out: std.Io.Writer = .fixed(out_buf);
+    const r = try runProgramTo(text, &out, err_buf);
+    return .{ .status = r.status, .out = out.buffered(), .err = r.err };
+}
+
+/// Writes `text` to a file in a fresh directory and runs it with `out` as stdout;
+/// returns the status and stderr.
+fn runProgramTo(text: []const u8, out: *std.Io.Writer, err_buf: []u8) !struct { status: u8, err: []const u8 } {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
+    defer std.testing.allocator.free(path);
     var err: std.Io.Writer = .fixed(err_buf);
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &out, &err);
-    return .{ .status = status, .out = out.buffered(), .err = err.buffered() };
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, out, &err);
+    return .{ .status = status, .err = err.buffered() };
+}
+
+/// A writer that keeps up to `buffer` bytes and fails when it has to write them out,
+/// like stdout that is closed or full.
+fn failingStdout(buffer: []u8) std.Io.Writer {
+    const failing = struct {
+        fn drain(_: *std.Io.Writer, _: []const []const u8, _: usize) std.Io.Writer.Error!usize {
+            return error.WriteFailed;
+        }
+    };
+    return .{ .vtable = &.{ .drain = failing.drain }, .buffer = buffer };
+}
+
+test "runFile reports output it cannot write to stdout, and exits 74" {
+    // 書き手の領域より多く書くと、プログラムの途中で書けなくなる。
+    var small: [4]u8 = undefined;
+    var out = failingStdout(&small);
+    var eb: [256]u8 = undefined;
+    const r = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hello\")\n(display \"never\")\n", &out, &eb);
+    try std.testing.expectEqual(exit_io_error, r.status);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", r.err);
+    // 書いたものが領域に収まっても、終わりの書き出しで失敗すれば、同じである。
+    var room: [64]u8 = undefined;
+    var out2 = failingStdout(&room);
+    const r2 = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hi\")\n", &out2, &eb);
+    try std.testing.expectEqual(exit_io_error, r2.status);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", r2.err);
+}
+
+test "runFile keeps the description of a runtime error when stdout cannot be written either" {
+    var room: [64]u8 = undefined;
+    var out = failingStdout(&room);
+    var eb: [256]u8 = undefined;
+    const r = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hi\")\n(car 1)\n", &out, &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", r.err);
 }
 
 test "runFile writes what the program writes to the console to stdout, and not the values" {
