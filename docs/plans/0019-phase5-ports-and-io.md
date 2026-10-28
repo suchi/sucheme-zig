@@ -100,6 +100,22 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 - 5q: `(scheme r5rs)` は、ほかのライブラリからの再輸出と、`null-environment` と `scheme-report-environment` である。数の手続き(`exact->inexact` など)は 0018 のライブラリを待つ。準拠マトリクスの、再輸出による識別子の重複は、roadmap の段階6の項目が解く。
 - 5r: 0016 の 3r と同じ手続き。v0.4.0 の公開より前には出さない(リリースは段階の完了条件で切る。[0017](0017-parallel-lanes.md) の合意を求める点の4)。
 
+### 5g のレビューの記録と、後のスライスへの申し送り
+
+5g のレビュー(suchi/sucheme-zig#205)で、ミューテーションが生き残ったが、テストを足さなかったもの:
+
+- `growPortBytes` の早期の戻りの条件 `capacity <= bytes.len` を `<` にしても、同じ大きさの確保と写しが1回増えるだけで、結果も計上も変わらない(同値)。
+- `growPortBytes` が古い領域から写す量を `len` から `bytes.len` に変えても、写す先の `len` より後ろは中身を約束しない部分なので、観測できる違いが無い(同値)。
+- `growPortBytes` の `assert(direction == .output)` と、`createMemoryPort` のテキストのポートの UTF-8 の `assert`。外しても緑だが、Zig のテストは panic を期待して書けないので、固定しない。
+
+5h と 5k が守る約束(型や表明では保証していないもの):
+
+- `Port.Memory` の `pos <= len <= bytes.len` は、型では保証されない。読み書きの関数(5h の `src/port.zig`)が保つ。
+- `growPortBytes` で伸ばした領域のうち、`bytes[len..]` は初期化されていない。`get-output-string` と `get-output-bytevector` は `len` までだけを読む。
+- 入力のポートに `growPortBytes` を呼ぶと、安全なビルドでは表明で止まる。入力のポートは、開いたときの写しを最後まで使い、伸ばさない。
+- `Port.Direction` は `input` か `output` の片方だけで、入出力の両方を持つポートは表せない。両方が要るポートを足すなら、型を変える。
+- テキストのポートのバイト列が妥当な UTF-8 であることは、`createMemoryPort` の表明(安全なビルドだけ)でしか確かめない。呼び出し側(5h の `open-input-string` など)は、検査済みの文字列のバイト列だけを渡す。
+
 ## 依存と実施順
 
 ```mermaid
@@ -459,7 +475,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5c | マージ済み。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | suchi/sucheme-zig#147 |
 | 5d | マージ済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | suchi/sucheme-zig#160 |
 | 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
-| 5g | PR 作成済み。`Value` の `port` と、ヒープの型 `Port`(`src/value.zig`)。裏付けは、文字列ポートとバイトベクタポートが共有する `memory` の1つだけで、どちらかは `element`(`textual` か `binary`)で分ける。確保は `Heap.createMemoryPort`、出力の領域を伸ばすのは `Heap.growPortBytes` で、5h が `src/heap.zig` を触らずに書けるよう、ここで置いた。`Kind` の網羅的な switch に `.port` を足すため、`src/prim/equiv.zig`、`src/prim/procedure.zig`、`src/prim/promise.zig`、`src/syntax/expand.zig` にも1行ずつ触れた(4d と同じ4か所) | (この PR。番号はレビューの修正で書く) |
+| 5g | PR 作成済み。`Value` の `port` と、ヒープの型 `Port`(`src/value.zig`)。裏付けは、文字列ポートとバイトベクタポートが共有する `memory` の1つだけで、どちらかは `element`(`textual` か `binary`)で分ける。確保は `Heap.createMemoryPort`、出力の領域を伸ばすのは `Heap.growPortBytes` で、5h が `src/heap.zig` を触らずに書けるよう、ここで置いた。`Kind` の網羅的な switch に `.port` を足すため、`src/prim/equiv.zig`、`src/prim/procedure.zig`、`src/prim/promise.zig`、`src/syntax/expand.zig` にも1行ずつ触れた(4d と同じ4か所)。レビューで足さなかったテストと、後のスライスへの申し送りは「5g のレビューの記録と、後のスライスへの申し送り」の節にある | suchi/sucheme-zig#205 |
 | 5h から 5r | 未着手 | - |
 
 ## 次にやること
