@@ -296,6 +296,35 @@ pub fn digitValue(c: u21) ?u4
 
 `string-downcase` のギリシャ文字シグマの語末の規則は、R7RS 6.7 が言語に依存しない写像を求めるかを、原文で確かめてから決める(未確認)。
 
+### 4u2 の WASM の大きさの実測
+
+合意を求める点の1(表の段数)と2(文字のレパートリの退避案)の判断材料である。測定日は 2026-10-28。Zig 0.17.0、UCD 18.0.0、区画の大きさは 128(`block_shift = 7`)。
+
+測り方: 引く関数 8 個(`has`、`simpleUpcase`、`simpleDowncase`、`simpleFoldcase`、`fullUpcase`、`fullDowncase`、`fullFoldcase`、`digitValue`)を `export` するだけの wasm32-freestanding のモジュールと、何も参照しないモジュールを、`-O ReleaseSmall` と `-O ReleaseSafe` で作って大きさを比べた。測定用のソースはリポジトリに置かない。表が参照されないと、リンカが表を落とすので、この比べ方で表の寄与だけが残る。
+
+| 最適化 | 表を参照しない | 表を参照する | 増分 |
+| --- | --- | --- | --- |
+| ReleaseSmall | 100 バイト | 196,139 バイト | 196,039 バイト |
+| ReleaseSafe | 5,474 バイト | 240,559 バイト | 235,085 バイト |
+
+- 表の生のサイズは、要素の型と個数から数えて 194,932 バイトである。内訳は、印が 72,448(区画の番号 17,408 と区画 55,040)、大文字が 40,960、小文字が 37,888、畳み込みが 39,424、十進数字の並びと完全写像が 4,212 バイトである。
+- gzip -9 をかけると、ReleaseSmall の表を参照するモジュールは 6,994 バイトになる。表は反復が多く、よく縮む。
+- 比べる相手: `zig build wasm` が作る `web/sucheme.wasm`(ReleaseSafe。表をまだ参照していない)は 3,747,471 バイトで、gzip -9 で 1,183,877 バイトである。表を参照すると、生のサイズで約 6.3% 増える。gzip 後は、ReleaseSmall の 6,994 バイトを当てた概算で約 0.6% 増える(ReleaseSafe の gzip 後は測っていない)。
+- 段数と型を変えた見積り。実データの配列を並べ直した計算で、生成器は変えていない。大文字小文字の差は最大 122,550 で、16 ビットに収まらないので、差の表は 32 ビットのままにする。
+
+| 構成 | 4つの二段表の合計(バイト) |
+| --- | --- |
+| 区画 128、印は 16 ビット(いま) | 190,720 |
+| 区画 256、印は 16 ビット | 188,416 |
+| 区画 128、印は 8 ビット | 163,200 |
+| 区画 256、印は 8 ビット | 154,624 |
+| 区画 64、印は 16 ビット | 227,072 |
+| 区画 512、印は 16 ビット | 231,424 |
+
+3段にする案は計算していない。
+
+勧める案: いまの2段、区画 128 のまま採る。転送は gzip 後で数 KB、メモリは生で約 190 KB で、いまの WASM の 6% 弱に収まる。印を 8 ビットにすると約 14% 小さくなるが、生成器の型の選び方を変える必要があり、効果が小さい。許容できる大きさの基準は、計画書にも設計文書にもまだ無い。基準の判断はユーザーが行う。
+
 ### リーダの識別子
 
 リーダ(L2)が ASCII でない識別子を読むときの規則と、畳み込み(`#!fold-case`)に `simpleFoldcase` を使うことは、roadmap の項目である。読み取りの規則(R7RS 7.1.1 の `<initial>` に入る Unicode の一般カテゴリ)は L2 が実装し、L4 は `props.zig` に一般カテゴリを引く関数を足す。どのカテゴリを要るかは、4u3 の着手の前に、R7RS 7.1.1 の原文で確かめる。
@@ -413,7 +442,7 @@ pub fn digitValue(c: u21) ?u4
 
 ## 合意を求める点
 
-勧める案を先に書く。勧める案でよいときは、そう返信する。小さく戻せる選択(ファイルの構成、内部の名前、テストの足し方)は、[AGENTS.md](../../AGENTS.md) の規則どおり、ここでは諮らず、PR に書く。1から4は [open-questions.md](../design/open-questions.md) の「段階4までに決める」の4行である。合意のあと、決まった3と4の行は消し、4の内容は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の表示の規則に書いた。1と2は実測が根拠なので、4u2 まで残す。
+勧める案を先に書く。勧める案でよいときは、そう返信する。小さく戻せる選択(ファイルの構成、内部の名前、テストの足し方)は、[AGENTS.md](../../AGENTS.md) の規則どおり、ここでは諮らず、PR に書く。1から4は [open-questions.md](../design/open-questions.md) の「段階4までに決める」の4行である。合意のあと、決まった3と4の行は消し、4の内容は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の表示の規則に書いた。1と2は実測が根拠なので、4u2 まで残す。実測は 4u2 で取った(「4u2 の WASM の大きさの実測」)。1の判断はユーザーの回答を待っている。
 
 1. Unicode の表の圧縮方式と段数。
    - 勧める案: 2段の表(上位のビットで区画を引き、同じ内容の区画を共有する)から始め、属性の5つはビット束にまとめる。完全写像と十進数字の値は、例外の少ない表なので、整列した区間表を二分探索する。4u2 で `ReleaseSmall` の WASM の大きさを測り、段数を増やすかを決める。
@@ -528,9 +557,10 @@ pub fn digitValue(c: u21) ?u4
 | 4h | マージ済み([suchi/sucheme-zig#202](https://github.com/suchi/sucheme-zig/pull/202))。`(scheme inexact)` の12個の識別子(`src/prim/inexact.zig`、`lib/scheme/inexact.sld`)。範囲の決め方は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「超越関数と平方根」 |
 | 4r | 実装済み。ブランチ `feature/phase4-slice-4r-reader-numbers`。リーダの `atom` が、fixnum に収まる十進整数以外を `num.parse` で読む。値を持たない綴り(`1/0`、`#e+inf.0`)と、読み取りの大きさの上限を超える綴りは `InvalidToken` になる。`IntegerOutOfRange` はリーダが返さなくなったが、`src/sucheme.zig` の `switch` のために誤りの集合に残している。準拠マトリクスの「落ちた」が 9 件増えたのは、読めるようになった bignum、ratnum、compnum を `eqv?` が同じオブジェクトかで比べる欠落(4j が直す)と、`(expt 0.0 0)` が `1.0` でなく `1` を返す `expt` の挙動による。受け入れた制約: 上限の内側でも、`#e1e1000000` を並べた入力は 1 個あたり約 0.25 秒かかる。上限を超えた正しい数(9 を 100,001 個並べた整数、`#e1e1000001`)は `unreadable token` になる |
 | 4i | 実装済み、ドラフトの PR で確認中。`(scheme complex)` の6個の識別子(`src/prim/complex.zig`、`lib/scheme/complex.sld`)、複素数の `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` と `expt`(`src/num/complex.zig`)、`f64` の範囲を超える正確な数の `log` と `atan`(`src/num/elementary.zig`)。ブランチ `feature/phase4-slice-4i-scheme-complex`。範囲の決め方は [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「超越関数と平方根」と「複素数の初等関数」 |
-| 4u1 | 作業中。生成器(`tools/unicode-gen/`)の読み取り、2段の表の組み立て、整形済みの出力、比較モード、`check-unicode` と `generate-unicode` の step は実装済み。UCD 18.0.0 の5ファイルは `tools/unicode-gen/ucd/` に取り込んだ(出典、ハッシュ、公開日の根拠は同じ場所の `SOURCE.md`)。この入力から生成器が `src/unicode/tables.zig` を作り、`check-unicode` が一致を確かめることはローカルで確認した。検証コマンド表の行(CI の変更が要るため承認待ち)が残る。生成物 `src/unicode/tables.zig` は 4u2 が置くので、それまで `check-unicode` は CI に入れない |
+| 4u1 | マージ済み([suchi/sucheme-zig#201](https://github.com/suchi/sucheme-zig/pull/201))。生成器(`tools/unicode-gen/`)、`check-unicode` と `generate-unicode` の step、UCD 18.0.0 の5ファイル(`tools/unicode-gen/ucd/`。出典、ハッシュ、公開日の根拠は同じ場所の `SOURCE.md`)。ミューテーション査読の記録は上の「4u1 のミューテーション査読の記録」 |
+| 4u2 | 実装済み、ドラフトの PR で確認中。ブランチ `feature/phase4-slice-4u2-unicode-tables`。`src/unicode/tables.zig`(生成物)と `src/unicode/props.zig`(引く関数)を置いた。全符号位置が生成器の入力と一致することは、`tools/unicode-gen/full_range.zig` が見る。ReleaseSafe で 0.4 秒ほどなので、規模を試す層(`tier.slow()`)には分けず、全コミットの層に置いた。R2(生成器の判断のテスト)は `tools/unicode-gen/main.zig` に足した。WASM の大きさの実測は下の「4u2 の WASM の大きさの実測」。`check-unicode` を CI と検証コマンド表に入れる変更は、`.github/workflows/` の変更を含むので、ユーザーの承認を待っている |
 | 4j | 実装済み、ドラフトの PR で確認中。`isEqv` が bignum、ratnum、compnum を値で比べ、`isEq` はこの3つを同一性で比べる。`features` が `exact-closed` `exact-complex` `ratios` `ieee-float` を返す。テストは `tests/scheme/0480-eq-eqv.txt`。ブランチ `feature/phase4-slice-4j-eq-eqv-features`。準拠マトリクスの「落ちた」は 30 件から 18 件に減った。残る 18 件は 4j の外である(桁数を丸めて書いた期待値 16 件(`4.2` の `b` を含む)、`(sqrt -1.0-0.0i)`、`(expt 0.0 0)`)。`syntax-rules` のパターンに flonum、bignum、ratnum、compnum を書けるようにした(`src/syntax/rules.zig` の定数の分岐。照合は `equal?` のまま。テストは `tests/scheme/0481-pattern-number-constants.txt`)。 |
-| 4k〜4z、4u2〜4u4 | 未着手 |
+| 4k〜4z、4u3〜4u4 | 未着手 |
 
 ## 次にやること
 
@@ -554,4 +584,4 @@ pub fn digitValue(c: u21) ?u4
 - 改善案(段階4の終わりの振り返りで検討する。実装はしない): `src/sucheme.zig` の include の上限のテストは、既定の上限で初期化した使用量に余裕(128 KiB)を足す形に直した。残る課題は、束縛を足すたびに初期化の使用量が増えることそのもので、未束縛の手続きがすべて入ると、ヒープの既定の上限に対する初期化の割合がどうなるかを、段階の終わりに測る。
 - 4r(リーダの数)は実装済みで、PR のレビューとマージを待つ。次の L2 の作業は 4u4(4u2 のあと)。
 - 別の変更で足す(4r のミューテーションレビューの指摘): `src/num/number.zig` の指数の上限の判定(`@abs(parseExponent(d.exponent)) > max_spelling_exponent`)の `>` を `>=` にしても、全テストが通る。`parse` のテストに、`#e1e1000000` が bignum を返し `#e1e1000001` が null になる境界の組を足す。読む時間は `ReleaseSafe` で約 0.6 秒なので、`tier.slow()` に置く。
-- Unicode の生成ツール(4u1)は、数値の層と並行に進められる。
+- Unicode の生成ツール(4u1)はマージ済みで、表と引く関数(4u2)は実装を終え、PR のレビューに入る。4u2 の残りは、ユーザーの判断が要る3点である: (1) 表の大きさを許容するか(上の「4u2 の WASM の大きさの実測」。勧める案は、いまの2段のまま採る)、(2) `check-unicode` を CI と検証コマンドの表に入れる `.github/workflows/` と `AGENTS.md` の変更(差分案を親のセッション経由で諮る)、(3) 全符号位置の一致テストを規模を試す層に分けず全コミットの層に置いたこと(0.4 秒ほどのため。戻すのは小さな変更)。次は 4u3(`(scheme char)` と文字列の大文字小文字)。

@@ -147,7 +147,7 @@
 - [x] `number->string` と `string->number` の全範囲(スライス 4a・4b・4e・4g-4。リーダの数の綴りは 4r)
 - [x] リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加(スライス 4r)
 - [ ] リーダが ASCII でない文字の識別子を読めるようにするとき、畳み込む読み手の畳み込みに Unicode の表を使う(段階4。それまで、リーダはそうした識別子を読めず、畳み込む読み手の `folded` が ASCII だけを assert する。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)
-- [ ] Unicode テーブルの生成ツールと生成結果
+- [x] Unicode テーブルの生成ツールと生成結果(スライス 4u1・4u2。`tools/unicode-gen/`、`src/unicode/`。`check-unicode` を CI に入れる変更は、ユーザーの承認を待っている)
 - [x] `(scheme inexact)`(スライス 4h。12個の識別子が束縛される。テストは `tests/scheme/0460-inexact.txt`)
 - [x] `(scheme complex)`(スライス 4i。6個の識別子が束縛される。テストは `tests/scheme/0470-complex.txt`)
 - [ ] `(scheme char)`(スライス 4u3)
