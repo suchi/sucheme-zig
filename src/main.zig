@@ -867,13 +867,6 @@ fn runProgram(text: []const u8, err_buf: []u8) !struct { status: u8, err: []cons
 /// Writes `text` to a file in a fresh directory and runs it; returns the status, stdout
 /// and stderr.
 fn runProgramWithOutput(text: []const u8, out_buf: []u8, err_buf: []u8) !struct { status: u8, out: []const u8, err: []const u8 } {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
-    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(dir);
-    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
-    defer std.testing.allocator.free(path);
     var out: std.Io.Writer = .fixed(out_buf);
     const r = try runProgramTo(text, &out, err_buf);
     return .{ .status = r.status, .out = out.buffered(), .err = r.err };
@@ -882,15 +875,8 @@ fn runProgramWithOutput(text: []const u8, out_buf: []u8, err_buf: []u8) !struct 
 /// Writes `text` to a file in a fresh directory and runs it with `out` as stdout;
 /// returns the status and stderr.
 fn runProgramTo(text: []const u8, out: *std.Io.Writer, err_buf: []u8) !struct { status: u8, err: []const u8 } {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
-    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(dir);
-    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
-    defer std.testing.allocator.free(path);
     var err: std.Io.Writer = .fixed(err_buf);
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, out, &err);
+    const status = try runProgramToBoth(text, out, &err);
     return .{ .status = status, .err = err.buffered() };
 }
 
@@ -905,6 +891,92 @@ fn failingStdout(buffer: []u8) std.Io.Writer {
     return .{ .vtable = &.{ .drain = failing.drain }, .buffer = buffer };
 }
 
+/// What reaches a terminal, in the order the writers write it out.
+const Terminal = struct {
+    bytes: [512]u8 = undefined,
+    len: usize = 0,
+
+    fn shown(self: *const Terminal) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    fn append(self: *Terminal, bytes: []const u8) void {
+        @memcpy(self.bytes[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+    }
+};
+
+/// A writer that keeps up to `buffer` bytes and puts them on `terminal` only when it writes
+/// them out, like stdout or stderr that is buffered.
+/// Why: `std.Io.Writer.fixed` の `flush` は何もしないので、書き出しを忘れても、書き出しの
+/// 順序を誤っても、テストに見えない。
+const TerminalWriter = struct {
+    terminal: *Terminal,
+    interface: std.Io.Writer,
+
+    fn init(terminal: *Terminal, buffer: []u8) TerminalWriter {
+        return .{ .terminal = terminal, .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *TerminalWriter = @alignCast(@fieldParentPtr("interface", w));
+        self.terminal.append(w.buffered());
+        w.end = 0;
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            self.terminal.append(bytes);
+            n += bytes.len;
+        }
+        for (0..splat) |_| {
+            self.terminal.append(data[data.len - 1]);
+            n += data[data.len - 1].len;
+        }
+        return n;
+    }
+};
+
+/// Runs `text` from a file with `out` as stdout and `err` as stderr; returns the status.
+fn runProgramToBoth(text: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
+    defer std.testing.allocator.free(path);
+    return runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, out, err);
+}
+
+test "runFile writes stderr out, after what the program wrote to stdout" {
+    // 実行時エラー: プログラムの出力が先に見え、説明がそのあとに続く。
+    var t1: Terminal = .{};
+    var ob1: [16]u8 = undefined;
+    var eb1: [16]u8 = undefined;
+    var out1: TerminalWriter = .init(&t1, &ob1);
+    var err1: TerminalWriter = .init(&t1, &eb1);
+    const s1 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out1.interface, &err1.interface);
+    try std.testing.expectEqual(exit_runtime_error, s1);
+    try std.testing.expectEqualStrings("helloerror: wrong type of argument to car 1\n", t1.shown());
+    // 標準出力に書けない: 診断は書き出されている。
+    var t2: Terminal = .{};
+    var ob2: [4]u8 = undefined;
+    var eb2: [16]u8 = undefined;
+    var out2 = failingStdout(&ob2);
+    var err2: TerminalWriter = .init(&t2, &eb2);
+    const s2 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n", &out2, &err2.interface);
+    try std.testing.expectEqual(exit_io_error, s2);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", t2.shown());
+    // 実行時エラーと重なる: 2つの説明が、どちらも書き出されている。
+    var t3: Terminal = .{};
+    var ob3: [64]u8 = undefined;
+    var eb3: [16]u8 = undefined;
+    var out3 = failingStdout(&ob3);
+    var err3: TerminalWriter = .init(&t3, &eb3);
+    const s3 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out3, &err3.interface);
+    try std.testing.expectEqual(exit_runtime_error, s3);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", t3.shown());
+}
+
 test "runFile reports output it cannot write to stdout, and exits 74" {
     // 書き手の領域より多く書くと、プログラムの途中で書けなくなる。
     var small: [4]u8 = undefined;
@@ -912,6 +984,7 @@ test "runFile reports output it cannot write to stdout, and exits 74" {
     var eb: [256]u8 = undefined;
     const r = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hello\")\n(display \"never\")\n", &out, &eb);
     try std.testing.expectEqual(exit_io_error, r.status);
+    try std.testing.expectEqual(@as(u8, 74), exit_io_error);
     try std.testing.expectEqualStrings("error: cannot write to standard output\n", r.err);
     // 書いたものが領域に収まっても、終わりの書き出しで失敗すれば、同じである。
     var room: [64]u8 = undefined;

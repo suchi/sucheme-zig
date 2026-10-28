@@ -464,6 +464,13 @@ test "the port writer writes a vector and a splat larger than its buffer once ea
     try w.interface.flush();
     try std.testing.expectEqualStrings("123456789xababababab", written(p));
     try std.testing.expectEqual(null, w.failure);
+    // バッファに残っていた分は、返す数に入れない。入れると、繰り返しの残りが欠ける。
+    const q = try f.output(.textual);
+    var w2: Writer = .init(&f.heap, null, q, &buf);
+    try w2.interface.writeAll("ab");
+    try w2.interface.splatByteAll('z', 10);
+    try w2.interface.flush();
+    try std.testing.expectEqualStrings("abzzzzzzzzzz", written(q));
 }
 
 test "the port writer keeps the error of the port, and reports WriteFailed to the printer" {
