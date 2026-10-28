@@ -153,6 +153,50 @@ pub fn close(port: *Port) void {
     port.open = false;
 }
 
+/// A `std.Io.Writer` that writes to the output port `port` through `writeBytes`, for
+/// the printer (`display`, and `write` in slice 5j).
+/// Why: プリンタの出力を作業領域にまとめてから写すと、大きなデータの `display` が、その大きさの
+/// 領域をヒープの計上の外に取る。書き手の小さな領域(`buffer`)にためては、ポートに書く。
+/// `writeBytes` の失敗は `failure` に残し、書き手には `WriteFailed` として返す。呼び出し側は、
+/// `failure` を見て、元の誤り(上限、閉じたポートなど)を報告する。終わりに `interface.flush()` を
+/// 呼ぶこと。
+pub const Writer = struct {
+    heap: *Heap,
+    sink: ?*std.Io.Writer,
+    port: *Port,
+    failure: ?Error = null,
+    interface: std.Io.Writer,
+
+    pub fn init(heap: *Heap, sink: ?*std.Io.Writer, port: *Port, buffer: []u8) Writer {
+        return .{ .heap = heap, .sink = sink, .port = port, .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *Writer = @alignCast(@fieldParentPtr("interface", w));
+        try self.put(w.buffered());
+        w.end = 0;
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            try self.put(bytes);
+            n += bytes.len;
+        }
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            try self.put(pattern);
+            n += pattern.len;
+        }
+        return n;
+    }
+
+    fn put(self: *Writer, bytes: []const u8) std.Io.Writer.Error!void {
+        if (bytes.len == 0) return;
+        writeBytes(self.heap, self.sink, self.port, bytes) catch |e| {
+            self.failure = e;
+            return error.WriteFailed;
+        };
+    }
+};
+
 test {
     std.testing.refAllDecls(@This());
 }
@@ -386,4 +430,40 @@ test "the console input port is at its end from the start" {
     consume(in, 0);
     try std.testing.expectError(error.WrongKind, readByte(&f.heap, in));
     try std.testing.expectError(error.WrongDirection, writeBytes(&f.heap, null, in, "x"));
+}
+
+test "the port writer writes what goes through it to the port, in order, past its small buffer" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try f.output(.textual);
+    var buf: [4]u8 = undefined;
+    var w: Writer = .init(&f.heap, null, p, &buf);
+    try w.interface.writeAll("ab");
+    try w.interface.writeAll("cdefgh");
+    try w.interface.print("{d}", .{12345});
+    try w.interface.splatByteAll('z', 3);
+    try w.interface.flush();
+    try std.testing.expectEqualStrings("abcdefgh12345zzz", written(p));
+    try std.testing.expectEqual(null, w.failure);
+}
+
+test "the port writer keeps the error of the port, and reports WriteFailed to the printer" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try f.output(.textual);
+    close(p);
+    var buf: [4]u8 = undefined;
+    var w: Writer = .init(&f.heap, null, p, &buf);
+    try std.testing.expectError(error.WriteFailed, w.interface.writeAll("abcdef"));
+    try std.testing.expectEqual(error.PortClosed, w.failure.?);
+    // 上限で伸ばせないときも、上限の誤りが残る。
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = heap_mod.cellBytes(Port) + 4 });
+    defer heap.deinit();
+    const q = try heap.createMemoryPort(.output, .binary, "");
+    var w2: Writer = .init(&heap, null, q, &buf);
+    try w2.interface.writeAll("abc");
+    try std.testing.expectError(error.WriteFailed, w2.interface.writeAll("defgh"));
+    try std.testing.expectEqual(error.HeapLimit, w2.failure.?);
 }

@@ -425,16 +425,21 @@ fn flushOutputPort(services: *const Services, args: []const Value) Error!Value {
 
 /// `(display obj)` and `(display obj port)`: writes `obj` as `display` shows it
 /// (R7RS 6.13.3, `(scheme write)`).
-/// 書く形はプリンタの `display` が決める。いまは作業領域に書いてから、ポートに写す。ポートに
-/// 直接書く形と循環の扱いは、スライス 5j が入れる(docs/plans/0019-phase5-ports-and-io.md)。
+/// 書く形はプリンタの `display` が決め、ポートの書き手(`port.Writer`)を通して、ポートに直接
+/// 書く。何も書かない値(空の文字列)でも、閉じたポートは断るので、先に空の書き込みで確かめる。
+/// 循環の扱いは、スライス 5j が入れる(docs/plans/0019-phase5-ports-and-io.md)。
 fn display(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 1, .output, .textual);
-    var text: std.Io.Writer.Allocating = .init(services.scratch);
-    defer text.deinit();
-    printer.display(&text.writer, services.scratch, &services.heap.symbols, args[0]) catch |e| switch (e) {
-        error.WriteFailed, error.OutOfMemory => return error.OutOfMemory,
+    _ = try put(services, p, "");
+    const sink = if (services.console) |console| console.sink else null;
+    var buffer: [256]u8 = undefined;
+    var w: port_mod.Writer = .init(services.heap, sink, p, &buffer);
+    printer.display(&w.interface, services.scratch, &services.heap.symbols, args[0]) catch |e| switch (e) {
+        error.WriteFailed => return portFailure(w.failure.?),
+        error.OutOfMemory => return error.OutOfMemory,
     };
-    return put(services, p, text.written());
+    w.interface.flush() catch return portFailure(w.failure.?);
+    return .unspecified_value;
 }
 
 /// `(%console-parameter k)`: the parameter that is the current input port (0), output
@@ -882,4 +887,38 @@ test "a count far larger than what is left allocates only what is left" {
     // 確保したのは、読んだ 3 文字の文字列と 2 バイトのバイトベクタだけである。
     const heap_mod = @import("../heap.zig");
     try std.testing.expectEqual(before + heap_mod.cellBytes(value.String) + 3 + heap_mod.cellBytes(value.Bytevector) + 2, f.heap.accounted);
+}
+
+test "display writes what the printer's display shows to the port, and refuses a closed port" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try call(&f, "open-output-string", &.{});
+    const list = try f.heap.cons(try str(&f, "a"), try f.heap.cons(chr('b'), .empty_list_value));
+    _ = try call(&f, "display", &.{ list, p });
+    _ = try call(&f, "display", &.{ try str(&f, "λ"), p });
+    try expectString("(a b)λ", try call(&f, "get-output-string", &.{p}));
+    _ = try call(&f, "close-port", &.{p});
+    try std.testing.expectError(error.PortClosed, call(&f, "display", &.{ try str(&f, ""), p }));
+    try std.testing.expectError(error.PortClosed, call(&f, "display", &.{ list, p }));
+    // 省略したポートは現在の出力ポートで、コンソールを持たない呼び出しでは型の誤りである。
+    try std.testing.expectError(error.WrongType, call(&f, "display", &.{fix(1)}));
+}
+
+test "display of a long string goes to the port without the whole text in the scratch space" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const long = try f.heap.createStringFilled(10_000, struct {
+        pub fn fill(_: @This(), bytes: []u8) void {
+            @memset(bytes, 'x');
+        }
+    }{});
+    const p = try call(&f, "open-output-string", &.{});
+    // 作業領域を、全体の写しが入らない大きさに絞る。プリンタの作業スタックは入る。
+    var small: [4096]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&small);
+    f.services.scratch = fba.allocator();
+    _ = try call(&f, "display", &.{ .fromString(long), p });
+    try std.testing.expectEqual(10_000, (try call(&f, "get-output-string", &.{p})).asString().?.bytes.len);
 }
