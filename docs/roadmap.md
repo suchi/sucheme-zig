@@ -161,7 +161,7 @@
 
 ### 段階5: ポートと入出力
 
-- [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート
+- [ ] テキストポートとバイナリポート、文字列ポート、バイトベクタポート、ファイルポート([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5g、5h、5i、5k。ポートの型の骨格は 5g で入れた)
 - [ ] 第2類(利用者プログラムのファイル入出力)の経路を同じリゾルバに通す。探索ルートの制約はかけず、失敗は `file-error` で報告する
 - [x] リーダの完全化(データラベル、ブロックコメント、`#;`、縦棒識別子、`#!fold-case` と `#!no-fold-case` ディレクティブ、文字列の行継続)。`#u8` と16進エスケープは、段階3までに入った([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5a から 5c。3つともマージ済み)
 - [x] リーダの位置情報の副表([design/frontend.md](design/frontend.md) の位置情報)。リーダの完全化と同じ段階に置く([plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md))。スライス 5d([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md))。展開時の誤りに、ファイルと行と桁を前置する

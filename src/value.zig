@@ -105,6 +105,9 @@ pub const Value = union(enum) {
     /// A complex number whose imaginary part is not an exact zero.
     /// GC ヒープにある。作るのは src/num/ の正規化だけである(段階4で入る)。
     compnum: *Compnum,
+    /// A port: a source of input or a sink of output (R7RS 6.13).
+    /// GC ヒープにある。
+    port: *Port,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -208,11 +211,15 @@ pub const Value = union(enum) {
         return .{ .compnum = c };
     }
 
+    pub fn fromPort(p: *Port) Value {
+        return .{ .port = p };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise, .bignum, .ratnum, .compnum => true,
+            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise, .bignum, .ratnum, .compnum, .port => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character, .eof, .flonum => false,
         };
     }
@@ -245,6 +252,7 @@ pub const Value = union(enum) {
             .bignum => .bignum,
             .ratnum => .ratnum,
             .compnum => .compnum,
+            .port => .port,
         };
     }
 
@@ -416,6 +424,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The port, or null when the value is not one.
+    pub fn asPort(self: Value) ?*Port {
+        return switch (self) {
+            .port => |p| p,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -469,6 +485,7 @@ pub const Value = union(enum) {
             .bignum => |x| if (b.asBignum()) |y| x == y or x.toConst().eql(y.toConst()) else false,
             .ratnum => |x| if (b.asRatnum()) |y| x == y or (x.numerator.isEqv(y.numerator) and x.denominator.isEqv(y.denominator)) else false,
             .compnum => |x| if (b.asCompnum()) |y| x == y or (x.real.isEqv(y.real) and x.imag.isEqv(y.imag)) else false,
+            .port => |x| b.asPort() == x,
         };
     }
 
@@ -665,6 +682,51 @@ pub const Ratnum = struct {
 pub const Compnum = struct {
     real: Value,
     imag: Value,
+};
+
+/// A port: which way its data flows, whether the data is characters or bytes,
+/// whether it is still open, the case folding of the reader that reads from it,
+/// and what holds the data (R7RS 6.13).
+/// 裏付け(`backing`)の各バリアントは、ポートの種類を足すスライスが足す
+/// (docs/plans/0019-phase5-ports-and-io.md)。裏付けが持つ領域は、ヒープが所有し、
+/// 計上するペイロードである。GC がたどるものを持たない。
+pub const Port = struct {
+    direction: Direction,
+    element: Element,
+    /// Whether the port has not been closed (R7RS 6.13.1 `close-port`).
+    open: bool = true,
+    /// Whether `read` folds the case of identifiers and character names, which
+    /// `#!fold-case` and `#!no-fold-case` change (R7RS 2.1).
+    /// 状態はポートごとに持つ(docs/design/frontend.md)。既定は畳み込まない。
+    fold_case: bool = false,
+    backing: Backing,
+
+    pub const Direction = enum { input, output };
+
+    /// Whether the port carries characters or bytes (R7RS 6.13: textual and
+    /// binary ports).
+    pub const Element = enum { textual, binary };
+
+    pub const Backing = union(enum) {
+        /// The bytes of a string port or a bytevector port, held in the port.
+        memory: Memory,
+    };
+
+    /// The data of a port that reads from or writes to memory.
+    /// Why: 入力のポートは、開くときに、文字列の UTF-8 のバイト列(またはバイトベクタの中身)を
+    /// 写して持つ。元の文字列が `string-set!` で変わっても、読む位置が文字の途中を指さない
+    /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の3)。出力のポートは、
+    /// 伸びる領域に書く。
+    pub const Memory = struct {
+        /// The region the port owns: for an input port, a copy of what it reads;
+        /// for an output port, room for what has been written and more.
+        bytes: []u8,
+        /// How many bytes of `bytes` hold data. An input port holds data in all of them.
+        len: usize,
+        /// For an input port, where in `bytes` the next byte to read is.
+        /// 出力のポートでは使わず、0 のままである。
+        pos: usize = 0,
+    };
 };
 
 /// Whether `cp` is a Unicode scalar value: from 0 to #xD7FF or from #xE000 to
@@ -1347,7 +1409,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// 種別に番号を振る順序である。
 /// コアIRの節点(`Node`、`Lambda`、`Parameterize`)もここにある(ADR-0040)。節点は展開器が
 /// 作り、コードを指すもの(機械の制御のレジスタ、クロージャ、継続のフレーム)から辿られる。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize, Port };
 
 /// The types that are not in the GC heap but are pointed to from it: the
 /// procedures implemented in Zig.
@@ -1355,7 +1417,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{Primitive};
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum, port };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -1866,6 +1928,31 @@ test "a value takes two words, so a flonum fits beside a fixnum" {
     try std.testing.expectEqual(16, @sizeOf(Value));
 }
 
+test "a port is a heap object of its own kind, and eqv? compares it by identity" {
+    var bytes_a = [_]u8{ 'h', 'i' };
+    var bytes_b = [_]u8{ 'h', 'i' };
+    var a: Port = .{ .direction = .input, .element = .textual, .backing = .{ .memory = .{ .bytes = &bytes_a, .len = 2 } } };
+    // 向きも種類も中身も a と同じで、別の場所にある。
+    var b: Port = a;
+    b.backing.memory.bytes = &bytes_b;
+    const pv: Value = .fromPort(&a);
+    try std.testing.expectEqual(Kind.port, pv.kind());
+    try std.testing.expectEqual(&a, pv.asPort().?);
+    try std.testing.expect(pv.pointsIntoHeap());
+    try std.testing.expect(pv.isTrue());
+    try std.testing.expect(pv.asBytevector() == null);
+    try std.testing.expect(pv.asString() == null);
+    try std.testing.expect(Value.fromFixnum(1).asPort() == null);
+    try std.testing.expect(pv.isEqv(.fromPort(&a)));
+    try std.testing.expect(!pv.isEqv(.fromPort(&b)));
+    try std.testing.expect(pv.isEq(.fromPort(&a)));
+    try std.testing.expect(!pv.isEq(.fromPort(&b)));
+    // 作ったばかりのポートは開いていて、大文字と小文字を畳み込まない。
+    try std.testing.expect(a.open);
+    try std.testing.expect(!a.fold_case);
+    try std.testing.expectEqual(0, a.backing.memory.pos);
+}
+
 test "a bignum, a ratnum and a compnum are heap objects, each answering to its own accessor" {
     var limbs = [_]Limb{ 0, 1 };
     var b: Bignum = .{ .limbs = &limbs, .positive = false };
@@ -2204,6 +2291,9 @@ const Samples = struct {
     // 状態が同じ2つの約束。
     promise_a: Promise = .{ .done = true, .value = .{ .fixnum = 1 }, .forward = null },
     promise_b: Promise = .{ .done = true, .value = .{ .fixnum = 1 }, .forward = null },
+    // 向きも種類も中身も同じ2つのポート。
+    port_a: Port = undefined,
+    port_b: Port = undefined,
 
     fn nop(_: *const Services, _: []const Value) PrimitiveError!Value {
         return .unspecified_value;
@@ -2230,10 +2320,12 @@ const Samples = struct {
         self.record_b = .{ .record_type = &self.record_type_a, .fields = &self.fields_b };
         self.multiple_values_a = .{ .items = &self.values_items_a };
         self.multiple_values_b = .{ .items = &self.values_items_b };
+        self.port_a = .{ .direction = .input, .element = .textual, .backing = .{ .memory = .{ .bytes = &self.bytes_a, .len = 2 } } };
+        self.port_b = .{ .direction = .input, .element = .textual, .backing = .{ .memory = .{ .bytes = &self.bytes_b, .len = 2 } } };
     }
 
     /// Every sample, each different from all the others in the sense of `eqv?`.
-    fn all(self: *Samples) [41]Value {
+    fn all(self: *Samples) [43]Value {
         return .{
             .fromFixnum(0),
             .fromFixnum(1),
@@ -2276,6 +2368,8 @@ const Samples = struct {
             .eof_value,
             .fromPromise(&self.promise_a),
             .fromPromise(&self.promise_b),
+            .fromPort(&self.port_a),
+            .fromPort(&self.port_b),
         };
     }
 };

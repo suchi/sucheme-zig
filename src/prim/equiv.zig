@@ -222,7 +222,7 @@ pub fn isEqual(scratch: std.mem.Allocator, visited_alloc: std.mem.Allocator, a: 
             },
             // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
             // `equal?` が中身を比べるべき種別を見落とさないようにする。
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum => {
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum, .port => {
                 if (!left.isEqv(right)) return false;
             },
         }
@@ -445,6 +445,21 @@ test "equal? holds eqv? things equal" {
     try std.testing.expect(!try callWith(&f, "equal?", .fromBool(false), .empty_list_value));
     try std.testing.expect(try callWith(&f, "equal?", .fromPrimitive(&primitives[0]), .fromPrimitive(&primitives[0])));
     try std.testing.expect(!try callWith(&f, "equal?", .fromPrimitive(&primitives[0]), .fromPrimitive(&primitives[1])));
+}
+
+test "equal? compares ports as eqv? does, also inside a list and a vector" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // R7RS 6.1 は、ポートに対する equal? を eqv? と同じとする。中身が同じ別のポートは等しくない。
+    const a: Value = .fromPort(try f.heap.createMemoryPort(.input, .textual, "ab"));
+    const b: Value = .fromPort(try f.heap.createMemoryPort(.input, .textual, "ab"));
+    try std.testing.expect(try callWith(&f, "equal?", a, a));
+    try std.testing.expect(!try callWith(&f, "equal?", a, b));
+    try std.testing.expect(try callWith(&f, "equal?", try cons(&f, a, .empty_list_value), try cons(&f, a, .empty_list_value)));
+    try std.testing.expect(!try callWith(&f, "equal?", try cons(&f, a, .empty_list_value), try cons(&f, b, .empty_list_value)));
+    try std.testing.expect(try callWith(&f, "equal?", try vec(&f, &.{a}), try vec(&f, &.{a})));
+    try std.testing.expect(!try callWith(&f, "equal?", try vec(&f, &.{a}), try vec(&f, &.{b})));
 }
 
 /// A circular list holding `items` in turn, from the first pair on.

@@ -779,6 +779,19 @@ test "a bignum holds limbs only, and a ratnum and a compnum are followed through
     try t.expect(&.{});
 }
 
+test "a port holds bytes and flags only, so the walk follows nothing from it, and a value holding one reports it" {
+    try std.testing.expectEqual(Class.ignore, comptime interpreter.classify(value_mod.Port).?);
+    try std.testing.expectEqual(Class.follow, comptime interpreter.classify(*value_mod.Port).?);
+    var bytes = [_]u8{ 'h', 'i' };
+    var port: value_mod.Port = .{ .direction = .output, .element = .binary, .backing = .{ .memory = .{ .bytes = &bytes, .len = 1 } } };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Port, &port);
+    try r.expect(&.{});
+    var t: Recorder = .{};
+    interpreter.walk(&t, Value, .fromPort(&port));
+    try t.expect(&.{addr(&port)});
+}
+
 test "a type the walk cannot sort has no class" {
     // `walk` はこれを、フィールド名を示すコンパイルエラーにする。ここでは同じ問いを、
     // テストが答えられる形で行う。

@@ -269,7 +269,7 @@ const Expander = struct {
         }
         switch (task.form.kind()) {
             // 自己評価式(R7RS 4.1.2)。
-            .fixnum, .boolean, .character, .string, .vector, .bytevector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum => try self.constant(task, task.form),
+            .fixnum, .boolean, .character, .string, .vector, .bytevector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum, .port => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),
@@ -1381,6 +1381,16 @@ test "a literal is a constant, and a name is a global variable when nothing bind
     try f.expectExpands("#t", "(const #t)");
     try f.expectExpands("x", "(global x)");
     try f.expectExpands("+", "(global +)");
+}
+
+test "a port that reaches the expander as a form is a constant of itself" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // リーダはポートを作らないので、ヒープに作った値をそのまま渡す。
+    const port: Value = .fromPort(try f.ctx.heap.createMemoryPort(.input, .textual, "x"));
+    const node = try expandWith(&f.ctx, f.arena.allocator(), port, .{});
+    try std.testing.expect(node.constant.isEq(port));
 }
 
 test "quote gives its datum unexpanded" {
