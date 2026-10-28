@@ -65,7 +65,7 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 | 5d 位置情報の副表 | L2 | 展開時のエラーが、ファイルと行と桁を添えて報告される | `src/reader.zig`、`src/positions.zig`(新規)、`src/syntax/source.zig` の受け渡しの部分。2026-10-21 に承認された所有の外のもの: `src/syntax/expand.zig`(仕事に位置を持たせる分)、`src/context.zig`(表と送出の位置)、`src/sucheme.zig`(表の配線と説明の前置)、`src/main.zig`(パスを渡す1か所) | T3 | 5c、3o のマージ | L3 と並行。3o とは逐次 | 中 |
 | 5g ポートの型の骨格 | L3 | `Value` に `port` のバリアントがあり、GC が辿り、計上し、回収する。プリンタが `#<port>` と書く。手続きは足さない | `src/value.zig`、`src/trace.zig`、`src/heap.zig`、`src/printer.zig` の1行 | T3 | 0018 の数の型の骨格との順序(下の「型の骨格のコンフリクト」) | L2 と並行 | 小 |
 | 5h 文字列ポートとバイトベクタポート | L3 | `(let ((p (open-input-string "ab"))) (list (read-char p) (peek-char p) (read-char p) (eof-object? (read-char p))))` が `(#\a #\b #\b #t)`。`get-output-string` と `get-output-bytevector` がラウンドトリップする | `src/port.zig`(新規)、`src/prim/port.zig`(新規)、`src/prim/table.zig` の1行、`lib/scheme/base.sld` のポートの輸出 | T2 | 5g | L2 と並行 | 中 |
-| 5i コンソールのポートと現在のポート | L3 | `(display "hi")` と `(newline)` と `(write-string "x" (current-error-port))` が、ネイティブでも WASM でも、評価の結果の出力と同じ順で出る。`current-output-port` が `parameterize` で差し替わる | `src/port.zig`、`src/prim/port.zig`、`src/platform/`(新規)、`src/sucheme.zig` の配線、`src/wasm.zig`、`lib/scheme/write.sld`(新規、`display` だけ先に) | T2 | 5h | L2 と並行 | 中 |
+| 5i コンソールのポートと現在のポート | L3 | `(display "hi")` と `(newline)` と `(write-string "x" (current-error-port))` が、ネイティブでも WASM でも、評価の結果の出力と同じ順で出る。`current-output-port` が `parameterize` で差し替わる。既知の制限: 標準エラーは標準出力と同じ書き先に出る。標準入力は読めない(最初から終わりにある。5l が読む) | `src/port.zig`、`src/prim/port.zig`、`src/sucheme.zig` の配線、`lib/scheme/write.sld`(新規、`display` だけ先に)。`src/platform/` は 5i では作らない(下の 5i の中身) | T2 | 5h | L2 と並行 | 中 |
 | 5j `write` の3種 | L3 | `(let ((x (list 1 2))) (set-cdr! (cdr x) x) (write x))` が `#0=(1 2 . #0#)`。`write-shared` が共有を、`write-simple` がラベルなしを書く。`display` が循環で止まる。非 ASCII を含むシンボルを縦棒で書く | `src/printer.zig`、`src/prim/port.zig` の書き出しの手続き、`lib/scheme/write.sld` | T2(T3 がレビュー) | 5i | L2 と並行 | 中 |
 | 5k ファイルポートと `(scheme file)` | L3 | `with-output-to-file` で書いたファイルを `call-with-input-file` で読み返せる。開けないファイルで `file-error?` が真になる条件が送出される。WASM で `file-exists?` が `#f` を返す | `src/port.zig`、`src/prim/port.zig`、`src/resolve.zig` の第2類の入口、`src/platform/`、`lib/scheme/file.sld`(新規) | T3(GC との関係)、T2(手続き) | 5i | L2 と並行 | 大 |
 | 5l `read` と `(scheme read)` | L3 | `(read (open-input-string "(a . b) c"))` が `(a . b)` で、続く `read` が `c`、その次が EOF。読めない入力で `read-error?` が真になる。`#!fold-case` がポートごとに効く | `src/prim/port.zig`、`lib/scheme/read.sld`(新規) | T2 | 5h、5a(ディレクティブの状態) | L2 と並行。5a のマージ後 | 小 |
@@ -89,7 +89,9 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 
 - 5g: ヒープの型 `Port` を足す。中身は、方向(入力、出力)、種類(テキスト、バイナリ)、開いているか、畳み込みの状態(`#!fold-case` の状態はポートごと。[frontend.md](../design/frontend.md))、裏付け(下の表)の直和である。`Value` と `Kind` と `heap_types` に1行ずつ、`payloadBytes` と `free` に1行ずつ足す。`isEqv` は同一性で比べる。裏付けの各バリアントの中身は、合意を求める点の1と3と4の回答で決まる。骨格の PR では、文字列ポートのバリアント1つだけを置き、ほかは各スライスが足す。
 - 5h: `src/port.zig` に、ポートの読み書きの関数を置く(下の「署名」)。`src/prim/port.zig` に、`(scheme base)` のポートの手続きのうち、明示したポートを取るものと、文字列ポートとバイトベクタポートを作るものを置く。`call-with-port` は Scheme で書けるので、`lib/sucheme/procedures.scm` に置く(R7RS 6.13.1 の定義を原文で確かめる)。`read-bytevector!` は `requireMutable` を呼ぶ([runtime.md](../design/runtime.md) のリテラルの不変性)。
-- 5i: 標準入力、標準出力、標準エラーのポートを、`Interpreter` が作る。`current-input-port` `current-output-port` `current-error-port` は、パラメータオブジェクトである(R7RS 6.13.1)。既存の `make-parameter` の機構に載せる。ネイティブの出力は `evalPrint` が受け取る `std.Io.Writer` に、WASM の出力は既存の出力バッファに書く。WASM の出力バッファを計上の外に置く例外([ADR-0038](../adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md))は変えない。プラットフォームの差は、[platform-and-web.md](../design/platform-and-web.md) のプラットフォーム抽象の形(`src/platform/native.zig` と `src/platform/wasm.zig` をコンパイル時に選ぶ)で、このスライスから置く。
+- 5i: 標準入力、標準出力、標準エラーのポートを、`Interpreter` が作る。`current-input-port` `current-output-port` `current-error-port` は、パラメータオブジェクトである(R7RS 6.13.1)。既存の `make-parameter` の機構に載せる。ネイティブの出力は `evalPrint` が受け取る `std.Io.Writer` に、WASM の出力は既存の出力バッファに書く。WASM の出力バッファを計上の外に置く例外([ADR-0038](../adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md))は変えない。プラットフォームの差は、[platform-and-web.md](../design/platform-and-web.md) のプラットフォーム抽象の形(`src/platform/native.zig` と `src/platform/wasm.zig` をコンパイル時に選ぶ)で置く。
+  - 実施の結果(2026-10-28、親のセッションに諮って決めた): ネイティブも WASM も、コンソールの出力は `evalPrint` の書き手(ファイルの実行では `Interpreter.console_out` の標準出力)に直接書き、入力は最初から終わりにあるので、5i ではプラットフォームの差が無い。`src/platform/` は 5i では作らず、差が初めて出る 5k か 5n で作る。現在のポートのパラメータとコンソールのポートは `Context.console` が持ち、`%console-parameter` が最初に求められたときに作る。純粋プリミティブは `Services.console` と `Services.dyn` から現在のポートを引く。
+  - 既知の制限(5i): `current-error-port` への書き込みは、標準出力と同じ書き先に出る(ネイティブでも標準エラーに分けない)。分けるのは、`evalPrint` にエラーの書き手を足す変更で、まだどのスライスにも割り当てていない(スライス未割り当て)。`current-input-port` は最初から終わりにあり、ネイティブでも標準入力を読まない。読むのは、入力を足す `fill` を入れる 5l で、REPL が標準入力を行で読むこととの調停も 5l で決める。
 - 5j: プリンタを、`write`(循環にだけラベル)、`write-shared`(2回以上現れるペアとベクタすべてにラベル)、`write-simple`(ラベルなし)、`display`(循環にだけラベル)の4つの形にする。原文は R7RS 6.13.3 で、`display` は「must not loop forever on self-referencing pairs, vectors, or records」である。ラベルは、先に1回辿って、共有または循環しているオブジェクトを数え、2回目に書く。辿る表は計上の対象である。プリンタは今、作業スタックを `scratch`(計上の外)に置いているので、5j で計上つきの確保に移す。名前に ASCII でない文字を含むシンボルと、そのまま書くと別のデータとして読まれる名前(空白や括弧を含むもの、数として読めるもの)は、縦棒で囲んで書く(R7RS 6.13.3 の「Symbols that contain non-ASCII characters are escaped with vertical lines」)。数として読めるかの判定は、0018 の `scan` を呼ぶ(下の「署名」)。REPL が結果を書くのも `write` なので、循環した結果が止まらない問題も、ここで直る。名前が空のシンボルは `||` と書く。そのとき、リーダのファズの不変条件(書き出した長さが0でない)に 5b が置いた、名前が空のシンボルの例外を外す(`src/reader.zig` の `fuzzReadAll`)。
 - 5k: ファイルポートを、[frontend.md](../design/frontend.md) のファイルを開く経路の第2類として、リゾルバを通して開く。探索ルートの制約はかけない。失敗は、`ConditionKind.file` の条件で送出する。WASM の扱いは frontend.md の表どおり(開く手続きと `delete-file` は `file-error`、`file-exists?` は `#f`)。閉じ忘れたファイルの扱いは、合意を求める点の4で決める。
 - 5l: `read` は、ポートの残りの入力を `Reader` に渡し、読めたデータの長さだけポートを進める。`Reader` の今の形(入力のスライス、`pos`、`fold_case`)で足り、`src/reader.zig` を変えない見込みである。ディレクティブで変わった `fold_case` は、読み終えたあとポートに書き戻す。ファイルとコンソールのポートでは、データの途中で入力のバッファが尽きたとき(`Incomplete`)、バッファに続きを足して、データの頭から読み直す。読み直しの費用はデータの長さの2乗に比例する。REPL の継続行の判定と同じ制約で、段階7の差分読み取りの項目([roadmap.md](../roadmap.md))が解く。`reader.zig` の変更が要ると分かったら、L3 の担当は止めて、L2 に頼む([0017](0017-parallel-lanes.md) の引き継ぎの条件の2)。
@@ -200,6 +202,8 @@ flowchart TD
 - 5m は、3o の着手前にマージできれば先に入れる。3o が進行中なら、5m の PR は 3o のマージを待ってから main を取り込む。どちらの場合も、マージの順序を報告する前に、変更ファイルの一覧を突き合わせる(AGENTS.md)。
 - 5o は、3o のマージのあとに着手する。
 - 5h は、閉じたポートの誤りを報告するため、`primitiveFailure` の振り分けに `PortClosed` の1行を足した(`src/value.zig` の `PrimitiveError` にも1つ足した)。5m が `src/machine.zig` を触るときは、この行と隣り合いうるので、main を取り込んでから変更ファイルを突き合わせる。
+- 5i は、`callPure` に動的点を渡し、`Services` に `console` と `dyn` を入れる3行と、`primitiveFailure` で `WriteFailed` を条件にせず返す行を足した(`src/value.zig` の `PrimitiveError` と `src/context.zig` の `Error` にも `WriteFailed` を足した)。5m の `MachineOp.exit` は `apply` の振り分けと巻き戻しを触るので、`callPure` の呼び出しの行と隣り合いうる。5m は main を取り込んでから突き合わせる。
+- 5i は、`src/main.zig` の `runFile` に標準出力の書き手を渡す引数を足し、`Interpreter.console_out` に置いた。5m もファイルの実行の部分(終了コードと `command-line`)を触るので、同じ関数の隣り合う行になる。5m は main を取り込んでから突き合わせる。
 
 ### そのほかのファイルの重なり
 
@@ -401,12 +405,12 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | `src/port.zig`(新規) | ポートの読み書き | 5h、5i、5k |
 | `src/prim/port.zig`(新規) | ポートの手続き | 5h から 5l |
 | `src/prim/process.zig`、`time.zig`、`eval.zig`(新規) | プロセス、時刻、`eval` の手続き | 5m、5n、5o、5p、5q |
-| `src/platform/native.zig`、`src/platform/wasm.zig`(新規) | ホストの機能の差 | 5i、5k、5m、5n |
+| `src/platform/native.zig`、`src/platform/wasm.zig`(新規) | ホストの機能の差。5i では差が無いので作らず、差が初めて出るスライスが作る | 5k、5m、5n |
 | `src/printer.zig` | `write` の3種と `display`、シンボルの縦棒 | 5j |
-| `src/machine.zig` | `exit` の巻き戻し、`eval` | 5m、5o |
+| `src/machine.zig` | `exit` の巻き戻し、`eval`。閉じたポートと書き込みの失敗の振り分け、`Services` の現在のポート(5h、5i が数行) | 5m、5o |
 | `src/resolve.zig` | 第2類の入口、`load` | 5k、5p |
 | `src/sucheme.zig` | 新しい読み取りの誤りの説明の振り分け(1行ずつ)、コンソールのポート、終了の結果 | 5a、5b、5i、5m |
-| `src/main.zig` | プログラムへの引数、終了コード | 5m |
+| `src/main.zig` | プログラムへの引数、終了コード。ファイルの実行のコンソールの書き先(5i が数行) | 5m |
 | `src/wasm.zig`、`web/sucheme.js`、`tools/test-wasm/main.mjs` | エクスポートと import | 5i、5m、5n |
 | `lib/scheme/base.sld` | ポートの識別子 | 5h、5i |
 | `lib/scheme/write.sld` `file.sld` `read.sld` `process-context.sld` `time.sld` `eval.sld` `repl.sld` `load.sld` `r5rs.sld`(新規) | ライブラリ | 5i から 5q |
@@ -477,12 +481,14 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5d | マージ済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | suchi/sucheme-zig#160 |
 | 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
 | 5g | マージ済み。`Value` の `port` と、ヒープの型 `Port`(`src/value.zig`)。裏付けは、文字列ポートとバイトベクタポートが共有する `memory` の1つだけで、どちらかは `element`(`textual` か `binary`)で分ける。確保は `Heap.createMemoryPort`、出力の領域を伸ばすのは `Heap.growPortBytes` で、5h が `src/heap.zig` を触らずに書けるよう、ここで置いた。`Kind` の網羅的な switch に `.port` を足すため、`src/prim/equiv.zig`、`src/prim/procedure.zig`、`src/prim/promise.zig`、`src/syntax/expand.zig` にも1行ずつ触れた(4d と同じ4か所)。レビューで足さなかったテストと、後のスライスへの申し送りは「5g のレビューの記録と、後のスライスへの申し送り」の節にある | suchi/sucheme-zig#205 |
-| 5h | PR 作成済み。`src/port.zig` の読み書きの関数と、`(scheme base)` のポートの手続き(`src/prim/port.zig`、`call-with-port` は `lib/sucheme/procedures.scm`)。ポートの引数は、5i が現在のポートを入れるまで省略できない。署名の節のうち、`fill`(5k)、`flush`(書き出す先を持つポートを入れる 5i)、`writer`(5j)は、使うスライスが足す。閉じたポートへの読み書きは、新しい誤り `PortClosed`(文言は `port is closed in 手続きの名前`)、向きと種類の違いは型の誤りである。所有の外に、`src/value.zig` の `PrimitiveError` と `src/machine.zig` の `primitiveFailure`(「機械の重なり」の節)、`lib/sucheme/procedures.sld` の輸出、`tools/test-scheme/main.zig` の `mutators` の表に1つずつ足し、未実装の例にポートの名前を使っていた `tests/scheme/0292-scheme-libraries.txt`、`tools/conformance-run/run.zig`、`tools/test-wasm/main.mjs` のテストを、まだ無い現在のポートの名前に替えた(5i で替え直す) | suchi/sucheme-zig#207 |
-| 5i から 5r | 未着手 | - |
+| 5h | マージ済み。`src/port.zig` の読み書きの関数と、`(scheme base)` のポートの手続き(`src/prim/port.zig`、`call-with-port` は `lib/sucheme/procedures.scm`)。ポートの引数は、5i が現在のポートを入れるまで省略できない。署名の節のうち、`fill`(5k)、`flush`(書き出す先を持つポートを入れる 5i)、`writer`(5j)は、使うスライスが足す。閉じたポートへの読み書きは、新しい誤り `PortClosed`(文言は `port is closed in 手続きの名前`)、向きと種類の違いは型の誤りである。所有の外に、`src/value.zig` の `PrimitiveError` と `src/machine.zig` の `primitiveFailure`(「機械の重なり」の節)、`lib/sucheme/procedures.sld` の輸出、`tools/test-scheme/main.zig` の `mutators` の表に1つずつ足し、未実装の例にポートの名前を使っていた `tests/scheme/0292-scheme-libraries.txt`、`tools/conformance-run/run.zig`、`tools/test-wasm/main.mjs` のテストを、まだ無い現在のポートの名前に替えた(5i で替え直す) | suchi/sucheme-zig#207 |
+| 5i | PR 作成済み。コンソールのポート(`Port.Backing` の `console`)と、`current-input-port` `current-output-port` `current-error-port` のパラメータ(`Context.console`、`%console-parameter`)。ポートを省略した手続きは、呼び出しの動的点での現在のポートを使う。`display` を `(scheme write)` に置いた。コンソールへの書き込みの失敗は、条件にせず `WriteFailed` で機械の外へ返す。ファイルの実行は、式の値を捨て、プログラムの出力を標準出力に書く(`Interpreter.console_out`)。既知の制限: 標準エラーは標準出力と同じ書き先、標準入力は読めない(上の 5i の中身)。所有の外のファイルと理由は PR 本文にある | (この PR。番号はレビューの修正で書く) |
+| 5j から 5r | 未着手 | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。
 - L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5h の PR のレビューを収束させる。5i と 5l は 5h のマージを待つ。
-- 5i の着手は、親のセッションの指示を待つ。
+- L3 は 5i の PR のレビューを収束させる。5j、5k、5m、5n は 5i のマージを待つ。5l は 5h と 5a のあとに着手できる。
+- 標準エラーを標準出力と分ける変更(5i の既知の制限)は、まだどのスライスにも割り当てていない。割り当ては、親のセッションが決める。
+- 次のスライスの着手は、親のセッションの指示を待つ。
