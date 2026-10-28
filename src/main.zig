@@ -167,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .run_file => |index| {
             const roots = try searchRoots(init.arena.allocator(), rest[0..index]);
-            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], err);
+            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], out, err);
             if (status != 0) std.process.exit(status);
         },
         .program_arguments => {
@@ -367,8 +367,9 @@ fn readProgram(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
 /// Runs the program in the file `path`, and returns the exit status.
 ///
 /// ファイルの全体を読み、先頭から1つずつ評価する。式の値は出力しない。最初のエラーで
-/// 止め、エラーより前の評価の副作用はそのまま残る。エラーの説明は `err` に書く。
-pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, err: *std.Io.Writer) !u8 {
+/// 止め、エラーより前の評価の副作用はそのまま残る。プログラムがコンソールに書いたもの
+/// (`display` など)は `out` に書き、エラーの説明は `err` に書く。
+pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     const source = readProgram(gpa, files.io, path) catch |e| {
         try err.print("error: cannot read {s}: {s}\n", .{ path, if (e == error.StreamTooLong) "the file is larger than 1 MiB" else @errorName(e) });
         try err.flush();
@@ -382,15 +383,20 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     defer interp.deinit();
     // 展開時のエラーには、ファイルの中の位置を前置する(docs/design/frontend.md の位置情報)。
     interp.file_name = path;
+    // 式の値は捨て、プログラムの出力だけを `out` に書く(スライス 5i)。
+    interp.console_out = out;
     var discard: std.Io.Writer.Discarding = .init(&.{});
     interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
         error.WriteFailed => return e,
         else => {
+            // 端末では、プログラムの出力がエラーの説明より前に見えるよう、先に書き出す。
+            try out.flush();
             try err.print("error: {s}\n", .{interp.diagnostic()});
             try err.flush();
             return exit_runtime_error;
         },
     };
+    try out.flush();
     return 0;
 }
 
@@ -827,6 +833,14 @@ test "repl imports a library from a file beneath the roots it is given, and repo
 
 /// Writes `text` to a file in a fresh directory and runs it; returns the status and stderr.
 fn runProgram(text: []const u8, err_buf: []u8) !struct { status: u8, err: []const u8 } {
+    var ob: [256]u8 = undefined;
+    const r = try runProgramWithOutput(text, &ob, err_buf);
+    return .{ .status = r.status, .err = r.err };
+}
+
+/// Writes `text` to a file in a fresh directory and runs it; returns the status, stdout
+/// and stderr.
+fn runProgramWithOutput(text: []const u8, out_buf: []u8, err_buf: []u8) !struct { status: u8, out: []const u8, err: []const u8 } {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
@@ -834,9 +848,29 @@ fn runProgram(text: []const u8, err_buf: []u8) !struct { status: u8, err: []cons
     defer std.testing.allocator.free(dir);
     const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
     defer std.testing.allocator.free(path);
+    var out: std.Io.Writer = .fixed(out_buf);
     var err: std.Io.Writer = .fixed(err_buf);
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &err);
-    return .{ .status = status, .err = err.buffered() };
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &out, &err);
+    return .{ .status = status, .out = out.buffered(), .err = err.buffered() };
+}
+
+test "runFile writes what the program writes to the console to stdout, and not the values" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try runProgramWithOutput("(import (scheme base) (scheme write))\n(display \"hi\")\n(newline)\n42\n(write-string \"x\" (current-error-port))\n", &ob, &eb);
+    try std.testing.expectEqual(@as(u8, 0), r.status);
+    // 式の値 42 は書かない。標準エラーへの書き込みも、5i では標準出力に出る(既知の制限)。
+    try std.testing.expectEqualStrings("hi\nx", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "runFile keeps what the program wrote before an error, ahead of the description" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try runProgramWithOutput("(import (scheme base) (scheme write))\n(display \"before\")\n(car 1)\n(display \"after\")\n", &ob, &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expectEqualStrings("before", r.out);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\n", r.err);
 }
 
 test "runFile runs a program that starts with an import, prints nothing, and exits 0" {
@@ -910,7 +944,8 @@ test "runFile finds a library under a search root" {
     defer std.testing.allocator.free(path);
     var eb: [256]u8 = undefined;
     var err: std.Io.Writer = .fixed(&eb);
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &err);
+    var out: std.Io.Writer.Discarding = .init(&.{});
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &out.writer, &err);
     // `(f)` は 7 を返し、`(car 7)` が誤りになる。ライブラリが読めたことは、その誤りの種類で分かる。
     try std.testing.expectEqual(exit_runtime_error, status);
     try std.testing.expectEqualStrings("error: wrong type of argument to car 7\n", err.buffered());
@@ -919,11 +954,12 @@ test "runFile finds a library under a search root" {
 test "runFile returns 66 for a file that is missing, and for a directory" {
     var eb: [256]u8 = undefined;
     var err: std.Io.Writer = .fixed(&eb);
-    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", &err);
+    var out: std.Io.Writer.Discarding = .init(&.{});
+    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", &out.writer, &err);
     try std.testing.expectEqual(exit_no_input, missing);
     try std.testing.expect(std.mem.startsWith(u8, err.buffered(), "error: cannot read no-such-dir/no-such-file.scm: "));
     var err2: std.Io.Writer = .fixed(&eb);
-    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", &err2);
+    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", &out.writer, &err2);
     try std.testing.expectEqual(exit_no_input, directory);
 }
 
@@ -943,6 +979,7 @@ test "runFile returns 66 for a file larger than the limit, and runs one at the l
         const path = try std.fs.path.join(std.testing.allocator, &.{ dir, c.name });
         defer std.testing.allocator.free(path);
         var err: std.Io.Writer = .fixed(&eb);
-        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, &err));
+        var out: std.Io.Writer.Discarding = .init(&.{});
+        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, &out.writer, &err));
     }
 }
