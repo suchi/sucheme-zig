@@ -10,15 +10,19 @@ const ucd = @import("ucd.zig");
 
 const flag = ucd.flag;
 
+/// The five vendored files and the list of their hashes, as the generator reads them.
+pub const inputs: ucd.Inputs = .{
+    .unicode_data = @embedFile("ucd/UnicodeData.txt"),
+    .derived_core_properties = @embedFile("ucd/DerivedCoreProperties.txt"),
+    .prop_list = @embedFile("ucd/PropList.txt"),
+    .special_casing = @embedFile("ucd/SpecialCasing.txt"),
+    .case_folding = @embedFile("ucd/CaseFolding.txt"),
+};
+pub const sums = @embedFile("ucd/SHA256SUMS");
+
 /// Parses the five vendored files. The result lives as long as `arena`.
 pub fn load(arena: std.mem.Allocator) !ucd.Data {
-    return ucd.parseAll(arena, .{
-        .unicode_data = @embedFile("ucd/UnicodeData.txt"),
-        .derived_core_properties = @embedFile("ucd/DerivedCoreProperties.txt"),
-        .prop_list = @embedFile("ucd/PropList.txt"),
-        .special_casing = @embedFile("ucd/SpecialCasing.txt"),
-        .case_folding = @embedFile("ucd/CaseFolding.txt"),
-    });
+    return ucd.parseAll(arena, inputs);
 }
 
 fn delta(from: u21, to: u21) i32 {
