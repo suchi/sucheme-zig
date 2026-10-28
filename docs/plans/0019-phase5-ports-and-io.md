@@ -199,6 +199,7 @@ flowchart TD
 
 - 5m は、3o の着手前にマージできれば先に入れる。3o が進行中なら、5m の PR は 3o のマージを待ってから main を取り込む。どちらの場合も、マージの順序を報告する前に、変更ファイルの一覧を突き合わせる(AGENTS.md)。
 - 5o は、3o のマージのあとに着手する。
+- 5h は、閉じたポートの誤りを報告するため、`primitiveFailure` の振り分けに `PortClosed` の1行を足した(`src/value.zig` の `PrimitiveError` にも1つ足した)。5m が `src/machine.zig` を触るときは、この行と隣り合いうるので、main を取り込んでから変更ファイルを突き合わせる。
 
 ### そのほかのファイルの重なり
 
@@ -475,12 +476,13 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5c | マージ済み。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | suchi/sucheme-zig#147 |
 | 5d | マージ済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | suchi/sucheme-zig#160 |
 | 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
-| 5g | PR 作成済み。`Value` の `port` と、ヒープの型 `Port`(`src/value.zig`)。裏付けは、文字列ポートとバイトベクタポートが共有する `memory` の1つだけで、どちらかは `element`(`textual` か `binary`)で分ける。確保は `Heap.createMemoryPort`、出力の領域を伸ばすのは `Heap.growPortBytes` で、5h が `src/heap.zig` を触らずに書けるよう、ここで置いた。`Kind` の網羅的な switch に `.port` を足すため、`src/prim/equiv.zig`、`src/prim/procedure.zig`、`src/prim/promise.zig`、`src/syntax/expand.zig` にも1行ずつ触れた(4d と同じ4か所)。レビューで足さなかったテストと、後のスライスへの申し送りは「5g のレビューの記録と、後のスライスへの申し送り」の節にある | suchi/sucheme-zig#205 |
-| 5h から 5r | 未着手 | - |
+| 5g | マージ済み。`Value` の `port` と、ヒープの型 `Port`(`src/value.zig`)。裏付けは、文字列ポートとバイトベクタポートが共有する `memory` の1つだけで、どちらかは `element`(`textual` か `binary`)で分ける。確保は `Heap.createMemoryPort`、出力の領域を伸ばすのは `Heap.growPortBytes` で、5h が `src/heap.zig` を触らずに書けるよう、ここで置いた。`Kind` の網羅的な switch に `.port` を足すため、`src/prim/equiv.zig`、`src/prim/procedure.zig`、`src/prim/promise.zig`、`src/syntax/expand.zig` にも1行ずつ触れた(4d と同じ4か所)。レビューで足さなかったテストと、後のスライスへの申し送りは「5g のレビューの記録と、後のスライスへの申し送り」の節にある | suchi/sucheme-zig#205 |
+| 5h | PR 作成済み。`src/port.zig` の読み書きの関数と、`(scheme base)` のポートの手続き(`src/prim/port.zig`、`call-with-port` は `lib/sucheme/procedures.scm`)。ポートの引数は、5i が現在のポートを入れるまで省略できない。署名の節のうち、`fill`(5k)、`flush`(書き出す先を持つポートを入れる 5i)、`writer`(5j)は、使うスライスが足す。閉じたポートへの読み書きは、新しい誤り `PortClosed`(文言は `port is closed in 手続きの名前`)、向きと種類の違いは型の誤りである。所有の外に、`src/value.zig` の `PrimitiveError` と `src/machine.zig` の `primitiveFailure`(「機械の重なり」の節)、`lib/sucheme/procedures.sld` の輸出、`tools/test-scheme/main.zig` の `mutators` の表に1つずつ足し、未実装の例にポートの名前を使っていた `tests/scheme/0292-scheme-libraries.txt` と `tools/conformance-run/run.zig` のテストを、まだ無い現在のポートの名前に替えた(5i で替え直す) | (この PR。番号はレビューの修正で書く) |
+| 5i から 5r | 未着手 | - |
 
 ## 次にやること
 
-- 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。
+- 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。
 - L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5g の PR のレビューを収束させる。5h は 5g のマージを待つ(5h 以降はすべて 5g に依存する)。
-- 5h の着手は、親のセッションの指示を待つ。
+- L3 は 5h の PR のレビューを収束させる。5i と 5l は 5h のマージを待つ。
+- 5i の着手は、親のセッションの指示を待つ。
