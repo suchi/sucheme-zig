@@ -168,4 +168,5 @@ test {
     _ = ucd;
     _ = emit;
     _ = @import("real_data.zig");
+    _ = @import("full_range.zig");
 }

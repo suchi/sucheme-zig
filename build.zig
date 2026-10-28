@@ -304,6 +304,14 @@ pub fn build(b: *std.Build) void {
     const coverage = tool(b, "coverage-report", .Debug);
     // Unicode の表の生成器(スライス 4u1)。全符号位置の配列を作るので、ReleaseSafe にする。
     const unicode_gen = tool(b, "unicode-gen", .ReleaseSafe);
+    // 生成器のテストは、引く関数(src/unicode/props.zig)が全符号位置で生成器の入力と
+    // 一致するかを見る(スライス 4u2)。props.zig は sucheme モジュールからも相対パスで
+    // 読まれるが、2つは別のコンパイルなので、同じファイルが2つのモジュールに属する誤りにならない。
+    unicode_gen.root_module.addImport("unicode_props", b.createModule(.{
+        .root_source_file = b.path("src/unicode/props.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    }));
     // Why: ランナーは100万ステップのプログラムを評価するので、Debug ビルドでは
     // 数分かかる。ReleaseSafe は検査(境界・オーバーフロー・アサーション)を残したまま、
     // インタプリタを数倍速く動かす。下のモジュールは、それを import する

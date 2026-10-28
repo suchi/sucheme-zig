@@ -10,7 +10,8 @@ const ucd = @import("ucd.zig");
 
 const flag = ucd.flag;
 
-fn load(arena: std.mem.Allocator) !ucd.Data {
+/// Parses the five vendored files. The result lives as long as `arena`.
+pub fn load(arena: std.mem.Allocator) !ucd.Data {
     return ucd.parseAll(arena, .{
         .unicode_data = @embedFile("ucd/UnicodeData.txt"),
         .derived_core_properties = @embedFile("ucd/DerivedCoreProperties.txt"),
