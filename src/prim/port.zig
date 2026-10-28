@@ -86,8 +86,8 @@ fn byteOf(v: Value) ?u8 {
 /// A count of elements to read, `k` in `(read-string k port)`: an exact integer that is
 /// not negative.
 /// `usize` に収まらない大きさは、残りの全部を読むのと同じなので、最大の値にする。
-fn countOf(v: Value) Error!usize {
-    const k = v.asFixnum() orelse return error.WrongType;
+/// 型の検査(整数か)は、ほかの引数の型と一緒に、呼び出し側が先に済ませる。
+fn countOf(k: i64) Error!usize {
     if (k < 0) return error.OutOfRange;
     return std.math.cast(usize, k) orelse std.math.maxInt(usize);
 }
@@ -253,8 +253,9 @@ fn isCharReady(services: *const Services, args: []const Value) Error!Value {
 /// left, or an end-of-file object when none is left (R7RS 6.13.2).
 /// `k` が 0 なら、何も読まずに空の文字列を返す。
 fn readString(services: *const Services, args: []const Value) Error!Value {
-    const k = try countOf(args[0]);
+    const n = args[0].asFixnum() orelse return error.WrongType;
     const p = try portOf(args[1], .input, .textual);
+    const k = try countOf(n);
     const rest = try pendingOf(services, p);
     if (k == 0) return .fromString(try services.heap.createString(""));
     if (rest.len == 0) return .eof_value;
@@ -293,14 +294,15 @@ fn isU8Ready(services: *const Services, args: []const Value) Error!Value {
 /// are left, or an end-of-file object when none is left (R7RS 6.13.2).
 /// `k` が 0 なら、何も読まずに空のバイトベクタを返す。
 fn readBytevector(services: *const Services, args: []const Value) Error!Value {
-    const k = try countOf(args[0]);
+    const n = args[0].asFixnum() orelse return error.WrongType;
     const p = try portOf(args[1], .input, .binary);
+    const k = try countOf(n);
     const rest = try pendingOf(services, p);
     if (k == 0) return .fromBytevector(try services.heap.createBytevector(""));
     if (rest.len == 0) return .eof_value;
-    const n = @min(k, rest.len);
-    const b = try services.heap.createBytevector(rest[0..n]);
-    port_mod.consume(p, n);
+    const taken = @min(k, rest.len);
+    const b = try services.heap.createBytevector(rest[0..taken]);
+    port_mod.consume(p, taken);
     return .fromBytevector(b);
 }
 
@@ -725,4 +727,14 @@ test "reading and writing a closed port of the right direction and kind is refus
     // 何も書いていないので、書いたものは空のままである。
     try expectString("", try call(&f, "get-output-string", &.{p.text_out}));
     try expectBytes(&.{}, try call(&f, "get-output-bytevector", &.{p.bytes_out}));
+}
+
+test "read-string and read-bytevector check the type of the port before the range of the count" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try Ports.make(&f);
+    try std.testing.expectError(error.WrongType, call(&f, "read-string", &.{ fix(-1), p.bytes_in }));
+    try std.testing.expectError(error.WrongType, call(&f, "read-bytevector", &.{ fix(-1), p.text_in }));
+    try std.testing.expectError(error.OutOfRange, call(&f, "read-bytevector", &.{ fix(-1), p.bytes_in }));
 }
