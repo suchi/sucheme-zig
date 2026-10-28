@@ -285,3 +285,37 @@ test "close closes a port of either direction, and closing it again does nothing
     try std.testing.expect(!in.open);
     try std.testing.expect(!out.open);
 }
+
+test "writeBytes regrows the storage a number of times that is logarithmic in what was written" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try f.output(.binary);
+    var regrowths: usize = 0;
+    var capacity = p.backing.memory.bytes.len;
+    for (0..1000) |_| {
+        try writeBytes(&f.heap, p, "x");
+        if (p.backing.memory.bytes.len != capacity) {
+            regrowths += 1;
+            capacity = p.backing.memory.bytes.len;
+        }
+    }
+    // 倍ずつなら 1、2、4、...、1024 の 11 回である。要る分だけ伸ばすと 1000 回になる。
+    try std.testing.expect(regrowths <= 16);
+}
+
+test "the reading functions check the direction, then the kind, then whether the port is open" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const out = try f.output(.binary);
+    close(out);
+    // 閉じた出力のポートは、向きの誤りである。
+    try std.testing.expectError(error.WrongDirection, readChar(&f.heap, out));
+    const bytes = try f.input(.binary, "a");
+    close(bytes);
+    try std.testing.expectError(error.WrongKind, readChar(&f.heap, bytes));
+    const text = try f.input(.textual, "a");
+    close(text);
+    try std.testing.expectError(error.WrongKind, readByte(&f.heap, text));
+}

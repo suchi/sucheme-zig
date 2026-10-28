@@ -310,7 +310,9 @@ fn readBytevector(services: *const Services, args: []const Value) Error!Value {
 /// `(read-bytevector! bytevector port start end)`: reads the next bytes into `bytevector`
 /// from `start` up to `end`, and gives how many it read, or an end-of-file object when
 /// none is left (R7RS 6.13.2).
-/// 定数のバイトベクタは、範囲が空でも断る。範囲が空なら、何も読まずに 0 を返す。
+/// 定数のバイトベクタは、範囲が空でも断る。範囲が空なら、何も読まずに 0 を返す。終わりに
+/// あっても、範囲が空なら EOF でなく 0 である(R7RS 6.13.2 は、この境界を書き分けていない。
+/// `read-bytevector` の `k` が 0 のときと同じく、何も求めない呼び出しは何も返さない形にした)。
 fn readBytevectorInto(services: *const Services, args: []const Value) Error!Value {
     const target = args[0].asBytevector() orelse return error.WrongType;
     const p = try portOf(args[1], .input, .binary);
@@ -737,4 +739,62 @@ test "read-string and read-bytevector check the type of the port before the rang
     try std.testing.expectError(error.WrongType, call(&f, "read-string", &.{ fix(-1), p.bytes_in }));
     try std.testing.expectError(error.WrongType, call(&f, "read-bytevector", &.{ fix(-1), p.text_in }));
     try std.testing.expectError(error.OutOfRange, call(&f, "read-bytevector", &.{ fix(-1), p.bytes_in }));
+}
+
+test "read-line reads a blank line as an empty line, whichever ends it" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try call(&f, "open-input-string", &.{try str(&f, "a\n\nb\r\r\nc\n\r\n")});
+    for ([_][]const u8{ "a", "", "b", "", "c", "" }) |line| try expectString(line, try call(&f, "read-line", &.{p}));
+    try expectEof(try call(&f, "read-line", &.{p}));
+}
+
+test "read-line ends a line at a return that is the last character" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    for ([_][]const u8{ "a\rb\n", "c\r", "\r" }) |input| {
+        const p = try call(&f, "open-input-string", &.{try str(&f, input)});
+        _ = try call(&f, "read-line", &.{p});
+        if (std.mem.eql(u8, input, "a\rb\n")) try expectString("b", try call(&f, "read-line", &.{p}));
+        try expectEof(try call(&f, "read-line", &.{p}));
+    }
+}
+
+test "a count of zero reads nothing, but a closed port is still refused, and at the end the result is empty" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const text = try call(&f, "open-input-string", &.{try str(&f, "a")});
+    const bytes = try call(&f, "open-input-bytevector", &.{try bv(&f, &.{1})});
+    try expectString("", try call(&f, "read-string", &.{ fix(0), text }));
+    try expectBytes(&.{}, try call(&f, "read-bytevector", &.{ fix(0), bytes }));
+    // 0 個を求めても、読み進めない。
+    try std.testing.expectEqual(chr('a'), try call(&f, "read-char", &.{text}));
+    try std.testing.expectEqual(fix(1), try call(&f, "read-u8", &.{bytes}));
+    // 終わりでも、0 個を求めたら空である(EOF でない)。read-bytevector! の空の範囲も 0 である。
+    try expectString("", try call(&f, "read-string", &.{ fix(0), text }));
+    try expectBytes(&.{}, try call(&f, "read-bytevector", &.{ fix(0), bytes }));
+    const target = try bv(&f, &.{0});
+    try std.testing.expectEqual(fix(0), try call(&f, "read-bytevector!", &.{ target, bytes, fix(0), fix(0) }));
+    _ = try call(&f, "close-port", &.{text});
+    _ = try call(&f, "close-port", &.{bytes});
+    try std.testing.expectError(error.PortClosed, call(&f, "read-string", &.{ fix(0), text }));
+    try std.testing.expectError(error.PortClosed, call(&f, "read-bytevector", &.{ fix(0), bytes }));
+    try std.testing.expectError(error.PortClosed, call(&f, "read-bytevector!", &.{ target, bytes, fix(0), fix(0) }));
+}
+
+test "a count far larger than what is left allocates only what is left" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const text = try call(&f, "open-input-string", &.{try str(&f, "abc")});
+    const bytes = try call(&f, "open-input-bytevector", &.{try bv(&f, &.{ 1, 2 })});
+    const before = f.heap.accounted;
+    try expectString("abc", try call(&f, "read-string", &.{ fix(std.math.maxInt(i64)), text }));
+    try expectBytes(&.{ 1, 2 }, try call(&f, "read-bytevector", &.{ fix(std.math.maxInt(i64)), bytes }));
+    // 確保したのは、読んだ 3 文字の文字列と 2 バイトのバイトベクタだけである。
+    const heap_mod = @import("../heap.zig");
+    try std.testing.expectEqual(before + heap_mod.cellBytes(value.String) + 3 + heap_mod.cellBytes(value.Bytevector) + 2, f.heap.accounted);
 }
