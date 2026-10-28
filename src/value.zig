@@ -758,6 +758,8 @@ pub const PrimitiveError = error{
     /// `symbol->string` returned (R7RS 3.4). R7RS 4.1.2 makes it an error to alter one.
     /// `prim/immutable.zig` の `requireMutable` が返す。
     Immutable,
+    /// The port to read from or write to has been closed (R7RS 6.13.1 `close-port`).
+    PortClosed,
     /// The allocation would take the heap past its limit.
     /// `Heap` のエラーと同じ名前である。そのまま返してよい。
     HeapLimit,

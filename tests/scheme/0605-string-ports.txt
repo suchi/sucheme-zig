@@ -56,3 +56,10 @@ error: wrong type of argument to close-input-port #<port>
 
 (read-string -1 (open-input-string "a"))
 error: argument out of range in read-string -1 #<port>
+
+# 閉じたポートへの読み書きは誤りである(R7RS 6.13.1)。
+(let ((p (open-input-string "a"))) (close-port p) (read-char p))
+error: port is closed in read-char #<port>
+
+(let ((p (open-output-string))) (close-port p) (write-char #\a p))
+error: port is closed in write-char #\a #<port>

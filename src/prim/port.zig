@@ -6,7 +6,8 @@
 //!
 //! 検査の順序は、型、不変(`read-bytevector!`)、範囲、ポートの状態(向き、種類、開閉)である。
 //! 向きか種類の違うポートは、型の誤りである。閉じたポートへの読み書きは、R7RS 6.13 が誤りとする
-//! もので、`portFailure` が誤りの種類を決める。
+//! もので、`PortClosed` を返す(`portFailure`)。閉じたポートの `get-output-string` と
+//! `get-output-bytevector` は誤りにせず、書いたものを返す。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -59,11 +60,12 @@ pub const primitives = [_]Primitive{
 };
 
 /// The error a failure of the port functions is to a primitive.
-/// 向きと種類の違いは、引数の型の誤りである。
+/// 向きと種類の違いは、引数の型の誤りである。閉じたポートは、型は合っているので、別の誤り
+/// (`PortClosed`)にして、閉じたことが文言で分かるようにする。
 fn portFailure(e: port_mod.Error) Error {
     return switch (e) {
         error.WrongDirection, error.WrongKind => error.WrongType,
-        error.PortClosed => error.WrongType,
+        error.PortClosed => error.PortClosed,
         error.HeapLimit, error.OutOfMemory => |heap_error| heap_error,
     };
 }
@@ -700,4 +702,27 @@ test "reading and writing refuse a port of the other direction or kind as the wr
         .{ "write-char", &.{ fix(0), p.text_out } },       .{ "write-string", &.{ chr('a'), p.text_out } },
     };
     for (cases) |c| try std.testing.expectError(error.WrongType, call(&f, c[0], c[1]));
+}
+
+test "reading and writing a closed port of the right direction and kind is refused as closed" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try Ports.make(&f);
+    for ([_]Value{ p.text_in, p.bytes_in, p.text_out, p.bytes_out }) |port| _ = try call(&f, "close-port", &.{port});
+    const target = try bv(&f, &.{0});
+    const cases = [_]struct { []const u8, []const Value }{
+        .{ "read-char", &.{p.text_in} },                    .{ "peek-char", &.{p.text_in} },
+        .{ "read-line", &.{p.text_in} },                    .{ "char-ready?", &.{p.text_in} },
+        .{ "read-string", &.{ fix(1), p.text_in } },        .{ "read-u8", &.{p.bytes_in} },
+        .{ "peek-u8", &.{p.bytes_in} },                     .{ "u8-ready?", &.{p.bytes_in} },
+        .{ "read-bytevector", &.{ fix(1), p.bytes_in } },   .{ "read-bytevector!", &.{ target, p.bytes_in } },
+        .{ "write-char", &.{ chr('a'), p.text_out } },      .{ "write-string", &.{ try str(&f, "a"), p.text_out } },
+        .{ "newline", &.{p.text_out} },                     .{ "write-u8", &.{ fix(1), p.bytes_out } },
+        .{ "write-bytevector", &.{ target, p.bytes_out } }, .{ "flush-output-port", &.{p.text_out} },
+    };
+    for (cases) |c| try std.testing.expectError(error.PortClosed, call(&f, c[0], c[1]));
+    // 何も書いていないので、書いたものは空のままである。
+    try expectString("", try call(&f, "get-output-string", &.{p.text_out}));
+    try expectBytes(&.{}, try call(&f, "get-output-bytevector", &.{p.bytes_out}));
 }
