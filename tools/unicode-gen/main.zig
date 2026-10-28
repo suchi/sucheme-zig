@@ -143,46 +143,58 @@ pub fn execute(
     }
 }
 
-pub fn main(init: std.process.Init) !void {
+/// The exit status is the return value of `main`, so that no call to `exit` hides in the flow
+/// that `run` carries out.
+pub fn main(init: std.process.Init) !u8 {
     const gpa = init.arena.allocator();
     const io = init.io;
-    const cwd = std.Io.Dir.cwd();
 
     var buf: [4096]u8 = undefined;
     var stdout = std.Io.File.Writer.initStreaming(.stdout(), io, &buf);
     const out = &stdout.interface;
+    defer out.flush() catch {};
 
     const argv = try init.minimal.args.toSlice(gpa);
-    const mode = switch (parseArgs(argv[1..])) {
+    return run(gpa, io, std.Io.Dir.cwd(), argv[1..], out);
+}
+
+/// Carries out one invocation with `cwd` as the repository root and returns the exit status.
+///
+/// 0 は成功、1 は検査の失敗や読めない入力、2 は未知の引数である。メッセージは `out` に書く。
+/// 失敗を終了コードで返すので、単体テストが一時ディレクトリの上で流れ全体を通して固定する。
+pub fn run(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    args: []const []const u8,
+    out: *std.Io.Writer,
+) !u8 {
+    const mode = switch (parseArgs(args)) {
         .mode => |m| m,
         .unknown => |arg| {
             try out.print("unknown argument {s}\n", .{arg});
             try out.print("usage: unicode-gen [--check | --write]\n", .{});
-            try out.flush();
-            std.process.exit(2);
+            return 2;
         },
     };
 
     var dir = cwd.openDir(io, ucd_dir, .{}) catch |err| {
         try out.print("cannot open {s}: {t}\n", .{ ucd_dir, err });
         try out.print("run this from the repository root\n", .{});
-        try out.flush();
-        std.process.exit(1);
+        return 1;
     };
     defer dir.close(io);
 
     const sums = dir.readFileAlloc(io, sums_name, gpa, .unlimited) catch |err| {
         try out.print("cannot read {s}/{s}: {t}\n", .{ ucd_dir, sums_name, err });
-        try out.flush();
-        std.process.exit(1);
+        return 1;
     };
 
     var texts: Texts = undefined;
     for (input_names, 0..) |name, i| {
         texts[i] = dir.readFileAlloc(io, name, gpa, .unlimited) catch |err| {
             try out.print("cannot read {s}/{s}: {t}\n", .{ ucd_dir, name, err });
-            try out.flush();
-            std.process.exit(1);
+            return 1;
         };
     }
 
@@ -225,8 +237,7 @@ pub fn main(init: std.process.Init) !void {
             try out.print("wrote {s} from Unicode {s}\n", .{ out_path, g.version });
         },
     }
-    try out.flush();
-    if (!result.succeeded()) std.process.exit(1);
+    return if (result.succeeded()) 0 else 1;
 }
 
 test "verifySum accepts the matching line only" {
@@ -262,6 +273,7 @@ fn realTexts() Texts {
 /// The table the vendored input generates.
 fn generatedTable(arena: std.mem.Allocator) ![]const u8 {
     const r = try execute(arena, .write, real_data.sums, realTexts(), null);
+    try std.testing.expect(r == .generated);
     return r.generated.source;
 }
 
@@ -272,6 +284,7 @@ test "execute: a comparison accepts the table the input generates" {
     const table = try generatedTable(arena);
 
     const r = try execute(arena, .check, real_data.sums, realTexts(), table);
+    try std.testing.expect(r == .matches);
     try std.testing.expectEqualStrings("18.0.0", r.matches);
     try std.testing.expect(r.succeeded());
 }
@@ -318,6 +331,7 @@ test "execute: a write returns the source whatever the table holds" {
 
     const r = try execute(arena, .write, real_data.sums, realTexts(), "not the table");
     try std.testing.expect(r.succeeded());
+    try std.testing.expect(r == .generated);
     try std.testing.expectEqualStrings(table, r.generated.source);
     try std.testing.expectEqualStrings("18.0.0", r.generated.version);
 }
@@ -337,6 +351,7 @@ test "execute: an input that differs from its hash stops both modes" {
         errdefer std.debug.print("{s}\n", .{name});
         for ([_]Mode{ .check, .write }) |mode| {
             const r = try execute(arena, mode, real_data.sums, texts, table);
+            try std.testing.expect(r == .sum_mismatch);
             try std.testing.expectEqualStrings(name, r.sum_mismatch);
             try std.testing.expect(!r.succeeded());
         }
@@ -353,11 +368,13 @@ test "execute: a hash that does not match the input stops, and so does a missing
     const bad = try arena.dupe(u8, real_data.sums);
     bad[0] = if (bad[0] == '0') '1' else '0';
     const r = try execute(arena, .check, bad, realTexts(), table);
+    try std.testing.expect(r == .sum_mismatch);
     try std.testing.expectEqualStrings(input_names[0], r.sum_mismatch);
 
     // 一覧に載っていないファイル。先頭の行を落とす。
     const rest = real_data.sums[std.mem.indexOfScalar(u8, real_data.sums, '\n').? + 1 ..];
     const m = try execute(arena, .write, rest, realTexts(), null);
+    try std.testing.expect(m == .sum_missing);
     try std.testing.expectEqualStrings(input_names[0], m.sum_missing);
     try std.testing.expect(!m.succeeded());
 }
@@ -379,6 +396,121 @@ test "execute: an input that is not the Unicode data is reported" {
     const r = try execute(arena, .check, sums.items, texts, "x");
     try std.testing.expect(r == .unreadable);
     try std.testing.expect(!r.succeeded());
+}
+
+/// Lays out a repository root in `tmp`: the vendored inputs and, if given, the table.
+fn layOut(tmp: *std.testing.TmpDir, texts: Texts, table: ?[]const u8) !void {
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, ucd_dir);
+    var dir = try tmp.dir.openDir(io, ucd_dir, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = sums_name, .data = real_data.sums });
+    for (input_names, texts) |name, text| try dir.writeFile(io, .{ .sub_path = name, .data = text });
+    if (table) |t| {
+        try tmp.dir.createDirPath(io, "src/unicode");
+        try tmp.dir.writeFile(io, .{ .sub_path = out_path, .data = t });
+    }
+}
+
+/// Runs the whole flow in `tmp`, and expects `status` and a fragment of the message.
+fn expectRun(
+    arena: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    args: []const []const u8,
+    status: u8,
+    message: []const u8,
+) !void {
+    var output: std.Io.Writer.Allocating = .init(arena);
+    const got = try run(arena, std.testing.io, tmp.dir, args, &output.writer);
+    errdefer std.debug.print("output: {s}\n", .{output.written()});
+    try std.testing.expectEqual(status, got);
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), message) != null);
+}
+
+test "run: a comparison exits 0 for the table the input generates and 1 for any other" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const table = try generatedTable(arena);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try layOut(&tmp, realTexts(), table);
+    // 引数なしと --check は、どちらも比較である。
+    try expectRun(arena, &tmp, &.{}, 0, "matches Unicode 18.0.0");
+    try expectRun(arena, &tmp, &.{"--check"}, 0, "matches Unicode 18.0.0");
+
+    // 末尾の1バイトを変えた表。比較の失敗は終了コード 1 になる。
+    const broken = try arena.dupe(u8, table);
+    broken[broken.len - 1] ^= 1;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = out_path, .data = broken });
+    try expectRun(arena, &tmp, &.{}, 1, "is not what");
+    try expectRun(arena, &tmp, &.{"--check"}, 1, "generate-unicode");
+}
+
+test "run: a comparison exits 1 when there is no table" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try layOut(&tmp, realTexts(), null);
+    try expectRun(arena, &tmp, &.{}, 1, "cannot read src/unicode/tables.zig");
+}
+
+test "run: --write writes the table, replaces a broken one, and the next comparison agrees" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const table = try generatedTable(arena);
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try layOut(&tmp, realTexts(), null);
+    try expectRun(arena, &tmp, &.{"--write"}, 0, "wrote src/unicode/tables.zig from Unicode 18.0.0");
+    const written = try tmp.dir.readFileAlloc(io, out_path, arena, .unlimited);
+    try std.testing.expectEqualStrings(table, written);
+    try expectRun(arena, &tmp, &.{}, 0, "matches");
+
+    try tmp.dir.writeFile(io, .{ .sub_path = out_path, .data = "not the table" });
+    try expectRun(arena, &tmp, &.{"--write"}, 0, "wrote");
+    const again = try tmp.dir.readFileAlloc(io, out_path, arena, .unlimited);
+    try std.testing.expectEqualStrings(table, again);
+}
+
+test "run: an input that differs from its hash exits 1 and leaves the table alone" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+
+    var texts = realTexts();
+    const copy = try arena.dupe(u8, texts[2]);
+    copy[copy.len - 1] ^= 1;
+    texts[2] = copy;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try layOut(&tmp, texts, "old table");
+    try expectRun(arena, &tmp, &.{}, 1, "PropList.txt differs from the hash");
+    try expectRun(arena, &tmp, &.{"--write"}, 1, "PropList.txt differs from the hash");
+    // 書き込みも止まるので、表はそのままである。
+    const kept = try tmp.dir.readFileAlloc(io, out_path, arena, .unlimited);
+    try std.testing.expectEqualStrings("old table", kept);
+}
+
+test "run: a missing input directory and an unknown argument exit with their own status" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try expectRun(arena, &tmp, &.{}, 1, "run this from the repository root");
+    try expectRun(arena, &tmp, &.{"--wite"}, 2, "unknown argument --wite");
+    try expectRun(arena, &tmp, &.{ "--check", "--wite" }, 2, "usage: unicode-gen");
 }
 
 test {

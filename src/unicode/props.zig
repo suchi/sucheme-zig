@@ -234,6 +234,8 @@ test "full mappings" {
     try expectFull(fullFoldcase, 0x1E9E, &.{ 's', 's' });
     try expectFull(fullFoldcase, 0x0130, &.{ 'i', 0x0307 });
     try expectFull(fullFoldcase, 0xFB00, &.{ 'f', 'f' });
+    // 完全写像の表の最後の行(二分探索の端)。
+    try expectFull(fullFoldcase, 0x1DF95, &.{ 's', 's' });
     try expectFull(fullFoldcase, 'A', &.{'a'});
     try expectFull(fullFoldcase, 0x03C2, &.{0x03C3});
     try expectFull(fullFoldcase, 0x10FFFF, &.{0x10FFFF});
@@ -252,6 +254,13 @@ test "digitValue" {
     try std.testing.expectEqual(@as(?u4, 9), digitValue(0xFF19));
     try std.testing.expectEqual(@as(?u4, 0), digitValue(0x1D7CE));
     try std.testing.expectEqual(@as(?u4, 9), digitValue(0x1D7FF));
+    // 並びの表の最後の2つ。二分探索の端である。
+    try std.testing.expectEqual(@as(?u4, 0), digitValue(0x1E950));
+    try std.testing.expectEqual(@as(?u4, 9), digitValue(0x1E959));
+    try std.testing.expectEqual(@as(?u4, null), digitValue(0x1E95A));
+    try std.testing.expectEqual(@as(?u4, 0), digitValue(0x1FBF0));
+    try std.testing.expectEqual(@as(?u4, 9), digitValue(0x1FBF9));
+    try std.testing.expectEqual(@as(?u4, null), digitValue(0x1FBFA));
     // Nd でない数。
     try std.testing.expectEqual(@as(?u4, null), digitValue(0x00B2));
     try std.testing.expectEqual(@as(?u4, null), digitValue(0x2160));
