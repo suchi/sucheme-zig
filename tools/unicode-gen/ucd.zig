@@ -426,6 +426,30 @@ test "parseCaseFolding separates simple and full foldings" {
     try std.testing.expectError(error.UnknownCaseFoldingStatus, parseCaseFolding(gpa, "0041; X; 0061;\n", fold));
 }
 
+test "parseCaseFolding sorts full foldings into ascending order and rejects a duplicate" {
+    const gpa = std.testing.allocator;
+    const fold = try gpa.alloc(i32, code_point_count);
+    defer gpa.free(fold);
+    @memset(fold, 0);
+    // 入力は降順。引く側が二分探索するので、出力は昇順でなければならない。
+    const text =
+        "# CaseFolding-17.0.0.txt\n" ++
+        "FB00; F; 0066 0066;\n" ++
+        "1E9E; F; 0073 0073;\n" ++
+        "00DF; F; 0073 0073;\n";
+    const full = try parseCaseFolding(gpa, text, fold);
+    defer gpa.free(full);
+    try std.testing.expectEqual(@as(usize, 3), full.len);
+    try std.testing.expectEqual(@as(u21, 0x00DF), full[0].cp);
+    try std.testing.expectEqual(@as(u21, 0x1E9E), full[1].cp);
+    try std.testing.expectEqual(@as(u21, 0xFB00), full[2].cp);
+
+    try std.testing.expectError(
+        error.DuplicateMapping,
+        parseCaseFolding(gpa, "00DF; F; 0073 0073;\n00DF; F; 0073 0073;\n", fold),
+    );
+}
+
 test "parseSpecialCasing keeps only unconditional multi-character mappings" {
     const gpa = std.testing.allocator;
     const upper = try gpa.alloc(i32, code_point_count);

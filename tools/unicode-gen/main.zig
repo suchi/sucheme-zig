@@ -167,4 +167,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = ucd;
     _ = emit;
+    _ = @import("real_data.zig");
 }

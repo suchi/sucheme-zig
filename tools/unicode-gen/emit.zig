@@ -230,6 +230,72 @@ test "render is stable and already formatted" {
     try std.testing.expectEqualStrings(first, try tree.renderAlloc(arena));
 }
 
+/// Reads the integers of `pub const <name> = [_]...{ ... };` from rendered source.
+fn readArray(comptime T: type, arena: std.mem.Allocator, source: []const u8, name: []const u8) ![]T {
+    const head = try std.fmt.allocPrint(arena, "pub const {s} = [_]", .{name});
+    const start = std.mem.indexOf(u8, source, head) orelse return error.ArrayNotFound;
+    const open = std.mem.indexOfScalarPos(u8, source, start, '{') orelse return error.ArrayNotFound;
+    const close = std.mem.indexOfPos(u8, source, open, "};") orelse return error.ArrayNotFound;
+    var out: std.ArrayList(T) = .empty;
+    var it = std.mem.tokenizeAny(u8, source[open + 1 .. close], ", \n");
+    while (it.next()) |tok| try out.append(arena, try std.fmt.parseInt(T, tok, 10));
+    return out.items;
+}
+
+test "render names every table after its own data and agrees with the flags and the block size" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var d = try emptyData(arena);
+    // 4つの表が互いに違う値を持つようにして、名前の取り違えを見つける。
+    d.flags[0x41] = ucd.flag.alphabetic | ucd.flag.uppercase;
+    d.flags[0x30] = ucd.flag.numeric;
+    d.flags[0x20] = ucd.flag.white_space;
+    d.flags[0x61] = ucd.flag.lowercase;
+    d.upper[0x61] = -0x20;
+    d.lower[0x41] = 0x20;
+    d.fold[0x1E9E] = 0x00DF - 0x1E9E;
+    d.fold[0x10FFFF] = 7;
+    d.full_lower = &.{.{ .cp = 0x130, .len = 2, .out = .{ 0x69, 0x307, 0 } }};
+    d.full_fold = &.{.{ .cp = 0xDF, .len = 2, .out = .{ 0x73, 0x74, 0 } }};
+
+    const source = try render(arena, d);
+
+    // 印の名前と値は ucd.flag と同じ。
+    const flag_values = [_]struct { []const u8, u16 }{
+        .{ "alphabetic", ucd.flag.alphabetic },
+        .{ "numeric", ucd.flag.numeric },
+        .{ "white_space", ucd.flag.white_space },
+        .{ "uppercase", ucd.flag.uppercase },
+        .{ "lowercase", ucd.flag.lowercase },
+    };
+    for (flag_values) |f| {
+        const line = try std.fmt.allocPrint(arena, "pub const flag_{s}: u16 = 1 << {d};\n", .{ f[0], @ctz(f[1]) });
+        try std.testing.expect(std.mem.indexOf(u8, source, line) != null);
+    }
+    const shift = try std.fmt.allocPrint(arena, "pub const block_shift = {d};\n", .{block_shift});
+    try std.testing.expect(std.mem.indexOf(u8, source, shift) != null);
+
+    // 出力の stage1 と stage2 から引いた値が、元の配列と同じ。
+    const names = [_][]const u8{ "flags", "upper", "lower", "fold" };
+    const probes = [_]u21{ 0x00, 0x20, 0x30, 0x41, 0x61, 0xDF, 0x130, 0x1E9E, 0x10FFFF };
+    inline for (names, .{ d.flags, d.upper, d.lower, d.fold }) |name, values| {
+        const T = @typeInfo(@TypeOf(values)).pointer.child;
+        const stage1 = try readArray(u16, arena, source, name ++ "_stage1");
+        const stage2 = try readArray(T, arena, source, name ++ "_stage2");
+        try std.testing.expectEqual(ucd.code_point_count >> block_shift, stage1.len);
+        for (probes) |cp| {
+            const got = stage2[@as(usize, stage1[cp >> block_shift]) * block_size + (cp & (block_size - 1))];
+            try std.testing.expectEqual(values[cp], got);
+        }
+    }
+
+    // 完全写像は、表の名前ごとに、自分の入力の out の並びのまま出る。
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const full_upper = [_]FullMapping{\n    .{ .cp = 0x00DF, .len = 2, .out = .{ 0x0053, 0x0053, 0x0000 } },\n};") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const full_lower = [_]FullMapping{\n    .{ .cp = 0x0130, .len = 2, .out = .{ 0x0069, 0x0307, 0x0000 } },\n};") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const full_fold = [_]FullMapping{\n    .{ .cp = 0x00DF, .len = 2, .out = .{ 0x0073, 0x0074, 0x0000 } },\n};") != null);
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
