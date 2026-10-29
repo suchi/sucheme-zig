@@ -348,7 +348,12 @@ pub fn build(b: *std.Build) void {
     });
     conformance_run.addImport("sucheme", sucheme_host);
     coverage.root_module.addImport("conformance", conformance_run);
-    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage, conformance, unicode_gen };
+    // 利用者向けの文書の例の実行器(docs/plans/0027-user-documentation.md の D1)。ブロックを
+    // プロセスの中で評価するので、test-scheme と同じ理由で ReleaseSafe にし、ホスト向けの
+    // インタプリタを import する。
+    const check_examples = tool(b, "check-examples", .ReleaseSafe);
+    check_examples.root_module.addImport("sucheme", sucheme_host);
+    const tools = [_]*std.Build.Step.Compile{ check_docs, extractor, test_scheme, coverage, conformance, unicode_gen, check_examples };
 
     const run_check_docs = b.addRunArtifact(check_docs);
     // run step が引き継ぐのは build root ではなく `zig build` を起動したディレクトリ
@@ -409,6 +414,13 @@ pub fn build(b: *std.Build) void {
     run_test_scheme.setCwd(b.path("."));
     const test_scheme_step = b.step("test-scheme", "run the Scheme behaviour tests");
     test_scheme_step.dependOn(&run_test_scheme.step);
+
+    // 実行器は引数を取らず、docs/manual/ を自分で読む。理由は test-scheme と同じで、末尾の
+    // checkStepRuns の呼び出しを参照。
+    const run_check_examples = b.addRunArtifact(check_examples);
+    run_check_examples.setCwd(b.path("."));
+    const check_examples_step = b.step("check-examples", "run the code blocks of docs/manual and compare their output");
+    check_examples_step.dependOn(&run_check_examples.step);
 
     // WebAssembly ビルド(docs/plans/0008-slice-1i-wasm-web-ui.md)。モジュールの
     // ターゲットは1つなので、wasm 用のインタプリタは専用のモジュールにする。
@@ -563,6 +575,7 @@ pub fn build(b: *std.Build) void {
         check_extract_step,
         check_report_step,
         check_unicode_step,
+        check_examples_step,
     };
     for (required_steps) |s| {
         run_check_docs.addArg("--requires");
@@ -601,6 +614,8 @@ pub fn build(b: *std.Build) void {
     checkStepRuns(test_scheme_step, test_scheme, 1);
     // 準拠スイートの実行も、ちょうどその artifact だけ。理由は test-scheme と同じである。
     checkStepRuns(test_conformance_step, conformance, 1);
+    // 文書の例の実行も、ちょうどその artifact だけ。理由は test-scheme と同じである。
+    checkStepRuns(check_examples_step, check_examples, 1);
     // wasm のファイルは引数で、スクリプトは固定である。3つめの引数は、より狭い
     // テストの選択を入り込ませる手段になる。
     checkSystemStepRuns(test_wasm_step, test_wasm_script, &install_wasm.step, 3);

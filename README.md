@@ -52,6 +52,7 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 | 文書 | 内容 |
 | --- | --- |
+| [docs/manual/](docs/manual/README.md) | sucheme を使う人のための文書の入口(チュートリアル、ユーザーズガイド、リファレンス、プログラム集。順に足している) |
 | [docs/onboarding.md](docs/onboarding.md) | 開発に参加するときの入口。環境の整え方とリポジトリの歩き方 |
 | [docs/roadmap.md](docs/roadmap.md) | 段階、完了条件、現在地 |
 | [docs/plans/0001-sow.md](docs/plans/0001-sow.md) | 作業範囲、成果物、進め方、リスク |
