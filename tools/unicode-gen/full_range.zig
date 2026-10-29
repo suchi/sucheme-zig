@@ -1,0 +1,111 @@
+//! Checks the lookup functions in src/unicode/props.zig against the parsed UCD at every code point.
+//!
+//! 期待値は、生成器が UCD から読んだ配列(`ucd.Data`)から、表を経由せずに求める。表の符号化と
+//! 引く関数の誤り(区画の指し方、差の符号、二分探索の端)は、全符号位置の比較で見つかる。
+//! 表そのものが入力から導かれたことは、`zig build check-unicode` が見る。
+
+const std = @import("std");
+const ucd = @import("ucd.zig");
+const real_data = @import("real_data.zig");
+const props = @import("unicode_props");
+
+fn delta(c: u21, d: i32) u21 {
+    return @intCast(@as(i32, c) + d);
+}
+
+test "every code point agrees with the parsed UCD: properties and simple mappings" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const d = try real_data.load(arena_state.allocator());
+
+    const all = [_]struct { props.Property, u16 }{
+        .{ .alphabetic, ucd.flag.alphabetic },
+        .{ .numeric, ucd.flag.numeric },
+        .{ .white_space, ucd.flag.white_space },
+        .{ .uppercase, ucd.flag.uppercase },
+        .{ .lowercase, ucd.flag.lowercase },
+    };
+    for (0..ucd.code_point_count) |i| {
+        const c: u21 = @intCast(i);
+        errdefer std.debug.print("at U+{X:0>4}\n", .{c});
+        for (all) |p| {
+            try std.testing.expectEqual(d.flags[c] & p[1] != 0, props.has(c, p[0]));
+        }
+        try std.testing.expectEqual(delta(c, d.upper[c]), props.simpleUpcase(c));
+        try std.testing.expectEqual(delta(c, d.lower[c]), props.simpleDowncase(c));
+        try std.testing.expectEqual(delta(c, d.fold[c]), props.simpleFoldcase(c));
+    }
+}
+
+test "every code point agrees with the parsed UCD: full mappings" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const d = try real_data.load(arena_state.allocator());
+
+    const Case = struct {
+        table: []const ucd.FullMapping,
+        simple: []const i32,
+        f: *const fn (u21, *[3]u21) u2,
+    };
+    const cases = [_]Case{
+        .{ .table = d.full_upper, .simple = d.upper, .f = props.fullUpcase },
+        .{ .table = d.full_lower, .simple = d.lower, .f = props.fullDowncase },
+        .{ .table = d.full_fold, .simple = d.fold, .f = props.fullFoldcase },
+    };
+    for (cases) |case| {
+        // 完全写像の表は昇順なので、符号位置を進めながら先頭から対応づける。
+        var next: usize = 0;
+        for (0..ucd.code_point_count) |i| {
+            const c: u21 = @intCast(i);
+            errdefer std.debug.print("at U+{X:0>4}\n", .{c});
+            var out: [3]u21 = @splat(0);
+            const n = case.f(c, &out);
+            if (next < case.table.len and case.table[next].cp == c) {
+                const m = case.table[next];
+                next += 1;
+                try std.testing.expectEqual(m.len, n);
+                try std.testing.expectEqualSlices(u21, m.out[0..m.len], out[0..n]);
+            } else {
+                try std.testing.expectEqual(@as(u2, 1), n);
+                try std.testing.expectEqual(delta(c, case.simple[c]), out[0]);
+            }
+        }
+        try std.testing.expectEqual(case.table.len, next);
+    }
+}
+
+test "every code point agrees with the parsed UCD: digit values" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const d = try real_data.load(arena_state.allocator());
+
+    // 並びの10個ずつに値を割り当てて、符号位置ごとの期待値の配列にする。
+    const want = try arena_state.allocator().alloc(?u4, ucd.code_point_count);
+    @memset(want, null);
+    for (d.digit_starts) |start| {
+        for (0..10) |k| want[start + k] = @intCast(k);
+    }
+    for (want, 0..) |w, i| {
+        const c: u21 = @intCast(i);
+        errdefer std.debug.print("at U+{X:0>4}\n", .{c});
+        try std.testing.expectEqual(w, props.digitValue(c));
+    }
+}
+
+test "code points above U+10FFFF have no property and no mapping" {
+    const samples = [_]u21{ 0x110000, 0x110001, 0x1FFFFF, 0x1FFF80, 0x180000 };
+    for (samples) |c| {
+        for (std.enums.values(props.Property)) |p| try std.testing.expect(!props.has(c, p));
+        try std.testing.expectEqual(c, props.simpleUpcase(c));
+        try std.testing.expectEqual(c, props.simpleDowncase(c));
+        try std.testing.expectEqual(c, props.simpleFoldcase(c));
+        try std.testing.expectEqual(@as(?u4, null), props.digitValue(c));
+        var out: [3]u21 = @splat(0);
+        try std.testing.expectEqual(@as(u2, 1), props.fullUpcase(c, &out));
+        try std.testing.expectEqual(c, out[0]);
+    }
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}

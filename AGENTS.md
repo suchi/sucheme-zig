@@ -34,6 +34,8 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | 生成物の同期検査 | `zig build check-extract` | 0 | 全コミット |
 | 準拠マトリクスの同期検査 | `zig build check-report` | 1 | 全コミット |
 | 準拠マトリクスの生成 | `zig build report` | 1 | - |
+| Unicode の表の同期検査 | `zig build check-unicode` | 4 | 全コミット |
+| Unicode の表の生成 | `zig build generate-unicode` | 4 | - |
 
 コミット前に必ずテスト・リントを実行する。この表が正であり、他の文書はコマンド名を列挙せずここを参照する。新しいコマンドを足したらこの表に追加する。表にないコマンドは検証とレビューの対象外になる。
 
