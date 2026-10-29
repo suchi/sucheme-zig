@@ -2334,6 +2334,22 @@ test "the value raised is described: a condition by its message and irritants, a
     try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
 }
 
+test "a description whose values the printer cannot write within the limit keeps the message and cuts the values" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const ctx = &interp.ctx;
+    var list: value.Value = .empty_list_value;
+    for (0..32) |_| list = try ctx.heap.cons(.fromFixnum(1), list);
+    ctx.raised = try ctx.makeCondition(.@"error", "bad {s}", .{"thing"}, try ctx.heap.cons(list, .empty_list_value));
+    // プリンタの表の確保が上限で断られる。
+    ctx.heap.options.limit = ctx.heap.held() + 16;
+    interp.keepDiagnostic(arena.allocator(), error.Raised);
+    try std.testing.expectEqualStrings("bad thing ...", interp.diagnostic());
+}
+
 test "when the description cannot be allocated, the diagnostic says out of memory" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     var interp: Interpreter = undefined;
