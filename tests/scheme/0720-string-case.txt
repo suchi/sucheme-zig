@@ -99,6 +99,24 @@ error: bad import: string-ci=? is not exported by the import set
 (import (scheme char)) (list (string-ci=? "a") (string-ci<? "a") (string-ci>? "a") (string-ci<=? "a") (string-ci>=? "a"))
 (#t #t #t #t #t)
 
+# 畳み込んだ文字列が等しい組は、狭い順序(<、>)を満たさず、広い順序(<=、>=)と等しさを満たす。
+(import (scheme char)) (list (string-ci<? "a" "A") (string-ci>? "a" "A") (string-ci<? "ΣΑΣ" "σας") (string-ci>? "σας" "ΣΑΣ"))
+(#f #f #f #f)
+
+(import (scheme char)) (list (string-ci<=? "a" "A") (string-ci>=? "a" "A") (string-ci<=? "ΣΑΣ" "σας") (string-ci>=? "σας" "ΣΑΣ") (string-ci=? "ΣΑΣ" "σας"))
+(#t #t #t #t #t)
+
+# 成り立たない組のあとに、成り立つ組が来る。最後の組だけでは決まらない。
+(import (scheme char)) (list (string-ci<? "b" "a" "c") (string-ci=? "a" "b" "b") (string-ci>? "a" "b" "a") (string-ci<=? "b" "a" "c") (string-ci>=? "a" "b" "a"))
+(#f #f #f #f #f)
+
+# 畳み込みが3文字になる文字(U+FB03 の合字 ffi)。
+(import (scheme char)) (list (string-foldcase "\xFB03;") (string-length (string-foldcase "\xFB03;")) (string-ci=? "\xFB03;" "ffi") (string-ci=? "\xFB03;" "ff") (string-ci=? "\xFB03;" "ffij"))
+("ffi" 3 #t #f #f)
+
+(import (scheme char)) (list (string-ci<? "ff" "\xFB03;") (string-ci>? "\xFB03;" "ff") (string-ci<? "\xFB03;" "ffj") (string-ci>? "ffj" "\xFB03;"))
+(#t #t #t #t)
+
 # 文字列でない引数は誤りである。最初の組が成り立たなくても、後ろの引数まで検査される。
 (import (scheme char)) (string-upcase #\a)
 error: wrong type of argument to string-upcase #\a

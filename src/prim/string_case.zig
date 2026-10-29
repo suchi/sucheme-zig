@@ -360,6 +360,57 @@ test "the case-insensitive comparisons take any number of strings" {
     }
 }
 
+test "the case-insensitive comparisons of strings that fold to the same string" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const same = [_][2][]const u8{
+        .{ "a", "A" },
+        .{ "ΣΑΣ", "σας" },
+        .{ "Straße", "STRASSE" },
+        .{ "\u{FB03}", "ffi" },
+    };
+    for (same) |p| {
+        errdefer std.debug.print("{s} {s}\n", .{ p[0], p[1] });
+        try std.testing.expect(!try compareStrings(&f, "string-ci<?", &p));
+        try std.testing.expect(!try compareStrings(&f, "string-ci>?", &p));
+        try std.testing.expect(try compareStrings(&f, "string-ci<=?", &p));
+        try std.testing.expect(try compareStrings(&f, "string-ci>=?", &p));
+        try std.testing.expect(try compareStrings(&f, "string-ci=?", &p));
+    }
+}
+
+test "a case-insensitive comparison needs every neighboring pair to hold, not only the last" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // 成り立たない組のあとに、成り立つ組が来る。
+    try std.testing.expect(!try compareStrings(&f, "string-ci<?", &.{ "b", "a", "c" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci=?", &.{ "a", "b", "b" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci>?", &.{ "a", "b", "a" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci<=?", &.{ "b", "a", "c" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci>=?", &.{ "a", "b", "a" }));
+    // 成り立つ組のあとに、成り立たない組が来る。
+    try std.testing.expect(!try compareStrings(&f, "string-ci<?", &.{ "a", "c", "b" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci=?", &.{ "a", "A", "b" }));
+}
+
+test "a ligature that folds to three characters" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // U+FB03 (ffi の合字)は、畳み込むと f、f、i の3文字になる。
+    const folded = try convertString(&f, "string-foldcase", "\u{FB03}");
+    try expectString("ffi", folded);
+    try std.testing.expectEqual(3, folded.asString().?.length());
+    try std.testing.expect(try compareStrings(&f, "string-ci=?", &.{ "\u{FB03}", "ffi" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci=?", &.{ "\u{FB03}", "ff" }));
+    try std.testing.expect(!try compareStrings(&f, "string-ci=?", &.{ "\u{FB03}", "ffij" }));
+    // 畳み込んだ文字列が、短いほうが小さい順序で並ぶ。
+    try std.testing.expect(try compareStrings(&f, "string-ci>?", &.{ "\u{FB03}", "ff" }));
+    try std.testing.expect(try compareStrings(&f, "string-ci<?", &.{ "\u{FB03}", "ffj" }));
+}
+
 test "the case-insensitive comparisons check every argument for being a string" {
     var f: test_support.Fixture = undefined;
     f.init();

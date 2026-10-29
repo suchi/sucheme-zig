@@ -2,7 +2,7 @@
 # 表は Unicode 18.0.0 の UCD から作る(`tools/unicode-gen`)。期待値は、R7RS の例と、
 # Unicode の定義から選んだ符号位置である。
 
-# 13個の文字の識別子がすべて `(scheme char)` から入る。
+# 14個の文字の識別子がすべて `(scheme char)` から入る。
 (import (only (scheme char) char-alphabetic? char-numeric? char-whitespace? char-upper-case? char-lower-case? digit-value char-upcase char-downcase char-foldcase char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?)) (char-upcase #\a)
 #\A
 
@@ -115,6 +115,17 @@ error: bad import: digit-value is not exported by the import set
 
 (import (scheme char)) (list (char-ci=? #\a) (char-ci<? #\a) (char-ci>? #\a) (char-ci<=? #\a) (char-ci>=? #\a))
 (#t #t #t #t #t)
+
+# 畳み込んだ文字が等しい組は、狭い順序(<、>)を満たさず、広い順序(<=、>=)と等しさを満たす。
+(import (scheme char)) (list (char-ci<? #\a #\A) (char-ci>? #\a #\A) (char-ci<? #\x03C3 #\x03C2) (char-ci>? #\x03C2 #\x03A3))
+(#f #f #f #f)
+
+(import (scheme char)) (list (char-ci<=? #\a #\A) (char-ci>=? #\a #\A) (char-ci<=? #\x03C3 #\x03C2) (char-ci>=? #\x03C2 #\x03A3) (char-ci=? #\x03C2 #\x03A3))
+(#t #t #t #t #t)
+
+# 成り立たない組のあとに、成り立つ組が来る。最後の組だけでは決まらない。
+(import (scheme char)) (list (char-ci<? #\b #\a #\c) (char-ci=? #\a #\b #\b) (char-ci>? #\a #\b #\a) (char-ci<=? #\b #\a #\c) (char-ci>=? #\a #\b #\a))
+(#f #f #f #f #f)
 
 # 文字でない引数は誤りである。最初の組が成り立たなくても、後ろの引数まで検査される。
 (import (scheme char)) (char-alphabetic? 97)

@@ -1,0 +1,43 @@
+# スライス 4u3 を規模で試す。文字列の大文字小文字を変える手続きは、結果の大きさを先に数え、
+# 確保を GC の計上に通す。結果が元の3倍に増える文字(U+0390 は大文字にすると3文字になる)を
+# 数万個並べても長さが合うこと、上限を超えるとき `heap limit exceeded` の誤りになって元の文字列が
+# 変わらず、そのあとの確保が動くこと、ゴミになった結果が GC で計上から外れること、`string-ci` の
+# 比較が畳み込んだ文字列を作らないこと。実行に時間がかかるので `zig build test-scheme -Dslow=true`
+# のときだけ走る(docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0720-string-case.txt と src/prim/string_case.zig の単体テストにある。
+# 1ケースは既定と1ステップごとに GC するモードの2回走る。ランナーの上限は 64 MiB である。
+# 各ケースは新しいインタプリタで走るので、定義は使う式と同じ行に置く。
+
+# 結果が3倍に増える文字を数万個並べる。大文字、畳み込みのどちらも3文字になる。
+(import (scheme char)) (let ((s (string-upcase (make-string 50000 #\x0390)))) (list (string-length s) (char->integer (string-ref s 0)) (char->integer (string-ref s 2)) (char->integer (string-ref s 149999))))
+(150000 921 769 769)
+
+(import (scheme char)) (string-length (string-foldcase (make-string 50000 #\x0390)))
+150000
+
+# 小文字は、幅が変わらない文字の列では長さが変わらない。İ は2文字になる。
+(import (scheme char)) (list (string-length (string-downcase (make-string 100000 #\x0130))) (string-length (string-downcase (make-string 100000 #\A))))
+(200000 100000)
+
+# 上限に収まる大きさの元から、上限を超える結果ができる。誤りになり、元の文字列は変わらず、
+# そのあとの確保が動く。元は 2000万文字で 40 MB、結果は 3 倍の 120 MB になる。
+(import (scheme char)) (define s (make-string 20000000 #\x0390)) (define r (call/cc (lambda (k) (with-exception-handler (lambda (e) (k (error-object-message e))) (lambda () (string-upcase s)))))) (list r (string-length s) (string-length (make-string 1000 #\a)))
+("heap limit exceeded" 20000000 1000)
+
+(import (scheme char)) (define s (make-string 20000000 #\x0390)) (define r (call/cc (lambda (k) (with-exception-handler (lambda (e) (k (error-object-message e))) (lambda () (string-foldcase s)))))) (list r (string-length (string-upcase (make-string 1000 #\x0390))))
+("heap limit exceeded" 3000)
+
+# ゴミになった結果が GC で計上から外れる。1回の結果は約 0.6 MB で、200回の合計は上限を超える。
+(import (scheme char)) (define (loop n last) (if (= n 0) last (loop (- n 1) (string-upcase (make-string 100000 #\x0390))))) (string-length (loop 200 ""))
+300000
+
+(import (scheme char)) (define s (make-string 100000 #\ß)) (define (loop n last) (if (= n 0) last (loop (- n 1) (string-foldcase s)))) (string-length (loop 200 ""))
+200000
+
+# string-ci の比較は、畳み込んだ文字列を作らない。長い文字列を何度比べても確保は増えず、
+# 最後の1文字だけが違う組を見分ける。ß は ss に畳み込まれる。
+(import (scheme char)) (define a (make-string 2000000 #\ß)) (define b (string-append (make-string 1999999 #\ß) "t")) (define (loop n) (if (= n 0) 'done (begin (string-ci=? a b) (loop (- n 1))))) (list (loop 20) (string-ci=? a b) (string-ci<? a b) (string-ci>? b a) (string-ci=? a (make-string 2000000 #\ß)))
+(done #f #t #t #t)
+
+(import (scheme char)) (define a (make-string 3000000 #\Σ)) (define b (make-string 3000000 #\ς)) (list (string-ci=? a b) (string=? a b) (string-ci<? a b) (string-ci>=? a b))
+(#t #f #f #t)

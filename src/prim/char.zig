@@ -72,8 +72,8 @@ fn integerToChar(_: *const Services, args: []const Value) Error!Value {
 /// 整数の比較(`src/prim/arith.zig` の `comparison`)と同じ形である。引数が1つなら真、
 /// なしならエラー(機械が表の下限で報告する)。最初に成り立たなかった組より後のものも含め、
 /// すべての引数が文字であることを検査する。エラーが値に左右されないようにするためである。
-/// 順序は、`char->integer` の結果の順序である(R7RS 6.6 がそう定めている。原文は取得できて
-/// いない)。
+/// 順序は、`char->integer` の結果の順序である(R7RS 6.6 がそう定めている。
+/// `docs/spec/errata-corrected-r7rs.pdf` の 6.6 の本文で確かめた)。
 fn comparison(comptime op: std.math.CompareOperator) Primitive.Fn {
     return &struct {
         fn call(_: *const Services, args: []const Value) Error!Value {
@@ -429,6 +429,36 @@ test "the case-insensitive comparisons compare the folded characters" {
     for ([_][]const u8{ "char-ci=?", "char-ci<?", "char-ci>?", "char-ci<=?", "char-ci>=?" }) |name| {
         try std.testing.expect(try compareCodePoints(name, &.{'a'}));
     }
+}
+
+test "the case-insensitive comparisons of characters that fold to the same character" {
+    // 畳み込んだ文字が等しい組は、狭い順序(<、>)を満たさず、広い順序(<=、>=)と等しさを満たす。
+    const same = [_][2]u21{
+        .{ 'a', 'A' },
+        .{ 0x03C3, 0x03C2 },
+        .{ 0x03C2, 0x03A3 },
+        .{ 0x1E9E, 0x00DF },
+    };
+    for (same) |p| {
+        errdefer std.debug.print("U+{X:0>4} U+{X:0>4}\n", .{ p[0], p[1] });
+        try std.testing.expect(!try compareCodePoints("char-ci<?", &p));
+        try std.testing.expect(!try compareCodePoints("char-ci>?", &p));
+        try std.testing.expect(try compareCodePoints("char-ci<=?", &p));
+        try std.testing.expect(try compareCodePoints("char-ci>=?", &p));
+        try std.testing.expect(try compareCodePoints("char-ci=?", &p));
+    }
+}
+
+test "a case-insensitive comparison needs every neighboring pair to hold, not only the last" {
+    // 成り立たない組のあとに、成り立つ組が来る。
+    try std.testing.expect(!try compareCodePoints("char-ci<?", &.{ 'b', 'a', 'c' }));
+    try std.testing.expect(!try compareCodePoints("char-ci=?", &.{ 'a', 'b', 'b' }));
+    try std.testing.expect(!try compareCodePoints("char-ci>?", &.{ 'a', 'b', 'a' }));
+    try std.testing.expect(!try compareCodePoints("char-ci<=?", &.{ 'b', 'a', 'c' }));
+    try std.testing.expect(!try compareCodePoints("char-ci>=?", &.{ 'a', 'b', 'a' }));
+    // 成り立つ組のあとに、成り立たない組が来る。
+    try std.testing.expect(!try compareCodePoints("char-ci<?", &.{ 'a', 'c', 'b' }));
+    try std.testing.expect(!try compareCodePoints("char-ci=?", &.{ 'a', 'A', 'b' }));
 }
 
 test "the case-insensitive comparisons check every argument for being a character" {
