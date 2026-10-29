@@ -346,7 +346,10 @@ pub fn digitValue(c: u21) ?u4
 
 確かめた結果(2026-10-29、`docs/spec/errata-corrected-r7rs.pdf` の 7.1.1 の本文): ASCII の外の文字を識別子に使ってよいのは、一般カテゴリが Lu、Ll、Lt、Lm、Lo、Mn、Mc、Me、Nd、Nl、No、Pd、Pc、Po、Sc、Sm、Sk、So、Co のいずれかの文字と、U+200C と U+200D(ゼロ幅の非結合子と結合子)である。最初の文字に使えないのは、一般カテゴリが Nd、Mc、Me の文字である(U+200C と U+200D は、この除外に含まれない)。非 Unicode 文字は、記号と識別子に使えない。
 
-4u4 のための引き継ぎ: いまの `props.zig` と生成器は、一般カテゴリを持たない(`UnicodeData.txt` の3番目の欄を読んでいるのは、Nd の判定だけである)。リーダが「最初の文字」と「それ以外の文字」を判定するには、一般カテゴリを引く関数(`generalCategory`)を `props.zig` に足し、生成器に表を足す必要がある。表は30種ほどのカテゴリを持つ2段の表になるので、WASM の大きさの実測を取り直す。足す担当は、4u3 の PR の外で決める(L4 が足すか、4u4 の中で足すか)。
+4u4 のための引き継ぎ: いまの `props.zig` と生成器は、一般カテゴリを持たない(`UnicodeData.txt` の3番目の欄を読んでいるのは、Nd の判定だけである)。リーダが「最初の文字」と「それ以外の文字」を判定するために、4u3b(L4)が、`flags` の表に2ビットを足し、`props.zig` に次の2つを足す。
+- `pub fn isIdentifierInitial(c: u21) bool`: ASCII の外の文字が、識別子の最初の文字に使えるか。
+- `pub fn isIdentifierSubsequent(c: u21) bool`: ASCII の外の文字が、識別子の最初以外の文字に使えるか。
+ビットは `flag_identifier_initial` と `flag_identifier_subsequent` で、生成器が、上の確認結果(R7RS 7.1.1 の本文)の規則を、ASCII の外の文字に当てて立てる。ASCII の文字は、リーダの既存の規則が決めるので、ビットを立てない(0x80 より前では偽を返す)。決めたのは 2026-10-29。一般カテゴリそのものを引く関数(`generalCategory`、30種のカテゴリの2段の表で、実データからの見積りは約 52 KB の増分)は、別の用途が出たときに足す。この2ビットの増分の見積り(`flags` の表が 72,448 バイトから 82,176 バイトへ、約 9.7 KB)は、4u3b の PR で実測して取り直す。
 
 ## スライス
 
@@ -580,7 +583,7 @@ pub fn digitValue(c: u21) ?u4
 | 4u2 | マージ済み([suchi/sucheme-zig#206](https://github.com/suchi/sucheme-zig/pull/206))。ブランチ `feature/phase4-slice-4u2-unicode-tables`。`src/unicode/tables.zig`(生成物)と `src/unicode/props.zig`(引く関数)を置いた。全符号位置が生成器の入力と一致することは、`tools/unicode-gen/full_range.zig` が見る。ReleaseSafe で 0.1 秒ほど(生成器のテスト全体は 2 秒ほど)なので、規模を試す層(`tier.slow()`)には分けず、全コミットの層に置いた。R2(生成器の判断のテスト)は `tools/unicode-gen/main.zig` に足した。WASM の大きさの実測は下の「4u2 の WASM の大きさの実測」。`check-unicode` は、`ci.yml` の `test` ジョブと `full.yml` の `windows` ジョブ、`AGENTS.md` の検証コマンドの表、`build.zig` の必須の step の一覧に入れた(`.github/workflows/` の変更を含むので、ユーザーが承認した)。実績: PR を作ってから ready まで約 5.5 時間、マージまで約 24 時間(2026-10-28 18:04 JST から 23:34 JST、翌 18:20 JST。ミューテーション査読 3 巡と、ユーザーの承認が要る変更の待ちを含む。層2 は約 22 分) |
 | 4u3 | 実装済み、ドラフトの PR で確認中。ブランチ `feature/phase4-slice-4u3-char-and-string-case`。`(scheme char)` の22個の識別子を束縛した(`lib/scheme/char.sld`)。文字の手続き(属性、`digit-value`、`char-upcase` など、`char-ci` の比較)は `src/prim/char.zig`、文字列の手続き(`string-upcase` など、`string-ci` の比較)は `src/prim/string_case.zig`。テストは `tests/scheme/0700-char-procedures.txt` と `0720-string-case.txt`。準拠スイートの 6.6 と 6.7 の節で実行されていなかった項目が実行され、失敗は 0 件である(数は `docs/status/conformance.md`)。決めたことは [numerics-and-unicode.md](../design/numerics-and-unicode.md) の「段階4で決めたこと」 |
 | 4j | マージ済み([suchi/sucheme-zig#204](https://github.com/suchi/sucheme-zig/pull/204))。`isEqv` が bignum、ratnum、compnum を値で比べ、`isEq` はこの3つを同一性で比べる。`features` が `exact-closed` `exact-complex` `ratios` `ieee-float` を返す。テストは `tests/scheme/0480-eq-eqv.txt`。ブランチ `feature/phase4-slice-4j-eq-eqv-features`。準拠マトリクスの「落ちた」は 30 件から 18 件に減った。残る 18 件は 4j の外である(桁数を丸めて書いた期待値 16 件(`4.2` の `b` を含む)、`(sqrt -1.0-0.0i)`、`(expt 0.0 0)`)。`syntax-rules` のパターンに flonum、bignum、ratnum、compnum を書けるようにした(`src/syntax/rules.zig` の定数の分岐。照合は `equal?` のまま。テストは `tests/scheme/0481-pattern-number-constants.txt`)。 |
-| 4u3b | 未着手。一般カテゴリの表(2026-10-29 に L4 が足すと決めた)。4u3 のマージのあとに、`props.zig` の `generalCategory` と、生成器の表を足す。WASM の増分は、4u2 と 4u3 と同じ形で実測して PR に書く。4u4(L2)は、このスライスのマージを待つ。名前の候補は「4u3b 一般カテゴリの表」 |
+| 4u3b | 未着手。識別子の文字の表(2026-10-29 に、L4 が足すと決めた。案は、`flags` の表に2ビットを足す形で確定した)。4u3 のマージのあとに、生成器が `flag_identifier_initial` と `flag_identifier_subsequent` を立て、`props.zig` に `isIdentifierInitial` と `isIdentifierSubsequent` を足す。PR に書くこと: 増分の実測(`flags` の表の大きさと、Web 用 wasm の生のサイズと gzip 後のサイズ)、ビットを立てる規則の出所(R7RS 7.1.1 の本文の節)、ASCII の外の全コードポイントを `UnicodeData.txt` から計算し直した結果と表の引きが一致するテスト。4u4(L2)は、このスライスのマージを待つ。署名は、上の「リーダの識別子」にある |
 | 4k〜4z、4u4 | 未着手 |
 
 ## 次にやること
