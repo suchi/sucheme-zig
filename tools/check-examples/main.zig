@@ -21,8 +21,9 @@
 //! 検査の外に黙って出るブロックを残さないため、次を誤りとして報告する。情報文字列の
 //! 無いフェンス、知らない種類と語、行頭から書かれていないフェンス、閉じていない
 //! フェンス、`scheme` の後ろでない `output`、フェンスの外の、空白4つかタブで始まる行
-//! (インデントされたコードブロックになりうる)。この道具は CommonMark のリストの中の
-//! フェンスを読まないので、字下げを断ることで、読み違えを防ぐ。
+//! (インデントされたコードブロックになりうる)、引用(`>` で始まる行)の中のフェンス、
+//! `<pre>` と `<code>` で始まる HTML のブロック。この道具は CommonMark のリストと引用の
+//! 中のフェンスを読まないので、それらを断ることで、読み違えを防ぐ。
 //!
 //! docs/manual/ の下の `.md` でないファイル、`.md` が無いこと、`scheme` のブロックが
 //! 1つも無いことも、失敗とする。引数は取らない。範囲を狭める引数は、検査を減らした
@@ -34,10 +35,9 @@ const sucheme = @import("sucheme");
 /// Where the documents are.
 const manual_dir = "docs/manual";
 
-pub fn main(init: std.process.Init) !void {
+pub fn main(init: std.process.Init) !u8 {
     const gpa = init.arena.allocator();
     const io = init.io;
-    const cwd = std.Io.Dir.cwd();
 
     var buf: [4096]u8 = undefined;
     // tools/test-scheme と同じ理由でストリーミングにする。位置指定のライタは、
@@ -49,52 +49,68 @@ pub fn main(init: std.process.Init) !void {
     if (argv.len > 1) {
         try err.print("check-examples: takes no arguments, got {s}\n", .{argv[1]});
         try err.flush();
-        std.process.exit(2);
+        return 2;
     }
 
-    var counts: Counts = .{};
-    var paths: std.ArrayList([]const u8) = .empty;
-    var dir = cwd.openDir(io, manual_dir, .{ .iterate = true }) catch |e| {
+    var dir = std.Io.Dir.cwd().openDir(io, manual_dir, .{ .iterate = true }) catch |e| {
         try err.print("check-examples: cannot open {s} ({t})\n", .{ manual_dir, e });
         try err.flush();
-        std.process.exit(1);
+        return 1;
     };
     defer dir.close(io);
+    const counts = try run(gpa, io, dir, manual_dir, err);
+    try err.print("check-examples: {d} blocks passed, {d} failed\n", .{ counts.passed, counts.failed });
+    try err.flush();
+    // Why: 終了コードは `main` の戻り値で返す。`exit` の呼び出しを条件に置くと、その1行を
+    // 消すだけで、失敗を報告しながら 0 で終わる形になった(D1 のミューテーションの査読)。
+    return exitStatus(counts);
+}
+
+/// The exit status for a run with `counts`.
+fn exitStatus(counts: Counts) u8 {
+    return if (counts.failed != 0) 1 else 0;
+}
+
+/// Checks every document under `dir`, named `name` in the report, and writes what failed to `w`.
+///
+/// `.md` でないファイル、`.md` が無いこと、`scheme` のブロックが1つも走らないことも、
+/// 失敗として数える。
+fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, w: *std.Io.Writer) !Counts {
+    var counts: Counts = .{};
+    var paths: std.ArrayList([]const u8) = .empty;
     var walker = try dir.walk(gpa);
     defer walker.deinit();
     while (try walker.next(io)) |entry| {
         if (entry.kind == .directory) continue;
-        const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ manual_dir, entry.path });
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".md")) {
-            try err.print("{s}: not a `.md` file, so nothing here checks it\n", .{path});
+            try w.print("{s}/{s}: not a `.md` file, so nothing here checks it\n", .{ name, entry.path });
             counts.failed += 1;
             continue;
         }
-        try paths.append(gpa, path);
+        try paths.append(gpa, try gpa.dupe(u8, entry.path));
     }
     // ディレクトリの順序はホストごとに違う。ソートして報告を安定させる。
     std.mem.sort([]const u8, paths.items, {}, lessThan);
     if (paths.items.len == 0) {
-        try err.print("check-examples: no `.md` file under {s}\n", .{manual_dir});
+        try w.print("check-examples: no `.md` file under {s}\n", .{name});
         counts.failed += 1;
     }
 
     for (paths.items) |path| {
-        const body = cwd.readFileAlloc(io, path, gpa, .unlimited) catch |e| {
-            try err.print("{s}: cannot be read ({t})\n", .{ path, e });
+        const shown = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ name, path });
+        const body = dir.readFileAlloc(io, path, gpa, .unlimited) catch |e| {
+            try w.print("{s}: cannot be read ({t})\n", .{ shown, e });
             counts.failed += 1;
             continue;
         };
-        try checkFile(gpa, path, body, err, &counts);
+        try checkFile(gpa, shown, body, w, &counts);
     }
 
     if (counts.blocks == 0) {
-        try err.print("check-examples: no `scheme` block was run\n", .{});
+        try w.print("check-examples: no `scheme` block was run\n", .{});
         counts.failed += 1;
     }
-    try err.print("check-examples: {d} blocks passed, {d} failed\n", .{ counts.passed, counts.failed });
-    try err.flush();
-    if (counts.failed != 0) std.process.exit(1);
+    return counts;
 }
 
 fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -259,6 +275,13 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, problems: *std.ArrayList(Prob
             last_scheme = null;
             continue;
         }
+        // 引用の中のフェンスと、HTML の整形済みのブロックは、この道具が読まない場所に
+        // コードを置く。どちらも断る(D1 のミューテーションの査読)。
+        if (trimmed[0] == '>' and (std.mem.indexOf(u8, trimmed, "```") != null or std.mem.indexOf(u8, trimmed, "~~~") != null)) {
+            try problems.append(gpa, .{ .line = lineno, .message = "this fence is inside a block quote, which this tool does not read; write fences outside quotes" });
+        } else if (startsWithIgnoreCase(trimmed, "<pre") or startsWithIgnoreCase(trimmed, "<code")) {
+            try problems.append(gpa, .{ .line = lineno, .message = "this HTML block may hold code this tool does not read; use a fenced block" });
+        }
         // フェンスの外の、空白4つかタブで始まる行は、インデントされたコードブロックに
         // なりうる。リストの深さを読まずに、すべて断る。
         if (line[0] == '\t' or std.mem.startsWith(u8, line, "    ")) {
@@ -270,6 +293,11 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, problems: *std.ArrayList(Prob
         try problems.append(gpa, .{ .line = o.line, .message = "this fence is never closed" });
     }
     return try blocks.toOwnedSlice(gpa);
+}
+
+/// Whether `text` starts with `prefix`, ignoring ASCII case.
+fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
+    return text.len >= prefix.len and std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
 }
 
 /// Recognises a fence line: a run of at least three backticks or tildes, and what follows it.
@@ -509,4 +537,86 @@ test "a file that cannot be read in full runs none of its blocks" {
     defer arena.deinit();
     const r = try checkForTest(arena.allocator(), "```scheme\n(+ 1 2)\n```\n```lisp\n1\n```\n");
     try std.testing.expectEqual(Counts{ .blocks = 0, .passed = 0, .failed = 1 }, r.counts);
+}
+
+test "a quoted fence and an HTML code block are refused" {
+    for ([_]struct { doc: []const u8, line: usize }{
+        .{ .doc = "> ```scheme\n> (car 1)\n> ```\n", .line = 1 },
+        .{ .doc = "text\n\n> ~~~\n", .line = 3 },
+        .{ .doc = "<pre>\n(car 2)\n</pre>\n", .line = 1 },
+        .{ .doc = "<PRE class=\"x\">\n", .line = 1 },
+        .{ .doc = "<code>(car 3)</code>\n", .line = 1 },
+    }) |c| {
+        var p = try Parsed.of(c.doc);
+        defer p.deinit();
+        try std.testing.expect(p.problems.len >= 1);
+        try std.testing.expectEqual(c.line, p.problems[0].line);
+    }
+    // 引用の地の文と、ほかの HTML は断らない。
+    var q = try Parsed.of("> a quote with `code`\n\n<details>\n");
+    defer q.deinit();
+    try std.testing.expectEqual(@as(usize, 0), q.problems.len);
+}
+
+test "a closing fence needs the same character, at least the same length, and nothing after it" {
+    var p = try Parsed.of("````scheme\n```\n```x\n~~~~\n````\n");
+    defer p.deinit();
+    try std.testing.expectEqual(@as(usize, 0), p.problems.len);
+    try std.testing.expectEqual(@as(usize, 1), p.blocks.len);
+    try std.testing.expectEqualStrings("```\n```x\n~~~~\n", p.blocks[0].source);
+}
+
+test "the exit status is 1 exactly when something failed" {
+    try std.testing.expectEqual(@as(u8, 0), exitStatus(.{ .blocks = 3, .passed = 3, .failed = 0 }));
+    try std.testing.expectEqual(@as(u8, 1), exitStatus(.{ .blocks = 3, .passed = 2, .failed = 1 }));
+    try std.testing.expectEqual(@as(u8, 1), exitStatus(.{ .blocks = 0, .passed = 0, .failed = 1 }));
+}
+
+/// A file of a directory a test writes.
+const TestFile = struct { path: []const u8, data: []const u8 };
+
+/// Writes `files` into a new directory, runs it, and returns the counts and the report.
+fn runForTest(arena: std.mem.Allocator, files: []const TestFile) !struct { counts: Counts, report: []const u8 } {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    for (files) |f| {
+        if (std.fs.path.dirname(f.path)) |d| try tmp.dir.createDirPath(std.testing.io, d);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = f.path, .data = f.data });
+    }
+    var report: std.Io.Writer.Allocating = .init(arena);
+    const counts = try run(arena, std.testing.io, tmp.dir, "manual", &report.writer);
+    return .{ .counts = counts, .report = report.written() };
+}
+
+const passing_doc = "```scheme\n(+ 1 2)\n```\n\n```output\n3\n```\n";
+
+test "a directory of passing documents passes, nested ones included" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runForTest(arena.allocator(), &.{
+        .{ .path = "a.md", .data = passing_doc },
+        .{ .path = "sub/b.md", .data = passing_doc },
+    });
+    try std.testing.expectEqualStrings("", r.report);
+    try std.testing.expectEqual(Counts{ .blocks = 2, .passed = 2, .failed = 0 }, r.counts);
+    try std.testing.expectEqual(@as(u8, 0), exitStatus(r.counts));
+}
+
+test "a run with no document, no block, a failing block or a file that is not Markdown fails" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { files: []const TestFile, says: []const u8 }{
+        .{ .files = &.{}, .says = "check-examples: no `.md` file under manual\n" },
+        .{ .files = &.{.{ .path = "a.md", .data = "# Only prose\n" }}, .says = "check-examples: no `scheme` block was run\n" },
+        .{ .files = &.{ .{ .path = "a.md", .data = passing_doc }, .{ .path = "x.scm", .data = "(car 1)\n" } }, .says = "manual/x.scm: not a `.md` file, so nothing here checks it\n" },
+        .{ .files = &.{.{ .path = "a.md", .data = "```scheme\n(+ 1 2)\n```\n\n```output\n4\n```\n" }}, .says = "manual/a.md:1: the output differs\n" },
+        .{ .files = &.{.{ .path = "a.md", .data = "```lisp\n1\n```\n" }}, .says = "manual/a.md:1: this fence names a kind other than" },
+    };
+    for (cases) |c| {
+        const r = try runForTest(a, c.files);
+        try std.testing.expect(r.counts.failed >= 1);
+        try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
+        try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
+    }
 }
