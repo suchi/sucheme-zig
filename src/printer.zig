@@ -871,6 +871,32 @@ test "only write-shared puts labels on what appears twice without a cycle" {
     try std.testing.expectEqualStrings("(#0=(1) #1=#(v #0#) #1#)", try f.printed(&buf, both, .shared));
 }
 
+test "write-shared numbers more labels than fit in a byte" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // (#0=(0) #0# #1=(1) #1# ... #299=(299) #299#)
+    const n = 300;
+    var items: [2 * n]Value = undefined;
+    for (0..n) |i| {
+        const s = try f.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+        items[2 * i] = s;
+        items[2 * i + 1] = s;
+    }
+    const l = try f.list(&items, .empty_list_value);
+    var expected: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer expected.deinit();
+    try expected.writer.writeByte('(');
+    for (0..n) |i| {
+        if (i != 0) try expected.writer.writeByte(' ');
+        try expected.writer.print("#{d}=({d}) #{d}#", .{ i, i, i });
+    }
+    try expected.writer.writeByte(')');
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try print(&out.writer, &f.heap, &f.heap.symbols, l, .shared);
+    try std.testing.expectEqualStrings(expected.written(), out.written());
+}
+
 test "write-simple writes no label, even for a list that comes back to itself" {
     var f: Fixture = .init();
     defer f.deinit();

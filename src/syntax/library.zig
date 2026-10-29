@@ -795,6 +795,12 @@ test "the text of a library name that does not fit in the heap is told as the li
     try std.testing.expect(f.ctx.heap.external_refused);
     try std.testing.expectEqual(error.Raised, f.ctx.limitFailure(error.OutOfMemory));
     try std.testing.expectEqualStrings(context.heap_limit_message, f.ctx.diagnostic());
+    // 上限でない失敗(書き出す先の確保をホストが断る)では、印を立てない。
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    f.ctx.heap.options.limit = std.math.maxInt(usize);
+    f.ctx.heap.external_refused = false;
+    try std.testing.expectError(error.OutOfMemory, nameText(&f.ctx, failing.allocator(), name));
+    try std.testing.expect(!f.ctx.heap.external_refused);
 }
 
 test "a library that begins is registered in the state loading, with the environment of its body" {
