@@ -1,0 +1,18 @@
+# スライス 5j を規模で試す。長い循環と深い循環を `write` で書いても、プリンタが Zig の再帰を
+# 使わずに止まり、ラベルの表と作業スタックがランナーのヒープの上限(64 MiB)に収まること。
+# 実行に時間がかかるので `zig build test-scheme -Dslow=true` のときだけ走る
+# (docs/plans/0007-test-tiers.md)。同じ論理を小さい規模で通す双子が
+# tests/scheme/0630-write.txt と src/printer.zig の単体テストにある。1ケースは既定と
+# 1ステップごとに GC するモードの2回走る。
+
+# 長さ 200000 の輪。`#0=(` と、200000 個の要素と、` . #0#)` である。
+(import (scheme write)) (define (ring n) (let ((x (make-list n 1))) (set-cdr! (list-tail x (- n 1)) x) x)) (let ((p (open-output-string))) (write (ring 200000) p) (string-length (get-output-string p)))
+400010
+
+# 深さ 200000 の入れ子の、一番内側の car が外側に戻る。`#0=` と、200001 組の括弧と、`#0#` である。
+(import (scheme write)) (define (nest n) (let* ((inner (list 0)) (x (let loop ((i 0) (x inner)) (if (= i n) x (loop (+ i 1) (list x)))))) (set-car! inner x) x)) (let ((p (open-output-string))) (write (nest 200000) p) (string-length (get-output-string p)))
+400008
+
+# 同じペアが 100000 回現れるリストを `write-shared` で書くと、2回目からはラベルだけになる。
+(import (scheme write)) (let ((p (open-output-string))) (write-shared (make-list 100000 (list 1)) p) (string-length (get-output-string p)))
+400004
