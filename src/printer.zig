@@ -94,16 +94,22 @@ pub fn print(out: *std.Io.Writer, heap: *Heap, symbols: *const symbol.Table, v: 
 const Labels = struct {
     marks: std.AutoHashMapUnmanaged(usize, Mark) = .empty,
     /// The number the next label written takes.
-    next: usize = 0,
+    next: u29 = 0,
 
-    const Mark = struct {
+    /// What the passes know of one object, in 32 bits.
+    /// Why: 表は辿ったペアとベクタのすべてを持つので、書くデータの大きさに比例する。値を
+    /// 詰めて、1つあたりの大きさを抑える。番号は、ヒープに置けるオブジェクトの数(上限の
+    /// 1 GiB をペアの大きさで割った数)より大きい 2^29 まで持てる。
+    const Mark = packed struct(u32) {
         /// Whether the first pass is still inside the object: it is on the path from
         /// the top to where the pass is.
         open: bool = true,
         /// Whether the object is written with a label.
         labeled: bool = false,
+        /// Whether the object has been written, and so has its `number`.
+        written: bool = false,
         /// The label's number, once the object has been written.
-        number: ?usize = null,
+        number: u29 = 0,
     };
 
     /// What is left to do in the first pass.
@@ -191,13 +197,14 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
         .value => |x| {
             if (labels.labelOf(x)) |mark| {
                 // 2回目からは、ラベルだけを書く。
-                if (mark.number) |n| {
-                    try out.print("#{d}#", .{n});
+                if (mark.written) {
+                    try out.print("#{d}#", .{mark.number});
                     continue;
                 }
+                mark.written = true;
                 mark.number = labels.next;
                 labels.next += 1;
-                try out.print("#{d}=", .{mark.number.?});
+                try out.print("#{d}=", .{mark.number});
             }
             try emitValue(out, scratch, symbols, x, mode, &stack);
         },
