@@ -546,6 +546,10 @@ test "a quoted fence and an HTML code block are refused" {
         .{ .doc = "<pre>\n(car 2)\n</pre>\n", .line = 1 },
         .{ .doc = "<PRE class=\"x\">\n", .line = 1 },
         .{ .doc = "<code>(car 3)</code>\n", .line = 1 },
+        .{ .doc = "<CODE>(car 3)</CODE>\n", .line = 1 },
+        .{ .doc = "  <pre>\n(car 4)\n", .line = 1 },
+        .{ .doc = ">```scheme\n>(car 5)\n>```\n", .line = 1 },
+        .{ .doc = ">> ```scheme\n>> (car 6)\n>> ```\n", .line = 1 },
     }) |c| {
         var p = try Parsed.of(c.doc);
         defer p.deinit();
@@ -559,7 +563,7 @@ test "a quoted fence and an HTML code block are refused" {
 }
 
 test "a closing fence needs the same character, at least the same length, and nothing after it" {
-    var p = try Parsed.of("````scheme\n```\n```x\n~~~~\n````\n");
+    var p = try Parsed.of("````scheme\n```\n```x\n~~~~\n`````\n");
     defer p.deinit();
     try std.testing.expectEqual(@as(usize, 0), p.problems.len);
     try std.testing.expectEqual(@as(usize, 1), p.blocks.len);
@@ -576,6 +580,8 @@ test "the exit status is 1 exactly when something failed" {
     try std.testing.expectEqual(@as(u8, 0), exitStatus(.{ .blocks = 3, .passed = 3, .failed = 0 }));
     try std.testing.expectEqual(@as(u8, 1), exitStatus(.{ .blocks = 3, .passed = 2, .failed = 1 }));
     try std.testing.expectEqual(@as(u8, 1), exitStatus(.{ .blocks = 0, .passed = 0, .failed = 1 }));
+    // 256 件の失敗も 1 になる(件数を u8 に切り詰めると 0 になる)。
+    try std.testing.expectEqual(@as(u8, 1), exitStatus(.{ .blocks = 256, .passed = 0, .failed = 256 }));
 }
 
 /// A file of a directory a test writes.
@@ -602,9 +608,10 @@ test "a directory of passing documents passes, nested ones included" {
     const r = try runForTest(arena.allocator(), &.{
         .{ .path = "a.md", .data = passing_doc },
         .{ .path = "sub/b.md", .data = passing_doc },
+        .{ .path = "x/y/z/c.md", .data = passing_doc },
     });
     try std.testing.expectEqualStrings("", r.report);
-    try std.testing.expectEqual(Counts{ .blocks = 2, .passed = 2, .failed = 0 }, r.counts);
+    try std.testing.expectEqual(Counts{ .blocks = 3, .passed = 3, .failed = 0 }, r.counts);
     try std.testing.expectEqual(@as(u8, 0), exitStatus(r.counts));
 }
 

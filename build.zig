@@ -539,6 +539,22 @@ pub fn build(b: *std.Build) void {
     run_unicode_exit.addArg("--bogus");
     run_unicode_exit.expectExitCode(2);
     test_step.dependOn(&run_unicode_exit.step);
+    // 文書の例の実行器の `main` が、失敗を終了コードで返していることの検査。単体テストは `run` と
+    // `exitStatus` を呼ぶので、`main` が 0 を返しても落ちない(D1 の再確認のミューテーション)。
+    // 期待する出力が誤った文書、`docs/manual` の無いディレクトリ、引数の3つで、`main` の3つの
+    // 戻り値をすべて確かめる。固定の入力は、本物の文書の検査に混ざらない testdata/ に置く。
+    const run_examples_failing = b.addRunArtifact(check_examples);
+    run_examples_failing.setCwd(b.path("tools/check-examples/testdata/failing"));
+    run_examples_failing.expectExitCode(1);
+    test_step.dependOn(&run_examples_failing.step);
+    const run_examples_missing = b.addRunArtifact(check_examples);
+    run_examples_missing.setCwd(b.path("tools/check-examples/testdata"));
+    run_examples_missing.expectExitCode(1);
+    test_step.dependOn(&run_examples_missing.step);
+    const run_examples_argument = b.addRunArtifact(check_examples);
+    run_examples_argument.addArg("--bogus");
+    run_examples_argument.expectExitCode(2);
+    test_step.dependOn(&run_examples_argument.step);
     // 実行ファイルそのものに大きなリストを通す。単体テストと Scheme のテストは、実行ファイルの
     // `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられない(大きなリストを
     // 複数リストの `map` に渡すと、`SafeAllocator` の `munmap` が失敗して落ちた)。
