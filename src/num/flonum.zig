@@ -16,7 +16,8 @@ const tier = @import("../tier.zig");
 /// ECMA-262 の Number::toString(確認の記録は docs/plans/0018 の「ECMA-262 の Number::toString の確認」)の
 /// n を、`x = s × 10^(n-k)`(s は k 桁の整数で10で割り切れない)を満たす整数とし、
 /// n が -5 以上 21 以下なら小数で、それ以外なら指数表記で書く。指数表記の仮数部にも
-/// 小数点を置く(`1.0e21`、`1.5e-7`)。指数部の正の符号は書かない。`+inf.0` `-inf.0`
+/// 小数点を置く(`1.0e+21`、`1.5e-7`)。指数部の符号は、正でも負でも書く(ECMA-262 と
+/// R7RS の準拠スイートの綴りに合わせる)。`+inf.0` `-inf.0`
 /// `+nan.0` と `-0.0` は専用に書く。確保しない。
 pub fn write(out: *std.Io.Writer, x: f64) std.Io.Writer.Error!void {
     if (std.math.isNan(x)) return out.writeAll("+nan.0");
@@ -50,7 +51,7 @@ pub fn write(out: *std.Io.Writer, x: f64) std.Io.Writer.Error!void {
         return;
     }
 
-    // 指数表記。仮数部にも小数点を置く(`1.0e21`)。指数部の符号は、負のときだけ書く。
+    // 指数表記。仮数部にも小数点を置く(`1.0e+21`)。指数部の符号は常に書く。
     try out.writeByte(digits[0]);
     try out.writeByte('.');
     if (digits.len == 1) {
@@ -58,7 +59,7 @@ pub fn write(out: *std.Io.Writer, x: f64) std.Io.Writer.Error!void {
     } else {
         try out.writeAll(digits[1..]);
     }
-    try out.print("e{d}", .{n - 1});
+    try out.print("e{c}{d}", .{ @as(u8, if (n - 1 < 0) '-' else '+'), @abs(n - 1) });
 }
 
 /// The shortest digits that read back to the same `f64`, with the power of ten they scale by.
@@ -159,20 +160,20 @@ test "write puts a decimal point in every finite number, and writes zeros, infin
 test "write switches to exponent notation just outside n in [-5, 21] (ECMA-262 Number::toString)" {
     // 上側の境界: 1e20 は n = 21、1e21 は n = 22。
     try expectWrites("100000000000000000000.0", 1e20);
-    try expectWrites("1.0e21", 1e21);
+    try expectWrites("1.0e+21", 1e21);
     try expectWrites("123456789012345680000.0", 123456789012345680000.0);
-    try expectWrites("1.2345678901234568e21", 1.2345678901234568e21);
+    try expectWrites("1.2345678901234568e+21", 1.2345678901234568e21);
     // 下側の境界: 1e-6 は n = -5、1e-7 は n = -6。
     try expectWrites("0.000001", 1e-6);
     try expectWrites("1.0e-7", 1e-7);
     try expectWrites("0.0000015", 1.5e-6);
     try expectWrites("1.5e-7", 1.5e-7);
-    try expectWrites("-1.0e21", -1e21);
+    try expectWrites("-1.0e+21", -1e21);
     try expectWrites("-1.0e-7", -1e-7);
 }
 
 test "write gives the shortest digits for the extreme values" {
-    try expectWrites("1.7976931348623157e308", std.math.floatMax(f64));
+    try expectWrites("1.7976931348623157e+308", std.math.floatMax(f64));
     try expectWrites("5.0e-324", std.math.floatTrueMin(f64));
     try expectWrites("2.2250738585072014e-308", std.math.floatMin(f64));
     try expectWrites("9007199254740992.0", 9007199254740992.0);
@@ -197,6 +198,10 @@ test "parseDecimal rounds to nearest even, and saturates instead of failing" {
     try std.testing.expectEqual(@as(f64, 9007199254740992.0), try parseDecimal("9007199254740993."));
     try std.testing.expectEqual(@as(u64, 1), @as(u64, @bitCast(try parseDecimal("4.9e-324"))));
     try std.testing.expectEqual(std.math.floatMax(f64), try parseDecimal("1.7976931348623157e308"));
+    // 指数部の `+` は付いても付かなくても同じ値を読む(`write` は `+` を書く)。
+    try std.testing.expectEqual(std.math.floatMax(f64), try parseDecimal("1.7976931348623157e+308"));
+    try std.testing.expectEqual(@as(f64, 1e21), try parseDecimal("1.0e+21"));
+    try std.testing.expectEqual(@as(f64, 1e21), try parseDecimal("1.0e21"));
     try std.testing.expect(std.math.isPositiveInf(try parseDecimal("1e400")));
     try std.testing.expectEqual(@as(f64, 0.0), try parseDecimal("1e-400"));
     // 長い桁列と、大きな指数部も、誤りにならない。
