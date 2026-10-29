@@ -969,6 +969,10 @@ test "write fails with HeapLimit when the printer's table does not fit in the he
     const before = f.heap.resident;
     try std.testing.expectError(error.HeapLimit, call(&f, "write", &.{ l, p }));
     try std.testing.expectEqual(before, f.heap.resident);
+    // 数の書式の作業領域が断られても、ポートの失敗でなく上限の誤りである。
+    var c: value.Compnum = .{ .real = fix(1), .imag = fix(2) };
+    f.heap.options.limit = f.heap.held() + 8;
+    try std.testing.expectError(error.HeapLimit, call(&f, "write", &.{ .fromCompnum(&c), p }));
 }
 
 test "display of a long string goes to the port without the whole text in the scratch space" {

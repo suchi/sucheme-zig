@@ -168,7 +168,12 @@ fn itemsOf(ctx: *Context, scratch: std.mem.Allocator, form: Value, comptime what
 /// The text of the library name `name`, as `write` shows it.
 fn nameText(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error![]const u8 {
     var out: std.Io.Writer.Allocating = .init(scratch);
-    printer.print(&out.writer, &ctx.heap, &ctx.heap.symbols, name, .write) catch return error.OutOfMemory;
+    // プリンタは、作業領域の確保を断られると `HeapLimit` を返し、`external_refused` を呼び出し側の
+    // 値に戻す。上限の超過を `limitFailure` が見分けられるよう、印を立ててから `OutOfMemory` にする。
+    printer.print(&out.writer, &ctx.heap, &ctx.heap.symbols, name, .write) catch |e| {
+        if (e == error.HeapLimit) ctx.heap.external_refused = true;
+        return error.OutOfMemory;
+    };
     return out.written();
 }
 

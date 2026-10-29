@@ -81,7 +81,10 @@ pub fn print(out: *std.Io.Writer, heap: *Heap, symbols: *const symbol.Table, v: 
     defer labels.deinit(gpa);
     emit(out, gpa, symbols, v, mode, &labels) catch |e| switch (e) {
         error.OutOfMemory => return if (heap.external_refused) error.HeapLimit else error.OutOfMemory,
-        else => |other| return other,
+        // Why: 数の書式(src/num/number.zig)は、作業領域に置いた書き手に書いてから写すことがある。
+        // その書き手が確保を断られると、`out` の失敗でなくても `WriteFailed` になる。断られたことは
+        // `external_refused` で分かるので、上限の誤りに戻す。
+        error.WriteFailed => return if (heap.external_refused) error.HeapLimit else error.WriteFailed,
     };
 }
 
@@ -171,7 +174,8 @@ const Labels = struct {
 fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, v: Value, mode: Mode, labels: *Labels) error{ WriteFailed, OutOfMemory }!void {
     var stack: std.ArrayList(Item) = .empty;
     defer stack.deinit(scratch);
-    // 中に値を持たない値は、表も作業スタックも要らない。ヒープが上限の際でも書ける。
+    // 中に値を持たない値は、表も作業スタックも要らない。ただし、数の書式は作業領域を使うことが
+    // ある(多倍長整数と複素数)ので、上限の際では `HeapLimit` になりうる。
     if (!holdsValues(v)) return emitValue(out, scratch, symbols, v, mode, &stack);
     if (mode != .simple) try labels.find(scratch, v, mode);
     try stack.append(scratch, .{ .value = v });
@@ -197,7 +201,15 @@ fn emit(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.
             }
             try emitValue(out, scratch, symbols, x, mode, &stack);
         },
+        // irritant のリストの続きも、ラベルの付くペアは `. #n=(...)` か `. #n#` と書く。続きとして
+        // たどると、cdr が循環したリストで止まらない。
         .irritants => |rest| if (rest.asPair()) |p| {
+            if (labels.labelOf(rest) != null) {
+                try out.writeAll(" . ");
+                try stack.append(scratch, .{ .text = ">" });
+                try stack.append(scratch, .{ .value = rest });
+                continue;
+            }
             try out.writeByte(' ');
             try stack.append(scratch, .{ .irritants = p.cdr });
             try stack.append(scratch, .{ .value = p.car });
@@ -874,6 +886,38 @@ test "write stops on a condition whose irritants hold the condition" {
     var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = irritants };
     irritants.asPair().?.car = .fromCondition(&c);
     try std.testing.expectEqualStrings("#0=#<condition \"boom\" #0#>", try f.written(&buf, .fromCondition(&c)));
+}
+
+test "write stops on a condition whose list of irritants comes back to itself" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    var bytes = "boom".*;
+    var message: value_mod.String = .{ .bytes = &bytes, .is_ascii = true };
+    // irritant のリストの cdr を、リストの頭に戻す。
+    const irritants = try f.list(&.{ .fromFixnum(1), .fromFixnum(2) }, .empty_list_value);
+    irritants.asPair().?.cdr.asPair().?.cdr = irritants;
+    var c: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = irritants };
+    try std.testing.expectEqualStrings("#<condition \"boom\" . #0=(1 2 . #0#)>", try f.written(&buf, .fromCondition(&c)));
+    try std.testing.expectEqualStrings("#<condition boom . #0=(1 2 . #0#)>", try f.displayed(&buf, .fromCondition(&c)));
+    // 途中のペアに戻るときは、そこまでの irritant を書いてから `.` を置く。
+    const more = try f.list(&.{ .fromFixnum(1), .fromFixnum(2), .fromFixnum(3) }, .empty_list_value);
+    const second = more.asPair().?.cdr;
+    second.asPair().?.cdr.asPair().?.cdr = second;
+    var d: value_mod.Condition = .{ .kind = .@"error", .message = .fromString(&message), .irritants = more };
+    try std.testing.expectEqualStrings("#<condition \"boom\" 1 . #0=(2 3 . #0#)>", try f.written(&buf, .fromCondition(&d)));
+}
+
+test "print fails with HeapLimit, and not WriteFailed, when writing a number takes work that does not fit" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // 複素数の書式は、作業領域に書いてから写す(src/num/number.zig)。
+    var c: value_mod.Compnum = .{ .real = .fromFixnum(1), .imag = .fromFixnum(2) };
+    f.heap.options.limit = f.heap.held() + 8;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.HeapLimit, print(&w, &f.heap, &f.heap.symbols, .fromCompnum(&c), .write));
+    try std.testing.expectEqual(0, f.heap.resident);
 }
 
 test "write puts a symbol between vertical lines when read would not read its name back" {
