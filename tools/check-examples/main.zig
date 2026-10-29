@@ -564,6 +564,12 @@ test "a closing fence needs the same character, at least the same length, and no
     try std.testing.expectEqual(@as(usize, 0), p.problems.len);
     try std.testing.expectEqual(@as(usize, 1), p.blocks.len);
     try std.testing.expectEqualStrings("```\n```x\n~~~~\n", p.blocks[0].source);
+
+    // 後ろに語のある連なりは、長さが足りても閉じない。
+    var q = try Parsed.of("```scheme\n```x\n```\n");
+    defer q.deinit();
+    try std.testing.expectEqual(@as(usize, 0), q.problems.len);
+    try std.testing.expectEqualStrings("```x\n", q.blocks[0].source);
 }
 
 test "the exit status is 1 exactly when something failed" {
