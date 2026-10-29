@@ -1,8 +1,10 @@
-//! Port primitives (R7RS 6.13): the predicates, closing, string and bytevector ports, and
-//! reading and writing on a port given explicitly.
+//! Port primitives (R7RS 6.13): the predicates, closing, string and bytevector ports, the
+//! current ports, reading and writing, and `display` (R7RS 6.13.3, `(scheme write)`).
 //!
-//! ポートの引数は、今は省略できない。省略したときの既定の現在のポート(`current-input-port`
-//! など)は、スライス 5i が入れ、そこで個数の範囲を広げる(docs/plans/0019-phase5-ports-and-io.md)。
+//! ポートの引数を省略すると、現在のポートを使う(R7RS 6.13.2、6.13.3)。現在のポートは
+//! パラメータで(`current-input-port` と `current-output-port`)、その時点の値を、呼び出しの
+//! 動的点から引く(`Services.dyn`、`argPort`)。パラメータは `Context` が作り、`%console-parameter`
+//! が返す。`lib/sucheme/procedures.scm` が、それを名前に束縛する。
 //!
 //! 検査の順序は、型、不変(`read-bytevector!`)、範囲、ポートの状態(向き、種類、開閉)である。
 //! 向きか種類の違うポートは、型の誤りである。閉じたポートへの読み書きは、R7RS 6.13 が誤りとする
@@ -17,6 +19,7 @@ const Primitive = value.Primitive;
 const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
 const port_mod = @import("../port.zig");
+const printer = @import("../printer.zig");
 const immutable = @import("immutable.zig");
 const range_mod = @import("range.zig");
 const RangeOperands = range_mod.RangeOperands;
@@ -41,22 +44,24 @@ pub const primitives = [_]Primitive{
     .{ .name = "open-input-bytevector", .min_args = 1, .max_args = 1, .body = .{ .pure = &openInputBytevector } },
     .{ .name = "open-output-bytevector", .min_args = 0, .max_args = 0, .body = .{ .pure = &openOutputBytevector } },
     .{ .name = "get-output-bytevector", .min_args = 1, .max_args = 1, .body = .{ .pure = &getOutputBytevector } },
-    .{ .name = "read-char", .min_args = 1, .max_args = 1, .body = .{ .pure = &readChar } },
-    .{ .name = "peek-char", .min_args = 1, .max_args = 1, .body = .{ .pure = &peekChar } },
-    .{ .name = "read-line", .min_args = 1, .max_args = 1, .body = .{ .pure = &readLine } },
-    .{ .name = "char-ready?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isCharReady } },
-    .{ .name = "read-string", .min_args = 2, .max_args = 2, .body = .{ .pure = &readString } },
-    .{ .name = "read-u8", .min_args = 1, .max_args = 1, .body = .{ .pure = &readU8 } },
-    .{ .name = "peek-u8", .min_args = 1, .max_args = 1, .body = .{ .pure = &peekU8 } },
-    .{ .name = "u8-ready?", .min_args = 1, .max_args = 1, .body = .{ .pure = &isU8Ready } },
-    .{ .name = "read-bytevector", .min_args = 2, .max_args = 2, .body = .{ .pure = &readBytevector } },
-    .{ .name = "read-bytevector!", .min_args = 2, .max_args = 4, .body = .{ .pure = &readBytevectorInto } },
-    .{ .name = "newline", .min_args = 1, .max_args = 1, .body = .{ .pure = &newline } },
-    .{ .name = "write-char", .min_args = 2, .max_args = 2, .body = .{ .pure = &writeChar } },
-    .{ .name = "write-string", .min_args = 2, .max_args = 4, .body = .{ .pure = &writeString } },
-    .{ .name = "write-u8", .min_args = 2, .max_args = 2, .body = .{ .pure = &writeU8 } },
-    .{ .name = "write-bytevector", .min_args = 2, .max_args = 4, .body = .{ .pure = &writeBytevector } },
-    .{ .name = "flush-output-port", .min_args = 1, .max_args = 1, .body = .{ .pure = &flushOutputPort } },
+    .{ .name = "read-char", .min_args = 0, .max_args = 1, .body = .{ .pure = &readChar } },
+    .{ .name = "peek-char", .min_args = 0, .max_args = 1, .body = .{ .pure = &peekChar } },
+    .{ .name = "read-line", .min_args = 0, .max_args = 1, .body = .{ .pure = &readLine } },
+    .{ .name = "char-ready?", .min_args = 0, .max_args = 1, .body = .{ .pure = &isCharReady } },
+    .{ .name = "read-string", .min_args = 1, .max_args = 2, .body = .{ .pure = &readString } },
+    .{ .name = "read-u8", .min_args = 0, .max_args = 1, .body = .{ .pure = &readU8 } },
+    .{ .name = "peek-u8", .min_args = 0, .max_args = 1, .body = .{ .pure = &peekU8 } },
+    .{ .name = "u8-ready?", .min_args = 0, .max_args = 1, .body = .{ .pure = &isU8Ready } },
+    .{ .name = "read-bytevector", .min_args = 1, .max_args = 2, .body = .{ .pure = &readBytevector } },
+    .{ .name = "read-bytevector!", .min_args = 1, .max_args = 4, .body = .{ .pure = &readBytevectorInto } },
+    .{ .name = "newline", .min_args = 0, .max_args = 1, .body = .{ .pure = &newline } },
+    .{ .name = "write-char", .min_args = 1, .max_args = 2, .body = .{ .pure = &writeChar } },
+    .{ .name = "write-string", .min_args = 1, .max_args = 4, .body = .{ .pure = &writeString } },
+    .{ .name = "write-u8", .min_args = 1, .max_args = 2, .body = .{ .pure = &writeU8 } },
+    .{ .name = "write-bytevector", .min_args = 1, .max_args = 4, .body = .{ .pure = &writeBytevector } },
+    .{ .name = "flush-output-port", .min_args = 0, .max_args = 1, .body = .{ .pure = &flushOutputPort } },
+    .{ .name = "display", .min_args = 1, .max_args = 2, .body = .{ .pure = &display } },
+    .{ .name = "%console-parameter", .min_args = 1, .max_args = 1, .body = .{ .pure = &consoleParameter } },
 };
 
 /// The error a failure of the port functions is to a primitive.
@@ -66,8 +71,27 @@ fn portFailure(e: port_mod.Error) Error {
     return switch (e) {
         error.WrongDirection, error.WrongKind => error.WrongType,
         error.PortClosed => error.PortClosed,
+        error.WriteFailed => error.WriteFailed,
         error.HeapLimit, error.OutOfMemory => |heap_error| heap_error,
     };
+}
+
+/// The port `args[index]` is, or the current port of `direction` when the argument is
+/// left out (R7RS 6.13.2, 6.13.3); either must flow in `direction` and carry `element`.
+/// 現在のポートは、パラメータの、呼び出しの動的点での値である(`parameterize` が差し替えた
+/// 値を含む)。パラメータの値がポートでなければ、型の誤りである(`parameterize` は値を検査しない)。
+/// コンソールを持たない呼び出し(プリミティブの単体テスト)では、省略は型の誤りである。
+fn argPort(services: *const Services, args: []const Value, index: usize, direction: Port.Direction, element: Port.Element) Error!*Port {
+    if (index < args.len) return portOf(args[index], direction, element);
+    const console = services.console orelse return error.WrongType;
+    const param = try consoleParameterOf(services.heap, console, if (direction == .input) .input else .output);
+    return portOf(value.parameterValue(services.dyn, param), direction, element);
+}
+
+/// Whether `p` is a string or a bytevector port, which `get-output-string` and
+/// `get-output-bytevector` take.
+fn isMemory(p: *const Port) bool {
+    return p.backing == .memory;
 }
 
 /// The port `v` is, which must flow in `direction` and carry `element`.
@@ -175,6 +199,9 @@ fn openOutputString(services: *const Services, _: []const Value) Error!Value {
 /// 文字列にできる。
 fn getOutputString(services: *const Services, args: []const Value) Error!Value {
     const p = try portOf(args[0], .output, .textual);
+    // コンソールの出力ポートは、書いたものを持たない(R7RS 6.13.1 は open-output-string の
+    // ポートに限る)。
+    if (!isMemory(p)) return error.WrongType;
     return .fromString(try services.heap.createString(port_mod.written(p)));
 }
 
@@ -194,19 +221,20 @@ fn openOutputBytevector(services: *const Services, _: []const Value) Error!Value
 /// `open-output-bytevector` made.
 fn getOutputBytevector(services: *const Services, args: []const Value) Error!Value {
     const p = try portOf(args[0], .output, .binary);
+    if (!isMemory(p)) return error.WrongType;
     return .fromBytevector(try services.heap.createBytevector(port_mod.written(p)));
 }
 
 /// `(read-char port)`: the next character, or an end-of-file object (R7RS 6.13.2).
 fn readChar(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .textual);
+    const p = try argPort(services, args, 0, .input, .textual);
     const c = port_mod.readChar(services.heap, p) catch |e| return portFailure(e);
     return if (c) |char| .fromCharacter(char) else .eof_value;
 }
 
 /// `(peek-char port)`: the next character, without reading past it.
 fn peekChar(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .textual);
+    const p = try argPort(services, args, 0, .input, .textual);
     const c = port_mod.peekChar(services.heap, p) catch |e| return portFailure(e);
     return if (c) |char| .fromCharacter(char) else .eof_value;
 }
@@ -227,7 +255,7 @@ fn pendingOf(services: *const Services, p: *Port) Error![]const u8 {
 /// 行の終わりは、改行、復帰、復帰に続く改行のどれかである。どれも ASCII なので、バイト列を
 /// 走査して探してよい。
 fn readLine(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .textual);
+    const p = try argPort(services, args, 0, .input, .textual);
     const rest = try pendingOf(services, p);
     if (rest.len == 0) return .eof_value;
     const end = std.mem.indexOfAny(u8, rest, "\n\r") orelse rest.len;
@@ -244,7 +272,7 @@ fn readLine(services: *const Services, args: []const Value) Error!Value {
 /// `(char-ready? port)`: whether a character can be read without waiting (R7RS 6.13.2).
 /// 文字列ポートは、終わりにあっても、待たずに答えられるので真である。
 fn isCharReady(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .textual);
+    const p = try argPort(services, args, 0, .input, .textual);
     _ = try pendingOf(services, p);
     return .fromBool(true);
 }
@@ -254,7 +282,7 @@ fn isCharReady(services: *const Services, args: []const Value) Error!Value {
 /// `k` が 0 なら、何も読まずに空の文字列を返す。
 fn readString(services: *const Services, args: []const Value) Error!Value {
     const n = args[0].asFixnum() orelse return error.WrongType;
-    const p = try portOf(args[1], .input, .textual);
+    const p = try argPort(services, args, 1, .input, .textual);
     const k = try countOf(n);
     const rest = try pendingOf(services, p);
     if (k == 0) return .fromString(try services.heap.createString(""));
@@ -271,21 +299,21 @@ fn readString(services: *const Services, args: []const Value) Error!Value {
 
 /// `(read-u8 port)`: the next byte, or an end-of-file object (R7RS 6.13.2).
 fn readU8(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .binary);
+    const p = try argPort(services, args, 0, .input, .binary);
     const b = port_mod.readByte(services.heap, p) catch |e| return portFailure(e);
     return if (b) |byte| .fromFixnum(byte) else .eof_value;
 }
 
 /// `(peek-u8 port)`: the next byte, without reading past it.
 fn peekU8(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .binary);
+    const p = try argPort(services, args, 0, .input, .binary);
     const b = port_mod.peekByte(services.heap, p) catch |e| return portFailure(e);
     return if (b) |byte| .fromFixnum(byte) else .eof_value;
 }
 
 /// `(u8-ready? port)`: whether a byte can be read without waiting.
 fn isU8Ready(services: *const Services, args: []const Value) Error!Value {
-    const p = try portOf(args[0], .input, .binary);
+    const p = try argPort(services, args, 0, .input, .binary);
     _ = try pendingOf(services, p);
     return .fromBool(true);
 }
@@ -295,7 +323,7 @@ fn isU8Ready(services: *const Services, args: []const Value) Error!Value {
 /// `k` が 0 なら、何も読まずに空のバイトベクタを返す。
 fn readBytevector(services: *const Services, args: []const Value) Error!Value {
     const n = args[0].asFixnum() orelse return error.WrongType;
-    const p = try portOf(args[1], .input, .binary);
+    const p = try argPort(services, args, 1, .input, .binary);
     const k = try countOf(n);
     const rest = try pendingOf(services, p);
     if (k == 0) return .fromBytevector(try services.heap.createBytevector(""));
@@ -315,7 +343,7 @@ fn readBytevector(services: *const Services, args: []const Value) Error!Value {
 /// `read-bytevector` の `k` が 0 のときと同じく、何も求めない呼び出しは何も返さない形にした)。
 fn readBytevectorInto(services: *const Services, args: []const Value) Error!Value {
     const target = args[0].asBytevector() orelse return error.WrongType;
-    const p = try portOf(args[1], .input, .binary);
+    const p = try argPort(services, args, 1, .input, .binary);
     const operands = try RangeOperands.of(args, 2);
     try immutable.requireMutable(args[0]);
     const range = try resolveRange(operands, target.bytes.len);
@@ -331,19 +359,20 @@ fn readBytevectorInto(services: *const Services, args: []const Value) Error!Valu
 /// Writes `bytes` to `p`, which the caller has checked to be an output port of the
 /// right kind.
 fn put(services: *const Services, p: *Port, bytes: []const u8) Error!Value {
-    port_mod.writeBytes(services.heap, p, bytes) catch |e| return portFailure(e);
+    const sink = if (services.console) |console| console.sink else null;
+    port_mod.writeBytes(services.heap, sink, p, bytes) catch |e| return portFailure(e);
     return .unspecified_value;
 }
 
 /// `(newline port)`: writes an end of line, which is a linefeed (R7RS 6.13.3).
 fn newline(services: *const Services, args: []const Value) Error!Value {
-    return put(services, try portOf(args[0], .output, .textual), "\n");
+    return put(services, try argPort(services, args, 0, .output, .textual), "\n");
 }
 
 /// `(write-char char port)`: writes `char` (R7RS 6.13.3).
 fn writeChar(services: *const Services, args: []const Value) Error!Value {
     const c = args[0].asCharacter() orelse return error.WrongType;
-    const p = try portOf(args[1], .output, .textual);
+    const p = try argPort(services, args, 1, .output, .textual);
     var buf: [4]u8 = undefined;
     // 文字はスカラー値なので、符号化に失敗しない。
     const n = std.unicode.utf8Encode(c, &buf) catch unreachable;
@@ -355,7 +384,7 @@ fn writeChar(services: *const Services, args: []const Value) Error!Value {
 /// up to `end` (R7RS 6.13.3).
 fn writeString(services: *const Services, args: []const Value) Error!Value {
     const s = args[0].asString() orelse return error.WrongType;
-    const p = try portOf(args[1], .output, .textual);
+    const p = try argPort(services, args, 1, .output, .textual);
     const operands = try RangeOperands.of(args, 2);
     const range = try resolveRange(operands, s.length());
     const span = s.byteSpan(range.start, range.end);
@@ -365,7 +394,7 @@ fn writeString(services: *const Services, args: []const Value) Error!Value {
 /// `(write-u8 byte port)`: writes `byte` (R7RS 6.13.3).
 fn writeU8(services: *const Services, args: []const Value) Error!Value {
     const byte = byteOf(args[0]) orelse return error.WrongType;
-    const p = try portOf(args[1], .output, .binary);
+    const p = try argPort(services, args, 1, .output, .binary);
     return put(services, p, &.{byte});
 }
 
@@ -374,18 +403,78 @@ fn writeU8(services: *const Services, args: []const Value) Error!Value {
 /// `start` up to `end` (R7RS 6.13.3).
 fn writeBytevector(services: *const Services, args: []const Value) Error!Value {
     const b = args[0].asBytevector() orelse return error.WrongType;
-    const p = try portOf(args[1], .output, .binary);
+    const p = try argPort(services, args, 1, .output, .binary);
     const operands = try RangeOperands.of(args, 2);
     const range = try resolveRange(operands, b.bytes.len);
     return put(services, p, b.bytes[range.start..range.end]);
 }
 
-/// `(flush-output-port port)`: writes out what the port holds (R7RS 6.13.3).
+/// `(flush-output-port)` and `(flush-output-port port)`: writes out what the port holds
+/// (R7RS 6.13.3).
 /// 文字列ポートとバイトベクタポートは、書き出す先が無いので、開いているかだけを確かめる。
+/// コンソールのポートは、書き手の中にためたものを書き出す(REPL の途中の出力を見せるため)。
 fn flushOutputPort(services: *const Services, args: []const Value) Error!Value {
-    const p = args[0].asPort() orelse return error.WrongType;
+    const p = if (args.len > 0) args[0].asPort() orelse return error.WrongType else try argPort(services, args, 0, .output, .textual);
     if (p.direction != .output) return error.WrongType;
-    return put(services, p, "");
+    _ = try put(services, p, "");
+    if (p.backing == .console) {
+        if (services.console) |console| if (console.sink) |sink| sink.flush() catch return error.WriteFailed;
+    }
+    return .unspecified_value;
+}
+
+/// `(display obj)` and `(display obj port)`: writes `obj` as `display` shows it
+/// (R7RS 6.13.3, `(scheme write)`).
+/// 書く形はプリンタの `display` が決め、ポートの書き手(`port.Writer`)を通して、ポートに直接
+/// 書く。何も書かない値(空の文字列)でも、閉じたポートは断るので、先に空の書き込みで確かめる。
+/// 循環の扱いは、スライス 5j が入れる(docs/plans/0019-phase5-ports-and-io.md)。
+fn display(services: *const Services, args: []const Value) Error!Value {
+    const p = try argPort(services, args, 1, .output, .textual);
+    _ = try put(services, p, "");
+    const sink = if (services.console) |console| console.sink else null;
+    var buffer: [256]u8 = undefined;
+    var w: port_mod.Writer = .init(services.heap, sink, p, &buffer);
+    printer.display(&w.interface, services.scratch, &services.heap.symbols, args[0]) catch |e| switch (e) {
+        error.WriteFailed => return portFailure(w.failure.?),
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    w.interface.flush() catch return portFailure(w.failure.?);
+    return .unspecified_value;
+}
+
+/// `(%console-parameter k)`: the parameter that is the current input port (0), output
+/// port (1) or error port (2).
+/// `lib/sucheme/procedures.scm` が、`current-input-port` などの名前に束縛する。
+fn consoleParameter(services: *const Services, args: []const Value) Error!Value {
+    const console = services.console orelse return error.WrongType;
+    const k = args[0].asFixnum() orelse return error.WrongType;
+    const stream: Port.Stream = switch (k) {
+        0 => .input,
+        1 => .output,
+        2 => .error_output,
+        else => return error.OutOfRange,
+    };
+    return .fromParameter(try consoleParameterOf(services.heap, console, stream));
+}
+
+/// The parameter of `console` for `stream`, made with a new console port the first time
+/// it is asked for.
+/// Why: 初期化で作ると、コンテキストを作るだけのテストが、ヒープの中身を数え直すことになる。
+/// 標準ライブラリを読み込むと `lib/sucheme/procedures.scm` が3つとも求めるので、利用者の
+/// プログラムが走る前に、必ず作られている。作ったあとは `Context.mark` がルートにする。
+/// GC は機械のステップの境目でしか走らない(ADR-0031)ので、ポートとパラメータの2回の確保の
+/// 間に回収されることはない。
+fn consoleParameterOf(heap: *@import("../heap.zig").Heap, console: *value.Console, stream: Port.Stream) Error!*value.Parameter {
+    const slot = switch (stream) {
+        .input => &console.input,
+        .output => &console.output,
+        .error_output => &console.error_output,
+    };
+    if (slot.*) |param| return param;
+    const port = try heap.createConsolePort(stream);
+    const param = try heap.create(value.Parameter, .{ .value = .fromPort(port), .converter = null });
+    slot.* = param;
+    return param;
 }
 
 test {
@@ -452,19 +541,20 @@ const Ports = struct {
     }
 };
 
-test "the primitives take the numbers of arguments the language gives them, with the port required for now" {
+test "the primitives take the numbers of arguments the language gives them, with the port left out or given" {
     const expected = [_]struct { []const u8, u8, ?u8 }{
         .{ "port?", 1, 1 },                 .{ "input-port?", 1, 1 },           .{ "output-port?", 1, 1 },
         .{ "textual-port?", 1, 1 },         .{ "binary-port?", 1, 1 },          .{ "input-port-open?", 1, 1 },
         .{ "output-port-open?", 1, 1 },     .{ "close-port", 1, 1 },            .{ "close-input-port", 1, 1 },
         .{ "close-output-port", 1, 1 },     .{ "open-input-string", 1, 1 },     .{ "open-output-string", 0, 0 },
         .{ "get-output-string", 1, 1 },     .{ "open-input-bytevector", 1, 1 }, .{ "open-output-bytevector", 0, 0 },
-        .{ "get-output-bytevector", 1, 1 }, .{ "read-char", 1, 1 },             .{ "peek-char", 1, 1 },
-        .{ "read-line", 1, 1 },             .{ "char-ready?", 1, 1 },           .{ "read-string", 2, 2 },
-        .{ "read-u8", 1, 1 },               .{ "peek-u8", 1, 1 },               .{ "u8-ready?", 1, 1 },
-        .{ "read-bytevector", 2, 2 },       .{ "read-bytevector!", 2, 4 },      .{ "newline", 1, 1 },
-        .{ "write-char", 2, 2 },            .{ "write-string", 2, 4 },          .{ "write-u8", 2, 2 },
-        .{ "write-bytevector", 2, 4 },      .{ "flush-output-port", 1, 1 },
+        .{ "get-output-bytevector", 1, 1 }, .{ "read-char", 0, 1 },             .{ "peek-char", 0, 1 },
+        .{ "read-line", 0, 1 },             .{ "char-ready?", 0, 1 },           .{ "read-string", 1, 2 },
+        .{ "read-u8", 0, 1 },               .{ "peek-u8", 0, 1 },               .{ "u8-ready?", 0, 1 },
+        .{ "read-bytevector", 1, 2 },       .{ "read-bytevector!", 1, 4 },      .{ "newline", 0, 1 },
+        .{ "write-char", 1, 2 },            .{ "write-string", 1, 4 },          .{ "write-u8", 1, 2 },
+        .{ "write-bytevector", 1, 4 },      .{ "flush-output-port", 0, 1 },     .{ "display", 1, 2 },
+        .{ "%console-parameter", 1, 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
     for (expected, primitives) |e, p| {
@@ -797,4 +887,38 @@ test "a count far larger than what is left allocates only what is left" {
     // 確保したのは、読んだ 3 文字の文字列と 2 バイトのバイトベクタだけである。
     const heap_mod = @import("../heap.zig");
     try std.testing.expectEqual(before + heap_mod.cellBytes(value.String) + 3 + heap_mod.cellBytes(value.Bytevector) + 2, f.heap.accounted);
+}
+
+test "display writes what the printer's display shows to the port, and refuses a closed port" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try call(&f, "open-output-string", &.{});
+    const list = try f.heap.cons(try str(&f, "a"), try f.heap.cons(chr('b'), .empty_list_value));
+    _ = try call(&f, "display", &.{ list, p });
+    _ = try call(&f, "display", &.{ try str(&f, "λ"), p });
+    try expectString("(a b)λ", try call(&f, "get-output-string", &.{p}));
+    _ = try call(&f, "close-port", &.{p});
+    try std.testing.expectError(error.PortClosed, call(&f, "display", &.{ try str(&f, ""), p }));
+    try std.testing.expectError(error.PortClosed, call(&f, "display", &.{ list, p }));
+    // 省略したポートは現在の出力ポートで、コンソールを持たない呼び出しでは型の誤りである。
+    try std.testing.expectError(error.WrongType, call(&f, "display", &.{fix(1)}));
+}
+
+test "display of a long string goes to the port without the whole text in the scratch space" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const long = try f.heap.createStringFilled(10_000, struct {
+        pub fn fill(_: @This(), bytes: []u8) void {
+            @memset(bytes, 'x');
+        }
+    }{});
+    const p = try call(&f, "open-output-string", &.{});
+    // 作業領域を、全体の写しが入らない大きさに絞る。プリンタの作業スタックは入る。
+    var small: [4096]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&small);
+    f.services.scratch = fba.allocator();
+    _ = try call(&f, "display", &.{ .fromString(long), p });
+    try std.testing.expectEqual(10_000, (try call(&f, "get-output-string", &.{p})).asString().?.bytes.len);
 }

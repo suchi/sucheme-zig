@@ -1,0 +1,44 @@
+# スライス 5i: コンソールのポートと現在のポート(R7RS 6.13.1)。コンソールの出力は、評価の結果の
+# 表示と同じ書き手に、書いた順に並ぶ。スライス 5i では、標準エラーも同じ書き手に書き、標準入力は
+# 最初から終わりにある(docs/plans/0019-phase5-ports-and-io.md の 5i の既知の制限)。
+
+# 計画書 0019 の 5i の完了条件。出力のあとに、式の値 1 が続く。
+(import (scheme write)) (display "hi") (newline) (write-string "x" (current-error-port)) 1
+hi
+x1
+
+# 結果と出力は、書いた順に並ぶ。
+(import (scheme write)) (display 1) 2 (display 3) 4
+12
+34
+
+# `parameterize` で、現在の出力ポートを差し替えられる。省略したポートは、差し替えた先になる。
+(let ((p (open-output-string))) (parameterize ((current-output-port p)) (write-char #\a) (newline) (write-string "bc")) (get-output-string p))
+"a\nbc"
+
+(import (scheme write)) (let ((p (open-output-string))) (parameterize ((current-output-port p)) (display '(1 "a" #\b))) (get-output-string p))
+"(1 a b)"
+
+# 差し替えが終われば、元のコンソールに戻る。
+(let ((p (open-output-string))) (parameterize ((current-output-port p)) (write-char #\a)) (write-char #\b) (get-output-string p))
+b"a"
+
+(list (input-port? (current-input-port)) (output-port? (current-output-port)) (output-port? (current-error-port)) (textual-port? (current-output-port)) (eq? (current-output-port) (current-output-port)))
+(#t #t #t #t #t)
+
+# 標準入力は、5i では最初から終わりにある。
+(list (eof-object? (read-char)) (eof-object? (peek-char)) (eof-object? (read-line)) (char-ready?))
+(#t #t #t #t)
+
+(begin (flush-output-port) (flush-output-port (current-error-port)) 'flushed)
+flushed
+
+# コンソールの出力ポートは、書いたものを持たない。
+(get-output-string (current-output-port))
+error: wrong type of argument to get-output-string #<port>
+
+(write-u8 1)
+error: wrong type of argument to write-u8 1
+
+(parameterize ((current-output-port 1)) (newline))
+error: wrong type of argument to newline

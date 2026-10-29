@@ -600,7 +600,7 @@ pub const Machine = struct {
             // 本体が検査する(`PrimitiveError.WrongArgumentCount` を参照)。
             if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount, args, count);
             switch (prim.body) {
-                .pure => |call| return .{ .value = try self.callPure(prim, call, args, count) },
+                .pure => |call| return .{ .value = try self.callPure(prim, call, args, count, dyn.*) },
                 .machine => |op| switch (op) {
                     // Why: 並べ直した呼び出しは、継続のフレームを積まずに適用する。被呼び出し側は
                     // `apply` の呼び出しの継続のもとで走るので、`apply` の第1引数の呼び出しは
@@ -737,7 +737,7 @@ pub const Machine = struct {
 
     /// The value of the pure primitive `prim`, whose body is `call`, for the
     /// `count` operands in `args`.
-    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize) Error!Value {
+    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize, dyn: ?*const DynPoint) Error!Value {
         const ctx = self.ctx;
         var small: [small_operands]Value = undefined;
         const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
@@ -747,7 +747,7 @@ pub const Machine = struct {
         // 残すと、オペランドの多いプリミティブを呼ぶループは、1 周ごとに領域を広げてしまう。
         defer if (count > small.len) self.scratch.free(operands);
         fill(operands, args);
-        const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch };
+        const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch, .console = &ctx.console, .dyn = dyn };
         return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e, args, count);
     }
 
@@ -1011,6 +1011,8 @@ pub const Machine = struct {
         const irritants = switch (e) {
             // ヒープの失敗は、ほかの経路と同じ文言になるよう `Context` を通す。
             error.HeapLimit, error.OutOfMemory => |heap_error| return ctx.heapFailure(heap_error),
+            // ホストの書き手の失敗は、条件にせずにそのまま返す(WASM の出力バッファが満杯など)。
+            error.WriteFailed => return error.WriteFailed,
             else => try operandList(ctx, args, count),
         };
         return switch (e) {
@@ -1020,7 +1022,7 @@ pub const Machine = struct {
             error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
             error.Immutable => raiseWith(ctx, irritants, "cannot modify a constant in {s}", .{prim.name}),
             error.PortClosed => raiseWith(ctx, irritants, "port is closed in {s}", .{prim.name}),
-            error.HeapLimit, error.OutOfMemory => unreachable,
+            error.HeapLimit, error.OutOfMemory, error.WriteFailed => unreachable,
         };
     }
 

@@ -32,6 +32,7 @@
           vector-append vector-copy vector-copy! vector-fill! vector-for-each vector-length
           vector-map vector-ref vector-set! vector? when with-exception-handler zero?
           binary-port? call-with-port char-ready? close-input-port close-output-port close-port
+          current-error-port current-input-port current-output-port
           flush-output-port get-output-bytevector get-output-string input-port-open? input-port?
           newline open-input-bytevector open-input-string open-output-bytevector
           open-output-string output-port-open? output-port? peek-char peek-u8 port?

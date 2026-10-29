@@ -11,7 +11,8 @@
 //! | `-I` が最後の引数で、ディレクトリが続かない | stderr にそのオプションの名前を出す | 64 |
 //! | なし、または `-I <dir>` だけ(繰り返せる) | stdin が尽きるまで REPL を走らせる | 0 |
 //! | `<file>`(`-I <dir>` が前にあってもよい) | ファイルのプログラムを最後まで実行する | 0 |
-//! | 同上で、実行時エラーが起きた | stderr に `error: ` と説明を出して、そこで止める | 1 |
+//! | 同上で、実行時エラーが起きた | stderr に `error: ` と説明を出して、そこで止める。プログラムの出力も stdout に書けなければ、続けて `error: cannot write to standard output` を出す | 1 |
+//! | 同上で、プログラムの出力を stdout に書けない(閉じている、満杯、パイプの先が閉じた) | stderr に `error: cannot write to standard output` を出して、そこで止める | 74 |
 //! | 同上で、ファイルを開けない・読めない・大きすぎる | stderr に `cannot read <file>: ` と理由を出す | 66 |
 //! | `<file>` の後ろに引数が続く | stderr に説明を出す(プログラムへの引数は段階5) | 64 |
 //! | `-` だけ | オプションでなく名前として扱う。標準入力のプログラムは未実装と伝える | 69 |
@@ -30,7 +31,9 @@
 //!
 //! ファイルのプログラムは、REPL と同じ初期環境(`(scheme base)`)で、先頭から1つずつ
 //! 評価する。R7RS 5.1 のプログラムは `import` で始まるが、始まらなくてもよい。式の値は
-//! 出力しない。出力の手段(`display`)は段階5で入る。標準ライブラリのファイルは `-I` の
+//! 出力しない。プログラムが現在の出力ポートに書いたもの(`display`、`write-string` など)は
+//! stdout に出る。`current-error-port` への書き込みも、いまは stdout に出る(標準エラーに分ける
+//! のは後の段階)。標準入力は、プログラムからは読めない(最初から終わりにある)。標準ライブラリのファイルは `-I` の
 //! 探索ルートから読まれる(作業ディレクトリが先頭で、プログラムのファイルのあるディレクトリは
 //! 足されない)。ファイルの大きさの上限は 1 MiB(`max_program_bytes`)で、
 //! UTF-8 でなければ実行時エラーである。
@@ -141,7 +144,8 @@ pub fn main(init: std.process.Init) !void {
             try out.print(
                 "{s} {s}\n\nUsage: {s} [--version] [--help|-h] [-I <dir>]... [<file>]\n\n" ++
                     "With no argument, reads expressions from stdin and prints their values.\n" ++
-                    "With a file, runs the program in it and prints nothing but errors.\n" ++
+                    "With a file, runs the program in it; what the program writes goes to stdout,\n" ++
+                    "and the values of its expressions are not printed.\n" ++
                     "-I <dir> adds a directory to search for the files of libraries; the working\n" ++
                     "directory is searched first.\n" ++
                     "Only the core of the language is bound for now; see docs/roadmap.md.\n",
@@ -167,7 +171,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .run_file => |index| {
             const roots = try searchRoots(init.arena.allocator(), rest[0..index]);
-            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], err);
+            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], out, err);
             if (status != 0) std.process.exit(status);
         },
         .program_arguments => {
@@ -218,6 +222,11 @@ pub const exit_no_input: u8 = 66;
 ///
 /// 64 は sysexits.h の EX_USAGE で、ここで慣習に最も近いものである。
 pub const exit_usage: u8 = 64;
+
+/// Exit status for a program whose output could not be written to stdout.
+///
+/// 74 は sysexits.h の EX_IOERR である。
+pub const exit_io_error: u8 = 74;
 
 /// The option that adds a directory to search for the files of libraries.
 pub const include_option = "-I";
@@ -367,8 +376,9 @@ fn readProgram(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
 /// Runs the program in the file `path`, and returns the exit status.
 ///
 /// ファイルの全体を読み、先頭から1つずつ評価する。式の値は出力しない。最初のエラーで
-/// 止め、エラーより前の評価の副作用はそのまま残る。エラーの説明は `err` に書く。
-pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, err: *std.Io.Writer) !u8 {
+/// 止め、エラーより前の評価の副作用はそのまま残る。プログラムがコンソールに書いたもの
+/// (`display` など)は `out` に書き、エラーの説明は `err` に書く。
+pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     const source = readProgram(gpa, files.io, path) catch |e| {
         try err.print("error: cannot read {s}: {s}\n", .{ path, if (e == error.StreamTooLong) "the file is larger than 1 MiB" else @errorName(e) });
         try err.flush();
@@ -382,16 +392,38 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     defer interp.deinit();
     // 展開時のエラーには、ファイルの中の位置を前置する(docs/design/frontend.md の位置情報)。
     interp.file_name = path;
+    // 式の値は捨て、プログラムの出力だけを `out` に書く(スライス 5i)。
+    interp.console_out = out;
     var discard: std.Io.Writer.Discarding = .init(&.{});
     interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
-        error.WriteFailed => return e,
+        // 式の値は捨てているので、ここに来る書き込みの失敗は、プログラムの出力の標準出力である。
+        error.WriteFailed => return cannotWriteOutput(err),
         else => {
+            // 端末では、プログラムの出力がエラーの説明より前に見えるよう、先に書き出す。
+            // 書き出せなくても、元のエラーの説明は隠さない。終了コードは実行時エラーのままにする。
+            const flushed = if (out.flush()) true else |_| false;
             try err.print("error: {s}\n", .{interp.diagnostic()});
+            if (!flushed) try err.writeAll(cannot_write_output);
             try err.flush();
             return exit_runtime_error;
         },
     };
+    out.flush() catch return cannotWriteOutput(err);
     return 0;
+}
+
+/// What the diagnostic is when the program's output cannot be written to stdout.
+const cannot_write_output = "error: cannot write to standard output\n";
+
+/// Reports that the program's output could not be written, and gives the exit status.
+/// Why: 標準出力が閉じているか満杯か、パイプの先が読み終えている(`| head -c 0`)。どれも
+/// プログラムの誤りでなく出力先の失敗なので、実行時エラー(1)と分けて、入出力の誤り(74)にする。
+/// パイプの先が閉じた場合も、黙らずに同じ診断を出す。失敗の種類を見分けずに済み、出力が
+/// 欠けたことが分かるからである。
+fn cannotWriteOutput(err: *std.Io.Writer) !u8 {
+    try err.writeAll(cannot_write_output);
+    try err.flush();
+    return exit_io_error;
 }
 
 test "classify recognises --version" {
@@ -827,6 +859,84 @@ test "repl imports a library from a file beneath the roots it is given, and repo
 
 /// Writes `text` to a file in a fresh directory and runs it; returns the status and stderr.
 fn runProgram(text: []const u8, err_buf: []u8) !struct { status: u8, err: []const u8 } {
+    var ob: [256]u8 = undefined;
+    const r = try runProgramWithOutput(text, &ob, err_buf);
+    return .{ .status = r.status, .err = r.err };
+}
+
+/// Writes `text` to a file in a fresh directory and runs it; returns the status, stdout
+/// and stderr.
+fn runProgramWithOutput(text: []const u8, out_buf: []u8, err_buf: []u8) !struct { status: u8, out: []const u8, err: []const u8 } {
+    var out: std.Io.Writer = .fixed(out_buf);
+    const r = try runProgramTo(text, &out, err_buf);
+    return .{ .status = r.status, .out = out.buffered(), .err = r.err };
+}
+
+/// Writes `text` to a file in a fresh directory and runs it with `out` as stdout;
+/// returns the status and stderr.
+fn runProgramTo(text: []const u8, out: *std.Io.Writer, err_buf: []u8) !struct { status: u8, err: []const u8 } {
+    var err: std.Io.Writer = .fixed(err_buf);
+    const status = try runProgramToBoth(text, out, &err);
+    return .{ .status = status, .err = err.buffered() };
+}
+
+/// A writer that keeps up to `buffer` bytes and fails when it has to write them out,
+/// like stdout that is closed or full.
+fn failingStdout(buffer: []u8) std.Io.Writer {
+    const failing = struct {
+        fn drain(_: *std.Io.Writer, _: []const []const u8, _: usize) std.Io.Writer.Error!usize {
+            return error.WriteFailed;
+        }
+    };
+    return .{ .vtable = &.{ .drain = failing.drain }, .buffer = buffer };
+}
+
+/// What reaches a terminal, in the order the writers write it out.
+const Terminal = struct {
+    bytes: [512]u8 = undefined,
+    len: usize = 0,
+
+    fn shown(self: *const Terminal) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    fn append(self: *Terminal, bytes: []const u8) void {
+        @memcpy(self.bytes[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+    }
+};
+
+/// A writer that keeps up to `buffer` bytes and puts them on `terminal` only when it writes
+/// them out, like stdout or stderr that is buffered.
+/// Why: `std.Io.Writer.fixed` の `flush` は何もしないので、書き出しを忘れても、書き出しの
+/// 順序を誤っても、テストに見えない。
+const TerminalWriter = struct {
+    terminal: *Terminal,
+    interface: std.Io.Writer,
+
+    fn init(terminal: *Terminal, buffer: []u8) TerminalWriter {
+        return .{ .terminal = terminal, .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *TerminalWriter = @alignCast(@fieldParentPtr("interface", w));
+        self.terminal.append(w.buffered());
+        w.end = 0;
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            self.terminal.append(bytes);
+            n += bytes.len;
+        }
+        for (0..splat) |_| {
+            self.terminal.append(data[data.len - 1]);
+            n += data[data.len - 1].len;
+        }
+        return n;
+    }
+};
+
+/// Runs `text` from a file with `out` as stdout and `err` as stderr; returns the status.
+fn runProgramToBoth(text: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data = text });
@@ -834,9 +944,83 @@ fn runProgram(text: []const u8, err_buf: []u8) !struct { status: u8, err: []cons
     defer std.testing.allocator.free(dir);
     const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
     defer std.testing.allocator.free(path);
-    var err: std.Io.Writer = .fixed(err_buf);
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &err);
-    return .{ .status = status, .err = err.buffered() };
+    return runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, out, err);
+}
+
+test "runFile writes stderr out, after what the program wrote to stdout" {
+    // 実行時エラー: プログラムの出力が先に見え、説明がそのあとに続く。
+    // 標準エラーの領域は、説明が書き出すまで残るよう、説明より大きくする。
+    var t1: Terminal = .{};
+    var ob1: [16]u8 = undefined;
+    var eb1: [128]u8 = undefined;
+    var out1: TerminalWriter = .init(&t1, &ob1);
+    var err1: TerminalWriter = .init(&t1, &eb1);
+    const s1 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out1.interface, &err1.interface);
+    try std.testing.expectEqual(exit_runtime_error, s1);
+    try std.testing.expectEqualStrings("helloerror: wrong type of argument to car 1\n", t1.shown());
+    // 標準出力に書けない: 診断は書き出されている。
+    var t2: Terminal = .{};
+    var ob2: [4]u8 = undefined;
+    var eb2: [128]u8 = undefined;
+    var out2 = failingStdout(&ob2);
+    var err2: TerminalWriter = .init(&t2, &eb2);
+    const s2 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n", &out2, &err2.interface);
+    try std.testing.expectEqual(exit_io_error, s2);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", t2.shown());
+    // 実行時エラーと重なる: 2つの説明が、どちらも書き出されている。
+    var t3: Terminal = .{};
+    var ob3: [64]u8 = undefined;
+    var eb3: [128]u8 = undefined;
+    var out3 = failingStdout(&ob3);
+    var err3: TerminalWriter = .init(&t3, &eb3);
+    const s3 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out3, &err3.interface);
+    try std.testing.expectEqual(exit_runtime_error, s3);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", t3.shown());
+}
+
+test "runFile reports output it cannot write to stdout, and exits 74" {
+    // 書き手の領域より多く書くと、プログラムの途中で書けなくなる。
+    var small: [4]u8 = undefined;
+    var out = failingStdout(&small);
+    var eb: [256]u8 = undefined;
+    const r = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hello\")\n(display \"never\")\n", &out, &eb);
+    try std.testing.expectEqual(exit_io_error, r.status);
+    try std.testing.expectEqual(@as(u8, 74), exit_io_error);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", r.err);
+    // 書いたものが領域に収まっても、終わりの書き出しで失敗すれば、同じである。
+    var room: [64]u8 = undefined;
+    var out2 = failingStdout(&room);
+    const r2 = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hi\")\n", &out2, &eb);
+    try std.testing.expectEqual(exit_io_error, r2.status);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", r2.err);
+}
+
+test "runFile keeps the description of a runtime error when stdout cannot be written either" {
+    var room: [64]u8 = undefined;
+    var out = failingStdout(&room);
+    var eb: [256]u8 = undefined;
+    const r = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hi\")\n(car 1)\n", &out, &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", r.err);
+}
+
+test "runFile writes what the program writes to the console to stdout, and not the values" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try runProgramWithOutput("(import (scheme base) (scheme write))\n(display \"hi\")\n(newline)\n42\n(write-string \"x\" (current-error-port))\n", &ob, &eb);
+    try std.testing.expectEqual(@as(u8, 0), r.status);
+    // 式の値 42 は書かない。標準エラーへの書き込みも、5i では標準出力に出る(既知の制限)。
+    try std.testing.expectEqualStrings("hi\nx", r.out);
+    try std.testing.expectEqualStrings("", r.err);
+}
+
+test "runFile keeps what the program wrote before an error, ahead of the description" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try runProgramWithOutput("(import (scheme base) (scheme write))\n(display \"before\")\n(car 1)\n(display \"after\")\n", &ob, &eb);
+    try std.testing.expectEqual(exit_runtime_error, r.status);
+    try std.testing.expectEqualStrings("before", r.out);
+    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\n", r.err);
 }
 
 test "runFile runs a program that starts with an import, prints nothing, and exits 0" {
@@ -910,7 +1094,8 @@ test "runFile finds a library under a search root" {
     defer std.testing.allocator.free(path);
     var eb: [256]u8 = undefined;
     var err: std.Io.Writer = .fixed(&eb);
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &err);
+    var out: std.Io.Writer.Discarding = .init(&.{});
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &out.writer, &err);
     // `(f)` は 7 を返し、`(car 7)` が誤りになる。ライブラリが読めたことは、その誤りの種類で分かる。
     try std.testing.expectEqual(exit_runtime_error, status);
     try std.testing.expectEqualStrings("error: wrong type of argument to car 7\n", err.buffered());
@@ -919,11 +1104,12 @@ test "runFile finds a library under a search root" {
 test "runFile returns 66 for a file that is missing, and for a directory" {
     var eb: [256]u8 = undefined;
     var err: std.Io.Writer = .fixed(&eb);
-    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", &err);
+    var out: std.Io.Writer.Discarding = .init(&.{});
+    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", &out.writer, &err);
     try std.testing.expectEqual(exit_no_input, missing);
     try std.testing.expect(std.mem.startsWith(u8, err.buffered(), "error: cannot read no-such-dir/no-such-file.scm: "));
     var err2: std.Io.Writer = .fixed(&eb);
-    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", &err2);
+    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", &out.writer, &err2);
     try std.testing.expectEqual(exit_no_input, directory);
 }
 
@@ -943,6 +1129,7 @@ test "runFile returns 66 for a file larger than the limit, and runs one at the l
         const path = try std.fs.path.join(std.testing.allocator, &.{ dir, c.name });
         defer std.testing.allocator.free(path);
         var err: std.Io.Writer = .fixed(&eb);
-        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, &err));
+        var out: std.Io.Writer.Discarding = .init(&.{});
+        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, &out.writer, &err));
     }
 }

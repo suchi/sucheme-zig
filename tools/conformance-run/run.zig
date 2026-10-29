@@ -558,7 +558,7 @@ test "the digest is the lowercase hex of SHA-256" {
     try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &d);
 }
 
-const fake_required = [_][]const u8{ "car", "current-input-port", "string-upcase", "+", "define" };
+const fake_required = [_][]const u8{ "car", "display", "string-upcase", "+", "define" };
 
 fn runFake(arena: std.mem.Allocator, text: []const u8) !SuiteResult {
     return runSuite(arena, text, &fake_required);
@@ -595,8 +595,8 @@ test "each kind of outcome is counted in its section" {
         \\(test 3 (+ 1 2))
         \\(test 4 (+ 1 2))
         \\(test 1 (car 5))
-        \\(test 1 (current-input-port 4))
-        \\(define (f) (current-input-port 4))
+        \\(test 1 (display 4))
+        \\(define (f) (display 4))
         \\(test 2 (f))
         \\(test #u8(1 #e) 1)
         \\(test (car 5) 1)
@@ -713,8 +713,8 @@ test "a quoted name of an unimplemented procedure does not make the form unimple
         \\(import (scheme base) (chibi test))
         \\(test-begin "all")
         \\(test-begin "a")
-        \\(define f (current-input-port 4))
-        \\(test #t (symbol? 'current-input-port))
+        \\(define f (display 4))
+        \\(test #t (symbol? 'display))
         \\(test '(a `(b ,f) f) '(a `(b ,f) f))
         \\(test-end)
         \\(test-end)
@@ -729,13 +729,13 @@ test "a definition inside a top-level begin, or made by a macro, cascades" {
         \\(import (scheme base) (chibi test))
         \\(test-begin "all")
         \\(test-begin "a")
-        \\(begin (define z (current-input-port 4)) (define w 1))
+        \\(begin (define z (display 4)) (define w 1))
         \\(test 2 z)
         \\(test 1 w)
         \\(test-end)
         \\(test-begin "b")
         \\(define-syntax def (syntax-rules () ((_ n v) (define n v))))
-        \\(def y (current-input-port 4))
+        \\(def y (display 4))
         \\(test 2 y)
         \\(test 3 (car 5))
         \\(test-end)
@@ -789,7 +789,7 @@ test "an unbound error in a test cascades after an errored form, and across nest
         \\(test 1 nowhere-defined)
         \\(test-end)
         \\(test-begin "p")
-        \\(define q (current-input-port 4))
+        \\(define q (display 4))
         \\(test-begin "n")
         \\(test 1 nowhere-else)
         \\(test-end)
@@ -895,7 +895,7 @@ test "a definition that is unreadable, raises, or cascades makes its users casca
         \\(test 1 e)
         \\(test-end)
         \\(test-begin "cascades")
-        \\(define f (current-input-port 4))
+        \\(define f (display 4))
         \\(define g f)
         \\(define h g)
         \\(test 1 h)

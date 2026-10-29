@@ -345,7 +345,22 @@ test("the standard libraries of slice 3k can be imported in wasm", () => {
     h.run("(import (scheme base) (scheme cxr) (scheme lazy) (scheme case-lambda)) (list (cadr '(1 2 3)) (caddr '(1 2 3)) (force (delay 4)) ((case-lambda ((a) a) ((a b) (+ a b))) 1 2))"),
     [OK, "(2 3 4 3)\n"],
   );
-  assert.deepEqual(h.run("(import (only (scheme base) current-input-port))"), [SCHEME_ERROR, "error: bad import: current-input-port is not exported by the import set\n"]);
+  assert.deepEqual(h.run("(import (only (scheme base) display))"), [SCHEME_ERROR, "error: bad import: display is not exported by the import set\n"]);
+});
+
+// スライス 5i: コンソールのポートは、評価の結果と同じ出力バッファに、書いた順に書く。標準エラーも
+// 同じバッファに書き、標準入力は最初から終わりにある(計画書 0019 の 5i の既知の制限)。
+test("the console ports write to the output buffer in order with the results", () => {
+  const h = instantiate().init();
+  assert.deepEqual(
+    h.run("(import (scheme write)) (display \"hi\") (newline) (write-string \"x\" (current-error-port)) 1"),
+    [OK, "hi\nx1\n"],
+  );
+  assert.deepEqual(h.run("(eof-object? (read-char))"), [OK, "#t\n"]);
+  // 出力バッファの書き手は、書き出しで失敗しない(固定の書き手の flush は何もしない)。
+  assert.deepEqual(h.run("(write-string \"y\") (flush-output-port) 2"), [OK, "y2\n"]);
+  // 出力が残っていても、エラーの行はそのあとに書かれる。
+  assert.deepEqual(h.run("(write-string \"a\") (car 1)"), [SCHEME_ERROR, "aerror: wrong type of argument to car 1\n"]);
 });
 
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
@@ -469,6 +484,18 @@ test("output overflow returns -1 and ends with the buffer-full line", () => {
   assert.ok(len <= OUTPUT_CAPACITY, `output length ${len}`);
   assert.ok(h.output().endsWith("error: output buffer full\n"), h.output().slice(-60));
   // 出力を取り出して消せば、続けて評価できる。
+  h.x.sucheme_output_clear();
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
+// スライス 5i: プログラムがコンソールに書き続けて出力バッファが満杯になっても、同じ行で終わる。
+// 書き込みの失敗は Scheme の条件にならず、ハンドラでも捕まえられない。
+test("console output that overflows the buffer returns -1 with the buffer-full line, even under a handler", () => {
+  const h = instantiate().init();
+  const status = h.eval("(with-exception-handler (lambda (e) 'caught) (lambda () (let loop () (write-string \"0123456789\") (loop))))");
+  assert.equal(status, SCHEME_ERROR);
+  assert.ok(h.x.sucheme_output_len() <= OUTPUT_CAPACITY);
+  assert.ok(h.output().endsWith("error: output buffer full\n"), h.output().slice(-60));
   h.x.sucheme_output_clear();
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });

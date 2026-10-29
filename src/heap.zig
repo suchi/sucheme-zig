@@ -476,6 +476,7 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Bignum => object.limbs.len * @sizeOf(Limb),
         Port => switch (object.backing) {
             .memory => |m| m.bytes.len,
+            .console => 0,
         },
         Node => switch (object.*) {
             .sequence => |nodes| nodes.len * @sizeOf(*const Node),
@@ -814,6 +815,18 @@ pub const Heap = struct {
         errdefer self.backing.free(copy);
         const cell = try self.backing.create(Cell(Port));
         cell.value = .{ .direction = direction, .element = element, .backing = .{ .memory = .{ .bytes = copy, .len = copy.len } } };
+        self.link(Port, cell, total);
+        return &cell.value;
+    }
+
+    /// A new open textual port on the console's stream `stream`: an input port for
+    /// standard input, an output port for the others.
+    /// ペイロードを持たないので、計上はセルだけである。
+    pub fn createConsolePort(self: *Heap, stream: Port.Stream) Error!*Port {
+        const total = try self.reserveWithPayload(.limit, Port, 0, 1);
+        const cell = try self.backing.create(Cell(Port));
+        const direction: Port.Direction = if (stream == .input) .input else .output;
+        cell.value = .{ .direction = direction, .element = .textual, .backing = .{ .console = stream } };
         self.link(Port, cell, total);
         return &cell.value;
     }
@@ -1157,6 +1170,7 @@ pub const Heap = struct {
                     Bignum => self.backing.free(cell.value.limbs),
                     Port => switch (cell.value.backing) {
                         .memory => |m| self.backing.free(m.bytes),
+                        .console => {},
                     },
                     Node => switch (cell.value) {
                         .sequence => |nodes| self.backing.free(nodes),
@@ -2682,4 +2696,39 @@ test "when the new bytes cannot be allocated a memory port keeps its old ones" {
     try std.testing.expectError(error.OutOfMemory, heap.growPortBytes(p, 8));
     try std.testing.expectEqualStrings("ab", p.backing.memory.bytes);
     try std.testing.expectEqual(cellBytes(Port) + 2, heap.accounted);
+}
+
+test "a console port accounts for its cell only, and a collection keeps it while a value reaches it" {
+    for ([_]usize{ 0, 4096 }) |capacity| {
+        var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = capacity });
+        defer heap.deinit();
+        const in = try heap.createConsolePort(.input);
+        const out = try heap.createConsolePort(.output);
+        const err = try heap.createConsolePort(.error_output);
+        try std.testing.expectEqual(.input, in.direction);
+        try std.testing.expectEqual(.output, out.direction);
+        try std.testing.expectEqual(.output, err.direction);
+        for ([_]*Port{ in, out, err }) |p| {
+            try std.testing.expectEqual(.textual, p.element);
+            try std.testing.expect(p.open);
+        }
+        try std.testing.expectEqual(Port.Stream.error_output, err.backing.console);
+        try std.testing.expectEqual(3 * cellBytes(Port), heap.accounted);
+        // 領域を持つポートと並んでいても、コンソールのポートの分はセルだけである。
+        _ = try heap.createMemoryPort(.input, .binary, "abcd");
+        heap.collect(TestRoots{ .values = &.{ .fromPort(in), .fromPort(err) } });
+        try std.testing.expectEqual(2, heap.count);
+        try std.testing.expectEqual(2 * cellBytes(Port), heap.accounted);
+        heap.collect(TestRoots{});
+        try std.testing.expectEqual(0, heap.count);
+        try std.testing.expectEqual(0, heap.accounted);
+    }
+}
+
+test "a console port is held to the limit by its cell" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) });
+    defer heap.deinit();
+    _ = try heap.createConsolePort(.output);
+    try std.testing.expectError(error.HeapLimit, heap.createConsolePort(.output));
+    try std.testing.expectEqual(cellBytes(Port), heap.accounted);
 }

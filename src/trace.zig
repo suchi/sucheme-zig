@@ -790,6 +790,21 @@ test "a port holds bytes and flags only, so the walk follows nothing from it, an
     var t: Recorder = .{};
     interpreter.walk(&t, Value, .fromPort(&port));
     try t.expect(&.{addr(&port)});
+    // コンソールのポートも、たどるものを持たない。
+    var console: value_mod.Port = .{ .direction = .output, .element = .textual, .backing = .{ .console = .output } };
+    var c: Recorder = .{};
+    interpreter.children(&c, value_mod.Port, &console);
+    try c.expect(&.{});
+}
+
+test "the console's parameters are followed through their values" {
+    // `Console` はヒープの型ではないが、`Context` がその3つのパラメータをルートとして挙げる。
+    // パラメータは、値(ポート)をたどる。
+    var port: value_mod.Port = .{ .direction = .output, .element = .textual, .backing = .{ .console = .output } };
+    const param: value_mod.Parameter = .{ .value = .fromPort(&port), .converter = null };
+    var r: Recorder = .{};
+    interpreter.children(&r, value_mod.Parameter, &param);
+    try r.expect(&.{addr(&port)});
 }
 
 test "a type the walk cannot sort has no class" {
