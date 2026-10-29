@@ -12,7 +12,7 @@ const symbol = @import("symbol.zig");
 const printer = @import("printer.zig");
 const Heap = @import("heap.zig").Heap;
 
-pub const Error = std.Io.Writer.Error || error{OutOfMemory};
+pub const Error = printer.Error;
 
 /// A new node holding `n`, allocated with `alloc`.
 pub fn make(alloc: std.mem.Allocator, n: Node) error{OutOfMemory}!*const Node {
@@ -29,43 +29,43 @@ pub fn make(alloc: std.mem.Allocator, n: Node) error{OutOfMemory}!*const Node {
 /// ノードは再帰で書き、その深さはノードの木の深さに等しい。呼び出し側はテスト
 /// だけなので、深い入力はここでは問題にならない。プログラムの入力を受け取る
 /// 呼び出し側は、これを使ってはならない。
-pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, node: *const Node) Error!void {
+pub fn write(out: *std.Io.Writer, heap: *Heap, symbols: *const symbol.Table, node: *const Node) Error!void {
     switch (node.*) {
         .constant => |v| {
             try out.writeAll("(const ");
-            try printer.write(out, scratch, symbols, v);
+            try printer.print(out, heap, symbols, v, .write);
             try out.writeByte(')');
         },
         .local_ref => |r| try out.print("(local {s} {d} {d})", .{ symbols.nameOf(r.name), r.address.depth, r.address.index }),
         .global_ref => |cell| try out.print("(global {s})", .{symbols.nameOf(cell.name)}),
         .local_set => |a| {
             try out.print("(set-local {s} {d} {d} ", .{ symbols.nameOf(a.name), a.address.depth, a.address.index });
-            try write(out, scratch, symbols, a.value);
+            try write(out, heap, symbols, a.value);
             try out.writeByte(')');
         },
         .local_define => |a| {
             try out.print("(define-local {s} {d} {d} ", .{ symbols.nameOf(a.name), a.address.depth, a.address.index });
-            try write(out, scratch, symbols, a.value);
+            try write(out, heap, symbols, a.value);
             try out.writeByte(')');
         },
         .global_set => |a| {
             try out.print("(set-global {s} ", .{symbols.nameOf(a.cell.name)});
-            try write(out, scratch, symbols, a.value);
+            try write(out, heap, symbols, a.value);
             try out.writeByte(')');
         },
         .global_define => |a| {
             try out.print("(define-global {s} ", .{symbols.nameOf(a.cell.name)});
-            try write(out, scratch, symbols, a.value);
+            try write(out, heap, symbols, a.value);
             try out.writeByte(')');
         },
         .@"if" => |i| {
             try out.writeAll("(if ");
-            try write(out, scratch, symbols, i.condition);
+            try write(out, heap, symbols, i.condition);
             try out.writeByte(' ');
-            try write(out, scratch, symbols, i.consequent);
+            try write(out, heap, symbols, i.consequent);
             if (i.alternative) |alt| {
                 try out.writeByte(' ');
-                try write(out, scratch, symbols, alt);
+                try write(out, heap, symbols, alt);
             }
             try out.writeByte(')');
         },
@@ -73,32 +73,32 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
             try out.writeAll("(seq");
             for (nodes) |n| {
                 try out.writeByte(' ');
-                try write(out, scratch, symbols, n);
+                try write(out, heap, symbols, n);
             }
             try out.writeByte(')');
         },
-        .lambda => |l| try writeLambda(out, scratch, symbols, l),
+        .lambda => |l| try writeLambda(out, heap, symbols, l),
         // 本体は、引数の無い `lambda` と同じ書き方で、束縛のあとに続く。
         .parameterize => |p| {
             try out.writeAll("(parameterize (");
             for (p.bindings, 0..) |b, i| {
                 if (i != 0) try out.writeByte(' ');
                 try out.writeByte('(');
-                try write(out, scratch, symbols, b.param);
+                try write(out, heap, symbols, b.param);
                 try out.writeByte(' ');
-                try write(out, scratch, symbols, b.value);
+                try write(out, heap, symbols, b.value);
                 try out.writeByte(')');
             }
             try out.writeAll(") ");
-            try writeLambda(out, scratch, symbols, p.body);
+            try writeLambda(out, heap, symbols, p.body);
             try out.writeByte(')');
         },
         .call => |c| {
             try out.writeAll("(call ");
-            try write(out, scratch, symbols, c.operator);
+            try write(out, heap, symbols, c.operator);
             for (c.operands) |n| {
                 try out.writeByte(' ');
-                try write(out, scratch, symbols, n);
+                try write(out, heap, symbols, n);
             }
             try out.writeByte(')');
         },
@@ -107,13 +107,13 @@ pub fn write(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
 
 /// 余りの引数を受ける手続きは、必須の個数のあとに `rest` と書く。固定個の手続きの
 /// 書き方は変えない。
-fn writeLambda(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const symbol.Table, l: *const value_mod.Lambda) Error!void {
+fn writeLambda(out: *std.Io.Writer, heap: *Heap, symbols: *const symbol.Table, l: *const value_mod.Lambda) Error!void {
     if (l.rest) {
         try out.print("(lambda {d} rest {d} ", .{ l.arity, l.frame_size });
     } else {
         try out.print("(lambda {d} {d} ", .{ l.arity, l.frame_size });
     }
-    try write(out, scratch, symbols, l.body);
+    try write(out, heap, symbols, l.body);
     try out.writeByte(')');
 }
 
@@ -125,7 +125,10 @@ test {
 fn written(gpa: std.mem.Allocator, symbols: *const symbol.Table, node: *const Node) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    try write(&out.writer, gpa, symbols, node);
+    // 定数のデータを書くプリンタの作業領域を、このヒープに数える。
+    var heap: Heap = .init(gpa, .{});
+    defer heap.deinit();
+    try write(&out.writer, &heap, symbols, node);
     return out.toOwnedSlice();
 }
 

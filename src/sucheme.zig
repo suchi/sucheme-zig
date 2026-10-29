@@ -222,13 +222,14 @@ pub const Interpreter = struct {
     /// there is one, or what the failure is.
     /// 送出された値は、条件オブジェクトならメッセージと irritant を、それ以外は
     /// `write` の形で書く(docs/design/runtime.md の未処理例外)。リーダの失敗と
-    /// ホストの失敗は、ヒープに条件を作らずに説明する。`scratch` はプリンタの作業領域である。
-    fn keepDiagnostic(self: *Interpreter, scratch: std.mem.Allocator, e: Error) void {
+    /// ホストの失敗は、ヒープに条件を作らずに説明する。プリンタの作業領域は、ヒープの上限に
+    /// 数える確保で持つ(スライス 5j)ので、2つ目の引数は使わない。
+    fn keepDiagnostic(self: *Interpreter, _: std.mem.Allocator, e: Error) void {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
         const written = if (self.ctx.raised) |v| blk: {
             if (self.error_at) |at| w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column }) catch |failed| break :blk failed;
-            break :blk describeRaised(&w.writer, scratch, &self.ctx.heap.symbols, v);
+            break :blk describeRaised(&w.writer, &self.ctx.heap, v);
         } else w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
         self.diagnostic_text = if (written) |_| self.diagnostic_buffer.items else |_| "out of memory";
@@ -299,8 +300,8 @@ pub const Interpreter = struct {
             // 最上位の REPL は、複数値を受け取る(docs/design/runtime.md の複数値の表)。
             // 値を1行に1つずつ書き、0個なら何も書かない。
             if (v.asMultipleValues()) |multiple| {
-                for (multiple.items) |item| try self.printResult(out, arena, item);
-            } else try self.printResult(out, arena, v);
+                for (multiple.items) |item| try self.printResult(out, item);
+            } else try self.printResult(out, v);
         }
     }
 
@@ -320,9 +321,11 @@ pub const Interpreter = struct {
     /// 定義は何も出力しない。最上位の未規定値も表示しない。データの中の未規定値は、
     /// プリンタが `#<unspecified>` と書く。複数値の1つが未規定値のときも、1つの結果と
     /// して同じく表示しない。
-    fn printResult(self: *const Interpreter, out: *std.Io.Writer, arena: std.mem.Allocator, v: value.Value) Error!void {
+    /// 循環した結果も止まらずに書く(`write` の形。スライス 5j)。プリンタの作業領域が上限に
+    /// 収まらなければ、`HeapLimit` で、ヒープの上限の誤りになる。
+    fn printResult(self: *Interpreter, out: *std.Io.Writer, v: value.Value) Error!void {
         if (v.kind() == .unspecified) return;
-        try printer.write(out, arena, &self.ctx.heap.symbols, v);
+        try printer.print(out, &self.ctx.heap, &self.ctx.heap.symbols, v, .write);
         try out.writeByte('\n');
     }
 };
@@ -337,18 +340,20 @@ pub const Interpreter = struct {
 pub const shown_value_bytes = 128;
 
 /// Writes `v`, a value raised, as `diagnostic` shows it.
-/// 値の部分は `shown_value_bytes` までで切り、切ったら `...` を付ける。
-fn describeRaised(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, v: value.Value) printer.Error!void {
+/// 値の部分は `shown_value_bytes` までで切り、切ったら `...` を付ける。プリンタの作業領域が
+/// ヒープの上限に収まらないときも、そこまでで切る。上限の誤りの説明を書くときに、ヒープは
+/// 上限の際にあるからである。
+fn describeRaised(out: *std.Io.Writer, h: *heap.Heap, v: value.Value) printer.Error!void {
     var buf: [shown_value_bytes]u8 = undefined;
     var shown: std.Io.Writer = .fixed(&buf);
     const written = if (v.asCondition()) |c| blk: {
         // メッセージは文字列のはずだが、文字列でなくても panic せずに write の形で書く
         // (docs/design/runtime.md の未処理例外は、報告の経路で停止しないことを求める)。
-        if (c.message.asString()) |text| try out.writeAll(text.bytes) else break :blk printer.write(&shown, scratch, symbols, c.message);
-        break :blk writeIrritants(&shown, scratch, symbols, c.irritants);
-    } else printer.write(&shown, scratch, symbols, v);
+        if (c.message.asString()) |text| try out.writeAll(text.bytes) else break :blk printer.print(&shown, h, &h.symbols, c.message, .write);
+        break :blk writeIrritants(&shown, h, c.irritants);
+    } else printer.print(&shown, h, &h.symbols, v, .write);
     written catch |e| switch (e) {
-        error.WriteFailed => {
+        error.WriteFailed, error.HeapLimit => {
             try out.writeAll(wholeCharacters(shown.buffered()));
             return out.writeAll("...");
         },
@@ -388,11 +393,12 @@ pub fn errorLine(buf: []u8, message: []const u8) []const u8 {
 }
 
 /// Writes each of `irritants`, a list, after a space.
-fn writeIrritants(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const @import("symbol.zig").Table, irritants: value.Value) printer.Error!void {
+/// irritant のリストの cdr が循環していても、書き出す先が満杯になったところで止まる。
+fn writeIrritants(out: *std.Io.Writer, h: *heap.Heap, irritants: value.Value) printer.Error!void {
     var it = irritants;
     while (it.asPair()) |p| : (it = p.cdr) {
         try out.writeByte(' ');
-        try printer.write(out, scratch, symbols, p.car);
+        try printer.print(out, h, &h.symbols, p.car, .write);
     }
 }
 

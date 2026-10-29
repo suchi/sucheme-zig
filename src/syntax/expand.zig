@@ -1314,7 +1314,7 @@ const Fixture = struct {
         const form = try self.read(src);
         const node = try expandWith(&self.ctx, self.arena.allocator(), form, limits);
         var out: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try core.write(&out.writer, self.arena.allocator(), &self.ctx.heap.symbols, node);
+        try core.write(&out.writer, &self.ctx.heap, &self.ctx.heap.symbols, node);
         return out.written();
     }
 
@@ -1833,10 +1833,10 @@ test "the name a local variable node holds stays the name after a collection tha
     var buf: [16]u8 = undefined;
     for (0..32) |i| _ = try f.ctx.intern(std.fmt.bufPrint(&buf, "other-{d}", .{i}) catch unreachable);
     var out: std.Io.Writer.Allocating = .init(a);
-    try core.write(&out.writer, a, &f.ctx.heap.symbols, read_node);
+    try core.write(&out.writer, &f.ctx.heap, &f.ctx.heap.symbols, read_node);
     try std.testing.expectEqualStrings("(lambda 1 1 (local zr 0 0))", out.written());
     out.clearRetainingCapacity();
-    try core.write(&out.writer, a, &f.ctx.heap.symbols, set_node);
+    try core.write(&out.writer, &f.ctx.heap, &f.ctx.heap.symbols, set_node);
     try std.testing.expectEqualStrings("(lambda 1 1 (set-local zs 0 0 (const 1)))", out.written());
 }
 
@@ -2023,7 +2023,7 @@ test "quote gives an alias back as its symbol, and keeps the shared structure sh
     const datum = try h.cons(shared, try h.cons(shared, try h.cons(try testAlias(&f, "tmp"), .empty_list_value)));
     const c = (try quoted(&f, datum)).constant;
     var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
-    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.heap.symbols, c);
+    try @import("../printer.zig").print(&out.writer, &f.ctx.heap, &f.ctx.heap.symbols, c, .write);
     try std.testing.expectEqualStrings("((1 tmp) (1 tmp) tmp)", out.written());
     const first = c.asPair().?.car.asPair().?;
     const second = c.asPair().?.cdr.asPair().?.car.asPair().?;

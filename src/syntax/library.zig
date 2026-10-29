@@ -168,7 +168,7 @@ fn itemsOf(ctx: *Context, scratch: std.mem.Allocator, form: Value, comptime what
 /// The text of the library name `name`, as `write` shows it.
 fn nameText(ctx: *Context, scratch: std.mem.Allocator, name: Value) Error![]const u8 {
     var out: std.Io.Writer.Allocating = .init(scratch);
-    printer.write(&out.writer, scratch, &ctx.heap.symbols, name) catch return error.OutOfMemory;
+    printer.print(&out.writer, &ctx.heap, &ctx.heap.symbols, name, .write) catch return error.OutOfMemory;
     return out.written();
 }
 
@@ -752,7 +752,7 @@ const Fixture = struct {
 
     fn text(self: *Fixture, node: *const value_mod.Node) ![]const u8 {
         var out: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try core.write(&out.writer, self.arena.allocator(), &self.ctx.heap.symbols, node);
+        try core.write(&out.writer, &self.ctx.heap, &self.ctx.heap.symbols, node);
         return out.written();
     }
 
@@ -850,7 +850,7 @@ test "the forms being processed and the bindings of a library survive a collecti
     f.ctx.collectIdle();
     // 作業中の形式は、読んだペアのまま残る。セルの値も残る。
     var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
-    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.heap.symbols, form);
+    try @import("../printer.zig").print(&out.writer, &f.ctx.heap, &f.ctx.heap.symbols, form, .write);
     try std.testing.expectEqualStrings("(define-library (t a) (export))", out.written());
     try std.testing.expectEqual(1, table.lookup(x).?.denotation.global.value.asPair().?.car.asFixnum().?);
     // 作業中の形式を手放すと、それは回収される。
@@ -910,7 +910,7 @@ test "a macro defined in a library reads its ellipsis and underscore by the libr
     defer work.deinit();
     const output = try @import("rules.zig").transform(&f.ctx, &work, m.macro, use, null);
     var out: std.Io.Writer.Allocating = .init(f.arena.allocator());
-    try @import("../printer.zig").write(&out.writer, f.arena.allocator(), &f.ctx.heap.symbols, output);
+    try @import("../printer.zig").print(&out.writer, &f.ctx.heap, &f.ctx.heap.symbols, output, .write);
     // テンプレートの `quote` は別名なので、`(quote (1 2))` の形で出る。
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "(1 2)") != null);
 }

@@ -953,7 +953,10 @@ fn isDecimalInteger(token: []const u8) bool {
 // <initial> に <subsequent> が続くものか、<peculiar identifier> である。整数は、
 // これを尋ねる前に判別してあり、識別子の形をした数(`+inf.0`、`+i`)は、
 // `atom` が先に `num.parse` で数として読む。
-fn isIdentifier(token: []const u8) bool {
+/// Whether `read` reads `token`, written without vertical lines, as an identifier
+/// (unless it is a number). `token` is not empty.
+/// プリンタ(src/printer.zig)が、シンボルを縦棒で囲むかを決めるのにも使う(スライス 5j)。
+pub fn isIdentifier(token: []const u8) bool {
     if (isInitial(token[0])) return allSubsequent(token[1..]);
     // <peculiar identifier>
     var rest = token;
@@ -1025,7 +1028,7 @@ const Fixture = struct {
     fn roundTrip(self: *Fixture, src: []const u8, buf: []u8) ![]const u8 {
         const d = try self.readOne(src);
         var w: std.Io.Writer = .fixed(buf);
-        try printer.write(&w, std.testing.allocator, &self.heap.symbols, d);
+        try printer.print(&w, &self.heap, &self.heap.symbols, d, .write);
         return w.buffered();
     }
 };
@@ -2235,22 +2238,19 @@ fn fuzzReadAll(gpa: std.mem.Allocator, src: []const u8) !void {
         // `InvalidUtf8` になる。src/string_syntax.zig)。`createString` の assert は
         // ReleaseFast では消えるので、その最適化でもこの性質を見る。
         try std.testing.expect(stringsAreUtf8(gpa, datum) catch return);
-        // Why: 今のプリンタは循環を検出せず(プリンタのスライス 5j で直す)、共有はたどるたびに
-        // 書くので、データラベルのあるデータの書き出しは止まらないか、入力より桁違いに長くなる。
+        // Why: `write` は循環にだけラベルを付け(スライス 5j)、循環でない共有はたどるたびに
+        // 書くので、データラベルのあるデータの書き出しは、入力より桁違いに長くなりうる。
         // 書き出す先を入力の大きさに比例する長さで切り、ラベルが無ければ収まることを見る。
         // ラベルの無いデータでは、1バイトの入力が最も長く書かれるのは `'` の `(quote ` と `)` で、
         // 16 倍に収まる。
         var printed: [16 * fuzz_max_input + 64]u8 = undefined;
         var sunk: std.Io.Writer = .fixed(&printed);
-        printer.write(&sunk, gpa, &heap.symbols, datum) catch |err| switch (err) {
-            error.OutOfMemory => return,
+        printer.print(&sunk, &heap, &heap.symbols, datum, .write) catch |err| switch (err) {
+            error.OutOfMemory, error.HeapLimit => return,
             error.WriteFailed => if (std.mem.indexOfScalar(u8, src, '=') != null) return else return error.TestUnexpectedResult,
         };
-        // Why: 名前が空のシンボル(`||`)だけは、今のプリンタが何も書かない。縦棒を付けて
-        // 書き出すのはプリンタのスライス 5j(docs/plans/0019-phase5-ports-and-io.md)で、
-        // そこでこの例外を外す。`(string->symbol "")` でも同じ値ができ、5b の前からある。
-        const empty_symbol = if (datum.asSymbol()) |id| heap.symbols.nameOf(id).len == 0 else false;
-        try std.testing.expect(sunk.end > 0 or empty_symbol);
+        // 名前が空のシンボルも `||` と書くので、書き出しは空でない。
+        try std.testing.expect(sunk.end > 0);
     }
 }
 
