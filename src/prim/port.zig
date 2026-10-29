@@ -958,6 +958,23 @@ test "write, write-shared and write-simple write to the port in their forms, and
     }
 }
 
+test "write-simple writes no label for a cycle, and runs into the limit where write stops" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const c = try f.heap.cons(fix(1), .empty_list_value);
+    c.asPair().?.cdr = c;
+    const p = try call(&f, "open-output-string", &.{});
+    // 文字列ポートの領域が伸び続けるので、上限で止まる。
+    const limit = f.heap.options.limit;
+    f.heap.options.limit = f.heap.held() + 64 * 1024;
+    try std.testing.expectError(error.HeapLimit, call(&f, "write-simple", &.{ c, p }));
+    f.heap.options.limit = limit;
+    const q = try call(&f, "open-output-string", &.{});
+    _ = try call(&f, "write", &.{ c, q });
+    try expectString("#0=(1 . #0#)", try call(&f, "get-output-string", &.{q}));
+}
+
 test "write fails with HeapLimit when the printer's table does not fit in the heap" {
     var f: test_support.Fixture = undefined;
     f.init();

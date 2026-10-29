@@ -944,11 +944,13 @@ test "write puts a symbol between vertical lines when read would not read its na
         .{ .name = "1", .written = "|1|" },
         .{ .name = "-2.5", .written = "|-2.5|" },
         .{ .name = "+i", .written = "|+i|" },
+        .{ .name = "-i", .written = "|-i|" },
         .{ .name = "-inf.0", .written = "|-inf.0|" },
         .{ .name = "#x10", .written = "|#x10|" },
         // <infnan> の綴りで始まる名前(準拠スイートに合わせる)。
         .{ .name = "+NaN.0abc", .written = "|+NaN.0abc|" },
         .{ .name = "-inf.0x", .written = "|-inf.0x|" },
+        .{ .name = "+INF.0x", .written = "|+INF.0x|" },
         .{ .name = "+inf", .written = "+inf" },
         .{ .name = "+nan.", .written = "+nan." },
         // 縦棒の要らない名前。<peculiar identifier> も含む。
@@ -990,6 +992,8 @@ test "print fails with HeapLimit when its table does not fit in the heap, and gi
     var items: [32]Value = undefined;
     for (&items, 0..) |*item, i| item.* = .fromFixnum(@intCast(i));
     const l = try f.list(&items, .empty_list_value);
+    const s = try f.string("s");
+    const a = try f.sym("a");
     f.heap.options.limit = f.heap.held() + 16;
     f.heap.external_refused = true;
     var w: std.Io.Writer = .fixed(&buf);
@@ -999,8 +1003,39 @@ test "print fails with HeapLimit when its table does not fit in the heap, and gi
     try std.testing.expect(f.heap.external_refused);
     // ラベルを付けない形も、作業スタックを上限に数える。
     try std.testing.expectError(error.HeapLimit, print(&w, &f.heap, &f.heap.symbols, l, .simple));
-    // アトムは表も作業スタックも使わない。
+    // アトムは表も作業スタックも使わない。上限の際でも書け、呼び出し側の印も戻す。
+    f.heap.options.limit = f.heap.held();
     w = .fixed(&buf);
     try print(&w, &f.heap, &f.heap.symbols, .fromFixnum(7), .write);
-    try std.testing.expectEqualStrings("7", w.buffered());
+    try print(&w, &f.heap, &f.heap.symbols, s, .write);
+    try print(&w, &f.heap, &f.heap.symbols, .fromCharacter('c'), .write);
+    try print(&w, &f.heap, &f.heap.symbols, a, .write);
+    try std.testing.expectEqualStrings("7\"s\"#\\ca", w.buffered());
+    try std.testing.expect(f.heap.external_refused);
+}
+
+test "print tells the host's memory running out from the limit, whatever its caller had marked" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    const l = try heap.cons(.fromFixnum(1), .empty_list_value);
+    // 次の確保から、ホストが断る。上限は断っていない。
+    failing.fail_index = failing.alloc_index;
+    heap.external_refused = true;
+    var buf: [16]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.OutOfMemory, print(&w, &heap, &heap.symbols, l, .write));
+    try std.testing.expect(heap.external_refused);
+}
+
+test "write labels the pair it reaches first by the car before the cdr, and a vector's items in order" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    // a = ((a)) のように、a の car が b で、b の car が a である。
+    const a = try f.list(&.{.fromBool(false)}, .empty_list_value);
+    const b = try f.list(&.{a}, .empty_list_value);
+    a.asPair().?.car = b;
+    try std.testing.expectEqualStrings("(#0=((#0#)) #0#)", try f.written(&buf, try f.cons(a, b)));
+    try std.testing.expectEqualStrings("#(#0=((#0#)) (#0#))", try f.written(&buf, try f.vector(&.{ a, b })));
 }
