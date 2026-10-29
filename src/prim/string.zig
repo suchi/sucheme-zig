@@ -16,8 +16,7 @@
 //! 走らない(ADR-0031)ので、1回の呼び出しの確保は、その間に回収されない。確保する量が
 //! 入力に比例するこの性質は、`list` や `vector` の個数に比例する確保と同じである。
 //!
-//! 大文字小文字を畳み込む手続き(`string-ci=?` `string-upcase` など)は、Unicode の表が入る
-//! 段階4で足す。
+//! 大文字小文字を畳み込む手続き(`string-ci=?` `string-upcase` など)は `string_case.zig` にある。
 
 const std = @import("std");
 const value = @import("../value.zig");
