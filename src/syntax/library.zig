@@ -783,6 +783,20 @@ test "the name of a library is the same as another's when the elements are the s
     try std.testing.expect(!sameName(try f.read("(foo)"), try f.read("(Foo)")));
 }
 
+test "the text of a library name that does not fit in the heap is told as the limit" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const name = try f.read("(foo bar 1)");
+    f.ctx.heap.options.limit = f.ctx.heap.held() + 16;
+    f.ctx.heap.external_refused = false;
+    try std.testing.expectError(error.OutOfMemory, nameText(&f.ctx, f.arena.allocator(), name));
+    // 上限で断られたことが残るので、入口の `limitFailure` が上限の誤りにする。
+    try std.testing.expect(f.ctx.heap.external_refused);
+    try std.testing.expectEqual(error.Raised, f.ctx.limitFailure(error.OutOfMemory));
+    try std.testing.expectEqualStrings(context.heap_limit_message, f.ctx.diagnostic());
+}
+
 test "a library that begins is registered in the state loading, with the environment of its body" {
     var f: Fixture = undefined;
     try f.init();
