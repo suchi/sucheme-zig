@@ -1224,7 +1224,7 @@ test "max and min compare exactly, and give an inexact result when an argument i
     try expectExtreme(&h, .min, &.{ "1", "2.0" }, "1.0");
     try expectExtreme(&h, .min, &.{ "3", "2.0" }, "2.0");
     try expectExtreme(&h, .max, &.{ "18446744073709551616", "5" }, "18446744073709551616");
-    try expectExtreme(&h, .max, &.{ "18446744073709551616", "1e30" }, "1.0e30");
+    try expectExtreme(&h, .max, &.{ "18446744073709551616", "1e30" }, "1.0e+30");
     try expectExtreme(&h, .max, &.{ "-inf.0", "-5" }, "-5.0");
     try expectExtreme(&h, .min, &.{ "+inf.0", "5" }, "5.0");
     // 正確な比較: 2^53 + 1 は 2^53.0 より大きい。

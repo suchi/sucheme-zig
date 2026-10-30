@@ -639,8 +639,8 @@ test "the remainders take their sign from the dividend or from the divisor" {
 
 test "a floor remainder that a flonum cannot hold is rounded" {
     // 真の値 1e25 - 5 は flonum で表せないので、補正した余りは 1e25 に丸まる。
-    try expectCall("1.0e25", "modulo", &.{ "-5", "1e25" });
-    try expectCall("-1.0e25", "modulo", &.{ "5", "-1e25" });
+    try expectCall("1.0e+25", "modulo", &.{ "-5", "1e25" });
+    try expectCall("-1.0e+25", "modulo", &.{ "5", "-1e25" });
     // 結果が除数と等しくなる(0 <= r < |d| に反する)。
     try expectCall("18446744073709552000.0", "modulo", &.{ "-5.0", "18446744073709551616" });
     // truncate 系の余りは、この場合も正確である。
