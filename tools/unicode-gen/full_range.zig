@@ -92,7 +92,65 @@ test "every code point agrees with the parsed UCD: digit values" {
     }
 }
 
+/// 期待値の元になる一般カテゴリを、生成器の読み方(ucd.zig)を使わずに UnicodeData.txt から取り直す。
+/// 範囲の行(First と Last)は、間の符号位置の全部にカテゴリを広げる。
+fn readCategories(arena: std.mem.Allocator) ![]const [2]u8 {
+    const gc = try arena.alloc([2]u8, ucd.code_point_count);
+    @memset(gc, .{ 'C', 'n' }); // 載っていない符号位置は Cn(未割り当て)
+    var first: ?usize = null;
+    var lines = std.mem.splitScalar(u8, real_data.inputs.unicode_data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var it = std.mem.splitScalar(u8, line, ';');
+        const cp = try std.fmt.parseInt(usize, it.next().?, 16);
+        const name = it.next().?;
+        const cat = it.next().?;
+        gc[cp] = .{ cat[0], cat[1] };
+        if (std.mem.endsWith(u8, name, ", First>")) {
+            first = cp;
+        } else if (std.mem.endsWith(u8, name, ", Last>")) {
+            for (first.?..cp) |i| gc[i] = .{ cat[0], cat[1] };
+            first = null;
+        }
+    }
+    return gc;
+}
+
+test "every code point agrees with the general category: identifier bits (R7RS 7.1.1)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const gc = try readCategories(arena_state.allocator());
+
+    // <subsequent> に入る一般カテゴリ。最初の文字は、このうち Nd, Mc, Me を除く。
+    const allowed = "Lu Ll Lt Lm Lo Mn Mc Me Nd Nl No Pd Pc Po Sc Sm Sk So Co";
+    var allowed_count: usize = 0;
+    for (0..ucd.code_point_count) |i| {
+        const c: u21 = @intCast(i);
+        errdefer std.debug.print("at U+{X:0>4}\n", .{c});
+        var subsequent = std.mem.indexOf(u8, allowed, &gc[i]) != null;
+        var initial = subsequent and !std.mem.eql(u8, &gc[i], "Nd") and !std.mem.eql(u8, &gc[i], "Mc") and
+            !std.mem.eql(u8, &gc[i], "Me");
+        if (c == 0x200C or c == 0x200D) {
+            subsequent = true;
+            initial = true;
+        }
+        if (c < 0x80) {
+            subsequent = false;
+            initial = false;
+        }
+        if (subsequent) allowed_count += 1;
+        try std.testing.expectEqual(initial, props.isIdentifierInitial(c));
+        try std.testing.expectEqual(subsequent, props.isIdentifierSubsequent(c));
+    }
+    // 期待値の計算が空振りしていない(全部 false の比較で緑にならない)。
+    try std.testing.expect(allowed_count > 100_000);
+}
+
 test "code points above U+10FFFF have no property and no mapping" {
+    try std.testing.expect(!props.isIdentifierInitial(0x110000));
+    try std.testing.expect(!props.isIdentifierSubsequent(0x110000));
+    try std.testing.expect(!props.isIdentifierInitial(0x1FFFFF));
+    try std.testing.expect(!props.isIdentifierSubsequent(0x1FFFFF));
     const samples = [_]u21{ 0x110000, 0x110001, 0x1FFFFF, 0x1FFF80, 0x180000 };
     for (samples) |c| {
         for (std.enums.values(props.Property)) |p| try std.testing.expect(!props.has(c, p));
