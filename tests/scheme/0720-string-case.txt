@@ -1,0 +1,144 @@
+# Slice 4u3: the string procedures of `(scheme char)` (R7RS 6.7).
+# 完全な大文字小文字の写像は文字数を変える。語末のシグマは扱わない(R7RS 6.7 が、扱わなくて
+# よいとしている。`string-downcase` は Σ をいつも σ にする)。
+
+# 8個の文字列の識別子がすべて `(scheme char)` から入る。
+(import (only (scheme char) string-upcase string-downcase string-foldcase string-ci=? string-ci<? string-ci>? string-ci<=? string-ci>=?)) (string-upcase "abc")
+"ABC"
+
+# `(scheme base)` は、これらを持たない。
+(import (only (scheme base) string-upcase))
+error: bad import: string-upcase is not exported by the import set
+
+(import (only (scheme base) string-ci=?))
+error: bad import: string-ci=? is not exported by the import set
+
+# 大文字にする。
+(import (scheme char)) (list (string-upcase "") (string-upcase "abc dEf 123!") (string-upcase "ABC"))
+("" "ABC DEF 123!" "ABC")
+
+# ß の大文字は SS で、文字列が長くなる。
+(import (scheme char)) (let ((s (string-upcase "straße"))) (list s (string-length s)))
+("STRASSE" 7)
+
+(import (scheme char)) (string-length (string-upcase "ßßß"))
+6
+
+# 結果が3文字になる文字、合字、幅の違う文字が混ざった文字列。
+(import (scheme char)) (map char->integer (string->list (string-upcase "\x390;")))
+(921 776 769)
+
+(import (scheme char)) (map char->integer (string->list (string-upcase "\xFB03;")))
+(70 70 73)
+
+(import (scheme char)) (string-upcase "aλ\x10428;")
+"AΛ𐐀"
+
+# 小文字にする。語末のシグマは、いつも σ になる。
+(import (scheme char)) (list (string-downcase "ABC dEf") (string-downcase "ΧΑΟΣ") (string-downcase "Σ ΣΣ") (string-downcase "χαος"))
+("abc def" "χαοσ" "σ σσ" "χαος")
+
+# İ の小文字は i と結合文字 U+0307 の2文字になる。
+(import (scheme char)) (let ((s (string-downcase "\x130;"))) (list (string-length s) (map char->integer (string->list s))))
+(2 (105 775))
+
+# 大文字小文字を畳み込む。
+(import (scheme char)) (list (string-foldcase "Straße") (string-foldcase "STRASSE") (string-foldcase "ΣΑΣ") (string-foldcase "σας"))
+("strasse" "strasse" "σασ" "σασ")
+
+(import (scheme char)) (list (string-length (string-foldcase "\x1E9E;")) (string-foldcase "\xFB00;") (string-foldcase ""))
+(2 "ff" "")
+
+# 結果は新しい文字列で、書き換えられる。元の文字列は、定数でも変わらない。
+(import (scheme char)) (let ((s (string-upcase "abc"))) (string-set! s 0 #\x) s)
+"xBC"
+
+(import (scheme char)) (let* ((c "abc") (u (string-upcase c))) (list c u (eq? c u)))
+("abc" "ABC" #f)
+
+(import (scheme char)) (let* ((c "ABC") (u (string-upcase c))) (string-set! u 0 #\x) (list c u))
+("ABC" "xBC")
+
+(import (scheme char)) (let ((s (make-string 3 #\a))) (string-downcase s) (string-set! s 0 #\b) s)
+"baa"
+
+# 長い文字列。幅が増える文字を並べる。
+(import (scheme char)) (let ((s (string-upcase (make-string 1000 #\ß)))) (list (string-length s) (string-ref s 0) (string-ref s 1999)))
+(2000 #\S #\S)
+
+# 「Aß」は畳み込むと「ass」の3文字になる。
+(import (scheme char)) (let loop ((i 0) (s "")) (if (= i 500) (list (string-length s) (string-length (string-foldcase s))) (loop (+ i 1) (string-append s "Aß"))))
+(1000 1500)
+
+# 大文字小文字を区別しない比較。
+(import (scheme char)) (list (string-ci=? "abc" "ABC" "aBc") (string=? "abc" "ABC") (string-ci=? "abc" "abd") (string-ci=? "" ""))
+(#t #f #f #t)
+
+# 長さが違えば等しくない。畳み込んだ結果で比べるので、ß は ss と等しい。
+(import (scheme char)) (list (string-ci=? "abc" "abcd") (string-ci=? "Straße" "STRASSE" "strasse") (string-ci=? "ΣΑΣ" "σας" "σασ"))
+(#f #t #t)
+
+# 畳み込んだ文字列が途中で分かれる。
+(import (scheme char)) (list (string-ci=? "ß" "s") (string-ci>? "ß" "s") (string-ci<? "ß" "st") (string-ci<? "s" "ß"))
+(#f #t #t #t)
+
+# 順序は、畳み込んだ文字のコードポイントの順で、短いほうが小さい。
+(import (scheme char)) (list (string-ci<? "a" "B") (string-ci<? "Abc" "abd") (string-ci<? "ab" "ABC") (string-ci<? "" "a") (string-ci<? "abc" "ABC"))
+(#t #t #t #t #f)
+
+(import (scheme char)) (list (string-ci>? "B" "a") (string-ci>? "ABC" "ab") (string-ci>? "a" "") (string-ci>? "abc" "ABC"))
+(#t #t #t #f)
+
+# '_' は 'A' と 'a' の間にある。畳み込むと、'A' は '_' より後になる。
+(import (scheme char)) (list (string<? "A" "_") (string-ci<? "A" "_") (string-ci>? "A" "_") (string-ci<? "z" "Ω") (string-ci<? "Σ" "ω"))
+(#t #f #t #t #t)
+
+(import (scheme char)) (list (string-ci<=? "a" "A" "b" "B") (string-ci<=? "a" "C" "b") (string-ci>=? "D" "c" "C" "a") (string-ci>=? "a" "b"))
+(#t #f #t #f)
+
+(import (scheme char)) (list (string-ci=? "a") (string-ci<? "a") (string-ci>? "a") (string-ci<=? "a") (string-ci>=? "a"))
+(#t #t #t #t #t)
+
+# 畳み込んだ文字列が等しい組は、狭い順序(<、>)を満たさず、広い順序(<=、>=)と等しさを満たす。
+(import (scheme char)) (list (string-ci<? "a" "A") (string-ci>? "a" "A") (string-ci<? "ΣΑΣ" "σας") (string-ci>? "σας" "ΣΑΣ"))
+(#f #f #f #f)
+
+(import (scheme char)) (list (string-ci<=? "a" "A") (string-ci>=? "a" "A") (string-ci<=? "ΣΑΣ" "σας") (string-ci>=? "σας" "ΣΑΣ") (string-ci=? "ΣΑΣ" "σας"))
+(#t #t #t #t #t)
+
+# 成り立たない組のあとに、成り立つ組が来る。最後の組だけでは決まらない。
+(import (scheme char)) (list (string-ci<? "b" "a" "c") (string-ci=? "a" "b" "b") (string-ci>? "a" "b" "a") (string-ci<=? "b" "a" "c") (string-ci>=? "a" "b" "a"))
+(#f #f #f #f #f)
+
+# 畳み込みが3文字になる文字(U+FB03 の合字 ffi)。
+(import (scheme char)) (list (string-foldcase "\xFB03;") (string-length (string-foldcase "\xFB03;")) (string-ci=? "\xFB03;" "ffi") (string-ci=? "\xFB03;" "ff") (string-ci=? "\xFB03;" "ffij"))
+("ffi" 3 #t #f #f)
+
+(import (scheme char)) (list (string-ci<? "ff" "\xFB03;") (string-ci>? "\xFB03;" "ff") (string-ci<? "\xFB03;" "ffj") (string-ci>? "ffj" "\xFB03;"))
+(#t #t #t #t)
+
+# 文字列でない引数は誤りである。最初の組が成り立たなくても、後ろの引数まで検査される。
+(import (scheme char)) (string-upcase #\a)
+error: wrong type of argument to string-upcase #\a
+
+(import (scheme char)) (string-downcase 'abc)
+error: wrong type of argument to string-downcase abc
+
+(import (scheme char)) (string-foldcase 3)
+error: wrong type of argument to string-foldcase 3
+
+(import (scheme char)) (string-ci=? "a" 97)
+error: wrong type of argument to string-ci=? "a" 97
+
+(import (scheme char)) (string-ci<? "b" "a" "a" #t)
+error: wrong type of argument to string-ci<? "b" "a" "a" #t
+
+# 引数の数。
+(import (scheme char)) (string-upcase)
+error: wrong number of arguments to string-upcase
+
+(import (scheme char)) (string-upcase "a" "b")
+error: wrong number of arguments to string-upcase "a" "b"
+
+(import (scheme char)) (string-ci=?)
+error: wrong number of arguments to string-ci=?

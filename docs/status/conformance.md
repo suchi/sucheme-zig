@@ -10,7 +10,7 @@
 | --- | ---: | ---: |
 | `(scheme base)` | 238 | 238 |
 | `(scheme case-lambda)` | 1 | 1 |
-| `(scheme char)` | 0 | 22 |
+| `(scheme char)` | 22 | 22 |
 | `(scheme complex)` | 6 | 6 |
 | `(scheme cxr)` | 24 | 24 |
 | `(scheme eval)` | 0 | 2 |
@@ -24,7 +24,7 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 1 | 4 |
-| 一意の識別子の合計 | 287 | 339 |
+| 一意の識別子の合計 | 309 | 339 |
 
 ## 準拠スイートの結果
 
@@ -42,19 +42,19 @@
 | 6.1 Equivalence Predicates | 25 | 0 | 0 | 0 | 0 | 0 |
 | 6.2 Numbers | 202 | 17 | 0 | 0 | 0 | 0 |
 | 6.3 Booleans | 18 | 0 | 0 | 0 | 0 | 0 |
-| 6.4 Lists | 64 | 0 | 0 | 0 | 1 | 0 |
+| 6.4 Lists | 65 | 0 | 0 | 0 | 0 | 0 |
 | 6.5 Symbols | 17 | 0 | 0 | 0 | 0 | 0 |
-| 6.6 Characters | 20 | 0 | 0 | 0 | 59 | 0 |
-| 6.7 Strings | 78 | 0 | 0 | 0 | 52 | 0 |
+| 6.6 Characters | 79 | 0 | 0 | 0 | 0 | 0 |
+| 6.7 Strings | 130 | 0 | 0 | 0 | 0 | 0 |
 | 6.8 Vectors | 43 | 0 | 0 | 0 | 0 | 0 |
 | 6.9 Bytevectors | 39 | 0 | 0 | 0 | 0 | 0 |
-| 6.10 Control Features | 31 | 0 | 0 | 0 | 3 | 0 |
+| 6.10 Control Features | 33 | 0 | 0 | 0 | 1 | 0 |
 | 6.11 Exceptions | 19 | 0 | 0 | 0 | 5 | 4 |
 | 6.12 Environments and evaluation | 0 | 0 | 0 | 0 | 4 | 0 |
 | 6.13 Input and output | 56 | 0 | 0 | 0 | 7 | 0 |
 | Read syntax | 0 | 0 | 0 | 0 | 68 | 28 |
 | Numeric syntax | 0 | 0 | 0 | 0 | 2 | 110 |
 | 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
-| 合計 | 755 | 18 | 0 | 0 | 211 | 142 |
+| 合計 | 869 | 18 | 0 | 0 | 97 | 142 |
 
-スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme char)` `(scheme time)` `(scheme file)` `(scheme read)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
+スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme time)` `(scheme file)` `(scheme read)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`

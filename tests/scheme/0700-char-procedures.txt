@@ -1,0 +1,151 @@
+# Slice 4u3: the character procedures of `(scheme char)` (R7RS 6.6).
+# 表は Unicode 18.0.0 の UCD から作る(`tools/unicode-gen`)。期待値は、R7RS の例と、
+# Unicode の定義から選んだ符号位置である。
+
+# 14個の文字の識別子がすべて `(scheme char)` から入る。
+(import (only (scheme char) char-alphabetic? char-numeric? char-whitespace? char-upper-case? char-lower-case? digit-value char-upcase char-downcase char-foldcase char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?)) (char-upcase #\a)
+#\A
+
+# `(scheme base)` は、これらを持たない。
+(import (only (scheme base) char-upcase))
+error: bad import: char-upcase is not exported by the import set
+
+(import (only (scheme base) digit-value))
+error: bad import: digit-value is not exported by the import set
+
+# R7RS 6.6 の例: digit-value。
+(import (scheme char)) (list (digit-value #\3) (digit-value #\x0664) (digit-value #\x0AE6) (digit-value #\x0EA6))
+(3 4 0 #f)
+
+# 十進数字の並びの端。数字の隣の文字は数字ではない。
+(import (scheme char)) (list (digit-value #\0) (digit-value #\9) (digit-value #\/) (digit-value #\:))
+(0 9 #f #f)
+
+(import (scheme char)) (list (digit-value #\x1D7CE) (digit-value #\x1D7FF) (digit-value #\xFF19) (digit-value #\x1FBF9) (digit-value #\x1FBFA))
+(0 9 9 9 #f)
+
+# Nd でない数は、char-numeric? も digit-value も受けつけない。
+(import (scheme char)) (list (char-numeric? #\x00B2) (char-numeric? #\x00BD) (char-numeric? #\x2160) (digit-value #\x00B2) (digit-value #\x2160))
+(#f #f #f #f #f)
+
+(import (scheme char)) (list (char-numeric? #\3) (char-numeric? #\x0664) (char-numeric? #\xFF10) (char-numeric? #\a))
+(#t #t #t #f)
+
+# R7RS 6.6: ギリシャ文字のアルファは Alphabetic で、小文字である。
+(import (scheme char)) (list (char-alphabetic? #\x03B1) (char-lower-case? #\x03B1) (char-upper-case? #\x03B1))
+(#t #t #f)
+
+(import (scheme char)) (list (char-alphabetic? #\A) (char-alphabetic? #\z) (char-alphabetic? #\3) (char-alphabetic? #\space) (char-alphabetic? #\!))
+(#t #t #f #f #f)
+
+# 大文字と小文字。
+(import (scheme char)) (list (char-upper-case? #\A) (char-upper-case? #\a) (char-lower-case? #\a) (char-lower-case? #\A) (char-upper-case? #\3) (char-lower-case? #\3))
+(#t #f #t #f #f #f)
+
+# 文字だが、大文字でも小文字でもない文字(R7RS 6.6)。ひらがなと、二重字の Lt。
+(import (scheme char)) (list (char-alphabetic? #\x3042) (char-upper-case? #\x3042) (char-lower-case? #\x3042))
+(#t #f #f)
+
+(import (scheme char)) (list (char-alphabetic? #\x01C5) (char-upper-case? #\x01C5) (char-lower-case? #\x01C5))
+(#t #f #f)
+
+# Other_Lowercase と Other_Uppercase で大文字、小文字になる文字。
+(import (scheme char)) (list (char-lower-case? #\x00AA) (char-upper-case? #\x2160))
+(#t #t)
+
+# 空白。White_Space の端と外。
+(import (scheme char)) (list (char-whitespace? #\space) (char-whitespace? #\tab) (char-whitespace? #\newline) (char-whitespace? #\return) (char-whitespace? #\a))
+(#t #t #t #t #f)
+
+(import (scheme char)) (list (char-whitespace? #\x0085) (char-whitespace? #\x00A0) (char-whitespace? #\x2028) (char-whitespace? #\x3000) (char-whitespace? #\x200B) (char-whitespace? #\x180E))
+(#t #t #t #t #f #f)
+
+(import (scheme char)) (list (char-whitespace? #\x0008) (char-whitespace? #\x000E) (char-whitespace? #\null) (char-whitespace? #\x10FFFF))
+(#f #f #f #f)
+
+# 写像。
+(import (scheme char)) (list (char-upcase #\a) (char-upcase #\A) (char-upcase #\3) (char-downcase #\A) (char-downcase #\a) (char-downcase #\!))
+(#\A #\A #\3 #\a #\a #\!)
+
+# 印字は ASCII の外の文字をそのまま書くので、以下の結果は `char->integer` の値(十進数)
+# で比べる。コメントに十六進数を添える。
+(import (scheme char)) (map char->integer (list (char-upcase #\x03B1) (char-downcase #\x0391) (char-upcase #\x0436) (char-downcase #\x0416)))
+(913 945 1046 1078)
+# 913 = #x391, 945 = #x3B1, 1046 = #x416, 1078 = #x436
+
+# 単純写像を持たない文字は、そのまま返る。ß に単純な大文字は無い。
+(import (scheme char)) (map char->integer (list (char-upcase #\x00DF) (char-upcase #\x3042) (char-downcase #\x3042)))
+(223 12354 12354)
+# 223 = #xDF, 12354 = #x3042
+
+# 語末のシグマ。大文字と畳み込みでシグマに戻る。小文字は小文字のまま。
+(import (scheme char)) (map char->integer (list (char-upcase #\x03C2) (char-foldcase #\x03C2) (char-downcase #\x03C2) (char-downcase #\x03A3)))
+(931 963 962 963)
+# 931 = #x3A3, 963 = #x3C3, 962 = #x3C2
+
+# İ の単純な小文字は i。単純な畳み込みは無い。
+(import (scheme char)) (map char->integer (list (char-downcase #\x0130) (char-foldcase #\x0130)))
+(105 304)
+# 105 = #\i, 304 = #x130
+
+# 畳み込み。
+(import (scheme char)) (map char->integer (list (char-foldcase #\A) (char-foldcase #\a) (char-foldcase #\x1E9E) (char-foldcase #\x01C5)))
+(97 97 223 454)
+# 223 = #xDF, 454 = #x1C6
+
+# 範囲の端。
+(import (scheme char)) (map char->integer (list (char-upcase #\null) (char-foldcase #\x10FFFF) (char-downcase #\xD7FF) (char-upcase #\xE000)))
+(0 1114111 55295 57344)
+# 1114111 = #x10FFFF, 55295 = #xD7FF, 57344 = #xE000
+
+# 大文字小文字を区別しない比較。R7RS 6.6 の例: (char-ci=? #\A #\a) は真。
+(import (scheme char)) (list (char-ci=? #\A #\a) (char=? #\A #\a) (char-ci=? #\a #\b) (char-ci=? #\x03A3 #\x03C3 #\x03C2))
+(#t #f #f #t)
+
+# 順序は、畳み込んだ文字のコードポイントの順である。
+(import (scheme char)) (list (char-ci<? #\a #\B) (char-ci<? #\A #\b) (char-ci>? #\Z #\a) (char<? #\Z #\a) (char-ci<? #\Z #\a))
+(#t #t #t #t #f)
+
+# '_' は 'A' と 'a' の間にある。畳み込むと、'A' は '_' より後になる。
+(import (scheme char)) (list (char<? #\A #\_) (char-ci<? #\A #\_) (char-ci>? #\A #\_) (char-ci<? #\_ #\A))
+(#t #f #t #t)
+
+(import (scheme char)) (list (char-ci<=? #\a #\A #\b #\C) (char-ci<=? #\a #\C #\b) (char-ci>=? #\C #\b #\B #\a) (char-ci>=? #\a #\b))
+(#t #f #t #f)
+
+(import (scheme char)) (list (char-ci=? #\a) (char-ci<? #\a) (char-ci>? #\a) (char-ci<=? #\a) (char-ci>=? #\a))
+(#t #t #t #t #t)
+
+# 畳み込んだ文字が等しい組は、狭い順序(<、>)を満たさず、広い順序(<=、>=)と等しさを満たす。
+(import (scheme char)) (list (char-ci<? #\a #\A) (char-ci>? #\a #\A) (char-ci<? #\x03C3 #\x03C2) (char-ci>? #\x03C2 #\x03A3))
+(#f #f #f #f)
+
+(import (scheme char)) (list (char-ci<=? #\a #\A) (char-ci>=? #\a #\A) (char-ci<=? #\x03C3 #\x03C2) (char-ci>=? #\x03C2 #\x03A3) (char-ci=? #\x03C2 #\x03A3))
+(#t #t #t #t #t)
+
+# 成り立たない組のあとに、成り立つ組が来る。最後の組だけでは決まらない。
+(import (scheme char)) (list (char-ci<? #\b #\a #\c) (char-ci=? #\a #\b #\b) (char-ci>? #\a #\b #\a) (char-ci<=? #\b #\a #\c) (char-ci>=? #\a #\b #\a))
+(#f #f #f #f #f)
+
+# 文字でない引数は誤りである。最初の組が成り立たなくても、後ろの引数まで検査される。
+(import (scheme char)) (char-alphabetic? 97)
+error: wrong type of argument to char-alphabetic? 97
+
+(import (scheme char)) (char-upcase "a")
+error: wrong type of argument to char-upcase "a"
+
+(import (scheme char)) (digit-value 3)
+error: wrong type of argument to digit-value 3
+
+(import (scheme char)) (char-ci=? #\a 97)
+error: wrong type of argument to char-ci=? #\a 97
+
+(import (scheme char)) (char-ci<? #\b #\a #\a 'c)
+error: wrong type of argument to char-ci<? #\b #\a #\a c
+
+# 引数の数。
+(import (scheme char)) (char-upcase)
+error: wrong number of arguments to char-upcase
+
+(import (scheme char)) (char-ci=?)
+error: wrong number of arguments to char-ci=?
