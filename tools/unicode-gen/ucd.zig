@@ -249,8 +249,7 @@ fn parseUnicodeData(
             const stem = name[0 .. name.len - ", Last>".len];
             if (!std.mem.eql(u8, first.stem, stem) or !std.mem.eql(u8, first.gc, gc) or cp < first.cp)
                 return error.UnpairedRange;
-            const bits = try identifierBits(first.cp, gc);
-            for (first.cp..@as(usize, cp) + 1) |c| flags[c] |= if (c < 0x80) 0 else bits;
+            for (first.cp..@as(usize, cp) + 1) |c| flags[c] |= try identifierBits(@intCast(c), gc);
             continue;
         }
         if (open != null) return error.UnpairedRange;
