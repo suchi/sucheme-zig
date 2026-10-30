@@ -628,7 +628,7 @@ test "number->string writes a number in the radix, ten by default" {
     try expectWritten("18446744073709551616", "18446744073709551616", null);
     try expectWritten("10000000000000000", "18446744073709551616", 16);
     try expectWritten("0.5", "0.5", null);
-    try expectWritten("1.0e30", "1e30", null);
+    try expectWritten("1.0e+30", "1e30", null);
     try expectWritten("+inf.0", "+inf.0", null);
     try expectWritten("+nan.0", "+nan.0", 10);
     try expectWritten("1+2i", "1+2i", null);

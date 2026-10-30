@@ -150,7 +150,7 @@
 - [x] Unicode テーブルの生成ツールと生成結果(スライス 4u1・4u2。`tools/unicode-gen/`、`src/unicode/`。`zig build check-unicode` は、全コミットの検査に入れた)
 - [x] `(scheme inexact)`(スライス 4h。12個の識別子が束縛される。テストは `tests/scheme/0460-inexact.txt`)
 - [x] `(scheme complex)`(スライス 4i。6個の識別子が束縛される。テストは `tests/scheme/0470-complex.txt`)
-- [ ] `(scheme char)`(スライス 4u3)
+- [x] `(scheme char)`(スライス 4u3。22個の識別子が束縛される。テストは `tests/scheme/0700-char-procedures.txt` と `tests/scheme/0720-string-case.txt`)
 - [x] (スライス 4j。テストは `tests/scheme/0480-eq-eqv.txt`)`eq?` と `eqv?` が別の関数になるとき(浮動小数点数と bignum が入るとき)、`lib/sucheme/procedures.scm` の `memq` と `memv`、`assq` と `assv` の区別を固定するテストを足す。今は `eq?` と `eqv?` が同じ関数なので、入れ替えるミューテーションを検出するテストが書けない(スライス 3g のレビューの指摘)
 
 完了条件: `exact-closed` `ratios` `exact-complex` `ieee-float` のフィーチャを真にできる。浮動小数点数のラウンドトリップ性テストが通る。リリース v0.4.0 を出す。
@@ -214,6 +214,18 @@
 完了条件: ブラウザで R7RS のサンプルが一通り動く。配置した URL でも動く。リリース v1.2.0 を出す。
 
 残していること: [design/open-questions.md](design/open-questions.md) の「段階8までに決める」の行。件数と内容をここに複製しない。ここが最終段階である。
+
+## 利用者向けの文書(段階をまたぐ)
+
+段階に属さず、レーン L9 で進める。計画は [plans/0027-user-documentation.md](plans/0027-user-documentation.md) が正で、2026-10-29 に合意された。
+
+- [x] 文書のコードブロックを走らせて、期待する出力と比べる検査(`tools/check-examples/`、`zig build check-examples`。計画書の D1。決定は [ADR-0048](adr/0048-run-the-examples-of-the-user-documentation.md))。プログラム集の `.scm` を走らせる部分は D7a で足す
+- [ ] チュートリアル(Lisp 系の言語が初めての読者向け)。計画書の D2 と D4、前提のスライスのあとの追加
+- [ ] ユーザーズガイド(実行ファイル、REPL、ファイルの実行、ライブラリ、終了コード、Web UI、既知の制限)。計画書の D3
+- [ ] リファレンスマニュアル(R7RS の節への索引と、sucheme に固有の項目と例。原文で足りるものは節の参照で済ませる)。計画書の D5 と D6
+- [ ] プログラム集(実行ファイルで走らせて確かめる `.scm`。分野ごとの目標の本数は計画書の「プログラム集」の表)と、それを走らせる検査。計画書の D7a と D7b
+
+完了条件: 文書の中の Scheme のコードと、プログラム集のすべてが、全コミットの CI で走って期待どおりの出力になる。段階8の完了の時点で、計画書の章と項目がそろっている。
 
 ## 横断的に続ける作業
 

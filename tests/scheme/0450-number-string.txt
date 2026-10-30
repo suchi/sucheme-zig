@@ -84,3 +84,15 @@ error: wrong type of argument to string->number 10
 
 (let ((n (string->number "#e1e99999"))) (= n (string->number (number->string n))))
 #t
+
+# 指数表記は、指数部の符号を正でも負でも書く(ECMA-262 と準拠スイートの綴り)。
+(list (number->string 1e21) (number->string 1e-7) (number->string 1.5e300) (number->string -1e21) (number->string 1.7976931348623157e308))
+("1.0e+21" "1.0e-7" "1.5e+300" "-1.0e+21" "1.7976931348623157e+308")
+
+# 小数で書く範囲の境界(n が -5 以上 21 以下)。
+(list (number->string 1e20) (number->string 1e-6))
+("100000000000000000000.0" "0.000001")
+
+# 読む側は、指数部の `+` が付いても付かなくても同じ値になり、書いた綴りを読み戻せる。
+(list (string->number "1e+21") (string->number "1e21") (eqv? (string->number "1.0e+21") (string->number "1e21")) (eqv? 1.7976931348623157e308 (string->number (number->string 1.7976931348623157e308))))
+(1.0e+21 1.0e+21 #t #t)
