@@ -282,7 +282,7 @@ error: division by zero in expt 0.0 -1+i
 (import (scheme complex)) (expt 0.0 +i)
 error: division by zero in expt 0.0 +i
 
-# f64 に収まらない正確な複素数の angle。log の実部は別に直す(下の確認待ちの記録)。
+# f64 に収まらない正確な複素数の angle。同じ入力の log の実部は、suchi/sucheme-zig#221 で直す。
 (import (scheme complex)) (let ((a (angle (make-rectangular (expt 10 400) (expt 10 399))))) (list (< 0.0996 a 0.0997) (inexact? a)))
 (#t #t)
 
