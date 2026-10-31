@@ -137,3 +137,21 @@ error: wrong number of arguments to sin
 
 (import (scheme inexact)) (log 1 2 3)
 error: wrong number of arguments to log 1 2 3
+
+# 分子も分母も f64 の範囲を大きく超える有理数の sqrt は、各部の根が f64 に収まらなくても、比の根を返す。
+(import (scheme inexact)) (list (sqrt (/ (expt 10 1000) (expt 10 998))) (sqrt (/ (+ (expt 10 1400) 1) (+ (expt 10 1398) 1))))
+(10 10.0)
+
+(import (scheme inexact)) (let ((r (sqrt (/ (expt 10 2000) (+ (* 3 (expt 10 1998)) 1))))) (list (inexact? r) (< 5.7735 r 5.7736)))
+(#t #t)
+
+# 真の値が f64 の範囲外なら、無限大か 0 になる。
+(import (scheme inexact)) (list (sqrt (/ (expt 10 1400) 3)) (sqrt (/ 1 (* 3 (expt 10 1400)))))
+(+inf.0 0.0)
+
+# 2引数の atan は、符号つきの 0 を区別する(R7RS 6.2.6 の表)。
+(import (scheme inexact)) (list (atan -0.0 1) (atan 0.0 1) (atan 0.0 0.0) (atan -0.0 0.0))
+(-0.0 0.0 0.0 -0.0)
+
+(import (scheme inexact)) (list (atan 0.0 -1) (atan -0.0 -1) (atan 0.0 -0.0) (atan -0.0 -0.0))
+(3.141592653589793 -3.141592653589793 3.141592653589793 -3.141592653589793)
