@@ -774,11 +774,23 @@ pub const Machine = struct {
         // 残すと、オペランドの多いプリミティブを呼ぶループは、1 周ごとに領域を広げてしまう。
         defer if (count > small.len) self.scratch.free(operands);
         fill(operands, args);
-        const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch, .console = &ctx.console, .dyn = dyn };
+        var reason: []const u8 = "the datum cannot be read";
+        const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch, .console = &ctx.console, .dyn = dyn, .reason = &reason };
         return call(&services, operands) catch |e| {
             if (e == error.FilesExhausted and !retried) return error.CollectAndRetry;
+            if (e == error.Unreadable) return unreadable(ctx, prim, reason, args, count);
             return primitiveFailure(ctx, prim, e, args, count);
         };
+    }
+
+    /// The error that a primitive that read what is not a datum is: a condition that
+    /// `read-error?` is true of (R7RS 6.11), whose message is `reason` and the name of
+    /// the primitive.
+    /// irritant は、ほかの失敗と同じく、呼び出しの引数である(`primitiveFailure`)。
+    fn unreadable(ctx: *Context, prim: *const value_mod.Primitive, reason: []const u8, args: *const Args, count: usize) Error {
+        const irritants = try operandList(ctx, args, count);
+        ctx.raised = try ctx.makeCondition(.read, "{s} in {s}", .{ reason, prim.name }, irritants);
+        return error.Raised;
     }
 
     /// How many operands one step lines up (`Kont.Step.spread`).
@@ -1056,7 +1068,8 @@ pub const Machine = struct {
                 ctx.raised = try ctx.makeCondition(.file, "file operation failed in {s}", .{prim.name}, irritants);
                 return error.Raised;
             },
-            error.HeapLimit, error.OutOfMemory, error.WriteFailed => unreachable,
+            // 理由の文言を持つ `callPure` が、先に `unreadable` に写す。
+            error.Unreadable, error.HeapLimit, error.OutOfMemory, error.WriteFailed => unreachable,
         };
     }
 

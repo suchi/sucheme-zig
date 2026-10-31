@@ -21,6 +21,7 @@ const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
 const port_mod = @import("../port.zig");
 const Heap = @import("../heap.zig").Heap;
+const reader = @import("../reader.zig");
 const printer = @import("../printer.zig");
 const immutable = @import("immutable.zig");
 const range_mod = @import("range.zig");
@@ -73,6 +74,7 @@ pub const primitives = [_]Primitive{
     .{ .name = "open-binary-output-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &openBinaryOutputFile } },
     .{ .name = "file-exists?", .min_args = 1, .max_args = 1, .body = .{ .pure = &fileExists } },
     .{ .name = "delete-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &deleteFile } },
+    .{ .name = "read", .min_args = 0, .max_args = 1, .body = .{ .pure = &read } },
 };
 
 /// The error a failure of the port functions is to a primitive.
@@ -421,6 +423,56 @@ fn readString(services: *const Services, args: []const Value) Error!Value {
     return try readText(services, p, k, false) orelse .eof_value;
 }
 
+/// `(read port)`: the next datum of the textual input port `port`, or an end-of-file
+/// object when only atmosphere is left (R7RS 6.13.2).
+/// ポートの手元の入力を `Reader` に渡し、読めたバイトの数だけポートを進める。データとして読む
+/// ので、リテラルの外の循環も許す(`Reader.code` を偽にする)。`#!fold-case` と
+/// `#!no-fold-case` で変わった畳み込みの状態は、ポートに書き戻し、次の `read` に残す
+/// (R7RS 2.1)。手元の入力の終わりでデータが終わっていない(`Incomplete`)か、終わりまで
+/// 読んだ(最後のトークンが切れている恐れがある)ときは、ポートが足せる限り読み足して、
+/// データの頭から読み直す(docs/plans/0019-phase5-ports-and-io.md の 5l の中身)。
+fn read(services: *const Services, args: []const Value) Error!Value {
+    const p = try argPort(services, args, 0, .input, .textual);
+    try checkReadable(services, p);
+    const heap = services.heap;
+    // Why: `Reader` が読んでいる間に開いているリストの枠は、入れ子の深さに比例するので、
+    // ヒープの上限に数える(`Collected` と同じ理由)。
+    const was_refused = heap.external_refused;
+    heap.external_refused = false;
+    defer heap.external_refused = was_refused;
+    while (true) {
+        const held = port_mod.pending(p);
+        var r: reader.Reader = .{ .src = held, .fold_case = p.fold_case, .code = false };
+        var arena: std.heap.ArenaAllocator = .init(heap.residentAllocator());
+        defer arena.deinit();
+        const datum = r.next(arena.allocator(), .{ .heap = heap }) catch |e| switch (e) {
+            error.Incomplete => {
+                if (try addInput(services, p)) continue;
+                return unreadable(services, error.Incomplete);
+            },
+            error.OutOfMemory => return if (heap.external_refused) error.HeapLimit else error.OutOfMemory,
+            error.HeapLimit => return error.HeapLimit,
+            else => |syntax| return unreadable(services, syntax),
+        };
+        if (r.pos == held.len and try addInput(services, p)) continue;
+        port_mod.consume(p, r.pos);
+        p.fold_case = r.fold_case;
+        return datum orelse .eof_value;
+    }
+}
+
+/// Adds to what the textual input port `p` holds, and gives whether it added anything.
+fn addInput(services: *const Services, p: *Port) Error!bool {
+    return port_mod.fill(services.heap, p) catch |e| return portFailure(e);
+}
+
+/// `Unreadable`, with the text of what the reader could not read put where the
+/// machine takes it.
+fn unreadable(services: *const Services, e: reader.SyntaxError) Error {
+    if (services.reason) |reason| reason.* = reader.describe(e);
+    return error.Unreadable;
+}
+
 /// `(read-u8 port)`: the next byte, or an end-of-file object (R7RS 6.13.2).
 fn readU8(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .binary);
@@ -731,7 +783,7 @@ test "the primitives take the numbers of arguments the language gives them, with
         .{ "write-shared", 1, 2 },          .{ "write-simple", 1, 2 },            .{ "display", 1, 2 },
         .{ "%console-parameter", 1, 1 },    .{ "open-input-file", 1, 1 },         .{ "open-binary-input-file", 1, 1 },
         .{ "open-output-file", 1, 1 },      .{ "open-binary-output-file", 1, 1 }, .{ "file-exists?", 1, 1 },
-        .{ "delete-file", 1, 1 },
+        .{ "delete-file", 1, 1 },           .{ "read", 0, 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
     for (expected, primitives) |e, p| {

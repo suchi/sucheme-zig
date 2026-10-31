@@ -799,6 +799,11 @@ pub const PrimitiveError = error{
     /// 回収が、到達できなくなった開いたポートを閉じるからである。2回目も尽きていれば、
     /// `FileError` と同じ条件にする。
     FilesExhausted,
+    /// What a port holds is not the external representation of a datum (R7RS 6.13.2
+    /// `read`).
+    /// 機械は、`read-error?` が真になる条件に写す(R7RS 6.11)。読めない理由の文言は、
+    /// プリミティブが `Services.reason` に置く。
+    Unreadable,
     /// The host could not take what was written to the console.
     /// 条件にならない。機械はそのまま返す(WASM の出力バッファが満杯のときなど)。
     WriteFailed,
@@ -830,6 +835,10 @@ pub const Services = struct {
     /// parameters (`parameterValue`).
     /// ポートを省略した呼び出しは、ここから現在のポートを引く(R7RS 6.13.1)。
     dyn: ?*const DynPoint = null,
+    /// Where a primitive that fails with `Unreadable` puts the text that says why, or
+    /// null when nothing takes it (the tests of the primitives).
+    /// 文言は、プログラムの寿命の間ある文字列(`reader.describe` が返すもの)に限る。
+    reason: ?*[]const u8 = null,
 };
 
 /// The parameters that are the current ports, and where the console's output goes.
