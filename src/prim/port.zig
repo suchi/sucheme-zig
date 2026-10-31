@@ -1398,6 +1398,7 @@ const OneFile = struct {
     contents: []const u8,
     at: usize = 0,
     chunk: usize = 1000,
+    reads: usize = 0,
 
     fn host(self: *OneFile) Heap.FileHost {
         return .{ .context = self, .open = open, .delete = delete, .exists = exists, .read = readFile, .write = writeFile, .close = closeFile };
@@ -1420,6 +1421,7 @@ const OneFile = struct {
         const n = @min(buffer.len, self.chunk, self.contents.len - self.at);
         @memcpy(buffer[0..n], self.contents[self.at..][0..n]);
         self.at += n;
+        self.reads += 1;
         return n;
     }
 
@@ -1454,4 +1456,51 @@ test "read gives the buffer of a file port back its usual size after a datum lon
     try std.testing.expectEqual(7, (try call(&f, "read", &.{.fromPort(p)})).asFixnum().?);
     try std.testing.expect((try call(&f, "read", &.{.fromPort(p)})).isEqv(.eof_value));
     _ = try call(&f, "close-port", &.{.fromPort(p)});
+}
+
+test "read takes a datum many times longer than the buffer with a number of reads that grows with its logarithm" {
+    // Why: バッファを倍ずつ伸ばすので、読み足す回数はデータの長さの対数に比例する。少しずつ
+    // 伸ばす形に戻ると、データの長さに比例する回数になる。ホストが1回に満たせる量に上限を
+    // 置かないので、読み足しの回数がそのまま伸ばした回数の目安になる。
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.append(std.testing.allocator, '(');
+    for (0..16 * file_buffer_size / 5) |_| try list.appendSlice(std.testing.allocator, "1234 ");
+    try list.appendSlice(std.testing.allocator, ")");
+    var file: OneFile = .{ .contents = list.items, .chunk = std.math.maxInt(usize) };
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.files = file.host();
+    const p = try f.heap.createFilePort(.input, .textual, file_buffer_size);
+    p.open = true;
+    const datum = try call(&f, "read", &.{.fromPort(p)});
+    try std.testing.expectEqual(16 * file_buffer_size / 5, @import("pair.zig").properLength(datum).?);
+    try std.testing.expect(file.reads <= 8);
+}
+
+test "read gives the buffer back its usual size when what is left to read fills it exactly" {
+    // 12288 バイトのデータを読むと、バッファは 16384 バイトまで伸び、読み終えたあとの残りは、
+    // ちょうど元の大きさ(4096 バイト)である。残りが収まる限り、元の大きさに戻す。
+    comptime std.debug.assert(file_buffer_size == 4096);
+    var contents: std.ArrayList(u8) = .empty;
+    defer contents.deinit(std.testing.allocator);
+    try contents.append(std.testing.allocator, '(');
+    while (contents.items.len < 3 * file_buffer_size - 1) try contents.append(std.testing.allocator, ' ');
+    try contents.append(std.testing.allocator, ')');
+    while (contents.items.len < 4 * file_buffer_size - 1) try contents.append(std.testing.allocator, ' ');
+    try contents.append(std.testing.allocator, '7');
+    var file: OneFile = .{ .contents = contents.items, .chunk = std.math.maxInt(usize) };
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.files = file.host();
+    const p = try f.heap.createFilePort(.input, .textual, file_buffer_size);
+    p.open = true;
+    const before = f.heap.accounted;
+    try std.testing.expect((try call(&f, "read", &.{.fromPort(p)})).isEqv(.empty_list_value));
+    try std.testing.expectEqual(file_buffer_size, p.backing.file.len - p.backing.file.pos);
+    try std.testing.expectEqual(file_buffer_size, p.backing.file.buffer.len);
+    try std.testing.expectEqual(before, f.heap.accounted);
+    try std.testing.expectEqual(7, (try call(&f, "read", &.{.fromPort(p)})).asFixnum().?);
 }

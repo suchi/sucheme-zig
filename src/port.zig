@@ -552,6 +552,24 @@ test "a console output port reports a writer that cannot take the bytes" {
     try std.testing.expectError(error.WriteFailed, writeBytes(&f.heap, &sink, out, "abc"));
 }
 
+test "the console input port reads from the reader the heap holds, and reports one that fails" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const in = try f.heap.createConsolePort(.input);
+    var source: std.Io.Reader = .fixed("aλ");
+    f.heap.console_input = &source;
+    try std.testing.expectEqual('a', (try readChar(&f.heap, in)).?);
+    try std.testing.expectEqual(0x3BB, (try readChar(&f.heap, in)).?);
+    try std.testing.expectEqual(null, try readChar(&f.heap, in));
+    // 読み手が読めなかったことは、終わりと区別して `Io` で知らせる。
+    var buf: [16]u8 = undefined;
+    var failing: std.Io.Reader = .failing;
+    failing.buffer = &buf;
+    f.heap.console_input = &failing;
+    try std.testing.expectError(error.Io, readChar(&f.heap, in));
+}
+
 test "the console input port is at its end from the start" {
     var f: Fixture = undefined;
     f.init();
