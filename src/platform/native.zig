@@ -94,6 +94,10 @@ pub const FileTable = struct {
     }
 };
 
+test {
+    std.testing.refAllDecls(@This());
+}
+
 test "a file written through the table is read back through it, and its slot is used again" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

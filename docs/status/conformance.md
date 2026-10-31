@@ -14,7 +14,7 @@
 | `(scheme complex)` | 6 | 6 |
 | `(scheme cxr)` | 24 | 24 |
 | `(scheme eval)` | 0 | 2 |
-| `(scheme file)` | 0 | 10 |
+| `(scheme file)` | 10 | 10 |
 | `(scheme inexact)` | 12 | 12 |
 | `(scheme lazy)` | 5 | 5 |
 | `(scheme load)` | 0 | 1 |
@@ -24,7 +24,7 @@
 | `(scheme repl)` | 0 | 1 |
 | `(scheme time)` | 0 | 3 |
 | `(scheme write)` | 4 | 4 |
-| 一意の識別子の合計 | 312 | 339 |
+| 一意の識別子の合計 | 322 | 339 |
 
 ## 準拠スイートの結果
 
@@ -49,12 +49,12 @@
 | 6.8 Vectors | 43 | 0 | 0 | 0 | 0 | 0 |
 | 6.9 Bytevectors | 39 | 0 | 0 | 0 | 0 | 0 |
 | 6.10 Control Features | 33 | 0 | 0 | 0 | 1 | 0 |
-| 6.11 Exceptions | 27 | 0 | 0 | 0 | 3 | 0 |
+| 6.11 Exceptions | 28 | 0 | 0 | 0 | 2 | 0 |
 | 6.12 Environments and evaluation | 0 | 0 | 0 | 0 | 4 | 0 |
 | 6.13 Input and output | 61 | 0 | 0 | 0 | 2 | 0 |
 | Read syntax | 18 | 0 | 0 | 0 | 67 | 10 |
 | Numeric syntax | 22 | 0 | 0 | 0 | 1 | 99 |
-| 6.14 System interface | 2 | 0 | 0 | 0 | 10 | 0 |
-| 合計 | 922 | 18 | 0 | 0 | 88 | 109 |
+| 6.14 System interface | 4 | 1 | 0 | 0 | 7 | 0 |
+| 合計 | 925 | 19 | 0 | 0 | 84 | 109 |
 
-スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme time)` `(scheme file)` `(scheme read)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
+スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme time)` `(scheme read)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`

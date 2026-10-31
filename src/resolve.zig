@@ -409,7 +409,10 @@ pub const UserFileError = error{
 /// 第2類の入口である。探索ルートの制約をかけず、パスは作業ディレクトリを基準にし、リンクを
 /// 辿る(frontend.md)。プログラムが名前を選んだファイルを読み書きするのは、R7RS 6.13.1 と
 /// 6.14 が定める手続きの働きそのものだからである。ディレクトリは開かない。
+/// WASM はファイルの表を作らないので、ここに来ない。`openLibrary` と同じ理由で、
+/// `Dir.cwd()` を解析させないために打ち切る(下の2つも同じ)。
 pub fn openUserFile(io: std.Io, path: []const u8, direction: Direction) UserFileError!File {
+    if (comptime builtin.os.tag == .freestanding) return error.Refused;
     const opened = switch (direction) {
         .input => Dir.cwd().openFile(io, path, .{ .allow_directory = false }),
         .output => Dir.cwd().createFile(io, path, .{}),
@@ -424,6 +427,7 @@ pub fn openUserFile(io: std.Io, path: []const u8, direction: Direction) UserFile
 /// ファイルが無いときも、消せないときと同じく断る(R7RS 6.14 は、どちらも `file-error?` が
 /// 真になる誤りとする)。
 pub fn deleteUserFile(io: std.Io, path: []const u8) error{Refused}!void {
+    if (comptime builtin.os.tag == .freestanding) return error.Refused;
     Dir.cwd().deleteFile(io, path) catch return error.Refused;
 }
 
@@ -431,6 +435,7 @@ pub fn deleteUserFile(io: std.Io, path: []const u8) error{Refused}!void {
 /// 調べられないとき(名前がパスにならない、途中のディレクトリを読めないなど)は、無いと答える。
 /// R7RS 6.14 は、この手続きの誤りを定めていない(frontend.md)。
 pub fn userFileExists(io: std.Io, path: []const u8) bool {
+    if (comptime builtin.os.tag == .freestanding) return false;
     Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
