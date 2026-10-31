@@ -52,6 +52,28 @@ pub fn has(c: u21, p: Property) bool {
     return lookup(u16, &tables.flags_stage1, &tables.flags_stage2, c) & flagBit(p) != 0;
 }
 
+fn identifierBit(c: u21, bit: u16) bool {
+    return lookup(u16, &tables.flags_stage1, &tables.flags_stage2, c) & bit != 0;
+}
+
+/// Whether the non-ASCII `c` may start an identifier (R7RS 7.1.1 `<initial>`).
+///
+/// ASCII の文字は字句規則が別にあるので、常に false を返す。範囲外の値(0x10FFFF より
+/// 大きい値)も false。一般カテゴリが Lu, Ll, Lt, Lm, Lo, Mn, Nl, No, Pd, Pc, Po, Sc, Sm,
+/// Sk, So, Co のものと、U+200C と U+200D が true で、`isIdentifierSubsequent` から
+/// Nd, Mc, Me を除いた集合にあたる。
+pub fn isIdentifierInitial(c: u21) bool {
+    return identifierBit(c, tables.flag_identifier_initial);
+}
+
+/// Whether the non-ASCII `c` may continue an identifier (R7RS 7.1.1 `<subsequent>`).
+///
+/// ASCII の文字と範囲外の値は false。一般カテゴリが Lu, Ll, Lt, Lm, Lo, Mn, Mc, Me, Nd,
+/// Nl, No, Pd, Pc, Po, Sc, Sm, Sk, So, Co のものと、U+200C と U+200D が true。
+pub fn isIdentifierSubsequent(c: u21) bool {
+    return identifierBit(c, tables.flag_identifier_subsequent);
+}
+
 /// 表の値は「写像先 - 元の符号位置」の差である。
 fn shifted(c: u21, delta: i32) u21 {
     return @intCast(@as(i32, c) + delta);
@@ -180,6 +202,47 @@ test "has: the ends of the range and the surrogates have no property" {
     try expectHas(0x10FFFF, &.{});
     try expectHas(0x110000, &.{});
     try expectHas(0x1FFFFF, &.{});
+}
+
+fn expectIdentifier(c: u21, initial: bool, subsequent: bool) !void {
+    errdefer std.debug.print("identifier bits of U+{X:0>4}\n", .{c});
+    try std.testing.expectEqual(initial, isIdentifierInitial(c));
+    try std.testing.expectEqual(subsequent, isIdentifierSubsequent(c));
+}
+
+test "identifier bits: ASCII is always false" {
+    // 'a' は Ll、'!' は Po だが、ASCII の識別子は字句規則が別に決める。
+    for (0..0x80) |c| try expectIdentifier(@intCast(c), false, false);
+}
+
+test "identifier bits: categories that may start and continue an identifier" {
+    // Ll, Lo(範囲の中を含む), Nl, No, Po, So, Co(範囲の中と端)。
+    const both = [_]u21{
+        0x03BB, 0x00B2, 0x2160, 0x00B7,  0x00A9,  0x1F600, 0x2E80, 0x4E00, 0x5000,  0x9FFF,
+        0xAC00, 0xB000, 0xD7A3, 0x20000, 0x2A6DF, 0xE000,  0xF000, 0xF8FF, 0xF0000, 0x10FFFD,
+    };
+    for (both) |c| try expectIdentifier(c, true, true);
+    // 結合文字と、ZWNJ と ZWJ(Cf だが規則が名指しで許す。最初の文字にも置ける)。
+    try expectIdentifier(0x200C, true, true);
+    try expectIdentifier(0x200D, true, true);
+}
+
+test "identifier bits: Nd, Mc and Me may only continue an identifier" {
+    try expectIdentifier(0x0660, false, true);
+    try expectIdentifier(0xFF10, false, true);
+    try expectIdentifier(0x0903, false, true);
+    try expectIdentifier(0x20DD, false, true);
+    // Mn は最初の文字にも置ける。
+    try expectIdentifier(0x0300, true, true);
+}
+
+test "identifier bits: other categories and non-characters are false" {
+    // Zs, Zl, Zp, Cc, Cf(名指しされたもの以外), Pi, Pf, Cn, Cs。
+    const none = [_]u21{
+        0x00A0, 0x3000,   0x2028, 0x2029, 0x0080,   0x00AD,   0x2018, 0x00AB, 0x00BB,
+        0x0378, 0x10FFFF, 0xD800, 0xDFFF, 0x110000, 0x1FFFFF,
+    };
+    for (none) |c| try expectIdentifier(c, false, false);
 }
 
 test "simple mappings" {

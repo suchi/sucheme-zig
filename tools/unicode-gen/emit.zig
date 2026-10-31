@@ -102,7 +102,9 @@ fn renderRaw(gpa: std.mem.Allocator, d: ucd.Data) ![]u8 {
         "pub const flag_numeric: u16 = 1 << 1;\n" ++
         "pub const flag_white_space: u16 = 1 << 2;\n" ++
         "pub const flag_uppercase: u16 = 1 << 3;\n" ++
-        "pub const flag_lowercase: u16 = 1 << 4;\n\n");
+        "pub const flag_lowercase: u16 = 1 << 4;\n" ++
+        "pub const flag_identifier_initial: u16 = 1 << 5;\n" ++
+        "pub const flag_identifier_subsequent: u16 = 1 << 6;\n\n");
 
     try w.writeAll("// 単純写像の表の値は、写像先から元の符号位置を引いた差である。\n\n");
     try twoStage(u16, gpa, w, "flags", d.flags);
@@ -268,6 +270,8 @@ test "render names every table after its own data and agrees with the flags and 
         .{ "white_space", ucd.flag.white_space },
         .{ "uppercase", ucd.flag.uppercase },
         .{ "lowercase", ucd.flag.lowercase },
+        .{ "identifier_initial", ucd.flag.identifier_initial },
+        .{ "identifier_subsequent", ucd.flag.identifier_subsequent },
     };
     for (flag_values) |f| {
         const line = try std.fmt.allocPrint(arena, "pub const flag_{s}: u16 = 1 << {d};\n", .{ f[0], @ctz(f[1]) });

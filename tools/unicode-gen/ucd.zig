@@ -16,6 +16,10 @@ pub const flag = struct {
     pub const white_space: u16 = 1 << 2;
     pub const uppercase: u16 = 1 << 3;
     pub const lowercase: u16 = 1 << 4;
+    /// R7RS 7.1.1 で、ASCII でない文字が識別子の最初の文字になれる。ASCII では常に0。
+    pub const identifier_initial: u16 = 1 << 5;
+    /// R7RS 7.1.1 で、ASCII でない文字が識別子の2文字目以降になれる。ASCII では常に0。
+    pub const identifier_subsequent: u16 = 1 << 6;
 };
 
 /// A code point whose full mapping is more than one code point.
@@ -32,6 +36,8 @@ pub const Error = error{
     VersionMismatch,
     PropertyNotFound,
     NonStandardDigitRun,
+    UnpairedRange,
+    UnknownCategory,
     UnknownCaseFoldingStatus,
     BadMappingLength,
     DuplicateMapping,
@@ -167,7 +173,41 @@ fn delta(from: u21, to: u21) i32 {
     return @as(i32, to) - @as(i32, from);
 }
 
-/// Fills `flags` (numeric) and the simple upper/lower deltas. Returns the digit run starts.
+/// 一般カテゴリの全30種。これ以外が来たら入力が想定と違うので止める。
+const general_categories = [_][]const u8{
+    "Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl",
+    "No", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "Sm", "Sc",
+    "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co", "Cn",
+};
+
+/// R7RS 7.1.1 の <subsequent> に、ASCII でない文字として入れてよい一般カテゴリ。
+const identifier_categories = [_][]const u8{
+    "Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl",
+    "No", "Pd", "Pc", "Po", "Sc", "Sm", "Sk", "So", "Co",
+};
+
+/// <initial> から外れる一般カテゴリ(<subsequent> には入る)。
+const not_initial_categories = [_][]const u8{ "Nd", "Mc", "Me" };
+
+fn inCategories(set: []const []const u8, gc: []const u8) bool {
+    for (set) |c| if (std.mem.eql(u8, c, gc)) return true;
+    return false;
+}
+
+/// The identifier bits R7RS 7.1.1 gives a non-ASCII code point of category `gc`.
+///
+/// ASCII は字句規則が別にあるので、ここでは常に0を返す。U+200C と U+200D は
+/// 一般カテゴリ Cf だが、規則が名指しで許し、最初の文字にも置ける。
+fn identifierBits(cp: u21, gc: []const u8) Error!u16 {
+    if (!inCategories(&general_categories, gc)) return error.UnknownCategory;
+    if (cp < 0x80) return 0;
+    if (cp == 0x200C or cp == 0x200D) return flag.identifier_initial | flag.identifier_subsequent;
+    if (!inCategories(&identifier_categories, gc)) return 0;
+    if (inCategories(&not_initial_categories, gc)) return flag.identifier_subsequent;
+    return flag.identifier_initial | flag.identifier_subsequent;
+}
+
+/// Fills `flags` (numeric, identifier bits) and the simple upper/lower deltas. Returns the digit run starts.
 fn parseUnicodeData(
     gpa: std.mem.Allocator,
     text: []const u8,
@@ -179,6 +219,9 @@ fn parseUnicodeData(
     var digits: std.ArrayList(Digit) = .empty;
     defer digits.deinit(gpa);
 
+    const Open = struct { cp: u21, stem: []const u8, gc: []const u8 };
+    var open: ?Open = null;
+
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -189,11 +232,28 @@ fn parseUnicodeData(
         const cp = try parseCodePoint(fields[0]);
         const name = fields[1];
         const gc = fields[2];
-        // 範囲の端(CJK や Hangul など)。写像も十進数字も持たない。
-        if (std.mem.endsWith(u8, name, ", First>") or std.mem.endsWith(u8, name, ", Last>")) {
+        // 範囲の端(CJK や Hangul など)。写像も十進数字も持たない。First の次の行は、
+        // 同じ名前と同じカテゴリの Last でなければならない。範囲の中の符号位置は、
+        // 一般カテゴリを範囲と共有する。
+        const is_first = std.mem.endsWith(u8, name, ", First>");
+        const is_last = std.mem.endsWith(u8, name, ", Last>");
+        if (is_first or is_last) {
             if (std.mem.eql(u8, gc, "Nd")) return error.NonStandardDigitRun;
+            if (is_first) {
+                if (open != null) return error.UnpairedRange;
+                open = .{ .cp = cp, .stem = name[0 .. name.len - ", First>".len], .gc = gc };
+                continue;
+            }
+            const first = open orelse return error.UnpairedRange;
+            open = null;
+            const stem = name[0 .. name.len - ", Last>".len];
+            if (!std.mem.eql(u8, first.stem, stem) or !std.mem.eql(u8, first.gc, gc) or cp < first.cp)
+                return error.UnpairedRange;
+            for (first.cp..@as(usize, cp) + 1) |c| flags[c] |= try identifierBits(@intCast(c), gc);
             continue;
         }
+        if (open != null) return error.UnpairedRange;
+        flags[cp] |= try identifierBits(cp, gc);
         if (std.mem.eql(u8, gc, "Nd")) {
             flags[cp] |= flag.numeric;
             const value = std.fmt.parseInt(u8, fields[6], 10) catch return error.MalformedLine;
@@ -203,6 +263,8 @@ fn parseUnicodeData(
         if (fields[12].len != 0) upper[cp] = delta(cp, try parseCodePoint(fields[12]));
         if (fields[13].len != 0) lower[cp] = delta(cp, try parseCodePoint(fields[13]));
     }
+
+    if (open != null) return error.UnpairedRange;
 
     // 十進数字は、値0から9まで連続する10個の並びでできている。そうでない並びが来たら、
     // 先頭からの距離で値を引く表現が成り立たないので、止める。
@@ -356,12 +418,170 @@ test "parseUnicodeData sets numeric, simple mappings and digit runs" {
     const starts = try parseUnicodeData(gpa, text.items, flags, upper, lower);
     defer gpa.free(starts);
     try std.testing.expectEqualSlices(u21, &.{0x660}, starts);
-    try std.testing.expectEqual(flag.numeric, flags[0x664]);
+    try std.testing.expectEqual(flag.numeric | flag.identifier_subsequent, flags[0x664]);
     try std.testing.expectEqual(@as(u16, 0), flags[0x41]);
     try std.testing.expectEqual(@as(i32, 0x20), lower[0x41]);
     try std.testing.expectEqual(@as(i32, -0x20), upper[0x61]);
     try std.testing.expectEqual(@as(i32, 0), upper[0x41]);
-    try std.testing.expectEqual(@as(u16, 0), flags[0x4E00]);
+    // 範囲の端の行は、範囲の中の全符号位置に一般カテゴリを広げる。数字や写像は持たない。
+    try std.testing.expectEqual(flag.identifier_initial | flag.identifier_subsequent, flags[0x4E00]);
+    try std.testing.expectEqual(flag.identifier_initial | flag.identifier_subsequent, flags[0x7000]);
+    try std.testing.expectEqual(flag.identifier_initial | flag.identifier_subsequent, flags[0x9FFF]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0x9FFF + 1]);
+    try std.testing.expectEqual(@as(i32, 0), lower[0x7000]);
+}
+
+fn parseForIdentifierBits(gpa: std.mem.Allocator, text: []const u8, flags: []u16) Error!void {
+    const upper = try gpa.alloc(i32, code_point_count);
+    defer gpa.free(upper);
+    const lower = try gpa.alloc(i32, code_point_count);
+    defer gpa.free(lower);
+    @memset(flags, 0);
+    @memset(upper, 0);
+    @memset(lower, 0);
+    const starts = try parseUnicodeData(gpa, text, flags, upper, lower);
+    gpa.free(starts);
+}
+
+test "parseUnicodeData sets the identifier bits by general category (R7RS 7.1.1)" {
+    const gpa = std.testing.allocator;
+    const flags = try gpa.alloc(u16, code_point_count);
+    defer gpa.free(flags);
+    const both = flag.identifier_initial | flag.identifier_subsequent;
+    const sub = flag.identifier_subsequent;
+    const text =
+        "0021;EXCLAMATION MARK;Po;0;ON;;;;;N;;;;;\n" ++
+        "0061;LATIN SMALL LETTER A;Ll;0;L;;;;;N;;;0041;;0041\n" ++
+        "00A0;NO-BREAK SPACE;Zs;0;CS;<noBreak> 0020;;;;N;NON-BREAKING SPACE;;;;\n" ++
+        "00A9;COPYRIGHT SIGN;So;0;ON;;;;;N;;;;;\n" ++
+        "00AD;SOFT HYPHEN;Cf;0;BN;;;;;N;;;;;\n" ++
+        "0300;COMBINING GRAVE ACCENT;Mn;230;NSM;;;;;N;;;;;\n" ++
+        "0903;DEVANAGARI SIGN VISARGA;Mc;0;L;;;;;N;;;;;\n" ++
+        "20DD;COMBINING ENCLOSING CIRCLE;Me;0;NSM;;;;;N;;;;;\n" ++
+        "2018;LEFT SINGLE QUOTATION MARK;Pi;0;ON;;;;;N;;;;;\n" ++
+        "200C;ZERO WIDTH NON-JOINER;Cf;0;BN;;;;;N;;;;;\n" ++
+        "200D;ZERO WIDTH JOINER;Cf;0;BN;;;;;N;;;;;\n" ++
+        "E000;<Private Use, First>;Co;0;L;;;;;N;;;;;\n" ++
+        "F8FF;<Private Use, Last>;Co;0;L;;;;;N;;;;;\n" ++
+        "D800;<Non Private Use High Surrogate, First>;Cs;0;L;;;;;N;;;;;\n" ++
+        "DB7F;<Non Private Use High Surrogate, Last>;Cs;0;L;;;;;N;;;;;\n";
+    try parseForIdentifierBits(gpa, text, flags);
+    try std.testing.expectEqual(@as(u16, 0), flags[0x21]); // ASCII は常に0
+    try std.testing.expectEqual(@as(u16, 0), flags[0x61]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0xA0]);
+    try std.testing.expectEqual(both, flags[0xA9]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0xAD]);
+    try std.testing.expectEqual(both, flags[0x300]); // Mn は最初の文字にも置ける
+    try std.testing.expectEqual(sub, flags[0x903]);
+    try std.testing.expectEqual(sub, flags[0x20DD]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0x2018]);
+    try std.testing.expectEqual(both, flags[0x200C]);
+    try std.testing.expectEqual(both, flags[0x200D]);
+    try std.testing.expectEqual(both, flags[0xE000]);
+    try std.testing.expectEqual(both, flags[0xF000]);
+    try std.testing.expectEqual(both, flags[0xF8FF]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0xF900]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0xD800]);
+    try std.testing.expectEqual(@as(u16, 0), flags[0xDB7F]);
+}
+
+test "parseUnicodeData gives every general category its own identifier bits" {
+    const gpa = std.testing.allocator;
+    const flags = try gpa.alloc(u16, code_point_count);
+    defer gpa.free(flags);
+    const both = flag.identifier_initial | flag.identifier_subsequent;
+    const sub = flag.identifier_subsequent;
+    // 一般カテゴリごとに、ASCII の外の符号位置を1つ。Nd は十進数字の並びが要るので、別のテストで見る。
+    const cases = [_]struct { cp: u21, gc: []const u8, bits: u16 }{
+        .{ .cp = 0x00C0, .gc = "Lu", .bits = both },
+        .{ .cp = 0x00E0, .gc = "Ll", .bits = both },
+        .{ .cp = 0x01C5, .gc = "Lt", .bits = both },
+        .{ .cp = 0x02B0, .gc = "Lm", .bits = both },
+        .{ .cp = 0x00AA, .gc = "Lo", .bits = both },
+        .{ .cp = 0x0300, .gc = "Mn", .bits = both },
+        .{ .cp = 0x0903, .gc = "Mc", .bits = sub },
+        .{ .cp = 0x20DD, .gc = "Me", .bits = sub },
+        .{ .cp = 0x2160, .gc = "Nl", .bits = both },
+        .{ .cp = 0x00B2, .gc = "No", .bits = both },
+        .{ .cp = 0x2010, .gc = "Pd", .bits = both },
+        .{ .cp = 0x203F, .gc = "Pc", .bits = both },
+        .{ .cp = 0x00B7, .gc = "Po", .bits = both },
+        .{ .cp = 0x20AC, .gc = "Sc", .bits = both },
+        .{ .cp = 0x00D7, .gc = "Sm", .bits = both },
+        .{ .cp = 0x02C2, .gc = "Sk", .bits = both },
+        .{ .cp = 0x00A9, .gc = "So", .bits = both },
+        .{ .cp = 0xE000, .gc = "Co", .bits = both },
+        .{ .cp = 0x0F3A, .gc = "Ps", .bits = 0 },
+        .{ .cp = 0x0F3B, .gc = "Pe", .bits = 0 },
+        .{ .cp = 0x2018, .gc = "Pi", .bits = 0 },
+        .{ .cp = 0x2019, .gc = "Pf", .bits = 0 },
+        .{ .cp = 0x00A0, .gc = "Zs", .bits = 0 },
+        .{ .cp = 0x2028, .gc = "Zl", .bits = 0 },
+        .{ .cp = 0x2029, .gc = "Zp", .bits = 0 },
+        .{ .cp = 0x0085, .gc = "Cc", .bits = 0 },
+        .{ .cp = 0x00AD, .gc = "Cf", .bits = 0 },
+        .{ .cp = 0xD800, .gc = "Cs", .bits = 0 },
+        .{ .cp = 0x0378, .gc = "Cn", .bits = 0 },
+        // ASCII の境界。カテゴリが許す集合にあっても、0x80 より前では立てない。
+        .{ .cp = 0x007E, .gc = "Lo", .bits = 0 },
+        .{ .cp = 0x007F, .gc = "Lo", .bits = 0 },
+        .{ .cp = 0x0080, .gc = "Lo", .bits = both },
+    };
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    for (cases) |c| try text.print(gpa, "{X:0>4};CHARACTER;{s};0;L;;;;;N;;;;;\n", .{ c.cp, c.gc });
+    try parseForIdentifierBits(gpa, text.items, flags);
+    for (cases) |c| {
+        errdefer std.debug.print("identifier bits of U+{X:0>4} ({s})\n", .{ c.cp, c.gc });
+        try std.testing.expectEqual(c.bits, flags[c.cp]);
+    }
+}
+
+test "parseUnicodeData keeps the identifier bits of a decimal digit out of the initial set" {
+    const gpa = std.testing.allocator;
+    const flags = try gpa.alloc(u16, code_point_count);
+    defer gpa.free(flags);
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    for (0..10) |k| {
+        try text.print(gpa, "{X:0>4};ARABIC-INDIC DIGIT;Nd;0;AN;;{d};{d};{d};N;;;;;\n", .{ 0x660 + k, k, k, k });
+    }
+    try parseForIdentifierBits(gpa, text.items, flags);
+    try std.testing.expectEqual(flag.identifier_subsequent, flags[0x660] & (flag.identifier_initial | flag.identifier_subsequent));
+    try std.testing.expectEqual(flag.numeric | flag.identifier_subsequent, flags[0x669]);
+}
+
+test "parseUnicodeData rejects a range line without its partner and an unknown category" {
+    const gpa = std.testing.allocator;
+    const flags = try gpa.alloc(u16, code_point_count);
+    defer gpa.free(flags);
+    const first = "4E00;<CJK Ideograph, First>;Lo;0;L;;;;;N;;;;;\n";
+    const last = "9FFF;<CJK Ideograph, Last>;Lo;0;L;;;;;N;;;;;\n";
+    const other = "0061;LATIN SMALL LETTER A;Ll;0;L;;;;;N;;;0041;;0041\n";
+    // First と Last が同じ符号位置の1点の範囲は正当である。
+    try parseForIdentifierBits(gpa, "4E00;<CJK Ideograph, First>;Lo;0;L;;;;;N;;;;;\n" ++
+        "4E00;<CJK Ideograph, Last>;Lo;0;L;;;;;N;;;;;\n", flags);
+    try std.testing.expectEqual(flag.identifier_initial | flag.identifier_subsequent, flags[0x4E00]);
+    try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, first, flags));
+    try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, last, flags));
+    try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, first ++ other ++ last, flags));
+    try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, first ++ first ++ last, flags));
+    try std.testing.expectError(
+        error.UnpairedRange,
+        parseForIdentifierBits(gpa, first ++ "9FFF;<Hangul Syllable, Last>;Lo;0;L;;;;;N;;;;;\n", flags),
+    );
+    try std.testing.expectError(
+        error.UnpairedRange,
+        parseForIdentifierBits(gpa, first ++ "9FFF;<CJK Ideograph, Last>;Ll;0;L;;;;;N;;;;;\n", flags),
+    );
+    try std.testing.expectError(
+        error.UnpairedRange,
+        parseForIdentifierBits(gpa, "9FFF;<CJK Ideograph, First>;Lo;0;L;;;;;N;;;;;\n" ++ "4E00;<CJK Ideograph, Last>;Lo;0;L;;;;;N;;;;;\n", flags),
+    );
+    try std.testing.expectError(
+        error.UnknownCategory,
+        parseForIdentifierBits(gpa, "00E9;X;Xx;0;L;;;;;N;;;;;\n", flags),
+    );
 }
 
 test "parseUnicodeData rejects a digit run that is not 0 to 9" {

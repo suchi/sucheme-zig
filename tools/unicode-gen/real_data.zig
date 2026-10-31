@@ -93,8 +93,10 @@ test "real data: properties of known code points" {
         .{ .cp = '!', .flags = 0 },
         .{ .cp = 0x10FFFF, .flags = 0 },
     };
+    // 識別子の印は、ここでは見ない(props.zig と full_range.zig が見る)。
+    const identifier = flag.identifier_initial | flag.identifier_subsequent;
     for (known) |k| {
-        std.testing.expectEqual(k.flags, d.flags[k.cp]) catch |err| {
+        std.testing.expectEqual(k.flags, d.flags[k.cp] & ~identifier) catch |err| {
             std.debug.print("flags of U+{X:0>4}\n", .{k.cp});
             return err;
         };
