@@ -713,6 +713,9 @@ pub const Port = struct {
         /// One of the console's streams: standard input, output or error (R7RS 6.13.1).
         /// 領域を持たない。書き込みは、`Console.sink` に直接書く(src/port.zig)。
         console: Stream,
+        /// A file the host has open, through a buffer the port holds (R7RS 6.13.1
+        /// `open-input-file` and the like).
+        file: File,
     };
 
     /// Which of the console's streams a console port is.
@@ -732,6 +735,28 @@ pub const Port = struct {
         /// For an input port, where in `bytes` the next byte to read is.
         /// 出力のポートでは使わず、0 のままである。
         pos: usize = 0,
+    };
+
+    /// The data of a port on a file: which of the host's open files it is, and the
+    /// buffer between the file and the program.
+    /// Why: ファイルそのもの(`std.Io.File`)をポートに置かず、ホストの表(src/platform/)の
+    /// 番号を置く。GC の走査(src/trace.zig)は、ヒープの型と純粋なデータだけをたどり、
+    /// ホストのポインタを持つ型を受け付けない。番号は、閉じるまで表の1つの欄を指す。
+    /// バッファは固定の大きさで、ヒープが計上し、回収のときに返す
+    /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の1)。
+    pub const File = struct {
+        /// The slot of the host's table of open files that holds the file.
+        id: u32,
+        /// The buffer the port owns. Its size is fixed when the port is opened.
+        buffer: []u8,
+        /// For an input port, how many bytes of `buffer` hold data read from the
+        /// file; for an output port, how many hold data not yet written to it.
+        len: usize = 0,
+        /// For an input port, where in `buffer` the next byte to read is.
+        /// 出力のポートでは使わず、0 のままである。
+        pos: usize = 0,
+        /// For an input port, whether the file has given its last byte.
+        at_end: bool = false,
     };
 };
 
@@ -766,6 +791,14 @@ pub const PrimitiveError = error{
     Immutable,
     /// The port to read from or write to has been closed (R7RS 6.13.1 `close-port`).
     PortClosed,
+    /// A file could not be opened, deleted, read or written (R7RS 6.13.1, 6.14).
+    /// 機械は、`file-error?` が真になる条件に写す(R7RS 6.11)。どの操作かは、手続きの名前が示す。
+    FileError,
+    /// A file could not be opened because the system had no descriptor left.
+    /// 機械は、次の境目で回収してから、同じ呼び出しを1回だけ適用し直す(`Machine.apply`)。
+    /// 回収が、到達できなくなった開いたポートを閉じるからである。2回目も尽きていれば、
+    /// `FileError` と同じ条件にする。
+    FilesExhausted,
     /// The host could not take what was written to the console.
     /// 条件にならない。機械はそのまま返す(WASM の出力バッファが満杯のときなど)。
     WriteFailed,
@@ -1145,6 +1178,11 @@ pub const Kont = struct {
         /// 空のリストか、`index` が末尾に達した複数値のオブジェクトなら、残りは無い。
         rest: Value,
         index: usize,
+        /// Whether the call is the one made again after a collection, because the
+        /// system had no file descriptor left (`Machine.apply`).
+        /// 印をフレームに持たせるのは、フレームが送出で捨てられたときに、印も一緒に消える
+        /// ようにするためである。
+        retry: bool = false,
 
         /// Takes the next operand off `rest`, or null when none is left.
         pub fn takeNext(self: *Spread) ?Value {

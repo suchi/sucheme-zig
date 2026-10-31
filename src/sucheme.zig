@@ -34,6 +34,7 @@ const library = @import("syntax/library.zig");
 pub const resolve = @import("resolve.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
+const platform = @import("platform/native.zig");
 const printer = @import("printer.zig");
 const value = @import("value.zig");
 const tier = @import("tier.zig");
@@ -146,7 +147,14 @@ pub const Interpreter = struct {
     /// Why: 準拠マトリクスは、標準ライブラリごとに、その輸出だけを数える。最上位に標準環境が
     /// あると、別のライブラリの輸出を、数えようとしているライブラリの分に数えてしまう。
     pub fn initBare(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
-        try self.build(gpa, options, null);
+        try self.initBareWithFiles(gpa, options, null);
+    }
+
+    /// `initBare`, opening files with `files`, or with no file system when `files`
+    /// is null (`initWithFiles`).
+    /// 準拠スイートのランナーが、ファイルの手続き(R7RS 6.14)をネイティブの経路で試すために使う。
+    pub fn initBareWithFiles(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options, files: ?resolve.Files) error{OutOfMemory}!void {
+        try self.build(gpa, options, files);
         self.ctx.globals.base = null;
     }
 
@@ -155,6 +163,15 @@ pub const Interpreter = struct {
         errdefer self.arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
         self.ctx.files = files;
+        // ファイルの表は、ライブラリのファイルを開けるホストだけが持つ。表をアリーナに置くのは、
+        // ヒープが表を指すので、コンテキストを動かしても表のアドレスが変わらないようにするため
+        // である。
+        if (files) |f| {
+            const t = try self.arena.allocator().create(platform.FileTable);
+            t.* = .init(f.io, gpa);
+            self.ctx.file_table = t;
+            self.ctx.heap.files = t.host();
+        }
         self.ctx.embedded = embedded;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
@@ -2660,4 +2677,400 @@ test "a library still reports a name that only dead code of its body refers to, 
         defer interp.deinit();
         try expectLineFails(&interp, "(define-library (t a) (export) (import (sucheme core)) (begin (if #f car-typo)) (begin (define y1 1) (define y2 2)))", "unbound identifier in library (t a): car-typo");
     }
+}
+
+/// The program text `text` with each `{s}` replaced by the path of `file` beneath `tree`, written
+/// as a Scheme string literal.
+/// Why: 一時のディレクトリの絶対パスは、Windows では `\` を含む。文字列のリテラルに
+/// そのまま埋めると、エスケープとして読まれる。
+fn withFileName(a: std.mem.Allocator, tree: *const resolve.Tree, file: []const u8, text: []const u8) ![]const u8 {
+    var literal: std.Io.Writer.Allocating = .init(a);
+    try literal.writer.writeByte('"');
+    for ([_][]const u8{ tree.path, "/", file }) |part| for (part) |c| {
+        if (c == '\\' or c == '"') try literal.writer.writeByte('\\');
+        try literal.writer.writeByte(c);
+    };
+    try literal.writer.writeByte('"');
+    return std.mem.replaceOwned(u8, a, text, "{s}", literal.written());
+}
+
+/// An interpreter of the standard environment that opens files, on the files beneath `tree`.
+fn initWithFileTable(interp: *Interpreter, tree: *resolve.Tree, stress: bool) !void {
+    try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &tree.roots });
+}
+
+test "a file written with with-output-to-file is read back with call-with-input-file" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        try expectLinePrints(&interp, try withFileName(a, &tree, "out.txt", "(import (scheme file) (scheme write)) (with-output-to-file {s} (lambda () (write (list 1 \"two\" #\\3)) (newline) 'done))"), "done\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "out.txt", "(call-with-input-file {s} (lambda (p) (list (read-line p) (read-char p))))"), "(\"(1 \\\"two\\\" #\\\\3)\" #<eof>)\n");
+        // バッファ(`file_buffer_size`)の2倍を超える出力は、バッファを2回満たして書き出され、
+        // 読むときは、バッファを2回足す。ストレスモードはステップごとに回収するので、規模は
+        // 境目を越える最小に近く保つ。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-output-file {s} (lambda (p) (let loop ((i 0)) (if (< i 900) (begin (write-string \"0123456789\" p) (loop (+ i 1)))))))"), "");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0)) (if (eof-object? (read-char p)) n (loop (+ n 1))))))"), "9000\n");
+    }
+}
+
+test "a binary file holds the bytes written to it, and file-exists? and delete-file see it" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectLinePrints(&interp, "(import (scheme file))", "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(file-exists? {s})"), "#f\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(let ((p (open-binary-output-file {s}))) (write-bytevector (bytevector 0 255 10) p) (close-port p))"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(file-exists? {s})"), "#t\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(let ((p (open-binary-input-file {s}))) (let ((b (read-bytevector 10 p))) (close-port p) (list b (binary-port? p))))"), "(#u8(0 255 10) #t)\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(delete-file {s})"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(file-exists? {s})"), "#f\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(guard (c ((file-error? c) 'gone)) (delete-file {s}))"), "gone\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(guard (c ((file-error? c) 'missing)) (open-input-file {s}))"), "missing\n");
+    // 開けなかったファイルの名前は、条件の irritant である。
+    try expectLineFails(&interp, try withFileName(a, &tree, "none/x.txt", "(open-output-file {s})"), try withFileName(a, &tree, "none/x.txt", "file operation failed in open-output-file {s}"));
+}
+
+test "a file port that nothing reaches is written out and closed when it is collected, and at the end" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    {
+        // ストレスモードは、ステップごとに回収する。次の行の評価の前に、ポートは回収される。
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, true);
+        defer interp.deinit();
+        try expectLinePrints(&interp, try withFileName(a, &tree, "lost.txt", "(import (scheme file)) (write-string \"abc\" (open-output-file {s})) 'ok"), "ok\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "lost.txt", "(call-with-input-file {s} (lambda (p) (read-string 10 p)))"), "\"abc\"\n");
+        var open: usize = 0;
+        for (interp.ctx.file_table.?.slots.items) |slot| open += @intFromBool(slot != null);
+        try std.testing.expectEqual(0, open);
+        try expectLinePrints(&interp, try withFileName(a, &tree, "kept.txt", "(define kept (open-output-file {s})) (write-string \"xyz\" kept)"), "");
+    }
+    // 解放のときに開いていたポートも、書き出して閉じる。
+    const kept = try tree.tmp.dir.readFileAlloc(std.testing.io, "kept.txt", a, .unlimited);
+    try std.testing.expectEqualStrings("xyz", kept);
+}
+
+/// The table of an interpreter, made to run out of descriptors once `limit` files
+/// are open, for the tests of opening a file again after a collection.
+const ScarceFiles = struct {
+    inner: heap.Heap.FileHost,
+    table: *platform.FileTable,
+    limit: usize,
+    refused: usize = 0,
+
+    fn install(self: *ScarceFiles, interp: *Interpreter) void {
+        self.inner = interp.ctx.heap.files.?;
+        self.table = interp.ctx.file_table.?;
+        var h = self.inner;
+        h.context = self;
+        h.open = open;
+        h.read = read;
+        h.write = write;
+        h.close = close;
+        h.delete = delete;
+        h.exists = exists;
+        interp.ctx.heap.files = h;
+    }
+
+    fn of(ctx_ptr: *anyopaque) *ScarceFiles {
+        return @ptrCast(@alignCast(ctx_ptr));
+    }
+
+    fn open(ctx_ptr: *anyopaque, path: []const u8, direction: value.Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        const self = of(ctx_ptr);
+        var open_count: usize = 0;
+        for (self.table.slots.items) |slot| open_count += @intFromBool(slot != null);
+        if (open_count >= self.limit) {
+            self.refused += 1;
+            return error.Exhausted;
+        }
+        return self.inner.open(self.inner.context, path, direction);
+    }
+
+    fn read(ctx_ptr: *anyopaque, id: u32, buffer: []u8) error{Io}!usize {
+        return of(ctx_ptr).inner.read(of(ctx_ptr).inner.context, id, buffer);
+    }
+
+    fn write(ctx_ptr: *anyopaque, id: u32, bytes: []const u8) error{Io}!void {
+        return of(ctx_ptr).inner.write(of(ctx_ptr).inner.context, id, bytes);
+    }
+
+    fn close(ctx_ptr: *anyopaque, id: u32) void {
+        of(ctx_ptr).inner.close(of(ctx_ptr).inner.context, id);
+    }
+
+    fn delete(ctx_ptr: *anyopaque, path: []const u8) error{Refused}!void {
+        return of(ctx_ptr).inner.delete(of(ctx_ptr).inner.context, path);
+    }
+
+    fn exists(ctx_ptr: *anyopaque, path: []const u8) bool {
+        return of(ctx_ptr).inner.exists(of(ctx_ptr).inner.context, path);
+    }
+};
+
+test "a file is opened again after a collection when the system has run out of descriptors" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    var scarce: ScarceFiles = .{ .inner = undefined, .table = undefined, .limit = 2 };
+    scarce.install(&interp);
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(import (scheme file)) (call-with-output-file {s} (lambda (p) (write-string \"a\" p)))"), "");
+    // 開いたまま手放したポートは、回収で閉じられ、記述子が空く。上限を超えて開き続けられる。
+    const before = interp.ctx.heap.collections;
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(let loop ((i 0)) (if (< i 10) (begin (open-input-file {s}) (loop (+ i 1))) 'opened))"), "opened\n");
+    try std.testing.expect(scarce.refused > 0);
+    try std.testing.expect(interp.ctx.heap.collections - before >= scarce.refused);
+    // 開いたポートがすべて届くところにあれば、回収しても空かない。呼び直しは1回だけで、
+    // そのあとは file-error である。
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(define kept (list (open-input-file {s}) (open-input-file {s})))"), "");
+    // 1回目の試みと、回収のあとの呼び直しの、2回だけ断られる。
+    scarce.refused = 0;
+    const collections = interp.ctx.heap.collections;
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(guard (c ((file-error? c) (error-object-message c))) (open-binary-input-file {s}))"), "\"file operation failed in open-binary-input-file\"\n");
+    try std.testing.expectEqual(2, scarce.refused);
+    try std.testing.expect(interp.ctx.heap.collections > collections);
+    // 呼び直しの印は、次の呼び出しに残らない。
+    try expectLinePrints(&interp, "(close-port (car kept)) (input-port? (open-input-string \"\"))", "#t\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(input-port-open? (open-input-file {s}))"), "#t\n");
+}
+
+test "an output file is emptied when it is opened, and flush-output-port writes what its port holds" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file))", "");
+    // 長い中身のあとに短く書くと、後ろは残らない。
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-output-file {s} (lambda (p) (write-string \"long contents\" p)))"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-output-file {s} (lambda (p) (write-string \"short\" p)))"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (read-string 100 p)))"), "\"short\"\n");
+    // 開いたままのポートの中身は、書き出すまでファイルに無い。
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(define out (open-output-file {s})) (write-string \"abc\" out)"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (eof-object? (read-char p))))"), "#t\n");
+    try expectLinePrints(&interp, "(flush-output-port out)", "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (read-string 100 p)))"), "\"abc\"\n");
+    try expectLinePrints(&interp, "(close-port out)", "");
+}
+
+test "closing a file port whose output cannot be written is a file error, and closes the port" {
+    // Why: 書き出しが必ず失敗するファイルは、Linux の /dev/full である(書き込みが ENOSPC になる)。
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file)) (define full (open-output-file \"/dev/full\")) (write-string \"a\" full)", "");
+    try expectLinePrints(&interp, "(guard (c ((file-error? c) (error-object-message c))) (close-port full))", "\"file operation failed in close-port\"\n");
+    try expectLinePrints(&interp, "(output-port-open? full)", "#f\n");
+    // バッファより大きい書き込みは、閉じる前に失敗する。
+    try expectLinePrints(&interp, "(define full2 (open-output-file \"/dev/full\")) (guard (c ((file-error? c) 'file)) (write-string (make-string 5000 #\\a) full2))", "file\n");
+}
+
+test "reading a file whose characters cross the end of the port's buffer, or are not UTF-8, keeps the characters whole" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // バッファ(`file_buffer_size`)の境目で、3バイトの文字「あ」が分かれる。
+    const size = @import("prim/port.zig").file_buffer_size;
+    const split = try a.alloc(u8, size - 2 + "あいう".len);
+    @memset(split[0 .. size - 2], 'a');
+    @memcpy(split[size - 2 ..], "あいう");
+    try tree.write("split.txt", split);
+    // 続きのバイトでない後続が、文字の途中に来る。
+    try tree.write("bad.txt", &.{ 97, 255, 98 });
+    // バイナリのファイルは、バッファより長い 5000 バイトにする。
+    comptime std.debug.assert(size < 5000);
+    const bytes = try a.alloc(u8, 5000);
+    for (bytes, 0..) |*b, i| b.* = @truncate(i);
+    try tree.write("bytes.bin", bytes);
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (scheme file))", "");
+        // 文字の数は、`a` が size - 2 個と「あいう」の3つである。
+        const count = try std.fmt.allocPrint(a, "({d} #t)\n", .{size + 1});
+        const tail = try std.fmt.allocPrint(a, "(substring s {d} {d})", .{ size - 2, size + 1 });
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", try std.mem.concat(a, u8, &.{ "(let ((s (call-with-input-file {s} (lambda (p) (read-string 100000 p))))) (list (string-length s) (equal? ", tail, " \"あいう\")))" })), count);
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", try std.mem.concat(a, u8, &.{ "(let ((s (call-with-input-file {s} read-line))) (list (string-length s) (equal? ", tail, " \"あいう\")))" })), count);
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0) (last #f)) (let ((c (read-char p))) (if (eof-object? c) (list n (eqv? last #\\う)) (loop (+ n 1) c))))))"), count);
+        // 境目の直前まで読むと、次の文字は、読み足してから覗ける。
+        const before = try std.fmt.allocPrint(a, "(call-with-input-file {{s}} (lambda (p) (read-string {d} p) (list (char-ready? p) (eqv? (peek-char p) #\\あ) (eqv? (read-char p) #\\あ))))", .{size - 2});
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", before), "(#t #t #t)\n");
+        // 読めないバイトは、1バイトずつ U+FFFD になる。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bad.txt", "(equal? (call-with-input-file {s} read-line) (string #\\a (integer->char #xFFFD) #\\b))"), "#t\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bad.txt", "(equal? (call-with-input-file {s} (lambda (p) (read-string 10 p))) (string #\\a (integer->char #xFFFD) #\\b))"), "#t\n");
+        // バイナリのポートも、バッファを越えて読み足す。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bytes.bin", "(call-with-port (open-binary-input-file {s}) (lambda (p) (let ((b (read-bytevector 100000 p))) (list (bytevector-length b) (bytevector-u8-ref b 4999) (eof-object? (read-u8 p))))))"), "(5000 135 #t)\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bytes.bin", "(let ((b (make-bytevector 6000 0))) (call-with-port (open-binary-input-file {s}) (lambda (p) (list (read-bytevector! b p) (bytevector-u8-ref b 4999) (read-bytevector! b p)))))"), "(5000 135 #<eof>)\n");
+    }
+}
+
+/// A file to read and what reading it with `check` prints, for the table of reads
+/// across the end of a port's buffer.
+const BoundaryCase = struct {
+    /// What the file holds, made from the offset `n`, which falls on or next to an end
+    /// of the buffer.
+    contents: *const fn (a: std.mem.Allocator, n: usize) anyerror![]const u8,
+    /// The program, in which `{s}` names the file.
+    check: []const u8,
+    /// What `check` prints, made from `n`.
+    expected: *const fn (a: std.mem.Allocator, n: usize) anyerror![]const u8,
+};
+
+fn repeated(a: std.mem.Allocator, n: usize, tail: []const u8) ![]const u8 {
+    const out = try a.alloc(u8, n + tail.len);
+    @memset(out[0..n], 'a');
+    @memcpy(out[n..], tail);
+    return out;
+}
+
+const boundary_cases = [_]BoundaryCase{
+    // 行の終わりが、境目の前後にある。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "\nnext\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let* ((x (read-line p)) (y (read-line p))) (list (string-length x) y (eof-object? (read-line p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} \"next\" #t)\n", .{n});
+            }
+        }.f,
+    },
+    // 復帰と改行の組が、境目で分かれうる。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "\r\nnext\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let* ((x (read-line p)) (y (read-line p))) (list (string-length x) y (eof-object? (read-line p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} \"next\" #t)\n", .{n});
+            }
+        }.f,
+    },
+    // 3バイトの文字が、境目で分かれうる。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n - 1, "あ\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let ((x (read-line p))) (list (string-length x) (eqv? (string-ref x (- (string-length x) 1)) #\\あ)))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} #t)\n", .{n});
+            }
+        }.f,
+    },
+    // 読めないバイトは、境目の前後でも U+FFFD になる。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "\xffb\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let ((x (read-line p))) (list (string-length x) (char->integer (string-ref x (- (string-length x) 2)))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} 65533)\n", .{n + 2});
+            }
+        }.f,
+    },
+    // `read-string` は、終わりまでにある分を返し、そのあとは EOF である。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let* ((x (read-string 3 p)) (y (read-string 100000 p))) (list (string-length x) (string-length y) (eof-object? (read-string 1 p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "(3 {d} #t)\n", .{n - 3});
+            }
+        }.f,
+    },
+    // `read-bytevector` と `read-bytevector!` も同じである。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "");
+            }
+        }.f,
+        .check = "(call-with-port (open-binary-input-file {s}) (lambda (p) (let* ((x (read-bytevector 3 p)) (b (make-bytevector 100000 0)) (y (read-bytevector! b p))) (list (bytevector-length x) y (eof-object? (read-bytevector 1 p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "(3 {d} #t)\n", .{n - 3});
+            }
+        }.f,
+    },
+};
+
+test "reads that cross an end of a file port's buffer give what the file holds" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file))", "");
+    const size = @import("prim/port.zig").file_buffer_size;
+    for ([_]usize{ size - 1, size, size + 1, 2 * size, 2 * size + 1 }) |n| {
+        for (boundary_cases) |c| {
+            try tree.write("b.txt", try c.contents(a, n));
+            const expected = try c.expected(a, n);
+            const line = try withFileName(a, &tree, "b.txt", c.check);
+            expectLinePrints(&interp, line, expected) catch |e| {
+                std.debug.print("at offset {d}: {s}\n", .{ n, c.check });
+                return e;
+            };
+        }
+    }
+    // 行の長さがバッファを割り切らないとき、どの行も割れない。
+    var lines: std.ArrayList(u8) = .empty;
+    for (0..100) |_| try lines.appendSlice(a, try repeated(a, 79, "\n"));
+    try tree.write("lines.txt", lines.items);
+    try expectLinePrints(&interp, try withFileName(a, &tree, "lines.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0) (bad 0)) (let ((x (read-line p))) (if (eof-object? x) (list n bad) (loop (+ n 1) (if (= (string-length x) 79) bad (+ bad 1))))))))"), "(100 0)\n");
 }

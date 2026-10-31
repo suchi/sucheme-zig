@@ -363,6 +363,14 @@ test("the console ports write to the output buffer in order with the results", (
   assert.deepEqual(h.run("(write-string \"a\") (car 1)"), [SCHEME_ERROR, "aerror: wrong type of argument to car 1\n"]);
 });
 
+// スライス 5k: WASM はファイルの表を持たないので、`file-exists?` は誤りを送出せずに `#f` を返し、
+// ファイルを開く手続きは `file-error?` が真になる条件を送出する(docs/design/frontend.md の第2類)。
+test("file-exists? is false in wasm, and opening a file is a file error", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run('(import (scheme file)) (file-exists? "x")'), [OK, "#f\n"]);
+  assert.deepEqual(h.run("(guard (c ((file-error? c) 'file)) (open-input-file \"x\"))"), [OK, "file\n"]);
+});
+
 // WASM にはファイルを開く手段が無いので、`include` は、ファイルを探さずに、ファイルが無いと
 // 報告する(スライス 2o)。ファイル名の形が悪いものは、開く前に、形の誤りとして断る。
 test("an include reports that there is no file to read, and refuses a form that is not well formed", () => {

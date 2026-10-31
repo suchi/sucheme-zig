@@ -431,3 +431,23 @@
 (define current-input-port (%console-parameter 0))
 (define current-output-port (%console-parameter 1))
 (define current-error-port (%console-parameter 2))
+
+;; ファイルの `call-with-*` と `with-*`(R7RS 6.13.1)。開く手続きと `file-exists?` `delete-file` は
+;; Zig のプリミティブである(src/prim/port.zig)。`call-with-*` は、開いたポートで `call-with-port`
+;; を呼ぶ。`with-*` は、開いたポートを現在のポートにして `thunk` を呼び、戻ったら閉じて値を返す。
+;; 原文は、継続で抜けたときは `parameterize` で束縛したのと同じに振る舞うとするので、差し替えは
+;; `parameterize` で行い、抜けたときは閉じない(`call-with-port` と同じ扱い)。このライブラリは
+;; `let` を持たない(`(sucheme derived)` にある)ので、開いたポートは手続きの引数で受ける。
+(define (call-with-input-file string proc)
+  (call-with-port (open-input-file string) proc))
+
+(define (call-with-output-file string proc)
+  (call-with-port (open-output-file string) proc))
+
+(define (with-input-from-file string thunk)
+  (call-with-port (open-input-file string)
+    (lambda (port) (parameterize ((current-input-port port)) (thunk)))))
+
+(define (with-output-to-file string thunk)
+  (call-with-port (open-output-file string)
+    (lambda (port) (parameterize ((current-output-port port)) (thunk)))))

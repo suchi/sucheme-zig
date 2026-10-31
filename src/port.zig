@@ -2,7 +2,12 @@
 //!
 //! ポートの手続き(`prim/port.zig`)と、後のスライスの `read`(5l)とプリンタ(5j)が、ここを通して
 //! ポートを読み書きする。今の裏付けは、文字列ポートとバイトベクタポートの `memory` と、コンソールの
-//! `console` である(docs/plans/0019-phase5-ports-and-io.md)。
+//! `console` と、ファイルの `file` である(docs/plans/0019-phase5-ports-and-io.md)。
+//!
+//! ファイルのポートは、固定の大きさのバッファを通して、ホストの表(`Heap.files`)のファイルを
+//! 読み書きする。入力は、バッファが尽きたら `fill` で足す。出力は、バッファが満ちたとき、
+//! `flush` のとき、閉じるときに書き出す。`Port.File` の `pos <= len <= buffer.len` は、
+//! ここの関数が保つ。
 //!
 //! コンソールの出力ポート(標準出力と標準エラー)は、書いたバイトを、そのまま `sink` に書く。
 //! 領域を持たないので、評価の結果の表示と同じ書き手に、書いた順に並ぶ。コンソールの入力ポートは、
@@ -28,6 +33,8 @@ pub const Error = heap_mod.Error || error{
     WrongKind,
     /// The writer the console writes to could not take the bytes.
     WriteFailed,
+    /// The host could not read from or write to the file of a file port.
+    Io,
 };
 
 /// Checks that `port` is open, flows in `direction` and carries `element`.
@@ -54,16 +61,27 @@ pub fn peekChar(heap: *Heap, port: *Port) Error!?u21 {
     return next.char;
 }
 
+/// The character that stands for bytes that are not UTF-8.
+pub const replacement_char: u21 = 0xFFFD;
+
 /// The next character and the bytes it takes.
-/// テキストのポートのバイト列は、開いたときに妥当な UTF-8 である(`Heap.createMemoryPort`)。
-/// 読む位置は文字の境目にしか置かないので、ここで復号に失敗することはない。
+/// 文字列ポートのバイト列は、開いたときに妥当な UTF-8 である(`Heap.createMemoryPort`)。
+/// ファイルの中身は選べないので、UTF-8 として読めないバイトは、1バイトずつ置換文字
+/// (U+FFFD)として読む。ファイルの末尾で途切れた列も同じである。ファイルのポートは、
+/// 1文字のバイトが手元にそろうまで `fill` で足す。
 fn peekCharWidth(heap: *Heap, port: *Port) Error!?struct { char: u21, width: usize } {
-    _ = heap;
     try check(port, .input, .textual);
-    const rest = pending(port);
-    if (rest.len == 0) return null;
-    const width = std.unicode.utf8ByteSequenceLength(rest[0]) catch unreachable;
-    const char = std.unicode.utf8Decode(rest[0..width]) catch unreachable;
+    var rest = pending(port);
+    if (rest.len == 0) {
+        if (!try fill(heap, port)) return null;
+        rest = pending(port);
+    }
+    const width = std.unicode.utf8ByteSequenceLength(rest[0]) catch return .{ .char = replacement_char, .width = 1 };
+    while (rest.len < width) {
+        if (!try fill(heap, port)) return .{ .char = replacement_char, .width = 1 };
+        rest = pending(port);
+    }
+    const char = std.unicode.utf8Decode(rest[0..width]) catch return .{ .char = replacement_char, .width = 1 };
     return .{ .char = char, .width = width };
 }
 
@@ -78,20 +96,24 @@ pub fn readByte(heap: *Heap, port: *Port) Error!?u8 {
 /// The next byte of the binary input port `port`, without reading past it, or
 /// null at the end.
 pub fn peekByte(heap: *Heap, port: *Port) Error!?u8 {
-    _ = heap;
     try check(port, .input, .binary);
-    const rest = pending(port);
-    if (rest.len == 0) return null;
+    var rest = pending(port);
+    if (rest.len == 0) {
+        if (!try fill(heap, port)) return null;
+        rest = pending(port);
+    }
     return rest[0];
 }
 
-/// The bytes of the input port `port` that have not been read.
-/// 向きと開閉は、呼び出し側が先に検査する。
+/// The bytes of the input port `port` that have not been read, of those it holds.
+/// 向きと開閉は、呼び出し側が先に検査する。ファイルのポートでは、バッファにある分だけで、
+/// 空でもファイルの終わりとは限らない(`fill` で足す)。
 pub fn pending(port: *const Port) []const u8 {
     return switch (port.backing) {
         .memory => |*memory| memory.bytes[memory.pos..memory.len],
         // 標準入力は、5i では最初から終わりにある。
         .console => "",
+        .file => |*file| file.buffer[file.pos..file.len],
     };
 }
 
@@ -104,7 +126,38 @@ pub fn consume(port: *Port, n: usize) void {
             memory.pos += n;
         },
         .console => std.debug.assert(n == 0),
+        .file => |*file| {
+            std.debug.assert(n <= file.len - file.pos);
+            file.pos += n;
+        },
     }
+}
+
+/// Adds to what the open input port `port` holds from its source, and gives
+/// whether it added anything: false at the end.
+/// 文字列ポートとバイトベクタポートは、開いたときにすべてを持つので、足すものが無い。
+/// ファイルのポートは、読んでいない分をバッファの頭に寄せてから、空いた所に読む。
+/// バッファが読んでいない分で埋まっていてはならない(`peekCharWidth` は高々4バイトを待つ)。
+/// 終わりに着いたあとは、ファイルを読まずに false を返す。
+pub fn fill(heap: *Heap, port: *Port) Error!bool {
+    const file = switch (port.backing) {
+        .memory, .console => return false,
+        .file => |*file| file,
+    };
+    if (file.at_end) return false;
+    const unread = file.len - file.pos;
+    std.mem.copyForwards(u8, file.buffer[0..unread], file.buffer[file.pos..file.len]);
+    file.pos = 0;
+    file.len = unread;
+    std.debug.assert(file.len < file.buffer.len);
+    const host = heap.files.?;
+    const n = try host.read(host.context, file.id, file.buffer[file.len..]);
+    if (n == 0) {
+        file.at_end = true;
+        return false;
+    }
+    file.len += n;
+    return true;
 }
 
 /// Appends `bytes` to the output port `port`; for a textual port they must be
@@ -126,6 +179,7 @@ pub fn writeBytes(heap: *Heap, sink: ?*std.Io.Writer, port: *Port, bytes: []cons
             if (sink) |w| w.writeAll(bytes) catch return error.WriteFailed;
             return;
         },
+        .file => |*file| return writeFile(heap, file, bytes),
     };
     const needed = std.math.add(usize, memory.len, bytes.len) catch return error.HeapLimit;
     if (needed > memory.bytes.len) {
@@ -146,11 +200,63 @@ pub fn written(port: *const Port) []const u8 {
     return memory.bytes[0..memory.len];
 }
 
+/// Puts `bytes` in the buffer of a file output port, writing out the buffer first
+/// when they do not fit.
+/// バッファより大きい書き込みは、バッファを書き出してから、写さずに直接書く。
+fn writeFile(heap: *Heap, file: *Port.File, bytes: []const u8) Error!void {
+    if (bytes.len <= file.buffer.len - file.len) {
+        @memcpy(file.buffer[file.len..][0..bytes.len], bytes);
+        file.len += bytes.len;
+        return;
+    }
+    try writeOut(heap, file);
+    if (bytes.len < file.buffer.len) {
+        @memcpy(file.buffer[0..bytes.len], bytes);
+        file.len = bytes.len;
+        return;
+    }
+    const host = heap.files.?;
+    try host.write(host.context, file.id, bytes);
+}
+
+/// Writes what the buffer of a file output port holds to its file, and empties
+/// the buffer.
+/// 書けなかったときは、バッファをそのまま残す。
+fn writeOut(heap: *Heap, file: *Port.File) Error!void {
+    if (file.len == 0) return;
+    const host = heap.files.?;
+    try host.write(host.context, file.id, file.buffer[0..file.len]);
+    file.len = 0;
+}
+
+/// Writes out what the open output port `port` holds for its destination
+/// (R7RS 6.13.3 `flush-output-port`).
+/// ためておくのは、ファイルのポートだけである。コンソールの書き手を書き出すのは、呼び出し側
+/// である(`prim/port.zig` の `flush-output-port`)。
+pub fn flush(heap: *Heap, port: *Port) Error!void {
+    if (port.direction != .output) return error.WrongDirection;
+    if (!port.open) return error.PortClosed;
+    switch (port.backing) {
+        .memory, .console => {},
+        .file => |*file| try writeOut(heap, file),
+    }
+}
+
 /// Closes `port`; closing a closed port does nothing (R7RS 6.13.1).
 /// 文字列ポートとバイトベクタポートの領域は、閉じても回収まで残る。`get-output-string` は、
-/// 閉じたあとも読める。
-pub fn close(port: *Port) void {
-    port.open = false;
+/// 閉じたあとも読める。ファイルのポートは、ためた出力を書き出してから、ファイルを閉じる。
+/// 書き出せなかったときも、ファイルは閉じ、ためた出力は捨てて、`Io` を返す。
+pub fn close(heap: *Heap, port: *Port) Error!void {
+    if (!port.open) return;
+    switch (port.backing) {
+        .memory, .console => port.open = false,
+        .file => |*file| {
+            const written_out = if (port.direction == .output) writeOut(heap, file) else {};
+            file.len = 0;
+            heap.closeFile(port);
+            try written_out;
+        },
+    }
 }
 
 /// A `std.Io.Writer` that writes to the output port `port` through `writeBytes`, for
@@ -273,10 +379,10 @@ test "the reading functions refuse a port of the other kind, an output port and 
     const out = try f.output(.textual);
     try std.testing.expectError(error.WrongDirection, readChar(&f.heap, out));
     try std.testing.expectError(error.WrongDirection, peekChar(&f.heap, out));
-    close(text);
+    try close(&f.heap, text);
     try std.testing.expectError(error.PortClosed, readChar(&f.heap, text));
     try std.testing.expectError(error.PortClosed, peekChar(&f.heap, text));
-    close(bytes);
+    try close(&f.heap, bytes);
     try std.testing.expectError(error.PortClosed, readByte(&f.heap, bytes));
     try std.testing.expectError(error.PortClosed, peekByte(&f.heap, bytes));
     // 何も読まなかったので、位置は動いていない。
@@ -320,7 +426,7 @@ test "writeBytes refuses an input port and a closed port, and leaves the port as
     try std.testing.expectError(error.WrongDirection, writeBytes(&f.heap, null, in, "x"));
     const out = try f.output(.binary);
     try writeBytes(&f.heap, null, out, "a");
-    close(out);
+    try close(&f.heap, out);
     try std.testing.expectError(error.PortClosed, writeBytes(&f.heap, null, out, "x"));
     try std.testing.expectEqualStrings("a", written(out));
 }
@@ -346,9 +452,9 @@ test "close closes a port of either direction, and closing it again does nothing
     defer f.deinit();
     const in = try f.input(.textual, "a");
     const out = try f.output(.textual);
-    close(in);
-    close(in);
-    close(out);
+    try close(&f.heap, in);
+    try close(&f.heap, in);
+    try close(&f.heap, out);
     try std.testing.expect(!in.open);
     try std.testing.expect(!out.open);
 }
@@ -376,14 +482,14 @@ test "the reading functions check the direction, then the kind, then whether the
     f.init();
     defer f.deinit();
     const out = try f.output(.binary);
-    close(out);
+    try close(&f.heap, out);
     // 閉じた出力のポートは、向きの誤りである。
     try std.testing.expectError(error.WrongDirection, readChar(&f.heap, out));
     const bytes = try f.input(.binary, "a");
-    close(bytes);
+    try close(&f.heap, bytes);
     try std.testing.expectError(error.WrongKind, readChar(&f.heap, bytes));
     const text = try f.input(.textual, "a");
-    close(text);
+    try close(&f.heap, text);
     try std.testing.expectError(error.WrongKind, readByte(&f.heap, text));
 }
 
@@ -405,7 +511,7 @@ test "a console output port writes to the sink as it is written to, and to nothi
     try std.testing.expectEqual(before, f.heap.accounted);
     try std.testing.expectEqualStrings("abλc", sink.buffered());
     // 閉じたら書けない。
-    close(out);
+    try close(&f.heap, out);
     try std.testing.expectError(error.PortClosed, writeBytes(&f.heap, &sink, out, "x"));
 }
 
@@ -479,7 +585,7 @@ test "the port writer keeps the error of the port, and reports WriteFailed to th
     f.init();
     defer f.deinit();
     const p = try f.output(.textual);
-    close(p);
+    try close(&f.heap, p);
     var buf: [4]u8 = undefined;
     var w: Writer = .init(&f.heap, null, p, &buf);
     try std.testing.expectError(error.WriteFailed, w.interface.writeAll("abcdef"));
@@ -492,4 +598,229 @@ test "the port writer keeps the error of the port, and reports WriteFailed to th
     try w2.interface.writeAll("abc");
     try std.testing.expectError(error.WriteFailed, w2.interface.writeAll("defgh"));
     try std.testing.expectEqual(error.HeapLimit, w2.failure.?);
+}
+
+/// A host with one file in memory, which gives at most `chunk` bytes a read and
+/// records what is written, for the tests of file ports.
+/// ヒープより先に作り、後で解放する。ヒープの解放が、開いたポートを書き出して閉じるからである。
+const FakeHost = struct {
+    contents: []const u8 = "",
+    at: usize = 0,
+    chunk: usize = 3,
+    reads: usize = 0,
+    written: std.ArrayList(u8) = .empty,
+    writes: usize = 0,
+    closed: usize = 0,
+    fail: bool = false,
+
+    fn deinit(self: *FakeHost) void {
+        self.written.deinit(std.testing.allocator);
+    }
+
+    fn host(self: *FakeHost) Heap.FileHost {
+        return .{ .context = self, .open = open, .delete = delete, .exists = exists, .read = read, .write = write, .close = closeIt };
+    }
+
+    fn open(_: *anyopaque, _: []const u8, _: Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        return error.Refused;
+    }
+
+    fn delete(_: *anyopaque, _: []const u8) error{Refused}!void {
+        return error.Refused;
+    }
+
+    fn exists(_: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+
+    fn read(context: *anyopaque, _: u32, buffer: []u8) error{Io}!usize {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        if (self.fail) return error.Io;
+        self.reads += 1;
+        const n = @min(buffer.len, self.chunk, self.contents.len - self.at);
+        @memcpy(buffer[0..n], self.contents[self.at..][0..n]);
+        self.at += n;
+        return n;
+    }
+
+    fn write(context: *anyopaque, _: u32, bytes: []const u8) error{Io}!void {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        if (self.fail) return error.Io;
+        self.writes += 1;
+        self.written.appendSlice(std.testing.allocator, bytes) catch return error.Io;
+    }
+
+    fn closeIt(context: *anyopaque, _: u32) void {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        self.closed += 1;
+    }
+};
+
+/// An open file port with a buffer of `size` bytes on `heap`, which reads from and
+/// writes to `fake`.
+fn openFake(heap: *Heap, fake: *FakeHost, direction: Port.Direction, element: Port.Element, size: usize) !*Port {
+    heap.files = fake.host();
+    const p = try heap.createFilePort(direction, element, size);
+    p.open = true;
+    return p;
+}
+
+test "a textual file port reads characters that cross the end of what its buffer holds" {
+    var fake: FakeHost = .{ .contents = "aλ😀b" };
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .input, .textual, 4);
+    try std.testing.expectEqual('a', (try readChar(&f.heap, p)).?);
+    try std.testing.expectEqual(0x3BB, (try peekChar(&f.heap, p)).?);
+    try std.testing.expectEqual(0x3BB, (try readChar(&f.heap, p)).?);
+    try std.testing.expectEqual(0x1F600, (try readChar(&f.heap, p)).?);
+    try std.testing.expectEqual('b', (try readChar(&f.heap, p)).?);
+    try std.testing.expectEqual(null, try readChar(&f.heap, p));
+    // 終わりに着いたあとは、ファイルを読まない。
+    const reads = fake.reads;
+    try std.testing.expectEqual(null, try peekChar(&f.heap, p));
+    try std.testing.expectEqual(reads, fake.reads);
+}
+
+test "a textual file port reads each byte that is not UTF-8 as the replacement character" {
+    // 続きのバイトで始まる列、続きのバイトでない後続、末尾で途切れた列。
+    var fake: FakeHost = .{ .contents = "\x80a\xCE\x41\xF0\x9F" };
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .input, .textual, 8);
+    const expected = [_]u21{ replacement_char, 'a', replacement_char, 'A', replacement_char, replacement_char };
+    for (expected) |c| try std.testing.expectEqual(c, (try readChar(&f.heap, p)).?);
+    try std.testing.expectEqual(null, try readChar(&f.heap, p));
+}
+
+test "a binary file port reads its bytes through a small buffer, and null at the end" {
+    var fake: FakeHost = .{ .contents = &.{ 1, 2, 3, 4, 5 }, .chunk = 2 };
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .input, .binary, 2);
+    for (1..6) |b| {
+        try std.testing.expectEqual(@as(u8, @intCast(b)), (try peekByte(&f.heap, p)).?);
+        try std.testing.expectEqual(@as(u8, @intCast(b)), (try readByte(&f.heap, p)).?);
+    }
+    try std.testing.expectEqual(null, try readByte(&f.heap, p));
+    try std.testing.expect(p.backing.file.at_end);
+}
+
+test "fill keeps what has not been read, and adds nothing to a memory port" {
+    var fake: FakeHost = .{ .contents = "abcdef", .chunk = 4 };
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .input, .binary, 5);
+    try std.testing.expect(try fill(&f.heap, p));
+    try std.testing.expectEqualStrings("abcd", pending(p));
+    consume(p, 3);
+    try std.testing.expect(try fill(&f.heap, p));
+    try std.testing.expectEqualStrings("def", pending(p));
+    try std.testing.expect(!try fill(&f.heap, p));
+    try std.testing.expectEqualStrings("def", pending(p));
+    const m = try f.input(.binary, "xy");
+    try std.testing.expect(!try fill(&f.heap, m));
+    try std.testing.expectEqualStrings("xy", pending(m));
+}
+
+test "a file input port reports a failure to read as Io" {
+    var fake: FakeHost = .{ .contents = "a", .fail = true };
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .input, .textual, 4);
+    try std.testing.expectError(error.Io, readChar(&f.heap, p));
+    const q = try openFake(&f.heap, &fake, .input, .binary, 4);
+    try std.testing.expectError(error.Io, peekByte(&f.heap, q));
+}
+
+test "a file output port keeps small writes in its buffer until it is full, flushed or closed" {
+    var fake: FakeHost = .{};
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .output, .textual, 4);
+    try writeBytes(&f.heap, null, p, "ab");
+    try writeBytes(&f.heap, null, p, "cd");
+    try std.testing.expectEqual(0, fake.writes);
+    // 収まらない書き込みは、先にバッファを書き出す。
+    try writeBytes(&f.heap, null, p, "e");
+    try std.testing.expectEqualStrings("abcd", fake.written.items);
+    try flush(&f.heap, p);
+    try std.testing.expectEqualStrings("abcde", fake.written.items);
+    // 空のバッファの書き出しは、ファイルに書かない。
+    const writes = fake.writes;
+    try flush(&f.heap, p);
+    try std.testing.expectEqual(writes, fake.writes);
+    try writeBytes(&f.heap, null, p, "f");
+    try close(&f.heap, p);
+    try std.testing.expectEqualStrings("abcdef", fake.written.items);
+    try std.testing.expectEqual(1, fake.closed);
+    try std.testing.expect(!p.open);
+    // 閉じたポートを閉じても、何もしない。
+    try close(&f.heap, p);
+    try std.testing.expectEqual(1, fake.closed);
+}
+
+test "a write as large as the buffer of a file port goes to the file after what the buffer holds" {
+    var fake: FakeHost = .{};
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .output, .binary, 4);
+    try writeBytes(&f.heap, null, p, "a");
+    try writeBytes(&f.heap, null, p, "bcde");
+    try std.testing.expectEqualStrings("abcde", fake.written.items);
+    try std.testing.expectEqual(0, p.backing.file.len);
+    // バッファより1バイト小さい書き込みは、書き出したあとのバッファに入る。
+    try writeBytes(&f.heap, null, p, "x");
+    try writeBytes(&f.heap, null, p, "yzw");
+    try writeBytes(&f.heap, null, p, "v");
+    try std.testing.expectEqualStrings("abcdexyzw", fake.written.items);
+    try std.testing.expectEqual(1, p.backing.file.len);
+}
+
+test "a file output port that cannot write keeps its buffer, and closing it closes the file all the same" {
+    var fake: FakeHost = .{};
+    defer fake.deinit();
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try openFake(&f.heap, &fake, .output, .textual, 4);
+    try writeBytes(&f.heap, null, p, "abc");
+    fake.fail = true;
+    try std.testing.expectError(error.Io, flush(&f.heap, p));
+    try std.testing.expectEqual(3, p.backing.file.len);
+    try std.testing.expectError(error.Io, writeBytes(&f.heap, null, p, "de"));
+    try std.testing.expectEqual(3, p.backing.file.len);
+    try std.testing.expectError(error.Io, close(&f.heap, p));
+    try std.testing.expect(!p.open);
+    try std.testing.expectEqual(1, fake.closed);
+    try std.testing.expectEqual(0, fake.written.items.len);
+    try std.testing.expectError(error.PortClosed, flush(&f.heap, p));
+}
+
+test "flush refuses an input port and a closed port, and does nothing to a memory port" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const in = try f.input(.textual, "a");
+    try std.testing.expectError(error.WrongDirection, flush(&f.heap, in));
+    const out = try f.output(.textual);
+    try writeBytes(&f.heap, null, out, "a");
+    try flush(&f.heap, out);
+    try std.testing.expectEqualStrings("a", written(out));
+    try close(&f.heap, out);
+    try std.testing.expectError(error.PortClosed, flush(&f.heap, out));
 }

@@ -502,6 +502,8 @@ WASM では実ファイルシステムを持たない。このとき第2類の�
 
 `file-exists?` がエラーを送出してはならないのは、R7RS 6.14 が「The file-exists? procedure returns #t if the named file exists at the time the procedure is called, and #f otherwise」と規定しており、誤りの送出を定めていないためである。送出すると `(if (file-exists? "config.scm") (load "config.scm") (use-defaults))` という移植可能な書き方がブラウザで止まる。`delete-file` については同節が「If the file does not exist or cannot be deleted, an error that satisfies file-error? is signaled」と明記しているので送出が正しい。
 
+現状(スライス 5k)。第2類の入口は `src/resolve.zig` の `openUserFile` `deleteUserFile` `userFileExists` で、パスは作業ディレクトリを基準にし、リンクを辿る。読むためにディレクトリは開かない。書くために開くファイルは、無ければ作り、あれば中身を空にする(R7RS 6.13.1 は既にあるファイルへの影響を定めていない)。開いたファイルは `src/platform/native.zig` の表が持ち、ポートは表の欄の番号と、固定の大きさのバッファを持つ。表は、ライブラリのファイルを開けるホスト(`Interpreter` を `Files` つきで作ったとき)だけが作る。WASM と、`Files` なしで作るインタプリタ(Scheme のテストのランナーなど)は表を持たないので、上の表の WASM の扱いになる。失敗は、手続きの名前と、手続きに渡した引数を irritant に持つ `file operation failed in <手続き>` の条件である。閉じ忘れたファイルポートは、回収のときとインタプリタの解放のときに、ためた出力を書き出してから閉じる。開くときに記述子が尽きていれば、回収してから1回だけ開き直す。テキストのファイルの入力で UTF-8 として読めないバイトは、1バイトずつ U+FFFD として読む(ファイルの末尾で途切れた列も同じ)。
+
 文字列のファイル名を受け取る経路の規則を定める。ライブラリ名の成分と同じ規則をそのまま適用してはならない。上の許可集合は R7RS 5.6.1 が「ライブラリ名の識別子に含めるのが望ましくない文字」として列挙したものを根拠にしており、対象が違う。同じ集合を文字列のファイル名に適用すると、`(load "scripts/my setup.scm")` や `(include "設定.scm")` のように実在して読めるべきファイルが拒否される。R7RS 4.1.7 と 6.14 はファイル名の文字集合に制約を置いていない。
 
 第1類の文字列のファイル名には次を適用する。
