@@ -3146,3 +3146,29 @@ test "read takes the data of a file across the end of the port's buffer" {
         try expectLinePrints(&interp, try withFileName(a, &tree, "i.txt", "(call-with-input-file {s} (lambda (p) (guard (c ((read-error? c) (error-object-message c))) (read p))))"), "\"unexpected end of input in read\"\n");
     }
 }
+
+test "slow: read takes a datum many times longer than the buffer of a file port" {
+    try tier.slow();
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Why: バッファを倍ずつ伸ばすので、読み直しはデータの長さの対数の回数で済む。数メガバイトの
+    // データで、読み直しの回数が長さに比例しない(倍に伸ばさない形に戻ると、この規模で遅くなる)
+    // ことと、伸ばしたバッファでも正しく読めることを見る。縮小版は、バッファの数倍のデータで
+    // 層1 にある("read takes the data of a file across the end of the port's buffer")。
+    const n = 1 << 19;
+    var list: std.ArrayList(u8) = .empty;
+    try list.append(a, '(');
+    for (0..n) |i| try list.print(a, "{d} ", .{i % 1000});
+    try list.appendSlice(a, ") tail");
+    try tree.write("big.txt", list.items);
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file) (scheme read))", "");
+    const expected = try std.fmt.allocPrint(a, "({d} tail)\n", .{n});
+    try expectLinePrints(&interp, try withFileName(a, &tree, "big.txt", "(call-with-input-file {s} (lambda (p) (let* ((x (read p)) (y (read p))) (list (length x) y))))"), expected);
+}
