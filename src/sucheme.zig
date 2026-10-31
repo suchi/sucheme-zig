@@ -2936,3 +2936,139 @@ test "reading a file whose characters cross the end of the port's buffer, or are
         try expectLinePrints(&interp, try withFileName(a, &tree, "bytes.bin", "(let ((b (make-bytevector 6000 0))) (call-with-port (open-binary-input-file {s}) (lambda (p) (list (read-bytevector! b p) (bytevector-u8-ref b 4999) (read-bytevector! b p)))))"), "(5000 135 #<eof>)\n");
     }
 }
+
+/// A file to read and what reading it with `check` prints, for the table of reads
+/// across the end of a port's buffer.
+const BoundaryCase = struct {
+    /// What the file holds, made from the offset `n`, which falls on or next to an end
+    /// of the buffer.
+    contents: *const fn (a: std.mem.Allocator, n: usize) anyerror![]const u8,
+    /// The program, in which `{s}` names the file.
+    check: []const u8,
+    /// What `check` prints, made from `n`.
+    expected: *const fn (a: std.mem.Allocator, n: usize) anyerror![]const u8,
+};
+
+fn repeated(a: std.mem.Allocator, n: usize, tail: []const u8) ![]const u8 {
+    const out = try a.alloc(u8, n + tail.len);
+    @memset(out[0..n], 'a');
+    @memcpy(out[n..], tail);
+    return out;
+}
+
+const boundary_cases = [_]BoundaryCase{
+    // 行の終わりが、境目の前後にある。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "\nnext\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let* ((x (read-line p)) (y (read-line p))) (list (string-length x) y (eof-object? (read-line p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} \"next\" #t)\n", .{n});
+            }
+        }.f,
+    },
+    // 復帰と改行の組が、境目で分かれうる。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "\r\nnext\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let* ((x (read-line p)) (y (read-line p))) (list (string-length x) y (eof-object? (read-line p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} \"next\" #t)\n", .{n});
+            }
+        }.f,
+    },
+    // 3バイトの文字が、境目で分かれうる。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n - 1, "あ\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let ((x (read-line p))) (list (string-length x) (eqv? (string-ref x (- (string-length x) 1)) #\\あ)))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} #t)\n", .{n});
+            }
+        }.f,
+    },
+    // 読めないバイトは、境目の前後でも U+FFFD になる。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "\xffb\n");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let ((x (read-line p))) (list (string-length x) (char->integer (string-ref x (- (string-length x) 2)))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "({d} 65533)\n", .{n + 2});
+            }
+        }.f,
+    },
+    // `read-string` は、終わりまでにある分を返し、そのあとは EOF である。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "");
+            }
+        }.f,
+        .check = "(call-with-input-file {s} (lambda (p) (let* ((x (read-string 3 p)) (y (read-string 100000 p))) (list (string-length x) (string-length y) (eof-object? (read-string 1 p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "(3 {d} #t)\n", .{n - 3});
+            }
+        }.f,
+    },
+    // `read-bytevector` と `read-bytevector!` も同じである。
+    .{
+        .contents = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return repeated(a, n, "");
+            }
+        }.f,
+        .check = "(call-with-port (open-binary-input-file {s}) (lambda (p) (let* ((x (read-bytevector 3 p)) (b (make-bytevector 100000 0)) (y (read-bytevector! b p))) (list (bytevector-length x) y (eof-object? (read-bytevector 1 p))))))",
+        .expected = struct {
+            fn f(a: std.mem.Allocator, n: usize) ![]const u8 {
+                return std.fmt.allocPrint(a, "(3 {d} #t)\n", .{n - 3});
+            }
+        }.f,
+    },
+};
+
+test "reads that cross an end of a file port's buffer give what the file holds" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file))", "");
+    const size = @import("prim/port.zig").file_buffer_size;
+    for ([_]usize{ size - 1, size, size + 1, 2 * size, 2 * size + 1 }) |n| {
+        for (boundary_cases) |c| {
+            try tree.write("b.txt", try c.contents(a, n));
+            const expected = try c.expected(a, n);
+            const line = try withFileName(a, &tree, "b.txt", c.check);
+            expectLinePrints(&interp, line, expected) catch |e| {
+                std.debug.print("at offset {d}: {s}\n", .{ n, c.check });
+                return e;
+            };
+        }
+    }
+    // 行の長さがバッファを割り切らないとき、どの行も割れない。
+    var lines: std.ArrayList(u8) = .empty;
+    for (0..100) |_| try lines.appendSlice(a, try repeated(a, 79, "\n"));
+    try tree.write("lines.txt", lines.items);
+    try expectLinePrints(&interp, try withFileName(a, &tree, "lines.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0) (bad 0)) (let ((x (read-line p))) (if (eof-object? x) (list n bad) (loop (+ n 1) (if (= (string-length x) 79) bad (+ bad 1))))))))"), "(100 0)\n");
+}
