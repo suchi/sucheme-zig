@@ -2710,9 +2710,11 @@ test "a file written with with-output-to-file is read back with call-with-input-
         const a = arena.allocator();
         try expectLinePrints(&interp, try withFileName(a, &tree, "out.txt", "(import (scheme file) (scheme write)) (with-output-to-file {s} (lambda () (write (list 1 \"two\" #\\3)) (newline) 'done))"), "done\n");
         try expectLinePrints(&interp, try withFileName(a, &tree, "out.txt", "(call-with-input-file {s} (lambda (p) (list (read-line p) (read-char p))))"), "(\"(1 \\\"two\\\" #\\\\3)\" #<eof>)\n");
-        // 長い出力は、バッファを何度も満たして書き出される。
-        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-output-file {s} (lambda (p) (let loop ((i 0)) (if (< i 10000) (begin (write-string \"0123456789\" p) (loop (+ i 1)))))))"), "");
-        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0)) (if (eof-object? (read-char p)) n (loop (+ n 1))))))"), "100000\n");
+        // バッファ(`file_buffer_size`)の2倍を超える出力は、バッファを2回満たして書き出され、
+        // 読むときは、バッファを2回足す。ストレスモードはステップごとに回収するので、規模は
+        // 境目を越える最小に近く保つ。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-output-file {s} (lambda (p) (let loop ((i 0)) (if (< i 900) (begin (write-string \"0123456789\" p) (loop (+ i 1)))))))"), "");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0)) (if (eof-object? (read-char p)) n (loop (+ n 1))))))"), "9000\n");
     }
 }
 
