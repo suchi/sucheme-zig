@@ -76,6 +76,7 @@ fn portFailure(e: port_mod.Error) Error {
         error.WrongDirection, error.WrongKind => error.WrongType,
         error.PortClosed => error.PortClosed,
         error.WriteFailed => error.WriteFailed,
+        error.Io => error.FileError,
         error.HeapLimit, error.OutOfMemory => |heap_error| heap_error,
     };
 }
@@ -163,24 +164,26 @@ fn isOutputPortOpen(_: *const Services, args: []const Value) Error!Value {
 }
 
 /// `(close-port port)`: closes `port`; a closed port is left as it is (R7RS 6.13.1).
-fn closePort(_: *const Services, args: []const Value) Error!Value {
-    port_mod.close(args[0].asPort() orelse return error.WrongType);
+/// ファイルの出力ポートは、ためた出力を書き出してから閉じる。書き出せなければ、閉じたうえで
+/// `file-error` を送出する。
+fn closePort(services: *const Services, args: []const Value) Error!Value {
+    port_mod.close(services.heap, args[0].asPort() orelse return error.WrongType) catch |e| return portFailure(e);
     return .unspecified_value;
 }
 
 /// `(close-input-port port)`: `close-port` for an input port only.
-fn closeInputPort(_: *const Services, args: []const Value) Error!Value {
+fn closeInputPort(services: *const Services, args: []const Value) Error!Value {
     const p = args[0].asPort() orelse return error.WrongType;
     if (p.direction != .input) return error.WrongType;
-    port_mod.close(p);
+    port_mod.close(services.heap, p) catch |e| return portFailure(e);
     return .unspecified_value;
 }
 
 /// `(close-output-port port)`: `close-port` for an output port only.
-fn closeOutputPort(_: *const Services, args: []const Value) Error!Value {
+fn closeOutputPort(services: *const Services, args: []const Value) Error!Value {
     const p = args[0].asPort() orelse return error.WrongType;
     if (p.direction != .output) return error.WrongType;
-    port_mod.close(p);
+    port_mod.close(services.heap, p) catch |e| return portFailure(e);
     return .unspecified_value;
 }
 
@@ -417,10 +420,11 @@ fn writeBytevector(services: *const Services, args: []const Value) Error!Value {
 /// (R7RS 6.13.3).
 /// 文字列ポートとバイトベクタポートは、書き出す先が無いので、開いているかだけを確かめる。
 /// コンソールのポートは、書き手の中にためたものを書き出す(REPL の途中の出力を見せるため)。
+/// ファイルのポートは、バッファにためたものをファイルに書く。
 fn flushOutputPort(services: *const Services, args: []const Value) Error!Value {
     const p = if (args.len > 0) args[0].asPort() orelse return error.WrongType else try argPort(services, args, 0, .output, .textual);
     if (p.direction != .output) return error.WrongType;
-    _ = try put(services, p, "");
+    port_mod.flush(services.heap, p) catch |e| return portFailure(e);
     if (p.backing == .console) {
         if (services.console) |console| if (console.sink) |sink| sink.flush() catch return error.WriteFailed;
     }

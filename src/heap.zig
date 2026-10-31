@@ -477,6 +477,7 @@ fn payloadBytes(comptime T: type, object: *const T) usize {
         Port => switch (object.backing) {
             .memory => |m| m.bytes.len,
             .console => 0,
+            .file => |f| f.buffer.len,
         },
         Node => switch (object.*) {
             .sequence => |nodes| nodes.len * @sizeOf(*const Node),
@@ -574,6 +575,29 @@ pub const Heap = struct {
     resident: usize = 0,
     /// The symbols: each name is interned once, and named by a `SymbolId`.
     symbols: symbol.Table = .{},
+    /// The host's open files, which the file ports read from and write to, or null
+    /// when no file port can be made.
+    /// Why: ファイルを持つのはホストの表(src/platform/)で、ヒープはその型を知らない。
+    /// ポートの読み書き(src/port.zig)は、ヒープを受け取るので、ここから表に届く。閉じ忘れた
+    /// ファイルポートは、回収のときに書き出してから閉じる(docs/plans/0019-phase5-ports-and-io.md
+    /// の合意を求める点の4)。`deinit` も同じ経路を通るので、終了のときに開いたままの
+    /// ファイルも閉じる。
+    files: ?FileHost = null,
+
+    /// The means of reading, writing and closing the host's open files, each named
+    /// by the slot of the host's table that holds it (`Port.File.id`).
+    pub const FileHost = struct {
+        context: *anyopaque,
+        /// Reads into `buffer`, and gives how many bytes it read; 0 at the end of
+        /// the file.
+        read: *const fn (context: *anyopaque, id: u32, buffer: []u8) error{Io}!usize,
+        /// Writes all of `bytes`.
+        write: *const fn (context: *anyopaque, id: u32, bytes: []const u8) error{Io}!void,
+        /// Closes the file and frees its slot.
+        /// 誤りは返さない。閉じる操作の誤りは、知らせても取り返せない(R7RS 6.13.1 の
+        /// `close-port` は値を返さない)。
+        close: *const fn (context: *anyopaque, id: u32) void,
+    };
 
     pub fn init(backing: std.mem.Allocator, options: Options) Heap {
         return .{
@@ -815,6 +839,21 @@ pub const Heap = struct {
         errdefer self.backing.free(copy);
         const cell = try self.backing.create(Cell(Port));
         cell.value = .{ .direction = direction, .element = element, .backing = .{ .memory = .{ .bytes = copy, .len = copy.len } } };
+        self.link(Port, cell, total);
+        return &cell.value;
+    }
+
+    /// A new file port with a buffer of `size` bytes, closed until the caller has
+    /// opened its file and set `id` and `open`.
+    /// Why: ポートを先に作り、ファイルを後で開く。逆の順では、ファイルを開いたあとでポートの
+    /// 確保が上限で断られたとき、開いたファイルを閉じる責任が呼び出し側に残る。この順なら、
+    /// 開けなかったポートは閉じたまま回収されるだけで、ホストの表(`files`)には触れない。
+    pub fn createFilePort(self: *Heap, direction: Port.Direction, element: Port.Element, size: usize) Error!*Port {
+        const total = try self.reserveWithPayload(.limit, Port, size, 1);
+        const buffer = try self.backing.alloc(u8, size);
+        errdefer self.backing.free(buffer);
+        const cell = try self.backing.create(Cell(Port));
+        cell.value = .{ .direction = direction, .element = element, .open = false, .backing = .{ .file = .{ .id = 0, .buffer = buffer } } };
         self.link(Port, cell, total);
         return &cell.value;
     }
@@ -1151,6 +1190,20 @@ pub const Heap = struct {
         if (self.accounted > self.peak) self.peak = self.accounted;
     }
 
+    /// Writes out what the open file port `port` holds, if it is an output port,
+    /// closes its file and marks it closed.
+    /// 書き出しの誤りは捨てる。回収の途中では知らせる先が無い。`close-port` が誤りを知らせる
+    /// ときは、先に書き出してから、これを呼ぶ(src/port.zig)。
+    pub fn closeFile(self: *Heap, port: *Port) void {
+        std.debug.assert(port.open);
+        const host = self.files.?;
+        const file = &port.backing.file;
+        if (port.direction == .output and file.len != 0) host.write(host.context, file.id, file.buffer[0..file.len]) catch {};
+        file.len = 0;
+        host.close(host.context, file.id);
+        port.open = false;
+    }
+
     /// Gives an object and its payload back to the allocator, and takes them
     /// off the account.
     /// ヘッダは、呼ぶ前にリストから外しておくこと。
@@ -1171,6 +1224,10 @@ pub const Heap = struct {
                     Port => switch (cell.value.backing) {
                         .memory => |m| self.backing.free(m.bytes),
                         .console => {},
+                        .file => |f| {
+                            if (cell.value.open) self.closeFile(&cell.value);
+                            self.backing.free(f.buffer);
+                        },
                     },
                     Node => switch (cell.value) {
                         .sequence => |nodes| self.backing.free(nodes),
@@ -2723,6 +2780,134 @@ test "a console port accounts for its cell only, and a collection keeps it while
         try std.testing.expectEqual(0, heap.count);
         try std.testing.expectEqual(0, heap.accounted);
     }
+}
+
+/// A host that records what is written to its files and which it closes, for the
+/// tests of file ports.
+const RecordingHost = struct {
+    written: std.ArrayList(u8) = .empty,
+    closed: std.ArrayList(u32) = .empty,
+    fail_writes: bool = false,
+
+    fn deinit(self: *RecordingHost) void {
+        self.written.deinit(std.testing.allocator);
+        self.closed.deinit(std.testing.allocator);
+    }
+
+    fn host(self: *RecordingHost) Heap.FileHost {
+        return .{ .context = self, .read = read, .write = write, .close = close };
+    }
+
+    fn read(context: *anyopaque, id: u32, buffer: []u8) error{Io}!usize {
+        _ = context;
+        _ = id;
+        _ = buffer;
+        return 0;
+    }
+
+    fn write(context: *anyopaque, id: u32, bytes: []const u8) error{Io}!void {
+        const self: *RecordingHost = @ptrCast(@alignCast(context));
+        _ = id;
+        if (self.fail_writes) return error.Io;
+        self.written.appendSlice(std.testing.allocator, bytes) catch unreachable;
+    }
+
+    fn close(context: *anyopaque, id: u32) void {
+        const self: *RecordingHost = @ptrCast(@alignCast(context));
+        self.closed.append(std.testing.allocator, id) catch unreachable;
+    }
+};
+
+test "a file port is made closed, and accounts for its buffer as well as its cell" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const p = try heap.createFilePort(.output, .binary, 64);
+    try std.testing.expect(!p.open);
+    try std.testing.expectEqual(.output, p.direction);
+    try std.testing.expectEqual(.binary, p.element);
+    try std.testing.expectEqual(64, p.backing.file.buffer.len);
+    try std.testing.expectEqual(0, p.backing.file.len);
+    try std.testing.expectEqual(0, p.backing.file.pos);
+    try std.testing.expect(!p.backing.file.at_end);
+    try std.testing.expectEqual(cellBytes(Port) + 64, heap.accounted);
+}
+
+test "a collection writes out and closes a file port it frees while the port is open, and only then" {
+    var recording: RecordingHost = .{};
+    defer recording.deinit();
+    var heap: Heap = .init(std.testing.allocator, .{ .work_capacity = 4096 });
+    heap.files = recording.host();
+    const kept = try heap.createFilePort(.output, .textual, 16);
+    kept.backing.file.id = 1;
+    kept.open = true;
+    @memcpy(kept.backing.file.buffer[0..2], "ok");
+    kept.backing.file.len = 2;
+    const lost = try heap.createFilePort(.output, .textual, 16);
+    lost.backing.file.id = 2;
+    lost.open = true;
+    @memcpy(lost.backing.file.buffer[0..3], "abc");
+    lost.backing.file.len = 3;
+    // 開けなかったポートは閉じたまま回収され、表に触れない。
+    _ = try heap.createFilePort(.input, .binary, 16);
+    heap.collect(TestRoots{ .values = &.{.fromPort(kept)} });
+    try std.testing.expectEqualSlices(u32, &.{2}, recording.closed.items);
+    try std.testing.expectEqualStrings("abc", recording.written.items);
+    try std.testing.expectEqual(cellBytes(Port) + 16, heap.accounted);
+    // 終了のときに開いたままのポートも、同じ経路で書き出して閉じる。
+    heap.deinit();
+    try std.testing.expectEqualSlices(u32, &.{ 2, 1 }, recording.closed.items);
+    try std.testing.expectEqualStrings("abcok", recording.written.items);
+}
+
+test "closing a file port drops what cannot be written, and closes the file all the same" {
+    var recording: RecordingHost = .{ .fail_writes = true };
+    defer recording.deinit();
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    heap.files = recording.host();
+    const p = try heap.createFilePort(.output, .binary, 4);
+    p.backing.file.id = 7;
+    p.open = true;
+    p.backing.file.len = 1;
+    heap.closeFile(p);
+    try std.testing.expect(!p.open);
+    try std.testing.expectEqual(0, p.backing.file.len);
+    try std.testing.expectEqualSlices(u32, &.{7}, recording.closed.items);
+}
+
+test "closing a file input port writes nothing" {
+    var recording: RecordingHost = .{};
+    defer recording.deinit();
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    heap.files = recording.host();
+    const p = try heap.createFilePort(.input, .binary, 4);
+    p.backing.file.id = 3;
+    p.open = true;
+    p.backing.file.len = 4;
+    heap.closeFile(p);
+    try std.testing.expectEqual(0, recording.written.items.len);
+    try std.testing.expectEqualSlices(u32, &.{3}, recording.closed.items);
+}
+
+test "a file port is held to the limit by its buffer, and a failure leaves the account as it was" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) + 16 });
+    defer heap.deinit();
+    try std.testing.expectError(error.HeapLimit, heap.createFilePort(.input, .binary, 17));
+    try std.testing.expectEqual(0, heap.accounted);
+    _ = try heap.createFilePort(.input, .binary, 16);
+    try std.testing.expectEqual(cellBytes(Port) + 16, heap.accounted);
+}
+
+test "when the cell cannot be allocated the buffer of a file port is given back" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    var heap: Heap = .init(failing.allocator(), .{});
+    defer heap.deinit();
+    // 1回目の確保はバッファ、2回目はセルで、これが失敗する。
+    try std.testing.expectError(error.OutOfMemory, heap.createFilePort(.output, .textual, 8));
+    try std.testing.expectEqual(0, heap.accounted);
+    try std.testing.expectEqual(0, heap.count);
+    try std.testing.expectEqual(1, failing.deallocations);
 }
 
 test "a console port is held to the limit by its cell" {
