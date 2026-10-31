@@ -1233,7 +1233,8 @@ test "next reads an identifier with characters that are not ASCII as the symbol 
     defer f.deinit();
     // <initial> に入る一般カテゴリ(Ll、Lu、Lo、Sm、So、Pc、Mn、Co)と、4 バイトの文字。
     // どれも大文字を含まないので、畳み込む読み手でも名前は変わらない。
-    for ([_][]const u8{ "λ", "二倍", "→", "😀", "\u{203F}", "\u{0301}", "\u{E000}", "a\u{3BB}", "\u{3BB}1", "x\u{663}" }) |name| {
+    // U+0080 から U+00FF の文字(é、ß、ª)は、ASCII との境界のすぐ上にある。
+    for ([_][]const u8{ "λ", "二倍", "→", "😀", "\u{203F}", "\u{0301}", "\u{E000}", "a\u{3BB}", "\u{3BB}1", "x\u{663}", "\u{E9}", "\u{DF}x", "\u{AA}" }) |name| {
         for ([_]bool{ false, true }) |fold| {
             f.fold_case = fold;
             const sym = (try f.readOne(name)).asSymbol() orelse return error.TestUnexpectedResult;
@@ -1838,7 +1839,7 @@ test "next reads the numbers that are spelled like peculiar identifiers as numbe
 }
 
 test "isIdentifier follows the R7RS grammar, peculiar identifiers included" {
-    for ([_][]const u8{ "+", "-", "...", "x", "list->vector", "<=?", "a.b", "+a", "-@", "+.a", "..", ".a", "->x" }) |s| {
+    for ([_][]const u8{ "+", "-", "...", "x", "list->vector", "<=?", "a.b", "+a", "-@", "+.a", "..", ".a", "->x", ".+", ".-x", ".@x" }) |s| {
         if (!isIdentifier(s)) {
             std.debug.print("rejected {s}\n", .{s});
             return error.TestUnexpectedResult;
