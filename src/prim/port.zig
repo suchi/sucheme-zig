@@ -20,6 +20,7 @@ const Primitive = value.Primitive;
 const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
 const port_mod = @import("../port.zig");
+const Heap = @import("../heap.zig").Heap;
 const printer = @import("../printer.zig");
 const immutable = @import("immutable.zig");
 const range_mod = @import("range.zig");
@@ -321,41 +322,90 @@ fn peekChar(services: *const Services, args: []const Value) Error!Value {
     return if (c) |char| .fromCharacter(char) else .eof_value;
 }
 
-/// The bytes of the input port `p` that have not been read, after checking that it is
-/// open.
-fn pendingOf(services: *const Services, p: *Port) Error![]const u8 {
-    // 開閉の検査は、1バイトを覗く関数に任せる。覗くだけで位置は動かない。
+/// Checks that the input port `p` is open, without reading past anything.
+/// 開閉の検査は、1つを覗く関数に任せる。覗くだけで位置は動かない。
+fn checkReadable(services: *const Services, p: *Port) Error!void {
     switch (p.element) {
         .textual => _ = port_mod.peekChar(services.heap, p) catch |e| return portFailure(e),
         .binary => _ = port_mod.peekByte(services.heap, p) catch |e| return portFailure(e),
     }
-    return port_mod.pending(p);
+}
+
+/// Where the procedures that read many characters or bytes collect them before they
+/// make the result: room counted against the limit of the heap (`Heap.residentAllocator`).
+/// Why: ファイルのポートは、まだ読んでいない入力のうち、バッファにある分しか手元に持たない。
+/// 結果はバッファより長くなりうるので、読み足しながら、ここにためる。ためる量は読む量に
+/// 比例するので、上限に数える。ためたものは、結果のオブジェクトを作ったら返す。
+const Collected = struct {
+    bytes: std.ArrayList(u8) = .empty,
+    heap: *Heap,
+    was_refused: bool,
+
+    fn init(heap: *Heap) Collected {
+        const was_refused = heap.external_refused;
+        heap.external_refused = false;
+        return .{ .heap = heap, .was_refused = was_refused };
+    }
+
+    fn deinit(self: *Collected) void {
+        self.bytes.deinit(self.heap.residentAllocator());
+        self.heap.external_refused = self.was_refused;
+    }
+
+    fn append(self: *Collected, bytes: []const u8) Error!void {
+        self.bytes.appendSlice(self.heap.residentAllocator(), bytes) catch
+            return if (self.heap.external_refused) error.HeapLimit else error.OutOfMemory;
+    }
+
+    fn appendChar(self: *Collected, c: u21) Error!void {
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(c, &buf) catch unreachable;
+        return self.append(buf[0..n]);
+    }
+};
+
+/// The characters of the textual input port `p` up to `limit` of them, or, when `line`
+/// is true, up to the end of the line, which is read past but not kept; null when the
+/// port is at its end before any character.
+/// Why: 1文字ずつ `port.readChar` で読む。ファイルのポートでは、バッファの境目で分かれた文字を
+/// 読み足してつなぎ、UTF-8 として読めないバイトを U+FFFD にする(src/port.zig の
+/// `peekCharWidth`)。バッファのバイト列を切り出して文字列にすると、境目で分かれた文字や
+/// 読めないバイトが、検査されないまま文字列に入る。ためたものは、文字を符号化し直したもの
+/// なので、妥当な UTF-8 である(ADR-0008)。
+fn readText(services: *const Services, p: *Port, limit: usize, line: bool) Error!?Value {
+    var collected: Collected = .init(services.heap);
+    defer collected.deinit();
+    var count: usize = 0;
+    var read_any = false;
+    while (count < limit) : (count += 1) {
+        const c = (port_mod.readChar(services.heap, p) catch |e| return portFailure(e)) orelse break;
+        read_any = true;
+        if (line and c == '\n') break;
+        if (line and c == '\r') {
+            const next = port_mod.peekChar(services.heap, p) catch |e| return portFailure(e);
+            if (next == '\n') _ = port_mod.readChar(services.heap, p) catch |e| return portFailure(e);
+            break;
+        }
+        try collected.appendChar(c);
+    }
+    if (!read_any) return null;
+    return .fromString(try services.heap.createString(collected.bytes.items));
 }
 
 /// `(read-line port)`: the characters up to the end of the line, without the end, or an
 /// end-of-file object when nothing is left (R7RS 6.13.2).
-/// 行の終わりは、改行、復帰、復帰に続く改行のどれかである。どれも ASCII なので、バイト列を
-/// 走査して探してよい。
+/// 行の終わりは、改行、復帰、復帰に続く改行のどれかである。
 fn readLine(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .textual);
-    const rest = try pendingOf(services, p);
-    if (rest.len == 0) return .eof_value;
-    const end = std.mem.indexOfAny(u8, rest, "\n\r") orelse rest.len;
-    const line = try services.heap.createString(rest[0..end]);
-    var skip = end;
-    if (end < rest.len) {
-        skip += 1;
-        if (rest[end] == '\r' and end + 1 < rest.len and rest[end + 1] == '\n') skip += 1;
-    }
-    port_mod.consume(p, skip);
-    return .fromString(line);
+    return try readText(services, p, std.math.maxInt(usize), true) orelse .eof_value;
 }
 
 /// `(char-ready? port)`: whether a character can be read without waiting (R7RS 6.13.2).
-/// 文字列ポートは、終わりにあっても、待たずに答えられるので真である。
+/// 文字列ポートは、終わりにあっても、待たずに答えられるので真である。ファイルのポートも、
+/// 読み足しは待たずに終わるものとして、真と答える。
 fn isCharReady(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .textual);
-    _ = try pendingOf(services, p);
+    try checkReadable(services, p);
     return .fromBool(true);
 }
 
@@ -366,17 +416,9 @@ fn readString(services: *const Services, args: []const Value) Error!Value {
     const n = args[0].asFixnum() orelse return error.WrongType;
     const p = try argPort(services, args, 1, .input, .textual);
     const k = try countOf(n);
-    const rest = try pendingOf(services, p);
+    try checkReadable(services, p);
     if (k == 0) return .fromString(try services.heap.createString(""));
-    if (rest.len == 0) return .eof_value;
-    var end: usize = 0;
-    var count: usize = 0;
-    while (end < rest.len and count < k) : (count += 1) {
-        end += std.unicode.utf8ByteSequenceLength(rest[end]) catch unreachable;
-    }
-    const s = try services.heap.createString(rest[0..end]);
-    port_mod.consume(p, end);
-    return .fromString(s);
+    return try readText(services, p, k, false) orelse .eof_value;
 }
 
 /// `(read-u8 port)`: the next byte, or an end-of-file object (R7RS 6.13.2).
@@ -396,8 +438,17 @@ fn peekU8(services: *const Services, args: []const Value) Error!Value {
 /// `(u8-ready? port)`: whether a byte can be read without waiting.
 fn isU8Ready(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .binary);
-    _ = try pendingOf(services, p);
+    try checkReadable(services, p);
     return .fromBool(true);
+}
+
+/// The bytes the binary input port `p` holds, after adding to them from its source
+/// when it holds none; empty at the end.
+fn nextBytes(services: *const Services, p: *Port) Error![]const u8 {
+    const rest = port_mod.pending(p);
+    if (rest.len != 0) return rest;
+    _ = port_mod.fill(services.heap, p) catch |e| return portFailure(e);
+    return port_mod.pending(p);
 }
 
 /// `(read-bytevector k port)`: a new bytevector of the next `k` bytes, or of as many as
@@ -407,13 +458,21 @@ fn readBytevector(services: *const Services, args: []const Value) Error!Value {
     const n = args[0].asFixnum() orelse return error.WrongType;
     const p = try argPort(services, args, 1, .input, .binary);
     const k = try countOf(n);
-    const rest = try pendingOf(services, p);
+    try checkReadable(services, p);
     if (k == 0) return .fromBytevector(try services.heap.createBytevector(""));
-    if (rest.len == 0) return .eof_value;
-    const taken = @min(k, rest.len);
-    const b = try services.heap.createBytevector(rest[0..taken]);
-    port_mod.consume(p, taken);
-    return .fromBytevector(b);
+    // Why: ファイルのポートは、バッファにある分しか手元に持たないので、読み足しながら
+    // ためる(`readText` と同じ理由)。
+    var collected: Collected = .init(services.heap);
+    defer collected.deinit();
+    while (collected.bytes.items.len < k) {
+        const rest = try nextBytes(services, p);
+        if (rest.len == 0) break;
+        const taken = @min(k - collected.bytes.items.len, rest.len);
+        try collected.append(rest[0..taken]);
+        port_mod.consume(p, taken);
+    }
+    if (collected.bytes.items.len == 0) return .eof_value;
+    return .fromBytevector(try services.heap.createBytevector(collected.bytes.items));
 }
 
 /// `(read-bytevector! bytevector port)`, `(read-bytevector! bytevector port start)` and
@@ -429,12 +488,19 @@ fn readBytevectorInto(services: *const Services, args: []const Value) Error!Valu
     const operands = try RangeOperands.of(args, 2);
     try immutable.requireMutable(args[0]);
     const range = try resolveRange(operands, target.bytes.len);
-    const rest = try pendingOf(services, p);
+    try checkReadable(services, p);
     if (range.start == range.end) return .fromFixnum(0);
-    if (rest.len == 0) return .eof_value;
-    const n = @min(range.end - range.start, rest.len);
-    @memcpy(target.bytes[range.start..][0..n], rest[0..n]);
-    port_mod.consume(p, n);
+    // ファイルのポートは、範囲が埋まるか終わりに着くまで、読み足す。
+    var n: usize = 0;
+    while (range.start + n < range.end) {
+        const rest = try nextBytes(services, p);
+        if (rest.len == 0) break;
+        const taken = @min(range.end - range.start - n, rest.len);
+        @memcpy(target.bytes[range.start + n ..][0..taken], rest[0..taken]);
+        port_mod.consume(p, taken);
+        n += taken;
+    }
+    if (n == 0) return .eof_value;
     return .fromFixnum(@intCast(n));
 }
 

@@ -2893,3 +2893,46 @@ test "closing a file port whose output cannot be written is a file error, and cl
     // バッファより大きい書き込みは、閉じる前に失敗する。
     try expectLinePrints(&interp, "(define full2 (open-output-file \"/dev/full\")) (guard (c ((file-error? c) 'file)) (write-string (make-string 5000 #\\a) full2))", "file\n");
 }
+
+test "reading a file whose characters cross the end of the port's buffer, or are not UTF-8, keeps the characters whole" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // バッファ(`file_buffer_size`)の境目で、3バイトの文字「あ」が分かれる。
+    const size = @import("prim/port.zig").file_buffer_size;
+    const split = try a.alloc(u8, size - 2 + "あいう".len);
+    @memset(split[0 .. size - 2], 'a');
+    @memcpy(split[size - 2 ..], "あいう");
+    try tree.write("split.txt", split);
+    // 続きのバイトでない後続が、文字の途中に来る。
+    try tree.write("bad.txt", &.{ 97, 255, 98 });
+    // バイナリのファイルは、バッファより長い 5000 バイトにする。
+    comptime std.debug.assert(size < 5000);
+    const bytes = try a.alloc(u8, 5000);
+    for (bytes, 0..) |*b, i| b.* = @truncate(i);
+    try tree.write("bytes.bin", bytes);
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (scheme file))", "");
+        // 文字の数は、`a` が size - 2 個と「あいう」の3つである。
+        const count = try std.fmt.allocPrint(a, "({d} #t)\n", .{size + 1});
+        const tail = try std.fmt.allocPrint(a, "(substring s {d} {d})", .{ size - 2, size + 1 });
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", try std.mem.concat(a, u8, &.{ "(let ((s (call-with-input-file {s} (lambda (p) (read-string 100000 p))))) (list (string-length s) (equal? ", tail, " \"あいう\")))" })), count);
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", try std.mem.concat(a, u8, &.{ "(let ((s (call-with-input-file {s} read-line))) (list (string-length s) (equal? ", tail, " \"あいう\")))" })), count);
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0) (last #f)) (let ((c (read-char p))) (if (eof-object? c) (list n (eqv? last #\\う)) (loop (+ n 1) c))))))"), count);
+        // 境目の直前まで読むと、次の文字は、読み足してから覗ける。
+        const before = try std.fmt.allocPrint(a, "(call-with-input-file {{s}} (lambda (p) (read-string {d} p) (list (char-ready? p) (eqv? (peek-char p) #\\あ) (eqv? (read-char p) #\\あ))))", .{size - 2});
+        try expectLinePrints(&interp, try withFileName(a, &tree, "split.txt", before), "(#t #t #t)\n");
+        // 読めないバイトは、1バイトずつ U+FFFD になる。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bad.txt", "(equal? (call-with-input-file {s} read-line) (string #\\a (integer->char #xFFFD) #\\b))"), "#t\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bad.txt", "(equal? (call-with-input-file {s} (lambda (p) (read-string 10 p))) (string #\\a (integer->char #xFFFD) #\\b))"), "#t\n");
+        // バイナリのポートも、バッファを越えて読み足す。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bytes.bin", "(call-with-port (open-binary-input-file {s}) (lambda (p) (let ((b (read-bytevector 100000 p))) (list (bytevector-length b) (bytevector-u8-ref b 4999) (eof-object? (read-u8 p))))))"), "(5000 135 #t)\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "bytes.bin", "(let ((b (make-bytevector 6000 0))) (call-with-port (open-binary-input-file {s}) (lambda (p) (list (read-bytevector! b p) (bytevector-u8-ref b 4999) (read-bytevector! b p)))))"), "(5000 135 #<eof>)\n");
+    }
+}
