@@ -49,10 +49,11 @@ pub const Machine = struct {
     /// 末尾位置の呼び出しはフレームを足さないので、自分自身を呼ぶループがあっても
     /// この値は変わらない。
     peak_depth: usize = 0,
-    /// Whether the next pure primitive applied is the call made again after a
-    /// collection, because the system had no file descriptor left (`apply`).
-    /// 呼び直しは、回収のすぐ後の境目で、同じ呼び出しに対して行う。その間に別の純粋
-    /// プリミティブは走らないので、次に適用する純粋プリミティブが呼び直しである。
+    /// Whether the pure primitive about to be applied is the call made again after
+    /// a collection, because the system had no file descriptor left (`apply`).
+    /// 呼び直しの `spread` のフレーム(`retry` が立ったもの)を適用する直前に立て、`apply` が
+    /// 純粋プリミティブを呼ぶときに下ろす。立ててから下ろすまでに境目は無いので、送出で
+    /// フレームが捨てられても、印は残らない。
     retrying: bool = false,
 
     pub fn init(ctx: *Context, scratch: std.mem.Allocator) Machine {
@@ -404,6 +405,7 @@ pub const Machine = struct {
                     .spread => |s| {
                         const lined = try self.lineUp(s);
                         if (lined.isDone()) {
+                            self.retrying = lined.retry;
                             take(try self.apply(&kont, &dyn, lined.chain, lined.count, .limit), &env, &control, &value);
                         } else {
                             kont = try self.push(kont, null, .{ .spread = lined });
@@ -616,9 +618,8 @@ pub const Machine = struct {
                             // フレームに載せ、次の境目で回収させてから、そのフレームが呼び直す。残りの
                             // オペランドの無い `spread` は、境目のすぐ後に、そのまま適用する。
                             error.CollectAndRetry => {
-                                kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = args, .count = count, .rest = .empty_list_value, .index = 0 } });
+                                kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = args, .count = count, .rest = .empty_list_value, .index = 0, .retry = true } });
                                 ctx.heap.collect_requested = true;
-                                self.retrying = true;
                                 return .{ .value = .unspecified_value };
                             },
                             else => |other| return other,

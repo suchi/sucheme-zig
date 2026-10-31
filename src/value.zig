@@ -1178,6 +1178,11 @@ pub const Kont = struct {
         /// 空のリストか、`index` が末尾に達した複数値のオブジェクトなら、残りは無い。
         rest: Value,
         index: usize,
+        /// Whether the call is the one made again after a collection, because the
+        /// system had no file descriptor left (`Machine.apply`).
+        /// 印をフレームに持たせるのは、フレームが送出で捨てられたときに、印も一緒に消える
+        /// ようにするためである。
+        retry: bool = false,
 
         /// Takes the next operand off `rest`, or null when none is left.
         pub fn takeNext(self: *Spread) ?Value {

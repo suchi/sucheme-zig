@@ -417,10 +417,25 @@ pub fn openUserFile(io: std.Io, path: []const u8, direction: Direction) UserFile
         .input => Dir.cwd().openFile(io, path, .{ .allow_directory = false }),
         .output => Dir.cwd().createFile(io, path, .{}),
     };
-    return opened catch |e| switch (e) {
+    return opened catch |e| userFileError(e);
+}
+
+/// What the failure `e` to open a file a program names is to the program: the
+/// descriptors running out, or any other refusal.
+/// 記述子の不足を、プロセスの上限とシステム全体の上限の両方で見分ける。見分け損ねると、
+/// 回収してから開き直す経路(`Machine.apply`)に入らず、すぐに `file-error` になる。
+fn userFileError(e: File.OpenError) UserFileError {
+    return switch (e) {
         error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => error.Exhausted,
         else => error.Refused,
     };
+}
+
+test "running out of descriptors is told apart from the other failures to open a file" {
+    try testing.expectEqual(error.Exhausted, userFileError(error.ProcessFdQuotaExceeded));
+    try testing.expectEqual(error.Exhausted, userFileError(error.SystemFdQuotaExceeded));
+    for ([_]File.OpenError{ error.FileNotFound, error.AccessDenied, error.IsDir, error.SystemResources, error.NoSpaceLeft }) |other|
+        try testing.expectEqual(error.Refused, userFileError(other));
 }
 
 /// Deletes the file `path` (R7RS 6.14 `delete-file`).

@@ -2939,6 +2939,18 @@ test "when the cell cannot be allocated the buffer of a file port is given back"
     try std.testing.expectEqual(1, failing.deallocations);
 }
 
+test "a requested collection is due at once, and the collection takes the request back" {
+    var heap: Heap = .init(std.testing.allocator, .{ .min_threshold = 1 << 20 });
+    defer heap.deinit();
+    try std.testing.expect(!heap.shouldCollect());
+    heap.collect_requested = true;
+    try std.testing.expect(heap.shouldCollect());
+    heap.collect(TestRoots{});
+    // 下ろさないと、以後の境目のたびに回収が走り、プログラムが遅くなり続ける。
+    try std.testing.expect(!heap.collect_requested);
+    try std.testing.expect(!heap.shouldCollect());
+}
+
 test "a console port is held to the limit by its cell" {
     var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) });
     defer heap.deinit();

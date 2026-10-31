@@ -2854,3 +2854,42 @@ test "a file is opened again after a collection when the system has run out of d
     try expectLinePrints(&interp, "(close-port (car kept)) (input-port? (open-input-string \"\"))", "#t\n");
     try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(input-port-open? (open-input-file {s}))"), "#t\n");
 }
+
+test "an output file is emptied when it is opened, and flush-output-port writes what its port holds" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file))", "");
+    // 長い中身のあとに短く書くと、後ろは残らない。
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-output-file {s} (lambda (p) (write-string \"long contents\" p)))"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-output-file {s} (lambda (p) (write-string \"short\" p)))"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (read-string 100 p)))"), "\"short\"\n");
+    // 開いたままのポートの中身は、書き出すまでファイルに無い。
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(define out (open-output-file {s})) (write-string \"abc\" out)"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (eof-object? (read-char p))))"), "#t\n");
+    try expectLinePrints(&interp, "(flush-output-port out)", "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (read-string 100 p)))"), "\"abc\"\n");
+    try expectLinePrints(&interp, "(close-port out)", "");
+}
+
+test "closing a file port whose output cannot be written is a file error, and closes the port" {
+    // Why: 書き出しが必ず失敗するファイルは、Linux の /dev/full である(書き込みが ENOSPC になる)。
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file)) (define full (open-output-file \"/dev/full\")) (write-string \"a\" full)", "");
+    try expectLinePrints(&interp, "(guard (c ((file-error? c) (error-object-message c))) (close-port full))", "\"file operation failed in close-port\"\n");
+    try expectLinePrints(&interp, "(output-port-open? full)", "#f\n");
+    // バッファより大きい書き込みは、閉じる前に失敗する。
+    try expectLinePrints(&interp, "(define full2 (open-output-file \"/dev/full\")) (guard (c ((file-error? c) 'file)) (write-string (make-string 5000 #\\a) full2))", "file\n");
+}
