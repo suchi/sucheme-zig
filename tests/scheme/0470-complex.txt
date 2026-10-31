@@ -289,5 +289,15 @@ error: division by zero in expt 0 +i
 (#t #t)
 
 # 範囲内の正確な複素数の log は、これまでの値のままである。
-(import (scheme complex) (scheme inexact)) (list (log 3+4i) (log 1+i))
-(1.6094379124341003+0.9272952180016122i 0.34657359027997264+0.7853981633974483i)
+# `(log 1+5i)` は、`logAbs` の値(1.6290482690107408)と、正確な数の経路の値(1.629048269010741)が最後の桁で食い違うので、
+# 切り替えの条件が範囲内の入力に効いていないことを固定する。
+(import (scheme complex) (scheme inexact)) (list (log 3+4i) (log 1+i) (log 1+5i))
+(1.6094379124341003+0.9272952180016122i 0.34657359027997264+0.7853981633974483i 1.6290482690107408+1.373400766945016i)
+
+# 部分が最小の正規化数(約 2.2e-308)に満たない非正規化数は、精度を失うので、正確な数の経路で求める
+# (実部の真の値は約 -736.48065617)。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 1 (expt 10 320)) (/ 1 (expt 10 320)))))) (list (< -736.48066 (real-part z) -736.48065) (< 0.785 (imag-part z) 0.786)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 3 (expt 10 320)) (/ 4 (expt 10 320)))))) (< -735.2178 (real-part z) -735.2177))
+#t
