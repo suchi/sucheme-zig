@@ -102,6 +102,11 @@ pub const Interpreter = struct {
     /// ファイルの実行は、式の値を捨てるが、プログラムの出力は標準出力に出す(src/main.zig の
     /// `runFile`)。REPL と WASM と test-scheme は null のままで、結果と出力が同じ順に並ぶ。
     console_out: ?*std.Io.Writer,
+    /// Where the console's input port reads from, or null when the console has no input
+    /// (WASM, the tests).
+    /// REPL は、行を読むのと同じ読み手を置く(src/main.zig の `repl`)。プログラムの `read` は、
+    /// REPL がまだ読んでいない行から読む。ファイルの実行は、標準入力を置く(suchi/sucheme-zig#230)。
+    console_in: ?*std.Io.Reader,
 
     const ErrorAt = struct { file: []const u8, location: positions_mod.Location };
 
@@ -178,6 +183,7 @@ pub const Interpreter = struct {
         self.file_name = null;
         self.error_at = null;
         self.console_out = null;
+        self.console_in = null;
     }
 
     /// Replaces the top level that imports `(sucheme core)` with one that imports
@@ -282,6 +288,10 @@ pub const Interpreter = struct {
         const previous_sink = self.ctx.console.sink;
         self.ctx.console.sink = self.console_out orelse out;
         defer self.ctx.console.sink = previous_sink;
+        // コンソールの入力ポートも、実行の間だけ、この読み手から読む。
+        const previous_input = self.ctx.heap.console_input;
+        self.ctx.heap.console_input = self.console_in;
+        defer self.ctx.heap.console_input = previous_input;
         var r: reader.Reader = .init(source);
         // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
         // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
@@ -3107,10 +3117,22 @@ test "read takes the data of a file across the end of the port's buffer" {
             try expectLinePrints(&interp, try withFileName(a, &tree, "r.txt", all), "(abcdef |λμν| \"string\" (1 2 3) end)\n");
         }
         // コメントと空白だけで手元が尽きても、続きのデータを読む。
-        // 1行がバッファより長い行コメントは、suchi/sucheme-zig#230 の答え(バッファを伸ばすか)で
-        // 扱いが決まるので、ここでは試さない。
         try tree.write("c.txt", try std.mem.concat(a, u8, &.{ "; comment\n", try spaced(a, size, "\nlast") }));
         try expectLinePrints(&interp, try withFileName(a, &tree, "c.txt", all), "(last)\n");
+        // 1行がバッファより長い行コメントと、バッファの数倍の長さのデータは、バッファを伸ばして
+        // 読む(suchi/sucheme-zig#230 の決定)。読んだあとのデータも続けて読める。
+        const long_comment = try a.alloc(u8, 2 * size);
+        @memset(long_comment, 'x');
+        long_comment[0] = ';';
+        try tree.write("lc.txt", try std.mem.concat(a, u8, &.{ long_comment, "\nafter" }));
+        try expectLinePrints(&interp, try withFileName(a, &tree, "lc.txt", all), "(after)\n");
+        var list: std.ArrayList(u8) = .empty;
+        try list.append(a, '(');
+        for (0..3 * size / 5) |i| try list.print(a, "{d:0>4} ", .{i % 10000});
+        try list.appendSlice(a, ") tail");
+        try tree.write("ld.txt", list.items);
+        const count = try std.fmt.allocPrint(a, "({d} tail)\n", .{3 * size / 5});
+        try expectLinePrints(&interp, try withFileName(a, &tree, "ld.txt", "(call-with-input-file {s} (lambda (p) (let* ((x (read p)) (y (read p))) (list (length x) y))))"), count);
         // `#!fold-case` は、ファイルのポートでも次の `read` に残る。
         try tree.write("f.txt", "#!fold-case ABC\nDEF");
         try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", all), "(abc def)\n");

@@ -447,8 +447,10 @@ fn read(services: *const Services, args: []const Value) Error!Value {
     const was_refused = heap.external_refused;
     heap.external_refused = false;
     defer heap.external_refused = was_refused;
+    // 長いデータのために伸ばしたバッファは、戻るときに元の大きさに戻す(`makeRoom`)。
+    defer restoreBuffer(heap, p);
     while (true) {
-        const all = port_mod.pending(p);
+        const all = port_mod.pending(services.heap, p);
         const valid = validPrefix(all);
         const held = all[0..valid.len];
         // 前置部分の後ろに読めないバイトがある。読み足しても、そこは変わらない。
@@ -461,7 +463,7 @@ fn read(services: *const Services, args: []const Value) Error!Value {
                 if (blocked) return unreadable(services, error.InvalidUtf8);
                 switch (try addInput(services, p)) {
                     .added => continue,
-                    .full => if (dropLeadingSpace(p, held)) continue else return tooLong(services),
+                    .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
                     .none => return unreadable(services, error.Incomplete),
                 }
             },
@@ -482,22 +484,22 @@ fn read(services: *const Services, args: []const Value) Error!Value {
                 if (blocked) return unreadable(services, error.InvalidUtf8);
                 switch (try addInput(services, p)) {
                     .added => continue,
-                    .full => if (dropLeadingSpace(p, held)) continue else return tooLong(services),
+                    .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
                     .none => {},
                 }
             }
-            port_mod.consume(p, r.pos);
+            port_mod.consume(services.heap, p, r.pos);
             p.fold_case = r.fold_case;
             return d;
         }
         // 空白とコメントだけで手元が尽きた。続きにデータがありうるので、確かに空白とコメント
         // だけと言える所までを読み終えたことにしてから、読み足す。
-        port_mod.consume(p, settledAtmosphere(held));
+        port_mod.consume(services.heap, p, settledAtmosphere(held));
         p.fold_case = r.fold_case;
         if (blocked) return unreadable(services, error.InvalidUtf8);
         switch (try addInput(services, p)) {
             .added => continue,
-            .full => return tooLong(services),
+            .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
             .none => return .eof_value,
         }
     }
@@ -522,7 +524,7 @@ fn settledAtmosphere(held: []const u8) usize {
 /// 空白と、行の終わりまで閉じた行コメントだけを数えるのは、`Reader` の空白の読み飛ばしが
 /// 外から呼べず(src/reader.zig は L2 の所有)、この2つなら、読み飛ばしても `fold_case` も
 /// データも変わらないからである。ブロックコメントと指令の前では止まる。
-fn dropLeadingSpace(p: *Port, held: []const u8) bool {
+fn dropLeadingSpace(heap: *Heap, p: *Port, held: []const u8) bool {
     var i: usize = 0;
     while (i < held.len) {
         switch (held[i]) {
@@ -532,13 +534,45 @@ fn dropLeadingSpace(p: *Port, held: []const u8) bool {
         }
     }
     if (i == 0) return false;
-    port_mod.consume(p, i);
+    port_mod.consume(heap, p, i);
     return true;
 }
 
-/// `Unreadable` for a datum that does not fit in the buffer of its file port.
+/// Makes room to add input to `p`, whose buffer is full of what it has not read,
+/// `held`: by reading past the spaces before the datum, or else, for a file port, by
+/// doubling its buffer; false when there is no way (the console).
+/// Why: 1つのデータがバッファより長いときだけ、バッファを倍に伸ばし、`read` が戻るときに
+/// 元の大きさに戻す(suchi/sucheme-zig#230 の決定。`restoreBuffer`)。伸ばす分は上限に数え、
+/// 上限に収まらなければ `HeapLimit` である。コンソールの読み手のバッファは、REPL と共有で、
+/// 伸ばせない。
+fn makeRoom(services: *const Services, p: *Port, held: []const u8) Error!bool {
+    if (dropLeadingSpace(services.heap, p, held)) return true;
+    switch (p.backing) {
+        .file => |*file| {
+            const doubled = std.math.mul(usize, file.buffer.len, 2) catch return error.HeapLimit;
+            try services.heap.resizeFileBuffer(p, doubled);
+            return true;
+        },
+        .memory, .console => return false,
+    }
+}
+
+/// Gives the file port `p` back a buffer of its usual size, if `read` made it larger
+/// and what it has not read fits.
+/// 戻せないとき(読んでいない分が多い、確保に失敗した)は、大きいまま残す。計上は残るが、
+/// 次の `read` がまた戻す。
+fn restoreBuffer(heap: *Heap, p: *Port) void {
+    if (p.backing != .file) return;
+    const file = &p.backing.file;
+    if (file.buffer.len <= file_buffer_size) return;
+    const unread = file.len - file.pos;
+    if (unread > file_buffer_size) return;
+    heap.resizeFileBuffer(p, file_buffer_size) catch {};
+}
+
+/// `Unreadable` for a datum that does not fit in what the console's reader can hold.
 fn tooLong(services: *const Services) Error {
-    if (services.reason) |reason| reason.* = "datum longer than the buffer of the port";
+    if (services.reason) |reason| reason.* = "datum longer than the input buffer";
     return error.Unreadable;
 }
 
@@ -568,13 +602,13 @@ fn closesItself(held: []const u8) bool {
 
 /// Adds to what the textual input port `p` holds: whether it added anything, or
 /// could not because what it holds fills its buffer.
-/// Why: 読んでいない分でバッファが埋まっていると、ファイルのポートは読み足せない
-/// (`port.fill`)。1つのデータがバッファより長いときの扱い(バッファを伸ばすか)は、
-/// suchi/sucheme-zig#230 で諮っている。答えが出るまでは、読めない誤り(`tooLong`)にする。
+/// 読んでいない分でバッファが埋まっていると、ファイルのポートもコンソールも読み足せない
+/// (`port.fill`)。そのときは `makeRoom` が場所を作る。
 fn addInput(services: *const Services, p: *Port) Error!enum { added, full, none } {
-    if (p.backing == .file) {
-        const file = &p.backing.file;
-        if (file.pos == 0 and file.len == file.buffer.len and !file.at_end) return .full;
+    switch (p.backing) {
+        .file => |*file| if (file.pos == 0 and file.len == file.buffer.len and !file.at_end) return .full,
+        .console => if (port_mod.consoleFull(services.heap)) return .full,
+        .memory => {},
     }
     const added = port_mod.fill(services.heap, p) catch |e| return portFailure(e);
     return if (added) .added else .none;
@@ -611,10 +645,10 @@ fn isU8Ready(services: *const Services, args: []const Value) Error!Value {
 /// The bytes the binary input port `p` holds, after adding to them from its source
 /// when it holds none; empty at the end.
 fn nextBytes(services: *const Services, p: *Port) Error![]const u8 {
-    const rest = port_mod.pending(p);
+    const rest = port_mod.pending(services.heap, p);
     if (rest.len != 0) return rest;
     _ = port_mod.fill(services.heap, p) catch |e| return portFailure(e);
-    return port_mod.pending(p);
+    return port_mod.pending(services.heap, p);
 }
 
 /// `(read-bytevector k port)`: a new bytevector of the next `k` bytes, or of as many as
@@ -635,7 +669,7 @@ fn readBytevector(services: *const Services, args: []const Value) Error!Value {
         if (rest.len == 0) break;
         const taken = @min(k - collected.bytes.items.len, rest.len);
         try collected.append(rest[0..taken]);
-        port_mod.consume(p, taken);
+        port_mod.consume(services.heap, p, taken);
     }
     if (collected.bytes.items.len == 0) return .eof_value;
     return .fromBytevector(try services.heap.createBytevector(collected.bytes.items));
@@ -663,7 +697,7 @@ fn readBytevectorInto(services: *const Services, args: []const Value) Error!Valu
         if (rest.len == 0) break;
         const taken = @min(range.end - range.start - n, rest.len);
         @memcpy(target.bytes[range.start + n ..][0..taken], rest[0..taken]);
-        port_mod.consume(p, taken);
+        port_mod.consume(services.heap, p, taken);
         n += taken;
     }
     if (n == 0) return .eof_value;

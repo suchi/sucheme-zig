@@ -50,7 +50,7 @@ fn check(port: *const Port, direction: Port.Direction, element: Port.Element) Er
 /// `heap` は、ファイルのポートが入力を足すとき(5k)に使う。文字列ポートでは使わない。
 pub fn readChar(heap: *Heap, port: *Port) Error!?u21 {
     const next = try peekCharWidth(heap, port) orelse return null;
-    consume(port, next.width);
+    consume(heap, port, next.width);
     return next.char;
 }
 
@@ -71,15 +71,15 @@ pub const replacement_char: u21 = 0xFFFD;
 /// 1文字のバイトが手元にそろうまで `fill` で足す。
 fn peekCharWidth(heap: *Heap, port: *Port) Error!?struct { char: u21, width: usize } {
     try check(port, .input, .textual);
-    var rest = pending(port);
+    var rest = pending(heap, port);
     if (rest.len == 0) {
         if (!try fill(heap, port)) return null;
-        rest = pending(port);
+        rest = pending(heap, port);
     }
     const width = std.unicode.utf8ByteSequenceLength(rest[0]) catch return .{ .char = replacement_char, .width = 1 };
     while (rest.len < width) {
         if (!try fill(heap, port)) return .{ .char = replacement_char, .width = 1 };
-        rest = pending(port);
+        rest = pending(heap, port);
     }
     const char = std.unicode.utf8Decode(rest[0..width]) catch return .{ .char = replacement_char, .width = 1 };
     return .{ .char = char, .width = width };
@@ -89,7 +89,7 @@ fn peekCharWidth(heap: *Heap, port: *Port) Error!?struct { char: u21, width: usi
 /// the end.
 pub fn readByte(heap: *Heap, port: *Port) Error!?u8 {
     const byte = try peekByte(heap, port) orelse return null;
-    consume(port, 1);
+    consume(heap, port, 1);
     return byte;
 }
 
@@ -97,35 +97,35 @@ pub fn readByte(heap: *Heap, port: *Port) Error!?u8 {
 /// null at the end.
 pub fn peekByte(heap: *Heap, port: *Port) Error!?u8 {
     try check(port, .input, .binary);
-    var rest = pending(port);
+    var rest = pending(heap, port);
     if (rest.len == 0) {
         if (!try fill(heap, port)) return null;
-        rest = pending(port);
+        rest = pending(heap, port);
     }
     return rest[0];
 }
 
 /// The bytes of the input port `port` that have not been read, of those it holds.
 /// 向きと開閉は、呼び出し側が先に検査する。ファイルのポートでは、バッファにある分だけで、
-/// 空でもファイルの終わりとは限らない(`fill` で足す)。
-pub fn pending(port: *const Port) []const u8 {
+/// 空でもファイルの終わりとは限らない(`fill` で足す)。コンソールの入力ポートでは、
+/// `Heap.console_input` の読み手のバッファにある分で、読み手が無ければ空である。
+pub fn pending(heap: *const Heap, port: *const Port) []const u8 {
     return switch (port.backing) {
         .memory => |*memory| memory.bytes[memory.pos..memory.len],
-        // 標準入力は、5i では最初から終わりにある。
-        .console => "",
+        .console => if (heap.console_input) |source| source.buffered() else "",
         .file => |*file| file.buffer[file.pos..file.len],
     };
 }
 
 /// Reads past `n` of the bytes `pending` gives, which for a textual port must end
 /// at the boundary of a character.
-pub fn consume(port: *Port, n: usize) void {
+pub fn consume(heap: *Heap, port: *Port, n: usize) void {
     switch (port.backing) {
         .memory => |*memory| {
             std.debug.assert(n <= memory.len - memory.pos);
             memory.pos += n;
         },
-        .console => std.debug.assert(n == 0),
+        .console => if (heap.console_input) |source| source.toss(n) else std.debug.assert(n == 0),
         .file => |*file| {
             std.debug.assert(n <= file.len - file.pos);
             file.pos += n;
@@ -141,7 +141,8 @@ pub fn consume(port: *Port, n: usize) void {
 /// 終わりに着いたあとは、ファイルを読まずに false を返す。
 pub fn fill(heap: *Heap, port: *Port) Error!bool {
     const file = switch (port.backing) {
-        .memory, .console => return false,
+        .memory => return false,
+        .console => return fillConsole(heap),
         .file => |*file| file,
     };
     if (file.at_end) return false;
@@ -158,6 +159,32 @@ pub fn fill(heap: *Heap, port: *Port) Error!bool {
     }
     file.len += n;
     return true;
+}
+
+/// Adds to what the reader of the console's input holds, and gives whether it added
+/// anything: false at the end, without a reader, or when its buffer is full of what
+/// has not been read.
+/// 読み手は、読んでいない分を頭に寄せてから読む(`std.Io.Reader.fillMore`)。読めた量が 0 でも
+/// 終わりではないことがあるので、足せるか終わりに着くまで繰り返す。バッファの大きさは
+/// 読み手が決めていて、伸ばせない(REPL と同じ読み手で、src/main.zig の `max_line`)。
+fn fillConsole(heap: *Heap) Error!bool {
+    const source = heap.console_input orelse return false;
+    if (source.bufferedLen() == source.buffer.len) return false;
+    const before = source.bufferedLen();
+    while (source.bufferedLen() == before) {
+        source.fillMore() catch |e| switch (e) {
+            error.EndOfStream => return false,
+            error.ReadFailed => return error.Io,
+        };
+    }
+    return true;
+}
+
+/// Whether the console's input holds what has not been read up to the end of the
+/// buffer of its reader, so that no more can be added before some is read.
+pub fn consoleFull(heap: *const Heap) bool {
+    const source = heap.console_input orelse return false;
+    return source.bufferedLen() == source.buffer.len;
 }
 
 /// Appends `bytes` to the output port `port`; for a textual port they must be
@@ -394,11 +421,11 @@ test "pending is what is left to read, and consume moves past part of it" {
     f.init();
     defer f.deinit();
     const p = try f.input(.textual, "abc");
-    try std.testing.expectEqualStrings("abc", pending(p));
-    consume(p, 2);
-    try std.testing.expectEqualStrings("c", pending(p));
+    try std.testing.expectEqualStrings("abc", pending(&f.heap, p));
+    consume(&f.heap, p, 2);
+    try std.testing.expectEqualStrings("c", pending(&f.heap, p));
     try std.testing.expectEqual('c', (try readChar(&f.heap, p)).?);
-    try std.testing.expectEqualStrings("", pending(p));
+    try std.testing.expectEqualStrings("", pending(&f.heap, p));
 }
 
 test "writeBytes appends to an output port, growing it, and keeps what was written" {
@@ -532,8 +559,8 @@ test "the console input port is at its end from the start" {
     const in = try f.heap.createConsolePort(.input);
     try std.testing.expectEqual(null, try readChar(&f.heap, in));
     try std.testing.expectEqual(null, try peekChar(&f.heap, in));
-    try std.testing.expectEqualStrings("", pending(in));
-    consume(in, 0);
+    try std.testing.expectEqualStrings("", pending(&f.heap, in));
+    consume(&f.heap, in, 0);
     try std.testing.expectError(error.WrongKind, readByte(&f.heap, in));
     try std.testing.expectError(error.WrongDirection, writeBytes(&f.heap, null, in, "x"));
 }
@@ -720,15 +747,15 @@ test "fill keeps what has not been read, and adds nothing to a memory port" {
     defer f.deinit();
     const p = try openFake(&f.heap, &fake, .input, .binary, 5);
     try std.testing.expect(try fill(&f.heap, p));
-    try std.testing.expectEqualStrings("abcd", pending(p));
-    consume(p, 3);
+    try std.testing.expectEqualStrings("abcd", pending(&f.heap, p));
+    consume(&f.heap, p, 3);
     try std.testing.expect(try fill(&f.heap, p));
-    try std.testing.expectEqualStrings("def", pending(p));
+    try std.testing.expectEqualStrings("def", pending(&f.heap, p));
     try std.testing.expect(!try fill(&f.heap, p));
-    try std.testing.expectEqualStrings("def", pending(p));
+    try std.testing.expectEqualStrings("def", pending(&f.heap, p));
     const m = try f.input(.binary, "xy");
     try std.testing.expect(!try fill(&f.heap, m));
-    try std.testing.expectEqualStrings("xy", pending(m));
+    try std.testing.expectEqualStrings("xy", pending(&f.heap, m));
 }
 
 test "a file input port reports a failure to read as Io" {
