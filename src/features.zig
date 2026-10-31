@@ -4,7 +4,8 @@
 //! `cond-expand` と `features` が同じ一覧を見る。一覧はビルド対象で決まるので、実行時に
 //! 何も調べず、コンパイル時に組み立てる。支える実装が入ったものだけを挙げる。数の
 //! `exact-closed` `exact-complex` `ratios` `ieee-float` は段階4のスライス 4j で入った。
-//! `full-unicode` は、Unicode の表が入る段階4の後半で足す。
+//! `full-unicode` は、Unicode の表(4u2)、文字と文字列の手続き(4u3)、リーダの ASCII でない
+//! 識別子(4u4)がそろった、スライス 4u4 で入った。
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -12,7 +13,7 @@ const build_options = @import("build_options");
 
 /// Every feature identifier, in the order `features` returns them.
 pub const names: []const []const u8 = blk: {
-    const base = [_][]const u8{ "r7rs", "sucheme", "sucheme-" ++ majorMinor(build_options.version), "exact-closed", "exact-complex", "ratios", "ieee-float" };
+    const base = [_][]const u8{ "r7rs", "sucheme", "sucheme-" ++ majorMinor(build_options.version), "exact-closed", "exact-complex", "ratios", "ieee-float", "full-unicode" };
     const os = osFeatures();
     const endian = switch (builtin.cpu.arch.endian()) {
         .little => "little-endian",
@@ -77,7 +78,8 @@ test "a build has r7rs, sucheme, its version, its endianness and its system, eac
     try std.testing.expect(!has("no-such-feature"));
     // 数のフィーチャは4つとも真である(正確な整数・有理数・複素数と IEEE 754 の flonum がある)。
     for ([_][]const u8{ "exact-closed", "exact-complex", "ratios", "ieee-float" }) |n| try std.testing.expect(has(n));
-    try std.testing.expect(!has("full-unicode"));
+    // 付録Bの `full-unicode`: Unicode の文字が文字として扱え、表と手続きとリーダが入っている。
+    try std.testing.expect(has("full-unicode"));
     for (names, 0..) |a, i| {
         for (names[i + 1 ..]) |b| try std.testing.expect(!std.mem.eql(u8, a, b));
     }

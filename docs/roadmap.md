@@ -146,7 +146,7 @@
 - [x] 浮動小数点数、bignum、ratnum、compnum(スライス 4d・4e・4f・4i。`eqv?` と `equal?` の値による比較は 4j)
 - [x] `number->string` と `string->number` の全範囲(スライス 4a・4b・4e・4g-4。リーダの数の綴りは 4r)
 - [x] リーダに基数接頭辞、正確性接頭辞、分数、小数、指数、`+inf.0` 系、複素数を追加(スライス 4r)
-- [ ] リーダが ASCII でない文字の識別子を読めるようにするとき、畳み込む読み手の畳み込みに Unicode の表を使う(段階4。それまで、リーダはそうした識別子を読めず、畳み込む読み手の `folded` が ASCII だけを assert する。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)
+- [x] リーダが ASCII でない文字の識別子を読み、畳み込む読み手の畳み込みに Unicode の表を使う(スライス 4u4。テストは `tests/scheme/0740-unicode-identifiers.txt` と `tests/scheme/0741-unicode-fold-case.txt`。[plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md) の合意を求める点の8)。`full-unicode` フィーチャも 4u4 で足した
 - [x] Unicode テーブルの生成ツールと生成結果(スライス 4u1・4u2。`tools/unicode-gen/`、`src/unicode/`。`zig build check-unicode` は、全コミットの検査に入れた)
 - [x] `(scheme inexact)`(スライス 4h。12個の識別子が束縛される。テストは `tests/scheme/0460-inexact.txt`)
 - [x] `(scheme complex)`(スライス 4i。6個の識別子が束縛される。テストは `tests/scheme/0470-complex.txt`)
