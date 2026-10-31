@@ -147,7 +147,14 @@ pub const Interpreter = struct {
     /// Why: 準拠マトリクスは、標準ライブラリごとに、その輸出だけを数える。最上位に標準環境が
     /// あると、別のライブラリの輸出を、数えようとしているライブラリの分に数えてしまう。
     pub fn initBare(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options) error{OutOfMemory}!void {
-        try self.build(gpa, options, null);
+        try self.initBareWithFiles(gpa, options, null);
+    }
+
+    /// `initBare`, opening files with `files`, or with no file system when `files`
+    /// is null (`initWithFiles`).
+    /// 準拠スイートのランナーが、ファイルの手続き(R7RS 6.14)をネイティブの経路で試すために使う。
+    pub fn initBareWithFiles(self: *Interpreter, gpa: std.mem.Allocator, options: heap.Options, files: ?resolve.Files) error{OutOfMemory}!void {
+        try self.build(gpa, options, files);
         self.ctx.globals.base = null;
     }
 

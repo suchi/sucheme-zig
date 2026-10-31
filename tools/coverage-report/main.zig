@@ -166,7 +166,7 @@ fn runVendoredSuite(
     };
     var required: std.ArrayList([]const u8) = .empty;
     for (libs) |lib| try required.appendSlice(gpa, lib.ids);
-    return conformance.runVendored(gpa, text, required.items) catch |e| {
+    return conformance.runVendored(gpa, io, text, required.items) catch |e| {
         if (e == error.NotVendored) {
             try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ path, &conformance.hexDigest(text), conformance.suite_sha256 });
             try err.flush();

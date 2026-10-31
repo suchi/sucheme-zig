@@ -54,7 +54,7 @@
 | 6.13 Input and output | 61 | 0 | 0 | 0 | 2 | 0 |
 | Read syntax | 18 | 0 | 0 | 0 | 67 | 10 |
 | Numeric syntax | 22 | 0 | 0 | 0 | 1 | 99 |
-| 6.14 System interface | 4 | 1 | 0 | 0 | 7 | 0 |
-| 合計 | 925 | 19 | 0 | 0 | 84 | 109 |
+| 6.14 System interface | 5 | 0 | 0 | 0 | 7 | 0 |
+| 合計 | 926 | 18 | 0 | 0 | 84 | 109 |
 
 スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme time)` `(scheme read)` `(scheme eval)` `(scheme process-context)` `(scheme r5rs)`
