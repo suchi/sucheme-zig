@@ -3116,6 +3116,19 @@ test "read takes the data of a file across the end of the port's buffer" {
             try tree.write("r.txt", try spaced(a, n, "abcdef λμν \"string\" (1 2 3) end"));
             try expectLinePrints(&interp, try withFileName(a, &tree, "r.txt", all), "(abcdef |λμν| \"string\" (1 2 3) end)\n");
         }
+        // `#` で始まるトークンは、切れると `Incomplete` でなく、ほかの構文の誤りになりうる。
+        // 満杯のバッファの終わりで切れても、読み足して読み直す。
+        const hashed = "#t #true #(1) #x1F #u8(1) #e1.5 #\\x41 #\\newline";
+        const hashed_out = "(#t #t #(1) 31 #u8(1) 3/2 #\\A #\\newline)\n";
+        for (0..12) |shift| {
+            try tree.write("h.txt", try spaced(a, size - 1 - shift, hashed));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "h.txt", all), hashed_out);
+        }
+        // 行をまたぐブロックコメントは、境目の前後でも、1つの空白である。
+        for ([_]usize{ size - 6, size - 3, size }) |n| {
+            try tree.write("b.txt", try spaced(a, n, "#| a\n b |# x"));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "b.txt", all), "(x)\n");
+        }
         // コメントと空白だけで手元が尽きても、続きのデータを読む。
         try tree.write("c.txt", try std.mem.concat(a, u8, &.{ "; comment\n", try spaced(a, size, "\nlast") }));
         try expectLinePrints(&interp, try withFileName(a, &tree, "c.txt", all), "(last)\n");

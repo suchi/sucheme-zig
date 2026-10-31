@@ -473,8 +473,12 @@ fn read(services: *const Services, args: []const Value) Error!Value {
             // ほかの構文の誤りになりうる。読み足せる限り読み足して読み直し、読み足せない
             // ときだけ、その誤りを報告する。
             else => |syntax| {
-                if (!blocked and try addInput(services, p) == .added) continue;
-                return unreadable(services, syntax);
+                if (blocked) return unreadable(services, syntax);
+                switch (try addInput(services, p)) {
+                    .added => continue,
+                    .full => if (try makeRoom(services, p, held)) continue else return unreadable(services, syntax),
+                    .none => return unreadable(services, syntax),
+                }
             },
         };
         if (datum) |d| {
@@ -492,30 +496,23 @@ fn read(services: *const Services, args: []const Value) Error!Value {
             p.fold_case = r.fold_case;
             return d;
         }
-        // 空白とコメントだけで手元が尽きた。続きにデータがありうるので、確かに空白とコメント
-        // だけと言える所までを読み終えたことにしてから、読み足す。
-        port_mod.consume(services.heap, p, settledAtmosphere(held));
-        p.fold_case = r.fold_case;
+        // 空白とコメントだけで手元が尽きた。最後の行コメントや指令が切れていることがあるので、
+        // 何も読み終えたことにせず、読み足して頭から読み直す。読み足せないときだけ、全部を
+        // 読み終えて EOF を返す。
+        // Why: 途中までを読み終えたことにすると、その切れ目が、改行をまたぐ閉じたブロック
+        // コメントの中に落ちうる(5l の査読で見つかった)。データの前の空白は、バッファが
+        // 埋まったときに `makeRoom` が読み飛ばす。
         if (blocked) return unreadable(services, error.InvalidUtf8);
         switch (try addInput(services, p)) {
             .added => continue,
             .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
-            .none => return .eof_value,
+            .none => {
+                port_mod.consume(services.heap, p, r.pos);
+                p.fold_case = r.fold_case;
+                return .eof_value;
+            },
         }
     }
-}
-
-/// How many bytes at the start of `held`, which the reader read to its end as
-/// atmosphere, can be read past without reading them again: up to the last line
-/// ending, or all of them when what follows it is only spaces.
-/// Why: 最後の行の残りは、終わりで切れた行コメントや指令(`#!fold-ca`)でありうる。行の終わり
-/// までのものは、行コメントも閉じたブロックコメントも終わっている(閉じていないブロック
-/// コメントは `Incomplete` になり、ここに来ない)。読み直す部分にある指令は、もう一度
-/// 効くだけで、最後の状態は変わらない。
-fn settledAtmosphere(held: []const u8) usize {
-    const last_line = if (std.mem.lastIndexOfAny(u8, held, "\n\r")) |i| i + 1 else 0;
-    for (held[last_line..]) |c| if (c != ' ' and c != '\t') return last_line;
-    return held.len;
 }
 
 /// Reads past the spaces, line endings and line comments at the start of `held`, what

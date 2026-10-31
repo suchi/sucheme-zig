@@ -46,3 +46,10 @@ error: wrong type of argument to read #<port>
 
 (import (scheme read)) (let ((p (open-input-string "1"))) (close-port p) (guard (c (#t (error-object-message c))) (read p)))
 "port is closed in read"
+
+# 行をまたぐブロックコメントは、1つの空白として読み飛ばす。
+(import (scheme read)) (let ((p (open-input-string "#| a\n b |#"))) (list (eof-object? (read p)) (eof-object? (read p))))
+(#t #t)
+
+(import (scheme read)) (let ((p (open-input-string "#| a\n b |# c"))) (list (read p) (eof-object? (read p))))
+(c #t)
