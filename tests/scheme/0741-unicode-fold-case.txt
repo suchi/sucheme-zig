@@ -39,6 +39,14 @@
 #!fold-case (eq? '𐐀 '𐐨)
 #t
 
+# 単純な畳み込みを持たない文字は残る。完全な畳み込みなら ß は ss になるが、
+# 識別子には文字ごとの畳み込みをかけるので、`Straße` と `STRASSE` は別のシンボルである。
+#!fold-case (eq? 'Straße 'STRASSE)
+#f
+
+#!fold-case (symbol->string 'Straße)
+"straße"
+
 # 符号の後ろでも畳み込む。
 #!fold-case (symbol->string '+Λ)
 "+λ"

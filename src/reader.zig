@@ -1329,8 +1329,9 @@ test "a reader that folds case folds the characters of an identifier that are no
         .{ "\u{1E9E}", "\u{DF}" },
         // 4 バイトの文字(Deseret)。
         .{ "\u{10400}", "\u{10428}" },
-        // 単純な畳み込みを持たない文字は、そのまま残る。
+        // 単純な畳み込みを持たない文字は、そのまま残る(完全な畳み込みなら `ss` になる `ß` も)。
         .{ "\u{130}", "\u{130}" },
+        .{ "Stra\u{DF}e", "stra\u{DF}e" },
         // 記号の後ろ。
         .{ "+Λ", "+λ" },
     };
