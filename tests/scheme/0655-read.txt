@@ -7,6 +7,10 @@
 (import (scheme read)) (eof-object? (read (open-input-string "  ; only a comment\n #| block |# ")))
 #t
 
+# EOF を返すときは、空白とコメントだけの残りを読み終えたことになり、続く文字の読みも EOF である。
+(import (scheme read)) (let ((p (open-input-string "  ; c\n"))) (let ((x (read p))) (list (eof-object? x) (eof-object? (read-char p)))))
+(#t #t)
+
 (import (scheme read)) (let ((p (open-input-string "1 #;2 3"))) (list (read p) (read p) (eof-object? (read p))))
 (1 3 #t)
 

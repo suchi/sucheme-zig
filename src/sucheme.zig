@@ -3167,6 +3167,9 @@ test "read takes the data of a file across the end of the port's buffer" {
         try tree.write("ld.txt", list.items);
         const count = try std.fmt.allocPrint(a, "({d} tail)\n", .{3 * size / 5});
         try expectLinePrints(&interp, try withFileName(a, &tree, "ld.txt", "(call-with-input-file {s} (lambda (p) (let* ((x (read p)) (y (read p))) (list (length x) y))))"), count);
+        // 空白とコメントだけの残りは、EOF を返すときに読み終えたことになり、続く文字の読みも EOF である。
+        try tree.write("s.txt", "  ; c\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "s.txt", "(call-with-input-file {s} (lambda (p) (let ((x (read p))) (list (eof-object? x) (eof-object? (read-char p))))))"), "(#t #t)\n");
         // `#!fold-case` は、ファイルのポートでも次の `read` に残る。
         try tree.write("f.txt", "#!fold-case ABC\nDEF");
         try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", all), "(abc def)\n");
