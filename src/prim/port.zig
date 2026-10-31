@@ -449,18 +449,30 @@ fn read(services: *const Services, args: []const Value) Error!Value {
     defer heap.external_refused = was_refused;
     // 長いデータのために伸ばしたバッファは、戻るときに元の大きさに戻す(`makeRoom`)。
     defer restoreBuffer(heap, p);
+    // Why: 検査する範囲(窓)を区切り、データが窓の終わりに達したときだけ倍に広げる。呼ぶたびに
+    // 手元の全体を検査すると、大きな手元から小さなデータを繰り返し読む費用が、読む回数の2乗に
+    // なる(5l の査読で見つかった)。文字列ポートの中身は、作るときに検査した UTF-8 なので
+    // (`Heap.createMemoryPort`)、検査しない。
+    var window: usize = initial_window;
     while (true) {
         const all = port_mod.pending(services.heap, p);
-        const valid = validPrefix(all);
-        const held = all[0..valid.len];
-        // 前置部分の後ろに読めないバイトがある。読み足しても、そこは変わらない。
-        const blocked = valid.len < all.len and !valid.cut;
+        const checked = if (p.backing == .memory) all else all[0..@min(all.len, window)];
+        const valid: ValidPrefix = if (p.backing == .memory) .{ .len = all.len, .cut = false } else validPrefix(checked);
+        const held = checked[0..valid.len];
+        // 前置部分の後ろに読めないバイトがある。読み足しても、窓を広げても、そこは変わらない。
+        const blocked = valid.len < checked.len and !valid.cut;
+        // 手元には、窓の外にまだ続きがある。読み足す前に、窓を広げて読み直す。
+        const widen = checked.len < all.len;
         var r: reader.Reader = .{ .src = held, .fold_case = p.fold_case, .code = false };
         var arena: std.heap.ArenaAllocator = .init(heap.residentAllocator());
         defer arena.deinit();
         const datum = r.next(arena.allocator(), .{ .heap = heap }) catch |e| switch (e) {
             error.Incomplete => {
                 if (blocked) return unreadable(services, error.InvalidUtf8);
+                if (widen) {
+                    window *|= 2;
+                    continue;
+                }
                 switch (try addInput(services, p)) {
                     .added => continue,
                     .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
@@ -474,6 +486,10 @@ fn read(services: *const Services, args: []const Value) Error!Value {
             // ときだけ、その誤りを報告する。
             else => |syntax| {
                 if (blocked) return unreadable(services, syntax);
+                if (widen) {
+                    window *|= 2;
+                    continue;
+                }
                 switch (try addInput(services, p)) {
                     .added => continue,
                     .full => if (try makeRoom(services, p, held)) continue else return unreadable(services, syntax),
@@ -486,6 +502,10 @@ fn read(services: *const Services, args: []const Value) Error!Value {
             // トークンの続きでありうる。
             if (r.pos == held.len and !closesItself(held)) {
                 if (blocked) return unreadable(services, error.InvalidUtf8);
+                if (widen) {
+                    window *|= 2;
+                    continue;
+                }
                 switch (try addInput(services, p)) {
                     .added => continue,
                     .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
@@ -503,6 +523,10 @@ fn read(services: *const Services, args: []const Value) Error!Value {
         // コメントの中に落ちうる(5l の査読で見つかった)。データの前の空白は、バッファが
         // 埋まったときに `makeRoom` が読み飛ばす。
         if (blocked) return unreadable(services, error.InvalidUtf8);
+        if (widen) {
+            window *|= 2;
+            continue;
+        }
         switch (try addInput(services, p)) {
             .added => continue,
             .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
@@ -573,10 +597,22 @@ fn tooLong(services: *const Services) Error {
     return error.Unreadable;
 }
 
+/// How many bytes `read` checks as UTF-8 before it reads, at first; it doubles them
+/// when the datum reaches their end.
+const initial_window = 1024;
+
+/// How much at the start of some bytes is valid UTF-8 (`validPrefix`).
+const ValidPrefix = struct {
+    len: usize,
+    /// Whether what follows is a character cut off by the end of the bytes, rather
+    /// than bytes that are not UTF-8.
+    cut: bool,
+};
+
 /// How many bytes at the start of `bytes` are valid UTF-8, and whether what follows
 /// them is a character cut off by the end of `bytes`, rather than bytes that are not
 /// UTF-8.
-fn validPrefix(bytes: []const u8) struct { len: usize, cut: bool } {
+fn validPrefix(bytes: []const u8) ValidPrefix {
     var i: usize = 0;
     while (i < bytes.len) {
         const width = std.unicode.utf8ByteSequenceLength(bytes[i]) catch return .{ .len = i, .cut = false };

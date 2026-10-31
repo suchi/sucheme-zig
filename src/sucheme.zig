@@ -3185,3 +3185,15 @@ test "slow: read takes a datum many times longer than the buffer of a file port"
     const expected = try std.fmt.allocPrint(a, "({d} tail)\n", .{n});
     try expectLinePrints(&interp, try withFileName(a, &tree, "big.txt", "(call-with-input-file {s} (lambda (p) (let* ((x (read p)) (y (read p))) (list (length x) y))))"), expected);
 }
+
+test "slow: reading many small data from one large string port costs in proportion to their number" {
+    try tier.slow();
+    // Why: `read` が呼ぶたびに手元の全体を検査していたとき、この規模では数分かかった(5l の
+    // 査読で見つかった)。今は、読んだ分に比例する。
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme read))", "");
+    try expectLinePrints(&interp, "(define (make-input n) (let ((p (open-output-string))) (let loop ((i 0)) (if (< i n) (begin (write-string \"(a 1) \" p) (loop (+ i 1))))) (get-output-string p)))", "");
+    try expectLinePrints(&interp, "(let ((p (open-input-string (make-input 100000)))) (let loop ((k 0)) (if (eof-object? (read p)) k (loop (+ k 1)))))", "100000\n");
+}
