@@ -794,6 +794,11 @@ pub const PrimitiveError = error{
     /// A file could not be opened, deleted, read or written (R7RS 6.13.1, 6.14).
     /// 機械は、`file-error?` が真になる条件に写す(R7RS 6.11)。どの操作かは、手続きの名前が示す。
     FileError,
+    /// A file could not be opened because the system had no descriptor left.
+    /// 機械は、次の境目で回収してから、同じ呼び出しを1回だけ適用し直す(`Machine.apply`)。
+    /// 回収が、到達できなくなった開いたポートを閉じるからである。2回目も尽きていれば、
+    /// `FileError` と同じ条件にする。
+    FilesExhausted,
     /// The host could not take what was written to the console.
     /// 条件にならない。機械はそのまま返す(WASM の出力バッファが満杯のときなど)。
     WriteFailed,

@@ -583,6 +583,12 @@ pub const Heap = struct {
     /// の合意を求める点の4)。`deinit` も同じ経路を通るので、終了のときに開いたままの
     /// ファイルも閉じる。
     files: ?FileHost = null,
+    /// Whether the next boundary between steps collects, whatever the threshold.
+    /// Why: ファイルを開くときに記述子が尽きたら、回収で閉じられるポートがあれば開き直せる
+    /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の4)。プリミティブの途中では
+    /// 回収できない(ADR-0031)ので、機械がこれを立てて、次の境目で回収してから呼び直す
+    /// (`Machine.apply`)。回収が下ろす。
+    collect_requested: bool = false,
 
     /// The means of opening, reading, writing and closing the host's files, each
     /// open one named by the slot of the host's table that holds it (`Port.File.id`).
@@ -984,6 +990,7 @@ pub const Heap = struct {
     /// Whether a collection is due.
     /// 機械は2つのステップの間に問い合わせる。
     pub fn shouldCollect(self: *Heap) bool {
+        if (self.collect_requested) return true;
         if (self.options.stress) {
             self.steps +|= 1;
             self.total_steps +|= 1;
@@ -1088,6 +1095,7 @@ pub const Heap = struct {
         self.symbols.sweep(self.backing);
         self.collections += 1;
         self.steps = 0;
+        self.collect_requested = false;
         const live = self.held();
         const soft = softLimit(self.options.limit);
         self.threshold = @min(soft, @max(self.options.min_threshold, live *| 2));

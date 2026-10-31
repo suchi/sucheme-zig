@@ -2762,3 +2762,93 @@ test "a file port that nothing reaches is written out and closed when it is coll
     const kept = try tree.tmp.dir.readFileAlloc(std.testing.io, "kept.txt", a, .unlimited);
     try std.testing.expectEqualStrings("xyz", kept);
 }
+
+/// The table of an interpreter, made to run out of descriptors once `limit` files
+/// are open, for the tests of opening a file again after a collection.
+const ScarceFiles = struct {
+    inner: heap.Heap.FileHost,
+    table: *platform.FileTable,
+    limit: usize,
+    refused: usize = 0,
+
+    fn install(self: *ScarceFiles, interp: *Interpreter) void {
+        self.inner = interp.ctx.heap.files.?;
+        self.table = interp.ctx.file_table.?;
+        var h = self.inner;
+        h.context = self;
+        h.open = open;
+        h.read = read;
+        h.write = write;
+        h.close = close;
+        h.delete = delete;
+        h.exists = exists;
+        interp.ctx.heap.files = h;
+    }
+
+    fn of(ctx_ptr: *anyopaque) *ScarceFiles {
+        return @ptrCast(@alignCast(ctx_ptr));
+    }
+
+    fn open(ctx_ptr: *anyopaque, path: []const u8, direction: value.Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        const self = of(ctx_ptr);
+        var open_count: usize = 0;
+        for (self.table.slots.items) |slot| open_count += @intFromBool(slot != null);
+        if (open_count >= self.limit) {
+            self.refused += 1;
+            return error.Exhausted;
+        }
+        return self.inner.open(self.inner.context, path, direction);
+    }
+
+    fn read(ctx_ptr: *anyopaque, id: u32, buffer: []u8) error{Io}!usize {
+        return of(ctx_ptr).inner.read(of(ctx_ptr).inner.context, id, buffer);
+    }
+
+    fn write(ctx_ptr: *anyopaque, id: u32, bytes: []const u8) error{Io}!void {
+        return of(ctx_ptr).inner.write(of(ctx_ptr).inner.context, id, bytes);
+    }
+
+    fn close(ctx_ptr: *anyopaque, id: u32) void {
+        of(ctx_ptr).inner.close(of(ctx_ptr).inner.context, id);
+    }
+
+    fn delete(ctx_ptr: *anyopaque, path: []const u8) error{Refused}!void {
+        return of(ctx_ptr).inner.delete(of(ctx_ptr).inner.context, path);
+    }
+
+    fn exists(ctx_ptr: *anyopaque, path: []const u8) bool {
+        return of(ctx_ptr).inner.exists(of(ctx_ptr).inner.context, path);
+    }
+};
+
+test "a file is opened again after a collection when the system has run out of descriptors" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    var scarce: ScarceFiles = .{ .inner = undefined, .table = undefined, .limit = 2 };
+    scarce.install(&interp);
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(import (scheme file)) (call-with-output-file {s} (lambda (p) (write-string \"a\" p)))"), "");
+    // 開いたまま手放したポートは、回収で閉じられ、記述子が空く。上限を超えて開き続けられる。
+    const before = interp.ctx.heap.collections;
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(let loop ((i 0)) (if (< i 10) (begin (open-input-file {s}) (loop (+ i 1))) 'opened))"), "opened\n");
+    try std.testing.expect(scarce.refused > 0);
+    try std.testing.expect(interp.ctx.heap.collections - before >= scarce.refused);
+    // 開いたポートがすべて届くところにあれば、回収しても空かない。呼び直しは1回だけで、
+    // そのあとは file-error である。
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(define kept (list (open-input-file {s}) (open-input-file {s})))"), "");
+    // 1回目の試みと、回収のあとの呼び直しの、2回だけ断られる。
+    scarce.refused = 0;
+    const collections = interp.ctx.heap.collections;
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(guard (c ((file-error? c) (error-object-message c))) (open-binary-input-file {s}))"), "\"file operation failed in open-binary-input-file\"\n");
+    try std.testing.expectEqual(2, scarce.refused);
+    try std.testing.expect(interp.ctx.heap.collections > collections);
+    // 呼び直しの印は、次の呼び出しに残らない。
+    try expectLinePrints(&interp, "(close-port (car kept)) (input-port? (open-input-string \"\"))", "#t\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", "(input-port-open? (open-input-file {s}))"), "#t\n");
+}

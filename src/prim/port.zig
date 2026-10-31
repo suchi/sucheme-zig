@@ -207,14 +207,17 @@ pub const file_buffer_size = 4096;
 /// A new open port of `direction` and `element` on the file `args[0]` names
 /// (R7RS 6.13.1 `open-input-file` and the like).
 /// ポートを先に作ってから開く(`Heap.createFilePort`)。ファイルを開けるホストを持たない
-/// とき(WASM)と、開けなかったときは、`file-error` である。
+/// とき(WASM)と、開けなかったときは、`file-error` である。記述子が尽きたときは
+/// `FilesExhausted` を返し、機械が回収してから1回だけ呼び直す(`Machine.apply`)。作りかけの
+/// ポートは閉じたまま、その回収で返る。
 fn openFile(services: *const Services, args: []const Value, direction: Port.Direction, element: Port.Element) Error!Value {
     const name = args[0].asString() orelse return error.WrongType;
     const host = services.heap.files orelse return error.FileError;
     const p = try services.heap.createFilePort(direction, element, file_buffer_size);
     p.backing.file.id = host.open(host.context, name.bytes, direction) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
-        error.Exhausted, error.Refused => error.FileError,
+        error.Exhausted => error.FilesExhausted,
+        error.Refused => error.FileError,
     };
     p.open = true;
     return .fromPort(p);

@@ -49,6 +49,11 @@ pub const Machine = struct {
     /// 末尾位置の呼び出しはフレームを足さないので、自分自身を呼ぶループがあっても
     /// この値は変わらない。
     peak_depth: usize = 0,
+    /// Whether the next pure primitive applied is the call made again after a
+    /// collection, because the system had no file descriptor left (`apply`).
+    /// 呼び直しは、回収のすぐ後の境目で、同じ呼び出しに対して行う。その間に別の純粋
+    /// プリミティブは走らないので、次に適用する純粋プリミティブが呼び直しである。
+    retrying: bool = false,
 
     pub fn init(ctx: *Context, scratch: std.mem.Allocator) Machine {
         return .{ .ctx = ctx, .scratch = scratch };
@@ -600,7 +605,26 @@ pub const Machine = struct {
             // 本体が検査する(`PrimitiveError.WrongArgumentCount` を参照)。
             if (!prim.acceptsCount(count)) return primitiveFailure(ctx, prim, error.WrongArgumentCount, args, count);
             switch (prim.body) {
-                .pure => |call| return .{ .value = try self.callPure(prim, call, args, count, dyn.*) },
+                .pure => |call| {
+                    const retried = self.retrying;
+                    self.retrying = false;
+                    return .{
+                        .value = self.callPure(prim, call, args, count, dyn.*, retried) catch |e| switch (e) {
+                            // Why: 記述子が尽きたときは、到達できなくなった開いたポートを回収で閉じれば、
+                            // 開けることがある(docs/plans/0019-phase5-ports-and-io.md の合意を求める点の4)。
+                            // プリミティブの途中では回収できない(ADR-0031)ので、同じ呼び出しを継続の
+                            // フレームに載せ、次の境目で回収させてから、そのフレームが呼び直す。残りの
+                            // オペランドの無い `spread` は、境目のすぐ後に、そのまま適用する。
+                            error.CollectAndRetry => {
+                                kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = args, .count = count, .rest = .empty_list_value, .index = 0 } });
+                                ctx.heap.collect_requested = true;
+                                self.retrying = true;
+                                return .{ .value = .unspecified_value };
+                            },
+                            else => |other| return other,
+                        },
+                    };
+                },
                 .machine => |op| switch (op) {
                     // Why: 並べ直した呼び出しは、継続のフレームを積まずに適用する。被呼び出し側は
                     // `apply` の呼び出しの継続のもとで走るので、`apply` の第1引数の呼び出しは
@@ -736,8 +760,10 @@ pub const Machine = struct {
     const small_operands = 8;
 
     /// The value of the pure primitive `prim`, whose body is `call`, for the
-    /// `count` operands in `args`.
-    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize, dyn: ?*const DynPoint) Error!Value {
+    /// `count` operands in `args`; `error.CollectAndRetry` when the system had no
+    /// file descriptor left and the call is not already the one made again
+    /// (`retried`).
+    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize, dyn: ?*const DynPoint, retried: bool) (Error || error{CollectAndRetry})!Value {
         const ctx = self.ctx;
         var small: [small_operands]Value = undefined;
         const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
@@ -748,7 +774,10 @@ pub const Machine = struct {
         defer if (count > small.len) self.scratch.free(operands);
         fill(operands, args);
         const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch, .console = &ctx.console, .dyn = dyn };
-        return call(&services, operands) catch |e| return primitiveFailure(ctx, prim, e, args, count);
+        return call(&services, operands) catch |e| {
+            if (e == error.FilesExhausted and !retried) return error.CollectAndRetry;
+            return primitiveFailure(ctx, prim, e, args, count);
+        };
     }
 
     /// How many operands one step lines up (`Kont.Step.spread`).
@@ -1022,7 +1051,7 @@ pub const Machine = struct {
             error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
             error.Immutable => raiseWith(ctx, irritants, "cannot modify a constant in {s}", .{prim.name}),
             error.PortClosed => raiseWith(ctx, irritants, "port is closed in {s}", .{prim.name}),
-            error.FileError => {
+            error.FileError, error.FilesExhausted => {
                 ctx.raised = try ctx.makeCondition(.file, "file operation failed in {s}", .{prim.name}, irritants);
                 return error.Raised;
             },
