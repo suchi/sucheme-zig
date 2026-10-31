@@ -183,11 +183,20 @@ fn acosOutside(x: f64) C {
 /// 負の実数は `log |x| + pi i`、`-0.0` も同じ(R7RS 6.2.6 は `(log -0.0)` を `-inf.0+πi` とする)。
 /// 正の実数と正確な 0 は、虚部が `0.0` である(`log 0` は `-inf.0`)。複素数は、`log |z|` と
 /// 角を成分にする。
+///
+/// 正確な複素数で、部分が `f64` に収まらない(無限大になる)か、0 でない部分が `f64` で
+/// 0 に潰れるときは、`log |z|` を `0.5 * ln(re^2 + im^2)` で求める。2乗の和は正確な数で、
+/// `elementary.ln` は `f64` に収まらない正確な数の対数を整数の演算で扱う。それ以外は `logAbs` の
+/// ままなので、範囲内の値は変わらない。
 pub fn logOf(h: *Heap, z: Value) Error!C {
     if (z.asCompnum()) |c| {
         const re = try elementary.toF64(h, c.real);
         const im = try elementary.toF64(h, c.imag);
-        return .init(logAbs(re, im), try elementary.atan2(h, c.imag, c.real));
+        const angle_of = try elementary.atan2(h, c.imag, c.real);
+        if (c.real.asFlonum() == null and (!fitsF64(c.real, re) or !fitsF64(c.imag, im))) {
+            return .init(0.5 * try elementary.ln(h, try sumOfSquares(h, c.real, c.imag)), angle_of);
+        }
+        return .init(logAbs(re, im), angle_of);
     }
     const negative = if (z.asFlonum()) |x|
         std.math.signbit(x) and !std.math.isNan(x)
@@ -197,6 +206,13 @@ pub fn logOf(h: *Heap, z: Value) Error!C {
     if (z.asFlonum()) |x| return .init(@log(@abs(x)), imag);
     if (z.asFixnum()) |n| if (n == 0) return .init(-std.math.inf(f64), imag);
     return .init(try elementary.ln(h, if (negative) try ops.negate(h, z) else z), imag);
+}
+
+/// Whether the exact number `v`, which `as_f64` is the `f64` of, is held by an `f64` without
+/// overflowing or underflowing: not infinite, and not a nonzero number that has become 0.
+fn fitsF64(v: Value, as_f64: f64) bool {
+    if (!std.math.isFinite(as_f64)) return false;
+    return as_f64 != 0 or v.asFixnum() == 0;
 }
 
 /// `log |re + im i|`, without overflowing in the sum of the squares.

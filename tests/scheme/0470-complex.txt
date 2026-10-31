@@ -260,3 +260,34 @@ error: division by zero in expt 0 +i
 # NaN の引数は、NaN を返し、異常終了しない。log は実部が無限大なら無限大。
 (import (scheme inexact)) (list (sqrt +nan.0+nan.0i) (asin +nan.0+nan.0i) (acos +nan.0+nan.0i) (log +inf.0+nan.0i) (log +nan.0+nan.0i))
 (+nan.0+nan.0i +nan.0+nan.0i +nan.0+nan.0i +inf.0+nan.0i +nan.0+nan.0i)
+
+# f64 に収まらない正確な複素数の log の実部は、整数の演算で求めた log |z| である(各部を f64 にすると +inf.0 や -inf.0 に潰れていた)。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 400) (expt 10 399))))) (list (< 921.03 (real-part z) 921.04) (< 0.0996 (imag-part z) 0.0997)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 1 (expt 10 400)) (/ 1 (expt 10 401)))))) (list (< -921.03 (real-part z) -921.02) (< 0.0996 (imag-part z) 0.0997)))
+(#t #t)
+
+# 一方の部分だけが範囲外でも同じ。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 400) 1)))) (list (< 921.03 (real-part z) 921.04) (imag-part z)))
+(#t 0.0)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular 1 (expt 10 400))))) (list (< 921.03 (real-part z) 921.04) (< 1.57 (imag-part z) 1.58)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 400) (/ 1 (expt 10 400)))))) (< 921.03 (real-part z) 921.04))
+#t
+
+# 部分が 10^617 を超えても、整数の演算で求めるので有限である。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 1000) (expt 10 999))))) (list (< 2302.58 (real-part z) 2302.6) (< 0.0996 (imag-part z) 0.0997)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 1 (expt 10 1000)) (/ 1 (expt 10 1000)))))) (list (< -2302.24 (real-part z) -2302.23) (< 0.78 (imag-part z) 0.79)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 5000) (- (expt 10 5000)))))) (list (< 11513.27 (real-part z) 11513.28) (< -0.79 (imag-part z) -0.78)))
+(#t #t)
+
+# 範囲内の正確な複素数の log は、これまでの値のままである。
+(import (scheme complex) (scheme inexact)) (list (log 3+4i) (log 1+i))
+(1.6094379124341003+0.9272952180016122i 0.34657359027997264+0.7853981633974483i)
