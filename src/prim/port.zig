@@ -1504,3 +1504,28 @@ test "read gives the buffer back its usual size when what is left to read fills 
     try std.testing.expectEqual(before, f.heap.accounted);
     try std.testing.expectEqual(7, (try call(&f, "read", &.{.fromPort(p)})).asFixnum().?);
 }
+
+test "read on the console reads past the spaces before a datum that fill its buffer, and finds bytes that are not UTF-8 at their end" {
+    // Why: コンソールの読み手のバッファは伸ばせないので、満杯のときに場所を作れるのは、データの
+    // 前の空白と行コメントの読み飛ばしだけである。読み飛ばせば、続きが無いことが分かり、閉じて
+    // いないデータの誤りになる。読み飛ばさなければ、長すぎるデータの誤りになる。`.fixed` の
+    // 読み手は、最初からバッファが満杯である。
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var reason: []const u8 = "";
+    f.services.reason = &reason;
+    const p = try f.heap.createConsolePort(.input);
+    for ([_][]const u8{ "  (a", "\t(a", "\r(a", "; c\n(a" }) |input| {
+        var source: std.Io.Reader = .fixed(input);
+        f.heap.console_input = &source;
+        try std.testing.expectError(error.Unreadable, call(&f, "read", &.{.fromPort(p)}));
+        try std.testing.expectEqualStrings("unexpected end of input", reason);
+    }
+    // 満杯のバッファの終わりのバイトが、切れた文字でなく、UTF-8 として読めないもの(先頭の
+    // バイトに、続きのバイトでないものが続く)なら、読み足すまでもなく読めない入力である。
+    var source: std.Io.Reader = .fixed("ab\xe3\xc3");
+    f.heap.console_input = &source;
+    try std.testing.expectError(error.Unreadable, call(&f, "read", &.{.fromPort(p)}));
+    try std.testing.expectEqualStrings("invalid UTF-8 input", reason);
+}
