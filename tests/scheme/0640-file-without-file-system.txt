@@ -1,0 +1,42 @@
+# スライス 5k: ファイルを開けないホストでの `(scheme file)`(R7RS 6.13.1、6.14)。このランナーの
+# インタプリタはファイルの表を持たないので、WASM と同じ経路を通る(docs/design/frontend.md の
+# 第2類)。開く手続きと `delete-file` は `file-error?` が真になる条件を送出し、`file-exists?` は
+# `#f` を返す。ファイルを書いて読み返すケースは、ファイルの表を持つ単体テスト(src/sucheme.zig)にある。
+
+(import (scheme file)) (file-exists? "any.txt")
+#f
+
+(import (scheme file)) (guard (c ((file-error? c) (list 'file (error-object-message c) (error-object-irritants c)))) (open-input-file "any.txt"))
+(file "file operation failed in open-input-file" ("any.txt"))
+
+(import (scheme file)) (guard (c ((file-error? c) 'file)) (open-binary-input-file "any.txt"))
+file
+
+(import (scheme file)) (guard (c ((file-error? c) 'file)) (open-output-file "any.txt"))
+file
+
+(import (scheme file)) (guard (c ((file-error? c) 'file)) (open-binary-output-file "any.txt"))
+file
+
+(import (scheme file)) (guard (c ((file-error? c) 'file)) (delete-file "any.txt"))
+file
+
+(import (scheme file)) (guard (c ((file-error? c) 'file)) (call-with-input-file "any.txt" read-char))
+file
+
+(import (scheme file)) (guard (c ((file-error? c) 'file)) (with-output-to-file "any.txt" (lambda () 1)))
+file
+
+# ファイルの誤りは、読み取りの誤りではない。
+(import (scheme file)) (guard (c ((read-error? c) 'read) ((error-object? c) 'error)) (open-input-file "any.txt"))
+error
+
+# 名前が文字列でなければ、型の誤りである。
+(import (scheme file)) (file-exists? 'a)
+error: wrong type of argument to file-exists? a
+
+(import (scheme file)) (open-input-file 1)
+error: wrong type of argument to open-input-file 1
+
+(import (scheme file)) (delete-file #f)
+error: wrong type of argument to delete-file #f

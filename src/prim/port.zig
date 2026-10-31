@@ -66,6 +66,12 @@ pub const primitives = [_]Primitive{
     .{ .name = "write-simple", .min_args = 1, .max_args = 2, .body = .{ .pure = &writeSimple } },
     .{ .name = "display", .min_args = 1, .max_args = 2, .body = .{ .pure = &display } },
     .{ .name = "%console-parameter", .min_args = 1, .max_args = 1, .body = .{ .pure = &consoleParameter } },
+    .{ .name = "open-input-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &openInputFile } },
+    .{ .name = "open-binary-input-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &openBinaryInputFile } },
+    .{ .name = "open-output-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &openOutputFile } },
+    .{ .name = "open-binary-output-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &openBinaryOutputFile } },
+    .{ .name = "file-exists?", .min_args = 1, .max_args = 1, .body = .{ .pure = &fileExists } },
+    .{ .name = "delete-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &deleteFile } },
 };
 
 /// The error a failure of the port functions is to a primitive.
@@ -184,6 +190,66 @@ fn closeOutputPort(services: *const Services, args: []const Value) Error!Value {
     const p = args[0].asPort() orelse return error.WrongType;
     if (p.direction != .output) return error.WrongType;
     port_mod.close(services.heap, p) catch |e| return portFailure(e);
+    return .unspecified_value;
+}
+
+/// The size of the buffer of a file port.
+/// Why: 仮の値である。候補の値を `ReleaseSafe` で測って決める(docs/plans/0019-phase5-ports-and-io.md
+/// の合意を求める点の1)。
+pub const file_buffer_size = 4096;
+
+/// A new open port of `direction` and `element` on the file `args[0]` names
+/// (R7RS 6.13.1 `open-input-file` and the like).
+/// ポートを先に作ってから開く(`Heap.createFilePort`)。ファイルを開けるホストを持たない
+/// とき(WASM)と、開けなかったときは、`file-error` である。
+fn openFile(services: *const Services, args: []const Value, direction: Port.Direction, element: Port.Element) Error!Value {
+    const name = args[0].asString() orelse return error.WrongType;
+    const host = services.heap.files orelse return error.FileError;
+    const p = try services.heap.createFilePort(direction, element, file_buffer_size);
+    p.backing.file.id = host.open(host.context, name.bytes, direction) catch |e| return switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.Exhausted, error.Refused => error.FileError,
+    };
+    p.open = true;
+    return .fromPort(p);
+}
+
+/// `(open-input-file string)`: a textual input port that reads the file `string` names.
+fn openInputFile(services: *const Services, args: []const Value) Error!Value {
+    return openFile(services, args, .input, .textual);
+}
+
+/// `(open-binary-input-file string)`.
+fn openBinaryInputFile(services: *const Services, args: []const Value) Error!Value {
+    return openFile(services, args, .input, .binary);
+}
+
+/// `(open-output-file string)`: a textual output port that writes the file `string`
+/// names, which is made, or emptied when it is there.
+/// R7RS 6.13.1 は、既にあるファイルへの影響を定めていない。中身を空にして書く。
+fn openOutputFile(services: *const Services, args: []const Value) Error!Value {
+    return openFile(services, args, .output, .textual);
+}
+
+/// `(open-binary-output-file string)`.
+fn openBinaryOutputFile(services: *const Services, args: []const Value) Error!Value {
+    return openFile(services, args, .output, .binary);
+}
+
+/// `(file-exists? string)`: whether the file `string` names is there (R7RS 6.14).
+/// ファイルを開けるホストを持たないとき(WASM)は、偽である(docs/design/frontend.md)。
+fn fileExists(services: *const Services, args: []const Value) Error!Value {
+    const name = args[0].asString() orelse return error.WrongType;
+    const host = services.heap.files orelse return .fromBool(false);
+    return .fromBool(host.exists(host.context, name.bytes));
+}
+
+/// `(delete-file string)`: deletes the file `string` names; a file that is not
+/// there, or cannot be deleted, is a `file-error` (R7RS 6.14).
+fn deleteFile(services: *const Services, args: []const Value) Error!Value {
+    const name = args[0].asString() orelse return error.WrongType;
+    const host = services.heap.files orelse return error.FileError;
+    host.delete(host.context, name.bytes) catch return error.FileError;
     return .unspecified_value;
 }
 
@@ -576,19 +642,21 @@ const Ports = struct {
 
 test "the primitives take the numbers of arguments the language gives them, with the port left out or given" {
     const expected = [_]struct { []const u8, u8, ?u8 }{
-        .{ "port?", 1, 1 },                 .{ "input-port?", 1, 1 },           .{ "output-port?", 1, 1 },
-        .{ "textual-port?", 1, 1 },         .{ "binary-port?", 1, 1 },          .{ "input-port-open?", 1, 1 },
-        .{ "output-port-open?", 1, 1 },     .{ "close-port", 1, 1 },            .{ "close-input-port", 1, 1 },
-        .{ "close-output-port", 1, 1 },     .{ "open-input-string", 1, 1 },     .{ "open-output-string", 0, 0 },
-        .{ "get-output-string", 1, 1 },     .{ "open-input-bytevector", 1, 1 }, .{ "open-output-bytevector", 0, 0 },
-        .{ "get-output-bytevector", 1, 1 }, .{ "read-char", 0, 1 },             .{ "peek-char", 0, 1 },
-        .{ "read-line", 0, 1 },             .{ "char-ready?", 0, 1 },           .{ "read-string", 1, 2 },
-        .{ "read-u8", 0, 1 },               .{ "peek-u8", 0, 1 },               .{ "u8-ready?", 0, 1 },
-        .{ "read-bytevector", 1, 2 },       .{ "read-bytevector!", 1, 4 },      .{ "newline", 0, 1 },
-        .{ "write-char", 1, 2 },            .{ "write-string", 1, 4 },          .{ "write-u8", 1, 2 },
-        .{ "write-bytevector", 1, 4 },      .{ "flush-output-port", 0, 1 },     .{ "write", 1, 2 },
-        .{ "write-shared", 1, 2 },          .{ "write-simple", 1, 2 },          .{ "display", 1, 2 },
-        .{ "%console-parameter", 1, 1 },
+        .{ "port?", 1, 1 },                 .{ "input-port?", 1, 1 },             .{ "output-port?", 1, 1 },
+        .{ "textual-port?", 1, 1 },         .{ "binary-port?", 1, 1 },            .{ "input-port-open?", 1, 1 },
+        .{ "output-port-open?", 1, 1 },     .{ "close-port", 1, 1 },              .{ "close-input-port", 1, 1 },
+        .{ "close-output-port", 1, 1 },     .{ "open-input-string", 1, 1 },       .{ "open-output-string", 0, 0 },
+        .{ "get-output-string", 1, 1 },     .{ "open-input-bytevector", 1, 1 },   .{ "open-output-bytevector", 0, 0 },
+        .{ "get-output-bytevector", 1, 1 }, .{ "read-char", 0, 1 },               .{ "peek-char", 0, 1 },
+        .{ "read-line", 0, 1 },             .{ "char-ready?", 0, 1 },             .{ "read-string", 1, 2 },
+        .{ "read-u8", 0, 1 },               .{ "peek-u8", 0, 1 },                 .{ "u8-ready?", 0, 1 },
+        .{ "read-bytevector", 1, 2 },       .{ "read-bytevector!", 1, 4 },        .{ "newline", 0, 1 },
+        .{ "write-char", 1, 2 },            .{ "write-string", 1, 4 },            .{ "write-u8", 1, 2 },
+        .{ "write-bytevector", 1, 4 },      .{ "flush-output-port", 0, 1 },       .{ "write", 1, 2 },
+        .{ "write-shared", 1, 2 },          .{ "write-simple", 1, 2 },            .{ "display", 1, 2 },
+        .{ "%console-parameter", 1, 1 },    .{ "open-input-file", 1, 1 },         .{ "open-binary-input-file", 1, 1 },
+        .{ "open-output-file", 1, 1 },      .{ "open-binary-output-file", 1, 1 }, .{ "file-exists?", 1, 1 },
+        .{ "delete-file", 1, 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
     for (expected, primitives) |e, p| {

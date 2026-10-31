@@ -34,6 +34,7 @@ const library = @import("syntax/library.zig");
 pub const resolve = @import("resolve.zig");
 const machine = @import("machine.zig");
 const context = @import("context.zig");
+const platform = @import("platform/native.zig");
 const printer = @import("printer.zig");
 const value = @import("value.zig");
 const tier = @import("tier.zig");
@@ -155,6 +156,15 @@ pub const Interpreter = struct {
         errdefer self.arena.deinit();
         self.ctx = try .initWithOptions(self.arena.allocator(), gpa, options);
         self.ctx.files = files;
+        // ファイルの表は、ライブラリのファイルを開けるホストだけが持つ。表をアリーナに置くのは、
+        // ヒープが表を指すので、コンテキストを動かしても表のアドレスが変わらないようにするため
+        // である。
+        if (files) |f| {
+            const t = try self.arena.allocator().create(platform.FileTable);
+            t.* = .init(f.io, gpa);
+            self.ctx.file_table = t;
+            self.ctx.heap.files = t.host();
+        }
         self.ctx.embedded = embedded;
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
@@ -2658,4 +2668,90 @@ test "a library still reports a name that only dead code of its body refers to, 
         defer interp.deinit();
         try expectLineFails(&interp, "(define-library (t a) (export) (import (sucheme core)) (begin (if #f car-typo)) (begin (define y1 1) (define y2 2)))", "unbound identifier in library (t a): car-typo");
     }
+}
+
+/// The program text `text` with each `{s}` replaced by the path of `file` beneath `tree`, written
+/// as a Scheme string literal.
+/// Why: 一時のディレクトリの絶対パスは、Windows では `\` を含む。文字列のリテラルに
+/// そのまま埋めると、エスケープとして読まれる。
+fn withFileName(a: std.mem.Allocator, tree: *const resolve.Tree, file: []const u8, text: []const u8) ![]const u8 {
+    var literal: std.Io.Writer.Allocating = .init(a);
+    try literal.writer.writeByte('"');
+    for ([_][]const u8{ tree.path, "/", file }) |part| for (part) |c| {
+        if (c == '\\' or c == '"') try literal.writer.writeByte('\\');
+        try literal.writer.writeByte(c);
+    };
+    try literal.writer.writeByte('"');
+    return std.mem.replaceOwned(u8, a, text, "{s}", literal.written());
+}
+
+/// An interpreter of the standard environment that opens files, on the files beneath `tree`.
+fn initWithFileTable(interp: *Interpreter, tree: *resolve.Tree, stress: bool) !void {
+    try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &tree.roots });
+}
+
+test "a file written with with-output-to-file is read back with call-with-input-file" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        try expectLinePrints(&interp, try withFileName(a, &tree, "out.txt", "(import (scheme file) (scheme write)) (with-output-to-file {s} (lambda () (write (list 1 \"two\" #\\3)) (newline) 'done))"), "done\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "out.txt", "(call-with-input-file {s} (lambda (p) (list (read-line p) (read-char p))))"), "(\"(1 \\\"two\\\" #\\\\3)\" #<eof>)\n");
+        // 長い出力は、バッファを何度も満たして書き出される。
+        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-output-file {s} (lambda (p) (let loop ((i 0)) (if (< i 10000) (begin (write-string \"0123456789\" p) (loop (+ i 1)))))))"), "");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "long.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0)) (if (eof-object? (read-char p)) n (loop (+ n 1))))))"), "100000\n");
+    }
+}
+
+test "a binary file holds the bytes written to it, and file-exists? and delete-file see it" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectLinePrints(&interp, "(import (scheme file))", "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(file-exists? {s})"), "#f\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(let ((p (open-binary-output-file {s}))) (write-bytevector (bytevector 0 255 10) p) (close-port p))"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(file-exists? {s})"), "#t\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(let ((p (open-binary-input-file {s}))) (let ((b (read-bytevector 10 p))) (close-port p) (list b (binary-port? p))))"), "(#u8(0 255 10) #t)\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(delete-file {s})"), "");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(file-exists? {s})"), "#f\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(guard (c ((file-error? c) 'gone)) (delete-file {s}))"), "gone\n");
+    try expectLinePrints(&interp, try withFileName(a, &tree, "b.bin", "(guard (c ((file-error? c) 'missing)) (open-input-file {s}))"), "missing\n");
+    // 開けなかったファイルの名前は、条件の irritant である。
+    try expectLineFails(&interp, try withFileName(a, &tree, "none/x.txt", "(open-output-file {s})"), try withFileName(a, &tree, "none/x.txt", "file operation failed in open-output-file {s}"));
+}
+
+test "a file port that nothing reaches is written out and closed when it is collected, and at the end" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    {
+        // ストレスモードは、ステップごとに回収する。次の行の評価の前に、ポートは回収される。
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, true);
+        defer interp.deinit();
+        try expectLinePrints(&interp, try withFileName(a, &tree, "lost.txt", "(import (scheme file)) (write-string \"abc\" (open-output-file {s})) 'ok"), "ok\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "lost.txt", "(call-with-input-file {s} (lambda (p) (read-string 10 p)))"), "\"abc\"\n");
+        var open: usize = 0;
+        for (interp.ctx.file_table.?.slots.items) |slot| open += @intFromBool(slot != null);
+        try std.testing.expectEqual(0, open);
+        try expectLinePrints(&interp, try withFileName(a, &tree, "kept.txt", "(define kept (open-output-file {s})) (write-string \"xyz\" kept)"), "");
+    }
+    // 解放のときに開いていたポートも、書き出して閉じる。
+    const kept = try tree.tmp.dir.readFileAlloc(std.testing.io, "kept.txt", a, .unlimited);
+    try std.testing.expectEqualStrings("xyz", kept);
 }

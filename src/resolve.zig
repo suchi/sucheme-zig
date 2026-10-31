@@ -12,6 +12,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const symbol = @import("symbol.zig");
 const Value = @import("value.zig").Value;
+const Direction = @import("value.zig").Port.Direction;
 const Dir = std.Io.Dir;
 const File = std.Io.File;
 
@@ -389,6 +390,49 @@ fn openChildFile(io: std.Io, parent: Dir, name: []const u8) OpenError!?File {
         return if (isLink(stat.kind)) error.LinkRefused else error.NotRegularFile;
     }
     return file;
+}
+
+/// Why a file a program names could not be opened (docs/design/frontend.md, the
+/// second class of the ways files are opened).
+pub const UserFileError = error{
+    /// The system has no descriptor left for the process, or for any process.
+    /// 記述子が尽きたことは、ほかの失敗と分ける。回収で閉じられるポートがあれば、開き直せる
+    /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の4)。
+    Exhausted,
+    /// The system refused for any other reason: the file is not there, is a
+    /// directory, cannot be read or written, or its name cannot be a path.
+    Refused,
+};
+
+/// The file `path`, opened for reading when `direction` is `.input`, or created,
+/// or emptied when it is there, for writing otherwise (R7RS 6.13.1).
+/// 第2類の入口である。探索ルートの制約をかけず、パスは作業ディレクトリを基準にし、リンクを
+/// 辿る(frontend.md)。プログラムが名前を選んだファイルを読み書きするのは、R7RS 6.13.1 と
+/// 6.14 が定める手続きの働きそのものだからである。ディレクトリは開かない。
+pub fn openUserFile(io: std.Io, path: []const u8, direction: Direction) UserFileError!File {
+    const opened = switch (direction) {
+        .input => Dir.cwd().openFile(io, path, .{ .allow_directory = false }),
+        .output => Dir.cwd().createFile(io, path, .{}),
+    };
+    return opened catch |e| switch (e) {
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => error.Exhausted,
+        else => error.Refused,
+    };
+}
+
+/// Deletes the file `path` (R7RS 6.14 `delete-file`).
+/// ファイルが無いときも、消せないときと同じく断る(R7RS 6.14 は、どちらも `file-error?` が
+/// 真になる誤りとする)。
+pub fn deleteUserFile(io: std.Io, path: []const u8) error{Refused}!void {
+    Dir.cwd().deleteFile(io, path) catch return error.Refused;
+}
+
+/// Whether the file `path` is there (R7RS 6.14 `file-exists?`).
+/// 調べられないとき(名前がパスにならない、途中のディレクトリを読めないなど)は、無いと答える。
+/// R7RS 6.14 は、この手続きの誤りを定めていない(frontend.md)。
+pub fn userFileExists(io: std.Io, path: []const u8) bool {
+    Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
 }
 
 test {

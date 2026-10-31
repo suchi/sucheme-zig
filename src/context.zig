@@ -10,6 +10,7 @@ const table = @import("prim/table.zig");
 const heap_mod = @import("heap.zig");
 const library = @import("syntax/library.zig");
 const resolve = @import("resolve.zig");
+const platform = @import("platform/native.zig");
 const positions_mod = @import("positions.zig");
 const Heap = heap_mod.Heap;
 const Value = value_mod.Value;
@@ -59,6 +60,10 @@ pub const Context = struct {
     /// WASM は実ファイルシステムを持たないので、空のままである。このとき、ライブラリの
     /// ファイルを引く経路は、見つからないことになる。
     files: ?resolve.Files = null,
+    /// The files the file ports have open, when the host has a file system
+    /// (src/platform/native.zig). The heap reaches it through `Heap.files`.
+    /// ヒープの `deinit` が開いたポートを閉じるときに使うので、ヒープより後に解放する。
+    file_table: ?*platform.FileTable = null,
     /// The source files the executable carries (src/resolve.zig). They are searched
     /// before the files of `files`, and WASM searches only these.
     embedded: ?resolve.Embedded = null,
@@ -140,6 +145,7 @@ pub const Context = struct {
         self.libraries.deinit(tables);
         self.sources.deinit(tables);
         self.heap.deinit();
+        if (self.file_table) |t| t.deinit();
     }
 
     /// Where the tables of the top levels, the registry of the libraries and the

@@ -584,10 +584,19 @@ pub const Heap = struct {
     /// ファイルも閉じる。
     files: ?FileHost = null,
 
-    /// The means of reading, writing and closing the host's open files, each named
-    /// by the slot of the host's table that holds it (`Port.File.id`).
+    /// The means of opening, reading, writing and closing the host's files, each
+    /// open one named by the slot of the host's table that holds it (`Port.File.id`).
+    /// 開く、消す、有無を調べる口は、ヒープは使わない。ファイルの手続き(src/prim/port.zig)が、
+    /// ヒープを通してここに届く。
     pub const FileHost = struct {
         context: *anyopaque,
+        /// Opens the file `path` and gives the slot that holds it (src/resolve.zig
+        /// `openUserFile`).
+        open: *const fn (context: *anyopaque, path: []const u8, direction: Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32,
+        /// Deletes the file `path`.
+        delete: *const fn (context: *anyopaque, path: []const u8) error{Refused}!void,
+        /// Whether the file `path` is there.
+        exists: *const fn (context: *anyopaque, path: []const u8) bool,
         /// Reads into `buffer`, and gives how many bytes it read; 0 at the end of
         /// the file.
         read: *const fn (context: *anyopaque, id: u32, buffer: []u8) error{Io}!usize,
@@ -2795,7 +2804,19 @@ const RecordingHost = struct {
     }
 
     fn host(self: *RecordingHost) Heap.FileHost {
-        return .{ .context = self, .read = read, .write = write, .close = close };
+        return .{ .context = self, .open = open, .delete = delete, .exists = exists, .read = read, .write = write, .close = close };
+    }
+
+    fn open(_: *anyopaque, _: []const u8, _: Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        return error.Refused;
+    }
+
+    fn delete(_: *anyopaque, _: []const u8) error{Refused}!void {
+        return error.Refused;
+    }
+
+    fn exists(_: *anyopaque, _: []const u8) bool {
+        return false;
     }
 
     fn read(context: *anyopaque, id: u32, buffer: []u8) error{Io}!usize {

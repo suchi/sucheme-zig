@@ -618,7 +618,19 @@ const FakeHost = struct {
     }
 
     fn host(self: *FakeHost) Heap.FileHost {
-        return .{ .context = self, .read = read, .write = write, .close = closeIt };
+        return .{ .context = self, .open = open, .delete = delete, .exists = exists, .read = read, .write = write, .close = closeIt };
+    }
+
+    fn open(_: *anyopaque, _: []const u8, _: Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        return error.Refused;
+    }
+
+    fn delete(_: *anyopaque, _: []const u8) error{Refused}!void {
+        return error.Refused;
+    }
+
+    fn exists(_: *anyopaque, _: []const u8) bool {
+        return false;
     }
 
     fn read(context: *anyopaque, _: u32, buffer: []u8) error{Io}!usize {
