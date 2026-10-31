@@ -431,6 +431,13 @@ fn readString(services: *const Services, args: []const Value) Error!Value {
 /// (R7RS 2.1)。手元の入力の終わりでデータが終わっていない(`Incomplete`)か、終わりまで
 /// 読んだ(最後のトークンが切れている恐れがある)ときは、ポートが足せる限り読み足して、
 /// データの頭から読み直す(docs/plans/0019-phase5-ports-and-io.md の 5l の中身)。
+///
+/// Why: ファイルのポートの手元の入力は、末尾で文字が分かれていることがあり、UTF-8 として
+/// 読めないバイトを含みうる(0019 の「5h と 5k が守る約束」)。`Reader` は、文字列リテラルの
+/// 外の読めないバイトを読んだ結果が正しいことまでは保証しない(src/reader.zig のファズ)。
+/// そのため、`Reader` には妥当な UTF-8 の前置部分(`validPrefix`)だけを渡す。その先が、
+/// 終わりで分かれた文字なら読み足し、読めないバイトなら、データがそこに掛かったときに
+/// `read-error` にする(`invalid UTF-8 input`。親のセッションの決定)。
 fn read(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .textual);
     try checkReadable(services, p);
@@ -441,29 +448,136 @@ fn read(services: *const Services, args: []const Value) Error!Value {
     heap.external_refused = false;
     defer heap.external_refused = was_refused;
     while (true) {
-        const held = port_mod.pending(p);
+        const all = port_mod.pending(p);
+        const valid = validPrefix(all);
+        const held = all[0..valid.len];
+        // 前置部分の後ろに読めないバイトがある。読み足しても、そこは変わらない。
+        const blocked = valid.len < all.len and !valid.cut;
         var r: reader.Reader = .{ .src = held, .fold_case = p.fold_case, .code = false };
         var arena: std.heap.ArenaAllocator = .init(heap.residentAllocator());
         defer arena.deinit();
         const datum = r.next(arena.allocator(), .{ .heap = heap }) catch |e| switch (e) {
             error.Incomplete => {
-                if (try addInput(services, p)) continue;
-                return unreadable(services, error.Incomplete);
+                if (blocked) return unreadable(services, error.InvalidUtf8);
+                switch (try addInput(services, p)) {
+                    .added => continue,
+                    .full => if (dropLeadingSpace(p, held)) continue else return tooLong(services),
+                    .none => return unreadable(services, error.Incomplete),
+                }
             },
             error.OutOfMemory => return if (heap.external_refused) error.HeapLimit else error.OutOfMemory,
             error.HeapLimit => return error.HeapLimit,
-            else => |syntax| return unreadable(services, syntax),
+            // Why: 手元の終わりで切れたトークン(`#!fold-ca` など)は、`Incomplete` でなく、
+            // ほかの構文の誤りになりうる。読み足せる限り読み足して読み直し、読み足せない
+            // ときだけ、その誤りを報告する。
+            else => |syntax| {
+                if (!blocked and try addInput(services, p) == .added) continue;
+                return unreadable(services, syntax);
+            },
         };
-        if (r.pos == held.len and try addInput(services, p)) continue;
-        port_mod.consume(p, r.pos);
+        if (datum) |d| {
+            // 手元の終わりまで読んだデータは、終わりの文字で閉じていなければ、続きが
+            // トークンの続きでありうる。
+            if (r.pos == held.len and !closesItself(held)) {
+                if (blocked) return unreadable(services, error.InvalidUtf8);
+                switch (try addInput(services, p)) {
+                    .added => continue,
+                    .full => if (dropLeadingSpace(p, held)) continue else return tooLong(services),
+                    .none => {},
+                }
+            }
+            port_mod.consume(p, r.pos);
+            p.fold_case = r.fold_case;
+            return d;
+        }
+        // 空白とコメントだけで手元が尽きた。続きにデータがありうるので、確かに空白とコメント
+        // だけと言える所までを読み終えたことにしてから、読み足す。
+        port_mod.consume(p, settledAtmosphere(held));
         p.fold_case = r.fold_case;
-        return datum orelse .eof_value;
+        if (blocked) return unreadable(services, error.InvalidUtf8);
+        switch (try addInput(services, p)) {
+            .added => continue,
+            .full => return tooLong(services),
+            .none => return .eof_value,
+        }
     }
 }
 
-/// Adds to what the textual input port `p` holds, and gives whether it added anything.
-fn addInput(services: *const Services, p: *Port) Error!bool {
-    return port_mod.fill(services.heap, p) catch |e| return portFailure(e);
+/// How many bytes at the start of `held`, which the reader read to its end as
+/// atmosphere, can be read past without reading them again: up to the last line
+/// ending, or all of them when what follows it is only spaces.
+/// Why: 最後の行の残りは、終わりで切れた行コメントや指令(`#!fold-ca`)でありうる。行の終わり
+/// までのものは、行コメントも閉じたブロックコメントも終わっている(閉じていないブロック
+/// コメントは `Incomplete` になり、ここに来ない)。読み直す部分にある指令は、もう一度
+/// 効くだけで、最後の状態は変わらない。
+fn settledAtmosphere(held: []const u8) usize {
+    const last_line = if (std.mem.lastIndexOfAny(u8, held, "\n\r")) |i| i + 1 else 0;
+    for (held[last_line..]) |c| if (c != ' ' and c != '\t') return last_line;
+    return held.len;
+}
+
+/// Reads past the spaces, line endings and line comments at the start of `held`, what
+/// `p` holds, and gives whether there were any.
+/// Why: データの前の空白で手元のバッファが埋まると、データの続きを読み足す余地が無い。
+/// 空白と、行の終わりまで閉じた行コメントだけを数えるのは、`Reader` の空白の読み飛ばしが
+/// 外から呼べず(src/reader.zig は L2 の所有)、この2つなら、読み飛ばしても `fold_case` も
+/// データも変わらないからである。ブロックコメントと指令の前では止まる。
+fn dropLeadingSpace(p: *Port, held: []const u8) bool {
+    var i: usize = 0;
+    while (i < held.len) {
+        switch (held[i]) {
+            ' ', '\t', '\n', '\r' => i += 1,
+            ';' => i = (std.mem.indexOfAnyPos(u8, held, i, "\n\r") orelse break) + 1,
+            else => break,
+        }
+    }
+    if (i == 0) return false;
+    port_mod.consume(p, i);
+    return true;
+}
+
+/// `Unreadable` for a datum that does not fit in the buffer of its file port.
+fn tooLong(services: *const Services) Error {
+    if (services.reason) |reason| reason.* = "datum longer than the buffer of the port";
+    return error.Unreadable;
+}
+
+/// How many bytes at the start of `bytes` are valid UTF-8, and whether what follows
+/// them is a character cut off by the end of `bytes`, rather than bytes that are not
+/// UTF-8.
+fn validPrefix(bytes: []const u8) struct { len: usize, cut: bool } {
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const width = std.unicode.utf8ByteSequenceLength(bytes[i]) catch return .{ .len = i, .cut = false };
+        if (i + width > bytes.len) {
+            // 揃っている続きのバイトが正しければ、終わりで切れた文字である。
+            for (bytes[i + 1 ..]) |b| if (b & 0xC0 != 0x80) return .{ .len = i, .cut = false };
+            return .{ .len = i, .cut = true };
+        }
+        _ = std.unicode.utf8Decode(bytes[i..][0..width]) catch return .{ .len = i, .cut = false };
+        i += width;
+    }
+    return .{ .len = i, .cut = false };
+}
+
+/// Whether the datum that `held` ends with is closed by its last character: a `)`
+/// or a `"`, after which nothing can continue it.
+fn closesItself(held: []const u8) bool {
+    return held.len > 0 and (held[held.len - 1] == ')' or held[held.len - 1] == '"');
+}
+
+/// Adds to what the textual input port `p` holds: whether it added anything, or
+/// could not because what it holds fills its buffer.
+/// Why: 読んでいない分でバッファが埋まっていると、ファイルのポートは読み足せない
+/// (`port.fill`)。1つのデータがバッファより長いときの扱い(バッファを伸ばすか)は、
+/// suchi/sucheme-zig#230 で諮っている。答えが出るまでは、読めない誤り(`tooLong`)にする。
+fn addInput(services: *const Services, p: *Port) Error!enum { added, full, none } {
+    if (p.backing == .file) {
+        const file = &p.backing.file;
+        if (file.pos == 0 and file.len == file.buffer.len and !file.at_end) return .full;
+    }
+    const added = port_mod.fill(services.heap, p) catch |e| return portFailure(e);
+    return if (added) .added else .none;
 }
 
 /// `Unreadable`, with the text of what the reader could not read put where the

@@ -2180,7 +2180,11 @@ fn expectLinePrints(interp: *Interpreter, line: []const u8, output: []const u8) 
     defer arena.deinit();
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try interp.evalPrint(arena.allocator(), line, &w);
+    interp.evalPrint(arena.allocator(), line, &w) catch |e| {
+        // 落ちた行と、その誤りの説明を出す。どのケースかが、テストの名前だけでは分からない。
+        std.debug.print("{s}\n  failed with: {s}\n", .{ line, interp.diagnostic() });
+        return e;
+    };
     try std.testing.expectEqualStrings(output, w.buffered());
 }
 
@@ -3073,4 +3077,50 @@ test "reads that cross an end of a file port's buffer give what the file holds" 
     for (0..100) |_| try lines.appendSlice(a, try repeated(a, 79, "\n"));
     try tree.write("lines.txt", lines.items);
     try expectLinePrints(&interp, try withFileName(a, &tree, "lines.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0) (bad 0)) (let ((x (read-line p))) (if (eof-object? x) (list n bad) (loop (+ n 1) (if (= (string-length x) 79) bad (+ bad 1))))))))"), "(100 0)\n");
+}
+
+/// `n` spaces followed by `tail`.
+fn spaced(a: std.mem.Allocator, n: usize, tail: []const u8) ![]const u8 {
+    const out = try a.alloc(u8, n + tail.len);
+    @memset(out[0..n], ' ');
+    @memcpy(out[n..], tail);
+    return out;
+}
+
+test "read takes the data of a file across the end of the port's buffer" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const size = @import("prim/port.zig").file_buffer_size;
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (scheme file) (scheme read))", "");
+        const all = "(call-with-input-file {s} (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))";
+        // 識別子、多バイトの識別子、文字列、リストが、それぞれ境目をまたぐ。
+        for ([_]usize{ size - 3, size - 1, size, size + 1 }) |n| {
+            try tree.write("r.txt", try spaced(a, n, "abcdef λμν \"string\" (1 2 3) end"));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "r.txt", all), "(abcdef |λμν| \"string\" (1 2 3) end)\n");
+        }
+        // コメントと空白だけで手元が尽きても、続きのデータを読む。
+        // 1行がバッファより長い行コメントは、suchi/sucheme-zig#230 の答え(バッファを伸ばすか)で
+        // 扱いが決まるので、ここでは試さない。
+        try tree.write("c.txt", try std.mem.concat(a, u8, &.{ "; comment\n", try spaced(a, size, "\nlast") }));
+        try expectLinePrints(&interp, try withFileName(a, &tree, "c.txt", all), "(last)\n");
+        // `#!fold-case` は、ファイルのポートでも次の `read` に残る。
+        try tree.write("f.txt", "#!fold-case ABC\nDEF");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", all), "(abc def)\n");
+        // 読めないバイトは、データがそこに掛かったときに `read-error` になる。その前のデータは読める。
+        try tree.write("u.txt", "(a) \xff b");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "u.txt", "(call-with-input-file {s} (lambda (p) (let ((x (read p))) (list x (guard (c ((read-error? c) (error-object-message c))) (read p))))))"), "((a) \"invalid UTF-8 input in read\")\n");
+        try tree.write("t.txt", "ab\xffc");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (guard (c ((read-error? c) 'read)) (read p))))"), "read\n");
+        // 閉じていないリストは、ファイルの終わりで `read-error` になる。
+        try tree.write("i.txt", "(1 2");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "i.txt", "(call-with-input-file {s} (lambda (p) (guard (c ((read-error? c) (error-object-message c))) (read p))))"), "\"unexpected end of input in read\"\n");
+    }
 }
