@@ -1,0 +1,101 @@
+# スライス 4u4: ASCII でない文字を含む識別子(R7RS 2.1、7.1.1)。識別子に使える文字は、
+# 一般カテゴリ Lu、Ll、Lt、Lm、Lo、Mn、Mc、Me、Nd、Nl、No、Pd、Pc、Po、Sc、Sm、Sk、So、Co の文字と
+# U+200C、U+200D である。最初の文字には、Nd、Mc、Me の文字を使えない。
+# `write` は、ASCII でない文字を含む名前を縦棒で囲む(src/printer.zig)ので、名前は
+# `symbol->string` と `eq?` で確かめる。
+
+(define λ 1) λ
+1
+
+(define (二倍 x) (* 2 x)) (二倍 21)
+42
+
+(define αβγ 3) (+ αβγ 1)
+4
+
+(symbol->string 'αβγ)
+"αβγ"
+
+(string-length (symbol->string 'αβγ))
+3
+
+# 縦棒の識別子や文字列から作ったシンボルと、同じシンボルである。
+(eq? 'λ (string->symbol "λ"))
+#t
+
+(eq? 'λ '|λ|)
+#t
+
+(eq? 'λ '|\x3BB;|)
+#t
+
+# 記号(Sm、Pc、So)も識別子に使える。
+(define → 5) →
+5
+
+(define ‿ 6) ‿
+6
+
+(define 😀 'smile) (symbol->string 😀)
+"smile"
+
+# ASCII の文字との組合せ。数字は、2文字目以降に使える。
+(symbol->string 'a→b)
+"a→b"
+
+(symbol->string 'x٣)
+"x٣"
+
+(symbol->string 'λ1)
+"λ1"
+
+# 符号で始まる識別子(<peculiar identifier>)の後ろにも使える。
+(symbol->string '+λ)
+"+λ"
+
+(symbol->string '-→1)
+"-→1"
+
+(symbol->string '.λ)
+".λ"
+
+# 大文字と小文字は別のシンボルである。
+(eq? 'Λ 'λ)
+#f
+
+# ゼロ幅の非結合子と結合子(U+200C、U+200D)は、識別子の中にも先頭にも置ける。
+(string-length (symbol->string 'a‌b))
+3
+
+# 最初の文字に使えない Nd は、識別子にならず、数にもならない。
+'٣
+error: unreadable token
+
+'٣x
+error: unreadable token
+
+# 数字で始まる綴りは、ASCII の規則のとおり識別子にならない。
+'1λ
+error: unreadable token
+
+# <subsequent> にない ASCII の文字が混ざると、識別子にならない。
+'λ#
+error: unreadable token
+
+# 識別子の綴りは区切り文字までである。
+(list (symbol->string 'λ) (symbol->string 'μ))
+("λ" "μ")
+
+# 識別子は、ほかの構文と同じに使える。
+(let ((λ 10) (μ 20)) (+ λ μ))
+30
+
+(define-record-type 点 (make-点 x) 点? (x 点-x)) (点-x (make-点 7))
+7
+
+(define-syntax ⟳ (syntax-rules () ((_ e) (begin e e)))) (let ((n 0)) (⟳ (set! n (+ n 1))) n)
+2
+
+# 文字列の中と文字リテラルは、これまでどおりである。
+(list "λ" #\λ)
+("λ" #\λ)

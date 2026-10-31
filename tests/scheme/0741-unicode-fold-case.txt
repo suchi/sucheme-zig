@@ -1,0 +1,58 @@
+# スライス 4u4: `#!fold-case` が、ASCII でない文字の識別子を Unicode の単純な畳み込み
+# (CaseFolding.txt の C と S)で畳み込む(R7RS 2.1)。縦棒の識別子、文字列、1文字の
+# 文字リテラルは畳み込まない。指令の効果は、その入力の中だけである(0502 と同じ)。
+# `write` は、ASCII でない文字を含む名前を縦棒で囲むので、名前は `symbol->string` で確かめる。
+
+# 畳み込まない読み手では、大文字と小文字は別のシンボルである。
+(eq? 'ΛΑΜΒΔΑ 'λαμβδα)
+#f
+
+#!fold-case (eq? 'ΛΑΜΒΔΑ 'λαμβδα)
+#t
+
+#!fold-case (symbol->string 'ΛΑΜΒΔΑ)
+"λαμβδα"
+
+(define λ 1) #!fold-case Λ
+1
+
+#!fold-case (DEFINE Αβ 2) αΒ
+2
+
+# 指令より前に読んだものは、畳み込まない。
+(list (symbol->string 'Λ) #!fold-case (symbol->string 'Λ))
+("Λ" "λ")
+
+# `#!no-fold-case` で戻る。
+#!fold-case (list (symbol->string 'Λ) #!no-fold-case (symbol->string 'Λ))
+("λ" "Λ")
+
+# 語末のシグマ(ς)は、単純な畳み込みで σ になる。
+#!fold-case (eq? 'οδος 'ΟΔΟΣ)
+#t
+
+# ケルビン記号(U+212A)は k に畳み込まれる。符号化の長さが変わる。
+#!fold-case (symbol->string 'K)
+"k"
+
+# 4 バイトの文字(Deseret)も畳み込む。
+#!fold-case (eq? '𐐀 '𐐨)
+#t
+
+# 符号の後ろでも畳み込む。
+#!fold-case (symbol->string '+Λ)
+"+λ"
+
+# 縦棒の識別子、文字列、1文字の文字リテラルは畳み込まない。
+#!fold-case (eq? '|Λ| 'λ)
+#f
+
+#!fold-case (list "Λ" #\Λ)
+("Λ" #\Λ)
+
+#!fold-case (char->integer #\Λ)
+923
+
+# 畳み込みで変わる文字を含まない識別子は、そのままである。
+#!fold-case (symbol->string 'λ二→)
+"λ二→"

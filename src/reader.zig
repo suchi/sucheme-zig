@@ -1,9 +1,10 @@
 //! Reads the external representation of data (R7RS 7.1.2).
 //!
-//! 読むのは、10 進整数、真偽値、識別子(縦棒で囲んだものを含む)、文字、文字列、丸括弧のリスト、ベクタ、`'` と
+//! 読むのは、10 進整数、真偽値、識別子(縦棒で囲んだものと、ASCII でない文字を含むものを含む)、文字、文字列、丸括弧のリスト、ベクタ、`'` と
 //! `` ` `` と `,` と `,@` の略記である。行コメント、入れ子のブロックコメント `#|` `|#`、
 //! データコメント `#;` を読み飛ばす。畳み込みの状態(`fold_case`)を持ち、真のとき識別子と
-//! 文字名を小文字にする。指令 `#!fold-case` と `#!no-fold-case` が、この状態を切り替える。
+//! 文字名を畳み込む(識別子は Unicode の単純な畳み込み、文字名は ASCII の小文字化)。
+//! 指令 `#!fold-case` と `#!no-fold-case` が、この状態を切り替える。
 //! 読めない記法は `InvalidToken` などの誤りにする。
 //! `Value` を直接作る。ペアは渡された GC ヒープに確保し、識別子は渡されたシンボル表に
 //! インターンする。読み取りの途中でヒープは GC しないので、`next` が返した時点で
@@ -26,6 +27,7 @@ const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
 const positions_mod = @import("positions.zig");
 const num = @import("num/number.zig");
+const unicode = @import("unicode/props.zig");
 
 /// What the reader cannot read: the input is not a datum.
 pub const SyntaxError = error{
@@ -657,27 +659,40 @@ pub const Reader = struct {
         // 読み取りの大きさの上限を超えるか、ヒープの上限に収まらないか、`1/0` のような
         // 値を持たない綴りである。
         if (try num.parse(sink.heap, token, 10)) |n| return n;
-        if (isIdentifier(token)) return .fromSymbol(try sink.heap.intern(try self.folded(scratch, token)));
+        if (readsAsIdentifier(token)) return .fromSymbol(try sink.heap.intern(try self.folded(scratch, token)));
         return error.InvalidToken;
     }
 
-    /// The identifier `token` as this reader reads it: folded to lower case when the
-    /// reader folds case.
-    /// ASCII の大文字を含まなければ、そのまま返す。確保するのは、含むときだけである。
-    /// Why: このリーダが区切り文字までのトークンとして識別子を読むのは ASCII だけなので、
-    /// 畳み込みは ASCII の小文字化で足りる。縦棒の識別子は ASCII でない文字を含みうるが、
-    /// 畳み込まないので、ここを通らない。ASCII でない文字を識別子に許すときは、畳み込みの表(段階4)が要る。許すだけで
-    /// 畳み込みを直さないと、畳み込むべき識別子がそのまま通り、原因の分からない未束縛の変数に
-    /// なるので、ここで止める。
+    /// The identifier `token` as this reader reads it: folded when the reader folds
+    /// case.
+    /// 文字ごとに Unicode の単純な畳み込み(`props.simpleFoldcase`)をかける。畳み込みで変わる
+    /// 文字が無ければ、そのまま返す。確保するのは、変わるときだけである。`token` は
+    /// `readsAsIdentifier` が真にした綴りで、妥当な UTF-8 である。
+    /// Why: 全体の畳み込み(`string-foldcase`)でなく単純な畳み込みを使うのは、識別子の名前を
+    /// 文字ごとの写像で決めるためである。全体の畳み込みは文字の数を変えうる(エスツェット
+    /// が `ss` になる)。縦棒の識別子は畳み込まないので、ここを通らない。
     fn folded(self: *const Reader, scratch: std.mem.Allocator, token: []const u8) Error![]const u8 {
         if (!self.fold_case) return token;
-        var has_upper = false;
-        for (token) |byte| {
-            std.debug.assert(byte < 0x80);
-            if (std.ascii.isUpper(byte)) has_upper = true;
+        const view = std.unicode.Utf8View.init(token) catch return error.InvalidToken;
+        var changes = false;
+        var scan = view.iterator();
+        while (scan.nextCodepoint()) |c| {
+            if (unicode.simpleFoldcase(c) != c) {
+                changes = true;
+                break;
+            }
         }
-        if (!has_upper) return token;
-        return std.ascii.allocLowerString(scratch, token);
+        if (!changes) return token;
+        var out: std.ArrayList(u8) = .empty;
+        // 畳み込みの結果の符号化は元より長くなりうる(4 バイトまで)が、短くなることが多い。
+        try out.ensureTotalCapacity(scratch, token.len);
+        var it = view.iterator();
+        while (it.nextCodepoint()) |c| {
+            var encoded: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(unicode.simpleFoldcase(c), &encoded) catch return error.InvalidToken;
+            try out.appendSlice(scratch, encoded[0..n]);
+        }
+        return out.items;
     }
 };
 
@@ -948,41 +963,60 @@ fn isDecimalInteger(token: []const u8) bool {
     return true;
 }
 
-// Why: R7RS 7.1.1 の <identifier> を、ASCII に限り、`|...|` の形を除いて実装している。
+/// Whether `read` reads `token`, written without vertical lines, as an identifier
+/// (unless it is a number) whose characters are all ASCII. `token` is not empty.
+/// プリンタ(src/printer.zig)が、シンボルを縦棒で囲むかを決めるのに使う(スライス 5j)。
+/// ASCII でない文字を含む綴りは偽にする。リーダは `readsAsIdentifier` で読めるが、
+/// プリンタは縦棒で囲む。囲んでも読み戻すと同じシンボルになるので、読み書きは食い違わない。
+pub fn isIdentifier(token: []const u8) bool {
+    for (token) |byte| if (byte >= 0x80) return false;
+    return readsAsIdentifier(token);
+}
+
+// Why: R7RS 7.1.1 の <identifier> を、`|...|` の形を除いて実装している。
 // `|...|` の形は `next` が `string_syntax.readIdentifier` で読む。
 // <initial> に <subsequent> が続くものか、<peculiar identifier> である。整数は、
 // これを尋ねる前に判別してあり、識別子の形をした数(`+inf.0`、`+i`)は、
 // `atom` が先に `num.parse` で数として読む。
+// ASCII でない文字は、<initial> と <subsequent> の `<Unicode non-ASCII ...>` の部分で、
+// 符号位置ごとに `props` の表が決める。<sign subsequent> と <dot subsequent> は
+// <initial> を含むので、`+λ` や `.λ` も識別子である。
 /// Whether `read` reads `token`, written without vertical lines, as an identifier
 /// (unless it is a number). `token` is not empty.
-/// プリンタ(src/printer.zig)が、シンボルを縦棒で囲むかを決めるのにも使う(スライス 5j)。
-pub fn isIdentifier(token: []const u8) bool {
-    if (isInitial(token[0])) return allSubsequent(token[1..]);
+/// 不正な UTF-8 は識別子ではない。
+fn readsAsIdentifier(token: []const u8) bool {
+    const view = std.unicode.Utf8View.init(token) catch return false;
+    var it = view.iterator();
+    var c = it.nextCodepoint() orelse return false;
+    if (isInitial(c)) return allSubsequent(&it);
     // <peculiar identifier>
-    var rest = token;
-    if (rest[0] == '+' or rest[0] == '-') {
-        rest = rest[1..];
-        if (rest.len == 0) return true; // <explicit sign>
-        if (isSignSubsequent(rest[0])) return allSubsequent(rest[1..]);
-        if (rest[0] != '.') return false;
+    if (c == '+' or c == '-') {
+        c = it.nextCodepoint() orelse return true; // <explicit sign>
+        if (isSignSubsequent(c)) return allSubsequent(&it);
     }
     // `.` <dot subsequent> <subsequent>*。手前の符号はあってもなくてもよい。
-    if (rest[0] != '.' or rest.len < 2) return false;
-    if (!isSignSubsequent(rest[1]) and rest[1] != '.') return false;
-    return allSubsequent(rest[2..]);
+    if (c != '.') return false;
+    const dot_subsequent = it.nextCodepoint() orelse return false;
+    if (!isSignSubsequent(dot_subsequent) and dot_subsequent != '.') return false;
+    return allSubsequent(&it);
 }
 
-fn isInitial(c: u8) bool {
-    return std.ascii.isAlphabetic(c) or std.mem.indexOfScalar(u8, "!$%&*/:<=>?^_~", c) != null;
+fn isInitial(c: u21) bool {
+    if (c >= 0x80) return unicode.isIdentifierInitial(c);
+    const byte: u8 = @intCast(c);
+    return std.ascii.isAlphabetic(byte) or std.mem.indexOfScalar(u8, "!$%&*/:<=>?^_~", byte) != null;
 }
 
-fn isSignSubsequent(c: u8) bool {
+fn isSignSubsequent(c: u21) bool {
     return isInitial(c) or c == '+' or c == '-' or c == '@';
 }
 
-fn allSubsequent(s: []const u8) bool {
-    for (s) |c| {
-        if (!(isInitial(c) or std.ascii.isDigit(c) or c == '+' or c == '-' or c == '.' or c == '@')) return false;
+/// Whether every character that `it` has left is a <subsequent>.
+fn allSubsequent(it: *std.unicode.Utf8Iterator) bool {
+    while (it.nextCodepoint()) |c| {
+        if (c >= 0x80) {
+            if (!unicode.isIdentifierSubsequent(c)) return false;
+        } else if (!(isInitial(c) or std.ascii.isDigit(@intCast(c)) or c == '+' or c == '-' or c == '.' or c == '@')) return false;
     }
     return true;
 }
@@ -1194,17 +1228,139 @@ test "a reader that folds case reads identifiers and character names in lower ca
     try std.testing.expectError(error.InvalidCharacter, f.readOne("#\\NEWLINE"));
 }
 
-test "a reader that folds case reads no identifier with a character that is not ASCII, as one that does not" {
+test "next reads an identifier with characters that are not ASCII as the symbol of its characters" {
     var f: Fixture = .init();
     defer f.deinit();
-    for ([_]bool{ false, true }) |fold| {
-        f.fold_case = fold;
-        try std.testing.expectError(error.InvalidToken, f.readOne("λ"));
-        try std.testing.expectError(error.InvalidToken, f.readOne("(define Αβ 1)"));
-        // 文字列の中と、1文字のリテラルは、識別子ではない。
-        _ = try f.readOne("\"λ\"");
-        _ = try f.readOne("#\\λ");
+    // <initial> に入る一般カテゴリ(Ll、Lu、Lo、Sm、So、Pc、Mn、Co)と、4 バイトの文字。
+    // どれも大文字を含まないので、畳み込む読み手でも名前は変わらない。
+    for ([_][]const u8{ "λ", "二倍", "→", "😀", "\u{203F}", "\u{0301}", "\u{E000}", "a\u{3BB}", "\u{3BB}1", "x\u{663}" }) |name| {
+        for ([_]bool{ false, true }) |fold| {
+            f.fold_case = fold;
+            const sym = (try f.readOne(name)).asSymbol() orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqualStrings(name, f.heap.symbols.nameOf(sym));
+        }
     }
+    f.fold_case = false;
+    try std.testing.expectEqualStrings("Αβ", f.heap.symbols.nameOf((try f.readOne("Αβ")).asSymbol().?));
+    // 識別子の中の位置を問わず、ほかのデータと並べて読める。
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(|λ| 1 |二倍|)", try f.roundTrip("(λ 1 二倍)", &buf));
+    // 同じ名前は同じシンボルで、大文字と小文字は別である。
+    try std.testing.expectEqual((try f.readOne("λ")).asSymbol().?, (try f.readOne("|\\x3BB;|")).asSymbol().?);
+    try std.testing.expect((try f.readOne("Λ")).asSymbol().? != (try f.readOne("λ")).asSymbol().?);
+    // 文字列の中と、1文字のリテラルは、識別子ではない。
+    _ = try f.readOne("\"λ\"");
+    _ = try f.readOne("#\\λ");
+}
+
+test "next reads a peculiar identifier with a character that is not ASCII" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    // <sign subsequent> と <dot subsequent> は <initial> を含む。
+    for ([_][]const u8{ "+λ", "-λ1", "+\u{3BB}.x", ".λ", "+.λ", "-..λ" }) |name| {
+        const sym = (try f.readOne(name)).asSymbol() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(name, f.heap.symbols.nameOf(sym));
+    }
+    // 記号の後ろの数字や、<initial> でない文字は、そのままでは識別子にならない。
+    try std.testing.expectError(error.InvalidToken, f.readOne("+\u{664}"));
+    try std.testing.expectError(error.InvalidToken, f.readOne(".\u{664}"));
+}
+
+test "next rejects a token with a character that may not be in an identifier" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{
+        // <initial> に使えない Nd、Mc、Me(<subsequent> には使える)。
+        "\u{664}",
+        "\u{664}x",
+        "\u{903}",
+        "\u{20DD}",
+        // 空白(Zs、Zl、Zp)と、制御文字(Cc、Cf のうち U+200C、U+200D 以外)。
+        "a\u{A0}b",
+        "a\u{2028}b",
+        "a\u{85}b",
+        "a\u{200B}b",
+        // 割り当てのない符号位置と、非文字。
+        "\u{378}",
+        "a\u{378}",
+        "a\u{FFFF}",
+        "a\u{10FFFF}",
+        // ASCII の規則が決めるもの(<subsequent> にない `#` と、数字で始まる綴り)。
+        "\u{3BB}#",
+        "1\u{3BB}",
+        "\u{3BB}\u{7F}",
+        // 不正な UTF-8 は、識別子にならない。
+        "a\xff",
+        "\xc3",
+        "a\xe3\x81",
+    }) |src| {
+        f.fold_case = src.len % 2 == 1;
+        std.testing.expectError(error.InvalidToken, f.readOne(src)) catch |e| {
+            std.debug.print("accepted {any}\n", .{src});
+            return e;
+        };
+    }
+}
+
+test "next reads U+200C and U+200D as parts of an identifier, at the start too" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    for ([_][]const u8{ "a\u{200C}b", "a\u{200D}", "\u{200C}a", "\u{200D}", "+\u{200D}" }) |name| {
+        const sym = (try f.readOne(name)).asSymbol() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(name, f.heap.symbols.nameOf(sym));
+    }
+}
+
+test "a reader that folds case folds the characters of an identifier that are not ASCII" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    f.fold_case = true;
+    const cases = [_][2][]const u8{
+        .{ "ΛΑΜΒΔΑ", "λαμβδα" },
+        .{ "Αβ", "αβ" },
+        // 末尾のシグマは小文字の字形が別でも、単純な畳み込みは 1 つの文字に寄せる。
+        .{ "ΟΔΟΣ", "οδοσ" },
+        .{ "οδος", "οδοσ" },
+        // ASCII の大文字と混ざる。
+        .{ "AλB", "aλb" },
+        .{ "Foo-BAR", "foo-bar" },
+        // 畳み込んだ結果の符号化の長さが元と違う(3 バイトが 1 バイト、3 バイトが 2 バイト)。
+        .{ "\u{212A}x", "kx" },
+        .{ "\u{1E9E}", "\u{DF}" },
+        // 4 バイトの文字(Deseret)。
+        .{ "\u{10400}", "\u{10428}" },
+        // 単純な畳み込みを持たない文字は、そのまま残る。
+        .{ "\u{130}", "\u{130}" },
+        // 記号の後ろ。
+        .{ "+Λ", "+λ" },
+    };
+    for (cases) |c| {
+        const sym = (try f.readOne(c[0])).asSymbol() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(c[1], f.heap.symbols.nameOf(sym));
+    }
+    // 畳み込んだ名前は、小文字で書いた同じ名前と同じシンボルである。
+    try std.testing.expectEqual((try f.readOne("ΛΑΜΒΔΑ")).asSymbol().?, (try f.readOne("λαμβδα")).asSymbol().?);
+    // 畳み込む読み手でも、縦棒の識別子、文字列、1 文字のリテラルは畳み込まない。
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(|Λ| \"Λ\" #\\Λ)", try f.roundTrip("(|Λ| \"Λ\" #\\Λ)", &buf));
+    // 畳み込まない読み手は、どれも変えない。
+    f.fold_case = false;
+    const kept = (try f.readOne("ΛΑΜΒΔΑ")).asSymbol().?;
+    try std.testing.expectEqualStrings("ΛΑΜΒΔΑ", f.heap.symbols.nameOf(kept));
+}
+
+test "a directive switches the folding of an identifier that is not ASCII" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("(|Λ| |λ| |Λ|)", try f.roundTrip("(Λ #!fold-case Λ #!no-fold-case Λ)", &buf));
+}
+
+test "isIdentifier is the ASCII rule that the printer asks, and does not accept a name with a character that is not ASCII" {
+    try std.testing.expect(isIdentifier("abc"));
+    try std.testing.expect(!isIdentifier("λ"));
+    try std.testing.expect(!isIdentifier("a\u{3BB}"));
+    try std.testing.expect(!isIdentifier("+\u{3BB}"));
 }
 
 test "next reads lists, the empty list and nesting" {
@@ -2141,6 +2297,13 @@ const fuzz_inputs = [_][]const u8{
     // 識別子、文字名、16 進の `X`、ASCII でない識別子と、畳み込みで名前にならないもの。
     "(DEFINE Foo #\\NEWLINE #\\X41 x) ",
     "(DEFINE Foo λ) #\\X41g #\\Newlin ",
+    // ASCII でない識別子(スライス 4u4): 畳み込まれるもの(ギリシャ文字、ケルビン記号、4 バイトの
+    // Deseret)、符号の後ろ、U+200D、最初の文字に使えない Nd と Mc、空白、不正な UTF-8、途中で切れた文字。
+    // 同じ綴りを、末尾の空白の有無で長さの偶奇を変えて 2 つ置く(畳み込む読み手と畳み込まない読み手)。
+    "(ΛΑΜΒΔΑ ΟΔΟΣ \u{212A}x \u{10400} +Λ .Λ a\u{200D} → 😀) ",
+    "(ΛΑΜΒΔΑ ΟΔΟΣ \u{212A}x \u{10400} +Λ .Λ a\u{200D} → 😀)",
+    "\u{664} \u{664}x \u{903} a\u{A0}b \u{378} a\u{FFFF} Λ# 1Λ",
+    "(a\xce) λ\xcf (\xce",
     // 評価器の入力に出る綴り(計画書 0025 のスライス 6i-3)。データの注釈と、それを重ねた形、
     // 入れ子のブロック注釈と閉じないもの、読み手の畳み込みの指令、文字の名前の残り。
     "(1 #;(ignored) 2 #;#;a b 3) #; ",

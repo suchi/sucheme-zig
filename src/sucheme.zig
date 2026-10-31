@@ -1351,6 +1351,7 @@ test "include-ci refuses a file name and a file as include does, and says its ow
     try tree.write("open.scm", "(define x");
     try tree.write("hash.scm", "(define x #z)");
     try tree.write("greek.scm", "(define \xce\xbb 1)");
+    try tree.write("greek-ci.scm", "(DEFINE \xce\x9b 2)");
     try tree.write("self.scm", "(include-ci \"self.scm\")");
     var interp: Interpreter = undefined;
     try initOnTree(&interp, &tree, false);
@@ -1362,9 +1363,10 @@ test "include-ci refuses a file name and a file as include does, and says its ow
     try expectLineFails(&interp, "(include-ci \"open.scm\")", "cannot include-ci open.scm: unexpected end of input");
     try expectLineFails(&interp, "(include-ci \"hash.scm\")", "cannot include-ci hash.scm: unreadable token");
     try expectLineFailsInTree(&interp, &tree, "(include-ci \"self.scm\")", "self.scm:1:1", "bad include-ci: self.scm includes itself, directly or through other files");
-    // ASCII でない文字の識別子は、畳み込む読み手も畳み込まない読み手も、まだ読めない。
-    try expectLineFails(&interp, "(include-ci \"greek.scm\")", "cannot include-ci greek.scm: unreadable token");
-    try expectLineFails(&interp, "(include \"greek.scm\")", "cannot include greek.scm: unreadable token");
+    // ASCII でない文字の識別子は、どちらの読み手も読める(スライス 4u4)。畳み込む読み手は
+    // 大文字のラムダ(U+039B)を小文字にするので、`greek-ci.scm` の定義は `λ` を束縛する。
+    try expectLinePrints(&interp, "(include \"greek.scm\") \u{3BB}", "1\n");
+    try expectLinePrints(&interp, "(include-ci \"greek-ci.scm\") \u{3BB}", "2\n");
     var bare: Interpreter = undefined;
     try bare.init(std.testing.allocator);
     defer bare.deinit();
