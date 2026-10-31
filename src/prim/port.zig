@@ -476,7 +476,7 @@ fn read(services: *const Services, args: []const Value) Error!Value {
                 switch (try addInput(services, p)) {
                     .added => continue,
                     .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
-                    .none => return unreadable(services, error.Incomplete),
+                    .none => return unreadable(services, if (valid.cut) error.InvalidUtf8 else error.Incomplete),
                 }
             },
             error.OutOfMemory => return if (heap.external_refused) error.HeapLimit else error.OutOfMemory,
@@ -493,7 +493,7 @@ fn read(services: *const Services, args: []const Value) Error!Value {
                 switch (try addInput(services, p)) {
                     .added => continue,
                     .full => if (try makeRoom(services, p, held)) continue else return unreadable(services, syntax),
-                    .none => return unreadable(services, syntax),
+                    .none => return unreadable(services, if (valid.cut) error.InvalidUtf8 else syntax),
                 }
             },
         };
@@ -509,7 +509,7 @@ fn read(services: *const Services, args: []const Value) Error!Value {
                 switch (try addInput(services, p)) {
                     .added => continue,
                     .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
-                    .none => {},
+                    .none => if (valid.cut) return unreadable(services, error.InvalidUtf8),
                 }
             }
             port_mod.consume(services.heap, p, r.pos);
@@ -531,6 +531,7 @@ fn read(services: *const Services, args: []const Value) Error!Value {
             .added => continue,
             .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
             .none => {
+                if (valid.cut) return unreadable(services, error.InvalidUtf8);
                 port_mod.consume(services.heap, p, r.pos);
                 p.fold_case = r.fold_case;
                 return .eof_value;
@@ -1389,4 +1390,68 @@ test "display of a long string goes to the port without the whole text in the sc
     f.services.scratch = fba.allocator();
     _ = try call(&f, "display", &.{ .fromString(long), p });
     try std.testing.expectEqual(10_000, (try call(&f, "get-output-string", &.{p})).asString().?.bytes.len);
+}
+
+/// A host with one file in memory, which gives at most `chunk` bytes a read, for the
+/// tests of `read` on a file port.
+const OneFile = struct {
+    contents: []const u8,
+    at: usize = 0,
+    chunk: usize = 1000,
+
+    fn host(self: *OneFile) Heap.FileHost {
+        return .{ .context = self, .open = open, .delete = delete, .exists = exists, .read = readFile, .write = writeFile, .close = closeFile };
+    }
+
+    fn open(_: *anyopaque, _: []const u8, _: Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        return error.Refused;
+    }
+
+    fn delete(_: *anyopaque, _: []const u8) error{Refused}!void {
+        return error.Refused;
+    }
+
+    fn exists(_: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+
+    fn readFile(context: *anyopaque, _: u32, buffer: []u8) error{Io}!usize {
+        const self: *OneFile = @ptrCast(@alignCast(context));
+        const n = @min(buffer.len, self.chunk, self.contents.len - self.at);
+        @memcpy(buffer[0..n], self.contents[self.at..][0..n]);
+        self.at += n;
+        return n;
+    }
+
+    fn writeFile(_: *anyopaque, _: u32, _: []const u8) error{Io}!void {}
+
+    fn closeFile(_: *anyopaque, _: u32) void {}
+};
+
+test "read gives the buffer of a file port back its usual size after a datum longer than it" {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.append(std.testing.allocator, '(');
+    for (0..3 * file_buffer_size / 5) |_| try list.appendSlice(std.testing.allocator, "1234 ");
+    try list.appendSlice(std.testing.allocator, ") 7");
+    var file: OneFile = .{ .contents = list.items };
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.files = file.host();
+    const p = try f.heap.createFilePort(.input, .textual, file_buffer_size);
+    p.open = true;
+    const before = f.heap.accounted;
+    const objects_before = f.heap.count;
+    const datum = try call(&f, "read", &.{.fromPort(p)});
+    try std.testing.expectEqual(3 * file_buffer_size / 5, @import("pair.zig").properLength(datum).?);
+    // 読むために伸ばしたバッファは、元の大きさに戻り、その分の計上も戻る。増えた計上は、
+    // 読んだリストのペアの分だけである(数は fixnum で、確保しない)。
+    try std.testing.expectEqual(file_buffer_size, p.backing.file.buffer.len);
+    const pairs = f.heap.count - objects_before;
+    try std.testing.expectEqual(3 * file_buffer_size / 5, pairs);
+    try std.testing.expectEqual(before + pairs * @import("../heap.zig").cellBytes(value.Pair), f.heap.accounted);
+    try std.testing.expectEqual(7, (try call(&f, "read", &.{.fromPort(p)})).asFixnum().?);
+    try std.testing.expect((try call(&f, "read", &.{.fromPort(p)})).isEqv(.eof_value));
+    _ = try call(&f, "close-port", &.{.fromPort(p)});
 }

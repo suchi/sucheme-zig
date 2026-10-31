@@ -3124,6 +3124,27 @@ test "read takes the data of a file across the end of the port's buffer" {
             try tree.write("h.txt", try spaced(a, size - 1 - shift, hashed));
             try expectLinePrints(&interp, try withFileName(a, &tree, "h.txt", all), hashed_out);
         }
+        // 多バイト文字が、バッファの終わりで割れる。2バイトの `λ` は size - 2 個の空白のあとで、
+        // 3バイトの `あ` は size - 3 個と size - 2 個の空白のあとで割れる。size - 1 個は割れない対照。
+        for ([_]struct { usize, []const u8, []const u8 }{
+            .{ size - 2, "(λ 1)", "((|λ| 1))\n" },
+            .{ size - 1, "(λ 1)", "((|λ| 1))\n" },
+            .{ size - 3, "(あ 1)", "((|あ| 1))\n" },
+            .{ size - 2, "(あ 1)", "((|あ| 1))\n" },
+        }) |c| {
+            try tree.write("m.txt", try spaced(a, c[0], c[1]));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "m.txt", all), c[2]);
+        }
+        // ファイルが文字の途中で終わるときも、読めないバイトと同じく `read-error` である。
+        const twice = "(call-with-input-file {s} (lambda (p) (let ((x (guard (c ((read-error? c) (error-object-message c))) (read p)))) (list x (guard (c ((read-error? c) (error-object-message c))) (read p))))))";
+        try tree.write("e1.txt", "abc\xe3\x81");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e1.txt", twice), "(\"invalid UTF-8 input in read\" \"invalid UTF-8 input in read\")\n");
+        try tree.write("e2.txt", "(a) \xc3\xa9\xe3\x81");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e2.txt", twice), "((a) \"invalid UTF-8 input in read\")\n");
+        try tree.write("e3.txt", "(a \xe3");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e3.txt", twice), "(\"invalid UTF-8 input in read\" \"invalid UTF-8 input in read\")\n");
+        try tree.write("e4.txt", "(a)\xe3");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e4.txt", twice), "((a) \"invalid UTF-8 input in read\")\n");
         // 行をまたぐブロックコメントは、境目の前後でも、1つの空白である。
         for ([_]usize{ size - 6, size - 3, size }) |n| {
             try tree.write("b.txt", try spaced(a, n, "#| a\n b |# x"));
