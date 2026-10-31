@@ -485,6 +485,58 @@ test "parseUnicodeData sets the identifier bits by general category (R7RS 7.1.1)
     try std.testing.expectEqual(@as(u16, 0), flags[0xDB7F]);
 }
 
+test "parseUnicodeData gives every general category its own identifier bits" {
+    const gpa = std.testing.allocator;
+    const flags = try gpa.alloc(u16, code_point_count);
+    defer gpa.free(flags);
+    const both = flag.identifier_initial | flag.identifier_subsequent;
+    const sub = flag.identifier_subsequent;
+    // 一般カテゴリごとに、ASCII の外の符号位置を1つ。Nd は十進数字の並びが要るので、別のテストで見る。
+    const cases = [_]struct { cp: u21, gc: []const u8, bits: u16 }{
+        .{ .cp = 0x00C0, .gc = "Lu", .bits = both },
+        .{ .cp = 0x00E0, .gc = "Ll", .bits = both },
+        .{ .cp = 0x01C5, .gc = "Lt", .bits = both },
+        .{ .cp = 0x02B0, .gc = "Lm", .bits = both },
+        .{ .cp = 0x00AA, .gc = "Lo", .bits = both },
+        .{ .cp = 0x0300, .gc = "Mn", .bits = both },
+        .{ .cp = 0x0903, .gc = "Mc", .bits = sub },
+        .{ .cp = 0x20DD, .gc = "Me", .bits = sub },
+        .{ .cp = 0x2160, .gc = "Nl", .bits = both },
+        .{ .cp = 0x00B2, .gc = "No", .bits = both },
+        .{ .cp = 0x2010, .gc = "Pd", .bits = both },
+        .{ .cp = 0x203F, .gc = "Pc", .bits = both },
+        .{ .cp = 0x00B7, .gc = "Po", .bits = both },
+        .{ .cp = 0x20AC, .gc = "Sc", .bits = both },
+        .{ .cp = 0x00D7, .gc = "Sm", .bits = both },
+        .{ .cp = 0x02C2, .gc = "Sk", .bits = both },
+        .{ .cp = 0x00A9, .gc = "So", .bits = both },
+        .{ .cp = 0xE000, .gc = "Co", .bits = both },
+        .{ .cp = 0x0F3A, .gc = "Ps", .bits = 0 },
+        .{ .cp = 0x0F3B, .gc = "Pe", .bits = 0 },
+        .{ .cp = 0x2018, .gc = "Pi", .bits = 0 },
+        .{ .cp = 0x2019, .gc = "Pf", .bits = 0 },
+        .{ .cp = 0x00A0, .gc = "Zs", .bits = 0 },
+        .{ .cp = 0x2028, .gc = "Zl", .bits = 0 },
+        .{ .cp = 0x2029, .gc = "Zp", .bits = 0 },
+        .{ .cp = 0x0085, .gc = "Cc", .bits = 0 },
+        .{ .cp = 0x00AD, .gc = "Cf", .bits = 0 },
+        .{ .cp = 0xD800, .gc = "Cs", .bits = 0 },
+        .{ .cp = 0x0378, .gc = "Cn", .bits = 0 },
+        // ASCII の境界。カテゴリが許す集合にあっても、0x80 より前では立てない。
+        .{ .cp = 0x007E, .gc = "Lo", .bits = 0 },
+        .{ .cp = 0x007F, .gc = "Lo", .bits = 0 },
+        .{ .cp = 0x0080, .gc = "Lo", .bits = both },
+    };
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    for (cases) |c| try text.print(gpa, "{X:0>4};CHARACTER;{s};0;L;;;;;N;;;;;\n", .{ c.cp, c.gc });
+    try parseForIdentifierBits(gpa, text.items, flags);
+    for (cases) |c| {
+        errdefer std.debug.print("identifier bits of U+{X:0>4} ({s})\n", .{ c.cp, c.gc });
+        try std.testing.expectEqual(c.bits, flags[c.cp]);
+    }
+}
+
 test "parseUnicodeData keeps the identifier bits of a decimal digit out of the initial set" {
     const gpa = std.testing.allocator;
     const flags = try gpa.alloc(u16, code_point_count);
@@ -506,6 +558,10 @@ test "parseUnicodeData rejects a range line without its partner and an unknown c
     const first = "4E00;<CJK Ideograph, First>;Lo;0;L;;;;;N;;;;;\n";
     const last = "9FFF;<CJK Ideograph, Last>;Lo;0;L;;;;;N;;;;;\n";
     const other = "0061;LATIN SMALL LETTER A;Ll;0;L;;;;;N;;;0041;;0041\n";
+    // First と Last が同じ符号位置の1点の範囲は正当である。
+    try parseForIdentifierBits(gpa, "4E00;<CJK Ideograph, First>;Lo;0;L;;;;;N;;;;;\n" ++
+        "4E00;<CJK Ideograph, Last>;Lo;0;L;;;;;N;;;;;\n", flags);
+    try std.testing.expectEqual(flag.identifier_initial | flag.identifier_subsequent, flags[0x4E00]);
     try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, first, flags));
     try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, last, flags));
     try std.testing.expectError(error.UnpairedRange, parseForIdentifierBits(gpa, first ++ other ++ last, flags));
