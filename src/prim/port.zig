@@ -194,8 +194,14 @@ fn closeOutputPort(services: *const Services, args: []const Value) Error!Value {
 }
 
 /// The size of the buffer of a file port.
-/// Why: 仮の値である。候補の値を `ReleaseSafe` で測って決める(docs/plans/0019-phase5-ports-and-io.md
-/// の合意を求める点の1)。
+/// Why: 大きさは、`ReleaseSafe` で測って決めた(docs/plans/0019-phase5-ports-and-io.md の合意を
+/// 求める点の1)。測り方: 候補(256、1024、4096、16384、65536)ごとに実行ファイルを作り、
+/// `write-char` で1文字ずつ書くプログラム、`read-char` で1文字ずつ読むプログラム、`write-string`
+/// で100文字ずつ書くプログラムを、それぞれ数メガバイトのファイルに対して3回走らせ、最短の時間を
+/// 比べた。1文字ずつの読み書きは、評価器の費用が大半で、候補の間に差が見えなかった。
+/// `write-string` では、256 だけが遅く、1024 以上はそろった。そろった中から、多くのシステムの
+/// ページの大きさと同じ 4096 を選んだ。これより大きくしても速くならず、開いたファイルごとに
+/// 計上する量だけが増える。
 pub const file_buffer_size = 4096;
 
 /// A new open port of `direction` and `element` on the file `args[0]` names
