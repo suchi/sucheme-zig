@@ -183,11 +183,20 @@ fn acosOutside(x: f64) C {
 /// 負の実数は `log |x| + pi i`、`-0.0` も同じ(R7RS 6.2.6 は `(log -0.0)` を `-inf.0+πi` とする)。
 /// 正の実数と正確な 0 は、虚部が `0.0` である(`log 0` は `-inf.0`)。複素数は、`log |z|` と
 /// 角を成分にする。
+///
+/// 正確な複素数で、部分が `f64` に収まらない(無限大になる)か、0 でない部分が `f64` の
+/// 最小の正規化数に満たない(0 に潰れるか、非正規化数で精度を失う)ときは、`log |z|` を `0.5 * ln(re^2 + im^2)` で求める。2乗の和は正確な数で、
+/// `elementary.ln` は `f64` に収まらない正確な数の対数を整数の演算で扱う。それ以外は `logAbs` の
+/// ままなので、範囲内の値は変わらない。
 pub fn logOf(h: *Heap, z: Value) Error!C {
     if (z.asCompnum()) |c| {
         const re = try elementary.toF64(h, c.real);
         const im = try elementary.toF64(h, c.imag);
-        return .init(logAbs(re, im), try elementary.atan2(h, c.imag, c.real));
+        const angle_of = try elementary.atan2(h, c.imag, c.real);
+        if (c.real.asFlonum() == null and (!fitsF64(c.real, re) or !fitsF64(c.imag, im))) {
+            return .init(0.5 * try elementary.ln(h, try sumOfSquares(h, c.real, c.imag)), angle_of);
+        }
+        return .init(logAbs(re, im), angle_of);
     }
     const negative = if (z.asFlonum()) |x|
         std.math.signbit(x) and !std.math.isNan(x)
@@ -197,6 +206,17 @@ pub fn logOf(h: *Heap, z: Value) Error!C {
     if (z.asFlonum()) |x| return .init(@log(@abs(x)), imag);
     if (z.asFixnum()) |n| if (n == 0) return .init(-std.math.inf(f64), imag);
     return .init(try elementary.ln(h, if (negative) try ops.negate(h, z) else z), imag);
+}
+
+/// Whether the exact number `v`, which `as_f64` is the `f64` of, is held by an `f64` without
+/// overflowing or losing precision: not infinite, and not a nonzero number below the smallest
+/// normal `f64` (a subnormal number has fewer digits, and 0 has none).
+///
+/// Why: 非正規化数は仮数部の桁が減るので、`10^-320` の `f64` は元の値から約 1e-5 の相対誤差を持ち、
+/// `log` の実部が同じだけずれる。境界を最小の正規化数にして、そこから下は正確な数の経路にする。
+fn fitsF64(v: Value, as_f64: f64) bool {
+    if (!std.math.isFinite(as_f64)) return false;
+    return @abs(as_f64) >= std.math.floatMin(f64) or v.asFixnum() == 0;
 }
 
 /// `log |re + im i|`, without overflowing in the sum of the squares.

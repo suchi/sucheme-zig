@@ -261,6 +261,47 @@ error: division by zero in expt 0 +i
 (import (scheme inexact)) (list (sqrt +nan.0+nan.0i) (asin +nan.0+nan.0i) (acos +nan.0+nan.0i) (log +inf.0+nan.0i) (log +nan.0+nan.0i))
 (+nan.0+nan.0i +nan.0+nan.0i +nan.0+nan.0i +inf.0+nan.0i +nan.0+nan.0i)
 
+# f64 に収まらない正確な複素数の log の実部は、整数の演算で求めた log |z| である(各部を f64 にすると +inf.0 や -inf.0 に潰れていた)。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 400) (expt 10 399))))) (list (< 921.03 (real-part z) 921.04) (< 0.0996 (imag-part z) 0.0997)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 1 (expt 10 400)) (/ 1 (expt 10 401)))))) (list (< -921.03 (real-part z) -921.02) (< 0.0996 (imag-part z) 0.0997)))
+(#t #t)
+
+# 一方の部分だけが範囲外でも同じ。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 400) 1)))) (list (< 921.03 (real-part z) 921.04) (imag-part z)))
+(#t 0.0)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular 1 (expt 10 400))))) (list (< 921.03 (real-part z) 921.04) (< 1.57 (imag-part z) 1.58)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 400) (/ 1 (expt 10 400)))))) (< 921.03 (real-part z) 921.04))
+#t
+
+# 部分が 10^617 を超えても、整数の演算で求めるので有限である。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 1000) (expt 10 999))))) (list (< 2302.58 (real-part z) 2302.6) (< 0.0996 (imag-part z) 0.0997)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 1 (expt 10 1000)) (/ 1 (expt 10 1000)))))) (list (< -2302.24 (real-part z) -2302.23) (< 0.78 (imag-part z) 0.79)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (expt 10 5000) (- (expt 10 5000)))))) (list (< 11513.27 (real-part z) 11513.28) (< -0.79 (imag-part z) -0.78)))
+(#t #t)
+
+# 範囲内の正確な複素数の log は、これまでの値のままである。
+# `(log 1+5i)` は、`logAbs` の値(1.6290482690107408)と、正確な数の経路の値(1.629048269010741)が最後の桁で食い違うので、
+# 切り替えの条件が範囲内の入力に効いていないことを固定する。
+(import (scheme complex) (scheme inexact)) (list (log 3+4i) (log 1+i) (log 1+5i))
+(1.6094379124341003+0.9272952180016122i 0.34657359027997264+0.7853981633974483i 1.6290482690107408+1.373400766945016i)
+
+# 部分が最小の正規化数(約 2.2e-308)に満たない非正規化数は、精度を失うので、正確な数の経路で求める
+# (実部の真の値は約 -736.48065617)。
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 1 (expt 10 320)) (/ 1 (expt 10 320)))))) (list (< -736.48066 (real-part z) -736.48065) (< 0.785 (imag-part z) 0.786)))
+(#t #t)
+
+(import (scheme complex) (scheme inexact)) (let ((z (log (make-rectangular (/ 3 (expt 10 320)) (/ 4 (expt 10 320)))))) (< -735.2178 (real-part z) -735.2177))
+#t
+
 # log の無限大と 0 の行(4i のミューテーション査読の記録)。無限大の部分は、比 b/a を取らずに +inf.0 になり、0 は -inf.0 になる。
 (import (scheme complex) (scheme inexact)) (list (log +inf.0+inf.0i) (log -inf.0+inf.0i) (log -inf.0-inf.0i))
 (+inf.0+0.7853981633974483i +inf.0+2.356194490192345i +inf.0-2.356194490192345i)
