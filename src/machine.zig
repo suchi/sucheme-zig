@@ -2363,7 +2363,7 @@ fn irritantsText(f: *Fixture, buf: []u8) ![]const u8 {
     var it = f.ctx.raised.?.asCondition().?.irritants;
     while (it.asPair()) |p| : (it = p.cdr) {
         if (w.end != 0) try w.writeByte(' ');
-        try @import("printer.zig").write(&w, std.testing.allocator, &f.ctx.heap.symbols, p.car);
+        try @import("printer.zig").print(&w, &f.ctx.heap, &f.ctx.heap.symbols, p.car, .write);
     }
     return w.buffered();
 }

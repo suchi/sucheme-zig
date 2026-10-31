@@ -1,0 +1,74 @@
+# スライス 5j: `write`、`write-shared`、`write-simple` と `display`(R7RS 6.13.3)。循環と共有は
+# データラベル(R7RS 2.4)で書く。`write` と `display` は循環にだけ、`write-shared` は2回以上
+# 現れるペアとベクタすべてにラベルを付け、`write-simple` はラベルを付けない。
+
+# 計画書 0019 の 5j の完了条件。
+(import (scheme write)) (let ((x (list 1 2))) (set-cdr! (cdr x) x) (write x))
+#0=(1 2 . #0#)
+
+# REPL が結果を書くのも `write` なので、循環した結果でも止まる。
+(let ((x (list 1 2))) (set-cdr! (cdr x) x) x)
+#0=(1 2 . #0#)
+
+(let ((v (vector 1 2))) (vector-set! v 1 v) v)
+#0=#(1 #0#)
+
+# 長い輪と深い入れ子の循環の縮小版(規模の版は tests/scheme-slow/0630-write-scale.txt)。
+(import (scheme write)) (define (ring n) (let ((x (make-list n 1))) (set-cdr! (list-tail x (- n 1)) x) x)) (let ((p (open-output-string))) (write (ring 1000) p) (string-length (get-output-string p)))
+2010
+
+(import (scheme write)) (define (nest n) (let* ((inner (list 0)) (x (let loop ((i 0) (x inner)) (if (= i n) x (loop (+ i 1) (list x)))))) (set-car! inner x) x)) (let ((p (open-output-string))) (write (nest 3) p) (get-output-string p))
+"#0=((((#0#))))"
+
+# リストの途中のペアに戻る循環は、そのペアを `.` のあとに書く。
+(let ((x (list 'a 'b 'c))) (set-cdr! (cddr x) (cdr x)) x)
+(a . #0=(b c . #0#))
+
+# 循環した定数(衛生性の検証項目の9。読んだラベルは `quote` を通っても保たれる)。
+'#0=(a b . #0#)
+#0=(a b . #0#)
+
+'(#0=(1 . #0#) #0#)
+(#0=(1 . #0#) #0#)
+
+'#0=(#1=(b . #1#) . #0#)
+#0=(#1=(b . #1#) . #0#)
+
+# 循環でない共有は、`write` ではラベルを付けず、`write-shared` だけが付ける。
+(import (scheme write)) (let ((s (list 1))) (write (list s s)) (write-shared (list s s)) (write-simple (list s s)))
+((1) (1))(#0=(1) #0#)((1) (1))
+
+(import (scheme write)) (let* ((s (list 1)) (v (vector 'v s))) (write-shared (list s v v)))
+(#0=(1) #1=#(v #0#) #1#)
+
+# `display` も循環で止まり、文字列と文字をそのまま書く。
+(import (scheme write)) (let ((x (list "a" #\b))) (set-cdr! (cdr x) x) (display x))
+#0=(a b . #0#)
+
+# 縦棒で囲むシンボル。`display` は囲まない。
+(import (scheme write)) (write (list (string->symbol "a b") (string->symbol "") (string->symbol "1") (string->symbol "λ") 'abc '+ '...))
+(|a b| || |1| |λ| abc + ...)
+
+(import (scheme write)) (display (list (string->symbol "a b") (string->symbol "λ")))
+(a b λ)
+
+'|a\|b|
+|a\|b|
+
+# 縦棒の中では、`|` と `\` にバックスラッシュを付ける。書いた綴りをリーダが読むと、同じ
+# シンボルになる(`read` は 5l なので、綴りをそのまま書いて確かめる)。
+(import (scheme write)) (let ((p (open-output-string))) (write (list (string->symbol "a b") (string->symbol "-1") (string->symbol "a|b\\c")) p) (get-output-string p))
+"(|a b| |-1| |a\\|b\\\\c|)"
+
+(list (eq? (string->symbol "a b") '|a b|) (eq? (string->symbol "-1") '|-1|) (eq? (string->symbol "a|b\\c") '|a\|b\\c|))
+(#t #t #t)
+
+# ポートを渡せば、そのポートに書く。
+(import (scheme write)) (let ((p (open-output-string))) (write "a" p) (write-shared 'b p) (write-simple #\c p) (display "d" p) (get-output-string p))
+"\"a\"b#\\cd"
+
+(import (scheme write)) (let ((p (open-output-string))) (close-port p) (write 1 p))
+error: port is closed in write 1 #<port>
+
+(import (scheme write)) (write-shared 1 (open-input-string ""))
+error: wrong type of argument to write-shared 1 #<port>

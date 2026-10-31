@@ -1,5 +1,6 @@
 //! Port primitives (R7RS 6.13): the predicates, closing, string and bytevector ports, the
-//! current ports, reading and writing, and `display` (R7RS 6.13.3, `(scheme write)`).
+//! current ports, reading and writing, and `write`, `write-shared`, `write-simple` and
+//! `display` (R7RS 6.13.3, `(scheme write)`).
 //!
 //! ポートの引数を省略すると、現在のポートを使う(R7RS 6.13.2、6.13.3)。現在のポートは
 //! パラメータで(`current-input-port` と `current-output-port`)、その時点の値を、呼び出しの
@@ -60,6 +61,9 @@ pub const primitives = [_]Primitive{
     .{ .name = "write-u8", .min_args = 1, .max_args = 2, .body = .{ .pure = &writeU8 } },
     .{ .name = "write-bytevector", .min_args = 1, .max_args = 4, .body = .{ .pure = &writeBytevector } },
     .{ .name = "flush-output-port", .min_args = 0, .max_args = 1, .body = .{ .pure = &flushOutputPort } },
+    .{ .name = "write", .min_args = 1, .max_args = 2, .body = .{ .pure = &write } },
+    .{ .name = "write-shared", .min_args = 1, .max_args = 2, .body = .{ .pure = &writeShared } },
+    .{ .name = "write-simple", .min_args = 1, .max_args = 2, .body = .{ .pure = &writeSimple } },
     .{ .name = "display", .min_args = 1, .max_args = 2, .body = .{ .pure = &display } },
     .{ .name = "%console-parameter", .min_args = 1, .max_args = 1, .body = .{ .pure = &consoleParameter } },
 };
@@ -423,20 +427,45 @@ fn flushOutputPort(services: *const Services, args: []const Value) Error!Value {
     return .unspecified_value;
 }
 
+/// `(write obj)` and `(write obj port)`: writes `obj` with labels for its cycles only
+/// (R7RS 6.13.3, `(scheme write)`).
+fn write(services: *const Services, args: []const Value) Error!Value {
+    return writeAs(services, args, .write);
+}
+
+/// `(write-shared obj)` and `(write-shared obj port)`: writes `obj` with labels for all
+/// the pairs and vectors that appear more than once (R7RS 6.13.3).
+fn writeShared(services: *const Services, args: []const Value) Error!Value {
+    return writeAs(services, args, .shared);
+}
+
+/// `(write-simple obj)` and `(write-simple obj port)`: writes `obj` with no labels
+/// (R7RS 6.13.3). It does not end on a cycle.
+fn writeSimple(services: *const Services, args: []const Value) Error!Value {
+    return writeAs(services, args, .simple);
+}
+
 /// `(display obj)` and `(display obj port)`: writes `obj` as `display` shows it
 /// (R7RS 6.13.3, `(scheme write)`).
-/// 書く形はプリンタの `display` が決め、ポートの書き手(`port.Writer`)を通して、ポートに直接
-/// 書く。何も書かない値(空の文字列)でも、閉じたポートは断るので、先に空の書き込みで確かめる。
-/// 循環の扱いは、スライス 5j が入れる(docs/plans/0019-phase5-ports-and-io.md)。
 fn display(services: *const Services, args: []const Value) Error!Value {
+    return writeAs(services, args, .display);
+}
+
+/// Writes `args[0]` to the port `args[1]`, or to the current output port, in the form
+/// of `mode`.
+/// 書く形はプリンタが決め、ポートの書き手(`port.Writer`)を通して、ポートに直接書く。何も
+/// 書かない値(空の文字列)でも、閉じたポートは断るので、先に空の書き込みで確かめる。
+/// プリンタの作業領域はヒープの上限に数え、収まらなければ `HeapLimit` である。
+fn writeAs(services: *const Services, args: []const Value, mode: printer.Mode) Error!Value {
     const p = try argPort(services, args, 1, .output, .textual);
     _ = try put(services, p, "");
     const sink = if (services.console) |console| console.sink else null;
     var buffer: [256]u8 = undefined;
     var w: port_mod.Writer = .init(services.heap, sink, p, &buffer);
-    printer.display(&w.interface, services.scratch, &services.heap.symbols, args[0]) catch |e| switch (e) {
+    printer.print(&w.interface, services.heap, &services.heap.symbols, args[0], mode) catch |e| switch (e) {
         error.WriteFailed => return portFailure(w.failure.?),
         error.OutOfMemory => return error.OutOfMemory,
+        error.HeapLimit => return error.HeapLimit,
     };
     w.interface.flush() catch return portFailure(w.failure.?);
     return .unspecified_value;
@@ -553,7 +582,8 @@ test "the primitives take the numbers of arguments the language gives them, with
         .{ "read-u8", 0, 1 },               .{ "peek-u8", 0, 1 },               .{ "u8-ready?", 0, 1 },
         .{ "read-bytevector", 1, 2 },       .{ "read-bytevector!", 1, 4 },      .{ "newline", 0, 1 },
         .{ "write-char", 1, 2 },            .{ "write-string", 1, 4 },          .{ "write-u8", 1, 2 },
-        .{ "write-bytevector", 1, 4 },      .{ "flush-output-port", 0, 1 },     .{ "display", 1, 2 },
+        .{ "write-bytevector", 1, 4 },      .{ "flush-output-port", 0, 1 },     .{ "write", 1, 2 },
+        .{ "write-shared", 1, 2 },          .{ "write-simple", 1, 2 },          .{ "display", 1, 2 },
         .{ "%console-parameter", 1, 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
@@ -905,6 +935,63 @@ test "display writes what the printer's display shows to the port, and refuses a
     try std.testing.expectError(error.WrongType, call(&f, "display", &.{fix(1)}));
 }
 
+test "write, write-shared and write-simple write to the port in their forms, and refuse a closed port" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try call(&f, "open-output-string", &.{});
+    // (s s) の s は共有され、c は自分に戻る。
+    const s = try f.heap.cons(try str(&f, "a"), .empty_list_value);
+    const shared = try f.heap.cons(s, try f.heap.cons(s, .empty_list_value));
+    const c = try f.heap.cons(fix(1), .empty_list_value);
+    c.asPair().?.cdr = c;
+    _ = try call(&f, "write", &.{ shared, p });
+    _ = try call(&f, "write-shared", &.{ shared, p });
+    _ = try call(&f, "write-simple", &.{ shared, p });
+    _ = try call(&f, "write", &.{ c, p });
+    _ = try call(&f, "write-shared", &.{ c, p });
+    _ = try call(&f, "display", &.{ c, p });
+    try expectString("((\"a\") (\"a\"))(#0=(\"a\") #0#)((\"a\") (\"a\"))#0=(1 . #0#)#0=(1 . #0#)#0=(1 . #0#)", try call(&f, "get-output-string", &.{p}));
+    _ = try call(&f, "close-port", &.{p});
+    for ([_][]const u8{ "write", "write-shared", "write-simple" }) |name| {
+        try std.testing.expectError(error.PortClosed, call(&f, name, &.{ fix(1), p }));
+    }
+}
+
+test "write-simple writes no label for a cycle, and runs into the limit where write stops" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const c = try f.heap.cons(fix(1), .empty_list_value);
+    c.asPair().?.cdr = c;
+    const p = try call(&f, "open-output-string", &.{});
+    // 文字列ポートの領域が伸び続けるので、上限で止まる。
+    const limit = f.heap.options.limit;
+    f.heap.options.limit = f.heap.held() + 64 * 1024;
+    try std.testing.expectError(error.HeapLimit, call(&f, "write-simple", &.{ c, p }));
+    f.heap.options.limit = limit;
+    const q = try call(&f, "open-output-string", &.{});
+    _ = try call(&f, "write", &.{ c, q });
+    try expectString("#0=(1 . #0#)", try call(&f, "get-output-string", &.{q}));
+}
+
+test "write fails with HeapLimit when the printer's table does not fit in the heap" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const p = try call(&f, "open-output-string", &.{});
+    var l: Value = .empty_list_value;
+    for (0..32) |_| l = try f.heap.cons(fix(1), l);
+    f.heap.options.limit = f.heap.held() + 16;
+    const before = f.heap.resident;
+    try std.testing.expectError(error.HeapLimit, call(&f, "write", &.{ l, p }));
+    try std.testing.expectEqual(before, f.heap.resident);
+    // 数の書式の作業領域が断られても、ポートの失敗でなく上限の誤りである。
+    var c: value.Compnum = .{ .real = fix(1), .imag = fix(2) };
+    f.heap.options.limit = f.heap.held() + 8;
+    try std.testing.expectError(error.HeapLimit, call(&f, "write", &.{ .fromCompnum(&c), p }));
+}
+
 test "display of a long string goes to the port without the whole text in the scratch space" {
     var f: test_support.Fixture = undefined;
     f.init();
@@ -915,7 +1002,8 @@ test "display of a long string goes to the port without the whole text in the sc
         }
     }{});
     const p = try call(&f, "open-output-string", &.{});
-    // 作業領域を、全体の写しが入らない大きさに絞る。プリンタの作業スタックは入る。
+    // 作業領域を、全体の写しが入らない大きさに絞る。プリンタの作業スタックはヒープの上限に
+    // 数える確保で持つので、作業領域を使わない(スライス 5j)。
     var small: [4096]u8 = undefined;
     var fba: std.heap.FixedBufferAllocator = .init(&small);
     f.services.scratch = fba.allocator();

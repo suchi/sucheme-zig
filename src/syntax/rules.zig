@@ -748,7 +748,7 @@ const Fixture = struct {
     fn transcribed(self: *Fixture, m: *const Macro, use: []const u8) ![]const u8 {
         const out = try transform(&self.ctx, &self.work, m, try self.read(use), null);
         var w: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try @import("../printer.zig").write(&w.writer, self.arena.allocator(), &self.ctx.heap.symbols, out);
+        try @import("../printer.zig").print(&w.writer, &self.ctx.heap, &self.ctx.heap.symbols, out, .write);
         return w.written();
     }
 

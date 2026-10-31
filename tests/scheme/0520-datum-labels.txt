@@ -28,9 +28,10 @@
 (define-syntax m (syntax-rules () ((_ d) 'd))) (let ((x (m #0=(a . #0#)))) (eq? x (cdr x)))
 error: circular reference outside a literal
 
-# 循環したリテラルも定数で、変更できない。
+# 循環したリテラルも定数で、変更できない。誤りの説明の irritant も、`write` の形でラベルを
+# 付けて書く(スライス 5j)。
 (set-car! '#0=(a . #0#) 1)
-error: cannot modify a constant in set-car! (a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a ...
+error: cannot modify a constant in set-car! #0=(a . #0#) 1
 
 # 循環したリスト同士の `equal?` は止まる(R7RS 6.1)。
 (equal? '#0=(a . #0#) '#1=(a . #1#))
