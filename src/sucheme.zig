@@ -2213,6 +2213,35 @@ test "the table of an environment specifier is freed once nothing reaches it, an
     try expectLinePrints(&interp, "(let loop ((i 0)) (if (< i 20) (begin (environment '(scheme base)) (loop (+ i 1))) (eval '(car '(7)) kept)))", "7\n");
 }
 
+test "the import sets environment is given stay alive while it loads a library" {
+    // Why: `environment` は、まだ読んでいないライブラリを読む間、入れ子の機械を走らせ、
+    // その中で GC が走る。実行時に組んだ輸入集合は、外側の機械の引数(`Context.suspended`
+    // の `args`)からしか届かない。ストレスモードは境目ごとに回収するので、引数を辿らない
+    // と、読み終えたあとの輸入集合の解釈が、回収されたペアを読む。
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme eval))", "");
+    try expectLinePrints(&interp, "(eval '(display \"hi\") (environment (list 'only (list 'scheme (string->symbol \"write\")) (string->symbol \"display\"))))", "hi");
+}
+
+test "environment does not pile up its work in the scratch arena of the program" {
+    // Why: ファイルの実行は、プログラム全体を1つのアリーナで走らせ、終わるまで捨てない。
+    // `environment` の輸入集合の評価(1回あたり数十 KiB。査読の測定)をそこに置くと、呼ぶ
+    // たびに伸びる。1つの形式の中で繰り返して、アリーナの容量が回数に比例しないことを見る。
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme eval))", "");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(let loop ((i 0)) (if (< i 30) (begin (eval '(car '(1)) (environment '(scheme base))) (loop (+ i 1))) 'done))", &w);
+    try std.testing.expectEqualStrings("done\n", w.buffered());
+    try std.testing.expect(arena.queryCapacity() <= 64 * 1024);
+}
+
 test "every primitive reports a wrong argument count, and the next line is read" {
     // 行ごとの列は REPL の読み取りと同じ形である(tests/scheme/ は1ケース1行で、
     // この続行を書けない)。表から数えるので、足したプリミティブは自動で含まれる。

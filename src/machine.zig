@@ -1026,19 +1026,33 @@ pub const Machine = struct {
         // データはリーダを通っていないので、リーダがコードに掛ける循環の検査をここで掛ける
         // (R7RS 2.4)。掛けないと、cdr が循環したフォームで展開器が止まらず、上限の外の
         // スクラッチを使い続ける。
-        try self.checkNotCircular(form, "eval");
-        return expand.expandIn(ctx, self.scratch, form, .{
+        var local = self.localScratch();
+        defer local.deinit();
+        try self.checkNotCircular(local.allocator(), form, "eval");
+        return expand.expandIn(ctx, local.allocator(), form, .{
             .table = syntax_env.topTable(ctx, where.root),
             .root = where.root,
             .mode = if (where.mutable) .repl else .library,
         }, .{});
     }
 
+    /// A scratch space for the work of one call of `eval` or `environment`, which
+    /// the call frees when it returns.
+    /// Why: 機械のスクラッチ(`self.scratch`)はアリーナで、REPL は行ごとに捨てるが、
+    /// ファイルの実行ではプログラムの終わりまで捨てない。`eval` と `environment` の作業
+    /// (展開の作業領域、輸入集合の評価)をそこに置くと、呼ぶたびに伸び続ける。作業の
+    /// 結果(節点、表、指定子)はヒープか resident にあり、ここには何も残らない。裏付けは
+    /// ヒープの `backing` で、`self.scratch` と同じく上限の外である(展開の作業は、
+    /// `expandIn` がこの上に重ねて上限に数える)。
+    fn localScratch(self: *Machine) std.heap.ArenaAllocator {
+        return .init(self.ctx.heap.backing);
+    }
+
     /// Raises an error when `datum`, taken as code by the procedure `who`, is
     /// circular outside a literal (R7RS 2.4), as the reader does for code.
-    fn checkNotCircular(self: *Machine, datum: Value, comptime who: []const u8) Error!void {
+    fn checkNotCircular(self: *Machine, scratch: std.mem.Allocator, datum: Value, comptime who: []const u8) Error!void {
         const ctx = self.ctx;
-        reader.checkNotCircularCode(self.scratch, &ctx.heap, datum) catch |e| return switch (e) {
+        reader.checkNotCircularCode(scratch, &ctx.heap, datum) catch |e| return switch (e) {
             error.CircularCode => ctx.raise("bad " ++ who ++ ": {s}", .{reader.describe(error.CircularCode)}),
             error.OutOfMemory => error.OutOfMemory,
             // Why: 検査が返すのは、スクラッチの確保の失敗と `CircularCode` だけである。
@@ -1058,8 +1072,11 @@ pub const Machine = struct {
         const waiting: context.Context.Suspended = .{ .kont = kont, .dyn = dyn, .args = args, .next = ctx.suspended };
         ctx.suspended = &waiting;
         defer ctx.suspended = waiting.next;
+        var local = self.localScratch();
+        defer local.deinit();
+        const scratch = local.allocator();
         // 被演算子の鎖は後ろから並ぶので、書いた順に並べ直す。
-        const specs = try self.scratch.alloc(Value, count);
+        const specs = try scratch.alloc(Value, count);
         var it: ?*const Args = args;
         var i = count;
         while (i > 0) {
@@ -1069,7 +1086,7 @@ pub const Machine = struct {
         }
         // 輸入集合もリーダを通っていないので、`eval` と同じ循環の検査を掛ける。掛けないと、
         // 循環したライブラリの名前などで、輸入集合の解釈が止まらない。
-        for (specs) |spec| try self.checkNotCircular(spec, "environment");
+        for (specs) |spec| try self.checkNotCircular(scratch, spec, "environment");
         ctx.heap.external_refused = false;
         const alloc = ctx.resident();
         const table = alloc.create(env_mod.Global) catch |e| return ctx.limitFailure(e);
@@ -1079,7 +1096,7 @@ pub const Machine = struct {
             table.deinit(alloc);
             alloc.destroy(table);
         };
-        library.importSets(ctx, self.scratch, table, specs, .library) catch |e| return ctx.limitFailure(e);
+        library.importSets(ctx, scratch, table, specs, .library) catch |e| return ctx.limitFailure(e);
         table.frozen = true;
         // 輸入集合を束縛し終えたあとは、機械を走らせないので、根を作って表を載せるまでに
         // GC は走らない。
@@ -1845,6 +1862,21 @@ test "the operands apply spreads do not pile up in the scratch space" {
     // リストの前の引数も、並べ直したあとの引数も、小さな配列に収まらない数である。
     _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (apply + 1 2 3 4 5 6 7 8 9 10 '(11 12)) (loop (- n 1)))))");
     _ = try f.eval("(loop 20000)");
+    try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
+}
+
+test "eval does not pile up its work in the scratch space" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer scratch.deinit();
+    f.machine.scratch = scratch.allocator();
+    // 機械のスクラッチは、ファイルの実行ではプログラムの終わりまで捨てないので、呼ぶたびの
+    // 作業がここに積もると、回数に比例して伸びる(1回あたり約 1 KiB。査読の測定)。
+    // `environment` の分は、ライブラリを読めるインタプリタで試す(src/sucheme.zig)。
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (eval '(car '(1 2)) (interaction-environment)) (loop (- n 1)))))");
+    _ = try f.eval("(loop 1000)");
     try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
 }
 
