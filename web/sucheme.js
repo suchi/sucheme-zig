@@ -34,7 +34,7 @@ export class Sucheme {
   /**
    * Instantiate the module from its bytes.
    *
-   * `onStderr(text)` は、モジュールがパニックしたときに説明を受け取る(1i ではこれが唯一の import)。
+   * `onStderr(text)` は、モジュールがパニックしたときに説明を受け取る。時刻の2つの import は、この層が `Date.now()` と `performance.now()` で渡す。
    */
   static async load(bytes, { onStderr = () => {} } = {}) {
     let instance = null;
@@ -43,6 +43,14 @@ export class Sucheme {
         host_write_stderr(ptr, len) {
           const memory = instance.exports.memory;
           onStderr(decoder.decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0)));
+        },
+        // 絶対時刻(UNIX 時刻のミリ秒)と単調な時間(ミリ秒)。`(scheme time)` が読む
+        // (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の2)。
+        host_now_ms() {
+          return Date.now();
+        },
+        host_monotonic_ms() {
+          return performance.now();
         },
       },
     };

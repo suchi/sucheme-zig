@@ -272,13 +272,14 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 env.host_write_stdout(ptr: u32, len: u32)
 env.host_write_stderr(ptr: u32, len: u32)
 env.host_now_ms() -> f64
+env.host_monotonic_ms() -> f64
 ```
 
-3つに限る。プロセス終了とコマンドライン引数は import で扱わない。終了は状態コード `-6` で報告し、引数はエクスポート `sucheme_set_command_line(ptr, len)` でホストが設定する(改行区切りの UTF-8)。設定は次回の `sucheme_eval_begin` から有効になるので、評価の途中で `(command-line)` の値が変わることはない。設定されていなければ `(command-line)` は処理系の名前だけの1要素のリストを返す。R7RS 6.14 は `command-line` が「the command line passed to the process」を返すとし、先頭要素は処理系に依存するとしている。
+4つに限る。`host_now_ms` は絶対時刻(UNIX 時刻のミリ秒。ブラウザでは `Date.now()`)、`host_monotonic_ms` は単調な時間(ミリ秒。ブラウザでは `performance.now()`)を返す。単調な時間を別の import にするのは、絶対時刻は時計の調整で戻ることがあり、`current-jiffy` が減ると R7RS 6.14 の「The starting epoch is guaranteed to be constant during a run of the program」を満たさないためである(計画書 0019 の合意を求める点の2)。プロセス終了とコマンドライン引数は import で扱わない。終了は状態コード `-6` で報告し、引数はエクスポート `sucheme_set_command_line(ptr, len)` でホストが設定する(改行区切りの UTF-8)。設定は次回の `sucheme_eval_begin` から有効になるので、評価の途中で `(command-line)` の値が変わることはない。設定されていなければ `(command-line)` は処理系の名前だけの1要素のリストを返す。R7RS 6.14 は `command-line` が「the command line passed to the process」を返すとし、先頭要素は処理系に依存するとしている。
 
 import を増やさないのは、ホスト側が用意しなければならない関数を最小に保つためである。エクスポートと状態コードで表せるものは import にしない。import 関数を通じた出力と、エクスポートの出力バッファ経由の取得の両方を用意するのは、逐次出力と一括取得の両方を使いたいためである。
 
-段階2までの `src/wasm.zig` が宣言する import は `host_write_stderr` だけで、パニックのときの書き込みにだけ使う。`host_write_stdout` と `host_now_ms` は宣言していない。出力は出力バッファだけを通り、`host_now_ms` は時刻の手続きが入る段階5で足す([open-questions.md](open-questions.md) の時刻の import の形の行)。`host_write_stdout` を足す段階は決めていない。
+今の `sucheme.wasm` が宣言する import は、`host_write_stderr`(`src/wasm.zig`。パニックのときの書き込みにだけ使う)と、`host_now_ms` と `host_monotonic_ms`(`src/platform/clock.zig`。スライス 5n)の3つである。`host_write_stdout` は宣言していない。出力は出力バッファだけを通る。`host_write_stdout` を足す段階は決めていない。時刻の2つは、`(scheme time)` を使わないプログラムでも、インスタンスを作るときにホストが渡さなければならない(`web/sucheme.js` と `tools/test-wasm/main.mjs` が渡す)。ホストが返した単調な時間が負か NaN なら `current-jiffy` は 0、大きすぎれば `i64` の最大値にする。
 
 ホスト関数の import と、`alloc` による領域確保、文字列のラウンドトリップは実機で確認した。
 

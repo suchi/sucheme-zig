@@ -203,6 +203,14 @@ defer gpa.free(s);
 
 `std.Io.Terminal` は色付き出力のための書き込み側の抽象であり、入力の生モードは提供しない。段階7の行編集では `file.isTty(io)` と `file.enableAnsiEscapeCodes(io)` を使い、生モードの設定は自前のプラットフォーム別コードで行う。
 
+## 時刻
+
+Zig 0.17.0 の標準ライブラリのソース(`std/Io.zig` の `Clock` と `Timestamp`)を読んで確かめた(スライス 5n。使っているのは `src/platform/clock.zig`)。
+
+- `std.Io.Clock` は enum で、`.real`(UNIX 時刻。閏秒を数えない。Windows の 1601 年起点も UNIX 時刻に直される)、`.awake`(単調。Linux では `CLOCK_MONOTONIC`)、`.boot`(停止中も数える単調な時計)などを持つ。
+- `clock.now(io)` は `std.Io.Timestamp` を返し、値は `nanoseconds: i96` である。
+- 時計を読むだけのときは、`Io` を配線せず、`std.Io.Threaded.global_single_threaded.io()` から取れる。
+
 ## Windows の引数と環境変数の符号化
 
 Windows は引数と環境変数を UTF-16 で渡す。Zig 0.17.0 の標準ライブラリは、これを UTF-8 ではなく WTF-8 に変換する。WTF-8 は、対になっていないサロゲート(U+D800 から U+DFFF)も3バイトで符号化できる UTF-8 の上位集合である。したがって、変換の結果は UTF-8 として妥当でない並びを含みうる。

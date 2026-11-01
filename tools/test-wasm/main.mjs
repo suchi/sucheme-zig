@@ -38,16 +38,23 @@ const compiled = new WebAssembly.Module(readFileSync(wasmPath));
 
 console.log(`node ${process.version}`);
 
-/** Makes a new instance. `stderr` collects the strings passed to host_write_stderr. */
-function instantiate() {
+/**
+ * Makes a new instance. `stderr` collects the strings passed to host_write_stderr.
+ * `clock` は時刻の2つの import を差し替える(既定は `Date.now()` と `performance.now()`)。
+ */
+function instantiate(clock = {}) {
   const stderr = [];
   let memory;
   const decoder = new TextDecoder();
+  const nowMs = clock.nowMs ?? (() => Date.now());
+  const monotonicMs = clock.monotonicMs ?? (() => performance.now());
   const instance = new WebAssembly.Instance(compiled, {
     env: {
       host_write_stderr(ptr, len) {
         stderr.push(decoder.decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0)));
       },
+      host_now_ms: () => nowMs(),
+      host_monotonic_ms: () => monotonicMs(),
     },
   });
   memory = instance.exports.memory;
@@ -403,6 +410,31 @@ test("the wasm feature is true in this build, and the names of an operating syst
 // 計上は上限の4分の3ほどで、同じ長さのメッセージは、予約を足しても収まらない。一方で、
 // ヒープが満杯の報告(上限と余裕の差の内側まで生きているもの)には当たらない長さである。
 // 名前が上限を超えるなら、シンボルを作れず、回復できるエラーになる。
+// `(scheme time)` は、ホストの2つの import から時刻を読む(スライス 5n)。絶対時刻には TAI と UTC の
+// 差の 37 秒を足し、単調な時間はマイクロ秒の jiffy にする。
+test("the time procedures read the two clock imports of the host", () => {
+  const h = instantiate({ nowMs: () => 1_500_000_000_250, monotonicMs: () => 2.5 }).init();
+  assert.deepEqual(
+    h.run("(import (scheme time)) (list (current-second) (current-jiffy) (jiffies-per-second))"),
+    [OK, "(1500000037.25 2500 1000000)\n"],
+  );
+  // 本物の時計でも、性質は同じである。
+  const r = instantiate().init();
+  assert.deepEqual(
+    r.run("(import (scheme time)) (let ((a (current-jiffy)) (b (current-jiffy))) (list (< 0 a) (<= a b) (exact-integer? a) (inexact? (current-second)) (< 1483228800 (current-second))))"),
+    [OK, "(#t #t #t #t #t)\n"],
+  );
+});
+
+test("a monotonic time the host gives out of range becomes 0, not a trap", () => {
+  for (const bad of [-1, Number.NaN, Number.NEGATIVE_INFINITY]) {
+    const h = instantiate({ monotonicMs: () => bad }).init();
+    assert.deepEqual(h.run("(import (scheme time)) (current-jiffy)"), [OK, "0\n"]);
+  }
+  const big = instantiate({ monotonicMs: () => Number.POSITIVE_INFINITY }).init();
+  assert.deepEqual(big.run("(import (scheme time)) (current-jiffy)"), [OK, "9223372036854775807\n"]);
+});
+
 // `exit` は、`after` を呼んでから -6 を返す。終了コードは出力に書かず、`sucheme_exit_code` で
 // 取る。以後はリセットまで評価を受け付けない(スライス 5m、docs/design/platform-and-web.md)。
 test("exit runs the after of a dynamic-wind, returns -6 with the code apart from the output, and waits for a reset", () => {
