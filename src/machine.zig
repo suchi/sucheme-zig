@@ -39,6 +39,7 @@ const pair = @import("prim/pair.zig");
 const features = @import("features.zig");
 const library = @import("syntax/library.zig");
 const syntax_env = @import("syntax/env.zig");
+const reader = @import("reader.zig");
 const env_mod = @import("env.zig");
 
 pub const Error = context.Error;
@@ -1022,11 +1023,28 @@ pub const Machine = struct {
         const ctx = self.ctx;
         if (library.topLevelForm(ctx, form)) |_|
             return ctx.raise("bad eval: import and define-library are not expressions or definitions", .{});
+        // データはリーダを通っていないので、リーダがコードに掛ける循環の検査をここで掛ける
+        // (R7RS 2.4)。掛けないと、cdr が循環したフォームで展開器が止まらず、上限の外の
+        // スクラッチを使い続ける。
+        try self.checkNotCircular(form, "eval");
         return expand.expandIn(ctx, self.scratch, form, .{
             .table = syntax_env.topTable(ctx, where.root),
             .root = where.root,
             .mode = if (where.mutable) .repl else .library,
         }, .{});
+    }
+
+    /// Raises an error when `datum`, taken as code by the procedure `who`, is
+    /// circular outside a literal (R7RS 2.4), as the reader does for code.
+    fn checkNotCircular(self: *Machine, datum: Value, comptime who: []const u8) Error!void {
+        const ctx = self.ctx;
+        reader.checkNotCircularCode(self.scratch, &ctx.heap, datum) catch |e| return switch (e) {
+            error.CircularCode => ctx.raise("bad " ++ who ++ ": {s}", .{reader.describe(error.CircularCode)}),
+            error.OutOfMemory => error.OutOfMemory,
+            // Why: 検査が返すのは、スクラッチの確保の失敗と `CircularCode` だけである。
+            // 型が `reader.Error` 全体なのは、リーダの中の呼び出しと型を揃えたためである。
+            else => unreachable,
+        };
     }
 
     /// A new environment specifier for what the `count` import sets in `args`
@@ -1049,6 +1067,9 @@ pub const Machine = struct {
             specs[i] = it.?.value;
             it = it.?.next;
         }
+        // 輸入集合もリーダを通っていないので、`eval` と同じ循環の検査を掛ける。掛けないと、
+        // 循環したライブラリの名前などで、輸入集合の解釈が止まらない。
+        for (specs) |spec| try self.checkNotCircular(spec, "environment");
         ctx.heap.external_refused = false;
         const alloc = ctx.resident();
         const table = alloc.create(env_mod.Global) catch |e| return ctx.limitFailure(e);

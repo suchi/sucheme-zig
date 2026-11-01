@@ -71,6 +71,26 @@ error: unknown library: (no such library)
 (import (scheme eval) (scheme lazy)) (force (eval (make-promise 5) (environment '(scheme base))))
 5
 
+# リテラルの外の循環は、リーダと同じく断る(R7RS 2.4)。`eval` のデータはリーダを通らない
+# ので、`eval` の入口で調べる。調べないと、cdr の循環で展開器が止まらない。
+(import (scheme eval)) (eval (let ((l (list 1))) (set-cdr! l l) l) (environment '(scheme base)))
+error: bad eval: circular reference outside a literal
+
+(import (scheme eval)) (eval (let ((l (list 1))) (set-cdr! l l) (cons 'begin l)) (environment '(scheme base)))
+error: bad eval: circular reference outside a literal
+
+# `environment` の輸入集合も、リーダを通らないので同じく断る。断らないと、循環したライブラリの
+# 名前で止まらない。
+(import (scheme eval)) (let ((l (list 'scheme))) (set-cdr! l l) (environment l))
+error: bad environment: circular reference outside a literal
+
+(import (scheme eval)) (environment (let ((l (list 'only '(scheme base) 'car))) (set-cdr! (cddr l) (cddr l)) l))
+error: bad environment: circular reference outside a literal
+
+# quote の中の循環はリテラルなので、そのまま値になる。
+(import (scheme eval)) (let ((l (list 1))) (set-cdr! l l) (eq? l (eval (list 'quote l) (environment '(scheme base)))))
+#t
+
 # `eval` の呼び出しは末尾の位置にある(R7RS 3.5)。継続が伸びないので、深く繰り返しても終わる。
 (import (scheme eval) (scheme repl)) (define (count-down n) (if (= n 0) 'done (eval (list 'count-down (- n 1)) (interaction-environment)))) (count-down 3000)
 done
