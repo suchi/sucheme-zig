@@ -50,11 +50,27 @@ fn io() std.Io {
 }
 
 test "the clocks give a time after 2017, and a monotonic time that does not go back" {
-    try std.testing.expect(unixSeconds() > 1_483_228_800);
+    // 2017-01-01 と 2100-01-01 の UNIX 時刻の間にある。秒でなくミリ秒で返すと、上の端を超える。
+    const now = unixSeconds();
+    try std.testing.expect(now > 1_483_228_800);
+    try std.testing.expect(now < 4_102_444_800);
     const a = monotonicMicroseconds();
     const b = monotonicMicroseconds();
     try std.testing.expect(a > 0);
     try std.testing.expect(b >= a);
+}
+
+test "the monotonic time counts microseconds, as the time of day counts seconds" {
+    // Why: 単位を取り違えると(ミリ秒やナノ秒)、同じ間に2つの時計が進む量の比が、1 から
+    // 桁で外れる。時刻の時計で 50 ミリ秒ほど待つ間の、2つの進みを比べる。時計の調整で時刻が
+    // 少し動いても収まるよう、比の幅を広く取る。
+    const real_start = unixSeconds();
+    const mono_start = monotonicMicroseconds();
+    while (unixSeconds() - real_start < 0.05) {}
+    const real_us = (unixSeconds() - real_start) * 1_000_000;
+    const mono_us: f64 = @floatFromInt(monotonicMicroseconds() - mono_start);
+    try std.testing.expect(mono_us > real_us / 4);
+    try std.testing.expect(mono_us < real_us * 4);
 }
 
 test "clampMicroseconds keeps what the host gives in range" {
@@ -63,4 +79,12 @@ test "clampMicroseconds keeps what the host gives in range" {
     try std.testing.expectEqual(@as(i64, 1234), clampMicroseconds(1234.9));
     try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), clampMicroseconds(std.math.inf(f64)));
     try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), clampMicroseconds(1e30));
+    // 上の端: 2^63 は `i64` に収まらないので最大値に、そのすぐ下の f64 はそのままの値にする。
+    try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), clampMicroseconds(9223372036854775808.0));
+    try std.testing.expectEqual(@as(i64, std.math.maxInt(i64) - 1023), clampMicroseconds(9223372036854774784.0));
+    // 下の端: 0 と -0 と 1 未満は 0、1 は 1 である。
+    try std.testing.expectEqual(@as(i64, 0), clampMicroseconds(0.0));
+    try std.testing.expectEqual(@as(i64, 0), clampMicroseconds(-0.0));
+    try std.testing.expectEqual(@as(i64, 0), clampMicroseconds(0.5));
+    try std.testing.expectEqual(@as(i64, 1), clampMicroseconds(1.0));
 }

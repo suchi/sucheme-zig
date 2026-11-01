@@ -9,8 +9,8 @@
 (import (scheme time)) (let* ((a (current-jiffy)) (b (current-jiffy))) (list (exact-integer? a) (< 0 a) (<= a b)))
 (#t #t #t)
 
-# `current-second` は不正確な数で、2017-01-01 の UNIX 時刻(1483228800)より後である。
-(import (scheme time)) (let ((s (current-second))) (list (inexact? s) (real? s) (< 1483228800 s)))
+# `current-second` は不正確な数で、2017-01-01 の UNIX 時刻(1483228800)より後、2100-01-01(4102444800)より前である。
+(import (scheme time)) (let ((s (current-second))) (list (inexact? s) (real? s) (< 1483228800 s 4102444800)))
 (#t #t #t)
 
 # R7RS 6.14 の例: 経過時間を秒で測る。
