@@ -2808,6 +2808,24 @@ test "load runs a file in the environment it is given" {
     try expectLineFails(&interp, "(load \"imp.scm\")", "bad load: import and define-library are not expressions or definitions");
 }
 
+test "load from the body of a library reads beneath the working directory, not beside the library" {
+    // Why: ライブラリの本体を走らせている間は、そのファイルが読んでいる最中のファイルとして
+    // 載っている。`include` はそこを基準にするが、`load` は手続きなので、呼ばれる時機によらず
+    // 作業ディレクトリを基準にする(docs/design/frontend.md)。
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/ll.sld", "(define-library (t ll) (export) (import (scheme base) (scheme load)) (begin (load \"a.scm\")))");
+    try tree.write("a.scm", "(define which 'working-directory)\n");
+    try tree.write("t/a.scm", "(define which 'beside-the-library)\n");
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (t ll)) which", "working-directory\n");
+    }
+}
+
 test "load refuses a name outside the roots and a file it cannot open with a file error" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);
@@ -2817,7 +2835,10 @@ test "load refuses a name outside the roots and a file it cannot open with a fil
     try initWithFileTable(&interp, &tree, false);
     defer interp.deinit();
     try expectLinePrints(&interp, "(import (scheme load))", "");
-    const cases = [_][]const u8{ "../x.scm", "/etc/passwd", "nope.scm", "" };
+    // `sub` はディレクトリを指す名前で、これも `file-error` になる(文言は `no such file`。
+    // `include` と同じ既存の振る舞い)。
+    try tree.write("sub/x.scm", "1\n");
+    const cases = [_][]const u8{ "../x.scm", "/etc/passwd", "nope.scm", "", "sub" };
     for (cases) |file_name| {
         var buf: [128]u8 = undefined;
         const line = try std.fmt.bufPrint(&buf, "(guard (e ((file-error? e) 'file-error)) (load \"{s}\"))", .{file_name});

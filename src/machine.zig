@@ -1073,7 +1073,7 @@ pub const Machine = struct {
             return ctx.raise("bad load: import and define-library are not expressions or definitions", .{});
         var local = self.localScratch();
         defer local.deinit();
-        const base = source_mod.currentOrigin(ctx, ctx.files);
+        const base = source_mod.workingOrigin(ctx.files);
         // 名前は、開いたときに検査を通っている。
         const path = resolve.includePath(local.allocator(), base.directory(), name.asString().?.bytes) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -1090,13 +1090,16 @@ pub const Machine = struct {
     /// ファイルは丸ごと読み、データをヒープのリストにしてから、最初の形式を展開する。
     /// 読み終えてから展開までの間に機械は走らないので、GC は走らない。データが無いファイル
     /// は、何もせずに未規定の値を返す(null)。
+    /// 名前は、読んでいる最中のファイルによらず、作業ディレクトリ(最初の探索ルート)を基準に
+    /// する。ライブラリの本体を走らせている間は `Context.sources` にそのファイルが載っているが、
+    /// そこを基準にすると、同じ手続きが呼ばれる時機によって別のファイルを読む。
     fn startLoad(self: *Machine, kont: *?*const Kont, name: Value, where: *const value_mod.Environment) Error!?*const Node {
         const ctx = self.ctx;
         const text = name.asString().?.bytes;
         var local = self.localScratch();
         defer local.deinit();
         const scratch = local.allocator();
-        const opened = try source_mod.openIncludedAs(ctx, scratch, text, "load", .file);
+        const opened = try source_mod.openIncludedAs(ctx, scratch, source_mod.workingOrigin(ctx.files), text, "load", .file);
         const subject = try std.fmt.allocPrint(scratch, "load {s}", .{text});
         // Why: 位置を記録しない(`readData`)。位置の表は REPL の1つのトップレベルフォームの
         // 間の作業表で、記録したペアを GC のルートにする。`load` はその1つのフォームの中で

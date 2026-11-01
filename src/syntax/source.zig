@@ -138,6 +138,13 @@ pub const Included = struct { source: resolve.Source, origin: resolve.Origin };
 /// REPL, whose first root it is.
 pub fn currentOrigin(ctx: *const Context, files: ?resolve.Files) resolve.Origin {
     if (ctx.sources.items.len > 0) return ctx.sources.items[ctx.sources.items.len - 1];
+    return workingOrigin(files);
+}
+
+/// The working directory, the first root, as the place a file name is relative to.
+/// `load` は、読んでいる最中のファイル(ライブラリの本体を走らせている間など)によらず、
+/// いつもここを基準にする(docs/design/frontend.md)。
+pub fn workingOrigin(files: ?resolve.Files) resolve.Origin {
     const roots = if (files) |f| f.roots else &[_][]const u8{};
     return .{ .root = if (roots.len > 0) roots[0] else ".", .path = &.{} };
 }
@@ -146,15 +153,14 @@ pub fn currentOrigin(ctx: *const Context, files: ?resolve.Files) resolve.Origin 
 /// that it is not a file that is being read already.
 /// `what` は、`include` と `include-ci` と `include-library-declarations` のいずれかである。
 pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8, what: []const u8) Error!Included {
-    return openIncludedAs(ctx, scratch, name, what, .@"error");
+    return openIncludedAs(ctx, scratch, currentOrigin(ctx, ctx.files), name, what, .@"error");
 }
 
-/// Opens the file that `name` means, as `openIncluded` does, and raises a
-/// condition of `kind` when it cannot be opened.
+/// Opens the file that `name` means relative to `base`, as `openIncluded` does,
+/// and raises a condition of `kind` when it cannot be opened.
 /// `load` は、開けないときに `file-error?` が真になる条件を送出する(R7RS 6.14 の手続き
 /// なので、利用者が `guard` で受けられるように)。名前の規則に反するものも同じである。
-pub fn openIncludedAs(ctx: *Context, scratch: std.mem.Allocator, name: []const u8, what: []const u8, kind: value_mod.ConditionKind) Error!Included {
-    const base = currentOrigin(ctx, ctx.files);
+pub fn openIncludedAs(ctx: *Context, scratch: std.mem.Allocator, base: resolve.Origin, name: []const u8, what: []const u8, kind: value_mod.ConditionKind) Error!Included {
     // 実ファイルを読むには、ファイルを開く手段が要る。埋め込みのファイルの中の `include` は、
     // 手段が無くても(WASM)、同じ埋め込みの中から引ける。
     if (ctx.files == null and !resolve.isEmbeddedRoot(base.root))
