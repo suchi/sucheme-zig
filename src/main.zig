@@ -180,13 +180,10 @@ pub fn main(init: std.process.Init) !void {
             if (status != 0) std.process.exit(status);
         },
         .run_file => |index| {
-            // Why: 引数は Scheme の文字列になるので、起動時に UTF-8 を検査する
-            // (docs/design/platform-and-web.md の検証の表)。Windows で対になっていない
-            // サロゲートは、Zig が WTF-8 の3バイトで渡すので、ここで断られる。
-            const command_line = rest[index..];
-            for (command_line, index + 1..) |arg, position| {
-                if (std.unicode.utf8ValidateSlice(arg)) continue;
-                try err.print("{s}: argument {d} is not valid UTF-8\n", .{ sucheme.name, position });
+            const command_line = programCommandLine(rest, index);
+            if (firstInvalidArgument(command_line)) |i| {
+                // 番号は、プログラムの名前を 0 とする引数の位置である(`rest` は argv[1..])。
+                try err.print("{s}: argument {d} is not valid UTF-8\n", .{ sucheme.name, index + 1 + i });
                 try err.flush();
                 std.process.exit(exit_usage);
             }
@@ -254,6 +251,25 @@ pub const Process = struct {
         interp.ctx.heap.process_environ = self.variables;
     }
 };
+
+/// What `(command-line)` gives for the arguments after the program name, `rest`,
+/// when `classify` found the program's file at `index`: the file and every
+/// argument after it.
+pub fn programCommandLine(rest: []const []const u8, index: usize) []const []const u8 {
+    return rest[index..];
+}
+
+/// The index in `command_line` of the first argument that is not valid UTF-8,
+/// or null when they all are.
+/// Why: 引数は Scheme の文字列になるので、起動時に UTF-8 を検査する
+/// (docs/design/platform-and-web.md の検証の表)。Windows で対になっていない
+/// サロゲートは、Zig が WTF-8 の3バイトで渡すので、ここで断られる。
+pub fn firstInvalidArgument(command_line: []const []const u8) ?usize {
+    for (command_line, 0..) |arg, i| {
+        if (!std.unicode.utf8ValidateSlice(arg)) return i;
+    }
+    return null;
+}
 
 /// The exit status for the exit code `code` of `exit`: its low 8 bits, which is
 /// what the system keeps of it (docs/design/platform-and-web.md, the table of
@@ -616,14 +632,39 @@ test "a variable whose value is not UTF-8 raises from get-environment-variable" 
     var variables: std.process.Environ.Map = .init(std.testing.allocator);
     defer variables.deinit();
     try variables.put("SUCHEME_BAD", "\xff");
+    // 名前が UTF-8 でない項目も、複数形の結果から除かれる。残るのは妥当な1件だけである。
+    try variables.put("\xff", "ok");
+    try variables.put("SUCHEME_GOOD", "ok");
     var ob: [256]u8 = undefined;
     var eb: [256]u8 = undefined;
-    var in: std.Io.Reader = .fixed("(import (scheme process-context)) (get-environment-variable \"SUCHEME_BAD\")\n(assoc \"SUCHEME_BAD\" (get-environment-variables))\n");
+    var in: std.Io.Reader = .fixed("(import (scheme process-context)) (get-environment-variable \"SUCHEME_BAD\")\n(get-environment-variables)\n");
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
     try std.testing.expectEqual(@as(u8, 0), try repl(std.testing.allocator, null, .{ .variables = &variables }, &in, &out, &err));
-    try std.testing.expectEqualStrings("> > #f\n> \n", out.buffered());
+    try std.testing.expectEqualStrings("> > ((\"SUCHEME_GOOD\" . \"ok\"))\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: value is not valid UTF-8 in get-environment-variable \"SUCHEME_BAD\"\n", err.buffered());
+}
+
+test "the command line of a program is its file and every argument after it, and an argument that is not UTF-8 is found" {
+    const rest = [_][]const u8{ "-I", "lib", "prog.scm", "a", "-" };
+    const index = classify(&rest).run_file;
+    const command_line = programCommandLine(&rest, index);
+    try std.testing.expectEqual(@as(usize, 3), command_line.len);
+    for ([_][]const u8{ "prog.scm", "a", "-" }, command_line) |want, got| try std.testing.expectEqualStrings(want, got);
+    try std.testing.expectEqual(@as(?usize, null), firstInvalidArgument(&.{ "prog.scm", "α" }));
+    try std.testing.expectEqual(@as(?usize, 2), firstInvalidArgument(&.{ "prog.scm", "a", "\xff" }));
+    try std.testing.expectEqual(@as(?usize, 0), firstInvalidArgument(&.{ "\xed\xa0\x80", "a" }));
+    // 断るときの終了ステータスは、sysexits.h の EX_USAGE である(doc コメントの契約の表)。
+    try std.testing.expectEqual(@as(u8, 64), exit_usage);
+}
+
+test "runFile reports that stdout could not take the output when the program exits, even with 0" {
+    var room: [64]u8 = undefined;
+    var out = failingStdout(&room);
+    var eb: [256]u8 = undefined;
+    const r = try runProgramTo("(import (scheme base) (scheme write) (scheme process-context))\n(display \"hi\")\n(exit 0)\n", &out, &eb);
+    try std.testing.expectEqual(exit_io_error, r.status);
+    try std.testing.expectEqualStrings("error: cannot write to standard output\n", r.err);
 }
 
 test "the exit status of exit is the low 8 bits of its code" {
