@@ -2771,6 +2771,9 @@ test "load runs the forms of a file one at a time in the REPL's top level" {
     // load の中の load は、作業ディレクトリ(最初の探索ルート)を基準にする。
     try tree.write("outer.scm", "(load \"x.scm\")\n(define outer (f))\n");
     try tree.write("empty.scm", "; 形式が無い\n");
+    // 環境を省略すると、REPL の最上位で REPL の規則で走る。インポートした名前を定義し直せる
+    // (ライブラリの規則なら断る)。
+    try tree.write("shadow.scm", "(define list 7)\n");
     for ([_]bool{ false, true }) |stress| {
         var interp: Interpreter = undefined;
         try initWithFileTable(&interp, &tree, stress);
@@ -2783,6 +2786,7 @@ test "load runs the forms of a file one at a time in the REPL's top level" {
         try expectLinePrints(&interp, "(load \"sub/a.scm\") from-a", "42\n");
         try expectLinePrints(&interp, "(load \"outer.scm\") outer", "2\n");
         try expectLinePrints(&interp, "(load \"empty.scm\") 'done", "done\n");
+        try expectLinePrints(&interp, "(load \"shadow.scm\") list", "7\n");
     }
 }
 
