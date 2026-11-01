@@ -633,7 +633,10 @@ test "a variable whose value is not UTF-8 raises from get-environment-variable" 
     defer variables.deinit();
     try variables.put("SUCHEME_BAD", "\xff");
     // 名前が UTF-8 でない項目も、複数形の結果から除かれる。残るのは妥当な1件だけである。
-    try variables.put("\xff", "ok");
+    // Why: 名前は、対になっていないサロゲート(WTF-8 では妥当で、UTF-8 では不正)にする。
+    // Windows の `Environ.Map.put` は、名前が WTF-8 として妥当であることを表明するので、`"\xff"` は
+    // 置けない(層2 の Windows のジョブで表明に当たった)。Windows で実際に渡りうる不正な名前もこの形である。
+    try variables.put("\xed\xa0\x80", "ok");
     try variables.put("SUCHEME_GOOD", "ok");
     var ob: [256]u8 = undefined;
     var eb: [256]u8 = undefined;

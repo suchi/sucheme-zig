@@ -44,6 +44,8 @@ fn commandLine(services: *const Services, _: []const Value) Error!Value {
 /// 値が UTF-8 でなければ、文字列にできないので `InvalidUtf8` である(docs/design/platform-and-web.md
 /// の検証の表)。
 fn getVariable(services: *const Services, args: []const Value) Error!Value {
+    // Windows の `Environ.Map.get` は、名前が WTF-8 として妥当であることを表明する。Scheme の
+    // 文字列は妥当な UTF-8 で、UTF-8 は WTF-8 に含まれるので、表明には当たらない。
     const name = args[0].asString() orelse return error.WrongType;
     const map = services.heap.process_environ orelse return .fromBool(false);
     const found = map.get(name.bytes) orelse return .fromBool(false);
