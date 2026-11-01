@@ -115,15 +115,17 @@ const step_limit = 250_000;
 /// Runs `text` with `runSuite` if it is the vendored suite, or returns `error.NotVendored`.
 /// 実行器と準拠マトリクスの生成器は、どちらもこの関数を通してスイートを走らせる。照合を
 /// 呼び出し元ごとに書くと、片方で照合が外れても、テストが見つけないためである。
-pub fn runVendored(gpa: std.mem.Allocator, io: std.Io, text: []const u8, required: []const []const u8) (RunError || error{NotVendored})!SuiteResult {
+/// `variables` は、スイートの `get-environment-variable` が読む環境変数である(実行器自身の
+/// 環境を渡す)。
+pub fn runVendored(gpa: std.mem.Allocator, io: std.Io, variables: ?*const std.process.Environ.Map, text: []const u8, required: []const []const u8) (RunError || error{NotVendored})!SuiteResult {
     const digest = hexDigest(text);
     if (!isVendored(&digest)) return error.NotVendored;
-    return runSuite(gpa, io, text, required);
+    return runSuite(gpa, io, variables, text, required);
 }
 
 /// Runs `text`, the whole suite. `required` is every identifier R7RS requires of a
 /// standard library. Everything returned is in `gpa`.
-pub fn runSuite(gpa: std.mem.Allocator, io: std.Io, text: []const u8, required: []const []const u8) RunError!SuiteResult {
+pub fn runSuite(gpa: std.mem.Allocator, io: std.Io, variables: ?*const std.process.Environ.Map, text: []const u8, required: []const []const u8) RunError!SuiteResult {
     var forms: std.ArrayList(split.Chunk) = .empty;
     var pos: usize = 0;
     while (try split.next(text, pos)) |c| {
@@ -160,6 +162,7 @@ pub fn runSuite(gpa: std.mem.Allocator, io: std.Io, text: []const u8, required: 
     var state: State = .{
         .gpa = gpa,
         .io = io,
+        .variables = variables,
         .text = text,
         .required = required,
         .header = header.items,
@@ -205,6 +208,8 @@ const State = struct {
     gpa: std.mem.Allocator,
     /// What the interpreters open files with: the suite tests the file procedures of R7RS 6.14.
     io: std.Io,
+    /// The variables of the environment the suite's `get-environment-variable` reads (R7RS 6.14).
+    variables: ?*const std.process.Environ.Map,
     text: []const u8,
     required: []const []const u8,
     header: []const u8,
@@ -230,6 +235,7 @@ const State = struct {
         self.closeSection();
         const interp = try self.gpa.create(sucheme.Interpreter);
         try interp.initBareWithFiles(std.heap.smp_allocator, .{}, .{ .io = self.io, .roots = &.{} });
+        interp.ctx.heap.process_environ = self.variables;
         self.interp = interp;
         self.records = 0;
         self.broken = .empty;
@@ -564,7 +570,7 @@ test "the digest is the lowercase hex of SHA-256" {
 const fake_required = [_][]const u8{ "car", "display", "string-upcase", "+", "define" };
 
 fn runFake(arena: std.mem.Allocator, text: []const u8) !SuiteResult {
-    return runSuite(arena, std.testing.io, text, &fake_required);
+    return runSuite(arena, std.testing.io, null, text, &fake_required);
 }
 
 test "a suite that is not the vendored one is not run" {
@@ -580,7 +586,7 @@ test "a suite that is not the vendored one is not run" {
         \\(test-end)
     ;
     _ = try runFake(arena.allocator(), text);
-    try std.testing.expectError(error.NotVendored, runVendored(arena.allocator(), std.testing.io, text, &fake_required));
+    try std.testing.expectError(error.NotVendored, runVendored(arena.allocator(), std.testing.io, null, text, &fake_required));
 }
 
 fn findSection(r: SuiteResult, name: []const u8) !Counts {
