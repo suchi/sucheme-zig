@@ -1,9 +1,11 @@
-//! Evaluation primitives (R7RS 6.12): `eval`, `environment` and
-//! `interaction-environment`.
+//! Evaluation primitives (R7RS 6.12 and 6.14): `eval`, `environment`,
+//! `interaction-environment` and `load`.
 //!
 //! `eval` と `environment` は機械操作プリミティブで、展開と輸入集合の評価は `Machine.apply` が
 //! 行う(スライス 5o、docs/plans/0019-phase5-ports-and-io.md の合意を求める点の9)。
 //! `interaction-environment` は純粋プリミティブで、REPL の最上位を指す指定子を作る。
+//! `load` も機械操作プリミティブで、ファイルの形式を1つずつ展開して走らせる(スライス 5p、
+//! 同じ計画書の合意を求める点の10)。
 
 const std = @import("std");
 const value = @import("../value.zig");
@@ -18,6 +20,7 @@ pub const primitives = [_]Primitive{
     .{ .name = "eval", .min_args = 2, .max_args = 2, .body = .{ .machine = .eval } },
     .{ .name = "environment", .min_args = 0, .max_args = null, .body = .{ .machine = .environment } },
     .{ .name = "interaction-environment", .min_args = 0, .max_args = 0, .body = .{ .pure = &interactionEnvironment } },
+    .{ .name = "load", .min_args = 1, .max_args = 2, .body = .{ .machine = .load } },
 };
 
 /// `(interaction-environment)`: an environment specifier for the REPL's top

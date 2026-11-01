@@ -2757,6 +2757,88 @@ fn initWithFileTable(interp: *Interpreter, tree: *resolve.Tree, stress: bool) !v
     try interp.initWithFiles(std.testing.allocator, .{ .stress = stress }, .{ .io = std.testing.io, .roots = &tree.roots });
 }
 
+test "load runs the forms of a file one at a time in the REPL's top level" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    // マクロを定義した形式のあとの形式が、そのマクロを使う。形式を1つずつ展開するので通る。
+    try tree.write("x.scm", "(define a 1)\n(define-syntax twice (syntax-rules () ((_ e) (+ e e))))\n(define (f) (twice a))\n");
+    // 途中の形式が誤りでも、それより前の形式は走り終えている。
+    try tree.write("bad.scm", "(define c 5)\n(car 1)\n(define d 6)\n");
+    // ファイルの中の include は、そのファイルを基準にする。
+    try tree.write("sub/a.scm", "(include \"b.scm\")\n(define from-a (+ from-b 1))\n");
+    try tree.write("sub/b.scm", "(define from-b 41)\n");
+    // load の中の load は、作業ディレクトリ(最初の探索ルート)を基準にする。
+    try tree.write("outer.scm", "(load \"x.scm\")\n(define outer (f))\n");
+    try tree.write("empty.scm", "; 形式が無い\n");
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (scheme load))", "");
+        try expectLinePrints(&interp, "(load \"x.scm\") (list a (f) (twice 10))", "(1 2 20)\n");
+        try expectLineFails(&interp, "(load \"bad.scm\")", "wrong type of argument to car 1");
+        try expectLinePrints(&interp, "c", "5\n");
+        try expectLineFails(&interp, "d", "unbound variable: d");
+        try expectLinePrints(&interp, "(load \"sub/a.scm\") from-a", "42\n");
+        try expectLinePrints(&interp, "(load \"outer.scm\") outer", "2\n");
+        try expectLinePrints(&interp, "(load \"empty.scm\") 'done", "done\n");
+    }
+}
+
+test "load runs a file in the environment it is given" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("expr.scm", "(display \"side\")\n(display (car '(1 2)))\n");
+    try tree.write("def.scm", "(define a 1)\n");
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme load) (scheme eval))", "");
+    try expectLinePrints(&interp, "(load \"expr.scm\" (environment '(scheme base) '(scheme write)))", "side1");
+    // `environment` の指定子は変更できないので、定義は断る。
+    try expectLineFails(&interp, "(load \"def.scm\" (environment '(scheme base)))", "bad define: cannot define a in an immutable environment");
+    // import は式でも定義でもないので、ファイルの中でも断る。
+    try tree.write("imp.scm", "(import (scheme base))\n");
+    try expectLineFails(&interp, "(load \"imp.scm\")", "bad load: import and define-library are not expressions or definitions");
+}
+
+test "load refuses a name outside the roots and a file it cannot open with a file error" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("unreadable.scm", "(define x");
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme load))", "");
+    const cases = [_][]const u8{ "../x.scm", "/etc/passwd", "nope.scm", "" };
+    for (cases) |file_name| {
+        var buf: [128]u8 = undefined;
+        const line = try std.fmt.bufPrint(&buf, "(guard (e ((file-error? e) 'file-error)) (load \"{s}\"))", .{file_name});
+        try expectLinePrints(&interp, line, "file-error\n");
+    }
+    // 読めないデータは、ファイル名を添えた誤りで、ファイルの誤りではない。
+    try expectLineFails(&interp, "(load \"unreadable.scm\")", "cannot load unreadable.scm: unexpected end of input");
+}
+
+test "a file that loads itself in tail position runs in constant space" {
+    // Why: 最後の形式は `load` の継続で走るので、自分を読み直す末尾のループは、継続も
+    // ヒープも伸びない。読んだデータの位置を記録すると、トップレベルフォームの間の作業表が
+    // データを GC のルートにして、読んだ量に比例して伸びた(`Machine.startLoad`)。
+    // 上限を小さくして、比例して伸びれば上限に当たる回数を回す。
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("cnt.scm", "(set! n (+ n 1))\n(if (< n limit) (load \"cnt.scm\") n)\n");
+    var interp: Interpreter = undefined;
+    try interp.initWithFiles(std.testing.allocator, .{ .limit = 2 * 1024 * 1024 }, .{ .io = std.testing.io, .roots = &tree.roots });
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme load)) (define n 0) (define limit 3000)", "");
+    try expectLinePrints(&interp, "(load \"cnt.scm\")", "3000\n");
+}
+
 test "a file written with with-output-to-file is read back with call-with-input-file" {
     var tree: resolve.Tree = undefined;
     try tree.init(std.testing.allocator);

@@ -952,6 +952,10 @@ pub const MachineOp = enum {
     /// 輸入集合の評価がライブラリの本体を走らせうるので、機械操作プリミティブである
     /// (`Context.Suspended`)。
     environment,
+    /// `(load filename)` and `(load filename environment-specifier)` (R7RS 6.14):
+    /// reads the file, and expands and runs its forms one at a time in the
+    /// environment (`Kont.Step.load_next`).
+    load,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -1168,6 +1172,12 @@ pub const Kont = struct {
         /// 呼び出しを適用するときはこのフレームが外れているので、呼ばれるものは末尾呼び出し
         /// である。
         spread: Spread,
+        /// The value is what a form of a file that `load` reads returned; it is
+        /// dropped, and the next form is expanded and run.
+        /// 形式を1つずつ展開するのは、前の形式の定義とマクロを次の形式の展開に効かせ、
+        /// 途中の形式が誤りでも前の形式を実行済みにするためである(REPL と同じ)。最後の形式は、
+        /// このフレームが残っていない状態で走るので、`load` の継続で評価される。
+        load_next: LoadStep,
 
         /// `make-parameter` called its converter, and the value is what it
         /// returned, which becomes the initial value of the new parameter.
@@ -1198,13 +1208,25 @@ pub const Kont = struct {
             return switch (step) {
                 .branch, .local_set, .local_define, .global_set, .global_define, .call => true,
                 .make_parameter, .parameterize_param, .parameterize_value, .parameterize_convert => true,
-                .sequence, .wind_before, .spread => false,
+                .sequence, .wind_before, .spread, .load_next => false,
                 .dynamic_exit, .handler_return, .wind_body => false,
                 .values_receiver => false,
                 .wind_after, .rewind => false,
                 .force_thunk => true,
             };
         }
+    };
+
+    /// The forms of a file that `load` reads and has not run yet (`Step.load_next`).
+    pub const LoadStep = struct {
+        /// The forms still to run, a list that is not empty.
+        rest: Value,
+        /// The environment specifier the forms run in.
+        where: *const Environment,
+        /// The file name `load` was given, a string.
+        /// 各形式の展開の間、ファイルの中の `include` がこのファイルを基準にするよう、
+        /// 名前から読んでいるファイルを作り直す(`Context.sources`)。
+        name: Value,
     };
 
     /// A call whose operands are being lined up (`Step.spread`).
