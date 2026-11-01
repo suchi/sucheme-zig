@@ -388,6 +388,11 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
    - 標準入力: 5l に含める。コンソールの入力ポートは、REPL が行を読むのと同じ読み手から読み、ファイルの実行では標準入力を読む。WASM は、合意を求める点の6のとおり、最初から終わりにある。
    - あわせて、親のセッションが決めた1点: `read` が読むバイトに UTF-8 として読めないものがあれば、`read-error?` が真になる誤り(`invalid UTF-8 input`)にする。文字を読む手続きの U+FFFD(5k)とは扱いが分かれる。
 
+9. 5o の着手のときに出た3点(suchi/sucheme-zig#236)。2026-11-01 に、ユーザーが3点とも勧める案に決めた。結論は、スライス表の 5o の行に写した。
+   - E1 環境の値: 新しいヒープの型 `Environment`。`environment` は呼ぶたびに新しい最上位の表を作り、指定子に届かなくなったら回収で解放する。`interaction-environment` は REPL の最上位の表を指す。
+   - E2 入れ子の作業の GC: `environment` と `eval` を機械操作プリミティブにし、輸入集合の評価で入れ子の機械が走る間、外側の機械のレジスタを `Context.suspended` に積んでルートにする。
+   - E3 展開の根: 根の環境(`SyntacticEnv`)が表を番号で指す欄を持ち、`topTable` が先に見る。表はヒープの外にあり、GC の走査がヒープの外へのポインタを辿らないので、ポインタでなく番号にした。
+
 回答(2026-10-20): ユーザーが、1 から 6 のすべてを勧める案どおりに承認した。
 
 ## 検証
@@ -507,13 +512,14 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5k | マージ済み(2026-10-31)。ファイルポート(`Port.Backing` の `file`)と `(scheme file)`。ポートは、ホストのファイルの表(`src/platform/native.zig`)の欄の番号と、固定の大きさの計上つきバッファ(`prim/port.zig` の `file_buffer_size`。大きさと測り方はそこの `Why:` コメント)を持つ。ヒープは `Heap.files` を通して表に届き、回収と解放のときに、開いたままのポートを書き出して閉じる。第2類の入口は `src/resolve.zig` の `openUserFile` など。表はライブラリのファイルを開けるホストだけが作り、WASM と Scheme のテストのランナーは、開く手続きと `delete-file` が `file-error`、`file-exists?` が `#f` になる(docs/design/frontend.md の「現状(スライス 5k)」)。`src/platform/wasm.zig` は、差が表の有無だけなので作らなかった。記述子が尽きたときは、プリミティブが `FilesExhausted` を返し、機械が同じ呼び出しを `spread` のフレームに載せて、次の境目で回収させてから1回だけ呼び直す(`Machine.apply`、`Heap.collect_requested`)。PR を開いた最初の push で、ファイルの往復の単体テストのストレスモードの分が、CI の `--test-timeout 60s` に当たった。ローカルでは時間の上限なしで走らせていたため見落とした。規模を縮めて直し、以後はローカルでも単体テストを `--summary all --test-timeout 60s` 付きで走らせる。査読で、5h の `read-line` `read-string` `read-bytevector` `read-bytevector!` が、ファイルのポートでバッファの分しか見ずに、行を割る、短く返す、境目で分かれた文字や読めないバイトで止まる、と分かった。読み足しながら読む形に直し、バッファの大きさの前後を網羅する表のテストを足した(上の「5h と 5k が守る約束」)。残した制限: 終了のときと回収のときの書き出しの誤りは捨て、終了コードも変えない。`call-with-output-file` と `with-output-to-file` が誤りで抜けると、書いた分は回収か終了まで書き出されない(R7RS は定めていない)。入力のポートが一度終わりを返すと、同じファイルにあとから足された分は読まない。記述子が尽きたときの `file-error` の文言は、ほかの失敗と区別しない。`test-conformance` は、準拠マトリクスの退行で赤にならない(見つけるのは `check-report`) | suchi/sucheme-zig#228 |
 | 5l | マージ済み(2026-11-01)。`read` と `(scheme read)`。ポートの手元の入力のうち妥当な UTF-8 の前置部分を `Reader`(`code` を偽、ポートの `fold_case`)に渡し、読めたバイトの数だけ進め、畳み込みの状態を書き戻す。手元の終わりでデータが終わっていないか、終わりまで読んだときは、読み足して頭から読み直す(バッファを倍に伸ばすので、読み直しはデータの長さの対数の回数)。UTF-8 の検査は、文字列ポートではせず、ほかのポートでは窓を倍に広げながら、読んだ分だけにする。データの前の空白と行コメントでバッファが埋まったら読み飛ばし、それでも足りなければ、ファイルのポートはバッファを倍に伸ばし、`read` が戻るときに戻す(`Heap.resizeFileBuffer`)。コンソールの入力ポートは `Heap.console_input` の読み手から読む。読めない入力は、`read-error?` が真になる条件(`reader.describe` の文言に ` in read`)。決めたことは合意を求める点の8。既知の制限: コンソールの読み手のバッファ(`max_line`)より長いデータは、伸ばせないので `datum longer than the input buffer`。読めなかったあと、ポートはデータの頭に留まる(R7RS は定めていない)ので、再試行するだけのループは終わらず、REPL で `(read)` が `)` で失敗すると、REPL が同じ `)` を読んで誤りが2回出る(PR 本文の「設計の見立て」)。満杯のバッファで読み飛ばすのは空白と行コメントだけなので、データの前の閉じたブロックコメントや `#;x` が非常に長いと、ファイルのポートはバッファをその量まで伸ばし、メモリが前置きの量に比例する(上限を超えると `heap limit exceeded`)。準拠マトリクスで、数の構文の 10 件(`1s2` などの R5RS の指数の印)が「未実装」から「誤り」に移った。リーダの範囲で、5l では直さない。査読で、行をまたぐブロックコメントの分割、満杯のバッファでの偽の誤り、文字列ポートの2乗の費用、末尾で切れた文字の黙った EOF が見つかり、直した | suchi/sucheme-zig#231 |
 | 5m | マージ済み(2026-11-01)。`exit` と `(scheme process-context)`。`exit` は、`Machine.invoke` と同じ巻き戻しの経路で最外の継続へ戻り、途中の `after` を呼んでから、`error.Exited`(`Context.Error`)で機械の外へ出る(巻き戻しの状態 `Rewind.exiting`)。終了コードは `Context.exit_code` に置く。`emergency-exit` も機械操作プリミティブで、巻き戻さずに同じ誤りで出る。終了コードへの変換は docs/design/platform-and-web.md の表どおり。`command-line` と環境変数の手続きは純粋プリミティブ(`src/prim/process.zig`)で、ヒープに置いたコマンドラインと環境変数を読む。ネイティブのファイルの実行は、ファイルの後ろの引数を `(command-line)` に渡し(以前の 64 での拒否をやめた)、起動時に UTF-8 を検査する。REPL の `exit` は REPL を終わらせる。WASM は `sucheme_set_command_line` と `sucheme_exit_code` を足し、`exit` で -6 を返す。環境変数は無い。準拠スイートの実行器は、自分の環境変数をスイートに渡す | suchi/sucheme-zig#232 |
-| 5n | 作業中。`(scheme time)`。`current-second`、`current-jiffy`、`jiffies-per-second` は純粋プリミティブ(`src/prim/time.zig`)で、時計は `src/platform/clock.zig` が読む。ネイティブは `std.Io.Clock` の `.real` と `.awake`(`Io` は標準ライブラリの大域のもの)、WASM は import の `env.host_now_ms` と `env.host_monotonic_ms`(合意を求める点の2)。jiffy はマイクロ秒。`current-second` は UNIX 時刻に TAI と UTC の差の 37 秒を足す(tzdata 2026e の `leap-seconds.list` で確かめた。IERS の頁では確かめていない)。WASM のホストが返した単調な時間が範囲の外なら、0 か `i64` の最大値にする。テストは本物の時計を読み、値でなく性質を見る | suchi/sucheme-zig#234 |
-| 5o から 5r、5t | 未着手 | - |
+| 5n | マージ済み(2026-11-01)。`(scheme time)`。`current-second`、`current-jiffy`、`jiffies-per-second` は純粋プリミティブ(`src/prim/time.zig`)で、時計は `src/platform/clock.zig` が読む。ネイティブは `std.Io.Clock` の `.real` と `.awake`(`Io` は標準ライブラリの大域のもの)、WASM は import の `env.host_now_ms` と `env.host_monotonic_ms`(合意を求める点の2)。jiffy はマイクロ秒。`current-second` は UNIX 時刻に TAI と UTC の差の 37 秒を足す(tzdata 2026e の `leap-seconds.list` で確かめた。IERS の頁では確かめていない)。WASM のホストが返した単調な時間が範囲の外なら、0 か `i64` の最大値にする。テストは本物の時計を読み、値でなく性質を見る | suchi/sucheme-zig#234 |
+| 5o | 作業中(ドラフトの PR)。`eval`、`environment`、`interaction-environment` と `(scheme eval)` `(scheme repl)`。決めたことは合意を求める点の9。実装は済み、層1 の単体テストと Scheme のテストは緑。残りは、ミューテーション(9件のうち4件を実施)、生き残りへのテストの追加、設計文書の更新、敵対的レビュー | - |
+| 5p から 5r、5t | 未着手 | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。バッファの大きさの行は、5k の PR で消した。
 - L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5n を進める。5o は 5m のマージのあとに着手できる(3o はマージ済み)。
+- L3 は 5o を進める(ブランチ `feature/phase5-slice-5o-eval`)。残りの順: ミューテーションの続き(F1、F2、F3、M1、T1。済んだ S1 と S2 は `tests/scheme/0680-eval.txt` だけが殺し、単体テストは殺さない)、生き残りへのテスト、`docs/design/` の `eval` の記述の更新、層1 の全行、敵対的レビュー(ミューテーションの担当と、GC と計上を広く試す担当)、指摘の修正をまとめた1回の push、PR 本文の「確認」の節の記入。
 - 標準エラーを標準出力と分ける変更(5i の既知の制限)は、5t に割り当てた(「標準エラーの分離の割り当て」)。
 - 次のスライスの着手は、親のセッションの指示を待つ。
