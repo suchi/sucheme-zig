@@ -222,7 +222,7 @@ pub fn isEqual(scratch: std.mem.Allocator, visited_alloc: std.mem.Allocator, a: 
             },
             // Why: `else` にしない。`Kind` に種別を足したとき、ここがコンパイルエラーになって、
             // `equal?` が中身を比べるべき種別を見落とさないようにする。
-            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum, .port => {
+            .fixnum, .boolean, .empty_list, .symbol, .primitive, .closure, .unspecified, .uninitialized, .condition, .character, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum, .port, .environment => {
                 if (!left.isEqv(right)) return false;
             },
         }

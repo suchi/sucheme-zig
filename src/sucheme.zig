@@ -2198,6 +2198,21 @@ fn expectLinePrints(interp: *Interpreter, line: []const u8, output: []const u8) 
     try std.testing.expectEqualStrings(output, w.buffered());
 }
 
+test "the table of an environment specifier is freed once nothing reaches it, and its slot is used again" {
+    // Why: `environment` は呼ぶたびに新しい最上位の表を作る(スライス 5o)。表はヒープの外に
+    // あるので、根に届かなくなった GC で解放しないと、繰り返すループで増え続ける。ストレス
+    // モードは境目ごとに回収するので、捨てた指定子の表はすぐに解放され、次の表が同じ欄を使う。
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme eval))", "");
+    try expectLinePrints(&interp, "(let loop ((i 0)) (if (< i 20) (begin (eval '(car '(1)) (environment '(only (scheme base) car quote))) (loop (+ i 1))) 'done))", "done\n");
+    try std.testing.expect(interp.ctx.environments.slots.items.len <= 3);
+    // 生きている指定子の表は解放しない。指定子を持ったまま回収を挟んでも、同じ束縛を引く。
+    try expectLinePrints(&interp, "(define kept (environment '(only (scheme base) car quote)))", "");
+    try expectLinePrints(&interp, "(let loop ((i 0)) (if (< i 20) (begin (environment '(scheme base)) (loop (+ i 1))) (eval '(car '(7)) kept)))", "7\n");
+}
+
 test "every primitive reports a wrong argument count, and the next line is read" {
     // 行ごとの列は REPL の読み取りと同じ形である(tests/scheme/ は1ケース1行で、
     // この続行を書けない)。表から数えるので、足したプリミティブは自動で含まれる。

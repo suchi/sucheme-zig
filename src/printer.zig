@@ -295,6 +295,8 @@ fn emitValue(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
         .promise => try out.writeAll("#<promise>"),
         // ポートも、R7RS 6.13 は外部表現を決めていない。向きや開閉の状態は書かない。
         .port => try out.writeAll("#<port>"),
+        // 環境の指定子も、R7RS 6.12 は外部表現を決めていない。
+        .environment => try out.writeAll("#<environment>"),
         // 複数値のオブジェクトは、1個を要求する継続に届くと誤りになるので、データの中には
         // 入らない。最上位の値は `Interpreter` が1つずつ書く。漏れたときに分かるよう、
         // それでも書く。

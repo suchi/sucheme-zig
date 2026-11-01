@@ -58,6 +58,12 @@ pub const Context = struct {
     /// The libraries a program has defined, and the forms being processed
     /// (src/syntax/library.zig).
     libraries: library.Registry = .{},
+    /// The tables of the top levels that `environment` made (R7RS 6.12), each
+    /// freed when nothing reaches its root any more.
+    environments: Environments = .{},
+    /// The registers of the machines that are waiting on nested work, the
+    /// innermost first (`Suspended`).
+    suspended: ?*const Suspended = null,
     /// What the files of the libraries are opened with, when the host has a file
     /// system (src/resolve.zig).
     /// WASM は実ファイルシステムを持たないので、空のままである。このとき、ライブラリの
@@ -149,6 +155,7 @@ pub const Context = struct {
         const tables = self.resident();
         self.globals.deinit(tables);
         self.libraries.deinit(tables);
+        self.environments.deinit(tables);
         self.sources.deinit(tables);
         self.heap.deinit();
         if (self.file_table) |t| t.deinit();
@@ -193,6 +200,9 @@ pub const Context = struct {
         self.globals.mark(marker);
         self.core.mark(marker);
         self.libraries.mark(marker);
+        self.environments.mark(marker);
+        var waiting = self.suspended;
+        while (waiting) |s| : (waiting = s.next) s.mark(marker);
         if (self.raised) |v| marker.value(v);
         if (self.raised_at) |at| marker.value(at.value);
         if (self.positions) |kept| kept.mark(marker);
@@ -202,6 +212,82 @@ pub const Context = struct {
     }
 
     pub const RaisedAt = struct { value: Value, position: positions_mod.Position };
+
+    /// The registers of a machine that waits, in the middle of a step, on work that
+    /// may run another machine and collect: what it continues with, where in the
+    /// dynamic state it is, and the arguments of the call it is applying.
+    /// Why: GC のルートは、走っている機械のレジスタと `Context` だけである(`Machine.collect`)。
+    /// `environment` の輸入集合はライブラリのファイルを読んで本体を走らせることがあり、
+    /// その中の機械が GC すると、外側の機械のレジスタが辿られない。外側の機械は、入れ子の
+    /// 作業の前にこれを積み、戻ったら外す(スライス 5o、計画書 0019 の合意を求める点の9)。
+    pub const Suspended = struct {
+        kont: ?*const value_mod.Kont,
+        dyn: ?*const value_mod.DynPoint,
+        args: ?*const value_mod.Args,
+        next: ?*const Suspended,
+
+        pub fn mark(self: *const Suspended, marker: *heap_mod.Marker) void {
+            marker.kont(self.kont);
+            marker.dynPoint(self.dyn);
+            if (self.args) |a| marker.object(value_mod.Args, a);
+        }
+    };
+
+    /// The tables of the top levels of the environment specifiers that
+    /// `environment` made, in slots that a freed table leaves for the next.
+    /// 表はヒープの外(`resident`)にあり、上限に数える。根の環境(`SyntacticEnv`)が
+    /// 番号で指す。マークは、生きている表をすべて強くマークし、マークの後で、根に届かなかった
+    /// 表を解放する(`prune`)。表のセルは、表が解放された次の GC で回収される。
+    pub const Environments = struct {
+        slots: std.ArrayList(?Slot) = .empty,
+        weak: heap_mod.Weak = .{ .prune = prune },
+
+        const Slot = struct { table: *env.Global, root: *const value_mod.SyntacticEnv };
+
+        /// Puts `table` in a free slot, for the root `root` to name.
+        pub fn add(self: *Environments, alloc: std.mem.Allocator, top: *env.Global, root: *const value_mod.SyntacticEnv) error{OutOfMemory}!value_mod.EnvironmentTable {
+            for (self.slots.items, 0..) |slot, i| {
+                if (slot != null) continue;
+                self.slots.items[i] = .{ .table = top, .root = root };
+                return @fromBackingInt(@intCast(i));
+            }
+            try self.slots.append(alloc, .{ .table = top, .root = root });
+            return @fromBackingInt(@intCast(self.slots.items.len - 1));
+        }
+
+        /// The table in the slot `id`, which must be live.
+        pub fn table(self: *const Environments, id: value_mod.EnvironmentTable) *env.Global {
+            return self.slots.items[@backingInt(id)].?.table;
+        }
+
+        pub fn mark(self: *const Environments, marker: *heap_mod.Marker) void {
+            // Why: 自分の刈り取りは、表それぞれの刈り取り(`Global` の弱い項目)より後に走らせる。
+            // 刈り取りは登録の新しい順に走るので、表をマークする前に登録する。先に表を解放すると、
+            // 表の刈り取りが解放済みの表を読む。
+            if (self.slots.items.len != 0) marker.holdWeakly(@constCast(&self.weak));
+            for (self.slots.items) |slot| if (slot) |s| s.table.mark(marker);
+        }
+
+        fn prune(w: *heap_mod.Weak, heap: *heap_mod.Heap) void {
+            const self: *Environments = @fieldParentPtr("weak", w);
+            const alloc = heap.residentAllocator();
+            for (self.slots.items) |*slot| {
+                const s = slot.* orelse continue;
+                if (heap.isMarked(value_mod.SyntacticEnv, s.root)) continue;
+                s.table.deinit(alloc);
+                alloc.destroy(s.table);
+                slot.* = null;
+            }
+        }
+
+        pub fn deinit(self: *Environments, alloc: std.mem.Allocator) void {
+            for (self.slots.items) |slot| if (slot) |s| {
+                s.table.deinit(alloc);
+                alloc.destroy(s.table);
+            };
+            self.slots.deinit(alloc);
+        }
+    };
 
     /// Keeps that the value just raised was raised at `position`, unless a
     /// place has been kept for it already: the innermost form keeps it first.

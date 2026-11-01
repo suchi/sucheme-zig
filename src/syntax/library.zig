@@ -459,14 +459,24 @@ pub fn importIntoRepl(ctx: *Context, scratch: std.mem.Allocator, form: Value) Er
     // この形式は、そのあいだ読み手の外にあるので、作業中の形式としてルートに載せる。
     try ctx.libraries.loading.append(ctx.resident(), form);
     defer _ = ctx.libraries.loading.pop();
+    try importSets(ctx, scratch, &ctx.globals, items[1..], .repl);
+}
+
+/// Imports what the import sets `specs` bring into the top level `table`, under
+/// the rules of `mode`: the REPL's, or those of an environment specifier from
+/// `environment` (R7RS 6.12, `.library`).
+/// 先にすべての集合を評価し、それから束縛する。集合の誤りで、一部だけがインポート
+/// されることはない。束縛の途中で上限に断られたときも、それまでの束縛を戻す。
+/// 集合を評価する間に GC が走りうるので、`specs` はルートから届くところに置いておくこと。
+pub fn importSets(ctx: *Context, scratch: std.mem.Allocator, table: *env_mod.Global, specs: []const Value, mode: expand.Mode) Error!void {
     var import_work: ImportWork = .begin(ctx, scratch);
     defer import_work.end();
     const work = import_work.allocator();
-    const sets = try work.alloc(Names, items.len - 1);
-    for (sets, items[1..]) |*set, spec| set.* = try evalImportSet(ctx, scratch, work, spec);
-    errdefer ctx.globals.undoShadows();
-    for (sets) |set| try bindImports(ctx, &ctx.globals, set, .repl);
-    ctx.globals.commitShadows();
+    const sets = try work.alloc(Names, specs.len);
+    for (sets, specs) |*set, spec| set.* = try evalImportSet(ctx, scratch, work, spec);
+    errdefer table.undoShadows();
+    for (sets) |set| try bindImports(ctx, table, set, mode);
+    table.commitShadows();
 }
 
 /// One `export` the library declares: the identifier of its body and the name

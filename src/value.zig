@@ -108,6 +108,7 @@ pub const Value = union(enum) {
     /// A port: a source of input or a sink of output (R7RS 6.13).
     /// GC ヒープにある。
     port: *Port,
+    environment: *Environment,
 
     /// The empty list.
     /// 同名の定数はバリアントと衝突するので、バリアントとは別の名前にしてある。
@@ -215,11 +216,15 @@ pub const Value = union(enum) {
         return .{ .port = p };
     }
 
+    pub fn fromEnvironment(e: *Environment) Value {
+        return .{ .environment = e };
+    }
+
     /// Whether the value refers to an object in the GC heap, which the collector
     /// has to be told about if the value is kept anywhere it cannot see.
     pub fn pointsIntoHeap(self: Value) bool {
         return switch (self) {
-            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise, .bignum, .ratnum, .compnum, .port => true,
+            .pair, .closure, .string, .vector, .bytevector, .condition, .alias, .record, .record_type, .continuation, .multiple_values, .parameter, .promise, .bignum, .ratnum, .compnum, .port, .environment => true,
             .fixnum, .boolean, .empty_list, .symbol, .primitive, .unspecified, .uninitialized, .character, .eof, .flonum => false,
         };
     }
@@ -253,6 +258,7 @@ pub const Value = union(enum) {
             .ratnum => .ratnum,
             .compnum => .compnum,
             .port => .port,
+            .environment => .environment,
         };
     }
 
@@ -432,6 +438,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// The environment specifier, or null when the value is not one.
+    pub fn asEnvironment(self: Value) ?*Environment {
+        return switch (self) {
+            .environment => |e| e,
+            else => null,
+        };
+    }
+
     /// Whether a conditional takes the consequent.
     /// `#f` 以外のすべての値は真で、空リストと 0 も含む(R7RS 6.3)。
     pub fn isTrue(self: Value) bool {
@@ -486,6 +500,7 @@ pub const Value = union(enum) {
             .ratnum => |x| if (b.asRatnum()) |y| x == y or (x.numerator.isEqv(y.numerator) and x.denominator.isEqv(y.denominator)) else false,
             .compnum => |x| if (b.asCompnum()) |y| x == y or (x.real.isEqv(y.real) and x.imag.isEqv(y.imag)) else false,
             .port => |x| b.asPort() == x,
+            .environment => |x| b.asEnvironment() == x,
         };
     }
 
@@ -892,8 +907,8 @@ pub const Primitive = struct {
 };
 
 /// The operations of the machine that a primitive can name as its body.
-/// 段階2の機械操作プリミティブはすべて変種になっている。`exit` はスライス 5m が足した。
-/// `eval` は段階5で、それを入れるスライスが足す(docs/design/runtime.md)。
+/// 段階2の機械操作プリミティブはすべて変種になっている。`exit` はスライス 5m が、`eval` と
+/// `environment` はスライス 5o が足した(docs/design/runtime.md)。
 pub const MachineOp = enum {
     /// `(apply proc arg1 ... args)` (R7RS 6.10).
     apply,
@@ -929,6 +944,14 @@ pub const MachineOp = enum {
     /// `(emergency-exit)` and `(emergency-exit obj)` (R7RS 6.14): ends the run with
     /// `error.Exited` at once, calling no `after`.
     emergency_exit,
+    /// `(eval expr-or-def environment-specifier)` (R7RS 6.12): expands the datum in
+    /// the environment and evaluates it in the place of the call.
+    eval,
+    /// `(environment list1 ...)` (R7RS 6.12): a new environment specifier for what
+    /// the import sets bring, which no definition may change.
+    /// 輸入集合の評価がライブラリの本体を走らせうるので、機械操作プリミティブである
+    /// (`Context.Suspended`)。
+    environment,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -1497,7 +1520,7 @@ pub fn depthAbove(parent: ?*const DynPoint) u32 {
 /// 種別に番号を振る順序である。
 /// コアIRの節点(`Node`、`Lambda`、`Parameterize`)もここにある(ADR-0040)。節点は展開器が
 /// 作り、コードを指すもの(機械の制御のレジスタ、クロージャ、継続のフレーム)から辿られる。
-pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize, Port };
+pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector, Condition, SyntacticEnv, SyntacticBinding, LocalBinding, Cell, DynPoint, Alias, Macro, RecordType, Record, Continuation, Rewind, WindPath, MultipleValues, Parameter, Library, Export, Promise, Bytevector, Bignum, Ratnum, Compnum, Node, Lambda, Parameterize, Port, Environment };
 
 /// The types that are not in the GC heap but are pointed to from it: the
 /// procedures implemented in Zig.
@@ -1505,7 +1528,7 @@ pub const heap_types = [_]type{ Pair, Closure, Frame, Kont, Args, String, Vector
 pub const code_types = [_]type{Primitive};
 
 /// What a value is, without how it is stored.
-pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum, port };
+pub const Kind = enum { fixnum, boolean, empty_list, symbol, pair, primitive, closure, unspecified, uninitialized, condition, character, string, vector, alias, record, record_type, continuation, multiple_values, parameter, eof, promise, bytevector, flonum, bignum, ratnum, compnum, port, environment };
 
 /// The special forms: the syntax the expander turns into core IR itself
 /// (ADR-0019).
@@ -1580,6 +1603,26 @@ pub const SyntacticEnv = struct {
     /// 環境は、すべてこの根に行き着く。識別子が最上位まで解決されたとき、どの最上位の表を
     /// 引くかは、根のこの値で決まる(`src/syntax/env.zig` の `resolve`)。
     library: ?*Library = null,
+    /// The table of an environment specifier whose top level this environment is
+    /// the root of (R7RS 6.12 `environment`); null for any other environment.
+    /// `library` と同じく、識別子が最上位まで解決されたときに引く表を決める
+    /// (`src/syntax/env.zig` の `topTable`)。表はヒープの外にあるので、番号で指す
+    /// (`Context.environments`)。
+    environment: ?EnvironmentTable = null,
+};
+
+/// Which table of `Context.environments` the top level of an environment
+/// specifier is.
+pub const EnvironmentTable = enum(u32) { _ };
+
+/// An environment specifier (R7RS 6.12): what `environment` and
+/// `interaction-environment` return, and what `eval` expands and evaluates in.
+/// `root` は、`environment` が作った最上位の表を指す根の環境で、`interaction-environment` の
+/// 値では null(REPL の最上位)である。表は、根が回収されるときに解放される
+/// (`Context.environments`)。`environment` の束縛は変更できない(R7RS 6.12)。
+pub const Environment = struct {
+    root: ?*SyntacticEnv,
+    mutable: bool,
 };
 
 /// One binding of a syntactic environment: an identifier and what it means.

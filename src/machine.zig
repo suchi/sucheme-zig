@@ -37,6 +37,9 @@ const Context = context.Context;
 const heap_mod = @import("heap.zig");
 const pair = @import("prim/pair.zig");
 const features = @import("features.zig");
+const library = @import("syntax/library.zig");
+const syntax_env = @import("syntax/env.zig");
+const env_mod = @import("env.zig");
 
 pub const Error = context.Error;
 
@@ -474,7 +477,9 @@ pub const Machine = struct {
 
     const Applied = union(enum) {
         value: Value,
-        body: struct { env: *Frame, body: *const Node },
+        /// The body to run and the frame to run it in; no frame for code of a top
+        /// level (what `eval` expands).
+        body: struct { env: ?*Frame, body: *const Node },
     };
 
     /// Puts what `apply` gave into the registers of a step: the value, or
@@ -724,6 +729,15 @@ pub const Machine = struct {
                         ctx.exit_code = exitCode(args, count);
                         return error.Exited;
                     },
+                    // Why: 展開した節点を、`eval` の呼び出しの継続のもとで制御に置く。入れ子の機械を
+                    // 走らせないので、`eval` の呼び出しは末尾の位置になる(R7RS 3.5)。
+                    .eval => {
+                        // 被演算子の鎖は後ろから並ぶ。第1引数が式、第2引数が環境の指定子である。
+                        const where = args.value.asEnvironment() orelse
+                            return primitiveFailure(ctx, prim, error.WrongType, args, count);
+                        return .{ .body = .{ .env = null, .body = try self.expandForEval(args.next.?.value, where) } };
+                    },
+                    .environment => return .{ .value = try self.makeEnvironment(kont.*, dyn.*, args, count) },
                     .call_with_values => {
                         args = try self.enterReceiver(prim, kont, args);
                         count = 0;
@@ -995,6 +1009,64 @@ pub const Machine = struct {
             list = ctx.heap.cons(.fromSymbol(id), list) catch |e| return ctx.heapFailure(e);
         }
         return list;
+    }
+
+    /// The code that `form` means at the top level of the environment specifier
+    /// `where` (R7RS 6.12 `eval`).
+    /// `environment` の値の最上位は変更できず、`.library` の規則(インポートした束縛への
+    /// 代入と再定義を断る)で展開する。新しい名前の定義は、表の `frozen` が断る。
+    /// `interaction-environment` の値は、REPL の最上位で、REPL の規則で展開する。
+    /// `import` と `define-library` は式でも定義でもないので、断る(R7RS 6.12 は
+    /// 「expr-or-def」を評価する)。展開は機械を走らせないので、ここでは GC が走らない。
+    fn expandForEval(self: *Machine, form: Value, where: *const value_mod.Environment) Error!*const Node {
+        const ctx = self.ctx;
+        if (library.topLevelForm(ctx, form)) |_|
+            return ctx.raise("bad eval: import and define-library are not expressions or definitions", .{});
+        return expand.expandIn(ctx, self.scratch, form, .{
+            .table = syntax_env.topTable(ctx, where.root),
+            .root = where.root,
+            .mode = if (where.mutable) .repl else .library,
+        }, .{});
+    }
+
+    /// A new environment specifier for what the `count` import sets in `args`
+    /// bring (R7RS 6.12 `environment`), whose bindings no form may change.
+    /// 新しい最上位の表を作り、輸入集合を束縛してから変更できない印を付ける。表は、根の
+    /// 環境に届かなくなった GC で解放される(`Context.Environments`)。輸入集合の評価は、
+    /// ライブラリのファイルを読んで本体を走らせうる。その中の機械の GC が、この機械の
+    /// 継続と動的点と引数を辿るよう、先に `Context.suspended` に積む。
+    fn makeEnvironment(self: *Machine, kont: ?*const Kont, dyn: ?*const DynPoint, args: *const Args, count: usize) Error!Value {
+        const ctx = self.ctx;
+        const waiting: context.Context.Suspended = .{ .kont = kont, .dyn = dyn, .args = args, .next = ctx.suspended };
+        ctx.suspended = &waiting;
+        defer ctx.suspended = waiting.next;
+        // 被演算子の鎖は後ろから並ぶので、書いた順に並べ直す。
+        const specs = try self.scratch.alloc(Value, count);
+        var it: ?*const Args = args;
+        var i = count;
+        while (i > 0) {
+            i -= 1;
+            specs[i] = it.?.value;
+            it = it.?.next;
+        }
+        ctx.heap.external_refused = false;
+        const alloc = ctx.resident();
+        const table = alloc.create(env_mod.Global) catch |e| return ctx.limitFailure(e);
+        table.* = .{};
+        var owned = true;
+        errdefer if (owned) {
+            table.deinit(alloc);
+            alloc.destroy(table);
+        };
+        library.importSets(ctx, self.scratch, table, specs, .library) catch |e| return ctx.limitFailure(e);
+        table.frozen = true;
+        // 輸入集合を束縛し終えたあとは、機械を走らせないので、根を作って表を載せるまでに
+        // GC は走らない。
+        const root = try ctx.create(value_mod.SyntacticEnv, .{ .parent = null, .rib_depth = 0, .bindings = null });
+        root.environment = ctx.environments.add(alloc, table, root) catch |e| return ctx.limitFailure(e);
+        owned = false;
+        const made = try ctx.create(value_mod.Environment, .{ .root = root, .mutable = false });
+        return .fromEnvironment(made);
     }
 
     /// The exit code that `(exit)` or `(exit obj)` stands for, `obj` being the
@@ -2566,7 +2638,7 @@ test "every allocation to call a handler is made from the reserve" {
     try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
     // ハンドラのフレームも予約から作る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
-        .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
+        .body => |entry| try std.testing.expectEqual(5, entry.env.?.values[0].asFixnum().?),
         .value => return error.TestUnexpectedResult,
     }
 }
@@ -2583,7 +2655,7 @@ test "a handler that takes its arguments as a list gets the list from the reserv
     // 余りの引数のリストも、フレームと同じく予約から作る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
         .body => |entry| {
-            const rest = entry.env.values[0].asPair().?;
+            const rest = entry.env.?.values[0].asPair().?;
             try std.testing.expectEqual(5, rest.car.asFixnum().?);
             try std.testing.expectEqual(value_mod.Kind.empty_list, rest.cdr.kind());
         },
@@ -2607,7 +2679,7 @@ test "raise-continuable calls the handler from the reserve, though it is applied
     // ふつうの呼び出しと同じく上限の budget で適用し、ハンドラの呼び出しに切り替わったところで
     // 予約に移る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .limit)) {
-        .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
+        .body => |entry| try std.testing.expectEqual(5, entry.env.?.values[0].asFixnum().?),
         .value => return error.TestUnexpectedResult,
     }
     try std.testing.expect(kont.?.step.handler_return.continuable);
@@ -2770,7 +2842,7 @@ test "every allocation of a rewind is made from the reserve" {
     var frame = kont.?;
     kont = frame.next;
     switch (try f.machine.rewind(&kont, &dyn, frame.step.rewind)) {
-        .body => |entry| try std.testing.expectEqual(0, entry.env.values.len),
+        .body => |entry| try std.testing.expectEqual(0, entry.env.?.values.len),
         .value => return error.TestUnexpectedResult,
     }
     try std.testing.expectEqual(null, dyn);
@@ -2918,6 +2990,10 @@ test "a continuation invoked with no values from the reserve makes its multiple 
     const k = try f.eval("(call/cc (lambda (k) k))");
     const call = try f.ctx.heap.create(Args, .{ .value = k, .next = null });
     try fillToLimit(&f);
+    // Why: `fillToLimit` が残す隙間は、上限までの端数で決まり、ヒープの型の大きさが変わると
+    // 動く。0個の値の複数値のオブジェクトがその隙間に入ると、予約から確保しても上限を超えない。
+    // 同じ大きさのオブジェクトで隙間を埋め、上限の budget では作れない状態にする。
+    while (f.ctx.heap.createMultipleValuesIn(.limit, &.{})) |_| {} else |_| {}
     var kont: ?*const Kont = null;
     var dyn: ?*const DynPoint = null;
     // 巻き戻しの途中で呼ばれる `after` が継続のときと同じく、予約の budget で適用する。上限の
