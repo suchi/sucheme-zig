@@ -1,0 +1,68 @@
+# スライス 5m: `exit`、`emergency-exit`、`command-line`、環境変数(R7RS 6.14)。
+# 終了は、その行の出力の後に `exit ` と終了コードの1行で現れる(tools/test-scheme/main.zig)。
+
+# docs/design/runtime.md の「テストに含める事例」の12: `dynamic-wind` の本体から `exit` を
+# 呼ぶと、`after` を呼んでから終わる。
+(import (scheme process-context) (scheme write)) (dynamic-wind (lambda () #f) (lambda () (display "in ") (exit 3)) (lambda () (display "cleanup") (newline)))
+in cleanup
+exit 3
+
+# 入れ子の `after` は、内側から順に呼ぶ。
+(import (scheme process-context) (scheme write)) (dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (exit)) (lambda () (display "inner ")))) (lambda () (display "outer") (newline)))
+inner outer
+exit 0
+
+# `emergency-exit` は `after` を呼ばない。
+(import (scheme process-context) (scheme write)) (dynamic-wind (lambda () #f) (lambda () (display "in") (newline) (emergency-exit 4)) (lambda () (display "cleanup")))
+in
+exit 4
+
+# 終了コードへの変換(docs/design/platform-and-web.md の表)。
+(import (scheme process-context)) (exit #t)
+exit 0
+
+(import (scheme process-context)) (exit #f)
+exit 1
+
+(import (scheme process-context)) (exit -7)
+exit -7
+
+(import (scheme process-context)) (exit 2147483647)
+exit 2147483647
+
+(import (scheme process-context)) (exit 2147483648)
+exit 1
+
+(import (scheme process-context)) (exit 'done)
+exit 1
+
+(import (scheme process-context)) (emergency-exit #f)
+exit 1
+
+# 終了はハンドラに渡らない。
+(import (scheme process-context)) (guard (e (#t 'caught)) (exit 5))
+exit 5
+
+# 終了したあとの式は評価しない。
+(import (scheme process-context) (scheme write)) (exit 6) (display "never")
+exit 6
+
+# `after` の中の `exit` は、その時点から改めて終わる。外側の `after` も呼ぶ。
+(import (scheme process-context) (scheme write)) (dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (exit 1)) (lambda () (display "a ") (exit 2)))) (lambda () (display "b") (newline)))
+a b
+exit 2
+
+# 引数を省いた `command-line` は、処理系の名前だけの1要素のリストである。
+(import (scheme process-context)) (command-line)
+("sucheme")
+
+# 返すリストは毎回新しい。
+(import (scheme process-context)) (let ((a (command-line))) (set-car! a "x") (command-line))
+("sucheme")
+
+# 環境変数が無いときは、どれも見つからない。
+(import (scheme process-context)) (list (get-environment-variable "PATH") (get-environment-variables))
+(#f ())
+
+(import (scheme process-context)) (get-environment-variable 'PATH)
+error: wrong type of argument to get-environment-variable PATH

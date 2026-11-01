@@ -31,6 +31,9 @@
 //! エラーは出力の一部である。その行がエラーより前に出力したものの後に、
 //! REPL が出すとおり、`error: ` とインタプリタのメッセージが続く。
 //!
+//! `exit` と `emergency-exit` による終了も出力の一部で、その行が終了より前に出力したものの
+//! 後に、`exit ` と終了コードの1行が続く(R7RS 6.14。REPL は終了コードを出さずに終わる)。
+//!
 //! 入力があって期待する出力がないケースは、読み飛ばさず報告する。行が
 //! 欠けていると、そのケースは何とも比較されなくなるからである。
 //!
@@ -478,6 +481,7 @@ fn evaluate(gpa: std.mem.Allocator, options: sucheme.heap.Options, c: Case) erro
         error.OutOfMemory => return error.OutOfMemory,
         // ライタは確保を行うので、失敗するのはメモリ不足のときだけである。
         error.WriteFailed => return error.OutOfMemory,
+        error.Exited => out.writer.print("exit {d}\n", .{interp.ctx.exit_code}) catch return error.OutOfMemory,
         // REPL が出すとおりに出力する。その行が失敗する前に書いたものの後に置く。
         else => out.writer.print("error: {s}\n", .{interp.diagnostic()}) catch return error.OutOfMemory,
     };

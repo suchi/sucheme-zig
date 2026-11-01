@@ -500,18 +500,34 @@ pub const Machine = struct {
     /// 呼ぶことになる。巻き戻しの状態とフレームは、送出のための予約から確保する
     /// (docs/design/runtime.md の送出のための予約領域)。
     fn invoke(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, target: ?*const value_mod.Continuation, v: Value) Error!Value {
+        return self.travel(kont, dyn, target, v, false);
+    }
+
+    /// Escapes to the outermost continuation of the run to end it with the exit
+    /// code `code`, calling every `after` on the way out, as an unhandled raise
+    /// does (`exit`, R7RS 6.14). Arriving gives `error.Exited`.
+    /// Why: R7RS 6.14 は `exit` が未処理の `after` をすべて呼ぶと定める。巻き戻しの経路は
+    /// 未処理例外と同じで、着いたときに送出する代わりに終わる(docs/design/runtime.md の
+    /// 「`exit` の巻き戻し」)。
+    fn exitWith(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, code: i32) Error!Value {
+        return self.travel(kont, dyn, null, .fromFixnum(code), true);
+    }
+
+    /// `invoke`, or `exitWith` when `exiting`: `v` is then the exit code.
+    fn travel(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, target: ?*const value_mod.Continuation, v: Value, exiting: bool) Error!Value {
         const ctx = self.ctx;
         const to = if (target) |t| t.dyn else null;
         const ancestor = value_mod.commonAncestor(dyn.*, to);
-        if (!value_mod.windBetween(dyn.*, ancestor) and !value_mod.windBetween(to, ancestor)) return self.arrive(kont, dyn, target, v);
-        const state = try ctx.createIn(.raise_reserve, value_mod.Rewind, .{ .target = target, .value = v, .ancestor = ancestor });
+        if (!value_mod.windBetween(dyn.*, ancestor) and !value_mod.windBetween(to, ancestor)) return self.arrive(kont, dyn, target, v, exiting);
+        const state = try ctx.createIn(.raise_reserve, value_mod.Rewind, .{ .target = target, .value = v, .ancestor = ancestor, .exiting = exiting });
         kont.* = try self.pushIn(.raise_reserve, null, null, .{ .rewind = .{ .state = state, .entered = null, .at = dyn.* } });
         return .unspecified_value;
     }
 
     /// Takes the registers to `target` and returns `v`; for the outermost
-    /// continuation, empties them and raises `v`.
-    fn arrive(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, target: ?*const value_mod.Continuation, v: Value) Error!Value {
+    /// continuation, empties them and raises `v`, or, when `exiting`, ends the
+    /// run with the exit code `v`.
+    fn arrive(self: *Machine, kont: *?*const Kont, dyn: *?*const DynPoint, target: ?*const value_mod.Continuation, v: Value, exiting: bool) Error!Value {
         if (target) |t| {
             kont.* = t.kont;
             dyn.* = t.dyn;
@@ -519,6 +535,10 @@ pub const Machine = struct {
         }
         kont.* = null;
         dyn.* = null;
+        if (exiting) {
+            self.ctx.exit_code = @intCast(v.asFixnum().?);
+            return error.Exited;
+        }
         self.ctx.raised = v;
         return error.Raised;
     }
@@ -554,7 +574,7 @@ pub const Machine = struct {
             dyn.* = link.point.parent;
             return self.callWinder(kont, dyn, state, link, link.point.kind.wind.before);
         }
-        return .{ .value = try self.arrive(kont, dyn, state.target, state.value) };
+        return .{ .value = try self.arrive(kont, dyn, state.target, state.value, state.exiting) };
     }
 
     /// Calls `winder`, an `after` or a `before` of a rewind, with no
@@ -699,6 +719,11 @@ pub const Machine = struct {
                     },
                     .values => return .{ .value = try self.valuesOf(args, count, budget) },
                     .features => return .{ .value = try self.featureList() },
+                    .exit => return .{ .value = try self.exitWith(kont, dyn, exitCode(args, count)) },
+                    .emergency_exit => {
+                        ctx.exit_code = exitCode(args, count);
+                        return error.Exited;
+                    },
                     .call_with_values => {
                         args = try self.enterReceiver(prim, kont, args);
                         count = 0;
@@ -972,6 +997,20 @@ pub const Machine = struct {
         return list;
     }
 
+    /// The exit code that `(exit)` or `(exit obj)` stands for, `obj` being the
+    /// first of the `count` operands in `args`
+    /// (docs/design/platform-and-web.md, the table of `exit`).
+    /// 引数なしと `#t` は 0、`#f` は 1、`i32` に収まる正確な整数はその値で、それ以外は、
+    /// 変換できないものとして 1 である(R7RS 6.14 の「if possible」)。
+    fn exitCode(args: *const Args, count: usize) i32 {
+        if (count == 0) return 0;
+        return switch (args.value) {
+            .boolean => |b| if (b) 0 else 1,
+            .fixnum => |n| std.math.cast(i32, n) orelse 1,
+            else => 1,
+        };
+    }
+
     /// What `(values obj ...)` returns for the `count` operands in `args`: the
     /// operand itself when there is one, and otherwise a multiple-values object
     /// of them (R7RS 6.10).
@@ -1064,6 +1103,7 @@ pub const Machine = struct {
             error.OutOfRange => raiseWith(ctx, irritants, "argument out of range in {s}", .{prim.name}),
             error.Immutable => raiseWith(ctx, irritants, "cannot modify a constant in {s}", .{prim.name}),
             error.PortClosed => raiseWith(ctx, irritants, "port is closed in {s}", .{prim.name}),
+            error.InvalidUtf8 => raiseWith(ctx, irritants, "value is not valid UTF-8 in {s}", .{prim.name}),
             error.FileError, error.FilesExhausted => {
                 ctx.raised = try ctx.makeCondition(.file, "file operation failed in {s}", .{prim.name}, irritants);
                 return error.Raised;
