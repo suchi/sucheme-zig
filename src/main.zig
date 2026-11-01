@@ -14,7 +14,9 @@
 //! | 同上で、実行時エラーが起きた | stderr に `error: ` と説明を出して、そこで止める。プログラムの出力も stdout に書けなければ、続けて `error: cannot write to standard output` を出す | 1 |
 //! | 同上で、プログラムの出力を stdout に書けない(閉じている、満杯、パイプの先が閉じた) | stderr に `error: cannot write to standard output` を出して、そこで止める | 74 |
 //! | 同上で、ファイルを開けない・読めない・大きすぎる | stderr に `cannot read <file>: ` と理由を出す | 66 |
-//! | `<file>` の後ろに引数が続く | stderr に説明を出す(プログラムへの引数は段階5) | 64 |
+//! | 同上で、プログラムが `exit` か `emergency-exit` を呼んだ | プログラムの出力を書き出して、そこで止める(`exit` は `dynamic-wind` の `after` を呼んでから) | `exit` の引数から決まる値(docs/design/platform-and-web.md の表)の下位8ビット |
+//! | `<file>` の後ろに引数が続く | 引数を、`-` で始まるものも含めて、プログラムへの引数として `(command-line)` に渡し、ファイルのプログラムを実行する | 上の行と同じ |
+//! | `<file>` かプログラムへの引数が UTF-8 でない | stderr に、何番目の引数かを出す | 64 |
 //! | `-` だけ | オプションでなく名前として扱う。標準入力のプログラムは未実装と伝える | 69 |
 //!
 //! 要求を決める最初の引数が優先される。このため `--version --bogus` はバージョンを
@@ -33,7 +35,10 @@
 //! 評価する。R7RS 5.1 のプログラムは `import` で始まるが、始まらなくてもよい。式の値は
 //! 出力しない。プログラムが現在の出力ポートに書いたもの(`display`、`write-string` など)は
 //! stdout に出る。`current-error-port` への書き込みも、いまは stdout に出る(標準エラーに分ける
-//! のは後の段階)。標準入力は、プログラムからは読めない(最初から終わりにある)。標準ライブラリのファイルは `-I` の
+//! のは後の段階)。プログラムの `read` や `read-char` は、標準入力から読む(スライス 5l)。
+//! `(command-line)` は、ファイルの名前とプログラムへの引数の文字列のリストで、`sucheme prog.scm a b`
+//! なら `("prog.scm" "a" "b")` である。`get-environment-variable` はプロセスの環境変数を読み、
+//! 値が UTF-8 でなければ条件を送出する(docs/design/platform-and-web.md の検証の表)。標準ライブラリのファイルは `-I` の
 //! 探索ルートから読まれる(作業ディレクトリが先頭で、プログラムのファイルのあるディレクトリは
 //! 足されない)。ファイルの大きさの上限は 1 MiB(`max_program_bytes`)で、
 //! UTF-8 でなければ実行時エラーである。
@@ -81,6 +86,11 @@
 //!
 //! エラーのあとも終了ステータスは 0 のままである。REPL は入力の残りを読み進めた
 //! からである。入力が尽きたときの `unexpected end of input` も同じである。
+//!
+//! `exit` か `emergency-exit` を呼んだ式は、REPL を終わらせる。それまでの出力を書き出し、
+//! 残りの入力は読まない。終了ステータスは、ファイルの実行と同じく、`exit` の引数から決まる。
+//! REPL の `(command-line)` は、処理系の名前だけの `("sucheme")` である(WASM でコマンドラインが
+//! 設定されていないときと同じ形)。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -90,10 +100,9 @@ pub const Request = union(enum) {
     version,
     help,
     repl,
-    /// Run the program in the file named by the argument at this index.
+    /// Run the program in the file named by the argument at this index; the
+    /// arguments after it are the program's.
     run_file: usize,
-    /// Arguments follow the name of the program, which nothing can read yet.
-    program_arguments,
     /// A valid request this stage cannot serve yet.
     not_implemented,
     /// An option this program does not know.
@@ -167,21 +176,23 @@ pub fn main(init: std.process.Init) !void {
             // (単体テストは `std.testing.allocator` のままなので、リーク検査は残る)。
             // `smp_allocator` は複数スレッドのターゲットだけで使える。WASI のような単一
             // スレッドのターゲットは、この実行ファイルの対象ではない(docs/adr/0009)。
-            try repl(std.heap.smp_allocator, .{ .io = io, .roots = roots }, &stdin.interface, out, err);
-        },
-        .run_file => |index| {
-            const roots = try searchRoots(init.arena.allocator(), rest[0..index]);
-            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], out, err);
+            const status = try repl(std.heap.smp_allocator, .{ .io = io, .roots = roots }, .{ .variables = init.environ_map }, &stdin.interface, out, err);
             if (status != 0) std.process.exit(status);
         },
-        .program_arguments => {
-            try err.print(
-                "{s}: arguments for the program are not supported yet.\n" ++
-                    "Run with --help for the options available now.\n",
-                .{sucheme.name},
-            );
-            try err.flush();
-            std.process.exit(exit_usage);
+        .run_file => |index| {
+            // Why: 引数は Scheme の文字列になるので、起動時に UTF-8 を検査する
+            // (docs/design/platform-and-web.md の検証の表)。Windows で対になっていない
+            // サロゲートは、Zig が WTF-8 の3バイトで渡すので、ここで断られる。
+            const command_line = rest[index..];
+            for (command_line, index + 1..) |arg, position| {
+                if (std.unicode.utf8ValidateSlice(arg)) continue;
+                try err.print("{s}: argument {d} is not valid UTF-8\n", .{ sucheme.name, position });
+                try err.flush();
+                std.process.exit(exit_usage);
+            }
+            const roots = try searchRoots(init.arena.allocator(), rest[0..index]);
+            const status = try runFile(std.heap.smp_allocator, .{ .io = io, .roots = roots }, rest[index], .{ .command_line = command_line, .variables = init.environ_map }, out, err);
+            if (status != 0) std.process.exit(status);
         },
         .not_implemented => {
             try err.print(
@@ -228,6 +239,29 @@ pub const exit_usage: u8 = 64;
 /// 74 は sysexits.h の EX_IOERR である。
 pub const exit_io_error: u8 = 74;
 
+/// What the program sees of its process: its command line, and the variables
+/// of its environment (R7RS 6.14).
+pub const Process = struct {
+    /// The file of the program and the arguments after it, each valid UTF-8, or
+    /// just the name of the interpreter for the REPL.
+    command_line: []const []const u8 = &.{sucheme.name},
+    /// The variables of the environment, or null for none (the tests).
+    variables: ?*const std.process.Environ.Map = null,
+
+    /// Puts them where the primitives of `interp` read them.
+    fn give(self: Process, interp: *sucheme.Interpreter) void {
+        interp.ctx.heap.command_line = self.command_line;
+        interp.ctx.heap.process_environ = self.variables;
+    }
+};
+
+/// The exit status for the exit code `code` of `exit`: its low 8 bits, which is
+/// what the system keeps of it (docs/design/platform-and-web.md, the table of
+/// `exit`).
+fn exitStatus(code: i32) u8 {
+    return @truncate(@as(u32, @bitCast(code)));
+}
+
 /// The option that adds a directory to search for the files of libraries.
 pub const include_option = "-I";
 
@@ -248,9 +282,8 @@ pub fn classify(args: []const []const u8) Request {
         if (arg.len > 1 and arg[0] == '-') return .{ .unknown_option = arg };
         // `-` だけは、慣習では標準入力のプログラムを指す。まだ応えられない。
         if (std.mem.eql(u8, arg, "-")) return .not_implemented;
-        // 最初の名前がプログラムのファイルで、その後ろは、プログラムへの引数である。
-        // 読む手段(`command-line`)が段階5で入るまで、黙って捨てずに断る。
-        if (i + 1 < args.len) return .program_arguments;
+        // 最初の名前がプログラムのファイルで、その後ろは、プログラムへの引数である
+        // (`command-line`)。オプションとしては読まない。
         return .{ .run_file = i };
     }
     return .repl;
@@ -289,12 +322,14 @@ pub const continuation_prompt = "... ";
 /// 続きを読み、完結したところで評価する。各回には、評価中に要るものためのまっさらな
 /// アリーナを使う。リーダが作るものと定義が保持するものはそこに入らず、
 /// インタプリタの中でセッションの終わりまで生きる。
-pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !void {
+/// 返すのは終了ステータスで、`exit` で終わったときのほかは 0 である。
+pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Process, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var interp: sucheme.Interpreter = undefined;
     try interp.initWithFiles(gpa, .{}, files);
     defer interp.deinit();
+    process.give(&interp);
     // プログラムの `read` は、REPL がまだ読んでいない行から読む(suchi/sucheme-zig#230)。
     interp.console_in = in;
     // 継続行の保留。エントリ層は確保を起動と終了に限るので、固定長にする。
@@ -332,6 +367,11 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, in: *std.Io.R
         _ = arena.reset(.retain_capacity);
         interp.evalPrint(arena.allocator(), pending[0..kept], out) catch |e| switch (e) {
             error.WriteFailed => return e,
+            // `exit` は REPL を終わらせる。それまでの出力を書き出し、残りの入力は読まない。
+            error.Exited => {
+                try out.flush();
+                return exitStatus(interp.ctx.exit_code);
+            },
             else => {
                 // エラーより前に書いた結果を先に出す。端末で2つのストリームの
                 // 順序が保たれるようにするためである。
@@ -351,6 +391,7 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, in: *std.Io.R
         try err.writeAll("error: unexpected end of input\n");
         try err.flush();
     }
+    return 0;
 }
 
 /// The size of the largest program file, in bytes.
@@ -380,7 +421,7 @@ fn readProgram(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
 /// ファイルの全体を読み、先頭から1つずつ評価する。式の値は出力しない。最初のエラーで
 /// 止め、エラーより前の評価の副作用はそのまま残る。プログラムがコンソールに書いたもの
 /// (`display` など)は `out` に書き、エラーの説明は `err` に書く。
-pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
+pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []const u8, process: Process, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     const source = readProgram(gpa, files.io, path) catch |e| {
         try err.print("error: cannot read {s}: {s}\n", .{ path, if (e == error.StreamTooLong) "the file is larger than 1 MiB" else @errorName(e) });
         try err.flush();
@@ -400,10 +441,17 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     var in_buf: [max_line]u8 = undefined;
     var stdin = std.Io.File.Reader.initStreaming(.stdin(), files.io, &in_buf);
     interp.console_in = &stdin.interface;
+    process.give(&interp);
     var discard: std.Io.Writer.Discarding = .init(&.{});
     interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
         // 式の値は捨てているので、ここに来る書き込みの失敗は、プログラムの出力の標準出力である。
         error.WriteFailed => return cannotWriteOutput(err),
+        // Why: 書き出せなければ、それを伝える。`exit` が伝えた値は、正常な終了を示していても、
+        // 出力が失われたことを隠すので使わない(`exit 0` で 74 にする)。
+        error.Exited => {
+            out.flush() catch return cannotWriteOutput(err);
+            return exitStatus(interp.ctx.exit_code);
+        },
         else => {
             // 端末では、プログラムの出力がエラーの説明より前に見えるよう、先に書き出す。
             // 書き出せなくても、元のエラーの説明は隠さない。終了コードは実行時エラーのままにする。
@@ -472,9 +520,9 @@ test "classify takes -I and the directory after it as the search roots, not as a
     // 名前が続けば、ファイルの実行を求めている。名前の位置が、検索ルートの終わりである。
     try std.testing.expectEqual(@as(usize, 2), classify(&.{ "-I", "lib", "prog.scm" }).run_file);
     // 名前の後ろは、プログラムへの引数である。`-I` も、その1つになる。
-    try std.testing.expect(classify(&.{ "prog.scm", "-I", "lib" }) == .program_arguments);
-    try std.testing.expect(classify(&.{ "prog.scm", "--version" }) == .program_arguments);
-    try std.testing.expect(classify(&.{ "prog.scm", "x" }) == .program_arguments);
+    try std.testing.expectEqual(@as(usize, 0), classify(&.{ "prog.scm", "-I", "lib" }).run_file);
+    try std.testing.expectEqual(@as(usize, 0), classify(&.{ "prog.scm", "--version" }).run_file);
+    try std.testing.expectEqual(@as(usize, 2), classify(&.{ "-I", "lib", "prog.scm", "x", "-" }).run_file);
     // 要求を決める最初の引数が優先される。
     try std.testing.expect(classify(&.{ "-I", "lib", "--version" }) == .version);
     try std.testing.expect(classify(&.{ "-I", "lib", "-h" }) == .help);
@@ -513,8 +561,76 @@ fn replOver(input: []const u8, out_buf: []u8, err_buf: []u8) !struct { out: []co
     var in: std.Io.Reader = .fixed(input);
     var out: std.Io.Writer = .fixed(out_buf);
     var err: std.Io.Writer = .fixed(err_buf);
-    try repl(std.testing.allocator, null, &in, &out, &err);
+    _ = try repl(std.testing.allocator, null, .{}, &in, &out, &err);
     return .{ .out = out.buffered(), .err = err.buffered() };
+}
+
+test "exit in the repl ends it, after the output so far and the after of dynamic-wind, with the status it gives" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    var in: std.Io.Reader = .fixed("(import (scheme process-context) (scheme write))\n(display \"a\")\n(dynamic-wind (lambda () #f) (lambda () (exit 300)) (lambda () (display \"b\")))\n(display \"never\")\n");
+    var out: std.Io.Writer = .fixed(&ob);
+    var err: std.Io.Writer = .fixed(&eb);
+    // 300 の下位8ビットは 44 である。
+    try std.testing.expectEqual(@as(u8, 44), try repl(std.testing.allocator, null, .{}, &in, &out, &err));
+    try std.testing.expectEqualStrings("> > a> b", out.buffered());
+    try std.testing.expectEqualStrings("", err.buffered());
+    // 引数の無い REPL の `command-line` は、処理系の名前だけである。
+    const r = try replOver("(import (scheme process-context)) (command-line)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> (\"sucheme\")\n> \n", r.out);
+}
+
+test "runFile gives the program its command line and its variables, and ends with the status exit gives" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "prog.scm", .data =
+        \\(import (scheme base) (scheme write) (scheme process-context))
+        \\(write (command-line))
+        \\(write (get-environment-variable "SUCHEME_TEST"))
+        \\(write (get-environment-variable "SUCHEME_NONE"))
+        \\(write (assoc "SUCHEME_TEST" (get-environment-variables)))
+        \\(exit (length (command-line)))
+        \\(display "never")
+    });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
+    defer std.testing.allocator.free(path);
+    var variables: std.process.Environ.Map = .init(std.testing.allocator);
+    defer variables.deinit();
+    try variables.put("SUCHEME_TEST", "値");
+    // 値が UTF-8 でない項目は、複数形の結果から除かれる。
+    try variables.put("SUCHEME_BAD", "\xff");
+    var ob: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&ob);
+    var eb: [256]u8 = undefined;
+    var err: std.Io.Writer = .fixed(&eb);
+    const command_line = [_][]const u8{ "prog.scm", "a", "-I" };
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, .{ .command_line = &command_line, .variables = &variables }, &out, &err);
+    try std.testing.expectEqual(@as(u8, 3), status);
+    try std.testing.expectEqualStrings("(\"prog.scm\" \"a\" \"-I\")\"値\"#f(\"SUCHEME_TEST\" . \"値\")", out.buffered());
+    try std.testing.expectEqualStrings("", err.buffered());
+}
+
+test "a variable whose value is not UTF-8 raises from get-environment-variable" {
+    var variables: std.process.Environ.Map = .init(std.testing.allocator);
+    defer variables.deinit();
+    try variables.put("SUCHEME_BAD", "\xff");
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    var in: std.Io.Reader = .fixed("(import (scheme process-context)) (get-environment-variable \"SUCHEME_BAD\")\n(assoc \"SUCHEME_BAD\" (get-environment-variables))\n");
+    var out: std.Io.Writer = .fixed(&ob);
+    var err: std.Io.Writer = .fixed(&eb);
+    try std.testing.expectEqual(@as(u8, 0), try repl(std.testing.allocator, null, .{ .variables = &variables }, &in, &out, &err));
+    try std.testing.expectEqualStrings("> > #f\n> \n", out.buffered());
+    try std.testing.expectEqualStrings("error: value is not valid UTF-8 in get-environment-variable \"SUCHEME_BAD\"\n", err.buffered());
+}
+
+test "the exit status of exit is the low 8 bits of its code" {
+    try std.testing.expectEqual(@as(u8, 0), exitStatus(0));
+    try std.testing.expectEqual(@as(u8, 255), exitStatus(-1));
+    try std.testing.expectEqual(@as(u8, 0), exitStatus(256));
+    try std.testing.expectEqual(@as(u8, 255), exitStatus(std.math.maxInt(i32)));
 }
 
 test "read and read-line in the repl take the lines the repl has not read yet" {
@@ -805,7 +921,7 @@ test "repl drops what it kept when a line is longer than it reads" {
     var in = src.limited(.unlimited, &in_buf);
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, null, &in.interface, &out, &err);
+    _ = try repl(std.testing.allocator, null, .{}, &in.interface, &out, &err);
     // 保留の "(" は捨てられるので、7 は新しい入力として評価され、終わりでも報告されない。
     try std.testing.expectEqualStrings("> ... > 7\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: the line does not fit in 65536 bytes, newline included\n", err.buffered());
@@ -827,7 +943,7 @@ test "repl skips a line longer than it reads and goes on" {
     var in = src.limited(.unlimited, &in_buf);
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, null, &in.interface, &out, &err);
+    _ = try repl(std.testing.allocator, null, .{}, &in.interface, &out, &err);
     try std.testing.expectEqualStrings("> > 7\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: the line does not fit in 65536 bytes, newline included\n", err.buffered());
 }
@@ -845,7 +961,7 @@ test "repl reads the longest line that fits, newline included" {
     var in = src.limited(.unlimited, &in_buf);
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, null, &in.interface, &out, &err);
+    _ = try repl(std.testing.allocator, null, .{}, &in.interface, &out, &err);
     try std.testing.expectEqualStrings("> 5\n> \n", out.buffered());
     try std.testing.expectEqualStrings("", err.buffered());
 }
@@ -868,7 +984,7 @@ test "repl imports a library from a file beneath the roots it is given, and repo
     var eb: [128]u8 = undefined;
     var out: std.Io.Writer = .fixed(&ob);
     var err: std.Io.Writer = .fixed(&eb);
-    try repl(std.testing.allocator, .{ .io = std.testing.io, .roots = &tree.roots }, &input, &out, &err);
+    _ = try repl(std.testing.allocator, .{ .io = std.testing.io, .roots = &tree.roots }, .{}, &input, &out, &err);
     try std.testing.expectEqualStrings("> > 7\n> > 7\n> \n", out.buffered());
     try std.testing.expectEqualStrings("error: unknown library: (foo baz)\n", err.buffered());
 }
@@ -960,7 +1076,7 @@ fn runProgramToBoth(text: []const u8, out: *std.Io.Writer, err: *std.Io.Writer) 
     defer std.testing.allocator.free(dir);
     const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "prog.scm" });
     defer std.testing.allocator.free(path);
-    return runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, out, err);
+    return runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, .{}, out, err);
 }
 
 test "runFile writes stderr out, after what the program wrote to stdout" {
@@ -1111,7 +1227,7 @@ test "runFile finds a library under a search root" {
     var eb: [256]u8 = undefined;
     var err: std.Io.Writer = .fixed(&eb);
     var out: std.Io.Writer.Discarding = .init(&.{});
-    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, &out.writer, &err);
+    const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, .{}, &out.writer, &err);
     // `(f)` は 7 を返し、`(car 7)` が誤りになる。ライブラリが読めたことは、その誤りの種類で分かる。
     try std.testing.expectEqual(exit_runtime_error, status);
     try std.testing.expectEqualStrings("error: wrong type of argument to car 7\n", err.buffered());
@@ -1121,11 +1237,11 @@ test "runFile returns 66 for a file that is missing, and for a directory" {
     var eb: [256]u8 = undefined;
     var err: std.Io.Writer = .fixed(&eb);
     var out: std.Io.Writer.Discarding = .init(&.{});
-    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", &out.writer, &err);
+    const missing = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, "no-such-dir/no-such-file.scm", .{}, &out.writer, &err);
     try std.testing.expectEqual(exit_no_input, missing);
     try std.testing.expect(std.mem.startsWith(u8, err.buffered(), "error: cannot read no-such-dir/no-such-file.scm: "));
     var err2: std.Io.Writer = .fixed(&eb);
-    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", &out.writer, &err2);
+    const directory = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{"."} }, ".", .{}, &out.writer, &err2);
     try std.testing.expectEqual(exit_no_input, directory);
 }
 
@@ -1146,6 +1262,6 @@ test "runFile returns 66 for a file larger than the limit, and runs one at the l
         defer std.testing.allocator.free(path);
         var err: std.Io.Writer = .fixed(&eb);
         var out: std.Io.Writer.Discarding = .init(&.{});
-        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, &out.writer, &err));
+        try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, .{}, &out.writer, &err));
     }
 }
