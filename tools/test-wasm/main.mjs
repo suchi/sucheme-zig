@@ -28,6 +28,7 @@ const UNRECOVERABLE = -2;
 const INVALID_UTF8 = -3;
 const WRONG_ORDER = -4;
 const NOT_INITIALIZED = -5;
+const EXITED = -6;
 const NO_MEMORY = -7;
 const BAD_REGION = -8;
 
@@ -402,6 +403,56 @@ test("the wasm feature is true in this build, and the names of an operating syst
 // 計上は上限の4分の3ほどで、同じ長さのメッセージは、予約を足しても収まらない。一方で、
 // ヒープが満杯の報告(上限と余裕の差の内側まで生きているもの)には当たらない長さである。
 // 名前が上限を超えるなら、シンボルを作れず、回復できるエラーになる。
+// `exit` は、`after` を呼んでから -6 を返す。終了コードは出力に書かず、`sucheme_exit_code` で
+// 取る。以後はリセットまで評価を受け付けない(スライス 5m、docs/design/platform-and-web.md)。
+test("exit runs the after of a dynamic-wind, returns -6 with the code apart from the output, and waits for a reset", () => {
+  const h = instantiate().init();
+  assert.equal(h.x.sucheme_exit_code(), 0);
+  assert.deepEqual(
+    h.run("(import (scheme process-context) (scheme write)) (dynamic-wind (lambda () #f) (lambda () (display \"in \") (exit 3)) (lambda () (display \"cleanup\")))"),
+    [EXITED, "in cleanup"],
+  );
+  assert.equal(h.x.sucheme_exit_code(), 3);
+  assert.deepEqual(h.run("(+ 1 2)"), [WRONG_ORDER, "error: the interpreter cannot go on; call sucheme_reset\n"]);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+  // 終了コードは、次の -6 まで残る。`emergency-exit` は `after` を呼ばない。
+  assert.equal(h.x.sucheme_exit_code(), 3);
+  assert.deepEqual(
+    h.run("(import (scheme process-context) (scheme write)) (dynamic-wind (lambda () #f) (lambda () (emergency-exit #f)) (lambda () (display \"cleanup\")))"),
+    [EXITED, ""],
+  );
+  assert.equal(h.x.sucheme_exit_code(), 1);
+});
+
+test("set_command_line sets what command-line gives from the next evaluation, and refuses what is not UTF-8", () => {
+  const h = instantiate().init();
+  const encoder = new TextEncoder();
+  const setLine = (bytes) => {
+    const ptr = h.x.sucheme_alloc(bytes.length);
+    h.bytes(ptr, bytes.length).set(bytes);
+    const result = h.x.sucheme_set_command_line(ptr, bytes.length);
+    h.x.sucheme_free(ptr, bytes.length);
+    return result;
+  };
+  // 設定していなければ、処理系の名前だけである。環境変数は無い。
+  assert.deepEqual(
+    h.run("(import (scheme process-context)) (list (command-line) (get-environment-variable \"PATH\") (get-environment-variables))"),
+    [OK, "((\"sucheme\") #f ())\n"],
+  );
+  assert.equal(setLine(encoder.encode("prog.scm\nα\n\n")), 1);
+  assert.deepEqual(h.run("(command-line)"), [OK, "(\"prog.scm\" \"α\" \"\")\n"]);
+  // 妥当でない UTF-8 は断り、前の設定を残す。出力バッファには書かない。
+  assert.equal(setLine(new Uint8Array([0x61, 0xff])), 0);
+  assert.equal(h.output(), "");
+  assert.deepEqual(h.run("(command-line)"), [OK, "(\"prog.scm\" \"α\" \"\")\n"]);
+  // リセットのあとも残る。空の設定は、処理系の名前だけに戻す。
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.deepEqual(h.run("(import (scheme process-context)) (command-line)"), [OK, "(\"prog.scm\" \"α\" \"\")\n"]);
+  assert.equal(setLine(new Uint8Array([])), 1);
+  assert.deepEqual(h.run("(command-line)"), [OK, "(\"sucheme\")\n"]);
+});
+
 test("a raise that uses up the reserve is unrecoverable until a reset", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_init(small_limit), OK);

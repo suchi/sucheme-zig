@@ -73,7 +73,9 @@ export class Sucheme {
    * Evaluate every expression in `text`.
    *
    * 戻り値は `{ status, output }`。-1(Scheme のエラー)と -3(不正な UTF-8)でも
-   * 出力に説明が入るので、呼び出し側はそのまま表示できる。
+   * 出力に説明が入るので、呼び出し側はそのまま表示できる。-6(`Status.EXITED`)は、
+   * プログラムが `exit` を呼んだことを表し、終了コードは `exitCode()` で取る。以後は
+   * `reset()` まで評価できない。
    */
   eval(text) {
     const e = this.#exports;
@@ -91,6 +93,33 @@ export class Sucheme {
       e.sucheme_free(ptr, encoded.length);
     }
     return { status, output: this.#takeOutput() };
+  }
+
+  /**
+   * Set what `(command-line)` gives from the next `eval`: the program's name first,
+   * then its arguments. Returns whether it was set (false for text that is not
+   * UTF-8 or contains a newline).
+   *
+   * 改行区切りで渡す(docs/design/platform-and-web.md)ので、改行を含む要素は渡せない。
+   * 空の配列は、処理系の名前だけに戻す。
+   */
+  setCommandLine(args) {
+    if (args.some((a) => a.includes("\n"))) return false;
+    const e = this.#exports;
+    const encoded = encoder.encode(args.join("\n"));
+    const ptr = e.sucheme_alloc(encoded.length);
+    if (ptr === 0) return false;
+    try {
+      this.#bytes(ptr, encoded.length).set(encoded);
+      return e.sucheme_set_command_line(ptr, encoded.length) === 1;
+    } finally {
+      e.sucheme_free(ptr, encoded.length);
+    }
+  }
+
+  /** The exit code of the last `eval` that returned `Status.EXITED`, or 0. */
+  exitCode() {
+    return this.#exports.sucheme_exit_code();
   }
 
   /** Discard all state and return to the freshly initialized state. */

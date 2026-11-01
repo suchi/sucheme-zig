@@ -32,6 +32,7 @@ const Status = struct {
     const invalid_utf8: i32 = -3;
     const wrong_order: i32 = -4;
     const not_initialized: i32 = -5;
+    const exited: i32 = -6;
     const out_of_memory: i32 = -7;
     const bad_region: i32 = -8;
 };
@@ -59,6 +60,21 @@ var initialized = false;
 /// 状態コードの表)。上限超過(-1)と分けるのは、上限超過がハンドラで捕まえられる Scheme の
 /// エラーだからである。
 var unrecoverable = false;
+/// Whether the program called `exit` or `emergency-exit`, so that only
+/// `sucheme_reset` may be called until it is cleared (status -6).
+/// Why: 終わったプログラムの続きを、同じインタプリタで評価しない(docs/design/platform-and-web.md
+/// の状態コードの表)。
+var exited = false;
+/// The exit code of the last status -6, or 0 when there has been none
+/// (`sucheme_exit_code`).
+var exit_code: i32 = 0;
+
+/// The command line `sucheme_set_command_line` set: the bytes it was given, and
+/// the lines of them, or nothing for the name of the interpreter alone.
+/// Why: ホストの領域はホストが返すので、写しを持つ。`Heap.command_line` に置くのは
+/// `sucheme_eval_begin` で、評価の途中で `(command-line)` が変わらない。
+var command_text: []u8 = &.{};
+var command_line: std.ArrayList([]const u8) = .empty;
 
 /// The output buffer and the writer into it.
 /// `out.end` が出力の長さである。
@@ -133,6 +149,7 @@ export fn sucheme_reset() i32 {
     const limit = interp.ctx.heap.options.limit;
     interp.deinit();
     unrecoverable = false;
+    exited = false;
     interp.initWithOptions(allocator, .{ .limit = limit }) catch {
         initialized = false;
         allocator.free(output);
@@ -199,13 +216,15 @@ fn firstInvalidUtf8(bytes: []const u8) ?usize {
 /// 返す値は 0(完了)、-1(Scheme のエラー。`error: ...` の一行を出力に書く)、
 /// -2(回復不能。送出のための予約も尽きた。`error: ...` の一行を出力に書き、以後は
 /// `sucheme_reset` だけを受け付ける)、-3(不正な UTF-8。位置を出力に書き、状態は変えない)、
-/// -4(-2 のあとで `sucheme_reset` の前に呼ばれた。状態は変えない)、-5、-8。
+/// -4(-2 か -6 のあとで `sucheme_reset` の前に呼ばれた。状態は変えない)、-5、
+/// -6(プログラムが `exit` か `emergency-exit` を呼んだ。終了コードは `sucheme_exit_code` で取り、
+/// 以後は `sucheme_reset` だけを受け付ける)、-8。
 export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
     if (!initialized) {
         appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
         return Status.not_initialized;
     }
-    if (unrecoverable) {
+    if (unrecoverable or exited) {
         appendTail(&out, output, "error: the interpreter cannot go on; call sucheme_reset\n");
         return Status.wrong_order;
     }
@@ -225,7 +244,15 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
     }
     var arena: std.heap.ArenaAllocator = .init(allocator);
     defer arena.deinit();
+    interp.ctx.heap.command_line = if (command_line.items.len == 0) &.{sucheme.name} else command_line.items;
     interp.evalPrint(arena.allocator(), source, &out) catch |e| {
+        // 終了コードは出力に書かない。`exit` が呼ぶ `after` の出力と混ざるからである
+        // (docs/design/platform-and-web.md)。
+        if (e == error.Exited) {
+            exited = true;
+            exit_code = interp.ctx.exit_code;
+            return Status.exited;
+        }
         var buf: [320]u8 = undefined;
         const message = switch (e) {
             error.WriteFailed => "output buffer full",
@@ -239,6 +266,44 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
         return Status.scheme_error;
     };
     return Status.ok;
+}
+
+/// Sets the command line that `(command-line)` gives from the next
+/// `sucheme_eval_begin`: the UTF-8 lines of (ptr, len), the name of the program
+/// first, or, for an empty one, the name of the interpreter alone.
+/// 返す値は 1(設定した)か 0(妥当な UTF-8 でない、`sucheme_alloc` の領域でない、確保できない。
+/// 設定は変えず、出力バッファにも書かない。docs/design/platform-and-web.md の検証の表)。状態は
+/// 変えないので、いつ呼んでもよい。
+/// 行は改行で区切り、末尾の改行は区切りとして扱わない(`"a\nb\n"` は2行)。
+export fn sucheme_set_command_line(ptr: u32, len: u32) u32 {
+    if (!initialized) return 0;
+    if (!insideRegion(ptr, len)) return 0;
+    const bytes: []const u8 = if (len == 0) &.{} else blk: {
+        const p: [*]const u8 = @ptrFromInt(ptr);
+        break :blk p[0..len];
+    };
+    if (!std.unicode.utf8ValidateSlice(bytes)) return 0;
+    const text = allocator.dupe(u8, bytes) catch return 0;
+    var lines: std.ArrayList([]const u8) = .empty;
+    if (text.len != 0) {
+        var it = std.mem.splitScalar(u8, if (text[text.len - 1] == '\n') text[0 .. text.len - 1] else text, '\n');
+        while (it.next()) |line| lines.append(allocator, line) catch {
+            lines.deinit(allocator);
+            allocator.free(text);
+            return 0;
+        };
+    }
+    command_line.deinit(allocator);
+    allocator.free(command_text);
+    command_text = text;
+    command_line = lines;
+    return 1;
+}
+
+/// The exit code of the last status -6, or 0 when there has been none
+/// (docs/design/platform-and-web.md, the table of `exit`).
+export fn sucheme_exit_code() i32 {
+    return exit_code;
 }
 
 export fn sucheme_output_ptr() u32 {
