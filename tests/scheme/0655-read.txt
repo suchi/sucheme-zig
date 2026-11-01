@@ -1,0 +1,59 @@
+# スライス 5l: `read`(R7RS 6.13.2)。ポートから1つずつデータを読み、残りがコメントと空白だけなら
+# EOF を返す。読めない入力は `read-error?` が真になる条件を送出する(R7RS 6.11)。
+
+(import (scheme read)) (let ((p (open-input-string "(a . b) c"))) (let* ((x (read p)) (y (read p)) (z (read p))) (list x y (eof-object? z))))
+((a . b) c #t)
+
+(import (scheme read)) (eof-object? (read (open-input-string "  ; only a comment\n #| block |# ")))
+#t
+
+# EOF を返すときは、空白とコメントだけの残りを読み終えたことになり、続く文字の読みも EOF である。
+(import (scheme read)) (let ((p (open-input-string "  ; c\n"))) (let ((x (read p))) (list (eof-object? x) (eof-object? (read-char p)))))
+(#t #t)
+
+(import (scheme read)) (let ((p (open-input-string "1 #;2 3"))) (list (read p) (read p) (eof-object? (read p))))
+(1 3 #t)
+
+# 読めたデータの後ろから、文字を読める。
+(import (scheme read)) (let ((p (open-input-string "abc def"))) (list (read p) (read-char p) (read-char p)))
+(abc #\space #\d)
+
+# 文字列、文字、ベクタ、バイトベクタ、数。
+(import (scheme read)) (let ((p (open-input-string "\"s\" #\\x #(1 2) #u8(3) 1/2 #e1.5"))) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))
+("s" #\x #(1 2) #u8(3) 1/2 3/2)
+
+# データとして読むので、リテラルの外の循環も読める。
+(import (scheme read) (scheme write)) (write (read (open-input-string "#0=(a . #0#)")))
+#0=(a . #0#)
+
+# `#!fold-case` は、そのポートの次の `read` に残る。ほかのポートには効かない。
+(import (scheme read)) (let ((p (open-input-string "#!fold-case ABC DEF #!no-fold-case GHI")) (q (open-input-string "XYZ"))) (list (read p) (read q) (read p) (read p)))
+(abc XYZ def GHI)
+
+# 読めない入力。
+(import (scheme read)) (guard (c ((read-error? c) (error-object-message c))) (read (open-input-string ")")))
+"unexpected ) in read"
+
+(import (scheme read)) (guard (c ((read-error? c) (error-object-message c))) (read (open-input-string "(1 2")))
+"unexpected end of input in read"
+
+(import (scheme read)) (guard (c ((read-error? c) 'read) ((file-error? c) 'file)) (read (open-input-string "#<foo>")))
+read
+
+# ポートを省略すると、現在の入力ポートから読む。
+(import (scheme read)) (parameterize ((current-input-port (open-input-string "(x y)"))) (read))
+(x y)
+
+# 向きと種類の違うポート、閉じたポート。
+(import (scheme read)) (read (open-output-string))
+error: wrong type of argument to read #<port>
+
+(import (scheme read)) (let ((p (open-input-string "1"))) (close-port p) (guard (c (#t (error-object-message c))) (read p)))
+"port is closed in read"
+
+# 行をまたぐブロックコメントは、1つの空白として読み飛ばす。
+(import (scheme read)) (let ((p (open-input-string "#| a\n b |#"))) (list (eof-object? (read p)) (eof-object? (read p))))
+(#t #t)
+
+(import (scheme read)) (let ((p (open-input-string "#| a\n b |# c"))) (list (read p) (eof-object? (read p))))
+(c #t)

@@ -21,6 +21,7 @@ const Services = value.Services;
 const PrimitiveError = value.PrimitiveError;
 const port_mod = @import("../port.zig");
 const Heap = @import("../heap.zig").Heap;
+const reader = @import("../reader.zig");
 const printer = @import("../printer.zig");
 const immutable = @import("immutable.zig");
 const range_mod = @import("range.zig");
@@ -73,6 +74,7 @@ pub const primitives = [_]Primitive{
     .{ .name = "open-binary-output-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &openBinaryOutputFile } },
     .{ .name = "file-exists?", .min_args = 1, .max_args = 1, .body = .{ .pure = &fileExists } },
     .{ .name = "delete-file", .min_args = 1, .max_args = 1, .body = .{ .pure = &deleteFile } },
+    .{ .name = "read", .min_args = 0, .max_args = 1, .body = .{ .pure = &read } },
 };
 
 /// The error a failure of the port functions is to a primitive.
@@ -421,6 +423,238 @@ fn readString(services: *const Services, args: []const Value) Error!Value {
     return try readText(services, p, k, false) orelse .eof_value;
 }
 
+/// `(read port)`: the next datum of the textual input port `port`, or an end-of-file
+/// object when only atmosphere is left (R7RS 6.13.2).
+/// ポートの手元の入力を `Reader` に渡し、読めたバイトの数だけポートを進める。データとして読む
+/// ので、リテラルの外の循環も許す(`Reader.code` を偽にする)。`#!fold-case` と
+/// `#!no-fold-case` で変わった畳み込みの状態は、ポートに書き戻し、次の `read` に残す
+/// (R7RS 2.1)。手元の入力の終わりでデータが終わっていない(`Incomplete`)か、終わりまで
+/// 読んだ(最後のトークンが切れている恐れがある)ときは、ポートが足せる限り読み足して、
+/// データの頭から読み直す(docs/plans/0019-phase5-ports-and-io.md の 5l の中身)。
+///
+/// Why: ファイルのポートの手元の入力は、末尾で文字が分かれていることがあり、UTF-8 として
+/// 読めないバイトを含みうる(0019 の「5h と 5k が守る約束」)。`Reader` は、文字列リテラルの
+/// 外の読めないバイトを読んだ結果が正しいことまでは保証しない(src/reader.zig のファズ)。
+/// そのため、`Reader` には妥当な UTF-8 の前置部分(`validPrefix`)だけを渡す。その先が、
+/// 終わりで分かれた文字なら読み足し、読めないバイトなら、データがそこに掛かったときに
+/// `read-error` にする(`invalid UTF-8 input`。親のセッションの決定)。
+fn read(services: *const Services, args: []const Value) Error!Value {
+    const p = try argPort(services, args, 0, .input, .textual);
+    try checkReadable(services, p);
+    const heap = services.heap;
+    // Why: `Reader` が読んでいる間に開いているリストの枠は、入れ子の深さに比例するので、
+    // ヒープの上限に数える(`Collected` と同じ理由)。
+    const was_refused = heap.external_refused;
+    heap.external_refused = false;
+    defer heap.external_refused = was_refused;
+    // 長いデータのために伸ばしたバッファは、戻るときに元の大きさに戻す(`makeRoom`)。
+    defer restoreBuffer(heap, p);
+    // Why: 検査する範囲(窓)を区切り、データが窓の終わりに達したときだけ倍に広げる。呼ぶたびに
+    // 手元の全体を検査すると、大きな手元から小さなデータを繰り返し読む費用が、読む回数の2乗に
+    // なる(5l の査読で見つかった)。文字列ポートの中身は、作るときに検査した UTF-8 なので
+    // (`Heap.createMemoryPort`)、検査しない。
+    var window: usize = initial_window;
+    while (true) {
+        const all = port_mod.pending(services.heap, p);
+        const checked = if (p.backing == .memory) all else all[0..@min(all.len, window)];
+        const valid: ValidPrefix = if (p.backing == .memory) .{ .len = all.len, .cut = false } else validPrefix(checked);
+        const held = checked[0..valid.len];
+        // 前置部分の後ろに読めないバイトがある。読み足しても、窓を広げても、そこは変わらない。
+        const blocked = valid.len < checked.len and !valid.cut;
+        // 手元には、窓の外にまだ続きがある。読み足す前に、窓を広げて読み直す。
+        const widen = checked.len < all.len;
+        var r: reader.Reader = .{ .src = held, .fold_case = p.fold_case, .code = false };
+        var arena: std.heap.ArenaAllocator = .init(heap.residentAllocator());
+        defer arena.deinit();
+        const datum = r.next(arena.allocator(), .{ .heap = heap }) catch |e| switch (e) {
+            error.Incomplete => {
+                if (blocked) return unreadable(services, error.InvalidUtf8);
+                if (widen) {
+                    window *|= 2;
+                    continue;
+                }
+                switch (try addInput(services, p)) {
+                    .added => continue,
+                    .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
+                    .none => return unreadable(services, if (valid.cut) error.InvalidUtf8 else error.Incomplete),
+                }
+            },
+            error.OutOfMemory => return if (heap.external_refused) error.HeapLimit else error.OutOfMemory,
+            error.HeapLimit => return error.HeapLimit,
+            // Why: 手元の終わりで切れたトークン(`#!fold-ca` など)は、`Incomplete` でなく、
+            // ほかの構文の誤りになりうる。読み足せる限り読み足して読み直し、読み足せない
+            // ときだけ、その誤りを報告する。
+            else => |syntax| {
+                if (blocked) return unreadable(services, syntax);
+                if (widen) {
+                    window *|= 2;
+                    continue;
+                }
+                switch (try addInput(services, p)) {
+                    .added => continue,
+                    .full => if (try makeRoom(services, p, held)) continue else return unreadable(services, syntax),
+                    .none => return unreadable(services, if (valid.cut) error.InvalidUtf8 else syntax),
+                }
+            },
+        };
+        if (datum) |d| {
+            // 手元の終わりまで読んだデータは、終わりの文字で閉じていなければ、続きが
+            // トークンの続きでありうる。
+            if (r.pos == held.len and !closesItself(held)) {
+                if (blocked) return unreadable(services, error.InvalidUtf8);
+                if (widen) {
+                    window *|= 2;
+                    continue;
+                }
+                switch (try addInput(services, p)) {
+                    .added => continue,
+                    .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
+                    .none => if (valid.cut) return unreadable(services, error.InvalidUtf8),
+                }
+            }
+            port_mod.consume(services.heap, p, r.pos);
+            p.fold_case = r.fold_case;
+            return d;
+        }
+        // 空白とコメントだけで手元が尽きた。最後の行コメントや指令が切れていることがあるので、
+        // 何も読み終えたことにせず、読み足して頭から読み直す。読み足せないときだけ、全部を
+        // 読み終えて EOF を返す。
+        // Why: 途中までを読み終えたことにすると、その切れ目が、改行をまたぐ閉じたブロック
+        // コメントの中に落ちうる(5l の査読で見つかった)。データの前の空白は、バッファが
+        // 埋まったときに `makeRoom` が読み飛ばす。
+        if (blocked) return unreadable(services, error.InvalidUtf8);
+        if (widen) {
+            window *|= 2;
+            continue;
+        }
+        switch (try addInput(services, p)) {
+            .added => continue,
+            .full => if (try makeRoom(services, p, held)) continue else return tooLong(services),
+            .none => {
+                if (valid.cut) return unreadable(services, error.InvalidUtf8);
+                port_mod.consume(services.heap, p, r.pos);
+                p.fold_case = r.fold_case;
+                return .eof_value;
+            },
+        }
+    }
+}
+
+/// Reads past the spaces, line endings and line comments at the start of `held`, what
+/// `p` holds, and gives whether there were any.
+/// Why: データの前の空白で手元のバッファが埋まると、データの続きを読み足す余地が無い。
+/// 空白と、行の終わりまで閉じた行コメントだけを数えるのは、`Reader` の空白の読み飛ばしが
+/// 外から呼べず(src/reader.zig は L2 の所有)、この2つなら、読み飛ばしても `fold_case` も
+/// データも変わらないからである。ブロックコメントと指令の前では止まる。
+fn dropLeadingSpace(heap: *Heap, p: *Port, held: []const u8) bool {
+    var i: usize = 0;
+    while (i < held.len) {
+        switch (held[i]) {
+            ' ', '\t', '\n', '\r' => i += 1,
+            ';' => i = (std.mem.indexOfAnyPos(u8, held, i, "\n\r") orelse break) + 1,
+            else => break,
+        }
+    }
+    if (i == 0) return false;
+    port_mod.consume(heap, p, i);
+    return true;
+}
+
+/// Makes room to add input to `p`, whose buffer is full of what it has not read,
+/// `held`: by reading past the spaces before the datum, or else, for a file port, by
+/// doubling its buffer; false when there is no way (the console).
+/// Why: 1つのデータがバッファより長いときだけ、バッファを倍に伸ばし、`read` が戻るときに
+/// 元の大きさに戻す(suchi/sucheme-zig#230 の決定。`restoreBuffer`)。伸ばす分は上限に数え、
+/// 上限に収まらなければ `HeapLimit` である。コンソールの読み手のバッファは、REPL と共有で、
+/// 伸ばせない。
+fn makeRoom(services: *const Services, p: *Port, held: []const u8) Error!bool {
+    if (dropLeadingSpace(services.heap, p, held)) return true;
+    switch (p.backing) {
+        .file => |*file| {
+            const doubled = std.math.mul(usize, file.buffer.len, 2) catch return error.HeapLimit;
+            try services.heap.resizeFileBuffer(p, doubled);
+            return true;
+        },
+        .memory, .console => return false,
+    }
+}
+
+/// Gives the file port `p` back a buffer of its usual size, if `read` made it larger
+/// and what it has not read fits.
+/// 戻せないとき(読んでいない分が多い、確保に失敗した)は、大きいまま残す。計上は残るが、
+/// 次の `read` がまた戻す。
+fn restoreBuffer(heap: *Heap, p: *Port) void {
+    if (p.backing != .file) return;
+    const file = &p.backing.file;
+    if (file.buffer.len <= file_buffer_size) return;
+    const unread = file.len - file.pos;
+    if (unread > file_buffer_size) return;
+    heap.resizeFileBuffer(p, file_buffer_size) catch {};
+}
+
+/// `Unreadable` for a datum that does not fit in what the console's reader can hold.
+fn tooLong(services: *const Services) Error {
+    if (services.reason) |reason| reason.* = "datum longer than the input buffer";
+    return error.Unreadable;
+}
+
+/// How many bytes `read` checks as UTF-8 before it reads, at first; it doubles them
+/// when the datum reaches their end.
+const initial_window = 1024;
+
+/// How much at the start of some bytes is valid UTF-8 (`validPrefix`).
+const ValidPrefix = struct {
+    len: usize,
+    /// Whether what follows is a character cut off by the end of the bytes, rather
+    /// than bytes that are not UTF-8.
+    cut: bool,
+};
+
+/// How many bytes at the start of `bytes` are valid UTF-8, and whether what follows
+/// them is a character cut off by the end of `bytes`, rather than bytes that are not
+/// UTF-8.
+fn validPrefix(bytes: []const u8) ValidPrefix {
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const width = std.unicode.utf8ByteSequenceLength(bytes[i]) catch return .{ .len = i, .cut = false };
+        if (i + width > bytes.len) {
+            // 揃っている続きのバイトが正しければ、終わりで切れた文字である。
+            for (bytes[i + 1 ..]) |b| if (b & 0xC0 != 0x80) return .{ .len = i, .cut = false };
+            return .{ .len = i, .cut = true };
+        }
+        _ = std.unicode.utf8Decode(bytes[i..][0..width]) catch return .{ .len = i, .cut = false };
+        i += width;
+    }
+    return .{ .len = i, .cut = false };
+}
+
+/// Whether the datum that `held` ends with is closed by its last character: a `)`
+/// or a `"`, after which nothing can continue it.
+fn closesItself(held: []const u8) bool {
+    return held.len > 0 and (held[held.len - 1] == ')' or held[held.len - 1] == '"');
+}
+
+/// Adds to what the textual input port `p` holds: whether it added anything, or
+/// could not because what it holds fills its buffer.
+/// 読んでいない分でバッファが埋まっていると、ファイルのポートもコンソールも読み足せない
+/// (`port.fill`)。そのときは `makeRoom` が場所を作る。
+fn addInput(services: *const Services, p: *Port) Error!enum { added, full, none } {
+    switch (p.backing) {
+        .file => |*file| if (file.pos == 0 and file.len == file.buffer.len and !file.at_end) return .full,
+        .console => if (port_mod.consoleFull(services.heap)) return .full,
+        .memory => {},
+    }
+    const added = port_mod.fill(services.heap, p) catch |e| return portFailure(e);
+    return if (added) .added else .none;
+}
+
+/// `Unreadable`, with the text of what the reader could not read put where the
+/// machine takes it.
+fn unreadable(services: *const Services, e: reader.SyntaxError) Error {
+    if (services.reason) |reason| reason.* = reader.describe(e);
+    return error.Unreadable;
+}
+
 /// `(read-u8 port)`: the next byte, or an end-of-file object (R7RS 6.13.2).
 fn readU8(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .binary);
@@ -445,10 +679,10 @@ fn isU8Ready(services: *const Services, args: []const Value) Error!Value {
 /// The bytes the binary input port `p` holds, after adding to them from its source
 /// when it holds none; empty at the end.
 fn nextBytes(services: *const Services, p: *Port) Error![]const u8 {
-    const rest = port_mod.pending(p);
+    const rest = port_mod.pending(services.heap, p);
     if (rest.len != 0) return rest;
     _ = port_mod.fill(services.heap, p) catch |e| return portFailure(e);
-    return port_mod.pending(p);
+    return port_mod.pending(services.heap, p);
 }
 
 /// `(read-bytevector k port)`: a new bytevector of the next `k` bytes, or of as many as
@@ -469,7 +703,7 @@ fn readBytevector(services: *const Services, args: []const Value) Error!Value {
         if (rest.len == 0) break;
         const taken = @min(k - collected.bytes.items.len, rest.len);
         try collected.append(rest[0..taken]);
-        port_mod.consume(p, taken);
+        port_mod.consume(services.heap, p, taken);
     }
     if (collected.bytes.items.len == 0) return .eof_value;
     return .fromBytevector(try services.heap.createBytevector(collected.bytes.items));
@@ -497,7 +731,7 @@ fn readBytevectorInto(services: *const Services, args: []const Value) Error!Valu
         if (rest.len == 0) break;
         const taken = @min(range.end - range.start - n, rest.len);
         @memcpy(target.bytes[range.start + n ..][0..taken], rest[0..taken]);
-        port_mod.consume(p, taken);
+        port_mod.consume(services.heap, p, taken);
         n += taken;
     }
     if (n == 0) return .eof_value;
@@ -731,7 +965,7 @@ test "the primitives take the numbers of arguments the language gives them, with
         .{ "write-shared", 1, 2 },          .{ "write-simple", 1, 2 },            .{ "display", 1, 2 },
         .{ "%console-parameter", 1, 1 },    .{ "open-input-file", 1, 1 },         .{ "open-binary-input-file", 1, 1 },
         .{ "open-output-file", 1, 1 },      .{ "open-binary-output-file", 1, 1 }, .{ "file-exists?", 1, 1 },
-        .{ "delete-file", 1, 1 },
+        .{ "delete-file", 1, 1 },           .{ "read", 0, 1 },
     };
     try std.testing.expectEqual(expected.len, primitives.len);
     for (expected, primitives) |e, p| {
@@ -1156,4 +1390,142 @@ test "display of a long string goes to the port without the whole text in the sc
     f.services.scratch = fba.allocator();
     _ = try call(&f, "display", &.{ .fromString(long), p });
     try std.testing.expectEqual(10_000, (try call(&f, "get-output-string", &.{p})).asString().?.bytes.len);
+}
+
+/// A host with one file in memory, which gives at most `chunk` bytes a read, for the
+/// tests of `read` on a file port.
+const OneFile = struct {
+    contents: []const u8,
+    at: usize = 0,
+    chunk: usize = 1000,
+    reads: usize = 0,
+
+    fn host(self: *OneFile) Heap.FileHost {
+        return .{ .context = self, .open = open, .delete = delete, .exists = exists, .read = readFile, .write = writeFile, .close = closeFile };
+    }
+
+    fn open(_: *anyopaque, _: []const u8, _: Port.Direction) error{ Exhausted, Refused, OutOfMemory }!u32 {
+        return error.Refused;
+    }
+
+    fn delete(_: *anyopaque, _: []const u8) error{Refused}!void {
+        return error.Refused;
+    }
+
+    fn exists(_: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+
+    fn readFile(context: *anyopaque, _: u32, buffer: []u8) error{Io}!usize {
+        const self: *OneFile = @ptrCast(@alignCast(context));
+        const n = @min(buffer.len, self.chunk, self.contents.len - self.at);
+        @memcpy(buffer[0..n], self.contents[self.at..][0..n]);
+        self.at += n;
+        self.reads += 1;
+        return n;
+    }
+
+    fn writeFile(_: *anyopaque, _: u32, _: []const u8) error{Io}!void {}
+
+    fn closeFile(_: *anyopaque, _: u32) void {}
+};
+
+test "read gives the buffer of a file port back its usual size after a datum longer than it" {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.append(std.testing.allocator, '(');
+    for (0..3 * file_buffer_size / 5) |_| try list.appendSlice(std.testing.allocator, "1234 ");
+    try list.appendSlice(std.testing.allocator, ") 7");
+    var file: OneFile = .{ .contents = list.items };
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.files = file.host();
+    const p = try f.heap.createFilePort(.input, .textual, file_buffer_size);
+    p.open = true;
+    const before = f.heap.accounted;
+    const objects_before = f.heap.count;
+    const datum = try call(&f, "read", &.{.fromPort(p)});
+    try std.testing.expectEqual(3 * file_buffer_size / 5, @import("pair.zig").properLength(datum).?);
+    // 読むために伸ばしたバッファは、元の大きさに戻り、その分の計上も戻る。増えた計上は、
+    // 読んだリストのペアの分だけである(数は fixnum で、確保しない)。
+    try std.testing.expectEqual(file_buffer_size, p.backing.file.buffer.len);
+    const pairs = f.heap.count - objects_before;
+    try std.testing.expectEqual(3 * file_buffer_size / 5, pairs);
+    try std.testing.expectEqual(before + pairs * @import("../heap.zig").cellBytes(value.Pair), f.heap.accounted);
+    try std.testing.expectEqual(7, (try call(&f, "read", &.{.fromPort(p)})).asFixnum().?);
+    try std.testing.expect((try call(&f, "read", &.{.fromPort(p)})).isEqv(.eof_value));
+    _ = try call(&f, "close-port", &.{.fromPort(p)});
+}
+
+test "read takes a datum many times longer than the buffer with a number of reads that grows with its logarithm" {
+    // Why: バッファを倍ずつ伸ばすので、読み足す回数はデータの長さの対数に比例する。少しずつ
+    // 伸ばす形に戻ると、データの長さに比例する回数になる。ホストが1回に満たせる量に上限を
+    // 置かないので、読み足しの回数がそのまま伸ばした回数の目安になる。
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.append(std.testing.allocator, '(');
+    for (0..16 * file_buffer_size / 5) |_| try list.appendSlice(std.testing.allocator, "1234 ");
+    try list.appendSlice(std.testing.allocator, ")");
+    var file: OneFile = .{ .contents = list.items, .chunk = std.math.maxInt(usize) };
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.files = file.host();
+    const p = try f.heap.createFilePort(.input, .textual, file_buffer_size);
+    p.open = true;
+    const datum = try call(&f, "read", &.{.fromPort(p)});
+    try std.testing.expectEqual(16 * file_buffer_size / 5, @import("pair.zig").properLength(datum).?);
+    try std.testing.expect(file.reads <= 8);
+}
+
+test "read gives the buffer back its usual size when what is left to read fills it exactly" {
+    // 12288 バイトのデータを読むと、バッファは 16384 バイトまで伸び、読み終えたあとの残りは、
+    // ちょうど元の大きさ(4096 バイト)である。残りが収まる限り、元の大きさに戻す。
+    comptime std.debug.assert(file_buffer_size == 4096);
+    var contents: std.ArrayList(u8) = .empty;
+    defer contents.deinit(std.testing.allocator);
+    try contents.append(std.testing.allocator, '(');
+    while (contents.items.len < 3 * file_buffer_size - 1) try contents.append(std.testing.allocator, ' ');
+    try contents.append(std.testing.allocator, ')');
+    while (contents.items.len < 4 * file_buffer_size - 1) try contents.append(std.testing.allocator, ' ');
+    try contents.append(std.testing.allocator, '7');
+    var file: OneFile = .{ .contents = contents.items, .chunk = std.math.maxInt(usize) };
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    f.heap.files = file.host();
+    const p = try f.heap.createFilePort(.input, .textual, file_buffer_size);
+    p.open = true;
+    const before = f.heap.accounted;
+    try std.testing.expect((try call(&f, "read", &.{.fromPort(p)})).isEqv(.empty_list_value));
+    try std.testing.expectEqual(file_buffer_size, p.backing.file.len - p.backing.file.pos);
+    try std.testing.expectEqual(file_buffer_size, p.backing.file.buffer.len);
+    try std.testing.expectEqual(before, f.heap.accounted);
+    try std.testing.expectEqual(7, (try call(&f, "read", &.{.fromPort(p)})).asFixnum().?);
+}
+
+test "read on the console reads past the spaces before a datum that fill its buffer, and finds bytes that are not UTF-8 at their end" {
+    // Why: コンソールの読み手のバッファは伸ばせないので、満杯のときに場所を作れるのは、データの
+    // 前の空白と行コメントの読み飛ばしだけである。読み飛ばせば、続きが無いことが分かり、閉じて
+    // いないデータの誤りになる。読み飛ばさなければ、長すぎるデータの誤りになる。`.fixed` の
+    // 読み手は、最初からバッファが満杯である。
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var reason: []const u8 = "";
+    f.services.reason = &reason;
+    const p = try f.heap.createConsolePort(.input);
+    for ([_][]const u8{ "  (a", "\t(a", "\r(a", "; c\n(a" }) |input| {
+        var source: std.Io.Reader = .fixed(input);
+        f.heap.console_input = &source;
+        try std.testing.expectError(error.Unreadable, call(&f, "read", &.{.fromPort(p)}));
+        try std.testing.expectEqualStrings("unexpected end of input", reason);
+    }
+    // 満杯のバッファの終わりのバイトが、切れた文字でなく、UTF-8 として読めないもの(先頭の
+    // バイトに、続きのバイトでないものが続く)なら、読み足すまでもなく読めない入力である。
+    var source: std.Io.Reader = .fixed("ab\xe3\xc3");
+    f.heap.console_input = &source;
+    try std.testing.expectError(error.Unreadable, call(&f, "read", &.{.fromPort(p)}));
+    try std.testing.expectEqualStrings("invalid UTF-8 input", reason);
 }

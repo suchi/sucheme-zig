@@ -295,6 +295,8 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, in: *std.Io.R
     var interp: sucheme.Interpreter = undefined;
     try interp.initWithFiles(gpa, .{}, files);
     defer interp.deinit();
+    // プログラムの `read` は、REPL がまだ読んでいない行から読む(suchi/sucheme-zig#230)。
+    interp.console_in = in;
     // 継続行の保留。エントリ層は確保を起動と終了に限るので、固定長にする。
     var pending: [max_line]u8 = undefined;
     var kept: usize = 0;
@@ -394,6 +396,10 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     interp.file_name = path;
     // 式の値は捨て、プログラムの出力だけを `out` に書く(スライス 5i)。
     interp.console_out = out;
+    // プログラムの `read` と `read-char` は、標準入力から読む(suchi/sucheme-zig#230)。
+    var in_buf: [max_line]u8 = undefined;
+    var stdin = std.Io.File.Reader.initStreaming(.stdin(), files.io, &in_buf);
+    interp.console_in = &stdin.interface;
     var discard: std.Io.Writer.Discarding = .init(&.{});
     interp.evalPrint(arena.allocator(), source, &discard.writer) catch |e| switch (e) {
         // 式の値は捨てているので、ここに来る書き込みの失敗は、プログラムの出力の標準出力である。
@@ -509,6 +515,16 @@ fn replOver(input: []const u8, out_buf: []u8, err_buf: []u8) !struct { out: []co
     var err: std.Io.Writer = .fixed(err_buf);
     try repl(std.testing.allocator, null, &in, &out, &err);
     return .{ .out = out.buffered(), .err = err.buffered() };
+}
+
+test "read and read-line in the repl take the lines the repl has not read yet" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    // `(read)` は次の行のデータを取り、REPL はその行を評価しない。データの後ろの改行は残るので、
+    // REPL は次に空の行を読み、プロンプトだけを出す。
+    const r = try replOver("(import (scheme read)) (read)\n(a b)\n(read-line)\nthe line\n(eof-object? (read))\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> (a b)\n> > \"the line\"\n> #t\n> \n", r.out);
+    try std.testing.expectEqualStrings("", r.err);
 }
 
 test "repl prints each line's results after a prompt" {

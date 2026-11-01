@@ -102,6 +102,11 @@ pub const Interpreter = struct {
     /// ファイルの実行は、式の値を捨てるが、プログラムの出力は標準出力に出す(src/main.zig の
     /// `runFile`)。REPL と WASM と test-scheme は null のままで、結果と出力が同じ順に並ぶ。
     console_out: ?*std.Io.Writer,
+    /// Where the console's input port reads from, or null when the console has no input
+    /// (WASM, the tests).
+    /// REPL は、行を読むのと同じ読み手を置く(src/main.zig の `repl`)。プログラムの `read` は、
+    /// REPL がまだ読んでいない行から読む。ファイルの実行は、標準入力を置く(suchi/sucheme-zig#230)。
+    console_in: ?*std.Io.Reader,
 
     const ErrorAt = struct { file: []const u8, location: positions_mod.Location };
 
@@ -178,6 +183,7 @@ pub const Interpreter = struct {
         self.file_name = null;
         self.error_at = null;
         self.console_out = null;
+        self.console_in = null;
     }
 
     /// Replaces the top level that imports `(sucheme core)` with one that imports
@@ -282,6 +288,10 @@ pub const Interpreter = struct {
         const previous_sink = self.ctx.console.sink;
         self.ctx.console.sink = self.console_out orelse out;
         defer self.ctx.console.sink = previous_sink;
+        // コンソールの入力ポートも、実行の間だけ、この読み手から読む。
+        const previous_input = self.ctx.heap.console_input;
+        self.ctx.heap.console_input = self.console_in;
+        defer self.ctx.heap.console_input = previous_input;
         var r: reader.Reader = .init(source);
         // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
         // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
@@ -2180,7 +2190,11 @@ fn expectLinePrints(interp: *Interpreter, line: []const u8, output: []const u8) 
     defer arena.deinit();
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try interp.evalPrint(arena.allocator(), line, &w);
+    interp.evalPrint(arena.allocator(), line, &w) catch |e| {
+        // 落ちた行と、その誤りの説明を出す。どのケースかが、テストの名前だけでは分からない。
+        std.debug.print("{s}\n  failed with: {s}\n", .{ line, interp.diagnostic() });
+        return e;
+    };
     try std.testing.expectEqualStrings(output, w.buffered());
 }
 
@@ -3073,4 +3087,137 @@ test "reads that cross an end of a file port's buffer give what the file holds" 
     for (0..100) |_| try lines.appendSlice(a, try repeated(a, 79, "\n"));
     try tree.write("lines.txt", lines.items);
     try expectLinePrints(&interp, try withFileName(a, &tree, "lines.txt", "(call-with-input-file {s} (lambda (p) (let loop ((n 0) (bad 0)) (let ((x (read-line p))) (if (eof-object? x) (list n bad) (loop (+ n 1) (if (= (string-length x) 79) bad (+ bad 1))))))))"), "(100 0)\n");
+}
+
+/// `n` spaces followed by `tail`.
+fn spaced(a: std.mem.Allocator, n: usize, tail: []const u8) ![]const u8 {
+    const out = try a.alloc(u8, n + tail.len);
+    @memset(out[0..n], ' ');
+    @memcpy(out[n..], tail);
+    return out;
+}
+
+test "read takes the data of a file across the end of the port's buffer" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const size = @import("prim/port.zig").file_buffer_size;
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try initWithFileTable(&interp, &tree, stress);
+        defer interp.deinit();
+        try expectLinePrints(&interp, "(import (scheme file) (scheme read))", "");
+        const all = "(call-with-input-file {s} (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))";
+        // 識別子、多バイトの識別子、文字列、リストが、それぞれ境目をまたぐ。
+        for ([_]usize{ size - 3, size - 1, size, size + 1 }) |n| {
+            try tree.write("r.txt", try spaced(a, n, "abcdef λμν \"string\" (1 2 3) end"));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "r.txt", all), "(abcdef |λμν| \"string\" (1 2 3) end)\n");
+        }
+        // `#` で始まるトークンは、切れると `Incomplete` でなく、ほかの構文の誤りになりうる。
+        // 満杯のバッファの終わりで切れても、読み足して読み直す。
+        const hashed = "#t #true #(1) #x1F #u8(1) #e1.5 #\\x41 #\\newline";
+        const hashed_out = "(#t #t #(1) 31 #u8(1) 3/2 #\\A #\\newline)\n";
+        for (0..12) |shift| {
+            try tree.write("h.txt", try spaced(a, size - 1 - shift, hashed));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "h.txt", all), hashed_out);
+        }
+        // 多バイト文字が、バッファの終わりで割れる。2バイトの `λ` は size - 2 個の空白のあとで、
+        // 3バイトの `あ` は size - 3 個と size - 2 個の空白のあとで割れる。size - 1 個は割れない対照。
+        for ([_]struct { usize, []const u8, []const u8 }{
+            .{ size - 2, "(λ 1)", "((|λ| 1))\n" },
+            .{ size - 1, "(λ 1)", "((|λ| 1))\n" },
+            .{ size - 3, "(あ 1)", "((|あ| 1))\n" },
+            .{ size - 2, "(あ 1)", "((|あ| 1))\n" },
+        }) |c| {
+            try tree.write("m.txt", try spaced(a, c[0], c[1]));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "m.txt", all), c[2]);
+        }
+        // ファイルが文字の途中で終わるときも、読めないバイトと同じく `read-error` である。
+        const twice = "(call-with-input-file {s} (lambda (p) (let ((x (guard (c ((read-error? c) (error-object-message c))) (read p)))) (list x (guard (c ((read-error? c) (error-object-message c))) (read p))))))";
+        try tree.write("e1.txt", "abc\xe3\x81");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e1.txt", twice), "(\"invalid UTF-8 input in read\" \"invalid UTF-8 input in read\")\n");
+        try tree.write("e2.txt", "(a) \xc3\xa9\xe3\x81");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e2.txt", twice), "((a) \"invalid UTF-8 input in read\")\n");
+        try tree.write("e3.txt", "(a \xe3");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e3.txt", twice), "(\"invalid UTF-8 input in read\" \"invalid UTF-8 input in read\")\n");
+        try tree.write("e4.txt", "(a)\xe3");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "e4.txt", twice), "((a) \"invalid UTF-8 input in read\")\n");
+        // 行をまたぐブロックコメントは、境目の前後でも、1つの空白である。
+        for ([_]usize{ size - 6, size - 3, size }) |n| {
+            try tree.write("b.txt", try spaced(a, n, "#| a\n b |# x"));
+            try expectLinePrints(&interp, try withFileName(a, &tree, "b.txt", all), "(x)\n");
+        }
+        // コメントと空白だけで手元が尽きても、続きのデータを読む。
+        try tree.write("c.txt", try std.mem.concat(a, u8, &.{ "; comment\n", try spaced(a, size, "\nlast") }));
+        try expectLinePrints(&interp, try withFileName(a, &tree, "c.txt", all), "(last)\n");
+        // 1行がバッファより長い行コメントと、バッファの数倍の長さのデータは、バッファを伸ばして
+        // 読む(suchi/sucheme-zig#230 の決定)。読んだあとのデータも続けて読める。
+        const long_comment = try a.alloc(u8, 2 * size);
+        @memset(long_comment, 'x');
+        long_comment[0] = ';';
+        try tree.write("lc.txt", try std.mem.concat(a, u8, &.{ long_comment, "\nafter" }));
+        try expectLinePrints(&interp, try withFileName(a, &tree, "lc.txt", all), "(after)\n");
+        var list: std.ArrayList(u8) = .empty;
+        try list.append(a, '(');
+        for (0..3 * size / 5) |i| try list.print(a, "{d:0>4} ", .{i % 10000});
+        try list.appendSlice(a, ") tail");
+        try tree.write("ld.txt", list.items);
+        const count = try std.fmt.allocPrint(a, "({d} tail)\n", .{3 * size / 5});
+        try expectLinePrints(&interp, try withFileName(a, &tree, "ld.txt", "(call-with-input-file {s} (lambda (p) (let* ((x (read p)) (y (read p))) (list (length x) y))))"), count);
+        // 空白とコメントだけの残りは、EOF を返すときに読み終えたことになり、続く文字の読みも EOF である。
+        try tree.write("s.txt", "  ; c\n");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "s.txt", "(call-with-input-file {s} (lambda (p) (let ((x (read p))) (list (eof-object? x) (eof-object? (read-char p))))))"), "(#t #t)\n");
+        // `#!fold-case` は、ファイルのポートでも次の `read` に残る。
+        try tree.write("f.txt", "#!fold-case ABC\nDEF");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "f.txt", all), "(abc def)\n");
+        // 読めないバイトは、データがそこに掛かったときに `read-error` になる。その前のデータは読める。
+        try tree.write("u.txt", "(a) \xff b");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "u.txt", "(call-with-input-file {s} (lambda (p) (let ((x (read p))) (list x (guard (c ((read-error? c) (error-object-message c))) (read p))))))"), "((a) \"invalid UTF-8 input in read\")\n");
+        try tree.write("t.txt", "ab\xffc");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "t.txt", "(call-with-input-file {s} (lambda (p) (guard (c ((read-error? c) 'read)) (read p))))"), "read\n");
+        // 閉じていないリストは、ファイルの終わりで `read-error` になる。
+        try tree.write("i.txt", "(1 2");
+        try expectLinePrints(&interp, try withFileName(a, &tree, "i.txt", "(call-with-input-file {s} (lambda (p) (guard (c ((read-error? c) (error-object-message c))) (read p))))"), "\"unexpected end of input in read\"\n");
+    }
+}
+
+test "slow: read takes a datum many times longer than the buffer of a file port" {
+    try tier.slow();
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Why: バッファを倍ずつ伸ばすので、読み直しはデータの長さの対数の回数で済む。数メガバイトの
+    // データで、読み直しの回数が長さに比例しない(倍に伸ばさない形に戻ると、この規模で遅くなる)
+    // ことと、伸ばしたバッファでも正しく読めることを見る。縮小版は、バッファの数倍のデータで
+    // 層1 にある("read takes the data of a file across the end of the port's buffer")。
+    const n = 1 << 19;
+    var list: std.ArrayList(u8) = .empty;
+    try list.append(a, '(');
+    for (0..n) |i| try list.print(a, "{d} ", .{i % 1000});
+    try list.appendSlice(a, ") tail");
+    try tree.write("big.txt", list.items);
+    var interp: Interpreter = undefined;
+    try initWithFileTable(&interp, &tree, false);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme file) (scheme read))", "");
+    const expected = try std.fmt.allocPrint(a, "({d} tail)\n", .{n});
+    try expectLinePrints(&interp, try withFileName(a, &tree, "big.txt", "(call-with-input-file {s} (lambda (p) (let* ((x (read p)) (y (read p))) (list (length x) y))))"), expected);
+}
+
+test "slow: reading many small data from one large string port costs in proportion to their number" {
+    try tier.slow();
+    // Why: `read` が呼ぶたびに手元の全体を検査していたとき、この規模では数分かかった(5l の
+    // 査読で見つかった)。今は、読んだ分に比例する。
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme read))", "");
+    try expectLinePrints(&interp, "(define (make-input n) (let ((p (open-output-string))) (let loop ((i 0)) (if (< i n) (begin (write-string \"(a 1) \" p) (loop (+ i 1))))) (get-output-string p)))", "");
+    try expectLinePrints(&interp, "(let ((p (open-input-string (make-input 100000)))) (let loop ((k 0)) (if (eof-object? (read p)) k (loop (+ k 1)))))", "100000\n");
 }

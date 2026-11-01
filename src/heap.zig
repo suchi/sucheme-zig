@@ -583,6 +583,12 @@ pub const Heap = struct {
     /// の合意を求める点の4)。`deinit` も同じ経路を通るので、終了のときに開いたままの
     /// ファイルも閉じる。
     files: ?FileHost = null,
+    /// Where the console's input port reads from, while a program runs, or null when
+    /// the console has no input: standard input (src/main.zig), or nothing (WASM).
+    /// Why: コンソールの入力ポートは、REPL が行を読むのと同じ読み手から読む
+    /// (suchi/sucheme-zig#230 の決定)。ポートの読み書き(src/port.zig)はヒープを受け取るので、
+    /// ここから届く。`Interpreter` が実行の間だけ置く。
+    console_input: ?*std.Io.Reader = null,
     /// Whether the next boundary between steps collects, whatever the threshold.
     /// Why: ファイルを開くときに記述子が尽きたら、回収で閉じられるポートがあれば開き直せる
     /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の4)。プリミティブの途中では
@@ -871,6 +877,28 @@ pub const Heap = struct {
         cell.value = .{ .direction = direction, .element = element, .open = false, .backing = .{ .file = .{ .id = 0, .buffer = buffer } } };
         self.link(Port, cell, total);
         return &cell.value;
+    }
+
+    /// Gives the file input port `port` a buffer of `capacity` bytes, keeping the bytes
+    /// it has not read, which move to the start.
+    /// Why: `read` は、1つのデータがバッファより長いときだけ、バッファを伸ばし、戻るときに
+    /// 元の大きさに戻す(suchi/sucheme-zig#230 の決定)。伸ばす分は上限に数え、新しい領域を先に
+    /// 確保するので、失敗したときは、ポートも計上も元のままである。`capacity` は、読んでいない
+    /// 分より小さくてはならない。
+    pub fn resizeFileBuffer(self: *Heap, port: *Port, capacity: usize) Error!void {
+        std.debug.assert(port.direction == .input);
+        const file = &port.backing.file;
+        const unread = file.len - file.pos;
+        std.debug.assert(capacity >= unread);
+        if (capacity > file.buffer.len) try self.reserve(.limit, capacity - file.buffer.len);
+        const new = try self.backing.alloc(u8, capacity);
+        @memcpy(new[0..unread], file.buffer[file.pos..file.len]);
+        self.accounted = self.accounted - file.buffer.len + capacity;
+        if (self.accounted > self.peak) self.peak = self.accounted;
+        self.backing.free(file.buffer);
+        file.buffer = new;
+        file.pos = 0;
+        file.len = unread;
     }
 
     /// A new open textual port on the console's stream `stream`: an input port for
@@ -2917,6 +2945,30 @@ test "closing a file input port writes nothing" {
     heap.closeFile(p);
     try std.testing.expectEqual(0, recording.written.items.len);
     try std.testing.expectEqualSlices(u32, &.{3}, recording.closed.items);
+}
+
+test "resizing the buffer of a file input port keeps what it has not read, and accounts for the new size" {
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = cellBytes(Port) + 16 });
+    defer heap.deinit();
+    const p = try heap.createFilePort(.input, .textual, 8);
+    const file = &p.backing.file;
+    @memcpy(file.buffer, "abcdefgh");
+    file.len = 8;
+    file.pos = 3;
+    try heap.resizeFileBuffer(p, 16);
+    try std.testing.expectEqual(16, file.buffer.len);
+    try std.testing.expectEqualStrings("defgh", file.buffer[file.pos..file.len]);
+    try std.testing.expectEqual(0, file.pos);
+    try std.testing.expectEqual(cellBytes(Port) + 16, heap.accounted);
+    // 上限を超える伸長は断られ、ポートも計上も元のままである。
+    try std.testing.expectError(error.HeapLimit, heap.resizeFileBuffer(p, 17));
+    try std.testing.expectEqual(16, file.buffer.len);
+    try std.testing.expectEqual(cellBytes(Port) + 16, heap.accounted);
+    // 縮めると、計上も戻る。
+    try heap.resizeFileBuffer(p, 5);
+    try std.testing.expectEqual(5, file.buffer.len);
+    try std.testing.expectEqualStrings("defgh", file.buffer[0..file.len]);
+    try std.testing.expectEqual(cellBytes(Port) + 5, heap.accounted);
 }
 
 test "a file port is held to the limit by its buffer, and a failure leaves the account as it was" {
