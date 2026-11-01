@@ -1664,6 +1664,45 @@ test "slow: a million tail calls through apply keep the continuation at the same
     try std.testing.expectEqual(depths[0], depths[1]);
 }
 
+/// The deepest the continuation gets while a loop of `short` and then of
+/// `long` calls through `eval` runs, for each of the two.
+fn evalLoopDepths(f: *Fixture, short: usize, long: usize) ![2]usize {
+    // R7RS 3.5: `eval` は第1引数を末尾の位置にあるかのように評価する。データの中の
+    // 呼び出しが、`eval` の継続のもとで走ることを、深さで確かめる。
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (eval (list 'loop (- n 1)) (interaction-environment))))");
+    var depths: [2]usize = undefined;
+    for ([_]usize{ short, long }, 0..) |n, i| {
+        var src: [64]u8 = undefined;
+        f.machine.peak_depth = 0;
+        const done = try f.eval(try std.fmt.bufPrint(&src, "(loop {d})", .{n}));
+        try std.testing.expectEqualStrings("done", f.ctx.heap.symbols.nameOf(done.asSymbol().?));
+        depths[i] = f.machine.peak_depth;
+    }
+    return depths;
+}
+
+test "eval evaluates its datum in tail position, so a loop through eval does not grow the continuation" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    const depths = try evalLoopDepths(&f, 10, 3000);
+    try std.testing.expectEqual(depths[0], depths[1]);
+    // 対照: `eval` の値を使う、末尾でないループは、回数に比例して深くなる。
+    _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (eval (list 'count (- n 1)) (interaction-environment)))))");
+    f.machine.peak_depth = 0;
+    try f.expectInt(3000, "(count 3000)");
+    try std.testing.expect(f.machine.peak_depth >= 3000);
+}
+
+test "slow: a million tail calls through eval keep the continuation at the same depth" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    const depths = try evalLoopDepths(&f, 10, 1_000_000);
+    try std.testing.expectEqual(depths[0], depths[1]);
+}
+
 /// 生きているデータは収まり、1周ごとのごみを周回の回数ぶんためると収まらない上限。
 /// `(nest n l)` のリストは、1段ごとにペア2個を持つ。`(apply apply l)` は1周ごとに引数の
 /// 鎖のノードを3個(`apply` と、リストの2要素)確保する。
