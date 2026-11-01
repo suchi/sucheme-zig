@@ -22,9 +22,9 @@
 | `(scheme r5rs)` | 0 | 222 |
 | `(scheme read)` | 1 | 1 |
 | `(scheme repl)` | 0 | 1 |
-| `(scheme time)` | 0 | 3 |
+| `(scheme time)` | 3 | 3 |
 | `(scheme write)` | 4 | 4 |
-| 一意の識別子の合計 | 328 | 339 |
+| 一意の識別子の合計 | 331 | 339 |
 
 ## 準拠スイートの結果
 
@@ -54,7 +54,7 @@
 | 6.13 Input and output | 63 | 0 | 0 | 0 | 0 | 0 |
 | Read syntax | 93 | 0 | 0 | 0 | 0 | 0 |
 | Numeric syntax | 200 | 0 | 10 | 0 | 0 | 0 |
-| 6.14 System interface | 9 | 0 | 0 | 0 | 4 | 0 |
-| 合計 | 1188 | 18 | 10 | 0 | 8 | 0 |
+| 6.14 System interface | 13 | 0 | 0 | 0 | 0 | 0 |
+| 合計 | 1192 | 18 | 10 | 0 | 4 | 0 |
 
-スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme time)` `(scheme eval)` `(scheme r5rs)`
+スイートが `import` するライブラリのうち、解決できなかったもの: `(scheme eval)` `(scheme r5rs)`
