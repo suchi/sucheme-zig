@@ -804,6 +804,9 @@ pub const PrimitiveError = error{
     /// 機械は、`read-error?` が真になる条件に写す(R7RS 6.11)。読めない理由の文言は、
     /// プリミティブが `Services.reason` に置く。
     Unreadable,
+    /// What the host gave is not valid UTF-8, so it cannot be a string (R7RS 6.14
+    /// `get-environment-variable`).
+    InvalidUtf8,
     /// The host could not take what was written to the console.
     /// 条件にならない。機械はそのまま返す(WASM の出力バッファが満杯のときなど)。
     WriteFailed,
@@ -889,8 +892,8 @@ pub const Primitive = struct {
 };
 
 /// The operations of the machine that a primitive can name as its body.
-/// 段階2の機械操作プリミティブはすべて変種になっている。`eval` と `exit` は
-/// 段階5で、それを入れるスライスが足す(docs/design/runtime.md)。
+/// 段階2の機械操作プリミティブはすべて変種になっている。`exit` はスライス 5m が足した。
+/// `eval` は段階5で、それを入れるスライスが足す(docs/design/runtime.md)。
 pub const MachineOp = enum {
     /// `(apply proc arg1 ... args)` (R7RS 6.10).
     apply,
@@ -920,6 +923,12 @@ pub const MachineOp = enum {
     /// `(features)` (R7RS 6.14): the feature identifiers of the build, as a new list of
     /// symbols.
     features,
+    /// `(exit)` and `(exit obj)` (R7RS 6.14): runs the `after` of every
+    /// `dynamic-wind` it is in, and ends the run with `error.Exited`.
+    exit,
+    /// `(emergency-exit)` and `(emergency-exit obj)` (R7RS 6.14): ends the run with
+    /// `error.Exited` at once, calling no `after`.
+    emergency_exit,
 };
 
 /// A procedure made by `lambda`: what the expression means, and the frame it was
@@ -1440,6 +1449,9 @@ pub const Rewind = struct {
     /// The innermost point that the dynamic state of the invocation and of
     /// the target have in common.
     ancestor: ?*const DynPoint,
+    /// Whether the rewind is for `exit`, which ends the run instead of raising
+    /// when it reaches the outermost continuation; `target` is then null.
+    exiting: bool = false,
 };
 
 /// One link of the path a rewind enters: the wind points from the common

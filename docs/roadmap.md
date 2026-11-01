@@ -171,7 +171,7 @@
 - [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 - [ ] ファイルを読むときのリーダの作業領域(未閉じの括弧ごとの枠)を、ヒープの上限に計上する。今は計上の外にあり、ファイルの大きさの上限(`max_file_bytes` の 1 MiB)で最悪の場合を抑えている([design/open-questions.md](design/open-questions.md) の「ライブラリの表と `import` の作業領域が、ヒープの上限の外にある」)。段階3から送った(2026-10-23 にユーザーが承認した)。スライス未割り当て
-- [ ] ネイティブの `current-error-port` を、標準出力と分けて標準エラーに書く。5i では、標準出力と同じ書き先に書く(既知の制限。[plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5i の中身)。`evalPrint` にエラーの書き手を足す変更になる。WASM は段階5では分けない(同じ計画書の「ホスト側のインポートの設計」)。割り当て先の案は 5m である。`evalPrint` にエラーの書き手を足す変更は、5m がファイルの実行の終了の経路で触る `src/main.zig` と `src/sucheme.zig` と同じ場所に当たる(5j の PR で書いた案で、決めるのは親のセッションである)。スライス未割り当て
+- [ ] ネイティブの `current-error-port` を、標準出力と分けて標準エラーに書く。5i では、標準出力と同じ書き先に書く(既知の制限。[plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5i の中身)。`evalPrint` にエラーの書き手を足す変更になる。WASM は段階5では分けない(同じ計画書の「ホスト側のインポートの設計」)。スライス 5t に割り当てた([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の「標準エラーの分離の割り当て」)
 
 完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` ディレクティブが入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。[design/runtime.md](design/runtime.md) の例外の節の事例12(`exit` と `dynamic-wind`)が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
 

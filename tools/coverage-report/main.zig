@@ -116,7 +116,7 @@ pub fn main(init: std.process.Init) !void {
     // ディレクトリの順序はホストごとに違う。ソートして出力を安定させる。
     std.mem.sort(Library, libs.items, {}, libraryLessThan);
 
-    const suite = try runVendoredSuite(gpa, io, cwd, err, libs.items);
+    const suite = try runVendoredSuite(gpa, io, init.environ_map, cwd, err, libs.items);
 
     var report: std.Io.Writer.Allocating = .init(gpa);
     try render(gpa, &report.writer, libs.items);
@@ -154,6 +154,7 @@ fn staleHelp(err: *std.Io.Writer) !void {
 fn runVendoredSuite(
     gpa: std.mem.Allocator,
     io: std.Io,
+    variables: ?*const std.process.Environ.Map,
     cwd: std.Io.Dir,
     err: *std.Io.Writer,
     libs: []const Library,
@@ -166,7 +167,7 @@ fn runVendoredSuite(
     };
     var required: std.ArrayList([]const u8) = .empty;
     for (libs) |lib| try required.appendSlice(gpa, lib.ids);
-    return conformance.runVendored(gpa, io, text, required.items) catch |e| {
+    return conformance.runVendored(gpa, io, variables, text, required.items) catch |e| {
         if (e == error.NotVendored) {
             try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ path, &conformance.hexDigest(text), conformance.suite_sha256 });
             try err.flush();

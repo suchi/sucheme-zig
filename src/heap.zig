@@ -589,6 +589,16 @@ pub const Heap = struct {
     /// (suchi/sucheme-zig#230 の決定)。ポートの読み書き(src/port.zig)はヒープを受け取るので、
     /// ここから届く。`Interpreter` が実行の間だけ置く。
     console_input: ?*std.Io.Reader = null,
+    /// The command line of the program, which `command-line` gives (R7RS 6.14): the
+    /// name of the program and then its arguments, each valid UTF-8.
+    /// `Interpreter` が実行の間だけ置く。UTF-8 の検査は、置く側が済ませる(ネイティブは
+    /// 起動時に src/main.zig が、WASM は `sucheme_set_command_line` が行う)。
+    command_line: []const []const u8 = &.{"sucheme"},
+    /// The variables of the process's environment that `get-environment-variable`
+    /// reads, or null when the program has none (WASM).
+    /// 値が UTF-8 かは、読むときに検査する(docs/design/platform-and-web.md の検証の表)。
+    /// `Interpreter` が実行の間だけ置く。
+    process_environ: ?*const std.process.Environ.Map = null,
     /// Whether the next boundary between steps collects, whatever the threshold.
     /// Why: ファイルを開くときに記述子が尽きたら、回収で閉じられるポートがあれば開き直せる
     /// (docs/plans/0019-phase5-ports-and-io.md の合意を求める点の4)。プリミティブの途中では

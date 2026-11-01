@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     const required = try readRequired(gpa, io, cwd, err);
-    const result = run.runVendored(gpa, io, text, required) catch |e| {
+    const result = run.runVendored(gpa, io, init.environ_map, text, required) catch |e| {
         if (e == error.NotVendored) {
             try err.print("{s} has SHA-256 {s}, not the vendored {s}\nthe vendored file must not be modified (tests/vendor/README.md)\n", .{ suite_path, &run.hexDigest(text), run.suite_sha256 });
             try err.flush();

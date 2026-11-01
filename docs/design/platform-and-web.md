@@ -64,9 +64,9 @@ sucheme_version_len() -> u32
 上の一覧は設計の目標である。段階2まで(`src/wasm.zig`)で実装しているのは、次の部分集合である。
 
 - 状態コードを返すもの: `sucheme_init`、`sucheme_eval_begin`、`sucheme_reset`
-- 状態コードを返さないもの: `sucheme_alloc`、`sucheme_free`、`sucheme_output_ptr`、`sucheme_output_len`、`sucheme_output_clear`、`sucheme_version_ptr`、`sucheme_version_len`
+- 状態コードを返さないもの: `sucheme_alloc`、`sucheme_free`、`sucheme_output_ptr`、`sucheme_output_len`、`sucheme_output_clear`、`sucheme_version_ptr`、`sucheme_version_len`、`sucheme_set_command_line`、`sucheme_exit_code`
 
-`sucheme_step`、`sucheme_provide_input`、`sucheme_provide_eof`、`sucheme_set_command_line`、`sucheme_exit_code` は、まだ無い。`web/sucheme.js` もこれらを呼ばない。`sucheme_eval_begin` は、入力の式をすべて、完了まで同期して評価してから戻る。戻す値は 0、-1、-2、-3、-4、-5、-8 のどれかで、1(継続)、2(入力待ち)、-6(`exit`)は戻さない。再開可能な機械は、段階8の「`read` による対話」と「処理の中断」で入れる([roadmap](../roadmap.md)、[plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md) の合意を求める点の1)。`sucheme_set_command_line` と `sucheme_exit_code` は、`command-line` と `exit` が入る段階5で足す。以下の状態コードと再開可能性の記述は、この完全な設計の契約であり、現状で実現しているのは上の部分集合に限る。
+`sucheme_step`、`sucheme_provide_input`、`sucheme_provide_eof` は、まだ無い。`web/sucheme.js` もこれらを呼ばない。`sucheme_eval_begin` は、入力の式をすべて、完了まで同期して評価してから戻る。戻す値は 0、-1、-2、-3、-4、-5、-6、-8 のどれかで、1(継続)と 2(入力待ち)は戻さない。再開可能な機械は、段階8の「`read` による対話」と「処理の中断」で入れる([roadmap](../roadmap.md)、[plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md) の合意を求める点の1)。`sucheme_set_command_line` と `sucheme_exit_code` は、スライス 5m で足した。`sucheme_set_command_line` は、空のバイト列で、処理系の名前だけの設定に戻す。`sucheme_alloc` の領域でない (ptr, len) と、写しを確保できないときも、0 を返して設定を変えない。`-6` のあとの `sucheme_eval_begin` は、`-2` のあとと同じく `-4` を返す。以下の状態コードと再開可能性の記述は、この完全な設計の契約であり、現状で実現しているのは上の部分集合に限る。
 
 文字列はすべて UTF-8 とする。文字列表現に UTF-8 を選んだ理由の一つがこの境界である。
 
@@ -80,7 +80,7 @@ sucheme_version_len() -> u32
 | --- | --- |
 | `sucheme_eval_begin` と `sucheme_provide_input` が受け取るバイト列 | 状態コード `-3` を返し、出力バッファに位置を示す説明を書く。インタプリタの状態は変えない |
 | `sucheme_set_command_line` が受け取るバイト列 | 0 を返して設定を変えない。出力バッファには書かない |
-| ネイティブのコマンドライン引数 | 起動時に検証し、不正なら標準エラーに説明を書いて非ゼロの終了コードで終わる。これは設計で、`command-line` が入る段階5で入れる。段階3までの `sucheme` は、引数を UTF-8 として検査せず、プログラムへの引数は渡せない。ファイルの実行(`sucheme prog.scm`)は、式の値を出さず、エラーは終了ステータス 1、読めないファイルは 66 で終わる(`src/main.zig` の doc コメントが正) |
+| ネイティブのコマンドライン引数 | 起動時に検証し、不正なら標準エラーに何番目の引数かを書いて、終了ステータス 64 で終わる(スライス 5m)。検査するのは、ファイルの実行で `(command-line)` に渡る引数(ファイルの名前とその後ろ)である。オプションと `-I` のディレクトリは Scheme の文字列にならないので検査しない(`src/main.zig` の doc コメントが正) |
 | ネイティブの標準入力(REPL の行読み取り、パイプ、リダイレクト) | 読んだ行を検証し、不正なら読み取りエラーとして報告してプロンプトに戻る。処理系は終了しない |
 | ネイティブの環境変数 | `get-environment-variable` と `get-environment-variables` の呼び出し時に検証する。単数形は条件オブジェクトを送出する。複数形は不正な項目を結果の alist から除く |
 | ファイルから読んだバイト列(テキストポート) | 下の表に従って報告する |
@@ -98,7 +98,7 @@ sucheme_version_len() -> u32
 
 `string->symbol` と `string-append` のように、既存の文字列から文字列を作る経路は検証しない。入力の時点で妥当なので構成上妥当である。`integer->char` はスカラ値の範囲を検査するので、不正なスカラ値から文字列が作られることはない。
 
-Windows では引数と環境変数が UTF-16 で渡される。Zig 0.17.0 はこれを WTF-8 に変換し、対になっていないサロゲートを3バイトで残す。この並びは `utf8ValidateSlice` が拒否するので、下の検査を通せば Scheme の文字列には入らない。標準ライブラリのソースの読解と Linux 上の単体テストで確かめた内容は [zig-api-notes.md](zig-api-notes.md) にあり、Windows 実機での実行は未確認である。引数が Scheme の文字列になる経路は `command-line` が入る段階5まで無いので、検査を足す位置はその段階で決める。
+Windows では引数と環境変数が UTF-16 で渡される。Zig 0.17.0 はこれを WTF-8 に変換し、対になっていないサロゲートを3バイトで残す。この並びは `utf8ValidateSlice` が拒否するので、下の検査を通せば Scheme の文字列には入らない。標準ライブラリのソースの読解と Linux 上の単体テストで確かめた内容は [zig-api-notes.md](zig-api-notes.md) にあり、Windows 実機での実行は未確認である。引数を検査する位置は、スライス 5m で、`src/main.zig` の `main` の、ファイルの実行に渡す前にした。環境変数は、上の表のとおり、呼び出し時に検査する(`src/prim/process.zig`)。
 
 妥当な UTF-8 でないものをすべて拒否する。判定は `std.unicode.utf8ValidateSlice` に委ね、自前で条件を列挙しない。列挙すると取りこぼす。実機で確認したところ、過長符号化(`0xC0 0x80`)、サロゲート符号位置の符号化、5バイト列、不完全な列、継続バイトの単独出現に加えて、`0xFE` と `0xFF` も `false` になる。後者2つは「過長」「サロゲート」「U+10FFFF 超過」のどれにも当てはまらないため、条件を数え上げる書き方では漏れる。
 
@@ -202,7 +202,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 
 `-8` を `-3` と分けるのは、原因がホスト側にあるためである。`-3` は妥当な UTF-8 でないバイト列、`-8` は確保していない領域を指す (ptr, len) である。`len` に UTF-8 のバイト長ではなく JavaScript の文字列長を渡す誤りは踏みやすく、`(display "αβγ")` は文字列長13・バイト長16なので末尾が切れる。切れた位置が多バイト文字の途中なら `-3` が返り、利用者には「入力が妥当な UTF-8 でない」と報告される。入力は妥当だったので誤った報告である。`len` を大きく渡した場合は確保済みの領域の外を読み、線形メモリの外に出ればトラップしてホストに状態コードが返らない。
 
-これを避けるため、`sucheme_alloc` が返した領域の先頭と長さを WASM 側で記録する。`sucheme_eval_begin` と `sucheme_provide_input` は、受け取った (ptr, len) が記録と一致するかを先に検査し、一致しなければ `-8` を返す。`sucheme_free` も同じ記録で長さの一致を検査する。記録は全ビルドで持つ。`Debug` ビルドだけにすると、本番で踏んだときにトラップになる。
+これを避けるため、`sucheme_alloc` が返した領域の先頭と長さを WASM 側で記録する。`sucheme_eval_begin` と `sucheme_provide_input` は、受け取った (ptr, len) が記録したどれかの領域の内側に収まるかを先に検査し、収まらなければ `-8` を返す。領域の一部分を渡すことは許す(長さ 0 はいつでも収まる。`src/wasm.zig` の `insideRegion`)。`sucheme_set_command_line` も同じ検査をし、収まらなければ 0 を返す。`sucheme_free` は同じ記録で、先頭と長さの一致を検査する。記録は全ビルドで持つ。`Debug` ビルドだけにすると、本番で踏んだときにトラップになる。
 
 読み取りの失敗(括弧の不均衡、不正な数値表記など)は状態コードではなく、`read-error?` が真になる条件オブジェクトで報告する。`sucheme_eval_begin` の入力に構文エラーがあれば未処理例外の経路を通って `-1` になり、説明が出力バッファに入る。`sucheme_provide_input` で与えた入力の構文エラーは、`read` の呼び出し位置で送出されるので `guard` で捕捉できる。ファイルポートからの読み取りと同じ扱いであり、入力元によって報告の形が変わらない。
 

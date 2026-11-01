@@ -25,7 +25,10 @@ const Value = value_mod.Value;
 /// 渡さず、`dynamic-wind` の `after` も呼ばずに、その形式を終える(計画書 0024)。
 /// ヒープの `HeapLimit` はこの集合に入れない。ヒープの確保を素の `try` で返すと
 /// コンパイルエラーになり、`heapFailure` を通して送出することを型が強いる。
-pub const Error = error{ OutOfMemory, Raised, ReserveExhausted, StepLimit, WriteFailed };
+/// `Exited` は、プログラムが `exit` か `emergency-exit` を呼んだことを表す(R7RS 6.14)。
+/// 終了コードは `Context.exit_code` にある。`exit` は、途中の `dynamic-wind` の `after` を
+/// すべて呼んでから返す(src/machine.zig)。
+pub const Error = error{ OutOfMemory, Raised, ReserveExhausted, StepLimit, WriteFailed, Exited };
 
 /// What the error is called when the heap cannot hold more.
 /// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。
@@ -84,6 +87,9 @@ pub const Context = struct {
     /// 何でも送出できるとする)。ヒープを指しうるので GC のルートであり(`mark`)、
     /// `clearDiagnostic` で空にするまで回収されない。
     raised: ?Value = null,
+    /// The exit code of the last `exit` or `emergency-exit`, which `error.Exited`
+    /// stands for (docs/design/platform-and-web.md, the table of `exit`).
+    exit_code: i32 = 0,
     /// Where in a file the expander was when it raised a value, and the value.
     /// 位置は、`raised` がその値であるときだけ意味を持つ(`raisedPosition`)。値も GC の
     /// ルートにする。回収された値の番地が新しい条件に使い回されると、無関係な位置を指すため
