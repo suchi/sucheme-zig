@@ -74,7 +74,7 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 | 5o `eval` と環境の値 | L3 | `(eval '(* 7 3) (environment '(scheme base)))` が `21`。`(eval '(define foo 32) (environment '(scheme base)))` が誤りを送出する。`interaction-environment` で定義した名前が REPL から見える。EOF の値と約束を `eval` で定数にするテストが通る | `src/machine.zig` の `MachineOp.eval`、`src/value.zig` の環境の値の型、`src/prim/eval.zig`(新規)、`lib/scheme/eval.sld` `repl.sld`(新規) | T3 | 3o のマージ、5m | 3o とは逐次 | 大 |
 | 5p `load` と `(scheme load)` | L3 | `(load "x.scm")` が探索ルートの中の `x.scm` を、指定の環境で評価する。ルートの外の名前を拒否する | `src/prim/eval.zig`、`src/resolve.zig` の第1類の入口、`lib/scheme/load.sld`(新規) | T2 | 5o | L2 と並行 | 小 |
 | 5q `(scheme r5rs)` | L3 | `(import (scheme r5rs))` が通り、`(eval '(+ 1 2) (scheme-report-environment 5))` が `3`。付録Aの全ライブラリが `import` できる | `lib/scheme/r5rs.sld`(新規)、`src/prim/eval.zig` の `null-environment` と `scheme-report-environment` | T2(輸出の転記は T1) | 5k、5l、5n、5p、0018 の `(scheme inexact)` `(scheme complex)` `(scheme char)` | 最後 | 小 |
-| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s、v0.4.0 の公開 | 最後 | 小 |
+| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s と 5t、v0.4.0 の公開 | 最後 | 小 |
 
 5e は、L2 が数の構文を足すスライスの名前として 0018 に渡す(下の「数の構文との順序」)。5f は欠番である。
 
@@ -91,13 +91,13 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 - 5h: `src/port.zig` に、ポートの読み書きの関数を置く(下の「署名」)。`src/prim/port.zig` に、`(scheme base)` のポートの手続きのうち、明示したポートを取るものと、文字列ポートとバイトベクタポートを作るものを置く。`call-with-port` は Scheme で書けるので、`lib/sucheme/procedures.scm` に置く(R7RS 6.13.1 の定義を原文で確かめる)。`read-bytevector!` は `requireMutable` を呼ぶ([runtime.md](../design/runtime.md) のリテラルの不変性)。
 - 5i: 標準入力、標準出力、標準エラーのポートを、`Interpreter` が作る。`current-input-port` `current-output-port` `current-error-port` は、パラメータオブジェクトである(R7RS 6.13.1)。既存の `make-parameter` の機構に載せる。ネイティブの出力は `evalPrint` が受け取る `std.Io.Writer` に、WASM の出力は既存の出力バッファに書く。WASM の出力バッファを計上の外に置く例外([ADR-0038](../adr/0038-wasm-entry-layer-allocations-outside-the-accounting.md))は変えない。プラットフォームの差は、[platform-and-web.md](../design/platform-and-web.md) のプラットフォーム抽象の形(`src/platform/native.zig` と `src/platform/wasm.zig` をコンパイル時に選ぶ)で置く。
   - 実施の結果(2026-10-28、親のセッションに諮って決めた): ネイティブも WASM も、コンソールの出力は `evalPrint` の書き手(ファイルの実行では `Interpreter.console_out` の標準出力)に直接書き、入力は最初から終わりにあるので、5i ではプラットフォームの差が無い。`src/platform/` は 5i では作らず、差が初めて出る 5k か 5n で作る。現在のポートのパラメータとコンソールのポートは `Context.console` が持ち、`%console-parameter` が最初に求められたときに作る。純粋プリミティブは `Services.console` と `Services.dyn` から現在のポートを引く。
-  - 既知の制限(5i): `current-error-port` への書き込みは、標準出力と同じ書き先に出る(ネイティブでも標準エラーに分けない)。分けるのは、`evalPrint` にエラーの書き手を足す変更で、まだどのスライスにも割り当てていない(スライス未割り当て)。`current-input-port` は最初から終わりにあり、ネイティブでも標準入力を読まない。この制限は 5l で解いた(合意を求める点の8。REPL では、REPL と同じ読み手の、まだ読んでいない行を読む)。ポートを省略した呼び出しは、動的点の鎖を根まで辿って現在のポートを引くので、関係の無い `parameterize` や `dynamic-wind` が深く重なるほど遅くなる(5i のレビューで見つかった)。速くするのは、まだどのスライスにも割り当てていない。
+  - 既知の制限(5i): `current-error-port` への書き込みは、標準出力と同じ書き先に出る(ネイティブでも標準エラーに分けない)。分けるのは、`evalPrint` にエラーの書き手を足す変更で、5t に割り当てた(「標準エラーの分離の割り当て」)。`current-input-port` は最初から終わりにあり、ネイティブでも標準入力を読まない。この制限は 5l で解いた(合意を求める点の8。REPL では、REPL と同じ読み手の、まだ読んでいない行を読む)。ポートを省略した呼び出しは、動的点の鎖を根まで辿って現在のポートを引くので、関係の無い `parameterize` や `dynamic-wind` が深く重なるほど遅くなる(5i のレビューで見つかった)。速くするのは、まだどのスライスにも割り当てていない。
 - 5j: プリンタを、`write`(循環にだけラベル)、`write-shared`(2回以上現れるペアとベクタすべてにラベル)、`write-simple`(ラベルなし)、`display`(循環にだけラベル)の4つの形にする。原文は R7RS 6.13.3 で、`display` は「must not loop forever on self-referencing pairs, vectors, or records」である。ラベルは、先に1回辿って、共有または循環しているオブジェクトを数え、2回目に書く。辿る表は計上の対象である。プリンタは今、作業スタックを `scratch`(計上の外)に置いているので、5j で計上つきの確保に移す。名前に ASCII でない文字を含むシンボルと、そのまま書くと別のデータとして読まれる名前(空白や括弧を含むもの、数として読めるもの)は、縦棒で囲んで書く(R7RS 6.13.3 の「Symbols that contain non-ASCII characters are escaped with vertical lines」)。数として読めるかの判定は、0018 の `scan` を呼ぶ(下の「署名」)。REPL が結果を書くのも `write` なので、循環した結果が止まらない問題も、ここで直る。名前が空のシンボルは `||` と書く。そのとき、リーダのファズの不変条件(書き出した長さが0でない)に 5b が置いた、名前が空のシンボルの例外を外す(`src/reader.zig` の `fuzzReadAll`)。
   - 実施の結果(2026-10-29、親のセッションに諮って決めた): 入口は `printer.print(out, heap, symbols, v, mode)` の1つで、`printer.write` と `printer.display` は無くした。表と作業スタックは `Heap.residentAllocator` で持ち、断られたら `HeapLimit` にする。中に値を持たない値は、表も作業スタックも使わない。ラベルを付けるのは、ペア、ベクタ、条件オブジェクト(irritant を書くので、条件を通る循環がありうる)で、番号は書く順に 0 から振り、一度書いたものは後の出現をすべて `#n#` と書く。縦棒で囲む名前は、リーダの `isIdentifier`(5j で `pub` にした)が受け付けない名前、`num.syntax.scan` が数とみなす名前、空の名前である。REPL の結果の書き出しで表の確保が断られたら、ヒープの上限の誤りになる。誤りの説明の値は、断られたらそこまでで切る。入口を1つにしたので、所有の外のテストの呼び出し(`src/core.zig` の `core.write` の引数と、`src/syntax/expand.zig`、`src/syntax/library.zig`、`src/syntax/rules.zig`、`src/machine.zig`、`src/reader.zig` のテスト)を新しい入口に替えた。`<infnan>` の綴りで始まる名前(`+NaN.0abc`)も縦棒で囲む。R7RS では識別子だが、準拠スイートが囲むことを求めるためである。
   - 査読の結果(2026-10-29): 挙動の担当が、cdr が循環した irritant のリストで書き出しが止まらないこと(ラベルの付くペアを `. #n=(...)` と書いて直した)と、上限の際で複素数を書くとプロセスが落ちること(数の書式の作業領域の断りを、`WriteFailed` でなく `HeapLimit` に戻して直した。5j で作業領域を上限に数えたことで入った退行だった)を見つけた。ライブラリの名前を書く `nameText` が上限の超過を「out of memory」にしていたのも直した。ラベルの表の値は 32 ビットに詰めた。ミューテーションの担当が見つけた、テストが固定していなかった判定は、単体テストを足して固定した。
 - 5k: ファイルポートを、[frontend.md](../design/frontend.md) のファイルを開く経路の第2類として、リゾルバを通して開く。探索ルートの制約はかけない。失敗は、`ConditionKind.file` の条件で送出する。WASM の扱いは frontend.md の表どおり(開く手続きと `delete-file` は `file-error`、`file-exists?` は `#f`)。閉じ忘れたファイルの扱いは、合意を求める点の4で決める。
 - 5l: `read` は、ポートの残りの入力を `Reader` に渡し、読めたデータの長さだけポートを進める。`Reader` の今の形(入力のスライス、`pos`、`fold_case`)で足り、`src/reader.zig` を変えない見込みである。ディレクティブで変わった `fold_case` は、読み終えたあとポートに書き戻す。ファイルとコンソールのポートでは、データの途中で入力のバッファが尽きたとき(`Incomplete`)、バッファに続きを足して、データの頭から読み直す。実装では、ファイルのポートのバッファを倍に伸ばすので、読み直しはデータの長さの対数の回数で済んだ(下の進捗の表の 5l の行)。読み直しをなくすのは、REPL の継続行の判定と同じく、段階7の差分読み取りの項目([roadmap.md](../roadmap.md))である。`reader.zig` の変更が要ると分かったら、L3 の担当は止めて、L2 に頼む([0017](0017-parallel-lanes.md) の引き継ぎの条件の2)。
-- 5m: `MachineOp` に `exit` を足す。未処理例外と同じ巻き戻しの経路で最外まで戻り、途中の `after` を呼ぶ([runtime.md](../design/runtime.md) の未処理例外と、必要なフレームの種類の「`exit` の巻き戻し」)。最外に着いたら、終了の値を持って、`error.Raised` と別の Zig の誤り(名前は 5m で決める)で機械の外へ出る。`emergency-exit` は、純粋プリミティブとして、巻き戻さずに同じ誤りを返す。`exit` の値から終了コードへの変換は [platform-and-web.md](../design/platform-and-web.md) の表どおり。`sucheme prog.scm` の後ろの引数を、今の 64 での拒否から、`command-line` に渡す形に変える(`src/main.zig` の doc コメントの表を直す)。引数と環境変数を UTF-8 として検査する位置は、platform-and-web.md の未決の記述どおり、このスライスで決める。WASM は `sucheme_set_command_line` と `sucheme_exit_code` を足し、`exit` で -6 を返す。環境変数は空として扱う。
+- 5m: `MachineOp` に `exit` を足す。未処理例外と同じ巻き戻しの経路で最外まで戻り、途中の `after` を呼ぶ([runtime.md](../design/runtime.md) の未処理例外と、必要なフレームの種類の「`exit` の巻き戻し」)。最外に着いたら、終了の値を持って、`error.Raised` と別の Zig の誤り(名前は 5m で決める)で機械の外へ出る。`emergency-exit` は、巻き戻さずに同じ誤りを返す(5m で、終了コードを運ぶ口を増やさないよう、機械操作プリミティブにした)。`exit` の値から終了コードへの変換は [platform-and-web.md](../design/platform-and-web.md) の表どおり。`sucheme prog.scm` の後ろの引数を、今の 64 での拒否から、`command-line` に渡す形に変える(`src/main.zig` の doc コメントの表を直す)。引数と環境変数を UTF-8 として検査する位置は、platform-and-web.md の未決の記述どおり、このスライスで決める。WASM は `sucheme_set_command_line` と `sucheme_exit_code` を足し、`exit` で -6 を返す。環境変数は空として扱う。
 - 5n: `current-jiffy` と `jiffies-per-second` は正確な整数(固定長整数で足りる)、`current-second` は不正確な数である(R7RS 6.14)。`current-second` は 0018 の浮動小数点数が入ってから足す。それまでに 5n を始めるなら、`current-jiffy` と `jiffies-per-second` だけを先に入れ、`(scheme time)` の `.sld` は `current-second` が入ってから置く。TAI は、R7RS が許す「UTC に定数を足したもの」で返す。足す定数の値と出典(IERS の公表値)は、5n の着手時に一次情報で確かめる(未確認)。WASM の import の形は、合意を求める点の2で決める。ネイティブの時計の API(Zig 0.17.0 の `std.Io.Clock` の種類)は、5n の着手時に標準ライブラリのソースで確かめ、[zig-api-notes.md](../design/zig-api-notes.md) に足す(未確認)。
 - 5o: 環境の値(`environment` が返す指定子)のヒープの型を足し、`MachineOp` に `eval` を足す。`eval` は、データを指定の環境で展開し、できた節点を `eval` の継続のもとで、末尾の位置として評価する(R7RS 3.5)。`environment` は、空の環境に輸入集合を `import` した、変更できない環境を作る(R7RS 6.12)。環境の表の形と、展開した節点の置き場所は、3o の結果に従う。3o の前に `eval` を入れると、`eval` を繰り返すループが、計上の外の節点を際限なく積む。roadmap の、`Expander.constant` の EOF の値と約束の分岐を Scheme から通すテストは、`(eval (list 'quote (eof-object)) ...)` の形で書く。
 - 5p: `load` は第1類の経路で、探索ルートの制約をかける([frontend.md](../design/frontend.md))。読み込んだ式は、5o の機構で、指定の環境(省略時は `interaction-environment`)で順に評価する。
@@ -147,6 +147,7 @@ flowchart TD
     s5p["5p load"]
     s5q["5q r5rs"]
     s5r["5r v0.5.0"]
+    s5t["5t 標準エラーの分離"]
     s5a --> s5b --> s5c --> s5d
     o3 --> s5d
     s5c --> s5e
@@ -170,7 +171,7 @@ flowchart TD
     s5n --> s5q
     s5p --> s5q
     nl --> s5q
-    s5q --> s5r
+    s5q --> s5t --> s5r
     s5d --> s5r
     s5j --> s5r
 ```
@@ -472,6 +473,17 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 - 規模の根拠: 5d で、読む経路に位置を渡す形(`source.readDataFrom`)ができている。`library.zig` の2つの読み手が、同じ形でファイルの名前を渡せば足りる見込みである。見込みで、`library.zig` の読み手を確かめて決めたものではない。
 - `tests/scheme` の番号は、5d の範囲(0530 から 0539)の残りを使う。ハーネスはファイルの名前を渡さないので、位置の確かめは単体テストで行う見込みである。
 
+## 標準エラーの分離の割り当て
+
+5i は、ネイティブの `current-error-port` への書き込みを、標準出力と同じ書き先に書く(5i の既知の制限)。分けるには、`evalPrint` にエラーの書き手を足し、`Interpreter` の API を変える。5j の PR で、割り当て先の案を 5m とした(5m がファイルの実行の終了の経路で、同じ `src/main.zig` と `src/sucheme.zig` を触るため)。5m の着手のときに、親のセッションが、5m に含めず、単独のスライスにすると決めた(2026-11-01)。5m がすでに機械と `src/main.zig` と `src/wasm.zig` に跨っており、`Interpreter` の API の変更は単独で査読したほうが見やすいためである。
+
+| スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 5t 標準エラーの分離 | L3 | ネイティブの `(write-string "x" (current-error-port))` が標準エラーに出て、標準出力には出ない。REPL とファイルの実行の両方で、結果の出力とエラーの出力の順序が端末で崩れない。`evalPrint` にエラーの書き手を足す変更の自前の査読が収束している。WASM は分けない(「ホスト側のインポートの設計」) | `src/sucheme.zig`(`evalPrint` とコンソールの配線。L0 の所有なので、触れる範囲を着手の前に親が確かめる)、`src/main.zig`、`src/port.zig` のコンソールの書き先、それを呼ぶテストのハーネス | T2 | 5q のマージ | 5r の前 | 小 |
+
+- 名前: 5s は「位置情報の残りの割り当て」の L2 のスライスが使っているので、次の 5t にする。
+- 段階5の完了(5r)の前提に 5t を加えた。
+
 ## 合意のあとにやること
 
 - roadmap の段階5の項目を、入っているもの(`#u8`、16進のエスケープ)が分かる形に直し、位置情報の副表の「スライス未割り当て」を 5d に替える。
@@ -493,13 +505,14 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5i | マージ済み(2026-10-29)。実績は、PR を開いてから ready まで約3時間20分、ready からマージまで約17時間(ユーザーの判断の待ちを含む)。コンソールのポート(`Port.Backing` の `console`)と、`current-input-port` `current-output-port` `current-error-port` のパラメータ(`Context.console`、`%console-parameter`)。ポートを省略した手続きは、呼び出しの動的点での現在のポートを使う。`display` を `(scheme write)` に置き、署名の節の `writer` にあたる `port.Writer`(プリンタがポートに直接書く書き手)を、5j より先にここで入れた(作業領域に全体を写すと、計上の外に大きく確保するため)。コンソールへの書き込みの失敗は、条件にせず `WriteFailed` で機械の外へ返す。ファイルの実行は、式の値を捨て、プログラムの出力を標準出力に書く(`Interpreter.console_out`)。標準出力に書けなければ、`error: cannot write to standard output` を出して終了コード 74 で止める(`src/main.zig` の契約の表)。既知の制限: 標準エラーは標準出力と同じ書き先、標準入力は読めない(上の 5i の中身)。所有の外のファイルと理由は PR 本文にある | suchi/sucheme-zig#208 |
 | 5j | マージ済み(2026-10-31)。`write` `write-shared` `write-simple` と `display` を、プリンタの1つの入口(`printer.print`)の4つの形にした。循環と共有のデータラベル、縦棒で囲むシンボル、表と作業スタックのヒープの上限への計上。決めたことは上の 5j の中身の「実施の結果」にある。受け入れた制約: `write` と `display` と `write-shared` の作業領域は、書くペアとベクタの数に比例し、上限に数える。1ペアあたりの大きさは、ペアそのものと同じ桁である(測った値は PR 本文にある)。そのため、データとその書き出しの作業領域の合計が上限を超えると、データは作れても、REPL で結果を表示すると `heap limit exceeded` になる。`write-simple` は、長いリストで定数、深い入れ子で比例する | suchi/sucheme-zig#212 |
 | 5k | マージ済み(2026-10-31)。ファイルポート(`Port.Backing` の `file`)と `(scheme file)`。ポートは、ホストのファイルの表(`src/platform/native.zig`)の欄の番号と、固定の大きさの計上つきバッファ(`prim/port.zig` の `file_buffer_size`。大きさと測り方はそこの `Why:` コメント)を持つ。ヒープは `Heap.files` を通して表に届き、回収と解放のときに、開いたままのポートを書き出して閉じる。第2類の入口は `src/resolve.zig` の `openUserFile` など。表はライブラリのファイルを開けるホストだけが作り、WASM と Scheme のテストのランナーは、開く手続きと `delete-file` が `file-error`、`file-exists?` が `#f` になる(docs/design/frontend.md の「現状(スライス 5k)」)。`src/platform/wasm.zig` は、差が表の有無だけなので作らなかった。記述子が尽きたときは、プリミティブが `FilesExhausted` を返し、機械が同じ呼び出しを `spread` のフレームに載せて、次の境目で回収させてから1回だけ呼び直す(`Machine.apply`、`Heap.collect_requested`)。PR を開いた最初の push で、ファイルの往復の単体テストのストレスモードの分が、CI の `--test-timeout 60s` に当たった。ローカルでは時間の上限なしで走らせていたため見落とした。規模を縮めて直し、以後はローカルでも単体テストを `--summary all --test-timeout 60s` 付きで走らせる。査読で、5h の `read-line` `read-string` `read-bytevector` `read-bytevector!` が、ファイルのポートでバッファの分しか見ずに、行を割る、短く返す、境目で分かれた文字や読めないバイトで止まる、と分かった。読み足しながら読む形に直し、バッファの大きさの前後を網羅する表のテストを足した(上の「5h と 5k が守る約束」)。残した制限: 終了のときと回収のときの書き出しの誤りは捨て、終了コードも変えない。`call-with-output-file` と `with-output-to-file` が誤りで抜けると、書いた分は回収か終了まで書き出されない(R7RS は定めていない)。入力のポートが一度終わりを返すと、同じファイルにあとから足された分は読まない。記述子が尽きたときの `file-error` の文言は、ほかの失敗と区別しない。`test-conformance` は、準拠マトリクスの退行で赤にならない(見つけるのは `check-report`) | suchi/sucheme-zig#228 |
-| 5l | 作業中。`read` と `(scheme read)`。ポートの手元の入力のうち妥当な UTF-8 の前置部分を `Reader`(`code` を偽、ポートの `fold_case`)に渡し、読めたバイトの数だけ進め、畳み込みの状態を書き戻す。手元の終わりでデータが終わっていないか、終わりまで読んだときは、読み足して頭から読み直す(バッファを倍に伸ばすので、読み直しはデータの長さの対数の回数)。UTF-8 の検査は、文字列ポートではせず、ほかのポートでは窓を倍に広げながら、読んだ分だけにする。データの前の空白と行コメントでバッファが埋まったら読み飛ばし、それでも足りなければ、ファイルのポートはバッファを倍に伸ばし、`read` が戻るときに戻す(`Heap.resizeFileBuffer`)。コンソールの入力ポートは `Heap.console_input` の読み手から読む。読めない入力は、`read-error?` が真になる条件(`reader.describe` の文言に ` in read`)。決めたことは合意を求める点の8。既知の制限: コンソールの読み手のバッファ(`max_line`)より長いデータは、伸ばせないので `datum longer than the input buffer`。読めなかったあと、ポートはデータの頭に留まる(R7RS は定めていない)ので、再試行するだけのループは終わらず、REPL で `(read)` が `)` で失敗すると、REPL が同じ `)` を読んで誤りが2回出る(PR 本文の「設計の見立て」)。満杯のバッファで読み飛ばすのは空白と行コメントだけなので、データの前の閉じたブロックコメントや `#;x` が非常に長いと、ファイルのポートはバッファをその量まで伸ばし、メモリが前置きの量に比例する(上限を超えると `heap limit exceeded`)。準拠マトリクスで、数の構文の 10 件(`1s2` などの R5RS の指数の印)が「未実装」から「誤り」に移った。リーダの範囲で、5l では直さない。査読で、行をまたぐブロックコメントの分割、満杯のバッファでの偽の誤り、文字列ポートの2乗の費用、末尾で切れた文字の黙った EOF が見つかり、直した | suchi/sucheme-zig#231 |
-| 5m から 5r | 未着手 | - |
+| 5l | マージ済み(2026-11-01)。`read` と `(scheme read)`。ポートの手元の入力のうち妥当な UTF-8 の前置部分を `Reader`(`code` を偽、ポートの `fold_case`)に渡し、読めたバイトの数だけ進め、畳み込みの状態を書き戻す。手元の終わりでデータが終わっていないか、終わりまで読んだときは、読み足して頭から読み直す(バッファを倍に伸ばすので、読み直しはデータの長さの対数の回数)。UTF-8 の検査は、文字列ポートではせず、ほかのポートでは窓を倍に広げながら、読んだ分だけにする。データの前の空白と行コメントでバッファが埋まったら読み飛ばし、それでも足りなければ、ファイルのポートはバッファを倍に伸ばし、`read` が戻るときに戻す(`Heap.resizeFileBuffer`)。コンソールの入力ポートは `Heap.console_input` の読み手から読む。読めない入力は、`read-error?` が真になる条件(`reader.describe` の文言に ` in read`)。決めたことは合意を求める点の8。既知の制限: コンソールの読み手のバッファ(`max_line`)より長いデータは、伸ばせないので `datum longer than the input buffer`。読めなかったあと、ポートはデータの頭に留まる(R7RS は定めていない)ので、再試行するだけのループは終わらず、REPL で `(read)` が `)` で失敗すると、REPL が同じ `)` を読んで誤りが2回出る(PR 本文の「設計の見立て」)。満杯のバッファで読み飛ばすのは空白と行コメントだけなので、データの前の閉じたブロックコメントや `#;x` が非常に長いと、ファイルのポートはバッファをその量まで伸ばし、メモリが前置きの量に比例する(上限を超えると `heap limit exceeded`)。準拠マトリクスで、数の構文の 10 件(`1s2` などの R5RS の指数の印)が「未実装」から「誤り」に移った。リーダの範囲で、5l では直さない。査読で、行をまたぐブロックコメントの分割、満杯のバッファでの偽の誤り、文字列ポートの2乗の費用、末尾で切れた文字の黙った EOF が見つかり、直した | suchi/sucheme-zig#231 |
+| 5m | 作業中。`exit` と `(scheme process-context)`。`exit` は、`Machine.invoke` と同じ巻き戻しの経路で最外の継続へ戻り、途中の `after` を呼んでから、`error.Exited`(`Context.Error`)で機械の外へ出る(巻き戻しの状態 `Rewind.exiting`)。終了コードは `Context.exit_code` に置く。`emergency-exit` も機械操作プリミティブで、巻き戻さずに同じ誤りで出る。終了コードへの変換は docs/design/platform-and-web.md の表どおり。`command-line` と環境変数の手続きは純粋プリミティブ(`src/prim/process.zig`)で、ヒープに置いたコマンドラインと環境変数を読む。ネイティブのファイルの実行は、ファイルの後ろの引数を `(command-line)` に渡し(以前の 64 での拒否をやめた)、起動時に UTF-8 を検査する。REPL の `exit` は REPL を終わらせる。WASM は `sucheme_set_command_line` と `sucheme_exit_code` を足し、`exit` で -6 を返す。環境変数は無い。準拠スイートの実行器は、自分の環境変数をスイートに渡す | - |
+| 5n から 5r、5t | 未着手 | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。バッファの大きさの行は、5k の PR で消した。
 - L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5l を進める。5m、5n は 5i のマージのあとに着手できる。
-- 標準エラーを標準出力と分ける変更(5i の既知の制限)は、割り当て先の案を 5m にした(roadmap の項目)。`evalPrint` にエラーの書き手を足す変更が、5m がファイルの実行の終了の経路で触る場所と同じだからである。決めるのは親のセッションである。
+- L3 は 5m を進める。5n は 5m と並行できる(触るファイルは `src/prim/table.zig` の1行だけが重なる)。
+- 標準エラーを標準出力と分ける変更(5i の既知の制限)は、5t に割り当てた(「標準エラーの分離の割り当て」)。
 - 次のスライスの着手は、親のセッションの指示を待つ。
