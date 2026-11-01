@@ -37,6 +37,10 @@ const Context = context.Context;
 const heap_mod = @import("heap.zig");
 const pair = @import("prim/pair.zig");
 const features = @import("features.zig");
+const library = @import("syntax/library.zig");
+const syntax_env = @import("syntax/env.zig");
+const reader = @import("reader.zig");
+const env_mod = @import("env.zig");
 
 pub const Error = context.Error;
 
@@ -474,7 +478,9 @@ pub const Machine = struct {
 
     const Applied = union(enum) {
         value: Value,
-        body: struct { env: *Frame, body: *const Node },
+        /// The body to run and the frame to run it in; no frame for code of a top
+        /// level (what `eval` expands).
+        body: struct { env: ?*Frame, body: *const Node },
     };
 
     /// Puts what `apply` gave into the registers of a step: the value, or
@@ -724,6 +730,15 @@ pub const Machine = struct {
                         ctx.exit_code = exitCode(args, count);
                         return error.Exited;
                     },
+                    // Why: 展開した節点を、`eval` の呼び出しの継続のもとで制御に置く。入れ子の機械を
+                    // 走らせないので、`eval` の呼び出しは末尾の位置になる(R7RS 3.5)。
+                    .eval => {
+                        // 被演算子の鎖は後ろから並ぶ。第1引数が式、第2引数が環境の指定子である。
+                        const where = args.value.asEnvironment() orelse
+                            return primitiveFailure(ctx, prim, error.WrongType, args, count);
+                        return .{ .body = .{ .env = null, .body = try self.expandForEval(args.next.?.value, where) } };
+                    },
+                    .environment => return .{ .value = try self.makeEnvironment(kont.*, dyn.*, args, count) },
                     .call_with_values => {
                         args = try self.enterReceiver(prim, kont, args);
                         count = 0;
@@ -995,6 +1010,101 @@ pub const Machine = struct {
             list = ctx.heap.cons(.fromSymbol(id), list) catch |e| return ctx.heapFailure(e);
         }
         return list;
+    }
+
+    /// The code that `form` means at the top level of the environment specifier
+    /// `where` (R7RS 6.12 `eval`).
+    /// `environment` の値の最上位は変更できず、`.library` の規則(インポートした束縛への
+    /// 代入と再定義を断る)で展開する。新しい名前の定義は、表の `frozen` が断る。
+    /// `interaction-environment` の値は、REPL の最上位で、REPL の規則で展開する。
+    /// `import` と `define-library` は式でも定義でもないので、断る(R7RS 6.12 は
+    /// 「expr-or-def」を評価する)。展開は機械を走らせないので、ここでは GC が走らない。
+    fn expandForEval(self: *Machine, form: Value, where: *const value_mod.Environment) Error!*const Node {
+        const ctx = self.ctx;
+        if (library.topLevelForm(ctx, form)) |_|
+            return ctx.raise("bad eval: import and define-library are not expressions or definitions", .{});
+        // データはリーダを通っていないので、リーダがコードに掛ける循環の検査をここで掛ける
+        // (R7RS 2.4)。掛けないと、cdr が循環したフォームで展開器が止まらず、上限の外の
+        // スクラッチを使い続ける。
+        var local = self.localScratch();
+        defer local.deinit();
+        try self.checkNotCircular(local.allocator(), form, "eval");
+        return expand.expandIn(ctx, local.allocator(), form, .{
+            .table = syntax_env.topTable(ctx, where.root),
+            .root = where.root,
+            .mode = if (where.mutable) .repl else .library,
+        }, .{});
+    }
+
+    /// A scratch space for the work of one call of `eval` or `environment`, which
+    /// the call frees when it returns.
+    /// Why: 機械のスクラッチ(`self.scratch`)はアリーナで、REPL は行ごとに捨てるが、
+    /// ファイルの実行ではプログラムの終わりまで捨てない。`eval` と `environment` の作業
+    /// (展開の作業領域、輸入集合の評価)をそこに置くと、呼ぶたびに伸び続ける。作業の
+    /// 結果(節点、表、指定子)はヒープか resident にあり、ここには何も残らない。裏付けは
+    /// ヒープの `backing` で、`self.scratch` と同じく上限の外である(展開の作業は、
+    /// `expandIn` がこの上に重ねて上限に数える)。
+    fn localScratch(self: *Machine) std.heap.ArenaAllocator {
+        return .init(self.ctx.heap.backing);
+    }
+
+    /// Raises an error when `datum`, taken as code by the procedure `who`, is
+    /// circular outside a literal (R7RS 2.4), as the reader does for code.
+    fn checkNotCircular(self: *Machine, scratch: std.mem.Allocator, datum: Value, comptime who: []const u8) Error!void {
+        const ctx = self.ctx;
+        reader.checkNotCircularCode(scratch, &ctx.heap, datum) catch |e| return switch (e) {
+            error.CircularCode => ctx.raise("bad " ++ who ++ ": {s}", .{reader.describe(error.CircularCode)}),
+            error.OutOfMemory => error.OutOfMemory,
+            // Why: 検査が返すのは、スクラッチの確保の失敗と `CircularCode` だけである。
+            // 型が `reader.Error` 全体なのは、リーダの中の呼び出しと型を揃えたためである。
+            else => unreachable,
+        };
+    }
+
+    /// A new environment specifier for what the `count` import sets in `args`
+    /// bring (R7RS 6.12 `environment`), whose bindings no form may change.
+    /// 新しい最上位の表を作り、輸入集合を束縛してから変更できない印を付ける。表は、根の
+    /// 環境に届かなくなった GC で解放される(`Context.Environments`)。輸入集合の評価は、
+    /// ライブラリのファイルを読んで本体を走らせうる。その中の機械の GC が、この機械の
+    /// 継続と動的点と引数を辿るよう、先に `Context.suspended` に積む。
+    fn makeEnvironment(self: *Machine, kont: ?*const Kont, dyn: ?*const DynPoint, args: *const Args, count: usize) Error!Value {
+        const ctx = self.ctx;
+        const waiting: context.Context.Suspended = .{ .kont = kont, .dyn = dyn, .args = args, .next = ctx.suspended };
+        ctx.suspended = &waiting;
+        defer ctx.suspended = waiting.next;
+        var local = self.localScratch();
+        defer local.deinit();
+        const scratch = local.allocator();
+        // 被演算子の鎖は後ろから並ぶので、書いた順に並べ直す。
+        const specs = try scratch.alloc(Value, count);
+        var it: ?*const Args = args;
+        var i = count;
+        while (i > 0) {
+            i -= 1;
+            specs[i] = it.?.value;
+            it = it.?.next;
+        }
+        // 輸入集合もリーダを通っていないので、`eval` と同じ循環の検査を掛ける。掛けないと、
+        // 循環したライブラリの名前などで、輸入集合の解釈が止まらない。
+        for (specs) |spec| try self.checkNotCircular(scratch, spec, "environment");
+        ctx.heap.external_refused = false;
+        const alloc = ctx.resident();
+        const table = alloc.create(env_mod.Global) catch |e| return ctx.limitFailure(e);
+        table.* = .{};
+        var owned = true;
+        errdefer if (owned) {
+            table.deinit(alloc);
+            alloc.destroy(table);
+        };
+        library.importSets(ctx, scratch, table, specs, .library) catch |e| return ctx.limitFailure(e);
+        table.frozen = true;
+        // 輸入集合を束縛し終えたあとは、機械を走らせないので、根を作って表を載せるまでに
+        // GC は走らない。
+        const root = try ctx.create(value_mod.SyntacticEnv, .{ .parent = null, .rib_depth = 0, .bindings = null });
+        root.environment = ctx.environments.add(alloc, table, root) catch |e| return ctx.limitFailure(e);
+        owned = false;
+        const made = try ctx.create(value_mod.Environment, .{ .root = root, .mutable = false });
+        return .fromEnvironment(made);
     }
 
     /// The exit code that `(exit)` or `(exit obj)` stands for, `obj` being the
@@ -1592,6 +1702,45 @@ test "slow: a million tail calls through apply keep the continuation at the same
     try std.testing.expectEqual(depths[0], depths[1]);
 }
 
+/// The deepest the continuation gets while a loop of `short` and then of
+/// `long` calls through `eval` runs, for each of the two.
+fn evalLoopDepths(f: *Fixture, short: usize, long: usize) ![2]usize {
+    // R7RS 3.5: `eval` は第1引数を末尾の位置にあるかのように評価する。データの中の
+    // 呼び出しが、`eval` の継続のもとで走ることを、深さで確かめる。
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (eval (list 'loop (- n 1)) (interaction-environment))))");
+    var depths: [2]usize = undefined;
+    for ([_]usize{ short, long }, 0..) |n, i| {
+        var src: [64]u8 = undefined;
+        f.machine.peak_depth = 0;
+        const done = try f.eval(try std.fmt.bufPrint(&src, "(loop {d})", .{n}));
+        try std.testing.expectEqualStrings("done", f.ctx.heap.symbols.nameOf(done.asSymbol().?));
+        depths[i] = f.machine.peak_depth;
+    }
+    return depths;
+}
+
+test "eval evaluates its datum in tail position, so a loop through eval does not grow the continuation" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    const depths = try evalLoopDepths(&f, 10, 3000);
+    try std.testing.expectEqual(depths[0], depths[1]);
+    // 対照: `eval` の値を使う、末尾でないループは、回数に比例して深くなる。
+    _ = try f.eval("(define (count n) (if (= n 0) 0 (+ 1 (eval (list 'count (- n 1)) (interaction-environment)))))");
+    f.machine.peak_depth = 0;
+    try f.expectInt(3000, "(count 3000)");
+    try std.testing.expect(f.machine.peak_depth >= 3000);
+}
+
+test "slow: a million tail calls through eval keep the continuation at the same depth" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    const depths = try evalLoopDepths(&f, 10, 1_000_000);
+    try std.testing.expectEqual(depths[0], depths[1]);
+}
+
 /// 生きているデータは収まり、1周ごとのごみを周回の回数ぶんためると収まらない上限。
 /// `(nest n l)` のリストは、1段ごとにペア2個を持つ。`(apply apply l)` は1周ごとに引数の
 /// 鎖のノードを3個(`apply` と、リストの2要素)確保する。
@@ -1713,6 +1862,21 @@ test "the operands apply spreads do not pile up in the scratch space" {
     // リストの前の引数も、並べ直したあとの引数も、小さな配列に収まらない数である。
     _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (apply + 1 2 3 4 5 6 7 8 9 10 '(11 12)) (loop (- n 1)))))");
     _ = try f.eval("(loop 20000)");
+    try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
+}
+
+test "eval does not pile up its work in the scratch space" {
+    var f: Fixture = undefined;
+    try f.initIn(std.heap.smp_allocator, .{});
+    defer f.deinit();
+    var scratch: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer scratch.deinit();
+    f.machine.scratch = scratch.allocator();
+    // 機械のスクラッチは、ファイルの実行ではプログラムの終わりまで捨てないので、呼ぶたびの
+    // 作業がここに積もると、回数に比例して伸びる(1回あたり約 1 KiB。査読の測定)。
+    // `environment` の分は、ライブラリを読めるインタプリタで試す(src/sucheme.zig)。
+    _ = try f.eval("(define (loop n) (if (= n 0) 'done (begin (eval '(car '(1 2)) (interaction-environment)) (loop (- n 1)))))");
+    _ = try f.eval("(loop 1000)");
     try std.testing.expect(scratch.queryCapacity() <= 16 * 1024);
 }
 
@@ -2566,7 +2730,7 @@ test "every allocation to call a handler is made from the reserve" {
     try std.testing.expect(f.ctx.heap.held() > f.ctx.heap.options.limit);
     // ハンドラのフレームも予約から作る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
-        .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
+        .body => |entry| try std.testing.expectEqual(5, entry.env.?.values[0].asFixnum().?),
         .value => return error.TestUnexpectedResult,
     }
 }
@@ -2583,7 +2747,7 @@ test "a handler that takes its arguments as a list gets the list from the reserv
     // 余りの引数のリストも、フレームと同じく予約から作る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .raise_reserve)) {
         .body => |entry| {
-            const rest = entry.env.values[0].asPair().?;
+            const rest = entry.env.?.values[0].asPair().?;
             try std.testing.expectEqual(5, rest.car.asFixnum().?);
             try std.testing.expectEqual(value_mod.Kind.empty_list, rest.cdr.kind());
         },
@@ -2607,7 +2771,7 @@ test "raise-continuable calls the handler from the reserve, though it is applied
     // ふつうの呼び出しと同じく上限の budget で適用し、ハンドラの呼び出しに切り替わったところで
     // 予約に移る。
     switch (try f.machine.apply(&kont, &dyn, call, 1, .limit)) {
-        .body => |entry| try std.testing.expectEqual(5, entry.env.values[0].asFixnum().?),
+        .body => |entry| try std.testing.expectEqual(5, entry.env.?.values[0].asFixnum().?),
         .value => return error.TestUnexpectedResult,
     }
     try std.testing.expect(kont.?.step.handler_return.continuable);
@@ -2770,7 +2934,7 @@ test "every allocation of a rewind is made from the reserve" {
     var frame = kont.?;
     kont = frame.next;
     switch (try f.machine.rewind(&kont, &dyn, frame.step.rewind)) {
-        .body => |entry| try std.testing.expectEqual(0, entry.env.values.len),
+        .body => |entry| try std.testing.expectEqual(0, entry.env.?.values.len),
         .value => return error.TestUnexpectedResult,
     }
     try std.testing.expectEqual(null, dyn);
@@ -2918,6 +3082,10 @@ test "a continuation invoked with no values from the reserve makes its multiple 
     const k = try f.eval("(call/cc (lambda (k) k))");
     const call = try f.ctx.heap.create(Args, .{ .value = k, .next = null });
     try fillToLimit(&f);
+    // Why: `fillToLimit` が残す隙間は、上限までの端数で決まり、ヒープの型の大きさが変わると
+    // 動く。0個の値の複数値のオブジェクトがその隙間に入ると、予約から確保しても上限を超えない。
+    // 同じ大きさのオブジェクトで隙間を埋め、上限の budget では作れない状態にする。
+    while (f.ctx.heap.createMultipleValuesIn(.limit, &.{})) |_| {} else |_| {}
     var kont: ?*const Kont = null;
     var dyn: ?*const DynPoint = null;
     // 巻き戻しの途中で呼ばれる `after` が継続のときと同じく、予約の budget で適用する。上限の

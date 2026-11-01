@@ -26,6 +26,7 @@ const promise = @import("promise.zig");
 const port = @import("port.zig");
 const process = @import("process.zig");
 const time = @import("time.zig");
+const eval = @import("eval.zig");
 
 /// The primitives of each family, in the order they are bound.
 const families = [_][]const Primitive{
@@ -50,6 +51,7 @@ const families = [_][]const Primitive{
     &port.primitives,
     &process.primitives,
     &time.primitives,
+    &eval.primitives,
 };
 
 const total = blk: {

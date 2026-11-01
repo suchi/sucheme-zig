@@ -269,7 +269,7 @@ const Expander = struct {
         }
         switch (task.form.kind()) {
             // 自己評価式(R7RS 4.1.2)。
-            .fixnum, .boolean, .character, .string, .vector, .bytevector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum, .port => try self.constant(task, task.form),
+            .fixnum, .boolean, .character, .string, .vector, .bytevector, .unspecified, .uninitialized, .condition, .primitive, .closure, .record, .record_type, .continuation, .multiple_values, .parameter, .eof, .promise, .flonum, .bignum, .ratnum, .compnum, .port, .environment => try self.constant(task, task.form),
             // Why: R7RS 4.1.3 は、手続き呼び出しに空でないリストを与えている。
             .empty_list => return self.ctx.raise("empty combination", .{}),
             .symbol, .alias => try self.reference(task),
@@ -714,6 +714,7 @@ const Expander = struct {
                 // 名前が別名(マクロのテンプレートが導入したもの)なら、元のシンボルの名前を
                 // 束縛する。最上位の束縛の表は名前で引くので、同じ展開の中の同じ別名の参照
                 // も、このセルに解決される。
+                if (self.top.frozen) return self.immutable(id, "define");
                 if (self.mode == .library) try self.checkNotImported(id, "define");
                 const cell = self.top.defineTarget(self.ctx.resident(), &self.ctx.heap, id) catch |e|
                     return self.ctx.heapFailure(e);
@@ -1262,9 +1263,16 @@ const Expander = struct {
         }
         const syntax = try self.syntaxDefinition(task.env, items, null);
         const name = syntax_env.baseSymbol(syntax.name);
+        if (self.top.frozen) return self.immutable(name, "define-syntax");
         if (self.mode == .library) try self.checkNotImported(name, "define-syntax");
         try self.top.defineSyntax(self.ctx.resident(), name, syntax.macro);
         try self.constant(task, .unspecified_value);
+    }
+
+    /// Refuses a definition of `id` at a top level that is frozen: that of an
+    /// environment specifier from `environment` (R7RS 6.12, "immutable").
+    fn immutable(self: *Expander, id: @import("../symbol.zig").SymbolId, form: []const u8) Error {
+        return self.ctx.raise("bad {s}: cannot define {s} in an immutable environment", .{ form, self.ctx.heap.symbols.nameOf(id) });
     }
 
     /// A procedure call (R7RS 4.1.3): the operator, then the operands from left

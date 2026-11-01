@@ -168,7 +168,7 @@
 - [x] 位置情報の残り(1): ライブラリのファイルと、ライブラリの宣言(`include` など)が読むファイルの位置の記録([design/frontend.md](design/frontend.md) の「現状(スライス 5d)」)。スライス 5s([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の「位置情報の残りの割り当て」)
 - [ ] 位置情報の残り(2): コアIRの節点への位置の複写と、実行時の誤りへの位置の表示。L7 の「エラー位置の表示」の計画書で割り当てる([plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md))。スライス未割り当て
 - [x] `write` と `write-shared` と `write-simple`(循環構造のデータラベル)。スライス 5j([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md))
-- [ ] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)
+- [x] 機械操作プリミティブの残り(`eval` `exit`)と `eval` 用の環境の値。`eval` が入るときに、`Expander.constant` が EOF の値と約束を定数として扱う分岐(`src/syntax/expand.zig`)を、Scheme から通すテストを足す(3f のレビューで、Scheme のソースにこれらの値が入る経路が無いため、この分岐を壊してもテストが落ちないと分かった)。スライス 5m(`exit`)と 5o(`eval`、環境の値、`tests/scheme/0680-eval.txt` の定数の分岐のテスト)
 - [ ] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`
 - [ ] ファイルを読むときのリーダの作業領域(未閉じの括弧ごとの枠)を、ヒープの上限に計上する。今は計上の外にあり、ファイルの大きさの上限(`max_file_bytes` の 1 MiB)で最悪の場合を抑えている([design/open-questions.md](design/open-questions.md) の「ライブラリの表と `import` の作業領域が、ヒープの上限の外にある」)。段階3から送った(2026-10-23 にユーザーが承認した)。スライス未割り当て
 - [ ] ネイティブの `current-error-port` を、標準出力と分けて標準エラーに書く。5i では、標準出力と同じ書き先に書く(既知の制限。[plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5i の中身)。`evalPrint` にエラーの書き手を足す変更になる。WASM は段階5では分けない(同じ計画書の「ホスト側のインポートの設計」)。スライス 5t に割り当てた([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の「標準エラーの分離の割り当て」)

@@ -1,0 +1,107 @@
+# スライス 5o: `eval`、`environment`、`interaction-environment`(R7RS 6.12)。
+
+# R7RS 6.12 の例。
+(import (scheme eval)) (eval '(* 7 3) (environment '(scheme base)))
+21
+
+(import (scheme eval)) (let ((f (eval '(lambda (f x) (f x x)) (null-environment 5)))) (f + 10))
+error: unbound variable: null-environment
+
+(import (scheme eval)) (let ((f (eval '(lambda (f x) (f x x)) (environment '(scheme base))))) (f + 10))
+20
+
+# `environment` の束縛は変更できない。定義、構文の定義、インポートした束縛への代入を断る。
+(import (scheme eval)) (eval '(define foo 32) (environment '(scheme base)))
+error: bad define: cannot define foo in an immutable environment
+
+(import (scheme eval)) (eval '(define-syntax m (syntax-rules () ((_) 1))) (environment '(scheme base)))
+error: bad define-syntax: cannot define m in an immutable environment
+
+(import (scheme eval)) (eval '(set! car 1) (environment '(scheme base)))
+error: bad set!: car is an imported binding and cannot be assigned
+
+# 定義に展開されるマクロも、同じく断る。
+(import (scheme eval)) (eval '(define-record-type point (make-point x) point? (x point-x)) (environment '(scheme base)))
+error: bad define: cannot define point in an immutable environment
+
+# 輸入集合は、修飾子つきで、いくつ並べてもよい。輸入していない名前は見えない。
+(import (scheme eval)) (eval '(cons (first-of '(1 2)) (caddr '(3 4 5))) (environment '(rename (only (scheme base) car cons quote) (car first-of)) '(scheme cxr)))
+(1 . 5)
+
+(import (scheme eval)) (eval 'cdr (environment '(only (scheme base) car)))
+error: unbound variable: cdr
+
+# まだ読んでいないライブラリも、`environment` が読む(本体を走らせる間も、外側の値は生きている)。
+(import (scheme eval)) (let ((kept (list 1 2 3))) (eval '(write-string "w") (environment '(scheme base) '(scheme write))) kept)
+w(1 2 3)
+
+# `interaction-environment` で定義した名前は、REPL の最上位に残る。
+(import (scheme eval) (scheme repl)) (eval '(define from-eval 42) (interaction-environment)) from-eval
+42
+
+(import (scheme eval) (scheme repl)) (define here 7) (eval 'here (interaction-environment))
+7
+
+# `import` と `define-library` は、式でも定義でもないので断る。
+(import (scheme eval)) (eval '(import (scheme write)) (environment '(scheme base)))
+error: bad eval: import and define-library are not expressions or definitions
+
+# 型と個数の誤り。
+(import (scheme eval)) (eval 1 2)
+error: wrong type of argument to eval 1 2
+
+(import (scheme eval)) (eval 1)
+error: wrong number of arguments to eval 1
+
+(import (scheme eval)) (environment '(no such library))
+error: unknown library: (no such library)
+
+# 環境の指定子の外部表現。
+(import (scheme eval) (scheme repl)) (list (environment) (interaction-environment))
+(#<environment> #<environment>)
+
+# 展開器は、EOF の値と約束を定数として扱う(`Expander.constant`)。Scheme のソースには書けないので、
+# `eval` に渡すデータに入れて通す。
+(import (scheme eval)) (eof-object? (eval (list 'quote (eof-object)) (environment '(scheme base))))
+#t
+
+(import (scheme eval)) (eof-object? (eval (eof-object) (environment '(scheme base))))
+#t
+
+(import (scheme eval) (scheme lazy)) (force (eval (make-promise 5) (environment '(scheme base))))
+5
+
+# リテラルの外の循環は、リーダと同じく断る(R7RS 2.4)。`eval` のデータはリーダを通らない
+# ので、`eval` の入口で調べる。調べないと、cdr の循環で展開器が止まらない。
+(import (scheme eval)) (eval (let ((l (list 1))) (set-cdr! l l) l) (environment '(scheme base)))
+error: bad eval: circular reference outside a literal
+
+(import (scheme eval)) (eval (let ((l (list 1))) (set-cdr! l l) (cons 'begin l)) (environment '(scheme base)))
+error: bad eval: circular reference outside a literal
+
+# `environment` の輸入集合も、リーダを通らないので同じく断る。断らないと、循環したライブラリの
+# 名前で止まらない。
+(import (scheme eval)) (let ((l (list 'scheme))) (set-cdr! l l) (environment l))
+error: bad environment: circular reference outside a literal
+
+(import (scheme eval)) (environment (let ((l (list 'only '(scheme base) 'car))) (set-cdr! (cddr l) (cddr l)) l))
+error: bad environment: circular reference outside a literal
+
+# quote の中の循環はリテラルなので、そのまま値になる。
+(import (scheme eval)) (let ((l (list 1))) (set-cdr! l l) (eq? l (eval (list 'quote l) (environment '(scheme base)))))
+#t
+
+# `eval` の呼び出しは末尾の位置にある(R7RS 3.5)。継続が伸びないので、深く繰り返しても終わる。
+(import (scheme eval) (scheme repl)) (define (count-down n) (if (= n 0) 'done (eval (list 'count-down (- n 1)) (interaction-environment)))) (count-down 3000)
+done
+
+# 表は、名前を GC から守る。`rename` で付けた名前は表だけが持つので、表をマークしないと、
+# シンボルが回収されて、あとで同じ綴りを読んでも表の名前に届かない。名前を持つものが
+# 無くなるよう、指定子は変数に置き、綴りは文字列から作る。間に多くのシンボルを作って
+# 回収を起こす。
+(import (scheme eval)) (define e (environment (list 'rename '(only (scheme base) car quote) (list 'car (string->symbol (string-append "renamed-" "by-5o")))))) (let loop ((i 0)) (if (< i 2000) (begin (string->symbol (string-append "s" (number->string i))) (loop (+ i 1))))) (eval (list (string->symbol (string-append "renamed-" "by-5o")) ''(1 2)) e)
+1
+
+# `environment` を繰り返しても、表は回収されて使い回される。
+(import (scheme eval)) (let loop ((i 0)) (if (< i 300) (begin (eval '(car '(1)) (environment '(scheme base))) (loop (+ i 1))) 'done))
+done

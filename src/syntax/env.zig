@@ -140,7 +140,11 @@ pub fn resolveAt(ctx: *Context, env: ?*const SyntacticEnv, id: Value) Error!Reso
 /// the library's, or the REPL's when `root` is not the root of a library.
 /// `root` は環境の鎖のいちばん外側である(鎖が空なら null)。
 pub fn topTable(ctx: *Context, root: ?*const SyntacticEnv) *env_mod.Global {
-    if (root) |r| if (r.library) |lib| return ctx.libraries.tableOf(lib);
+    if (root) |r| {
+        if (r.library) |lib| return ctx.libraries.tableOf(lib);
+        // `environment` が作った最上位(R7RS 6.12)。`eval` の展開が、この根から始まる。
+        if (r.environment) |id| return ctx.environments.table(id);
+    }
     return &ctx.globals;
 }
 

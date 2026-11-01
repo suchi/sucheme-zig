@@ -309,7 +309,8 @@ const Labels = struct {
 /// Why: `quote` は綴りで見る。展開の前に判定するので、束縛を引けないためである。そのため、
 /// `quote` 以外の名前で受け取った循環データを、マクロが展開の中で quote する形は、
 /// リテラルの外の循環として拒否する(docs/design/frontend.md の「現状(スライス 5c)」)。
-fn checkNotCircularCode(scratch: std.mem.Allocator, heap: *Heap, datum: Value) Error!void {
+/// `eval`(src/machine.zig)も、リーダを通らないデータに同じ検査を掛けるため呼ぶ。
+pub fn checkNotCircularCode(scratch: std.mem.Allocator, heap: *Heap, datum: Value) Error!void {
     const State = enum { on_path, done };
     const Enter = struct { value: Value, tail: bool, quasi: bool };
     const Step = union(enum) { enter: Enter, leave: usize };

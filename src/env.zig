@@ -137,6 +137,10 @@ pub const Global = struct {
     /// 未束縛の検査が、表に残るセルから名前を報告するので、弱く持つと報告が GC の時期に
     /// 依存するからである。
     keep_unbound: bool = false,
+    /// Whether no form may define a name in the table: the top level of an
+    /// environment specifier from `environment` (R7RS 6.12).
+    /// 展開器が、最上位の `define` と `define-syntax` を断る(src/syntax/expand.zig)。
+    frozen: bool = false,
     /// Where the marking finds the table to prune (`Heap.Weak`).
     weak: heap_mod.Weak = .{ .prune = pruneUnbound },
 
