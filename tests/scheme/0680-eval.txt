@@ -75,6 +75,13 @@ error: unknown library: (no such library)
 (import (scheme eval) (scheme repl)) (define (count-down n) (if (= n 0) 'done (eval (list 'count-down (- n 1)) (interaction-environment)))) (count-down 3000)
 done
 
+# 表は、名前を GC から守る。`rename` で付けた名前は表だけが持つので、表をマークしないと、
+# シンボルが回収されて、あとで同じ綴りを読んでも表の名前に届かない。名前を持つものが
+# 無くなるよう、指定子は変数に置き、綴りは文字列から作る。間に多くのシンボルを作って
+# 回収を起こす。
+(import (scheme eval)) (define e (environment (list 'rename '(only (scheme base) car quote) (list 'car (string->symbol (string-append "renamed-" "by-5o")))))) (let loop ((i 0)) (if (< i 2000) (begin (string->symbol (string-append "s" (number->string i))) (loop (+ i 1))))) (eval (list (string->symbol (string-append "renamed-" "by-5o")) ''(1 2)) e)
+1
+
 # `environment` を繰り返しても、表は回収されて使い回される。
 (import (scheme eval)) (let loop ((i 0)) (if (< i 300) (begin (eval '(car '(1)) (environment '(scheme base))) (loop (+ i 1))) 'done))
 done
