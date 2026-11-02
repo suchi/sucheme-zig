@@ -13,7 +13,7 @@
 
 段階4(数値塔と Unicode)は、v0.4.0 で完了した(タグは 2026-11-02 18:40 JST に `1d4ea11` に打った)。段階4の計画と進捗は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md) が正である。段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
 
-段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。段階5の計画は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正で、残りはスライス 5t と 5r(v0.5.0)である。
+段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。段階5の計画は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正で、残りはスライス 5r(v0.5.0)である(5t は suchi/sucheme-zig#246 でマージ済み)。
 
 - 段階のリリースの準備では、配布物に入る第三者の表示(`THIRD-PARTY-NOTICES.txt`)が、その段階で入れたデータやコードを覆っているかを確かめる。v0.4.0 の準備で、Unicode の表の表示が足りないと分かり、足した([ADR-0034](adr/0034-release-shape.md) の 2026-11-02 の追記)。
 
