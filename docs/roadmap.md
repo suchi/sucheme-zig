@@ -155,9 +155,9 @@
 
 完了条件: `exact-closed` `ratios` `exact-complex` `ieee-float` のフィーチャを真にできる。浮動小数点数のラウンドトリップ性テストが通る。リリース v0.4.0 を出す。
 
-`full-unicode` は、Unicode テーブルを入れた場合に真になる。WASM のサイズが許容できず文字レパートリを ASCII に制限する退避案を採る場合は偽のままになる。判断は実測で行い、採る場合はユーザーの承認を得て ADR を書く([design/open-questions.md](design/open-questions.md) の段階4の行)。したがって `full-unicode` を完了条件に含めない。
+`full-unicode` は、Unicode テーブルを入れた場合に真になる。WASM のサイズが許容できず文字レパートリを ASCII に制限する退避案を採る場合は偽のままになる。判断は実測で行い、採る場合はユーザーの承認を得て ADR を書く(退避案は採らず、4u4 で `full-unicode` を真にした。表の大きさの許容基準は [design/open-questions.md](design/open-questions.md) の段階8の行)。したがって `full-unicode` を完了条件に含めない。
 
-残していること: [design/open-questions.md](design/open-questions.md) の「段階4までに決める」の行。件数と内容をここに複製しない。
+残していること: [design/open-questions.md](design/open-questions.md) の「段階4までに決める」の行は、いまは残っていない。Unicode の表の大きさの許容基準は、段階4の完了のとき(スライス 4z)に、同じファイルの「段階8までに決める」へ送った。段階4のスライスの後に残った、直していないものは、段階6の作業項目に「スライス未割り当て」として置いた。
 
 ### 段階5: ポートと入出力
 
@@ -187,6 +187,9 @@
 - [ ] 複数値のオブジェクトの本体(`Machine.valuesOf` が作る、個数に比例するペイロード)を、1ステップの中で個数に比例する量を確保しない形にする。確保の前に必要な量を境目で確かめる形か、表現の変更が要る([ADR-0031](adr/0031-gc-at-machine-step-boundaries.md) の 2026-10-15 の追記(3))。段階3のスライス 3b が `call-with-values` の受け手の並べ方を直した残りである。段階3から送った(2026-10-23 にユーザーが承認した)。スライス未割り当て
 - [ ] マクロが導入したトップレベルの `define` と `define-syntax` を、衛生的にする。今は、名前が別名なら、元のシンボルの名前を REPL の表に束縛するので、マクロが導入したトップレベルの定義が、利用側の同じ綴りのトップレベルの変数を書き換える(例は [design/frontend.md](design/frontend.md) の解決規則の節)。v0.2.0 に既知の制限として入れた(ユーザーが 2026-10-15 に判断した)。経緯は [design/open-questions.md](design/open-questions.md) の「マクロが導入した名前のトップレベルの定義」の行にある。段階3でスライス 3q に割り当てたが、2026-10-22 に段階6へ送った(ユーザーが判断した。[plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md) の合意を求める点の5)。v0.3.0 にも既知の制限として入れ、リリースノートに書く(スライス 3r)。衛生的にするには、識別子の解決の最終段の前に、トップレベルの表を別名そのもので引く段を足すことになり、[ADR-0019](adr/0019-denotations-and-identifier-resolution.md) の解決規則を変える。計画書 0016 の「範囲を狭める線」は、この場合に段階6へ送ると定めていた。R7RS 4.3 は、トップレベルの変数の定義が束縛を導入するかどうかを、実装に委ねている(原文で確かめた)。段階6の準拠検証で必要になったときに、新しい ADR とともに直す。スライス未割り当て
 - [ ] `environment`(と `scheme-report-environment`、`null-environment`)が作る最上位の表を、GC を起こす判断の圧力に数える。今は繰り返し呼ぶと常駐のメモリが伸び、ヒープの上限で止まらない(5q の独立査読で見つかった。原因は推測で、確かめていない)。スライス 5u に割り当てた([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の「環境の表の GC の圧力の割り当て」)。段階5の作業項目に置いていたが、2026-11-02 に v0.5.0 の前提から外して v0.5.0 の後に送ったので、ここに移した(スライス 5t の PR)。v0.4.0 と v0.5.0 のリリースノートに、既知の制限として書く
+- [ ] プリンタが、リーダの読める ASCII でない識別子(`λ` など)を縦棒なしで書く。いまは縦棒で囲んで書き、読み戻すと同じシンボルになる。`src/printer.zig` の判定を、リーダの `readsAsIdentifier` に替える形になる([plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md) の「次にやること」の、4u4 のあとに残るもの(1))。段階4の完了のとき(スライス 4z)に段階6へ置いた。スライス未割り当て
+- [ ] `#!fold-case` の畳み込みを、R7RS 2.1 の文言どおりの完全な畳み込みにするかを決める。いまは単純な畳み込みで、`ß` が残る(2026-10-31 に、単純な畳み込みのままにすると決めた。同じ計画書の 4u4 の行)。準拠検証で必要になったときに直す。段階4の完了のとき(スライス 4z)に段階6へ置いた。スライス未割り当て
+- [ ] `src/num/power.zig` の `exptComplexByFloat` の `!std.math.isFinite(y)` のガードは、前の2つの条件のために到達しない。外して簡素にする(同じ計画書の「次にやること」の、複素数のテスト強化のミューテーション査読の記録(1))。段階4の完了のとき(スライス 4z)に段階6へ置いた。スライス未割り当て
 - [ ] 不合格項目の issue 化と解消(issue 化はスライス 6g で済んだ。レーンごとの issue は [計画書 0020](plans/0020-conformance-harness-early.md) の進捗の表にある。解消は各レーンで行う)
 - [x] `tests/vendor/README.md` の作成。[ADR-0013](adr/0013-testing-strategy-and-conformance-suite.md) の記録項目に加えて、`LICENSE` がこのディレクトリを覆わないことを明記する([ADR-0022](adr/0022-unlicensed-proprietary.md))
 - [x] BSD 3条項の第3条項(名前の宣伝利用)について、出典として述べることと推奨として用いることの線を引く新ADRの作成([ADR-0022](adr/0022-unlicensed-proprietary.md))。記録形式が2つ併存することを定める件も同じ ADR で扱う。[ADR-0041](adr/0041-bsd-name-clause-attribution-not-endorsement.md) で決めた

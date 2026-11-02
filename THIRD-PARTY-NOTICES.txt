@@ -6,10 +6,17 @@ for Linux do not link a C library (the build does not link libc), so the musl
 license below is kept only as a precaution, in case a future build links musl
 libc, which Zig builds from source.
 
-This file is a copy. The two texts below were copied unchanged from the Zig
-0.17.0 toolchain (the Zig license and lib/libc/musl/COPYRIGHT). When the pinned
-Zig version changes, compare them with the new toolchain's files and update this
-file (docs/adr/0034-release-shape.md).
+The executables and sucheme.wasm also contain tables generated from the
+Unicode Character Database (UCD) 18.0.0, which is covered by the Unicode
+License V3 below.
+
+This file is a copy. The first two texts below were copied unchanged from the
+Zig 0.17.0 toolchain (the Zig license and lib/libc/musl/COPYRIGHT). When the
+pinned Zig version changes, compare them with the new toolchain's files and
+update this file (docs/adr/0034-release-shape.md). The third text was copied
+unchanged from tools/unicode-gen/ucd/LICENSE.txt; where the UCD files came
+from is recorded in tools/unicode-gen/ucd/SOURCE.md. When the UCD version
+changes, compare it with the new LICENSE.txt and update this file.
 
 sucheme's own notice is in LICENSE.
 
@@ -238,3 +245,49 @@ to be subject to copyright, resulting in confusion over whether it
 negated the permissions granted in the license. In the spirit of
 permissive licensing, and of not having licensing issues being an
 obstacle to adoption, that text has been removed.
+
+
+======================================================================
+Unicode Character Database 18.0.0 (generated tables in every executable
+and in sucheme.wasm; see tools/unicode-gen/ucd/SOURCE.md)
+======================================================================
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
