@@ -34,8 +34,9 @@
 //! ファイルのプログラムは、REPL と同じ初期環境(`(scheme base)`)で、先頭から1つずつ
 //! 評価する。R7RS 5.1 のプログラムは `import` で始まるが、始まらなくてもよい。式の値は
 //! 出力しない。プログラムが現在の出力ポートに書いたもの(`display`、`write-string` など)は
-//! stdout に出る。`current-error-port` への書き込みも、いまは stdout に出る(標準エラーに分ける
-//! のは後の段階)。プログラムの `read` や `read-char` は、標準入力から読む(スライス 5l)。
+//! stdout に出る。`current-error-port` への書き込みは stderr に出る(スライス 5t)。書くたびに、
+//! 先にそれまでの stdout への出力を書き出すので、端末の上では書いた順に並ぶ。REPL でも同じである。
+//! プログラムの `read` や `read-char` は、標準入力から読む(スライス 5l)。
 //! `(command-line)` は、ファイルの名前とプログラムへの引数の文字列のリストで、`sucheme prog.scm a b`
 //! なら `("prog.scm" "a" "b")` である。`get-environment-variable` はプロセスの環境変数を読み、
 //! 値が UTF-8 でなければ条件を送出する(docs/design/platform-and-web.md の検証の表)。標準ライブラリのファイルは `-I` の
@@ -348,6 +349,8 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Proc
     process.give(&interp);
     // プログラムの `read` は、REPL がまだ読んでいない行から読む(suchi/sucheme-zig#230)。
     interp.console_in = in;
+    // `current-error-port` への書き込みは、診断と同じ stderr に出す(スライス 5t)。
+    interp.console_err = err;
     // 継続行の保留。エントリ層は確保を起動と終了に限るので、固定長にする。
     var pending: [max_line]u8 = undefined;
     var kept: usize = 0;
@@ -453,6 +456,8 @@ pub fn runFile(gpa: std.mem.Allocator, files: sucheme.resolve.Files, path: []con
     interp.file_name = path;
     // 式の値は捨て、プログラムの出力だけを `out` に書く(スライス 5i)。
     interp.console_out = out;
+    // `current-error-port` への書き込みは、stderr に出す(スライス 5t)。
+    interp.console_err = err;
     // プログラムの `read` と `read-char` は、標準入力から読む(suchi/sucheme-zig#230)。
     var in_buf: [max_line]u8 = undefined;
     var stdin = std.Io.File.Reader.initStreaming(.stdin(), files.io, &in_buf);
@@ -1154,6 +1159,36 @@ test "runFile writes stderr out, after what the program wrote to stdout" {
     try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", t3.shown());
 }
 
+test "what a program writes to stdout and to the error port shows on the terminal in the order it was written" {
+    // 標準出力の領域は、書き出さなければ全部ためられる大きさにする。順序が保たれるのは、
+    // 標準エラーへの書き込みの前に標準出力を書き出すからで、領域が満ちたからではない。
+    var t: Terminal = .{};
+    var ob: [128]u8 = undefined;
+    var eb: [128]u8 = undefined;
+    var out: TerminalWriter = .init(&t, &ob);
+    var err: TerminalWriter = .init(&t, &eb);
+    const s = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"a\")\n(write-string \"B\" (current-error-port))\n(display \"c\")\n(write 'D (current-error-port))\n(display \"e\")\n", &out.interface, &err.interface);
+    try std.testing.expectEqual(@as(u8, 0), s);
+    try std.testing.expectEqualStrings("aBcDe", t.shown());
+}
+
+test "the repl writes what goes to the error port to stderr, in order with the prompts and the results" {
+    var ob: [256]u8 = undefined;
+    var eb: [256]u8 = undefined;
+    const r = try replOver("(import (scheme base) (scheme write))\n(begin (display \"a\") (write-string \"B\" (current-error-port)) 1)\n", &ob, &eb);
+    try std.testing.expectEqualStrings("> > a1\n> \n", r.out);
+    try std.testing.expectEqualStrings("B", r.err);
+    // 端末の上では、結果の前に、書いた順に並ぶ。
+    var t: Terminal = .{};
+    var tob: [256]u8 = undefined;
+    var teb: [256]u8 = undefined;
+    var out: TerminalWriter = .init(&t, &tob);
+    var err: TerminalWriter = .init(&t, &teb);
+    var in: std.Io.Reader = .fixed("(import (scheme base) (scheme write))\n(begin (display \"a\") (write-string \"B\" (current-error-port)) (display \"c\") 1)\n");
+    _ = try repl(std.testing.allocator, null, .{}, &in, &out.interface, &err.interface);
+    try std.testing.expectEqualStrings("> > aBc1\n> \n", t.shown());
+}
+
 test "runFile reports output it cannot write to stdout, and exits 74" {
     // 書き手の領域より多く書くと、プログラムの途中で書けなくなる。
     var small: [4]u8 = undefined;
@@ -1185,9 +1220,9 @@ test "runFile writes what the program writes to the console to stdout, and not t
     var eb: [256]u8 = undefined;
     const r = try runProgramWithOutput("(import (scheme base) (scheme write))\n(display \"hi\")\n(newline)\n42\n(write-string \"x\" (current-error-port))\n", &ob, &eb);
     try std.testing.expectEqual(@as(u8, 0), r.status);
-    // 式の値 42 は書かない。標準エラーへの書き込みも、5i では標準出力に出る(既知の制限)。
-    try std.testing.expectEqualStrings("hi\nx", r.out);
-    try std.testing.expectEqualStrings("", r.err);
+    // 式の値 42 は書かない。標準エラーへの書き込みは、標準エラーに出る(スライス 5t)。
+    try std.testing.expectEqualStrings("hi\n", r.out);
+    try std.testing.expectEqualStrings("x", r.err);
 }
 
 test "runFile keeps what the program wrote before an error, ahead of the description" {

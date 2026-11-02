@@ -102,6 +102,11 @@ pub const Interpreter = struct {
     /// ファイルの実行は、式の値を捨てるが、プログラムの出力は標準出力に出す(src/main.zig の
     /// `runFile`)。REPL と WASM と test-scheme は null のままで、結果と出力が同じ順に並ぶ。
     console_out: ?*std.Io.Writer,
+    /// Where what the program writes to the console's error port goes, or null for
+    /// the writer the output port writes to.
+    /// ネイティブの REPL とファイルの実行は、標準エラーの書き手を置く(src/main.zig、スライス 5t)。
+    /// WASM と test-scheme は null のままで、標準エラーへの書き込みも結果と同じ順に並ぶ。
+    console_err: ?*std.Io.Writer,
     /// Where the console's input port reads from, or null when the console has no input
     /// (WASM, the tests).
     /// REPL は、行を読むのと同じ読み手を置く(src/main.zig の `repl`)。プログラムの `read` は、
@@ -183,6 +188,7 @@ pub const Interpreter = struct {
         self.file_name = null;
         self.error_at = null;
         self.console_out = null;
+        self.console_err = null;
         self.console_in = null;
     }
 
@@ -288,6 +294,10 @@ pub const Interpreter = struct {
         const previous_sink = self.ctx.console.sink;
         self.ctx.console.sink = self.console_out orelse out;
         defer self.ctx.console.sink = previous_sink;
+        // 標準エラーのポートは、`console_err` があればそこに書く(src/prim/port.zig の `ConsoleWrite`)。
+        const previous_error_sink = self.ctx.console.error_sink;
+        self.ctx.console.error_sink = self.console_err;
+        defer self.ctx.console.error_sink = previous_error_sink;
         // コンソールの入力ポートも、実行の間だけ、この読み手から読む。
         const previous_input = self.ctx.heap.console_input;
         self.ctx.heap.console_input = self.console_in;
@@ -3371,4 +3381,36 @@ test "slow: reading many small data from one large string port costs in proporti
     try expectLinePrints(&interp, "(import (scheme read))", "");
     try expectLinePrints(&interp, "(define (make-input n) (let ((p (open-output-string))) (let loop ((i 0)) (if (< i n) (begin (write-string \"(a 1) \" p) (loop (+ i 1))))) (get-output-string p)))", "");
     try expectLinePrints(&interp, "(let ((p (open-input-string (make-input 100000)))) (let loop ((k 0)) (if (eof-object? (read p)) k (loop (+ k 1)))))", "100000\n");
+}
+
+test "evalPrint writes the error port to console_err while it runs, and puts back the writer that was there" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var out_buf: [64]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var err_buf: [64]u8 = undefined;
+    var err: std.Io.Writer = .fixed(&err_buf);
+    // 呼ぶ前から置いてある書き手(入れ子の呼び出しの外側にあたる)。実行の間は使わず、戻すと元に戻る。
+    var outer_buf: [64]u8 = undefined;
+    var outer: std.Io.Writer = .fixed(&outer_buf);
+    interp.ctx.console.error_sink = &outer;
+    interp.console_err = &err;
+    try interp.evalPrint(arena.allocator(), "(write-string \"E\" (current-error-port)) 1", &out);
+    try std.testing.expectEqualStrings("1\n", out.buffered());
+    try std.testing.expectEqualStrings("E", err.buffered());
+    try std.testing.expectEqualStrings("", outer.buffered());
+    try std.testing.expectEqual(@as(?*std.Io.Writer, &outer), interp.ctx.console.error_sink);
+    // 誤りで終わる行でも戻す。
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(write-string \"F\" (current-error-port)) (car 1)", &out));
+    try std.testing.expectEqualStrings("EF", err.buffered());
+    try std.testing.expectEqual(@as(?*std.Io.Writer, &outer), interp.ctx.console.error_sink);
+    // `console_err` が無ければ、標準エラーへの書き込みも結果と同じ書き手に並ぶ。
+    interp.console_err = null;
+    try interp.evalPrint(arena.allocator(), "(write-string \"G\" (current-error-port)) 2", &out);
+    try std.testing.expectEqualStrings("1\nG2\n", out.buffered());
+    try std.testing.expectEqualStrings("", outer.buffered());
+    try std.testing.expectEqual(@as(?*std.Io.Writer, &outer), interp.ctx.console.error_sink);
 }

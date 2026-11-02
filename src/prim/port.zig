@@ -741,10 +741,38 @@ fn readBytevectorInto(services: *const Services, args: []const Value) Error!Valu
 /// Writes `bytes` to `p`, which the caller has checked to be an output port of the
 /// right kind.
 fn put(services: *const Services, p: *Port, bytes: []const u8) Error!Value {
-    const sink = if (services.console) |console| console.sink else null;
-    port_mod.writeBytes(services.heap, sink, p, bytes) catch |e| return portFailure(e);
+    const target: ConsoleWrite = try .begin(services, p);
+    port_mod.writeBytes(services.heap, target.sink, p, bytes) catch |e| return portFailure(e);
+    try target.end();
     return .unspecified_value;
 }
+
+/// The writer a write to a port goes to when the port is one of the console's, with
+/// what keeps the console's streams in order.
+/// 標準エラーが標準出力と別の書き手に書くとき(ネイティブの実行。スライス 5t)は、書く前に
+/// 標準出力の書き手にためたものを書き出し、書いたあとに標準エラーの書き手を書き出す。端末の
+/// 上で、プログラムが書いた順に並ぶ。同じ書き手に書くとき(WASM と Scheme のテスト)は何もしない。
+/// コンソールでないポートは、書き手を使わない(`port.writeBytes`)。
+const ConsoleWrite = struct {
+    sink: ?*std.Io.Writer,
+    flush_after: ?*std.Io.Writer = null,
+
+    fn begin(services: *const Services, p: *const Port) Error!ConsoleWrite {
+        const console = services.console orelse return .{ .sink = null };
+        const stream = switch (p.backing) {
+            .console => |stream| stream,
+            .memory, .file => return .{ .sink = console.sink },
+        };
+        if (!console.separate(stream)) return .{ .sink = console.sinkFor(stream) };
+        if (console.sink) |out| out.flush() catch return error.WriteFailed;
+        const own = console.sinkFor(stream);
+        return .{ .sink = own, .flush_after = own };
+    }
+
+    fn end(self: ConsoleWrite) Error!void {
+        if (self.flush_after) |w| w.flush() catch return error.WriteFailed;
+    }
+};
 
 /// `(newline port)`: writes an end of line, which is a linefeed (R7RS 6.13.3).
 fn newline(services: *const Services, args: []const Value) Error!Value {
@@ -800,8 +828,9 @@ fn flushOutputPort(services: *const Services, args: []const Value) Error!Value {
     const p = if (args.len > 0) args[0].asPort() orelse return error.WrongType else try argPort(services, args, 0, .output, .textual);
     if (p.direction != .output) return error.WrongType;
     port_mod.flush(services.heap, p) catch |e| return portFailure(e);
-    if (p.backing == .console) {
-        if (services.console) |console| if (console.sink) |sink| sink.flush() catch return error.WriteFailed;
+    switch (p.backing) {
+        .console => |stream| if (services.console) |console| if (console.sinkFor(stream)) |sink| sink.flush() catch return error.WriteFailed,
+        .memory, .file => {},
     }
     return .unspecified_value;
 }
@@ -838,15 +867,16 @@ fn display(services: *const Services, args: []const Value) Error!Value {
 fn writeAs(services: *const Services, args: []const Value, mode: printer.Mode) Error!Value {
     const p = try argPort(services, args, 1, .output, .textual);
     _ = try put(services, p, "");
-    const sink = if (services.console) |console| console.sink else null;
+    const target: ConsoleWrite = try .begin(services, p);
     var buffer: [256]u8 = undefined;
-    var w: port_mod.Writer = .init(services.heap, sink, p, &buffer);
+    var w: port_mod.Writer = .init(services.heap, target.sink, p, &buffer);
     printer.print(&w.interface, services.heap, &services.heap.symbols, args[0], mode) catch |e| switch (e) {
         error.WriteFailed => return portFailure(w.failure.?),
         error.OutOfMemory => return error.OutOfMemory,
         error.HeapLimit => return error.HeapLimit,
     };
     w.interface.flush() catch return portFailure(w.failure.?);
+    try target.end();
     return .unspecified_value;
 }
 
@@ -1528,4 +1558,98 @@ test "read on the console reads past the spaces before a datum that fill its buf
     f.heap.console_input = &source;
     try std.testing.expectError(error.Unreadable, call(&f, "read", &.{.fromPort(p)}));
     try std.testing.expectEqualStrings("invalid UTF-8 input", reason);
+}
+
+/// A writer for the tests that holds what is written in its own buffer, and puts it
+/// into `log`, which several of them share, only when it is flushed.
+/// 端末の上の標準出力と標準エラーのように、書き出した順にだけ並ぶ。
+const SharedLogWriter = struct {
+    log: *std.Io.Writer,
+    interface: std.Io.Writer,
+
+    fn init(log: *std.Io.Writer, buffer: []u8) SharedLogWriter {
+        return .{ .log = log, .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *SharedLogWriter = @alignCast(@fieldParentPtr("interface", w));
+        try self.log.writeAll(w.buffered());
+        w.end = 0;
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            try self.log.writeAll(bytes);
+            n += bytes.len;
+        }
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            try self.log.writeAll(pattern);
+            n += pattern.len;
+        }
+        return n;
+    }
+};
+
+test "the console's error port writes to a writer of its own, in order with the output port" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var log_buffer: [64]u8 = undefined;
+    var log: std.Io.Writer = .fixed(&log_buffer);
+    var out_buffer: [32]u8 = undefined;
+    var err_buffer: [32]u8 = undefined;
+    var out: SharedLogWriter = .init(&log, &out_buffer);
+    var err: SharedLogWriter = .init(&log, &err_buffer);
+    var console: value.Console = .{ .sink = &out.interface, .error_sink = &err.interface };
+    f.services.console = &console;
+    const o = try f.heap.createConsolePort(.output);
+    const e = try f.heap.createConsolePort(.error_output);
+    _ = try call(&f, "write-string", &.{ try str(&f, "a"), .fromPort(o) });
+    _ = try call(&f, "write-string", &.{ try str(&f, "B"), .fromPort(e) });
+    _ = try call(&f, "display", &.{ try str(&f, "c"), .fromPort(o) });
+    _ = try call(&f, "display", &.{ .fromFixnum(42), .fromPort(e) });
+    _ = try call(&f, "write-char", &.{ .fromCharacter('d'), .fromPort(o) });
+    // 標準エラーへの書き込みは、書いたそばから書き出される。標準出力は、ためたままである。
+    try std.testing.expectEqualStrings("aB", log.buffered()[0..2]);
+    try std.testing.expectEqualStrings("aBc42", log.buffered());
+    try std.testing.expectEqualStrings("d", out.interface.buffered());
+    try std.testing.expectEqualStrings("", err.interface.buffered());
+    // 標準出力の書き出しは、標準出力の書き手だけを書き出す。
+    _ = try call(&f, "flush-output-port", &.{.fromPort(o)});
+    try std.testing.expectEqualStrings("aBc42d", log.buffered());
+}
+
+test "the console's error port writes to the output's writer when it has none of its own" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var buffer: [16]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&buffer);
+    var console: value.Console = .{ .sink = &sink };
+    f.services.console = &console;
+    const o = try f.heap.createConsolePort(.output);
+    const e = try f.heap.createConsolePort(.error_output);
+    _ = try call(&f, "write-string", &.{ try str(&f, "a"), .fromPort(o) });
+    _ = try call(&f, "write-string", &.{ try str(&f, "b"), .fromPort(e) });
+    _ = try call(&f, "display", &.{ try str(&f, "c"), .fromPort(e) });
+    try std.testing.expectEqualStrings("abc", sink.buffered());
+    // 同じ書き手を `error_sink` に置いても、分けたことにはならない。
+    console.error_sink = &sink;
+    try std.testing.expect(!console.separate(.error_output));
+    _ = try call(&f, "write-string", &.{ try str(&f, "d"), .fromPort(e) });
+    try std.testing.expectEqualStrings("abcd", sink.buffered());
+}
+
+test "a console's error writer that cannot take the bytes is reported" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var out_buffer: [16]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buffer);
+    var err_buffer: [2]u8 = undefined;
+    var err: std.Io.Writer = .fixed(&err_buffer);
+    var console: value.Console = .{ .sink = &out, .error_sink = &err };
+    f.services.console = &console;
+    const e = try f.heap.createConsolePort(.error_output);
+    try std.testing.expectError(error.WriteFailed, call(&f, "write-string", &.{ try str(&f, "abc"), .fromPort(e) }));
+    try std.testing.expectEqualStrings("", out.buffered());
 }

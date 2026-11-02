@@ -726,7 +726,7 @@ pub const Port = struct {
         /// The bytes of a string port or a bytevector port, held in the port.
         memory: Memory,
         /// One of the console's streams: standard input, output or error (R7RS 6.13.1).
-        /// 領域を持たない。書き込みは、`Console.sink` に直接書く(src/port.zig)。
+        /// 領域を持たない。書き込みは、`Console.sinkFor` が選ぶ書き手に直接書く(src/prim/port.zig)。
         console: Stream,
         /// A file the host has open, through a buffer the port holds (R7RS 6.13.1
         /// `open-input-file` and the like).
@@ -861,13 +861,33 @@ pub const Services = struct {
 
 /// The parameters that are the current ports, and where the console's output goes.
 /// `Context` が持ち、パラメータを GC のルートにする。パラメータは、最初に求められたときに作る
-/// (null はまだ作っていないこと)。`sink` は、`Interpreter` が実行の間だけ置く。標準出力と
-/// 標準エラーは、どちらも `sink` に書く(docs/plans/0019-phase5-ports-and-io.md の 5i の既知の制限)。
+/// (null はまだ作っていないこと)。`sink` と `error_sink` は、`Interpreter` が実行の間だけ置く。
+/// 標準出力は `sink` に書き、標準エラーは `error_sink` があればそこに、無ければ `sink` に書く
+/// (スライス 5t。WASM と Scheme のテストのランナーは `error_sink` を置かず、結果と同じ順に並ぶ)。
 pub const Console = struct {
     input: ?*Parameter = null,
     output: ?*Parameter = null,
     error_output: ?*Parameter = null,
     sink: ?*std.Io.Writer = null,
+    error_sink: ?*std.Io.Writer = null,
+
+    /// The writer what is written to the console's `stream` goes to, or null when
+    /// nothing takes it.
+    pub fn sinkFor(self: *const Console, stream: Port.Stream) ?*std.Io.Writer {
+        return switch (stream) {
+            .error_output => self.error_sink orelse self.sink,
+            .input, .output => self.sink,
+        };
+    }
+
+    /// Whether what is written to `stream` goes to a writer of its own, apart from
+    /// the one the standard output goes to.
+    /// 別の書き手に書くときは、端末の上で順序が崩れないように、書く前に標準出力の書き手を
+    /// 書き出し、書いたあとに自分の書き手を書き出す(src/prim/port.zig の `ConsoleWrite`)。
+    pub fn separate(self: *const Console, stream: Port.Stream) bool {
+        const own = self.error_sink orelse return false;
+        return stream == .error_output and own != self.sink;
+    }
 };
 
 /// A procedure implemented in Zig.
