@@ -1,0 +1,39 @@
+# スライス 5q: `(scheme r5rs)`(R7RS 付録A)。R5RS の識別子を再輸出し、R5RS にだけある4つを足す。
+
+# 再輸出した識別子が使える(いくつかのライブラリから1つずつ)。
+(import (scheme r5rs)) (list (caddr '(1 2 3)) (char-upcase #\a) (exact (floor 2.5)) (force (delay 4)) (call-with-current-continuation (lambda (k) (k 5))))
+(3 #\A 2 4 5)
+
+# R7RS 6.12 の例。
+(import (scheme r5rs)) (eval '(+ 1 2) (scheme-report-environment 5))
+3
+
+(import (scheme r5rs)) (let ((f (eval '(lambda (f x) (f x x)) (null-environment 5)))) (f + 10))
+20
+
+# `null-environment` は構文キーワードだけを持ち、手続きの束縛を持たない。
+(import (scheme r5rs)) (eval '(let ((x 1)) (if x 'yes 'no)) (null-environment 5))
+yes
+
+(import (scheme r5rs)) (eval '(car '(1)) (null-environment 5))
+error: unbound variable: car
+
+# `scheme-report-environment` は R7RS にしかない名前を持たない。
+(import (scheme r5rs)) (eval '(exact 1.0) (scheme-report-environment 5))
+error: unbound variable: exact
+
+# どちらの環境も変更できない。
+(import (scheme r5rs)) (eval '(define x 1) (scheme-report-environment 5))
+error: bad define: cannot define x in an immutable environment
+
+# 版は 5 だけを受け付ける。
+(import (scheme r5rs)) (scheme-report-environment 7)
+error: unsupported version in scheme-report-environment 7
+
+(import (scheme r5rs)) (null-environment 'five)
+error: unsupported version in null-environment five
+
+# R5RS の名前の、正確と不正確の変換。
+(import (scheme r5rs)) (list (exact->inexact 1/4) (inexact->exact 0.25) (exact? (inexact->exact 2.0)))
+(0.25 1/4 #t)
+
