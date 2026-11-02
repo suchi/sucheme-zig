@@ -17,14 +17,14 @@
 | `(scheme file)` | 10 | 10 |
 | `(scheme inexact)` | 12 | 12 |
 | `(scheme lazy)` | 5 | 5 |
-| `(scheme load)` | 0 | 1 |
+| `(scheme load)` | 1 | 1 |
 | `(scheme process-context)` | 5 | 5 |
 | `(scheme r5rs)` | 0 | 222 |
 | `(scheme read)` | 1 | 1 |
 | `(scheme repl)` | 1 | 1 |
 | `(scheme time)` | 3 | 3 |
 | `(scheme write)` | 4 | 4 |
-| 一意の識別子の合計 | 334 | 339 |
+| 一意の識別子の合計 | 335 | 339 |
 
 ## 準拠スイートの結果
 

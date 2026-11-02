@@ -138,6 +138,13 @@ pub const Included = struct { source: resolve.Source, origin: resolve.Origin };
 /// REPL, whose first root it is.
 pub fn currentOrigin(ctx: *const Context, files: ?resolve.Files) resolve.Origin {
     if (ctx.sources.items.len > 0) return ctx.sources.items[ctx.sources.items.len - 1];
+    return workingOrigin(files);
+}
+
+/// The working directory, the first root, as the place a file name is relative to.
+/// `load` は、読んでいる最中のファイル(ライブラリの本体を走らせている間など)によらず、
+/// いつもここを基準にする(docs/design/frontend.md)。
+pub fn workingOrigin(files: ?resolve.Files) resolve.Origin {
     const roots = if (files) |f| f.roots else &[_][]const u8{};
     return .{ .root = if (roots.len > 0) roots[0] else ".", .path = &.{} };
 }
@@ -146,14 +153,21 @@ pub fn currentOrigin(ctx: *const Context, files: ?resolve.Files) resolve.Origin 
 /// that it is not a file that is being read already.
 /// `what` は、`include` と `include-ci` と `include-library-declarations` のいずれかである。
 pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8, what: []const u8) Error!Included {
-    const base = currentOrigin(ctx, ctx.files);
+    return openIncludedAs(ctx, scratch, currentOrigin(ctx, ctx.files), name, what, .@"error");
+}
+
+/// Opens the file that `name` means relative to `base`, as `openIncluded` does,
+/// and raises a condition of `kind` when it cannot be opened.
+/// `load` は、開けないときに `file-error?` が真になる条件を送出する(R7RS 6.14 の手続き
+/// なので、利用者が `guard` で受けられるように)。名前の規則に反するものも同じである。
+pub fn openIncludedAs(ctx: *Context, scratch: std.mem.Allocator, base: resolve.Origin, name: []const u8, what: []const u8, kind: value_mod.ConditionKind) Error!Included {
     // 実ファイルを読むには、ファイルを開く手段が要る。埋め込みのファイルの中の `include` は、
     // 手段が無くても(WASM)、同じ埋め込みの中から引ける。
     if (ctx.files == null and !resolve.isEmbeddedRoot(base.root))
-        return ctx.raise("bad {s}: this interpreter has no files to read: {s}", .{ what, name });
+        return fail(ctx, kind, "bad {s}: this interpreter has no files to read: {s}", .{ what, name });
     const path = resolve.includePath(scratch, base.directory(), name) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => |refused| return ctx.raise("bad {s}: {s}: {s}", .{ what, name, resolve.describeIncludeNameError(refused) }),
+        else => |refused| return fail(ctx, kind, "bad {s}: {s}: {s}", .{ what, name, resolve.describeIncludeNameError(refused) }),
     };
     const origin: resolve.Origin = .{ .root = base.root, .path = path };
     for (ctx.sources.items) |reading| {
@@ -163,12 +177,18 @@ pub fn openIncluded(ctx: *Context, scratch: std.mem.Allocator, name: []const u8,
         return ctx.raise("implementation restriction: files include one another more than {d} deep, at {s}", .{ max_open_files, name });
     const source = resolve.openIncluded(ctx.files, ctx.embedded, base.root, path) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.NotFound => return ctx.raise("bad {s}: {s}: no such file", .{ what, name }),
-        error.LinkRefused => return ctx.raise("bad {s}: {s}: the file, or a directory on the way to it, is a link", .{ what, name }),
-        error.NotRegularFile => return ctx.raise("bad {s}: {s}: not a regular file", .{ what, name }),
-        error.Unreadable => return ctx.raise("bad {s}: {s}: the system refused to open the file", .{ what, name }),
+        error.NotFound => return fail(ctx, kind, "bad {s}: {s}: no such file", .{ what, name }),
+        error.LinkRefused => return fail(ctx, kind, "bad {s}: {s}: the file, or a directory on the way to it, is a link", .{ what, name }),
+        error.NotRegularFile => return fail(ctx, kind, "bad {s}: {s}: not a regular file", .{ what, name }),
+        error.Unreadable => return fail(ctx, kind, "bad {s}: {s}: the system refused to open the file", .{ what, name }),
     };
     return .{ .source = source, .origin = origin };
+}
+
+/// Raises a condition of `kind` with the message `fmt` formatted with `args`.
+fn fail(ctx: *Context, kind: value_mod.ConditionKind, comptime fmt: []const u8, args: anytype) Error {
+    ctx.raised = try ctx.makeCondition(kind, fmt, args, .empty_list_value);
+    return error.Raised;
 }
 
 test {

@@ -1,0 +1,26 @@
+# スライス 5p: `load` と `(scheme load)`(R7RS 6.14)。
+# このランナーはファイルを開く手段を持たない(WASM と同じ)。ファイルを読む振る舞いは、
+# src/sucheme.zig の単体テストが一時のディレクトリで試す。
+
+# ファイルを開けないときは、`file-error?` が真になる条件を送出する。
+(import (scheme load)) (load "x.scm")
+error: bad load: this interpreter has no files to read: x.scm
+
+(import (scheme load)) (guard (e ((file-error? e) 'file-error)) (load "x.scm"))
+file-error
+
+(import (scheme load) (scheme repl)) (guard (e ((file-error? e) 'file-error)) (load "x.scm" (interaction-environment)))
+file-error
+
+# 型と個数の誤り。
+(import (scheme load)) (load 'x.scm)
+error: wrong type of argument to load x.scm
+
+(import (scheme load)) (load "x.scm" 1)
+error: wrong type of argument to load "x.scm" 1
+
+(import (scheme load)) (load)
+error: wrong number of arguments to load
+
+(import (scheme load) (scheme repl)) (load "x.scm" (interaction-environment) 1)
+error: wrong number of arguments to load "x.scm" #<environment> 1

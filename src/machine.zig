@@ -41,6 +41,8 @@ const library = @import("syntax/library.zig");
 const syntax_env = @import("syntax/env.zig");
 const reader = @import("reader.zig");
 const env_mod = @import("env.zig");
+const source_mod = @import("syntax/source.zig");
+const resolve = @import("resolve.zig");
 
 pub const Error = context.Error;
 
@@ -288,6 +290,11 @@ pub const Machine = struct {
                         } else {
                             value = .unspecified_value;
                         }
+                    },
+                    .load_next => |l| {
+                        const cell = l.rest.asPair().?;
+                        control = try self.nextLoaded(&kont, cell.car, cell.cdr, l.where, l.name);
+                        env = null;
                     },
                     .sequence => |s| {
                         const nodes = s.node.sequence;
@@ -739,6 +746,19 @@ pub const Machine = struct {
                         return .{ .body = .{ .env = null, .body = try self.expandForEval(args.next.?.value, where) } };
                     },
                     .environment => return .{ .value = try self.makeEnvironment(kont.*, dyn.*, args, count) },
+                    // Why: ファイルの形式を1つずつ展開して走らせる。最初の形式を、`load` の呼び出しの
+                    // 継続(残りの形式のフレームを積んだもの)のもとで制御に置く。
+                    .load => {
+                        // 被演算子の鎖は後ろから並ぶ。第1引数がファイル名、省略できる第2引数が環境の指定子。
+                        const name = if (count == 2) args.next.?.value else args.value;
+                        if (name.asString() == null) return primitiveFailure(ctx, prim, error.WrongType, args, count);
+                        const where = if (count == 2)
+                            args.value.asEnvironment() orelse return primitiveFailure(ctx, prim, error.WrongType, args, count)
+                        else
+                            try ctx.create(value_mod.Environment, .{ .root = null, .mutable = true });
+                        const first = try self.startLoad(kont, name, where) orelse return .{ .value = .unspecified_value };
+                        return .{ .body = .{ .env = null, .body = first } };
+                    },
                     .call_with_values => {
                         args = try self.enterReceiver(prim, kont, args);
                         count = 0;
@@ -1029,11 +1049,84 @@ pub const Machine = struct {
         var local = self.localScratch();
         defer local.deinit();
         try self.checkNotCircular(local.allocator(), form, "eval");
-        return expand.expandIn(ctx, local.allocator(), form, .{
+        return expandAt(ctx, local.allocator(), form, where);
+    }
+
+    /// Expands `form` at the top level of the environment specifier `where`, by
+    /// the rules `eval` uses.
+    fn expandAt(ctx: *Context, scratch: std.mem.Allocator, form: Value, where: *const value_mod.Environment) Error!*const Node {
+        return expand.expandIn(ctx, scratch, form, .{
             .table = syntax_env.topTable(ctx, where.root),
             .root = where.root,
             .mode = if (where.mutable) .repl else .library,
         }, .{});
+    }
+
+    /// The code that `form`, a form of the file `name` that `load` read, means at
+    /// the top level of `where`.
+    /// 展開の間、そのファイルを読んでいるファイルとして `Context.sources` に載せ、ファイルの
+    /// 中の `include` がこのファイルを基準にするようにする(docs/design/frontend.md)。
+    /// 形式はリーダが読んだものなので、循環の検査はリーダが済ませている。
+    fn expandLoaded(self: *Machine, form: Value, where: *const value_mod.Environment, name: Value) Error!*const Node {
+        const ctx = self.ctx;
+        if (library.topLevelForm(ctx, form)) |_|
+            return ctx.raise("bad load: import and define-library are not expressions or definitions", .{});
+        var local = self.localScratch();
+        defer local.deinit();
+        const base = source_mod.workingOrigin(ctx.files);
+        // 名前は、開いたときに検査を通っている。
+        const path = resolve.includePath(local.allocator(), base.directory(), name.asString().?.bytes) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => unreachable,
+        };
+        const reading = ctx.sources.items.len;
+        try ctx.sources.append(ctx.resident(), .{ .root = base.root, .path = path });
+        defer ctx.sources.shrinkRetainingCapacity(reading);
+        return expandAt(ctx, local.allocator(), form, where);
+    }
+
+    /// Reads the file `name` for `load`, and gives the node of its first form,
+    /// with a frame for the rest of them pushed on `kont`.
+    /// ファイルは丸ごと読み、データをヒープのリストにしてから、最初の形式を展開する。
+    /// 読み終えてから展開までの間に機械は走らないので、GC は走らない。データが無いファイル
+    /// は、何もせずに未規定の値を返す(null)。
+    /// 名前は、読んでいる最中のファイルによらず、作業ディレクトリ(最初の探索ルート)を基準に
+    /// する。ライブラリの本体を走らせている間は `Context.sources` にそのファイルが載っているが、
+    /// そこを基準にすると、同じ手続きが呼ばれる時機によって別のファイルを読む。
+    fn startLoad(self: *Machine, kont: *?*const Kont, name: Value, where: *const value_mod.Environment) Error!?*const Node {
+        const ctx = self.ctx;
+        const text = name.asString().?.bytes;
+        var local = self.localScratch();
+        defer local.deinit();
+        const scratch = local.allocator();
+        const opened = try source_mod.openIncludedAs(ctx, scratch, source_mod.workingOrigin(ctx.files), text, "load", .file);
+        const subject = try std.fmt.allocPrint(scratch, "load {s}", .{text});
+        // Why: 位置を記録しない(`readData`)。位置の表は REPL の1つのトップレベルフォームの
+        // 間の作業表で、記録したペアを GC のルートにする。`load` はその1つのフォームの中で
+        // 何度でも走るので、記録すると読んだデータが回収されず、読んだ量に比例して伸びる
+        // (自分を読み直すファイルで確かめた)。展開の誤りに位置を付けないことは、計画書
+        // 0019 の合意を求める点の10で決めた。
+        const data = try source_mod.readData(ctx, scratch, ctx.files, opened.source, subject, false);
+        if (data.len == 0) return null;
+        var rest: Value = .empty_list_value;
+        var i = data.len;
+        while (i > 1) {
+            i -= 1;
+            // 新しいペアは一時変数に受けてから入れる(`.cdr = rest` を読む前に `rest` を書き換えない)。
+            const cell = try ctx.create(value_mod.Pair, .{ .car = data[i], .cdr = rest });
+            rest = .{ .pair = cell };
+        }
+        return self.nextLoaded(kont, data[0], rest, where, name);
+    }
+
+    /// Gives the node of `form`, a form of the file `name` that `load` reads,
+    /// with a frame for `rest`, the forms after it, pushed on `kont` when there
+    /// are any.
+    /// 展開の前にフレームを積む。展開が送出で止まれば、フレームは継続と一緒に捨てられる。
+    fn nextLoaded(self: *Machine, kont: *?*const Kont, form: Value, rest: Value, where: *const value_mod.Environment, name: Value) Error!*const Node {
+        if (rest.kind() != .empty_list)
+            kont.* = try self.push(kont.*, null, .{ .load_next = .{ .rest = rest, .where = where, .name = name } });
+        return self.expandLoaded(form, where, name);
     }
 
     /// A scratch space for the work of one call of `eval` or `environment`, which
