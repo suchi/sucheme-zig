@@ -8,6 +8,8 @@
 > 2026-10-13 追記: 決定の「リハーサルとして `main` への push と準備完了のたびに走らせる」のうち、`main` への push では走らなくなった。`full.yml` の起動は、PR を ready にしたときと手動だけである([ADR-0036](0036-windows-tests-in-the-slow-tier.md))。リハーサルの目的(タグを打つ前に、組み立てが通っていることを確かめる)は、ready のときの `dist` ジョブと、タグの push で走る `release.yml` が果たす。決定そのものは変わらない。
 >
 > 2026-10-15 追記: 決定の「Linux の成果物が使う musl」は、事実と合っていなかった。ビルドは `link_libc` を設定せず、`-Dtarget=x86_64-linux-musl` の成果物を調べると、musl の C ライブラリのシンボルを含まない静的な実行ファイルだった。現状では musl のコードは成果物に入っていない。`THIRD-PARTY-NOTICES.txt` の musl の節は、将来 libc をリンクする場合に備えた予防として残す。表示の義務が生じる解釈に立っても満たされる側に倒すという決定は変わらない。
+>
+> 2026-11-02 追記: 決定の「`THIRD-PARTY-NOTICES.txt` の内容は Zig の `LICENSE` と musl の `COPYRIGHT`」に、Unicode License V3 が加わった。段階4(表はスライス 4u2、表を引く手続きは 4u3)から、実行ファイルと `sucheme.wasm` に、UCD 18.0.0 から生成した Unicode の表が入っている。v0.4.0 の準備(スライス 4z)で、表示が無いことが分かった。`tools/unicode-gen/ucd/LICENSE.txt` を改変せずに写し、出典は `tools/unicode-gen/ucd/SOURCE.md` を指す。生成した表が UCD の複製に当たるかは確かめていない。表示の義務が生じる解釈に立っても満たされる側に倒すという決定は変わらない。
 
 ## 背景
 
