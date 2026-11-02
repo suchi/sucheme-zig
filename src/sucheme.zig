@@ -102,6 +102,11 @@ pub const Interpreter = struct {
     /// ファイルの実行は、式の値を捨てるが、プログラムの出力は標準出力に出す(src/main.zig の
     /// `runFile`)。REPL と WASM と test-scheme は null のままで、結果と出力が同じ順に並ぶ。
     console_out: ?*std.Io.Writer,
+    /// Where what the program writes to the console's error port goes, or null for
+    /// the writer the output port writes to.
+    /// ネイティブの REPL とファイルの実行は、標準エラーの書き手を置く(src/main.zig、スライス 5t)。
+    /// WASM と test-scheme は null のままで、標準エラーへの書き込みも結果と同じ順に並ぶ。
+    console_err: ?*std.Io.Writer,
     /// Where the console's input port reads from, or null when the console has no input
     /// (WASM, the tests).
     /// REPL は、行を読むのと同じ読み手を置く(src/main.zig の `repl`)。プログラムの `read` は、
@@ -183,6 +188,7 @@ pub const Interpreter = struct {
         self.file_name = null;
         self.error_at = null;
         self.console_out = null;
+        self.console_err = null;
         self.console_in = null;
     }
 
@@ -288,6 +294,10 @@ pub const Interpreter = struct {
         const previous_sink = self.ctx.console.sink;
         self.ctx.console.sink = self.console_out orelse out;
         defer self.ctx.console.sink = previous_sink;
+        // 標準エラーのポートは、`console_err` があればそこに書く(src/prim/port.zig の `ConsoleWrite`)。
+        const previous_error_sink = self.ctx.console.error_sink;
+        self.ctx.console.error_sink = self.console_err;
+        defer self.ctx.console.error_sink = previous_error_sink;
         // コンソールの入力ポートも、実行の間だけ、この読み手から読む。
         const previous_input = self.ctx.heap.console_input;
         self.ctx.heap.console_input = self.console_in;
