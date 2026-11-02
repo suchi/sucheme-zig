@@ -74,7 +74,7 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 | 5o `eval` と環境の値 | L3 | `(eval '(* 7 3) (environment '(scheme base)))` が `21`。`(eval '(define foo 32) (environment '(scheme base)))` が誤りを送出する。`interaction-environment` で定義した名前が REPL から見える。EOF の値と約束を `eval` で定数にするテストが通る | `src/machine.zig` の `MachineOp.eval`、`src/value.zig` の環境の値の型、`src/prim/eval.zig`(新規)、`lib/scheme/eval.sld` `repl.sld`(新規) | T3 | 3o のマージ、5m | 3o とは逐次 | 大 |
 | 5p `load` と `(scheme load)` | L3 | `(load "x.scm")` が探索ルートの中の `x.scm` を、指定の環境で評価する。ルートの外の名前を拒否する | `src/prim/eval.zig`、`src/resolve.zig` の第1類の入口、`lib/scheme/load.sld`(新規) | T2 | 5o | L2 と並行 | 小 |
 | 5q `(scheme r5rs)` | L3 | `(import (scheme r5rs))` が通り、`(eval '(+ 1 2) (scheme-report-environment 5))` が `3`。付録Aの全ライブラリが `import` できる | `lib/scheme/r5rs.sld`(新規)、`src/prim/eval.zig` の `null-environment` と `scheme-report-environment` | T2(輸出の転記は T1) | 5k、5l、5n、5p、0018 の `(scheme inexact)` `(scheme complex)` `(scheme char)` | 最後 | 小 |
-| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s と 5t と 5u、v0.4.0 の公開 | 最後 | 小 |
+| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s と 5t、v0.4.0 の公開(5u は前提から外し、v0.5.0 の後に送った。「環境の表の GC の圧力の割り当て」) | 最後 | 小 |
 
 5e は、L2 が数の構文を足すスライスの名前として 0018 に渡す(下の「数の構文との順序」)。5f は欠番である。
 
@@ -172,7 +172,8 @@ flowchart TD
     s5n --> s5q
     s5p --> s5q
     nl --> s5q
-    s5q --> s5t --> s5u --> s5r
+    s5q --> s5t --> s5r
+    s5r -.->|"v0.5.0 の後"| s5u
     s5d --> s5r
     s5j --> s5r
 ```
@@ -496,16 +497,23 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 - 名前: 5s は「位置情報の残りの割り当て」の L2 のスライスが使っているので、次の 5t にする。
 - 段階5の完了(5r)の前提に 5t を加えた。
 
+### 5t で決めたこと
+
+- エラーの書き手は、`evalPrint` の引数でなく、`Interpreter` の欄 `console_err` にした(上の完了条件の「`evalPrint` にエラーの書き手を足す」を、この形で満たす)。理由は2つある。既存の `console_out`(ファイルの実行のプログラムの出力)と同じ形にそろう。WASM と test-scheme の `evalPrint` の呼び出しを変えずに済む。`src/sucheme.zig`(L0 の所有)に触れたのは、欄の追加(と初期化)と、`run` で `Console.error_sink` に置いて戻す所だけである(着手の前に、親のセッションがこの範囲を確かめた)。
+- 書き先の選び方は `Console.sinkFor`(`src/value.zig`)にした。標準エラーは `error_sink` があればそこに、無ければ `sink` に書く。`src/port.zig` の `writeBytes` は変えず、呼び出し側の `src/prim/port.zig` が書き手を選ぶ。
+- 順序: 標準エラーが別の書き手のときは、書く前に標準出力の書き手を書き出し、書いたあとに標準エラーの書き手を書き出す。端末の上では、プログラムが書いた順に並ぶ。標準出力は、今までどおり、ためてから書き出す。
+- 既知の制限: ファイルの実行で、標準エラーに書けないとき(閉じているなど)も、`WriteFailed` として標準出力に書けないときと同じ扱い(終了コード 74、`error: cannot write to standard output`)になる。どちらの書き手で失敗したかを、機械の外へ返す誤りで区別していないためである。
+
 ## 環境の表の GC の圧力の割り当て
 
 5q の独立査読で、`scheme-report-environment` と `null-environment` を繰り返し呼ぶと、1回あたり約 3.5 KB と約 1.4 KB ずつ常駐のメモリが伸び、ヒープの上限(256 MiB)を超えても `heap limit exceeded` にならないと分かった(査読の測定で、200000 回で RSS 7.1 GB)。5o の `environment` も同じ傾きで、5q に固有ではない。査読の担当は、`environment` が作る最上位の表(ヒープの外の resident)が、GC を起こす判断の圧力に数えられていないためと推測した。確かめていない。
 
 | スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 5u 環境の表の GC の圧力 | L3 | `environment` を繰り返し呼ぶループが、常駐のメモリを一定に保つか、ヒープの上限で `heap limit exceeded` になる。最初の作業として、表が圧力に数えられていないことを確かめる | `src/context.zig` の `Environments`、`src/heap.zig` の圧力の計算 | T3 | 5q | 5t と逐次 | 小 |
+| 5u 環境の表の GC の圧力 | L3 | `environment` を繰り返し呼ぶループが、常駐のメモリを一定に保つか、ヒープの上限で `heap limit exceeded` になる。最初の作業として、表が圧力に数えられていないことを確かめる | `src/context.zig` の `Environments`、`src/heap.zig` の圧力の計算 | T3 | 5q、v0.5.0 の公開 | 5r の後 | 小 |
 
 - 環境の値を使い回す案(呼ぶたびに同じ指定子を返す)は取らない。`eq?` の性質が変わるためである。
-- 5t のあとに置く。5t と 5u は所有するファイルが重ならないが、L3 の中で逐次に進める。段階5の完了(5r)の前提に 5u を加えた。
+- 最初は 5t のあと、5r の前に置き、段階5の完了(5r)の前提に加えた。2026-11-02 に、親のセッションの判断(ユーザーの承認を経た 4z、5t、5r の順序の指示)で、5r の前提から外し、v0.5.0 の後に送った(5t の PR)。v0.5.0 のリリースノートの既知の制限に、この圧力のことを書く(5r)。v0.4.0 のリリースノートにも、既知の制限として書いた(4z)。
 
 ## 合意のあとにやること
 
@@ -522,7 +530,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5b | マージ済み。縦棒の識別子。エスケープは <symbol element> のものに `\"` と `\\` を足したもので、行継続は無い。畳み込む読み手でも畳み込まない。縦棒を付けて書き出すのは 5j | suchi/sucheme-zig#146 |
 | 5c | マージ済み。データラベル。実装の途中で、リテラルの外の循環(R7RS 2.4 が誤りとする `#1=(begin (display #\x) #1#)`)と、`syntax-rules` のテンプレートの循環で展開器が止まらないと分かった。0017 の引き継ぎの条件の2と3に当たるので止めて諮り、2026-10-20 に、リーダがコードとしての循環を断る形と、`rules.compile` がパターンとテンプレートの循環を断る形(L0 の `src/syntax/rules.zig` への小さな追加)が承認された。既知の制限は docs/design/frontend.md の「現状(スライス 5c)」にある | suchi/sucheme-zig#147 |
 | 5d | マージ済み。位置情報の副表と、展開時の誤りの位置(`path:line:column: message`)。節点への複写は入れない。ライブラリのファイルと、ライブラリの宣言が読むファイルは、まだ位置を記録しない(docs/design/frontend.md の「現状(スライス 5d)」) | suchi/sucheme-zig#160 |
-| 5s | PR 作成済み。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
+| 5s | マージ済み(2026-10-23)。ライブラリのファイルと、ライブラリの宣言が読むファイルの位置の記録。`library.zig` は名前を渡す2か所だけ。残した制限は docs/design/frontend.md の「現状(スライス 5d)」の既知の制限にある | suchi/sucheme-zig#168 |
 | 5g | マージ済み。`Value` の `port` と、ヒープの型 `Port`(`src/value.zig`)。裏付けは、文字列ポートとバイトベクタポートが共有する `memory` の1つだけで、どちらかは `element`(`textual` か `binary`)で分ける。確保は `Heap.createMemoryPort`、出力の領域を伸ばすのは `Heap.growPortBytes` で、5h が `src/heap.zig` を触らずに書けるよう、ここで置いた。`Kind` の網羅的な switch に `.port` を足すため、`src/prim/equiv.zig`、`src/prim/procedure.zig`、`src/prim/promise.zig`、`src/syntax/expand.zig` にも1行ずつ触れた(4d と同じ4か所)。レビューで足さなかったテストと、後のスライスへの申し送りは「5g のレビューの記録と、後のスライスへの申し送り」の節にある | suchi/sucheme-zig#205 |
 | 5h | マージ済み。`src/port.zig` の読み書きの関数と、`(scheme base)` のポートの手続き(`src/prim/port.zig`、`call-with-port` は `lib/sucheme/procedures.scm`)。ポートの引数は、5i が現在のポートを入れるまで省略できない。署名の節のうち、`fill`(5k)、`flush`(書き出す先を持つポートを入れる 5i)、`writer`(5j)は、使うスライスが足す。閉じたポートへの読み書きは、新しい誤り `PortClosed`(文言は `port is closed in 手続きの名前`)、向きと種類の違いは型の誤りである。所有の外に、`src/value.zig` の `PrimitiveError` と `src/machine.zig` の `primitiveFailure`(「機械の重なり」の節)、`lib/sucheme/procedures.sld` の輸出、`tools/test-scheme/main.zig` の `mutators` の表に1つずつ足し、未実装の例にポートの名前を使っていた `tests/scheme/0292-scheme-libraries.txt`、`tools/conformance-run/run.zig`、`tools/test-wasm/main.mjs` のテストを、まだ無い現在のポートの名前に替えた(5i で替え直す) | suchi/sucheme-zig#207 |
 | 5i | マージ済み(2026-10-29)。実績は、PR を開いてから ready まで約3時間20分、ready からマージまで約17時間(ユーザーの判断の待ちを含む)。コンソールのポート(`Port.Backing` の `console`)と、`current-input-port` `current-output-port` `current-error-port` のパラメータ(`Context.console`、`%console-parameter`)。ポートを省略した手続きは、呼び出しの動的点での現在のポートを使う。`display` を `(scheme write)` に置き、署名の節の `writer` にあたる `port.Writer`(プリンタがポートに直接書く書き手)を、5j より先にここで入れた(作業領域に全体を写すと、計上の外に大きく確保するため)。コンソールへの書き込みの失敗は、条件にせず `WriteFailed` で機械の外へ返す。ファイルの実行は、式の値を捨て、プログラムの出力を標準出力に書く(`Interpreter.console_out`)。標準出力に書けなければ、`error: cannot write to standard output` を出して終了コード 74 で止める(`src/main.zig` の契約の表)。既知の制限: 標準エラーは標準出力と同じ書き先、標準入力は読めない(上の 5i の中身)。所有の外のファイルと理由は PR 本文にある | suchi/sucheme-zig#208 |
@@ -533,13 +541,15 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5n | マージ済み(2026-11-01)。`(scheme time)`。`current-second`、`current-jiffy`、`jiffies-per-second` は純粋プリミティブ(`src/prim/time.zig`)で、時計は `src/platform/clock.zig` が読む。ネイティブは `std.Io.Clock` の `.real` と `.awake`(`Io` は標準ライブラリの大域のもの)、WASM は import の `env.host_now_ms` と `env.host_monotonic_ms`(合意を求める点の2)。jiffy はマイクロ秒。`current-second` は UNIX 時刻に TAI と UTC の差の 37 秒を足す(tzdata 2026e の `leap-seconds.list` で確かめた。IERS の頁では確かめていない)。WASM のホストが返した単調な時間が範囲の外なら、0 か `i64` の最大値にする。テストは本物の時計を読み、値でなく性質を見る | suchi/sucheme-zig#234 |
 | 5o | マージ済み(2026-11-02)。`eval`、`environment`、`interaction-environment` と `(scheme eval)` `(scheme repl)`。決めたことは合意を求める点の9。`eval` のデータと `environment` の輸入集合は、リーダを通らないので、リーダと同じ循環の検査を入口で掛ける(査読で、cdr が循環したフォームで展開器が止まらないと分かった)。`eval` と `environment` の作業は、呼び出しごとのアリーナに置いて戻るときに捨てる(独立査読で、ファイルの実行では機械のスクラッチに積もり続けると分かった)。残した制限: `eval` の展開の誤りには位置が付かない。ミューテーションのうち、`environment` の入口で `external_refused` を下ろす行を消すものは生き残った(前の処理の印が残ったまま、上限でなくホストのメモリが尽きた場合だけ文言が変わる) | suchi/sucheme-zig#237 |
 | 5p | マージ済み(2026-11-02)。`load` と `(scheme load)`。決めたことは合意を求める点の10。自分を読み直すファイルに深さの上限は設けない(末尾の自己読み込みは継続もメモリも伸びない普通の無限ループで、末尾でない入れ子は継続が伸びてヒープの上限で止まる。読んだデータの位置を記録しないことで一定になることを測った)。既知の制限: 読み込んだ形式の展開の誤りに位置が付かない。ファイルの中の `import` は、`eval` と同じく断る | suchi/sucheme-zig#241 |
-| 5q | 作業中(ドラフトの PR)。`(scheme r5rs)`。R5RS の 222 識別子のうち 218 は、R7RS のライブラリからの再輸出で足りる。R5RS にだけある `exact->inexact`、`inexact->exact`、`scheme-report-environment`、`null-environment` は、計画では `src/prim/eval.zig` に置く想定だったが、`lib/scheme/r5rs.sld` の本体に Scheme で書いた(既存の `inexact`、`exact`、`environment` の組み合わせで書け、Zig の変更が要らないため)。2つの環境の手続きは版 5 だけを受け付け、呼ぶたびに変更できない新しい指定子を返す。`null-environment` は R5RS の構文キーワードだけを持つ 既知の制限: `scheme-report-environment` と `null-environment`(と 5o の `environment`)を繰り返し呼ぶと常駐のメモリが伸び、ヒープの上限で止まらない。5u に割り当てた(「環境の表の GC の圧力の割り当て」) | - |
-| 5r、5t、5u | 未着手 | - |
+| 5q | マージ済み(2026-11-02)。`(scheme r5rs)`。R5RS の 222 識別子のうち 218 は、R7RS のライブラリからの再輸出で足りる。R5RS にだけある `exact->inexact`、`inexact->exact`、`scheme-report-environment`、`null-environment` は、計画では `src/prim/eval.zig` に置く想定だったが、`lib/scheme/r5rs.sld` の本体に Scheme で書いた(既存の `inexact`、`exact`、`environment` の組み合わせで書け、Zig の変更が要らないため)。2つの環境の手続きは版 5 だけを受け付け、呼ぶたびに変更できない新しい指定子を返す。`null-environment` は R5RS の構文キーワードだけを持つ 既知の制限: `scheme-report-environment` と `null-environment`(と 5o の `environment`)を繰り返し呼ぶと常駐のメモリが伸び、ヒープの上限で止まらない。5u に割り当てた(「環境の表の GC の圧力の割り当て」) | suchi/sucheme-zig#243 |
+| 5t | 作業中(ドラフトの PR)。ネイティブの REPL とファイルの実行で、`current-error-port` への書き込みを標準エラーに出す。`Console` に `error_sink` を足し、`Interpreter` に `console_err` の欄を足した(下の「5t で決めたこと」)。標準エラーに書く前に標準出力の書き手を書き出し、書いたあとに標準エラーの書き手を書き出す(`src/prim/port.zig` の `ConsoleWrite`)。WASM と test-scheme は `console_err` を置かず、今までと同じく結果と同じ書き手に書く | この PR(5t) |
+| 5r | 未着手。v0.4.0 の公開のあとに着手する | - |
+| 5u | 未着手。v0.5.0 の後に送った(「環境の表の GC の圧力の割り当て」) | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。バッファの大きさの行は、5k の PR で消した。
-- L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5q を進める(ブランチ `feature/phase5-slice-5q-r5rs`)。実装、ミューテーション、文書の更新は済み。残りは、独立査読(親のセッションが手配する)、指摘の修正をまとめた1回の push、ready。そのあと 5t、5u の順に進める。
-- 標準エラーを標準出力と分ける変更(5i の既知の制限)は、5t に割り当てた(「標準エラーの分離の割り当て」)。
+- L2 の 5a から 5d と 5s は、すべてマージした。5s のあとの L2 のスライスは、この計画書には無い。
+- L3 は 5t を進める(ブランチ `feature/phase5-slice-5t-stderr-separation`)。そのあと、v0.4.0 の公開を待って 5r に進む。5u は v0.5.0 の後である。
+- 5r の前に確かめること: REPL で、`#!fold-case` を書いた行のあとの行に、畳み込みが引き継がれない(同じ行の中では効く。4z の監査のときに実行ファイルで見た)。5a の行は、REPL の入力をまたいで残すのは 5i と 5l としている。段階5の完了条件(「`#!fold-case` ディレクティブが入力の途中で有効になる」)は、同じ入力の中で満たしている。行をまたいで残すことが 5i か 5l の範囲だったかを確かめ、範囲だったなら直すスライスを決める。v0.4.0 のリリースノートには、既知の制限として書いた。
 - 次のスライスの着手は、親のセッションの指示を待つ。
