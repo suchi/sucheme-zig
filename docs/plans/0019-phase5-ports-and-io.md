@@ -520,13 +520,14 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5m | マージ済み(2026-11-01)。`exit` と `(scheme process-context)`。`exit` は、`Machine.invoke` と同じ巻き戻しの経路で最外の継続へ戻り、途中の `after` を呼んでから、`error.Exited`(`Context.Error`)で機械の外へ出る(巻き戻しの状態 `Rewind.exiting`)。終了コードは `Context.exit_code` に置く。`emergency-exit` も機械操作プリミティブで、巻き戻さずに同じ誤りで出る。終了コードへの変換は docs/design/platform-and-web.md の表どおり。`command-line` と環境変数の手続きは純粋プリミティブ(`src/prim/process.zig`)で、ヒープに置いたコマンドラインと環境変数を読む。ネイティブのファイルの実行は、ファイルの後ろの引数を `(command-line)` に渡し(以前の 64 での拒否をやめた)、起動時に UTF-8 を検査する。REPL の `exit` は REPL を終わらせる。WASM は `sucheme_set_command_line` と `sucheme_exit_code` を足し、`exit` で -6 を返す。環境変数は無い。準拠スイートの実行器は、自分の環境変数をスイートに渡す | suchi/sucheme-zig#232 |
 | 5n | マージ済み(2026-11-01)。`(scheme time)`。`current-second`、`current-jiffy`、`jiffies-per-second` は純粋プリミティブ(`src/prim/time.zig`)で、時計は `src/platform/clock.zig` が読む。ネイティブは `std.Io.Clock` の `.real` と `.awake`(`Io` は標準ライブラリの大域のもの)、WASM は import の `env.host_now_ms` と `env.host_monotonic_ms`(合意を求める点の2)。jiffy はマイクロ秒。`current-second` は UNIX 時刻に TAI と UTC の差の 37 秒を足す(tzdata 2026e の `leap-seconds.list` で確かめた。IERS の頁では確かめていない)。WASM のホストが返した単調な時間が範囲の外なら、0 か `i64` の最大値にする。テストは本物の時計を読み、値でなく性質を見る | suchi/sucheme-zig#234 |
 | 5o | マージ済み(2026-11-02)。`eval`、`environment`、`interaction-environment` と `(scheme eval)` `(scheme repl)`。決めたことは合意を求める点の9。`eval` のデータと `environment` の輸入集合は、リーダを通らないので、リーダと同じ循環の検査を入口で掛ける(査読で、cdr が循環したフォームで展開器が止まらないと分かった)。`eval` と `environment` の作業は、呼び出しごとのアリーナに置いて戻るときに捨てる(独立査読で、ファイルの実行では機械のスクラッチに積もり続けると分かった)。残した制限: `eval` の展開の誤りには位置が付かない。ミューテーションのうち、`environment` の入口で `external_refused` を下ろす行を消すものは生き残った(前の処理の印が残ったまま、上限でなくホストのメモリが尽きた場合だけ文言が変わる) | suchi/sucheme-zig#237 |
-| 5p | 作業中(ドラフトの PR)。`load` と `(scheme load)`。決めたことは合意を求める点の10。自分を読み直すファイルに深さの上限は設けない(末尾の自己読み込みは継続もメモリも伸びない普通の無限ループで、末尾でない入れ子は継続が伸びてヒープの上限で止まる。読んだデータの位置を記録しないことで一定になることを測った)。既知の制限: 読み込んだ形式の展開の誤りに位置が付かない。ファイルの中の `import` は、`eval` と同じく断る | - |
-| 5q、5r、5t | 未着手 | - |
+| 5p | マージ済み(2026-11-02)。`load` と `(scheme load)`。決めたことは合意を求める点の10。自分を読み直すファイルに深さの上限は設けない(末尾の自己読み込みは継続もメモリも伸びない普通の無限ループで、末尾でない入れ子は継続が伸びてヒープの上限で止まる。読んだデータの位置を記録しないことで一定になることを測った)。既知の制限: 読み込んだ形式の展開の誤りに位置が付かない。ファイルの中の `import` は、`eval` と同じく断る | suchi/sucheme-zig#241 |
+| 5q | 作業中(ドラフトの PR)。`(scheme r5rs)`。R5RS の 222 識別子のうち 218 は、R7RS のライブラリからの再輸出で足りる。R5RS にだけある `exact->inexact`、`inexact->exact`、`scheme-report-environment`、`null-environment` は、計画では `src/prim/eval.zig` に置く想定だったが、`lib/scheme/r5rs.sld` の本体に Scheme で書いた(既存の `inexact`、`exact`、`environment` の組み合わせで書け、Zig の変更が要らないため)。2つの環境の手続きは版 5 だけを受け付け、呼ぶたびに変更できない新しい指定子を返す。`null-environment` は R5RS の構文キーワードだけを持つ | - |
+| 5r、5t | 未着手 | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。バッファの大きさの行は、5k の PR で消した。
 - L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5p を進める(ブランチ `feature/phase5-slice-5p-load`)。実装、ミューテーション、文書の更新は済み。残りは、独立査読(親のセッションが手配する)、指摘の修正をまとめた1回の push、ready。そのあと 5q、5t の順に進める。
+- L3 は 5q を進める(ブランチ `feature/phase5-slice-5q-r5rs`)。実装、ミューテーション、文書の更新は済み。残りは、独立査読(親のセッションが手配する)、指摘の修正をまとめた1回の push、ready。そのあと 5t に進む。
 - 標準エラーを標準出力と分ける変更(5i の既知の制限)は、5t に割り当てた(「標準エラーの分離の割り当て」)。
 - 次のスライスの着手は、親のセッションの指示を待つ。
