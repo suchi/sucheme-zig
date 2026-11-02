@@ -11,9 +11,11 @@
 
 ## 次にやること
 
-段階3(Scheme による標準ライブラリ)は、v0.3.0 で完了した(タグは 2026-10-24 00:46 JST に `b73aaa1` に打った)。段階3の計画と進捗は [plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md) が正である。
+段階4(数値塔と Unicode)は、v0.4.0 で完了した(タグは 2026-11-02 18:40 JST に `1d4ea11` に打った)。段階4の計画と進捗は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md) が正である。段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
 
-段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。段階4の計画は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md) が正である。
+段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。段階5の計画は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正で、残りはスライス 5t と 5r(v0.5.0)である。
+
+- 段階のリリースの準備では、配布物に入る第三者の表示(`THIRD-PARTY-NOTICES.txt`)が、その段階で入れたデータやコードを覆っているかを確かめる。v0.4.0 の準備で、Unicode の表の表示が足りないと分かり、足した([ADR-0034](adr/0034-release-shape.md) の 2026-11-02 の追記)。
 
 - 見積りは、時間単位で付け、「ready まで」と「マージまで」を分ける。補正は、[0012](plans/0012-schedule-estimates-and-actuals.md) の方法で続ける。段階が終わったら、スライスごとの実績(着手、ready、マージの時刻)を、`git log --merges` と PR の時刻から取って、0012 に足す。
 - 計画書の「範囲を狭める線」の兆候が出たら、巡を足す前にユーザーに諮る。
