@@ -172,6 +172,7 @@
 - [x] `(scheme file)` `(scheme read)` `(scheme write)` `(scheme load)` `(scheme eval)` `(scheme repl)` `(scheme process-context)` `(scheme time)` `(scheme r5rs)`。スライス 5i から 5q([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md))。`(scheme load)` は 5p、`(scheme r5rs)` は 5q
 - [ ] ファイルを読むときのリーダの作業領域(未閉じの括弧ごとの枠)を、ヒープの上限に計上する。今は計上の外にあり、ファイルの大きさの上限(`max_file_bytes` の 1 MiB)で最悪の場合を抑えている([design/open-questions.md](design/open-questions.md) の「ライブラリの表と `import` の作業領域が、ヒープの上限の外にある」)。段階3から送った(2026-10-23 にユーザーが承認した)。スライス未割り当て
 - [ ] ネイティブの `current-error-port` を、標準出力と分けて標準エラーに書く。5i では、標準出力と同じ書き先に書く(既知の制限。[plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の 5i の中身)。`evalPrint` にエラーの書き手を足す変更になる。WASM は段階5では分けない(同じ計画書の「ホスト側のインポートの設計」)。スライス 5t に割り当てた([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の「標準エラーの分離の割り当て」)
+- [ ] `environment`(と `scheme-report-environment`、`null-environment`)が作る最上位の表を、GC を起こす判断の圧力に数える。今は繰り返し呼ぶと常駐のメモリが伸び、ヒープの上限で止まらない(5q の独立査読で見つかった。原因は推測で、確かめていない)。スライス 5u に割り当てた([plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) の「環境の表の GC の圧力の割り当て」)
 
 完了条件: 循環リストの `write` がデータラベル付きで出力される。`#!fold-case` ディレクティブが入力の途中で有効になる。衛生性の検証項目のうち循環データの `quote` の項目が通る。[design/runtime.md](design/runtime.md) の例外の節の事例12(`exit` と `dynamic-wind`)が通る。R7RS 付録Aのライブラリすべてが読み込める。リリース v0.5.0 を出す。
 

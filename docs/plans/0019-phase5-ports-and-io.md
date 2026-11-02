@@ -74,7 +74,7 @@ R7RS 付録Aのライブラリのうち、段階5が入れるのは、`(scheme f
 | 5o `eval` と環境の値 | L3 | `(eval '(* 7 3) (environment '(scheme base)))` が `21`。`(eval '(define foo 32) (environment '(scheme base)))` が誤りを送出する。`interaction-environment` で定義した名前が REPL から見える。EOF の値と約束を `eval` で定数にするテストが通る | `src/machine.zig` の `MachineOp.eval`、`src/value.zig` の環境の値の型、`src/prim/eval.zig`(新規)、`lib/scheme/eval.sld` `repl.sld`(新規) | T3 | 3o のマージ、5m | 3o とは逐次 | 大 |
 | 5p `load` と `(scheme load)` | L3 | `(load "x.scm")` が探索ルートの中の `x.scm` を、指定の環境で評価する。ルートの外の名前を拒否する | `src/prim/eval.zig`、`src/resolve.zig` の第1類の入口、`lib/scheme/load.sld`(新規) | T2 | 5o | L2 と並行 | 小 |
 | 5q `(scheme r5rs)` | L3 | `(import (scheme r5rs))` が通り、`(eval '(+ 1 2) (scheme-report-environment 5))` が `3`。付録Aの全ライブラリが `import` できる | `lib/scheme/r5rs.sld`(新規)、`src/prim/eval.zig` の `null-environment` と `scheme-report-environment` | T2(輸出の転記は T1) | 5k、5l、5n、5p、0018 の `(scheme inexact)` `(scheme complex)` `(scheme char)` | 最後 | 小 |
-| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s と 5t、v0.4.0 の公開 | 最後 | 小 |
+| 5r v0.5.0 と段階の完了 | L3 | v0.5.0 が公開され、段階5の完了の手続きが済む | `docs/releases/`、`build.zig` の `current_stage` と版、roadmap | T2 | 5a から 5q と 5s と 5t と 5u、v0.4.0 の公開 | 最後 | 小 |
 
 5e は、L2 が数の構文を足すスライスの名前として 0018 に渡す(下の「数の構文との順序」)。5f は欠番である。
 
@@ -148,6 +148,7 @@ flowchart TD
     s5q["5q r5rs"]
     s5r["5r v0.5.0"]
     s5t["5t 標準エラーの分離"]
+    s5u["5u 環境の表の GC の圧力"]
     s5a --> s5b --> s5c --> s5d
     o3 --> s5d
     s5c --> s5e
@@ -171,7 +172,7 @@ flowchart TD
     s5n --> s5q
     s5p --> s5q
     nl --> s5q
-    s5q --> s5t --> s5r
+    s5q --> s5t --> s5u --> s5r
     s5d --> s5r
     s5j --> s5r
 ```
@@ -495,6 +496,17 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 - 名前: 5s は「位置情報の残りの割り当て」の L2 のスライスが使っているので、次の 5t にする。
 - 段階5の完了(5r)の前提に 5t を加えた。
 
+## 環境の表の GC の圧力の割り当て
+
+5q の独立査読で、`scheme-report-environment` と `null-environment` を繰り返し呼ぶと、1回あたり約 3.5 KB と約 1.4 KB ずつ常駐のメモリが伸び、ヒープの上限(256 MiB)を超えても `heap limit exceeded` にならないと分かった(査読の測定で、200000 回で RSS 7.1 GB)。5o の `environment` も同じ傾きで、5q に固有ではない。査読の担当は、`environment` が作る最上位の表(ヒープの外の resident)が、GC を起こす判断の圧力に数えられていないためと推測した。確かめていない。
+
+| スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 5u 環境の表の GC の圧力 | L3 | `environment` を繰り返し呼ぶループが、常駐のメモリを一定に保つか、ヒープの上限で `heap limit exceeded` になる。最初の作業として、表が圧力に数えられていないことを確かめる | `src/context.zig` の `Environments`、`src/heap.zig` の圧力の計算 | T3 | 5q | 5t と逐次 | 小 |
+
+- 環境の値を使い回す案(呼ぶたびに同じ指定子を返す)は取らない。`eq?` の性質が変わるためである。
+- 5t のあとに置く。5t と 5u は所有するファイルが重ならないが、L3 の中で逐次に進める。段階5の完了(5r)の前提に 5u を加えた。
+
 ## 合意のあとにやること
 
 - roadmap の段階5の項目を、入っているもの(`#u8`、16進のエスケープ)が分かる形に直し、位置情報の副表の「スライス未割り当て」を 5d に替える。
@@ -521,13 +533,13 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5n | マージ済み(2026-11-01)。`(scheme time)`。`current-second`、`current-jiffy`、`jiffies-per-second` は純粋プリミティブ(`src/prim/time.zig`)で、時計は `src/platform/clock.zig` が読む。ネイティブは `std.Io.Clock` の `.real` と `.awake`(`Io` は標準ライブラリの大域のもの)、WASM は import の `env.host_now_ms` と `env.host_monotonic_ms`(合意を求める点の2)。jiffy はマイクロ秒。`current-second` は UNIX 時刻に TAI と UTC の差の 37 秒を足す(tzdata 2026e の `leap-seconds.list` で確かめた。IERS の頁では確かめていない)。WASM のホストが返した単調な時間が範囲の外なら、0 か `i64` の最大値にする。テストは本物の時計を読み、値でなく性質を見る | suchi/sucheme-zig#234 |
 | 5o | マージ済み(2026-11-02)。`eval`、`environment`、`interaction-environment` と `(scheme eval)` `(scheme repl)`。決めたことは合意を求める点の9。`eval` のデータと `environment` の輸入集合は、リーダを通らないので、リーダと同じ循環の検査を入口で掛ける(査読で、cdr が循環したフォームで展開器が止まらないと分かった)。`eval` と `environment` の作業は、呼び出しごとのアリーナに置いて戻るときに捨てる(独立査読で、ファイルの実行では機械のスクラッチに積もり続けると分かった)。残した制限: `eval` の展開の誤りには位置が付かない。ミューテーションのうち、`environment` の入口で `external_refused` を下ろす行を消すものは生き残った(前の処理の印が残ったまま、上限でなくホストのメモリが尽きた場合だけ文言が変わる) | suchi/sucheme-zig#237 |
 | 5p | マージ済み(2026-11-02)。`load` と `(scheme load)`。決めたことは合意を求める点の10。自分を読み直すファイルに深さの上限は設けない(末尾の自己読み込みは継続もメモリも伸びない普通の無限ループで、末尾でない入れ子は継続が伸びてヒープの上限で止まる。読んだデータの位置を記録しないことで一定になることを測った)。既知の制限: 読み込んだ形式の展開の誤りに位置が付かない。ファイルの中の `import` は、`eval` と同じく断る | suchi/sucheme-zig#241 |
-| 5q | 作業中(ドラフトの PR)。`(scheme r5rs)`。R5RS の 222 識別子のうち 218 は、R7RS のライブラリからの再輸出で足りる。R5RS にだけある `exact->inexact`、`inexact->exact`、`scheme-report-environment`、`null-environment` は、計画では `src/prim/eval.zig` に置く想定だったが、`lib/scheme/r5rs.sld` の本体に Scheme で書いた(既存の `inexact`、`exact`、`environment` の組み合わせで書け、Zig の変更が要らないため)。2つの環境の手続きは版 5 だけを受け付け、呼ぶたびに変更できない新しい指定子を返す。`null-environment` は R5RS の構文キーワードだけを持つ | - |
-| 5r、5t | 未着手 | - |
+| 5q | 作業中(ドラフトの PR)。`(scheme r5rs)`。R5RS の 222 識別子のうち 218 は、R7RS のライブラリからの再輸出で足りる。R5RS にだけある `exact->inexact`、`inexact->exact`、`scheme-report-environment`、`null-environment` は、計画では `src/prim/eval.zig` に置く想定だったが、`lib/scheme/r5rs.sld` の本体に Scheme で書いた(既存の `inexact`、`exact`、`environment` の組み合わせで書け、Zig の変更が要らないため)。2つの環境の手続きは版 5 だけを受け付け、呼ぶたびに変更できない新しい指定子を返す。`null-environment` は R5RS の構文キーワードだけを持つ 既知の制限: `scheme-report-environment` と `null-environment`(と 5o の `environment`)を繰り返し呼ぶと常駐のメモリが伸び、ヒープの上限で止まらない。5u に割り当てた(「環境の表の GC の圧力の割り当て」) | - |
+| 5r、5t、5u | 未着手 | - |
 
 ## 次にやること
 
 - 「合意のあとにやること」の1つ目(roadmap の段階5の項目)は、この計画書の PR で済ませた。3つ目(0018 との突き合わせ)は、5a の PR で「署名」の節を直して済ませた。open-questions.md の3行は、決めた内容を実装するスライス(5h、5k、5n)の PR で消す。5h の行(文字列ポートとバイトベクタポートの内部表現)は、5h の PR で消した。バッファの大きさの行は、5k の PR で消した。
 - L2 の 5a から 5d は、すべてマージした。L2 は 5s のレビューを収束させる。5s のあとの L2 のスライスは、この計画書には無い。
-- L3 は 5q を進める(ブランチ `feature/phase5-slice-5q-r5rs`)。実装、ミューテーション、文書の更新は済み。残りは、独立査読(親のセッションが手配する)、指摘の修正をまとめた1回の push、ready。そのあと 5t に進む。
+- L3 は 5q を進める(ブランチ `feature/phase5-slice-5q-r5rs`)。実装、ミューテーション、文書の更新は済み。残りは、独立査読(親のセッションが手配する)、指摘の修正をまとめた1回の push、ready。そのあと 5t、5u の順に進める。
 - 標準エラーを標準出力と分ける変更(5i の既知の制限)は、5t に割り当てた(「標準エラーの分離の割り当て」)。
 - 次のスライスの着手は、親のセッションの指示を待つ。
