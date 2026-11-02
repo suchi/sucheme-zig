@@ -37,3 +37,34 @@ error: unsupported version in null-environment five
 (import (scheme r5rs)) (list (exact->inexact 1/4) (inexact->exact 0.25) (exact? (inexact->exact 2.0)))
 (0.25 1/4 #t)
 
+
+# 準引用の `unquote` と `unquote-splicing` が、どちらの環境でも働く。付録A の `(scheme r5rs)` の
+# 一覧には無いので、`(scheme base)` から足している。
+(import (scheme r5rs)) (eval '(let ((x 1) (l '(2 3))) `(a ,x ,@l)) (scheme-report-environment 5))
+(a 1 2 3)
+
+(import (scheme r5rs)) (eval '((lambda (x) `(a ,x ,@'(2 3))) 1) (null-environment 5))
+(a 1 2 3)
+
+# `null-environment` の構文キーワードを1つずつ使う。
+(import (scheme r5rs)) (eval '(let* ((x 1) (y x)) (letrec ((f (lambda () y))) (begin (set! x 2) `(,x ,(f))))) (null-environment 5))
+(2 1)
+
+(import (scheme r5rs)) (eval '`(,(cond (#f 1) ((quote 2) => (lambda (v) v)) (else 3)) ,(case 'b ((a) 1) (else 2)) ,(and 1 2) ,(or #f 3)) (null-environment 5))
+(2 2 2 3)
+
+(import (scheme r5rs)) (eval '(do ((i 0 ((lambda (x) ((lambda () x))) 1))) ((quote #t) (if i 'done 'no))) (null-environment 5))
+done
+
+(import (scheme r5rs)) (eval '(let () (define-syntax s (syntax-rules () ((_ a ...) (quote (a ...))))) (define v (s 1 2)) v) (null-environment 5))
+(1 2)
+
+(import (scheme r5rs)) (eval '(let-syntax ((k (syntax-rules () ((_ x) x)))) (letrec-syntax ((m (syntax-rules () ((_ y) (k y))))) (m 'z))) (null-environment 5))
+z
+
+(import (scheme r5rs)) (eval '(let ((p (delay 1))) (if p 'yes 'no)) (null-environment 5))
+yes
+
+# 手続きの束縛は持たない(漏れの側)。
+(import (scheme r5rs)) (eval '+ (null-environment 5))
+error: unbound variable: +

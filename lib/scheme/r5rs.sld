@@ -39,13 +39,17 @@
       (unless (eqv? version 5)
         (error (string-append "unsupported version in " who) version)))
     ;; 呼ぶたびに新しい指定子を作る(`environment` と同じ)。どちらも変更できない。
+    ;; Why: R7RS 付録A の `(scheme r5rs)` の一覧は `unquote` と `unquote-splicing` を含まない。
+    ;; 束縛が無いと、`quasiquote` の中の `,x` が補助構文として認められず、`(unquote x)` という
+    ;; データのまま残る。R5RS の環境では準引用が働くべきなので、`(scheme base)` から足す。
     (define (scheme-report-environment version)
       (check-version "scheme-report-environment" version)
-      (environment '(scheme r5rs)))
+      (environment '(scheme r5rs) '(only (scheme base) unquote unquote-splicing)))
     ;; R5RS の構文キーワードの束縛だけを持つ環境(R7RS 6.12)。
     (define (null-environment version)
       (check-version "null-environment" version)
       (environment '(only (scheme r5rs)
                           quote lambda if set! cond case and or let let* letrec begin do delay
                           quasiquote define define-syntax let-syntax letrec-syntax syntax-rules
-                          else => ... _)))))
+                          else => ... _)
+                   '(only (scheme base) unquote unquote-splicing)))))
