@@ -12,8 +12,8 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階4(数値塔とUnicode)。段階1は v0.1.0 で、段階2は v0.2.0 で、段階3は v0.3.0 で完了した(段階1のスライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md)。段階2の実装計画と進捗は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md)、段階3は [plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md) が正である)。段階4の実装計画は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md) が正である。段階5と段階6の一部は、並行のレーンで先に進めている([plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md))。計画書のない段階の実装は始めない([plans/README.md](plans/README.md))。段階の数値は `build.zig` の `current_stage` が正で、直前のリリース(v0.N.0)の次の段階を表す。上げると `zig build check-docs` が新しい行をCIに要求する |
-| 最新リリース | [v0.3.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.3.0)([リリースノート](releases/v0.3.0.md)) |
+| 現在の段階 | 段階5(ポートと入出力)。段階1は v0.1.0 で、段階2は v0.2.0 で、段階3は v0.3.0 で、段階4は v0.4.0 で完了した(段階1のスライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md)。段階2の実装計画と進捗は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md)、段階3は [plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md)、段階4は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md) が正である)。段階5の実装計画は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である。段階6の一部は、並行のレーンで先に進めている([plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md))。計画書のない段階の実装は始めない([plans/README.md](plans/README.md))。段階の数値は `build.zig` の `current_stage` が正で、直前のリリース(v0.N.0)の次の段階を表す。上げると `zig build check-docs` が新しい行をCIに要求する |
+| 最新リリース | [v0.4.0](https://github.com/suchi/sucheme-zig/releases/tag/v0.4.0)([リリースノート](releases/v0.4.0.md)) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(生成されている。1つ目の表は、必須の識別子ごとに、そのライブラリを `import` したときに束縛されるかを見る。`lib/` のエクスポートはスライス 3l で入った。2つ目の表は、準拠スイートの節ごとの結果で、スライス 6f で入った) |
 
