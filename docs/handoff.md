@@ -13,7 +13,7 @@
 
 段階5(ポートと入出力)は、v0.5.0 で完了した(タグは `64a67c2` に打たれ、2026-11-03 08:43 JST に公開された)。段階5の計画と進捗は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である。段階4は v0.4.0 で([plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md))、段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
 
-段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。次は段階6(準拠検証)である。段階6の全体の計画書はまだ無く、先に進めた部分は [plans/0020-conformance-harness-early.md](plans/0020-conformance-harness-early.md) と [plans/0025-fuzzing-the-evaluator.md](plans/0025-fuzzing-the-evaluator.md) にある。段階4と段階5から送った項目は、roadmap の段階6の作業項目にある。
+段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。次は段階6(準拠検証)である。段階6の全体の計画書は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) で、2026-11-04 に合意された。先に進めた部分は [plans/0020-conformance-harness-early.md](plans/0020-conformance-harness-early.md) と [plans/0025-fuzzing-the-evaluator.md](plans/0025-fuzzing-the-evaluator.md) にある。段階4と段階5から送った項目は、roadmap の段階6の作業項目にある。
 
 - 段階のリリースの準備では、配布物に入る第三者の表示(`THIRD-PARTY-NOTICES.txt`)が、その段階で入れたデータやコードを覆っているかを確かめる。v0.4.0 の準備で、Unicode の表の表示が足りないと分かり、足した([ADR-0034](adr/0034-release-shape.md) の 2026-11-02 の追記)。
 
@@ -64,6 +64,7 @@
 - サンドボックスの `/tmp` ではなく、セッションの作業用ディレクトリ(スクラッチパッド)に一時ファイルを置く。
 - リモートのブランチの削除は、この環境からは HTTP 403 で拒否される(2026-10-29 に観察)。ブランチの作成と push は通る。削除はユーザーが手元で行う。ユーザーの環境は Windows で、コマンドは1行で示す(cmd では行末の `\` による継続が使えない。ユーザーのシェルの種類は確かめていない)。削除の前に、`git cherry origin/main origin/<ブランチ>` で固有のパッチが無いこと(または内容が main にあること)を確かめる。示すときは、削除するものと残すものを別の表にし、残すものには「削除しない」と明記する(同じ表に並べて、取り違えられた事例がある。[process-lessons.md](review/process-lessons.md) の「親が、報告の規則を守らなかった(段階4から5)」)。閉じた PR の先頭は `refs/pull/<番号>/head` に残るので、ブランチを消しても、そのコミットは取り出せる。
 - 別セッション(`create_session`)の VM に、zig が無いことがある(2026-10-29 に、suchi/sucheme-zig#209 の査読用のセッションで観察)。ziglang.org へは繋がらず、PyPI から取った zig の展開と実行は、自動承認の分類器に拒否された(外部から取得したコードの実行にあたる)。査読のように zig を走らせる用事は、zig を使える環境(親の環境のサブエージェント、または zig を持つ子のセッション)に任せる。起動の前に、`zig version` が通る環境かを確かめる。これは、10分を超える用事を別セッションに任せる規則(AGENTS.md)の、環境の制約による例外である。サブエージェントに任せたら、中断で止められうるので、[watch-subagent](../.agents/skills/watch-subagent/SKILL.md) に従って生存確認を予約する。
+- 子のセッションでは、`git checkout` が `.claude/settings.json` の `ask` の規則に当たり、承認の確認で止まる(2026-11-03)。ブランチの作成は、`allow` にある `git switch -c <ブランチ> origin/main` を使う(`--discard-changes` と `-C` は使わない)。ファイルの取り出しは `git show origin/main:<パス>` で行う。
 - 子のセッションの Bash が、`cd <作業ツリー> && ... git commit ...` の形で、main にコミットすると判定されて止まる(2026-10-29)。原因は、フックが、`cd` の前の cwd(main)の現在ブランチで判定することである。`git -C <作業ツリー> ...` の別々の呼び出しにすると通るのは、フックの照合の綴り(`git commit`)に当たらないためで、判定が正しくなるわけではない(この回避の穴は [design/open-questions.md](design/open-questions.md) に記録した)。`zig build --build-file` も確認になる(上のフックの項)ので、子への指示に使わない。子への指示を書く前に、この節を読み直す。
 
 ## サブエージェントの使い方
