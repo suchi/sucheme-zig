@@ -94,6 +94,11 @@ pass
 (import (scheme base) (chibi test) (sucheme test-results)) (test 1.0 1.001) (test 1e-10 2e-10) (test 1e10 10000000001.0) (test 1.0 1.0000099) (test 1.0 1.0000101) (map (lambda (r) (vector-ref r 2)) (test-results))
 (fail fail pass pass fail)
 
+# 割る数は、絶対値の小さいほうでなく大きいほうである。差が 1e-5 をわずかに超える2数は、小さいほうで割れば
+# 不合格だが、大きいほうで割ると合格になる。どちらを期待した値に置いても同じである。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1.0 1.00001) (test 1.00001 1.0) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass pass)
+
 # 記録の欄は、近似で合格しても、期待した値と得た値をそのまま残す。
 (import (scheme base) (chibi test) (sucheme test-results)) (test 9.728 9.728000255822641) (test-results)
 (#(#f 9.728000255822641 pass 9.728 9.728000255822641))
