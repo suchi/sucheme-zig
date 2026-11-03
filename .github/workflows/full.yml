@@ -146,3 +146,4 @@ jobs:
       - run: zig build check-report
       - run: zig build check-unicode
       - run: zig build check-examples
+      - run: zig build test-conformance
