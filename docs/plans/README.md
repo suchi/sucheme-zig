@@ -31,6 +31,7 @@
 | [0025-fuzzing-the-evaluator.md](0025-fuzzing-the-evaluator.md) | ファジングの拡充: 評価器を通しで試す対象と、入力コーパス(レーン L5) |
 | [0026-shorten-slow-tier.md](0026-shorten-slow-tier.md) | 層2の slow tests を、検査を減らさずに短くする案(単体テストの最適化、test-scheme のランナーの遅れと並列の実行) |
 | [0027-user-documentation.md](0027-user-documentation.md) | 利用者向けの文書(チュートリアル、ユーザーズガイド、リファレンス、プログラム集)と、文書のコードが動くことを確かめる検査(レーン L9) |
+| [0028-phase6-conformance.md](0028-phase6-conformance.md) | 段階6(準拠検証)の全体の計画: 残りのスライス(6j 以降)、未割り当ての項目の行き先、終了コードの切り替え、v1.0.0 のリリース |
 
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
