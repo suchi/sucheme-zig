@@ -10,14 +10,40 @@
       (lambda (c) (k (list 'raised c)))
       (lambda () (list 'value (thunk)))))))
 
-;; 値を期待するテストを1件走らせて記録する。比較は `equal?` である。
-;; 上流は不正確な数を近似で比べるが、浮動小数点数が入るまでは書かない。
+;; 不正確な数の比較で許す相対の差。上流の `(chibi test)` の既定値と同じである
+;; (docs/plans/0028-phase6-conformance.md の「確かめた事実」)。
+(define test-epsilon 1e-5)
+
+;; 実数 `x` と `y` が近いかを返す。差を、絶対値の大きいほうで割った比で測る。
+;; 絶対値の小さいほうが0なら、比が取れないので、大きいほうの絶対値そのものを測る。
+(define (test-close? x y)
+  (let ((near (if (> (abs x) (abs y)) y x))
+        (far (if (> (abs x) (abs y)) x y)))
+    (if (zero? near)
+        (< (abs far) test-epsilon)
+        (< (abs (/ (- near far) far)) test-epsilon))))
+
+;; 期待した値と得た値が合っているかを返す。`equal?` で等しければ合う。そうでなくても、
+;; 期待した値が不正確な実数なら、得た値が実数で(正確でもよい)近ければ合う。期待した値が
+;; 実数でない数なら、得た値も数であるときに、実部どうしと虚部どうしを、この規則で比べる。
+;; 正確な実数と、数でない値は、`equal?` だけで決まる。
+(define (test-match? expected actual)
+  (cond ((equal? expected actual) #t)
+        ((real? expected)
+         (and (inexact? expected) (real? actual) (test-close? expected actual)))
+        ((complex? expected)
+         (and (complex? actual)
+              (test-match? (real-part expected) (real-part actual))
+              (test-match? (imag-part expected) (imag-part actual))))
+        (else #f)))
+
+;; 値を期待するテストを1件走らせて記録する。比較は `test-match?` である。
 (define (test-run form expected thunk)
   (let ((outcome (test-outcome thunk)))
     (if (eq? (car outcome) 'raised)
         (test-results-add! form 'error expected (cadr outcome))
         (let ((actual (cadr outcome)))
-          (test-results-add! form (if (equal? actual expected) 'pass 'fail) expected actual)))))
+          (test-results-add! form (if (test-match? expected actual) 'pass 'fail) expected actual)))))
 
 ;; 条件が上がることを期待するテストを1件走らせて記録する。
 (define (test-run-error form thunk)

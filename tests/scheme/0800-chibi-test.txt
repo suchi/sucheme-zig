@@ -19,7 +19,7 @@
 (import (scheme base) (chibi test) (sucheme test-results)) (define (length x) 0) (define (list-ref l i) 'no) (test 1 1) (list (test-results-count) (vector-ref (test-results-ref 0) 2))
 (1 pass)
 
-# `test` は、期待した値と式の値を `equal?` で比べる。
+# `test` は、期待した値と式の値を `equal?` で比べる(不正確な数の例外は、下のスライス 6k のケース)。
 (import (scheme base) (chibi test) (sucheme test-results)) (test 3 (+ 1 2)) (test-results)
 (#(#f (+ 1 2) pass 3 3))
 
