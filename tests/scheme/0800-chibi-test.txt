@@ -82,3 +82,50 @@ error: wrong type of argument to car 5
 # スイートの使い方: `test` のテンプレートが参照する手続きは、利用側の同じ名前に影響されない。
 (import (scheme base) (chibi test) (sucheme test-results)) (define (equal? a b) #f) (define (test-run . args) 'shadowed) (test 1 1) (vector-ref (car (test-results)) 2)
 pass
+
+# スライス 6k: 期待した値が不正確な実数なら、得た値の実数との相対の差が 1e-5 未満で合格にする
+# (上流の `(chibi test)` の規則。docs/plans/0028-phase6-conformance.md の「確かめた事実」)。
+# 差は、絶対値の大きいほうで割る。準拠スイートは、桁を丸めた期待値をこの規則で比べる。
+(import (scheme base) (scheme inexact) (chibi test) (sucheme test-results)) (test 9.728 9.728000255822641) (test 1.4142135623731 (sqrt 2)) (test -3.14159265358979 (atan -0.0 -1.0)) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass pass pass)
+
+# 離れた不正確な数は不合格である。差は相対で測るので、絶対の差が小さくても、値が小さければ不合格になり、
+# 絶対の差が大きくても、値が大きければ合格になる。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1.0 1.001) (test 1e-10 2e-10) (test 1e10 10000000001.0) (test 1.0 1.0000099) (test 1.0 1.0000101) (map (lambda (r) (vector-ref r 2)) (test-results))
+(fail fail pass pass fail)
+
+# 記録の欄は、近似で合格しても、期待した値と得た値をそのまま残す。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 9.728 9.728000255822641) (test-results)
+(#(#f 9.728000255822641 pass 9.728 9.728000255822641))
+
+# 片方が0なら、もう片方の絶対値が 1e-5 未満で合格である。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 0.0 1e-6) (test 0.0 -1e-6) (test 1e-6 0.0) (test 0.0 -0.0) (test 0.0 1e-4) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass pass pass pass fail)
+
+# 期待した値が正確な数なら、近似にしない。`equal?` のままである。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 100000 100001) (test 1/3 0.3333333333) (test 1 1.0) (test 2 2) (map (lambda (r) (vector-ref r 2)) (test-results))
+(fail fail fail pass)
+
+# 期待した値が不正確で、得た値が正確な実数でも、近似で比べる(上流のとおり)。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1.0 1) (test 0.5 1/2) (test 1.0 2) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass pass fail)
+
+# 期待した値が実数でない数なら、実部と虚部を、それぞれ同じ規則で比べる。
+(import (scheme base) (scheme complex) (chibi test) (sucheme test-results)) (test 0.54030230586814+0.841470984807897i (make-polar 1 1)) (test 0.0+1.0i 0.0-1.0i) (test 1.0+1.0i 1.0+1.01i) (test 1.0+1.0i 1.0) (test 1+2i 1.0+2.0i) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass fail fail fail fail)
+
+# 期待した値が実数なら、得た値も実数でなければ不合格である。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1.0 1.0+0.000001i) (map (lambda (r) (vector-ref r 2)) (test-results))
+(fail)
+
+# 数でない値は `equal?` のままである。片方だけが数でも、誤りにせず不合格にする。リストの中の数は近似にしない。
+(import (scheme base) (chibi test) (sucheme test-results)) (test 1.0 "1.0") (test 1.0+1.0i 'x) (test '(1.0) '(1.000001)) (test '(1.0) '(1.0)) (test 'a 1.0) (map (lambda (r) (vector-ref r 2)) (test-results))
+(fail fail fail pass fail)
+
+# `test-values` は値のリストを比べるので、近似にしない(上流のとおり)。
+(import (scheme base) (chibi test) (sucheme test-results)) (test-values (values 1.0) (values 1.000001)) (test-values (values 1.0) (values 1.0)) (map (lambda (r) (vector-ref r 2)) (test-results))
+(fail pass)
+
+# 無限大と NaN は、`equal?` で等しいときだけ合格である。
+(import (scheme base) (chibi test) (sucheme test-results)) (test +inf.0 +inf.0) (test +inf.0 -inf.0) (test +inf.0 1e308) (test 1.0 +nan.0) (test +nan.0 1.0) (map (lambda (r) (vector-ref r 2)) (test-results))
+(pass fail fail fail fail)
