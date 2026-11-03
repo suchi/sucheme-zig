@@ -395,8 +395,8 @@ pub fn build(b: *std.Build) void {
     check_report_step.dependOn(&run_check_report.step);
 
     // 準拠スイート(tests/vendor/r7rs-tests.scm)の実行。ランナーは引数を取らず、スイートを
-    // 自分で読む。段階6までは CI で走らせない(AGENTS.md の検証コマンド表の「使えるようになる
-    // 段階」)。末尾の checkStepRuns の呼び出しを参照。
+    // 自分で読む。段階6から全コミットの CI で走らせる(AGENTS.md の検証コマンド表の「使えるように
+    // なる段階」)。末尾の checkStepRuns の呼び出しを参照。
     const run_conformance = b.addRunArtifact(conformance);
     run_conformance.setCwd(b.path("."));
     const test_conformance_step = b.step("test-conformance", "run the vendored R7RS conformance suite");
