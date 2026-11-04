@@ -397,7 +397,8 @@ test "sqrt of a complex number" {
     try expectNearComplex(0.7071067811865476, 0.7071067811865476, "sqrt", &.{"+i"});
     try expectNearComplex(1.272019649514069, 0.7861513777574233, "sqrt", &.{"1+2i"});
     try expectNearComplex(0.0, 1.0, "sqrt", &.{"-1.0+0.0i"});
-    try expectNearComplex(0.0, -1.0, "sqrt", &.{"-1.0-0.0i"});
+    // 虚部が -0.0 でも、R7RS 6.2.6 の「実部が0なら虚部は非負」に従い、+i 側の根になる。
+    try expectNearComplex(0.0, 1.0, "sqrt", &.{"-1.0-0.0i"});
 }
 
 test "sqrt takes only a number" {

@@ -104,6 +104,19 @@ error: wrong type of argument to magnitude "x"
 (import (scheme inexact) (scheme complex)) (map (lambda (z) (let ((r (sqrt z))) (or (> (real-part r) 0) (and (= (real-part r) 0) (>= (imag-part r) 0))))) '(-4 -4+1i 1-1i -1-1i 1+2i -1.5+0.5i))
 (#t #t #t #t #t #t)
 
+# sqrt の分岐: 負の実軸の上側(+0.0)も下側(-0.0)も、実部が0で虚部が非負の根になる。
+# 負の実軸から離れた引数と、実部が正の引数の根は変わらない。
+(import (scheme inexact)) (list (sqrt -1.0-0.0i) (sqrt -4.0-0.0i) (sqrt -1.0+0.0i) (sqrt -1.0) (sqrt 1.0-0.0i) (sqrt -1.0-1.0i))
+(0.0+1.0i 0.0+2.0i 0.0+1.0i 0.0+1.0i 1.0-0.0i 0.45508986056222733-1.09868411346781i)
+
+# 実部が負でない引数は、虚部の -0.0 を変えない(実部が 0 のときも)。
+(import (scheme inexact)) (list (sqrt 0.0-0.0i) (sqrt -0.0-0.0i))
+(0.0-0.0i 0.0-0.0i)
+
+# expt: 複素数の底と、整数値の flonum の指数。2^63 ちょうどの指数は整数に変換できないので、exp と log で求める。
+(import (scheme inexact)) (list (expt 1+2i 4.0) (expt 1+2i 9223372036854775808.0))
+(-7.0-24.0i +inf.0-inf.0i)
+
 # exp、log: 複素数。
 (import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (exp +i) 0.5403023058681398+0.8414709848078965i) (near? (exp 1+2i) -1.1312043837568135+2.4717266720048188i) (near? (exp (* +i 3.141592653589793)) -1.0)))
 (#t #t #t)

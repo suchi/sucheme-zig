@@ -40,7 +40,7 @@
 | 4.3 Macros | 26 | 0 | 0 | 0 | 0 | 0 |
 | 5 Program structure | 15 | 0 | 0 | 0 | 0 | 0 |
 | 6.1 Equivalence Predicates | 25 | 0 | 0 | 0 | 0 | 0 |
-| 6.2 Numbers | 218 | 1 | 0 | 0 | 0 | 0 |
+| 6.2 Numbers | 219 | 0 | 0 | 0 | 0 | 0 |
 | 6.3 Booleans | 18 | 0 | 0 | 0 | 0 | 0 |
 | 6.4 Lists | 65 | 0 | 0 | 0 | 0 | 0 |
 | 6.5 Symbols | 17 | 0 | 0 | 0 | 0 | 0 |
@@ -55,4 +55,4 @@
 | Read syntax | 93 | 0 | 0 | 0 | 0 | 0 |
 | Numeric syntax | 220 | 0 | 0 | 0 | 0 | 0 |
 | 6.14 System interface | 13 | 0 | 0 | 0 | 0 | 0 |
-| 合計 | 1233 | 1 | 0 | 0 | 0 | 0 |
+| 合計 | 1234 | 0 | 0 | 0 | 0 | 0 |
