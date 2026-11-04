@@ -437,6 +437,15 @@ test("a monotonic time the host gives out of range becomes 0, not a trap", () =>
 
 // `exit` は、`after` を呼んでから -6 を返す。終了コードは出力に書かず、`sucheme_exit_code` で
 // 取る。以後はリセットまで評価を受け付けない(スライス 5m、docs/design/platform-and-web.md)。
+test("a fold-case directive applies to the later evaluations until a reset", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("'ABC"), [OK, "ABC\n"]);
+  assert.deepEqual(h.run("#!fold-case"), [OK, ""]);
+  assert.deepEqual(h.run("'ABC"), [OK, "abc\n"]);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.deepEqual(h.run("'ABC"), [OK, "ABC\n"]);
+});
+
 test("exit runs the after of a dynamic-wind, returns -6 with the code apart from the output, and waits for a reset", () => {
   const h = instantiate().init();
   assert.equal(h.x.sucheme_exit_code(), 0);

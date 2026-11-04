@@ -94,6 +94,12 @@ pub const Interpreter = struct {
     /// 名前があれば、展開時のエラーの説明に、その形式を読んだ位置を前置する。文字列は
     /// 呼び出し側が持つ。
     file_name: ?[]const u8,
+    /// Whether the next `evalPrint` reads identifiers folded to lower case.
+    /// `#!fold-case` と `#!no-fold-case` は、同じポートの後続のデータに効く(R7RS 2.1)。REPL の
+    /// 入力は行ごとに `evalPrint` へ渡るので、各呼び出しがこの状態で読み始め、読み終えた
+    /// 状態を書き戻す(スライス 6r)。ファイルの実行は 1 回の呼び出しで全体を読むので、
+    /// 初期値の偽で始まり、挙動は変わらない。
+    fold_case: bool,
     /// Where in a file the error the last `evalPrint` returned was raised, if
     /// it is known.
     error_at: ?ErrorAt,
@@ -186,6 +192,7 @@ pub const Interpreter = struct {
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
         self.file_name = null;
+        self.fold_case = false;
         self.error_at = null;
         self.console_out = null;
         self.console_err = null;
@@ -303,6 +310,9 @@ pub const Interpreter = struct {
         self.ctx.heap.console_input = self.console_in;
         defer self.ctx.heap.console_input = previous_input;
         var r: reader.Reader = .init(source);
+        r.fold_case = self.fold_case;
+        // エラーで止まっても、そこまでに読んだ指令の効果は残す。
+        defer self.fold_case = r.fold_case;
         // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
         // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
         var table: positions_mod.Table = .init(arena);
@@ -487,6 +497,50 @@ fn evalPrinted(src: []const u8) ![]const u8 {
     var w: std.Io.Writer = .fixed(&S.buf);
     try interp.evalPrint(arena.allocator(), src, &w);
     return w.buffered();
+}
+
+test "a fold-case directive on one line of the REPL applies to the lines after it, until no-fold-case" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
+    try interp.evalPrint(arena.allocator(), "#!fold-case\n", &w);
+    try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
+    try interp.evalPrint(arena.allocator(), "(eq? 'Abc 'aBC)\n", &w);
+    try interp.evalPrint(arena.allocator(), "#!no-fold-case\n", &w);
+    try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
+    try std.testing.expectEqualStrings("Abc\nabc\n#t\nAbc\n", w.buffered());
+}
+
+test "a fold-case directive survives an error later in the same input" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "#!fold-case (car 1)", &w));
+    try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
+    try std.testing.expectEqualStrings("abc\n", w.buffered());
+}
+
+test "a fold-case directive survives a reader error in the same input" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 閉じていない括弧で、リーダが失敗する。指令はその前に読んである。
+    try std.testing.expectError(error.Incomplete, interp.evalPrint(arena.allocator(), "(#!fold-case", &w));
+    try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
+    try std.testing.expectEqualStrings("abc\n", w.buffered());
 }
 
 test "isBound answers for the primitives, the special forms and nothing else" {
