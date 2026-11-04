@@ -53,6 +53,6 @@
 | 6.12 Environments and evaluation | 4 | 0 | 0 | 0 | 0 | 0 |
 | 6.13 Input and output | 63 | 0 | 0 | 0 | 0 | 0 |
 | Read syntax | 93 | 0 | 0 | 0 | 0 | 0 |
-| Numeric syntax | 200 | 0 | 10 | 0 | 0 | 0 |
+| Numeric syntax | 220 | 0 | 0 | 0 | 0 | 0 |
 | 6.14 System interface | 13 | 0 | 0 | 0 | 0 | 0 |
-| 合計 | 1213 | 1 | 10 | 0 | 0 | 0 |
+| 合計 | 1233 | 1 | 0 | 0 | 0 | 0 |

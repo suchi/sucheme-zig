@@ -75,3 +75,39 @@ error: unreadable token
 
 #xg
 error: unreadable token
+
+# スライス 6m: 精度を示す指数の印 s f d l(大文字も)を、e と同じ指数として読む。
+# 精度は区別せず、write は e の綴りで書く。
+1s2
+100.0
+
+1F2
+100.0
+
+1.5d-1
+0.15
+
+1L2
+100.0
+
+#e1d2
+100
+
+1d2+1.5s1i
+100.0+15.0i
+
+(string->number "1f2")
+100.0
+
+(string->number "1d")
+#f
+
+(string->number "d2")
+#f
+
+(string->number "1d2" 16)
+466
+
+# 印の前に数字が無い綴りは記号である。
+(symbol? 'd2)
+#t

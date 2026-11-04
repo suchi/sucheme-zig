@@ -274,7 +274,7 @@ fn parseReal(h: *Heap, gpa: std.mem.Allocator, literal: syntax.Literal, real: sy
         },
         .decimal => |d| {
             if (literal.exactness == .exact) return try parseExactDecimal(h, gpa, d);
-            const x = flonum.parseDecimal(decimalSpelling(d)) catch return null;
+            const x = (try parseInexactDecimal(gpa, d)) orelse return null;
             return .fromFlonum(signedF64(d.sign, x));
         },
     }
@@ -296,6 +296,26 @@ fn decimalSpelling(d: anytype) []const u8 {
         @intFromPtr(d.fraction.ptr) + d.fraction.len;
     const first: [*]const u8 = d.whole.ptr;
     return first[0 .. end - start];
+}
+
+/// The value of an inexact decimal as a double.
+///
+/// Why: 指数の印は `e` のほかに `s` `f` `d` `l` を受け付ける(`syntax.scan`)。`std.fmt.parseFloat`
+/// は `e` しか指数の印として読まないので、ほかの印のときだけ、印を `e` に置いた写しを渡す。
+/// 短い綴りはスタックの領域に写す。長い綴りは `gpa`(ヒープの上限に計上される)に写す。
+/// 印が `e` か指数部が無い綴りは、写さない。
+fn parseInexactDecimal(gpa: std.mem.Allocator, d: anytype) Error!?f64 {
+    const text = decimalSpelling(d);
+    if (d.exponent.len == 0) return flonum.parseDecimal(text) catch null;
+    const marker = @intFromPtr(d.exponent.ptr) - @intFromPtr(text.ptr) - 1;
+    if (text[marker] == 'e' or text[marker] == 'E') return flonum.parseDecimal(text) catch null;
+    var stack: [256]u8 = undefined;
+    const heap_copy: ?[]u8 = if (text.len <= stack.len) null else try gpa.alloc(u8, text.len);
+    defer if (heap_copy) |c| gpa.free(c);
+    const copy = heap_copy orelse stack[0..text.len];
+    @memcpy(copy, text);
+    copy[marker] = 'e';
+    return flonum.parseDecimal(copy) catch null;
 }
 
 fn signedF64(sign: syntax.Sign, magnitude: f64) f64 {
@@ -948,6 +968,56 @@ test "the limits of a spelling are the values the design decided" {
     // 値を変えるのは設計の判断である(docs/design/numerics-and-unicode.md)。
     try testing.expectEqual(100_000, max_spelling_digits);
     try testing.expectEqual(1_000_000, max_spelling_exponent);
+}
+
+test "parse reads the exponent markers s, f, d and l as e, short and long" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    for ([_][]const u8{ "s", "f", "d", "l", "S", "F", "D", "L" }) |m| {
+        try expectReadsFormatted(&h, "100.0", "1{s}2", .{m});
+        try expectReadsFormatted(&h, "0.0015", "1.5{s}-3", .{m});
+        try expectReadsFormatted(&h, "-250.0", "-.25{s}+3", .{m});
+        try expectReadsFormatted(&h, "+inf.0", "1{s}400", .{m});
+        try expectReadsFormatted(&h, "100.0", "#i1{s}2", .{m});
+        try expectReadsFormatted(&h, "1000", "#e1{s}3", .{m});
+        try expectReadsFormatted(&h, "100.0+15.0i", "1{s}2+1.5{s}1i", .{ m, m });
+    }
+    // 256 バイトを超える綴りは、スタックでなく gpa に写して読む。
+    const long = try filled(300, '0');
+    defer testing.allocator.free(long);
+    try expectReadsFormatted(&h, "1.0", "1.{s}d0", .{long});
+    try expectReadsFormatted(&h, "1.0", "1.{s}D0", .{long});
+}
+
+test "parse reads a marked decimal on both sides of the 256 byte limit of the stack copy" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    // 綴りの長さが 255、256、257 バイト。"1." と印と "0" の 4 バイトのほかは 0 である。
+    for ([_]usize{ 255, 256, 257 }) |len| {
+        for ([_][]const u8{ "d", "F" }) |m| {
+            const zeros_run = try filled(len - 4, '0');
+            defer testing.allocator.free(zeros_run);
+            try expectReadsFormatted(&h, "1.0", "1.{s}{s}0", .{ zeros_run, m });
+            try expectReadsFormatted(&h, "-1.0", "-1.{s}{s}0", .{ zeros_run, m });
+        }
+    }
+}
+
+test "parse gives a heap limit error when the copy of a long marked decimal is refused" {
+    var h: Heap = .init(testing.allocator, .{ .limit = 1 << 20 });
+    defer h.deinit();
+    const zeros_run = try filled(400, '0');
+    defer testing.allocator.free(zeros_run);
+    const text = try std.fmt.allocPrint(testing.allocator, "1.{s}d0", .{zeros_run});
+    defer testing.allocator.free(text);
+    // 長い綴りの写しは、ヒープの上限に計上される。残りが無ければ断られ、数えた分は戻る。
+    h.external = h.options.limit;
+    try testing.expectError(error.HeapLimit, parse(&h, text, 10));
+    try testing.expectEqual(h.options.limit, h.external);
+    // 短い綴りはスタックに写すので、同じ状態でも読める。
+    try testing.expect((try parse(&h, "1.5d0", 10)) != null);
+    h.external = 0;
+    try testing.expect((try parse(&h, text, 10)) != null);
 }
 
 test "parse does not limit what costs little: an inexact decimal and an exact zero" {
