@@ -287,7 +287,7 @@ v1.0.0 は、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の「段階�
 | 6m | 完了。`s` `f` `d` `l`(大文字も)を `e` と同じ倍精度の指数の印として読む。字句は `src/num/syntax.zig`、値の読み取りは `src/num/number.zig`(`std.fmt.parseFloat` が `e` しか読まないので、印を `e` に置いた写しを渡す)。準拠スイートの Numeric syntax の節の誤りは0件になった。受け付ける綴りは L9 のリファレンスに載せる項目として伝える |
 | 6n | 実装済み、ドラフトの PR で通常の CI を待つ。`test-conformance` は、落ちた・誤り・実行不能が1件でもあるか、解決できない import があれば非0。着手前に main の `afc93c8` で走らせ、終了コード0、不合格0件を確かめたので、除外の一覧は置かない。展開器の読み取りの結果は 0024 に書いた。次にやること: 通常の CI が緑になったら親に報告する。ready の前に、main を取り込んだ先頭で `test-conformance` が終了コード0であることを確かめる |
 | 6o | 未着手 |
-| 6p | 未着手 |
+| 6p | 実装済み、ローカルの検証中。`Reader.next` が、未閉じの枠と枠の中の要素の並びを `heap.Charged` 経由で確保し、読む間だけ `external_enforced` を立てる(`src/heap.zig` は変えていない)。テストは `src/reader.zig`(層1に縮小版、`tier.slow()` に 1 MiB の規模版)。open-questions の該当の行にリーダの分の結果を書いた。次にやること: ドラフトの PR を作り、通常の CI が緑になったら親に報告する |
 | 5u | 未着手(0019 で割り当て済み) |
 | 6q | 実装中。`reader.readsAsIdentifier` を公開し、プリンタの判定をそれ1本にした(リーダの `isIdentifier`、ASCII だけを通す写しは削除)。`λ` などは縦棒なしで書き、空白や先頭に置けない文字(Nd など)を含む綴りは縦棒のまま。テストは `src/printer.zig`、`tests/scheme/0630-write.txt` |
 | 6r | 実装中。`Interpreter.fold_case` を足し、`run` が `Reader` に渡して、読み終えた状態(エラーで止まったときも)を書き戻す。`src/reader.zig` は変えていない。WASM の `sucheme_eval_begin` も同じ入口なので、評価をまたいで効き、`sucheme_reset` で戻る(`tools/test-wasm` で固定)。準拠スイートのランナーとテストの実行器は、節やケースごとに新しい `Interpreter` を作るので、影響を受けない。単体テストと、実際の REPL への入力で確かめた |
