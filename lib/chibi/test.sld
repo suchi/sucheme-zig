@@ -4,6 +4,6 @@
 ;; chibi 固有のライブラリを読み込むので、取り込まずに自前で書く(ADR-0013)。
 ;; 結果は `(sucheme test-results)` に貯める。
 (define-library (chibi test)
-  (import (scheme base) (sucheme test-results))
+  (import (scheme base) (scheme complex) (sucheme test-results))
   (export test test-assert test-error test-values test-begin test-end)
   (include "test.scm"))
