@@ -1,8 +1,7 @@
 # スライス 4u4: ASCII でない文字を含む識別子(R7RS 2.1、7.1.1)。識別子に使える文字は、
 # 一般カテゴリ Lu、Ll、Lt、Lm、Lo、Mn、Mc、Me、Nd、Nl、No、Pd、Pc、Po、Sc、Sm、Sk、So、Co の文字と
 # U+200C、U+200D である。最初の文字には、Nd、Mc、Me の文字を使えない。
-# `write` は、ASCII でない文字を含む名前を縦棒で囲む(src/printer.zig)ので、名前は
-# `symbol->string` と `eq?` で確かめる。
+# `write` は、リーダが縦棒なしで識別子に読む名前を囲まない(src/printer.zig、スライス 6q)。
 
 (define λ 1) λ
 1

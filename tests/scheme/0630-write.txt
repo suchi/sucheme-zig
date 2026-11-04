@@ -45,12 +45,23 @@
 (import (scheme write)) (let ((x (list "a" #\b))) (set-cdr! (cdr x) x) (display x))
 #0=(a b . #0#)
 
-# 縦棒で囲むシンボル。`display` は囲まない。
+# 縦棒で囲むシンボル。`display` は囲まない。リーダが縦棒なしで識別子に読む `λ` は囲まない。
 (import (scheme write)) (write (list (string->symbol "a b") (string->symbol "") (string->symbol "1") (string->symbol "λ") 'abc '+ '...))
-(|a b| || |1| |λ| abc + ...)
+(|a b| || |1| λ abc + ...)
 
 (import (scheme write)) (display (list (string->symbol "a b") (string->symbol "λ")))
 (a b λ)
+
+# スライス 6q: ASCII でない文字の名前も、リーダが識別子に読めるなら囲まない。読めない綴り
+# (空白を含むもの、数字で始まる Nd の文字)は囲む。どちらも読み戻すと同じシンボルになる。
+(import (scheme write)) (let ((p (open-output-string))) (write (list 'λ '二倍 '+λ (string->symbol "λ x") (string->symbol "\x661;")) p) (get-output-string p))
+"(λ 二倍 +λ |λ x| |١|)"
+
+(import (scheme write) (scheme read)) (let ((p (open-output-string))) (write 'λ p) (eq? 'λ (read (open-input-string (get-output-string p)))))
+#t
+
+(import (scheme write) (scheme read)) (let ((p (open-output-string)) (s (string->symbol "λ x"))) (write s p) (eq? s (read (open-input-string (get-output-string p)))))
+#t
 
 '|a\|b|
 |a\|b|
