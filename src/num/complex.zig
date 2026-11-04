@@ -363,6 +363,10 @@ test "the square root of a negative real with a negative zero imaginary part is 
     const right = (try number.parse(h, "1.0-0.0i", 10)).?;
     const kept = (try apply(h, .sqrt, right)).asCompnum().?;
     try std.testing.expect(std.math.signbit(kept.imag.asFlonum().?));
+    // 実部が0の引数は、虚部の -0.0 も変えない。
+    const zero = (try number.parse(h, "0.0-0.0i", 10)).?;
+    const zero_root = (try apply(h, .sqrt, zero)).asCompnum().?;
+    try std.testing.expect(std.math.signbit(zero_root.imag.asFlonum().?));
 }
 
 test "the angle of a real number follows its sign" {
