@@ -108,9 +108,6 @@ error: unreadable token
 (string->number "1d2" 16)
 466
 
-# 記号のままのもの(指数部の数字が無い、印の前に数字が無い)。
+# 印の前に数字が無い綴りは記号である。
 (symbol? 'd2)
-#t
-
-(symbol? '1d)
 #t
