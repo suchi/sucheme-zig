@@ -143,7 +143,9 @@ const Scanner = struct {
                 return null;
             }
             var exponent: []const u8 = "";
-            if (s.peek() == 'e') {
+            // 指数の印は `e` のほか、R7RS 6.2.5 が精度の印として許す `s` `f` `d` `l` も
+            // 受け付ける。精度は区別せず、すべて同じ指数として扱う(処理系の拡張)。
+            if (isExponentMarker(s.peek())) {
                 const marker = s.pos;
                 s.pos += 1;
                 const exponent_start = s.pos;
@@ -170,6 +172,14 @@ const Scanner = struct {
             return .{ .ratio = .{ .sign = sign, .numerator = whole, .denominator = denominator } };
         }
         return .{ .integer = .{ .sign = sign, .digits = whole } };
+    }
+
+    /// `e`、および精度を示す `s` `f` `d` `l`(`peek` は小文字にして返す)。
+    fn isExponentMarker(c: ?u8) bool {
+        return switch (c orelse return false) {
+            'e', 's', 'f', 'd', 'l' => true,
+            else => false,
+        };
     }
 
     const SignedReal = struct {
@@ -355,6 +365,40 @@ test "decimals with a point, an exponent, or both" {
     for ([_][]const u8{ ".", "+.", "-.", ".e2", "1e", "1e+", "1e-", "e5", "1.5.2", "1e2.5", "1.5e", "1..5", "1e2e3", "1ee2" }) |text| {
         try expectNot(text, 10);
     }
+}
+
+test "the exponent markers s, f, d and l read like e, in either case (R7RS 6.2.5 allows them)" {
+    for ([_][]const u8{ "s", "f", "d", "l", "S", "F", "D", "L" }) |marker| {
+        var buf: [16]u8 = undefined;
+        const plain = try std.fmt.bufPrint(&buf, "1{s}2", .{marker});
+        try expectReal(plain, dec(.positive, "1", "", "2"));
+        const signed = try std.fmt.bufPrint(&buf, "-1.5{s}-3", .{marker});
+        try expectReal(signed, dec(.negative, "1", "5", "-3"));
+        const fraction = try std.fmt.bufPrint(&buf, ".5{s}+2", .{marker});
+        try expectReal(fraction, dec(.positive, "", "5", "+2"));
+        // 指数部の数字が無い綴りは、e と同じく数ではない。
+        const bare = try std.fmt.bufPrint(&buf, "1{s}", .{marker});
+        try expectNot(bare, 10);
+        const no_digits = try std.fmt.bufPrint(&buf, "1{s}+", .{marker});
+        try expectNot(no_digits, 10);
+        const doubled = try std.fmt.bufPrint(&buf, "1{s}2{s}3", .{ marker, marker });
+        try expectNot(doubled, 10);
+        // 印の前に数字が無い綴りは、記号である。
+        const leading = try std.fmt.bufPrint(&buf, "{s}5", .{marker});
+        try expectNot(leading, 10);
+    }
+    // 複素数の中でも使える。
+    try expectScan("1d2+3f1i", 10, .{ .radix = 10, .exactness = .unmarked, .shape = .{ .rectangular = .{
+        .real = dec(.positive, "1", "", "2"),
+        .imag = dec(.positive, "3", "", "1"),
+    } } });
+    // 基数10以外では、d と f は数字であり、印ではない。
+    try expectScan("1d2", 16, .{ .radix = 16, .exactness = .unmarked, .shape = .{ .real = int(.positive, "1d2") } });
+    try expectNot("1s2", 16);
+    try expectNot("1l2", 8);
+    // 分数の中には現れない(e と同じ)。
+    try expectNot("1d2/3", 10);
+    try expectNot("1/2d3", 10);
 }
 
 test "the four infnan spellings, in either case, and nothing near them" {
