@@ -7,7 +7,8 @@
 //!
 //! 終了コードは、次のどれかのとき非0(1)にする。実行器自身の誤り(ハッシュの不一致、切り出せ
 //! ない、節の対が合わない、記録を読めない、節をまたぐ参照)。または、結果に「落ちた」「誤り」
-//! 「実行不能」(読めない・未実装・連鎖)が1件でもあること。除外の一覧は置いていないので、
+//! 「実行不能」(読めない・未実装・連鎖)が1件でもあること、または解決できない import が1件でも
+//! あること。除外の一覧は置いていないので、
 //! 実行不能も除外されない(計画書 0028 の「終了コードの切り替え」)。
 //!
 //! 引数は取らない。より狭い入力を指す引数は、実行する範囲を減らしたまま通す手口になるからで
@@ -56,11 +57,11 @@ pub fn main(init: std.process.Init) !void {
     };
     try report(out, result);
     try out.flush();
-    const bad = run.totalNotPassed(result);
-    if (bad > 0) {
-        try err.print("conformance-run: {d} failed, errored, or unrunnable (unreadable, unimplemented, cascaded) items; see the list above\n", .{bad});
+    const code = run.exitCode(result);
+    if (code != 0) {
+        try err.print("conformance-run: {d} failed, errored, or unrunnable (unreadable, unimplemented, cascaded) items and {d} unresolved libraries; see the list above\n", .{ run.totalNotPassed(result), result.missing_libraries.len });
         try err.flush();
-        std.process.exit(1);
+        std.process.exit(code);
     }
 }
 

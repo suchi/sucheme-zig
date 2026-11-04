@@ -75,6 +75,18 @@ pub fn totalNotPassed(r: SuiteResult) u32 {
     return n;
 }
 
+/// Whether `r` has nothing that did not pass and no library the suite imports that cannot be resolved.
+/// Why: 解決できないライブラリは、使う名前が未束縛になって未実装か連鎖に数えられるのが普通だが、
+/// 使われない import は数に現れない。入れ忘れが黙って通らないよう、1件でもあれば clean にしない。
+pub fn isClean(r: SuiteResult) bool {
+    return totalNotPassed(r) == 0 and r.missing_libraries.len == 0;
+}
+
+/// The exit code of the runner for `r`: 0 when `isClean`, otherwise 1.
+pub fn exitCode(r: SuiteResult) u8 {
+    return if (isClean(r)) 0 else 1;
+}
+
 /// One test that did not pass, or one top-level form that was not run or failed.
 pub const Failure = struct {
     section: []const u8,
@@ -675,6 +687,42 @@ test "each kind of outcome except a pass makes the exit code non-zero, in any se
     const sections = [_]SectionResult{ .{ .name = "a", .counts = .{ .passed = 2 } }, .{ .name = "b", .counts = .{ .cascaded = 3 } } };
     const r: SuiteResult = .{ .sections = &sections, .failures = &.{}, .missing_libraries = &.{} };
     try std.testing.expectEqual(@as(u32, 3), totalNotPassed(r));
+}
+
+test "the exit code is 0 only for a clean result, and an unresolved library is not clean" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const clean = try runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test 3 (+ 1 2))
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expect(isClean(clean));
+    try std.testing.expectEqual(@as(u8, 0), exitCode(clean));
+    const failing = try runFake(a,
+        \\(import (scheme base) (chibi test))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test 4 (+ 1 2))
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expect(!isClean(failing));
+    try std.testing.expectEqual(@as(u8, 1), exitCode(failing));
+    const missing = try runFake(a,
+        \\(import (scheme base) (chibi test) (no such-library))
+        \\(test-begin "all")
+        \\(test-begin "a")
+        \\(test 3 (+ 1 2))
+        \\(test-end)
+        \\(test-end)
+    );
+    try std.testing.expectEqual(@as(u32, 0), totalNotPassed(missing));
+    try std.testing.expectEqual(@as(u8, 1), exitCode(missing));
 }
 
 test "a nested section is counted under its own name, in its parent's interpreter" {
