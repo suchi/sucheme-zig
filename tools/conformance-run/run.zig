@@ -683,8 +683,12 @@ test "each kind of outcome except a pass makes the exit code non-zero, in any se
     try std.testing.expectEqual(@as(u32, 1), notPassed(.{ .unreadable = 1 }));
     try std.testing.expectEqual(@as(u32, 1), notPassed(.{ .unimplemented = 1 }));
     try std.testing.expectEqual(@as(u32, 1), notPassed(.{ .cascaded = 1 }));
-    // 問題のある節が最後でも、数え落とさない。
-    const sections = [_]SectionResult{ .{ .name = "a", .counts = .{ .passed = 2 } }, .{ .name = "b", .counts = .{ .cascaded = 3 } } };
+    // 問題のある節が、最後でなくても、数え落とさない。節の数は足し合わせる。
+    const sections = [_]SectionResult{
+        .{ .name = "a", .counts = .{ .passed = 2 } },
+        .{ .name = "b", .counts = .{ .cascaded = 3 } },
+        .{ .name = "c", .counts = .{ .passed = 1 } },
+    };
     const r: SuiteResult = .{ .sections = &sections, .failures = &.{}, .missing_libraries = &.{} };
     try std.testing.expectEqual(@as(u32, 3), totalNotPassed(r));
 }
