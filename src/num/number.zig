@@ -989,6 +989,37 @@ test "parse reads the exponent markers s, f, d and l as e, short and long" {
     try expectReadsFormatted(&h, "1.0", "1.{s}D0", .{long});
 }
 
+test "parse reads a marked decimal on both sides of the 256 byte limit of the stack copy" {
+    var h: Heap = .init(testing.allocator, .{});
+    defer h.deinit();
+    // 綴りの長さが 255、256、257 バイト。"1." と印と "0" の 4 バイトのほかは 0 である。
+    for ([_]usize{ 255, 256, 257 }) |len| {
+        for ([_][]const u8{ "d", "F" }) |m| {
+            const zeros_run = try filled(len - 4, '0');
+            defer testing.allocator.free(zeros_run);
+            try expectReadsFormatted(&h, "1.0", "1.{s}{s}0", .{ zeros_run, m });
+            try expectReadsFormatted(&h, "-1.0", "-1.{s}{s}0", .{ zeros_run, m });
+        }
+    }
+}
+
+test "parse gives a heap limit error when the copy of a long marked decimal is refused" {
+    var h: Heap = .init(testing.allocator, .{ .limit = 1 << 20 });
+    defer h.deinit();
+    const zeros_run = try filled(400, '0');
+    defer testing.allocator.free(zeros_run);
+    const text = try std.fmt.allocPrint(testing.allocator, "1.{s}d0", .{zeros_run});
+    defer testing.allocator.free(text);
+    // 長い綴りの写しは、ヒープの上限に計上される。残りが無ければ断られ、数えた分は戻る。
+    h.external = h.options.limit;
+    try testing.expectError(error.HeapLimit, parse(&h, text, 10));
+    try testing.expectEqual(h.options.limit, h.external);
+    // 短い綴りはスタックに写すので、同じ状態でも読める。
+    try testing.expect((try parse(&h, "1.5d0", 10)) != null);
+    h.external = 0;
+    try testing.expect((try parse(&h, text, 10)) != null);
+}
+
 test "parse does not limit what costs little: an inexact decimal and an exact zero" {
     // 不正確な小数は、桁数と指数が線形に読まれるので、上限の外でも読む(`#i` の小数も)。
     // 正確な 0 は、どんな桁数と指数でも 0 である。
