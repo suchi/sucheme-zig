@@ -529,6 +529,20 @@ test "a fold-case directive survives an error later in the same input" {
     try std.testing.expectEqualStrings("abc\n", w.buffered());
 }
 
+test "a fold-case directive survives a reader error in the same input" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 閉じていない括弧で、リーダが失敗する。指令はその前に読んである。
+    try std.testing.expectError(error.Incomplete, interp.evalPrint(arena.allocator(), "(#!fold-case", &w));
+    try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
+    try std.testing.expectEqualStrings("abc\n", w.buffered());
+}
+
 test "isBound answers for the primitives, the special forms and nothing else" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});
