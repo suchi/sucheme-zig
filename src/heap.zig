@@ -3031,3 +3031,18 @@ test "a console port is held to the limit by its cell" {
     try std.testing.expectError(error.HeapLimit, heap.createConsolePort(.output));
     try std.testing.expectEqual(cellBytes(Port), heap.accounted);
 }
+
+test "multipleValuesFit holds exactly when the cell and the values fit under the limit" {
+    const count = 5;
+    const exact = cellBytes(MultipleValues) + count * @sizeOf(Value);
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = exact, .min_threshold = 1 << 20 });
+    defer heap.deinit();
+    try std.testing.expect(heap.multipleValuesFit(.limit, count));
+    try std.testing.expect(!heap.multipleValuesFit(.limit, count + 1));
+    // 検査と確保は同じ境目である。
+    var items: [count]Value = @splat(.unspecified_value);
+    _ = try heap.createMultipleValuesIn(.limit, &items);
+    try std.testing.expect(!heap.multipleValuesFit(.limit, 0));
+    // 桁あふれする個数は収まらない。
+    try std.testing.expect(!heap.multipleValuesFit(.raise_reserve, std.math.maxInt(usize)));
+}
