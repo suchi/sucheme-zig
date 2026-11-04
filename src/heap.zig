@@ -982,6 +982,17 @@ pub const Heap = struct {
         return &cell.value;
     }
 
+    /// Whether a multiple-values object of `count` values would fit under what
+    /// `budget` allows now, without allocating it.
+    /// 本体は1回の確保で作るので、ステップに分けられない。機械は、収まらないときに、
+    /// 確保の前に境目で回収させてから呼び直す(`Machine.valuesOf`)。
+    pub fn multipleValuesFit(self: *const Heap, budget: Budget, count: usize) bool {
+        const payload = std.math.mul(usize, count, @sizeOf(Value)) catch return false;
+        const bytes = std.math.add(usize, cellBytes(MultipleValues), payload) catch return false;
+        self.reserve(budget, bytes) catch return false;
+        return true;
+    }
+
     /// A list of `len` elements for a node to hold: the nodes of a sequence or the
     /// operands of a call (`*const Node`), or the bindings of a `parameterize`
     /// (`ParameterBinding`), with every element unset.
