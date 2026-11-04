@@ -49,7 +49,7 @@ pub fn apply(h: *Heap, f: Fn, z: Value) Error!Value {
     const is_real = z.kind() != .compnum;
     const c = try toC(h, z);
     const r: C = switch (f) {
-        .sqrt => sqrtC(c),
+        .sqrt => sqrtC(principalSqrtArgument(c)),
         .exp => cx.exp(c),
         .log => try logOf(h, z),
         .sin => cx.sin(c),
@@ -60,6 +60,16 @@ pub fn apply(h: *Heap, f: Fn, z: Value) Error!Value {
         .acos => if (is_real and @abs(c.re) > 1.0) acosOutside(c.re) else acosC(c),
     };
     return fromC(h, r);
+}
+
+/// `c` with a negative zero imaginary part turned into a positive zero when the real part is negative.
+///
+/// R7RS 6.2.6 の `sqrt` は、結果の実部が正であるか、実部が0で虚部が非負であるとしている。負の実軸の
+/// 下側(虚部が -0.0)の引数も、上側と同じ `+i` 側の根にする(C99 の共役対称の根は `-i` 側になる)。
+/// `asin` と `acos` が使う `sqrtC` は、共役対称に頼る式なので、この変換は `sqrt` の手続きだけに掛ける。
+fn principalSqrtArgument(c: C) C {
+    if (c.re < 0 and c.im == 0) return C.init(c.re, 0.0);
+    return c;
 }
 
 /// The principal square root of `c`.
@@ -338,6 +348,25 @@ test "the exact square root of an exact complex number is exact only when its pa
     try std.testing.expect(root.asCompnum().?.real.asFlonum() == null);
     const inexact = (try number.parse(h, "1+2i", 10)).?;
     try std.testing.expect((try apply(h, .sqrt, inexact)).asCompnum().?.real.asFlonum() != null);
+}
+
+test "the square root of a negative real with a negative zero imaginary part is on the positive side" {
+    var f: test_support.Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const h = &f.heap;
+    const below = (try number.parse(h, "-1.0-0.0i", 10)).?;
+    const root = (try apply(h, .sqrt, below)).asCompnum().?;
+    try std.testing.expectEqual(@as(f64, 0.0), root.real.asFlonum().?);
+    try std.testing.expectEqual(@as(f64, 1.0), root.imag.asFlonum().?);
+    // 実部が正なら、虚部の -0.0 は根の虚部に残る。
+    const right = (try number.parse(h, "1.0-0.0i", 10)).?;
+    const kept = (try apply(h, .sqrt, right)).asCompnum().?;
+    try std.testing.expect(std.math.signbit(kept.imag.asFlonum().?));
+    // 実部が0の引数は、虚部の -0.0 も変えない。
+    const zero = (try number.parse(h, "0.0-0.0i", 10)).?;
+    const zero_root = (try apply(h, .sqrt, zero)).asCompnum().?;
+    try std.testing.expect(std.math.signbit(zero_root.imag.asFlonum().?));
 }
 
 test "the angle of a real number follows its sign" {

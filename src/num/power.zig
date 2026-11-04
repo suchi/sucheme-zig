@@ -26,7 +26,8 @@ pub const Error = ops.Error || error{WrongType};
 ///
 /// 指数が正確な整数のときは、底の種類によらず計算する。正確な底はべき乗を正確な数で、
 /// flonum の底は `std.math.pow` で、複素数の底は2乗の繰り返しで求める。指数が正確な0なら、
-/// 底によらず正確な 1 である(R7RS 6.2.6 の `(expt z 0)`)。
+/// 底が flonum の 0.0(`-0.0` を含む)のときだけ不正確な 1.0、そうでなければ正確な 1 である(R7RS 6.2.6)。
+/// 複素数の `0.0+0.0i` は特例に含めず、正確な 1 を返す。
 ///
 /// 指数が有理数か flonum なら、底の実数を flonum にして `std.math.pow` で計算する(結果は
 /// 不正確な数)。負の底と整数でない指数は、極形式で複素数になる。複素数の指数と、複素数の
@@ -37,7 +38,11 @@ pub const Error = ops.Error || error{WrongType};
 /// 範囲の時間は、結果の桁数の約2乗で伸びる(docs/design/open-questions.md)。
 pub fn expt(h: *Heap, base: Value, exponent: Value) Error!Value {
     std.debug.assert(number.isNumber(base) and number.isNumber(exponent));
-    if (exponent.asFixnum()) |n| if (n == 0) return .fromFixnum(1);
+    if (exponent.asFixnum()) |n| if (n == 0) {
+        // 0.0 の 0 乗は不正確な 1.0 である(R7RS 6.2.6 の 0.0^z は、不正確な結果で 0^z と同様)。
+        if (base.asFlonum()) |x| if (x == 0) return .fromFlonum(1.0);
+        return .fromFixnum(1);
+    };
     if (exponent.kind() == .compnum) return complex.expt(h, base, exponent);
     if (ops.isExactInteger(exponent)) return exptInteger(h, base, exponent);
     if (base.kind() == .compnum) return exptComplexByFloat(h, base, exponent);
@@ -102,7 +107,8 @@ fn exptComplex(h: *Heap, base: Value, n: i64) Error!Value {
 /// squaring, anything else by `exp` and `log`.
 fn exptComplexByFloat(h: *Heap, base: Value, exponent: Value) Error!Value {
     const y = exponent.asFlonum() orelse return complex.expt(h, base, exponent);
-    if (!std.math.isFinite(y) or y != @floor(y) or @abs(y) >= 9223372036854775808.0) return complex.expt(h, base, exponent);
+    // NaN は `y != @floor(y)` で、無限大は絶対値の比較で、ここに入る前に外れる。
+    if (y != @floor(y) or @abs(y) >= 9223372036854775808.0) return complex.expt(h, base, exponent);
     const power = try exptComplex(h, base, @intFromFloat(y));
     return ops.toInexact(h, power);
 }
