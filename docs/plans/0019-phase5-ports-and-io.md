@@ -506,11 +506,23 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 
 ## 環境の表の GC の圧力の割り当て
 
-5q の独立査読で、`scheme-report-environment` と `null-environment` を繰り返し呼ぶと、1回あたり約 3.5 KB と約 1.4 KB ずつ常駐のメモリが伸び、ヒープの上限(256 MiB)を超えても `heap limit exceeded` にならないと分かった(査読の測定で、200000 回で RSS 7.1 GB)。5o の `environment` も同じ傾きで、5q に固有ではない。査読の担当は、`environment` が作る最上位の表(ヒープの外の resident)が、GC を起こす判断の圧力に数えられていないためと推測した。確かめていない。
+5q の独立査読で、`scheme-report-environment` と `null-environment` を繰り返し呼ぶと、1回あたり約 3.5 KB と約 1.4 KB ずつ常駐のメモリが伸び、ヒープの上限(256 MiB)を超えても `heap limit exceeded` にならないと分かった(査読の測定で、200000 回で RSS 7.1 GB)。5o の `environment` も同じ傾きで、5q に固有ではない。査読の担当は、`environment` が作る最上位の表(ヒープの外の resident)が、GC を起こす判断の圧力に数えられていないためと推測した。
+
+5u の着手時に確かめたところ、この推測は当たらなかった(2026-11-04、main の f08bf40、`ReleaseSafe` の実行ファイル、4 CPU)。次は確かめた事実である。
+
+- 伸びは再現した。20000 回のループの最大 RSS は、`scheme-report-environment` が 73 MiB、`(environment '(scheme base))` が 73 MiB、`null-environment` が 12 MiB だった。200000 回では順に 688 MiB、689 MiB、12 MiB で、どれも `heap limit exceeded` にならなかった。`null-environment` が一定だったことは、査読の「約 1.4 KB ずつ」と合わない(測った入力の違いは確かめていない)。
+- 表は、`Heap.residentAllocator` で確保され、`heap.resident` に数えられている。`heap.accounted + heap.resident` は、2000 回から 30000 回のループを通して約 1 MiB に収まり、GC は約 2.6 回に 1 回走り、`Context.Environments` の欄の数は 27 で頭打ちになった。
+- `Interpreter.arena`(永続アリーナ)の容量は、2000 回のループの前後で変わらなかった(63902 バイト)。
+- ヒープの裏の割り当て器(`heap.backing`)を、確保と解放の量を数える包みで測った生存バイト数は、約 1.0 から 1.6 MiB で、計上に沿った。解放されない確保は見つからなかった。
+- それでも最大 RSS は、裏が `smp_allocator` のときは、30000 回で 54 から 120 MiB、120 から 224 MiB と伸びた。裏を `std.heap.page_allocator` に替えた同じテストでは、60 から 61 MiB で一定だった。
+- 実行ファイルで、`Heap.residentAllocator` の確保のうち 4096 バイト以上だけを `page_allocator` に回す実験(コミットしない)では、20000 回の最大 RSS が 73 MiB から 12 MiB になり、200000 回でも 12 MiB だった。境界を 32768 バイトにすると効かなかった(73 MiB)。実行ファイルの割り当て器そのものを `page_allocator` に替える実験では、20000 回の最大 RSS は 50 MiB で、`tests/cli-slow/multi-list-map.scm` が `reached unreachable code` で異常終了した(`src/main.zig` の割り当て器の `Why:` コメントが述べる `vm.max_map_count` の問題と同じ種類と見ている。異常終了のスタックは、デバッグ情報の読み込みで確保できず、確かめていない)。
+- `taskset` で CPU を絞ると、`scheme-report-environment` の 20000 回の最大 RSS は、1 CPU と 2 CPU で 12 MiB、4 CPU で 73 MiB だった。
+
+したがって、伸びの原因は計上の不足でなく、`smp_allocator` を裏にしたときの RSS の伸びである。仮説(推測。機序は実測していない): `std/heap/SmpAllocator.zig` は、スロットごとの空きリストを持ち、自分の空きリストが空のとき隣のスロットを 1 つ探し、`thread_index` を移す。解放は現在のスロットの空きリストに積まれるので、別のスロットに積まれた領域が再利用されず、新しいスラブが `mmap` される。表の `HashMap` の伸び縮みが 4 KiB から 32 KiB のクラスをまたぐことが、`null-environment` との差になっていると見ている。CPU の数への依存は、この仮説と矛盾しないが、確証ではない。圧力の計算を直しても、数えている量が一定なので、伸びは止まらない。完了条件は、この事実に合わせて「呼び出しのループで常駐のメモリが一定に収まる」に読み替えた。対処は、実装の前にユーザーの確認を取る(割り当ての経路の変更であるため)。
 
 | スライス | レーン | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 | 規模 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 5u 環境の表の GC の圧力 | L3 | `environment` を繰り返し呼ぶループが、常駐のメモリを一定に保つか、ヒープの上限で `heap limit exceeded` になる。最初の作業として、表が圧力に数えられていないことを確かめる | `src/context.zig` の `Environments`、`src/heap.zig` の圧力の計算 | T3 | 5q、v0.5.0 の公開 | 5r の後 | 小 |
+| 5u 環境の表の GC の圧力 | L3 | `environment` を繰り返し呼ぶループが、常駐のメモリを一定に保つか、ヒープの上限で `heap limit exceeded` になる。着手時の確認で、表が圧力に数えられていない、という推測は外れた(上の事実)。原因は割り当て器の再利用の不足と見ており、対処は、ユーザーの確認のあとに決める | `src/context.zig` の `Environments`、`src/heap.zig`(`residentAllocator`)、そのテスト | T3 | 5q、v0.5.0 の公開 | 5r の後 | 小 |
 
 - 環境の値を使い回す案(呼ぶたびに同じ指定子を返す)は取らない。`eq?` の性質が変わるためである。
 - 最初は 5t のあと、5r の前に置き、段階5の完了(5r)の前提に加えた。2026-11-02 に、親のセッションの判断(ユーザーの承認を経た 4z、5t、5r の順序の指示)で、5r の前提から外し、v0.5.0 の後に送った(5t の PR)。v0.5.0 のリリースノートの既知の制限に、この圧力のことを書く(5r)。v0.4.0 のリリースノートにも、既知の制限として書いた(4z)。
@@ -544,7 +556,7 @@ import を足すと、ホストのすべて(`web/sucheme.js` と `tools/test-was
 | 5q | マージ済み(2026-11-02)。`(scheme r5rs)`。R5RS の 222 識別子のうち 218 は、R7RS のライブラリからの再輸出で足りる。R5RS にだけある `exact->inexact`、`inexact->exact`、`scheme-report-environment`、`null-environment` は、計画では `src/prim/eval.zig` に置く想定だったが、`lib/scheme/r5rs.sld` の本体に Scheme で書いた(既存の `inexact`、`exact`、`environment` の組み合わせで書け、Zig の変更が要らないため)。2つの環境の手続きは版 5 だけを受け付け、呼ぶたびに変更できない新しい指定子を返す。`null-environment` は R5RS の構文キーワードだけを持つ 既知の制限: `scheme-report-environment` と `null-environment`(と 5o の `environment`)を繰り返し呼ぶと常駐のメモリが伸び、ヒープの上限で止まらない。5u に割り当てた(「環境の表の GC の圧力の割り当て」) | suchi/sucheme-zig#243 |
 | 5t | マージ済み(2026-11-02)。ネイティブの REPL とファイルの実行で、`current-error-port` への書き込みを標準エラーに出す。`Console` に `error_sink` を足し、`Interpreter` に `console_err` の欄を足した(下の「5t で決めたこと」)。標準エラーに書く前に標準出力の書き手を書き出し、書いたあとに標準エラーの書き手を書き出す(`src/prim/port.zig` の `ConsoleWrite`)。WASM と test-scheme は `console_err` を置かず、今までと同じく結果と同じ書き手に書く | suchi/sucheme-zig#246 |
 | 5r | 完了(準備の PR、開発版に戻す suchi/sucheme-zig#251、振り返りの suchi/sucheme-zig#252 の3つがマージ済み)。4z と同じ形で、リリースの準備(版を 0.5.0 にし、リリースノートを書き、roadmap と計画書を整理する)、開発版に戻す PR、振り返りの PR(計画書 0012 の段階5の実績)の3つに分ける。準備の PR はマージ済み(2026-11-03 05:12 JST、マージコミット `64a67c2`)。タグ v0.5.0 は `64a67c2` に打たれ(タグの作成は 2026-11-03 07:34 JST)、v0.5.0 は 2026-11-03 08:43 JST に公開された。開発版に戻す PR(版を 0.6.0-dev にし、roadmap の現在地と最新リリースを更新する)と、振り返りの PR は、公開のあとに出した。`current_stage` は、開発版に戻す PR では 5 のままにした。6 に上げると `test-conformance` を CI で走らせる必要があり、そのワークフローの変更にはユーザーの承認が要るためである。その後、ワークフローの変更(suchi/sucheme-zig#250 で承認)と同じ PR で、`current_stage` を 6 に上げ、`ci.yml` と `full.yml` の `windows` ジョブに `zig build test-conformance` を足した | suchi/sucheme-zig#249 |
-| 5u | 未着手。v0.5.0 の後に送った(「環境の表の GC の圧力の割り当て」) | - |
+| 5u | 調査済み、実装は未着手(2026-11-04)。圧力に数えられていない、という推測は外れ、伸びは `smp_allocator` を裏にしたときの RSS の伸びと分かった(「環境の表の GC の圧力の割り当て」の事実)。対処の案は、`Heap.residentAllocator` の 4096 バイト以上の確保だけを `page_allocator` に回す形が、実験で効いた。実行ファイルの割り当て器の入れ替えは、`multi-list-map.scm` が異常終了したので除く。割り当ての経路の変更は、ユーザーの確認を待つ | - |
 
 ## 次にやること
 

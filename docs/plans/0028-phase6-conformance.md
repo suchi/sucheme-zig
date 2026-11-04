@@ -288,7 +288,7 @@ v1.0.0 は、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の「段階�
 | 6n | 実装済み、ドラフトの PR で通常の CI を待つ。`test-conformance` は、落ちた・誤り・実行不能が1件でもあるか、解決できない import があれば非0。着手前に main の `afc93c8` で走らせ、終了コード0、不合格0件を確かめたので、除外の一覧は置かない。展開器の読み取りの結果は 0024 に書いた。次にやること: 通常の CI が緑になったら親に報告する。ready の前に、main を取り込んだ先頭で `test-conformance` が終了コード0であることを確かめる |
 | 6o | 未着手 |
 | 6p | 未着手 |
-| 5u | 未着手(0019 で割り当て済み) |
+| 5u | 調査済み、実装は未着手。圧力に数えられていない、という推測は外れた(計上は一定)。伸びは `smp_allocator` が解放した領域を再利用しないことによる RSS の伸びで、仮説と実測は 0019 の「環境の表の GC の圧力の割り当て」にある。次にやること: 対処の案(`Heap.residentAllocator` の 4096 バイト以上の確保を `page_allocator` に回す)を、ユーザーの確認のあとに実装し、縮小版を層1、200000 回の規模版を `tier.slow()` に置く |
 | 6q | 実装中。`reader.readsAsIdentifier` を公開し、プリンタの判定をそれ1本にした(リーダの `isIdentifier`、ASCII だけを通す写しは削除)。`λ` などは縦棒なしで書き、空白や先頭に置けない文字(Nd など)を含む綴りは縦棒のまま。テストは `src/printer.zig`、`tests/scheme/0630-write.txt` |
 | 6r | 実装中。`Interpreter.fold_case` を足し、`run` が `Reader` に渡して、読み終えた状態(エラーで止まったときも)を書き戻す。`src/reader.zig` は変えていない。WASM の `sucheme_eval_begin` も同じ入口なので、評価をまたいで効き、`sucheme_reset` で戻る(`tools/test-wasm` で固定)。準拠スイートのランナーとテストの実行器は、節やケースごとに新しい `Interpreter` を作るので、影響を受けない。単体テストと、実際の REPL への入力で確かめた |
 | 6z | 未着手 |
