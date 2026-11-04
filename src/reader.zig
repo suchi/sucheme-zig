@@ -964,16 +964,6 @@ fn isDecimalInteger(token: []const u8) bool {
     return true;
 }
 
-/// Whether `read` reads `token`, written without vertical lines, as an identifier
-/// (unless it is a number) whose characters are all ASCII. `token` is not empty.
-/// プリンタ(src/printer.zig)が、シンボルを縦棒で囲むかを決めるのに使う(スライス 5j)。
-/// ASCII でない文字を含む綴りは偽にする。リーダは `readsAsIdentifier` で読めるが、
-/// プリンタは縦棒で囲む。囲んでも読み戻すと同じシンボルになるので、読み書きは食い違わない。
-pub fn isIdentifier(token: []const u8) bool {
-    for (token) |byte| if (byte >= 0x80) return false;
-    return readsAsIdentifier(token);
-}
-
 // Why: R7RS 7.1.1 の <identifier> を、`|...|` の形を除いて実装している。
 // `|...|` の形は `next` が `string_syntax.readIdentifier` で読む。
 // <initial> に <subsequent> が続くものか、<peculiar identifier> である。整数は、
@@ -985,7 +975,9 @@ pub fn isIdentifier(token: []const u8) bool {
 /// Whether `read` reads `token`, written without vertical lines, as an identifier
 /// (unless it is a number). `token` is not empty.
 /// 不正な UTF-8 は識別子ではない。
-fn readsAsIdentifier(token: []const u8) bool {
+/// プリンタ(src/printer.zig)が、シンボルを縦棒で囲むかを決めるのに使う(スライス 6q)。
+/// 印字の判定をリーダと同じ関数にそろえ、規則を2か所に持たない。
+pub fn readsAsIdentifier(token: []const u8) bool {
     const view = std.unicode.Utf8View.init(token) catch return false;
     var it = view.iterator();
     var c = it.nextCodepoint() orelse return false;
@@ -1246,7 +1238,7 @@ test "next reads an identifier with characters that are not ASCII as the symbol 
     try std.testing.expectEqualStrings("Αβ", f.heap.symbols.nameOf((try f.readOne("Αβ")).asSymbol().?));
     // 識別子の中の位置を問わず、ほかのデータと並べて読める。
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("(|λ| 1 |二倍|)", try f.roundTrip("(λ 1 二倍)", &buf));
+    try std.testing.expectEqualStrings("(λ 1 二倍)", try f.roundTrip("(λ 1 二倍)", &buf));
     // 同じ名前は同じシンボルで、大文字と小文字は別である。
     try std.testing.expectEqual((try f.readOne("λ")).asSymbol().?, (try f.readOne("|\\x3BB;|")).asSymbol().?);
     try std.testing.expect((try f.readOne("Λ")).asSymbol().? != (try f.readOne("λ")).asSymbol().?);
@@ -1345,7 +1337,7 @@ test "a reader that folds case folds the characters of an identifier that are no
     try std.testing.expectEqual((try f.readOne("ΛΑΜΒΔΑ")).asSymbol().?, (try f.readOne("λαμβδα")).asSymbol().?);
     // 畳み込む読み手でも、縦棒の識別子、文字列、1 文字のリテラルは畳み込まない。
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("(|Λ| \"Λ\" #\\Λ)", try f.roundTrip("(|Λ| \"Λ\" #\\Λ)", &buf));
+    try std.testing.expectEqualStrings("(Λ \"Λ\" #\\Λ)", try f.roundTrip("(|Λ| \"Λ\" #\\Λ)", &buf));
     // 畳み込まない読み手は、どれも変えない。
     f.fold_case = false;
     const kept = (try f.readOne("ΛΑΜΒΔΑ")).asSymbol().?;
@@ -1356,14 +1348,16 @@ test "a directive switches the folding of an identifier that is not ASCII" {
     var f: Fixture = .init();
     defer f.deinit();
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("(|Λ| |λ| |Λ|)", try f.roundTrip("(Λ #!fold-case Λ #!no-fold-case Λ)", &buf));
+    try std.testing.expectEqualStrings("(Λ λ Λ)", try f.roundTrip("(Λ #!fold-case Λ #!no-fold-case Λ)", &buf));
 }
 
-test "isIdentifier is the ASCII rule that the printer asks, and does not accept a name with a character that is not ASCII" {
-    try std.testing.expect(isIdentifier("abc"));
-    try std.testing.expect(!isIdentifier("λ"));
-    try std.testing.expect(!isIdentifier("a\u{3BB}"));
-    try std.testing.expect(!isIdentifier("+\u{3BB}"));
+test "readsAsIdentifier accepts a name with a character that is not ASCII, by the same rule as the reader" {
+    try std.testing.expect(readsAsIdentifier("abc"));
+    try std.testing.expect(readsAsIdentifier("λ"));
+    try std.testing.expect(readsAsIdentifier("a\u{3BB}"));
+    try std.testing.expect(readsAsIdentifier("+\u{3BB}"));
+    try std.testing.expect(!readsAsIdentifier("a b"));
+    try std.testing.expect(!readsAsIdentifier("\u{3BB}\u{3000}"));
 }
 
 test "next reads lists, the empty list and nesting" {
@@ -1839,15 +1833,15 @@ test "next reads the numbers that are spelled like peculiar identifiers as numbe
     }
 }
 
-test "isIdentifier follows the R7RS grammar, peculiar identifiers included" {
+test "readsAsIdentifier follows the R7RS grammar, peculiar identifiers included" {
     for ([_][]const u8{ "+", "-", "...", "x", "list->vector", "<=?", "a.b", "+a", "-@", "+.a", "..", ".a", "->x", ".+", ".-x", ".@x" }) |s| {
-        if (!isIdentifier(s)) {
+        if (!readsAsIdentifier(s)) {
             std.debug.print("rejected {s}\n", .{s});
             return error.TestUnexpectedResult;
         }
     }
     for ([_][]const u8{ ".", "+.", "+.1", ".1", "1a", "a#", "@a" }) |s| {
-        if (isIdentifier(s)) {
+        if (readsAsIdentifier(s)) {
             std.debug.print("accepted {s}\n", .{s});
             return error.TestUnexpectedResult;
         }

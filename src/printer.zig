@@ -342,8 +342,9 @@ fn emitValue(out: *std.Io.Writer, scratch: std.mem.Allocator, symbols: *const sy
 /// Writes the symbol named `name`, between vertical lines when `read` would not
 /// read the name back as the same symbol (R7RS 6.13.3, 7.1.1).
 /// `display` は縦棒を付けない(R7RS 6.13.3 の「Symbols are not escaped」)。縦棒を付けるのは、
-/// リーダが縦棒なしで識別子として読まない名前(ASCII でない文字や区切り文字を含むもの、`.`、
-/// 空の名前など)と、数として読める名前(`1`、`+i`、`-inf.0`)である。縦棒の中では、`|` と `\`
+/// リーダが縦棒なしで識別子として読まない名前(空白や区切り文字を含むもの、`.`、
+/// 空の名前など。ASCII でない文字は、リーダが識別子に読めるものなら囲まない。判定は
+/// `reader.readsAsIdentifier` と同じ関数である)と、数として読める名前(`1`、`+i`、`-inf.0`)である。縦棒の中では、`|` と `\`
 /// の前に `\` を置き、制御文字を `\x` の16進のエスケープにする。リーダが読むエスケープ
 /// (src/string_syntax.zig の `readIdentifier`)の中から選んでいる。
 fn writeSymbol(out: *std.Io.Writer, name: []const u8, mode: Mode) std.Io.Writer.Error!void {
@@ -363,7 +364,7 @@ fn writeSymbol(out: *std.Io.Writer, name: []const u8, mode: Mode) std.Io.Writer.
 /// Whether the symbol named `name` is written between vertical lines.
 fn needsVerticalLines(name: []const u8) bool {
     if (name.len == 0) return true;
-    if (!reader.isIdentifier(name)) return true;
+    if (!reader.readsAsIdentifier(name)) return true;
     if (num_syntax.scan(name, 10) != null) return true;
     // Why: `+nan.0abc` は R7RS 7.1.1 の <peculiar identifier> で、このリーダは縦棒なしでも同じ
     // シンボルとして読む(数として読む例外は `+i` `-i` と <infnan> そのものだけである)。それでも
@@ -962,7 +963,16 @@ test "write puts a symbol between vertical lines when read would not read its na
     const cases = [_]struct { name: []const u8, written: []const u8 }{
         .{ .name = "", .written = "||" },
         .{ .name = "a b", .written = "|a b|" },
-        .{ .name = "\u{3bb}", .written = "|\u{3bb}|" },
+        // ASCII でない文字は、リーダが識別子に読めるなら縦棒なしで書く。読めない綴りは囲む。
+        .{ .name = "\u{3bb}", .written = "\u{3bb}" },
+        .{ .name = "\u{4e8c}\u{500d}", .written = "\u{4e8c}\u{500d}" },
+        .{ .name = "+\u{3bb}", .written = "+\u{3bb}" },
+        .{ .name = "a\u{3bb}1", .written = "a\u{3bb}1" },
+        .{ .name = "\u{3bb} x", .written = "|\u{3bb} x|" },
+        .{ .name = "\u{3bb}\u{3000}", .written = "|\u{3bb}\u{3000}|" },
+        .{ .name = "\u{3bb}(", .written = "|\u{3bb}(|" },
+        .{ .name = "\u{661}", .written = "|\u{661}|" },
+        .{ .name = "\xff\xfe", .written = "|\xff\xfe|" },
         .{ .name = ".", .written = "|.|" },
         .{ .name = "1+", .written = "|1+|" },
         .{ .name = "(", .written = "|(|" },

@@ -3275,7 +3275,7 @@ test "read takes the data of a file across the end of the port's buffer" {
         // 識別子、多バイトの識別子、文字列、リストが、それぞれ境目をまたぐ。
         for ([_]usize{ size - 3, size - 1, size, size + 1 }) |n| {
             try tree.write("r.txt", try spaced(a, n, "abcdef λμν \"string\" (1 2 3) end"));
-            try expectLinePrints(&interp, try withFileName(a, &tree, "r.txt", all), "(abcdef |λμν| \"string\" (1 2 3) end)\n");
+            try expectLinePrints(&interp, try withFileName(a, &tree, "r.txt", all), "(abcdef λμν \"string\" (1 2 3) end)\n");
         }
         // `#` で始まるトークンは、切れると `Incomplete` でなく、ほかの構文の誤りになりうる。
         // 満杯のバッファの終わりで切れても、読み足して読み直す。
@@ -3288,10 +3288,10 @@ test "read takes the data of a file across the end of the port's buffer" {
         // 多バイト文字が、バッファの終わりで割れる。2バイトの `λ` は size - 2 個の空白のあとで、
         // 3バイトの `あ` は size - 3 個と size - 2 個の空白のあとで割れる。size - 1 個は割れない対照。
         for ([_]struct { usize, []const u8, []const u8 }{
-            .{ size - 2, "(λ 1)", "((|λ| 1))\n" },
-            .{ size - 1, "(λ 1)", "((|λ| 1))\n" },
-            .{ size - 3, "(あ 1)", "((|あ| 1))\n" },
-            .{ size - 2, "(あ 1)", "((|あ| 1))\n" },
+            .{ size - 2, "(λ 1)", "((λ 1))\n" },
+            .{ size - 1, "(λ 1)", "((λ 1))\n" },
+            .{ size - 3, "(あ 1)", "((あ 1))\n" },
+            .{ size - 2, "(あ 1)", "((あ 1))\n" },
         }) |c| {
             try tree.write("m.txt", try spaced(a, c[0], c[1]));
             try expectLinePrints(&interp, try withFileName(a, &tree, "m.txt", all), c[2]);
