@@ -419,6 +419,35 @@ test "a resident block that grows past the large size moves to the large allocat
     try std.testing.expectEqual(0, heap.resident);
 }
 
+test "resizing a resident block in place never crosses the large size, even where the allocator below could" {
+    // 最後の確保をその場で伸び縮みできる割り当て器を下に置く。`std.testing.allocator` は
+    // 大きさの違う領域を伸ばすことを自分で断るので、境目の検査を外しても挙動が変わらない。
+    var small_buffer: [16 * 1024]u8 = undefined;
+    var large_buffer: [16 * 1024]u8 = undefined;
+    var small: std.heap.FixedBufferAllocator = .init(&small_buffer);
+    var large: std.heap.FixedBufferAllocator = .init(&large_buffer);
+    var heap: Heap = .init(small.allocator(), .{ .limit = 1 << 20 });
+    defer heap.deinit();
+    heap.large = large.allocator();
+    const a = heap.residentAllocator();
+    const below = try a.alloc(u8, 100);
+    // 小さい領域を境目の上まで伸ばすのは、その場で伸ばせる領域でも断る(resize も remap も)。
+    try std.testing.expect(!a.resize(below, large_resident_bytes * 2));
+    try std.testing.expectEqual(null, a.remap(below, large_resident_bytes * 2));
+    try std.testing.expectEqual(100, heap.resident);
+    // 大きい領域を境目の下まで縮めるのも、断る。取った経路でない側が解放することになる。
+    const above = try a.alloc(u8, large_resident_bytes * 2);
+    try std.testing.expect(!a.resize(above, 100));
+    try std.testing.expectEqual(null, a.remap(above, 100));
+    try std.testing.expectEqual(100 + large_resident_bytes * 2, heap.resident);
+    // 境目の内側は通る。
+    try std.testing.expect(a.resize(above, large_resident_bytes * 2 - 1));
+    try std.testing.expectEqual(100 + large_resident_bytes * 2 - 1, heap.resident);
+    a.free(above.ptr[0 .. large_resident_bytes * 2 - 1]);
+    a.free(below);
+    try std.testing.expectEqual(0, heap.resident);
+}
+
 test "a large resident request the large allocator refuses is not left counted" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
     var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20 });
