@@ -2321,7 +2321,8 @@ test "next stops at the heap limit on a file of unclosed parentheses of the larg
     try tier.slow();
     var f: Fixture = .init();
     defer f.deinit();
-    // ファイルの大きさの上限(1 MiB)と、既定のヒープの上限での、閉じていない括弧の列。
+    // ファイルの大きさの上限(1 MiB)いっぱいの、閉じていない括弧の列。ヒープの上限は 16 MiB に
+    // 下げて試す。既定の 256 MiB では、この大きさの枠は上限に届かず、入力の終わりの誤りで終わる。
     const src = try unclosed(f.arena.allocator(), "(", 1024 * 1024);
     f.heap.options.limit = 16 * 1024 * 1024;
     try std.testing.expectError(error.HeapLimit, f.readOne(src));

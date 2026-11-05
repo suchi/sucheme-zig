@@ -283,8 +283,8 @@ v1.0.0 は、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の「段階�
 | --- | --- |
 | 6j | 完了。main の 571a372 の結果で、suchi/sucheme-zig#152、#154、#155、#156 を閉じ、残りの不合格を suchi/sucheme-zig#256(近似の比較)、#257(数の手続きの値)、#258(指数の印)に移した |
 | 6k | マージ済み(suchi/sucheme-zig#259)。上流の比較の規則を確かめて記録し、`lib/chibi/test.scm` に入れた。準拠スイートの近似の比較による不合格は0件になった |
-| 6l | 完了。`(expt 0.0 0)` を `1.0` にし、`exptComplexByFloat` の到達しないガードを外し、`sqrt` を案Aで直した。除外の一覧に `sqrt` の行は要らない |
-| 6m | 完了。`s` `f` `d` `l`(大文字も)を `e` と同じ倍精度の指数の印として読む。字句は `src/num/syntax.zig`、値の読み取りは `src/num/number.zig`(`std.fmt.parseFloat` が `e` しか読まないので、印を `e` に置いた写しを渡す)。準拠スイートの Numeric syntax の節の誤りは0件になった。受け付ける綴りは L9 のリファレンスに載せる項目として伝える |
+| 6l | マージ済み(suchi/sucheme-zig#262)。`(expt 0.0 0)` を `1.0` にし、`exptComplexByFloat` の到達しないガードを外し、`sqrt` を案Aで直した。除外の一覧に `sqrt` の行は要らない |
+| 6m | マージ済み(suchi/sucheme-zig#261)。`s` `f` `d` `l`(大文字も)を `e` と同じ倍精度の指数の印として読む。字句は `src/num/syntax.zig`、値の読み取りは `src/num/number.zig`(`std.fmt.parseFloat` が `e` しか読まないので、印を `e` に置いた写しを渡す)。準拠スイートの Numeric syntax の節の誤りは0件になった。受け付ける綴りは L9 のリファレンスに載せる項目として伝える |
 | 6n | マージ済み(suchi/sucheme-zig#267)。`test-conformance` は、落ちた・誤り・実行不能が1件でもあるか、解決できない import があれば非0。着手前に main の `afc93c8` で走らせ、終了コード0、不合格0件を確かめたので、除外の一覧は置かない。展開器の読み取りの結果は 0024 に書いた |
 | 6o | マージ済み(suchi/sucheme-zig#272)。方針は案 (a)(表現は変えない)。`values` と継続の多値での起動は、本体が上限の余りに収まらないとき、確保の前に呼び出しを `retry` 付きの `spread` のフレームに載せて回収を要求し、次の境目の回収のあとに呼び直す(純粋プリミティブの `CollectAndRetry` と同じ仕組み)。呼び直しても収まらなければ、これまでどおり `heap limit exceeded`。本体は1個のオブジェクトなので1回の確保のままで、ステップには分けない。テストは `src/machine.zig`(層1は2000個、`tier.slow()` は20万個)と `src/heap.zig` |
 | 6p | マージ済み(suchi/sucheme-zig#268)。`Reader.next` が、未閉じの枠と枠の中の要素の並びを `heap.Charged` 経由で確保し、読む間だけ `external_enforced` を立てる(`src/heap.zig` は変えていない)。ラベルの表と、トークンなどの一時的な確保は、計上の外に残る(open-questions の該当の行に記録した)。テストは `src/reader.zig`(層1に縮小版、`tier.slow()` に 1 MiB の規模版) |
