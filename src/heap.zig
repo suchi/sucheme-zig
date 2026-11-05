@@ -982,6 +982,17 @@ pub const Heap = struct {
         return &cell.value;
     }
 
+    /// Whether a multiple-values object of `count` values would fit under what
+    /// `budget` allows now, without allocating it.
+    /// 本体は1回の確保で作るので、ステップに分けられない。機械は、収まらないときに、
+    /// 確保の前に境目で回収させてから呼び直す(`Machine.valuesOf`)。
+    pub fn multipleValuesFit(self: *const Heap, budget: Budget, count: usize) bool {
+        const payload = std.math.mul(usize, count, @sizeOf(Value)) catch return false;
+        const bytes = std.math.add(usize, cellBytes(MultipleValues), payload) catch return false;
+        self.reserve(budget, bytes) catch return false;
+        return true;
+    }
+
     /// A list of `len` elements for a node to hold: the nodes of a sequence or the
     /// operands of a call (`*const Node`), or the bindings of a `parameterize`
     /// (`ParameterBinding`), with every element unset.
@@ -3019,4 +3030,23 @@ test "a console port is held to the limit by its cell" {
     _ = try heap.createConsolePort(.output);
     try std.testing.expectError(error.HeapLimit, heap.createConsolePort(.output));
     try std.testing.expectEqual(cellBytes(Port), heap.accounted);
+}
+
+test "multipleValuesFit holds exactly when the cell and the values fit under the limit" {
+    const count = 5;
+    const exact = cellBytes(MultipleValues) + count * @sizeOf(Value);
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = exact, .min_threshold = 1 << 20 });
+    defer heap.deinit();
+    try std.testing.expect(heap.multipleValuesFit(.limit, count));
+    try std.testing.expect(!heap.multipleValuesFit(.limit, count + 1));
+    // 1バイト足りない上限では収まらない。
+    var short: Heap = .init(std.testing.allocator, .{ .limit = exact - 1, .min_threshold = 1 << 20 });
+    defer short.deinit();
+    try std.testing.expect(!short.multipleValuesFit(.limit, count));
+    // 検査と確保は同じ境目である。
+    var items: [count]Value = @splat(.unspecified_value);
+    _ = try heap.createMultipleValuesIn(.limit, &items);
+    try std.testing.expect(!heap.multipleValuesFit(.limit, 0));
+    // 桁あふれする個数は収まらない。
+    try std.testing.expect(!heap.multipleValuesFit(.raise_reserve, std.math.maxInt(usize)));
 }

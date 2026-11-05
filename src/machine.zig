@@ -650,11 +650,7 @@ pub const Machine = struct {
                             // プリミティブの途中では回収できない(ADR-0031)ので、同じ呼び出しを継続の
                             // フレームに載せ、次の境目で回収させてから、そのフレームが呼び直す。残りの
                             // オペランドの無い `spread` は、境目のすぐ後に、そのまま適用する。
-                            error.CollectAndRetry => {
-                                kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = args, .count = count, .rest = .empty_list_value, .index = 0, .retry = true } });
-                                ctx.heap.collect_requested = true;
-                                return .{ .value = .unspecified_value };
-                            },
+                            error.CollectAndRetry => return self.retryAfterCollection(kont, args, count),
                             else => |other| return other,
                         },
                     };
@@ -730,7 +726,10 @@ pub const Machine = struct {
                             },
                         }
                     },
-                    .values => return .{ .value = try self.valuesOf(args, count, budget) },
+                    .values => {
+                        if (self.valuesWait(budget, count)) return self.retryAfterCollection(kont, args, count);
+                        return .{ .value = try self.valuesOf(args, count, budget) };
+                    },
                     .features => return .{ .value = try self.featureList() },
                     .exit => return .{ .value = try self.exitWith(kont, dyn, exitCode(args, count)) },
                     .emergency_exit => {
@@ -769,6 +768,7 @@ pub const Machine = struct {
         };
         if (operator.asContinuation()) |k| {
             // 継続は任意個の値を受け取る。1個以外なら、複数値のオブジェクトにして渡す。
+            if (self.valuesWait(budget, count)) return self.retryAfterCollection(kont, args, count);
             return .{ .value = try self.invoke(kont, dyn, k, try self.valuesOf(args, count, budget)) };
         }
         if (operator.asParameter()) |param| {
@@ -1212,6 +1212,27 @@ pub const Machine = struct {
             .fixnum => |n| std.math.cast(i32, n) orelse 1,
             else => 1,
         };
+    }
+
+    /// Puts the call of `args` on a frame and asks for a collection, so the next
+    /// boundary collects and the frame then makes the same call again.
+    /// Why: プリミティブの途中では回収できない(ADR-0031)。残りのオペランドの無い
+    /// `spread` は、境目のすぐ後に、そのまま適用する。
+    fn retryAfterCollection(self: *Machine, kont: *?*const Kont, args: *const Args, count: usize) Error!Applied {
+        kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = args, .count = count, .rest = .empty_list_value, .index = 0, .retry = true } });
+        self.ctx.heap.collect_requested = true;
+        return .{ .value = .unspecified_value };
+    }
+
+    /// Whether the multiple-values object for `count` operands, made now, would
+    /// pass the limit and the call has not yet been made again after a collection.
+    /// 呼び直した後は false を返し、収まらなければ `valuesOf` が上限のエラーにする。
+    /// 送出のための予約から取る確保は待たない(予約は回収で増えない)。
+    fn valuesWait(self: *Machine, budget: heap_mod.Budget, count: usize) bool {
+        const retried = self.retrying;
+        self.retrying = false;
+        if (count == 1 or retried or budget != .limit) return false;
+        return !self.ctx.heap.multipleValuesFit(.limit, count);
     }
 
     /// What `(values obj ...)` returns for the `count` operands in `args`: the
@@ -3120,6 +3141,97 @@ test "values returns one value as it is, and anything else as a multiple-values 
     try std.testing.expectEqual(10, many.items[9].asFixnum().?);
     // 0個の値の呼び出しのたびに、新しいオブジェクトができる。
     try std.testing.expect((try f.eval("(values)")).asMultipleValues().? != none);
+}
+
+/// 読み取りと展開が使う余裕。式を読み、展開しても、上限に当たらない大きさにする。
+const values_test_slack = 16 * 1024;
+
+/// 個数 `n` のリスト `xs` を持つ機械を作る。回収を済ませた後の計上を返す。
+fn valuesFixture(f: *Fixture, n: usize, stress: bool) !usize {
+    try f.initWith(.{ .min_threshold = 1 << 30, .stress = stress });
+    _ = try f.eval("(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))");
+    _ = try f.eval(try std.fmt.allocPrint(f.arena.allocator(), "(define xs (build {d} '()))", .{n}));
+    f.ctx.collectIdle();
+    return f.ctx.heap.held();
+}
+
+/// 並べた鎖と複数値の本体を作るのに要る量。
+fn valuesNeed(n: usize) usize {
+    return n * heap_mod.cellBytes(Args) + heap_mod.cellBytes(value_mod.MultipleValues) + n * @sizeOf(Value);
+}
+
+/// 上限を、手前のごみを回収すれば本体が収まり、回収しなければ収まらない大きさにして、
+/// `src`(個数 `n` の複数値を返す式)を評価する。
+fn expectValuesAfterCollection(n: usize, src: []const u8, stress: bool) !void {
+    var f: Fixture = undefined;
+    const live = try valuesFixture(&f, n, stress);
+    defer f.deinit();
+    // 未参照のごみ。余裕の2倍で、個数によらない。
+    _ = try f.eval(try std.fmt.allocPrint(f.arena.allocator(), "(make-vector {d} 0)", .{2 * values_test_slack / @sizeOf(Value)}));
+    f.ctx.heap.options.limit = live + valuesNeed(n) + values_test_slack;
+    // 閾値に任せず、本体の確保を断られたときの回収だけを試す。
+    f.ctx.heap.threshold = std.math.maxInt(usize);
+    try std.testing.expect(f.ctx.heap.held() + valuesNeed(n) > f.ctx.heap.options.limit);
+    const before = f.ctx.heap.collections;
+    const got = (try f.eval(src)).asMultipleValues().?;
+    try std.testing.expectEqual(n, got.items.len);
+    try std.testing.expect(f.ctx.heap.collections > before);
+}
+
+test "values with many operands collects at the boundary when its body does not fit, then fits" {
+    for ([_]bool{ false, true }) |stress| {
+        try expectValuesAfterCollection(2000, "(apply values xs)", stress);
+    }
+}
+
+test "a continuation invoked with many values collects at the boundary when the multiple values do not fit" {
+    for ([_]bool{ false, true }) |stress| {
+        try expectValuesAfterCollection(2000, "(call/cc (lambda (k) (apply k xs)))", stress);
+    }
+}
+
+test "values with 200000 operands collects at the boundary when its body does not fit, then fits" {
+    try tier.slow();
+    for ([_]bool{ false, true }) |stress| {
+        try expectValuesAfterCollection(200_000, "(apply values xs)", stress);
+        try expectValuesAfterCollection(200_000, "(call/cc (lambda (k) (apply k xs)))", stress);
+    }
+}
+
+test "values with many operands stops at the heap limit after one collection when the collection leaves the heap short of the body only" {
+    const n = 2000;
+    var f: Fixture = undefined;
+    const live = try valuesFixture(&f, n, false);
+    defer f.deinit();
+    const body = heap_mod.cellBytes(value_mod.MultipleValues) + n * @sizeOf(Value);
+    // 回収のあとの計上(リストと並べた鎖)から上限までの余りが、本体より1KiB小さい。
+    // 回収のあとの余りは、`exhausted` が立つ大きさ(上限の 1/8)より大きいので、
+    // 回収は「使い果たした」と言わず、本体だけが収まらない。
+    f.ctx.heap.options.limit = live + n * heap_mod.cellBytes(Args) + body - 1024;
+    f.ctx.heap.threshold = std.math.maxInt(usize);
+    // 呼び直しの歯止めが無ければ、回収と呼び直しを繰り返し、歩数の上限に当たる。
+    f.ctx.step_limit = 100_000;
+    const before = f.ctx.heap.collections;
+    try f.expectFails("heap limit exceeded", "(apply values xs)");
+    try std.testing.expect(!f.ctx.heap.exhausted);
+    try std.testing.expectEqual(before + 1, f.ctx.heap.collections);
+}
+
+test "values with many operands fails with the heap limit when a collection does not make room" {
+    const n = 2000;
+    var f: Fixture = undefined;
+    const live = try valuesFixture(&f, n, false);
+    defer f.deinit();
+    // 生きているのは、リストと並べた鎖である。本体の分が足りない。
+    f.ctx.heap.options.limit = live + n * heap_mod.cellBytes(Args) + values_test_slack;
+    f.ctx.heap.threshold = std.math.maxInt(usize);
+    const before = f.ctx.heap.collections;
+    try f.expectFails("heap limit exceeded", "(apply values xs)");
+    // 失敗の前に、回収を一度は試している。
+    try std.testing.expect(f.ctx.heap.collections > before);
+    // 上限のエラーのあとも、機械は使える。
+    f.ctx.heap.options.limit = std.math.maxInt(usize) / 2;
+    try f.expectInt(3, "(+ 1 2)");
 }
 
 test "call-with-values gives the consumer the values the producer returns" {
