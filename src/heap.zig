@@ -366,6 +366,12 @@ const CountingAllocator = struct {
     }
 };
 
+test "the size from which resident requests go to the large allocator is 4096" {
+    // Why: 他の単体テストは、境目をシンボルで指す。数値を替えても通るので、ここで固定する。
+    // 効き目は、境界 4096 バイトと 32768 バイトの実測に乗っている(`large_resident_bytes` の説明)。
+    try std.testing.expectEqual(@as(usize, 4096), large_resident_bytes);
+}
+
 test "a resident request of the large size goes to the large allocator, and a smaller one stays on the backing" {
     // Why: `smp_allocator` は、解放した領域をスロットごとの空きリストに積み、別のスロットに
     // 積んだ領域を再利用しないことがある。大きな表を作っては捨てる繰り返しで、常駐のメモリが
@@ -653,6 +659,9 @@ const reserve_divisor = 16;
 /// (境界 4096 バイトで効き、32768 バイトでは効かなかった。実測は計画書 0019 の同じ節にある)。
 /// 実行ファイルの割り当て器そのものを替える案は、`vm.max_map_count` を超えて異常終了した
 /// (`tests/cli-slow/multi-list-map.scm`)。回すのは常駐の確保だけで、ヒープのセルは動かさない。
+/// この数値は、実測(境界 4096 バイトと 32768 バイトの2点)に乗っている。変えるときは、
+/// `environment` を 20000 回以上繰り返す実行ファイルで、最大 RSS を測り直す。単体テストは境目の
+/// 振る舞いをシンボルで固定するので、数値そのものは「境目の数値」のテストが固定する。
 pub const large_resident_bytes: usize = 4096;
 
 /// The account a collection is asked for at the latest.
