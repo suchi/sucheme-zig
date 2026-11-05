@@ -327,6 +327,110 @@ test "resizing a resident block in place counts the difference, and a growth pas
     try std.testing.expectEqual(0, heap.resident);
 }
 
+/// An allocator that counts the bytes it holds, on top of `std.testing.allocator`,
+/// which reports what is left at the end of the test.
+const CountingAllocator = struct {
+    live: usize = 0,
+    allocations: usize = 0,
+
+    fn allocator(self: *CountingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ptr));
+        const memory = std.testing.allocator.rawAlloc(len, alignment, ret_addr) orelse return null;
+        self.live += len;
+        self.allocations += 1;
+        return memory;
+    }
+
+    fn resize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ptr));
+        if (!std.testing.allocator.rawResize(memory, alignment, new_len, ret_addr)) return false;
+        self.live = self.live - memory.len + new_len;
+        return true;
+    }
+
+    fn remap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ptr));
+        const moved = std.testing.allocator.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
+        self.live = self.live - memory.len + new_len;
+        return moved;
+    }
+
+    fn free(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *CountingAllocator = @ptrCast(@alignCast(ptr));
+        std.testing.allocator.rawFree(memory, alignment, ret_addr);
+        self.live -= memory.len;
+    }
+};
+
+test "a resident request of the large size goes to the large allocator, and a smaller one stays on the backing" {
+    // Why: `smp_allocator` は、解放した領域をスロットごとの空きリストに積み、別のスロットに
+    // 積んだ領域を再利用しないことがある。大きな表を作っては捨てる繰り返しで、常駐のメモリが
+    // 伸びた(docs/plans/0019-phase5-ports-and-io.md の「環境の表の GC の圧力の割り当て」)。
+    var small: CountingAllocator = .{};
+    var large: CountingAllocator = .{};
+    var heap: Heap = .init(small.allocator(), .{ .limit = 1 << 20 });
+    defer heap.deinit();
+    heap.large = large.allocator();
+    const a = heap.residentAllocator();
+    const below = try a.alloc(u8, large_resident_bytes - 1);
+    try std.testing.expectEqual(large_resident_bytes - 1, small.live);
+    try std.testing.expectEqual(0, large.live);
+    const at = try a.alloc(u8, large_resident_bytes);
+    try std.testing.expectEqual(large_resident_bytes - 1, small.live);
+    try std.testing.expectEqual(large_resident_bytes, large.live);
+    // どちらの経路でも、計上は同じに数え、解放は取った経路に返す。
+    try std.testing.expectEqual(large_resident_bytes * 2 - 1, heap.resident);
+    a.free(at);
+    a.free(below);
+    try std.testing.expectEqual(0, small.live);
+    try std.testing.expectEqual(0, large.live);
+    try std.testing.expectEqual(0, heap.resident);
+}
+
+test "a resident block that grows past the large size moves to the large allocator, and back when it shrinks" {
+    var small: CountingAllocator = .{};
+    var large: CountingAllocator = .{};
+    var heap: Heap = .init(small.allocator(), .{ .limit = 1 << 20 });
+    defer heap.deinit();
+    heap.large = large.allocator();
+    const a = heap.residentAllocator();
+    var block = try a.alloc(u8, 100);
+    // 境目をまたぐ伸縮は、その場では断る。下の割り当て器に、取った経路でない側の領域を
+    // 伸ばさせない。
+    try std.testing.expect(!a.resize(block, large_resident_bytes * 2));
+    try std.testing.expectEqual(100, heap.resident);
+    block = try a.realloc(block, large_resident_bytes * 2);
+    try std.testing.expectEqual(0, small.live);
+    try std.testing.expectEqual(large_resident_bytes * 2, large.live);
+    try std.testing.expectEqual(large_resident_bytes * 2, heap.resident);
+    // 境目の内側の伸縮は、その場で通ってよい。
+    block = try a.realloc(block, large_resident_bytes * 3);
+    try std.testing.expectEqual(large_resident_bytes * 3, large.live);
+    block = try a.realloc(block, 200);
+    try std.testing.expectEqual(200, small.live);
+    try std.testing.expectEqual(0, large.live);
+    try std.testing.expectEqual(200, heap.resident);
+    a.free(block);
+    try std.testing.expectEqual(0, small.live);
+    try std.testing.expectEqual(0, heap.resident);
+}
+
+test "a large resident request the large allocator refuses is not left counted" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20 });
+    defer heap.deinit();
+    heap.large = failing.allocator();
+    const a = heap.residentAllocator();
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, large_resident_bytes));
+    try std.testing.expectEqual(0, heap.resident);
+    // 下の割り当て器が断ったのであって、上限が断ったのではない。
+    try std.testing.expect(!heap.external_refused);
+}
+
 test "a collection keeps the resident account, and counts it as live" {
     var heap: Heap = .init(std.testing.allocator, .{ .limit = 1 << 20, .min_threshold = 1 });
     defer heap.deinit();
@@ -510,6 +614,18 @@ var no_work: [0]*Header = .{};
 /// 少なすぎて、再び要求する価値がない。
 const reserve_divisor = 16;
 
+/// The size from which a request to the resident allocator goes to `Heap.large`
+/// rather than to `Heap.backing`.
+/// Why: 実行ファイルの下の割り当て器 `smp_allocator` は、解放した領域をスロットごとの空きリストに
+/// 積み、別のスロットに積んだ領域を再利用しないことがある(`std/heap/SmpAllocator.zig`。機序は
+/// 実測しておらず、CPU を 1 個か 2 個に絞ると伸びなかった観察と矛盾しない推測である)。
+/// `environment` は、大きな表を作っては捨てるので、`heap limit exceeded` にならないまま常駐の
+/// メモリが伸びた。4 KiB 以上の確保をページ単位の割り当て器に回すと、一定に収まった
+/// (境界 4096 バイトで効き、32768 バイトでは効かなかった。実測は計画書 0019 の同じ節にある)。
+/// 実行ファイルの割り当て器そのものを替える案は、`vm.max_map_count` を超えて異常終了した
+/// (`tests/cli-slow/multi-list-map.scm`)。回すのは常駐の確保だけで、ヒープのセルは動かさない。
+pub const large_resident_bytes: usize = 4096;
+
 /// The account a collection is asked for at the latest.
 /// 上限までの余裕は、機械の1ステップが2つのセーフポイントの間に確保してよい量である。
 /// 例外が2つある。`apply` は、最後の引数のリストの長さに比例する量を1ステップの中で
@@ -522,6 +638,10 @@ fn softLimit(limit: usize) usize {
 
 pub const Heap = struct {
     backing: std.mem.Allocator,
+    /// Where the resident requests of `large_resident_bytes` and more go.
+    /// ページ単位の割り当て器が既定である。WebAssembly では、`wasm_allocator` と同じものになる。
+    /// 単体テストは、回した確保を数えるために置き換える。
+    large: std.mem.Allocator = std.heap.page_allocator,
     options: Options,
     /// Every object, newest first.
     objects: ?*Header = null,
@@ -1070,10 +1190,22 @@ pub const Heap = struct {
         self.resident += bytes;
     }
 
+    /// The allocator that holds a resident block of `len` bytes.
+    /// 解放と伸縮は、ブロックの大きさで経路を選び直す。取ったときと同じ経路になるのは、
+    /// 境目をまたぐ伸縮を下で断るからである。
+    fn residentBacking(self: *Heap, len: usize) std.mem.Allocator {
+        return if (len >= large_resident_bytes) self.large else self.backing;
+    }
+
+    /// Whether two sizes of one resident block go to the same allocator.
+    fn sameResidentRoute(a: usize, b: usize) bool {
+        return (a >= large_resident_bytes) == (b >= large_resident_bytes);
+    }
+
     fn residentAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *Heap = @ptrCast(@alignCast(ptr));
         self.chargeResident(len) catch return null;
-        return self.backing.rawAlloc(len, alignment, ret_addr) orelse {
+        return self.residentBacking(len).rawAlloc(len, alignment, ret_addr) orelse {
             self.resident -= len;
             return null;
         };
@@ -1081,8 +1213,9 @@ pub const Heap = struct {
 
     fn residentResize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         const self: *Heap = @ptrCast(@alignCast(ptr));
+        if (!sameResidentRoute(memory.len, new_len)) return false;
         if (new_len > memory.len) self.chargeResident(new_len - memory.len) catch return false;
-        if (!self.backing.rawResize(memory, alignment, new_len, ret_addr)) {
+        if (!self.residentBacking(memory.len).rawResize(memory, alignment, new_len, ret_addr)) {
             if (new_len > memory.len) self.resident -= new_len - memory.len;
             return false;
         }
@@ -1092,8 +1225,9 @@ pub const Heap = struct {
 
     fn residentRemap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const self: *Heap = @ptrCast(@alignCast(ptr));
+        if (!sameResidentRoute(memory.len, new_len)) return null;
         if (new_len > memory.len) self.chargeResident(new_len - memory.len) catch return null;
-        const moved = self.backing.rawRemap(memory, alignment, new_len, ret_addr) orelse {
+        const moved = self.residentBacking(memory.len).rawRemap(memory, alignment, new_len, ret_addr) orelse {
             if (new_len > memory.len) self.resident -= new_len - memory.len;
             return null;
         };
@@ -1103,7 +1237,7 @@ pub const Heap = struct {
 
     fn residentFree(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const self: *Heap = @ptrCast(@alignCast(ptr));
-        self.backing.rawFree(memory, alignment, ret_addr);
+        self.residentBacking(memory.len).rawFree(memory, alignment, ret_addr);
         self.resident -= memory.len;
     }
 

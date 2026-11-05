@@ -2277,6 +2277,57 @@ test "the table of an environment specifier is freed once nothing reaches it, an
     try expectLinePrints(&interp, "(let loop ((i 0)) (if (< i 20) (begin (environment '(scheme base)) (loop (+ i 1))) (eval '(car '(7)) kept)))", "7\n");
 }
 
+test "repeating environment keeps the resident account level" {
+    // Why: 繰り返し呼んで常駐のメモリが伸びたのは、計上の不足ではなかった。表は数えられ、GC で
+    // 回収される(docs/plans/0019-phase5-ports-and-io.md の「環境の表の GC の圧力の割り当て」)。
+    // この事実を固定する。常駐の計上が、回数に比例して伸びれば、ここで落ちる。
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.testing.allocator, .{});
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme eval))", "");
+    const loop = "(let loop ((i 0)) (if (< i 300) (begin (environment '(scheme base)) (loop (+ i 1))) 'done))";
+    try expectLinePrints(&interp, loop, "done\n");
+    const level = interp.ctx.heap.held();
+    try expectLinePrints(&interp, loop, "done\n");
+    try expectLinePrints(&interp, loop, "done\n");
+    // 表の大きさは、数 MiB には届かない。2 回の繰り返しで、1 MiB も伸びない。
+    try std.testing.expect(interp.ctx.heap.held() < level + 1024 * 1024);
+    try std.testing.expect(interp.ctx.environments.slots.items.len < 200);
+}
+
+/// The resident set of this process, in bytes, where the host tells it.
+fn residentSetBytes() ?usize {
+    if (builtin.os.tag != .linux) return null;
+    const linux = std.os.linux;
+    const fd = linux.open("/proc/self/statm", .{}, 0);
+    if (linux.errno(fd) != .SUCCESS) return null;
+    defer _ = linux.close(@intCast(fd));
+    var buf: [128]u8 = undefined;
+    const n = linux.read(@intCast(fd), &buf, buf.len);
+    if (linux.errno(n) != .SUCCESS) return null;
+    // 1 つ目が仮想サイズ、2 つ目が常駐のページ数である。
+    var fields = std.mem.tokenizeScalar(u8, buf[0..n], ' ');
+    _ = fields.next() orelse return null;
+    const pages = std.fmt.parseInt(usize, fields.next() orelse return null, 10) catch return null;
+    return pages * std.heap.pageSize();
+}
+
+test "environment called 200000 times keeps the resident set level" {
+    // Why: `smp_allocator` を下にして繰り返すと、大きな表の領域が再利用されず、200000 回で
+    // 700 MiB に伸びた。上限(256 MiB)を超えても `heap limit exceeded` にならなかった。
+    // CPU の数が少ない実行機では、もとから伸びないので、この検査は伸びを見つけない。
+    // 仕組みの検査は src/heap.zig の単体テストにある。
+    try tier.slow();
+    const before = residentSetBytes() orelse return error.SkipZigTest;
+    var interp: Interpreter = undefined;
+    try interp.initWithOptions(std.heap.smp_allocator, .{});
+    defer interp.deinit();
+    try expectLinePrints(&interp, "(import (scheme eval))", "");
+    try expectLinePrints(&interp, "(let loop ((i 0)) (if (< i 200000) (begin (environment '(scheme base)) (loop (+ i 1))) 'done))", "done\n");
+    const after = residentSetBytes() orelse return error.SkipZigTest;
+    try std.testing.expect(after < before + 64 * 1024 * 1024);
+}
+
 test "the import sets environment is given stay alive while it loads a library" {
     // Why: `environment` は、まだ読んでいないライブラリを読む間、入れ子の機械を走らせ、
     // その中で GC が走る。実行時に組んだ輸入集合は、外側の機械の引数(`Context.suspended`
