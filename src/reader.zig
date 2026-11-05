@@ -22,7 +22,8 @@
 const std = @import("std");
 const value_mod = @import("value.zig");
 const Value = value_mod.Value;
-const Heap = @import("heap.zig").Heap;
+const heap_mod = @import("heap.zig");
+const Heap = heap_mod.Heap;
 const char_syntax = @import("char_syntax.zig");
 const string_syntax = @import("string_syntax.zig");
 const positions_mod = @import("positions.zig");
@@ -388,7 +389,42 @@ pub const Reader = struct {
     /// データは `sink` に確保する。`scratch` は、データを読んでいる間に開いているものを
     /// 持ち、呼び出し側がまとめて解放する。
     pub fn next(self: *Reader, scratch: std.mem.Allocator, sink: Sink) Error!?Value {
+        // Why: 未閉じの括弧ごとの枠(`open`)と、枠の中の要素の並びは、入れ子の深さと要素の数に
+        // 比例して伸びる作業領域で、ヒープの外にある。閉じていない `(` だけが続くファイルでは、
+        // ファイルの大きさの約 110 倍になった(docs/design/open-questions.md)。そこで
+        // `heap.Charged` を通して確保し、ヒープの上限に計上する。計上は、ふつうは数えるだけで、
+        // 上限の検査は展開の間だけ効く(`Heap.external_enforced`)ので、読んでいる間は検査を
+        // 入れる。展開と重ならず、`prim/equiv.zig` と同じく前の値を戻せば足りる。断られたことは
+        // `external_refused` で見分け、`HeapLimit` にする。
+        const heap = sink.heap;
+        const was_enforced = heap.external_enforced;
+        const was_refused = heap.external_refused;
+        heap.external_enforced = true;
+        heap.external_refused = false;
+        defer {
+            heap.external_enforced = was_enforced;
+            heap.external_refused = was_refused;
+        }
+        var charged: heap_mod.Charged = .{ .heap = heap, .backing = scratch };
+        return self.nextCharged(scratch, charged.allocator(), sink) catch |e| switch (e) {
+            error.OutOfMemory => if (heap.external_refused) error.HeapLimit else error.OutOfMemory,
+            else => e,
+        };
+    }
+
+    /// `next` with the frames of what is open allocated from `work`.
+    fn nextCharged(self: *Reader, scratch: std.mem.Allocator, work: std.mem.Allocator, sink: Sink) Error!?Value {
         var open: std.ArrayList(Frame) = .empty;
+        // 戻るときに、開いたままの枠が持つ並びを手放し、計上を戻す。
+        defer {
+            for (open.items) |*frame| switch (frame.*) {
+                .list => |*l| l.items.deinit(work),
+                .vector => |*items| items.deinit(work),
+                .bytevector => |*bytes| bytes.deinit(work),
+                else => {},
+            };
+            open.deinit(work);
+        }
         // ラベルの範囲は最も外側のデータなので、データごとに表を作る(R7RS 2.4)。
         var labels: Labels = .{};
         while (true) {
@@ -401,7 +437,7 @@ pub const Reader = struct {
                 '(' => {
                     const at = self.here(sink);
                     self.pos += 1;
-                    try open.append(scratch, .{ .list = .{ .at = at } });
+                    try open.append(work, .{ .list = .{ .at = at } });
                     continue;
                 },
                 '.' => if (self.atDot()) {
@@ -433,15 +469,15 @@ pub const Reader = struct {
                 },
                 '#' => if (self.atCharacter()) .fromCharacter(try char_syntax.read(self.src, &self.pos, self.fold_case)) else if (self.atVectorOpen()) {
                     self.pos += 2;
-                    try open.append(scratch, .{ .vector = .empty });
+                    try open.append(work, .{ .vector = .empty });
                     continue;
                 } else if (self.atBytevectorOpen()) {
                     self.pos += 4;
-                    try open.append(scratch, .{ .bytevector = .empty });
+                    try open.append(work, .{ .bytevector = .empty });
                     continue;
                 } else if (self.atDatumComment()) {
                     self.pos += 2;
-                    try open.append(scratch, .{ .datum_comment = labels.entries.items.len });
+                    try open.append(work, .{ .datum_comment = labels.entries.items.len });
                     continue;
                 } else if (try self.label()) |l| blk: {
                     // Why: R7RS 7.1.2 の <bytevector> の要素は <byte> で、<datum> ではないので、
@@ -449,7 +485,7 @@ pub const Reader = struct {
                     if (open.items.len != 0 and open.items[open.items.len - 1] == .bytevector) return error.InvalidByte;
                     switch (l.kind) {
                         .define => {
-                            try open.append(scratch, .{ .label = try labels.define(scratch, l.number) });
+                            try open.append(work, .{ .label = try labels.define(scratch, l.number) });
                             continue;
                         },
                         .reference => break :blk try labels.reference(scratch, sink, l.number),
@@ -464,7 +500,7 @@ pub const Reader = struct {
                     const at = self.here(sink);
                     // Why: `,@` は 2 文字で 1 つの記号である(R7RS 2.4)。
                     self.pos += if (abbreviation == .unquote_splicing) 2 else 1;
-                    try open.append(scratch, .{ .abbreviation = .{ .kind = abbreviation, .at = at } });
+                    try open.append(work, .{ .abbreviation = .{ .kind = abbreviation, .at = at } });
                     continue;
                 },
                 ')' => blk: {
@@ -474,14 +510,24 @@ pub const Reader = struct {
                         .abbreviation => return error.MissingDatum,
                         .datum_comment => return error.MissingCommentedDatum,
                         .label => return error.MissingLabeledDatum,
-                        .list => |l| {
+                        .list => |l_open| {
+                            var l = l_open;
+                            defer l.items.deinit(work);
                             if (l.dot and l.tail == null) return error.UnexpectedDot;
                             const list = try listOf(sink, l.items.items, l.tail orelse Value.empty_list_value);
                             try recordPosition(sink, list, l.at);
                             break :blk list;
                         },
-                        .vector => |items| break :blk .fromVector(try sink.heap.createVector(items.items)),
-                        .bytevector => |bytes| break :blk .fromBytevector(try sink.heap.createBytevector(bytes.items)),
+                        .vector => |items_open| {
+                            var items = items_open;
+                            defer items.deinit(work);
+                            break :blk .fromVector(try sink.heap.createVector(items.items));
+                        },
+                        .bytevector => |bytes_open| {
+                            var bytes = bytes_open;
+                            defer bytes.deinit(work);
+                            break :blk .fromBytevector(try sink.heap.createBytevector(bytes.items));
+                        },
                     }
                 },
                 else => try self.atom(scratch, sink),
@@ -512,11 +558,11 @@ pub const Reader = struct {
                 return datum;
             }
             switch (open.items[open.items.len - 1]) {
-                .list => |*l| try l.add(scratch, datum),
-                .vector => |*items| try items.append(scratch, datum),
+                .list => |*l| try l.add(work, datum),
+                .vector => |*items| try items.append(work, datum),
                 .bytevector => |*bytes| {
                     const byte = std.math.cast(u8, datum.asFixnum() orelse return error.InvalidByte) orelse return error.InvalidByte;
-                    try bytes.append(scratch, byte);
+                    try bytes.append(work, byte);
                 },
                 .abbreviation, .datum_comment, .label => unreachable,
             }
@@ -1019,6 +1065,7 @@ test {
 }
 
 const printer = @import("printer.zig");
+const tier = @import("tier.zig");
 
 /// A reader test's fixture: where data goes, and how it is printed back.
 const Fixture = struct {
@@ -2219,6 +2266,69 @@ test "next reads vectors nested far deeper than a recursive reader could" {
     }
     try std.testing.expectEqual(depth - 1, vectors);
     try std.testing.expectEqual(.vector, d.kind());
+}
+
+/// `depth` copies of `open`, as the input of a file that never closes them.
+fn unclosed(a: std.mem.Allocator, open: []const u8, depth: usize) ![]u8 {
+    const src = try a.alloc(u8, open.len * depth);
+    for (0..depth) |k| @memcpy(src[open.len * k ..][0..open.len], open);
+    return src;
+}
+
+test "next counts the frames of what is open against the heap limit" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    f.heap.options.limit = 64 * 1024;
+    // 閉じていない括弧、ベクタ、バイトベクタ、略記の列は、どれも枠が上限を超えて、
+    // ヒープの上限で止まる。
+    for ([_][]const u8{ "(", "#(", "#u8(", "'" }) |open| {
+        const src = try unclosed(f.arena.allocator(), open, 20_000);
+        try std.testing.expectError(error.HeapLimit, f.readOne(src));
+        // 断った読み取りは、計上を残さない。
+        try std.testing.expectEqual(0, f.heap.external);
+        try std.testing.expect(!f.heap.external_enforced);
+    }
+}
+
+test "next counts the elements of an open list against the heap limit" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    f.heap.options.limit = 64 * 1024;
+    const src = try unclosed(f.arena.allocator(), "1 ", 40_000);
+    const wrapped = try std.mem.concat(f.arena.allocator(), u8, &.{ "(", src });
+    try std.testing.expectError(error.HeapLimit, f.readOne(wrapped));
+    try std.testing.expectEqual(0, f.heap.external);
+}
+
+test "next gives the count of the frames back when the datum is read" {
+    var f: Fixture = .init();
+    defer f.deinit();
+    _ = try f.readOne("(a (b #(1 2) #u8(3)) 'c . d)");
+    try std.testing.expectEqual(0, f.heap.external);
+    try std.testing.expectError(error.Incomplete, f.readOne("(a (b #(1 2"));
+    try std.testing.expectEqual(0, f.heap.external);
+    try std.testing.expectError(error.UnexpectedCloseParen, f.readOne(")"));
+    try std.testing.expectEqual(0, f.heap.external);
+    // 外側が数えている作業は、読み取りのあとも、検査の有無も、そのまま残る。
+    f.heap.external = 100;
+    f.heap.external_enforced = false;
+    _ = try f.readOne("(a (b))");
+    try std.testing.expectEqual(100, f.heap.external);
+    try std.testing.expect(!f.heap.external_enforced);
+}
+
+test "next stops at the heap limit on a file of unclosed parentheses of the largest size" {
+    try tier.slow();
+    var f: Fixture = .init();
+    defer f.deinit();
+    // ファイルの大きさの上限(1 MiB)と、既定のヒープの上限での、閉じていない括弧の列。
+    const src = try unclosed(f.arena.allocator(), "(", 1024 * 1024);
+    f.heap.options.limit = 16 * 1024 * 1024;
+    try std.testing.expectError(error.HeapLimit, f.readOne(src));
+    try std.testing.expectEqual(0, f.heap.external);
+    const vectors = try unclosed(f.arena.allocator(), "#(", 512 * 1024);
+    try std.testing.expectError(error.HeapLimit, f.readOne(vectors));
+    try std.testing.expectEqual(0, f.heap.external);
 }
 
 test "next reads a long vector" {
