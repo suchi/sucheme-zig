@@ -742,7 +742,11 @@ fn runForTest(arena: std.mem.Allocator, files: []const TestFile) !struct { count
     }
     var report: std.Io.Writer.Allocating = .init(arena);
     const counts = try run(arena, std.testing.io, tmp.dir, "manual", .{ .exe = "stand-in", .runFn = echoProgram }, &report.writer);
-    return .{ .counts = counts, .report = report.written() };
+    // Why: walker のパスは、Windows では `\` で区切られる。報告の文字列を `/` で書いた
+    // 期待と比べるので、区切りをそろえる(Windows の層2で、この比較だけが落ちた)。
+    const written = try arena.dupe(u8, report.written());
+    std.mem.replaceScalar(u8, written, '\\', '/');
+    return .{ .counts = counts, .report = written };
 }
 
 const passing_doc = "```scheme\n(+ 1 2)\n```\n\n```output\n3\n```\n";
