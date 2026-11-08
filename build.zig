@@ -415,9 +415,11 @@ pub fn build(b: *std.Build) void {
     const test_scheme_step = b.step("test-scheme", "run the Scheme behaviour tests");
     test_scheme_step.dependOn(&run_test_scheme.step);
 
-    // 実行器は引数を取らず、docs/manual/ を自分で読む。理由は test-scheme と同じで、末尾の
+    // 実行器が取る引数は、プログラム集を走らせる実行ファイルのパスの1つだけで、docs/manual/ は
+    // 自分で読む。範囲を狭める引数を取らない理由は test-scheme と同じで、末尾の
     // checkStepRuns の呼び出しを参照。
     const run_check_examples = b.addRunArtifact(check_examples);
+    run_check_examples.addArtifactArg(exe);
     run_check_examples.setCwd(b.path("."));
     const check_examples_step = b.step("check-examples", "run the code blocks of docs/manual and compare their output");
     check_examples_step.dependOn(&run_check_examples.step);
@@ -544,17 +546,31 @@ pub fn build(b: *std.Build) void {
     // 期待する出力が誤った文書、`docs/manual` の無いディレクトリ、引数の3つで、`main` の3つの
     // 戻り値をすべて確かめる。固定の入力は、本物の文書の検査に混ざらない testdata/ に置く。
     const run_examples_failing = b.addRunArtifact(check_examples);
+    run_examples_failing.addArtifactArg(exe);
     run_examples_failing.setCwd(b.path("tools/check-examples/testdata/failing"));
     run_examples_failing.expectExitCode(1);
     test_step.dependOn(&run_examples_failing.step);
     const run_examples_missing = b.addRunArtifact(check_examples);
+    run_examples_missing.addArtifactArg(exe);
     run_examples_missing.setCwd(b.path("tools/check-examples/testdata"));
     run_examples_missing.expectExitCode(1);
     test_step.dependOn(&run_examples_missing.step);
+    // 引数が実行ファイルの1つでないときは 2 で終わる(0 個と 2 個)。
     const run_examples_argument = b.addRunArtifact(check_examples);
+    run_examples_argument.addArtifactArg(exe);
     run_examples_argument.addArg("--bogus");
     run_examples_argument.expectExitCode(2);
     test_step.dependOn(&run_examples_argument.step);
+    const run_examples_no_argument = b.addRunArtifact(check_examples);
+    run_examples_no_argument.expectExitCode(2);
+    test_step.dependOn(&run_examples_no_argument.step);
+    // 実行ファイルそのもので、プログラムの組の誤り(出力の違い、終了コード、組の欠け)が
+    // 終了コード 1 になることを確かめる。本物のプログラム集に混ざらない testdata/ に置く。
+    const run_examples_bad_programs = b.addRunArtifact(check_examples);
+    run_examples_bad_programs.addArtifactArg(exe);
+    run_examples_bad_programs.setCwd(b.path("tools/check-examples/testdata/bad-programs"));
+    run_examples_bad_programs.expectExitCode(1);
+    test_step.dependOn(&run_examples_bad_programs.step);
     // 実行ファイルそのものに大きなリストを通す。単体テストと Scheme のテストは、実行ファイルの
     // `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられない(大きなリストを
     // 複数リストの `map` に渡すと、`SafeAllocator` の `munmap` が失敗して落ちた)。
@@ -630,8 +646,9 @@ pub fn build(b: *std.Build) void {
     checkStepRuns(test_scheme_step, test_scheme, 1);
     // 準拠スイートの実行も、ちょうどその artifact だけ。理由は test-scheme と同じである。
     checkStepRuns(test_conformance_step, conformance, 1);
-    // 文書の例の実行も、ちょうどその artifact だけ。理由は test-scheme と同じである。
-    checkStepRuns(check_examples_step, check_examples, 1);
+    // 文書の例の実行は、その artifact と、プログラム集を走らせる実行ファイルの2つだけ。
+    // フィルタや狭いディレクトリが入り込む手段を増やさない理由は test-scheme と同じである。
+    checkStepRuns(check_examples_step, check_examples, 2);
     // wasm のファイルは引数で、スクリプトは固定である。3つめの引数は、より狭い
     // テストの選択を入り込ませる手段になる。
     checkSystemStepRuns(test_wasm_step, test_wasm_script, &install_wasm.step, 3);
