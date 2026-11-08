@@ -291,4 +291,4 @@ v1.0.0 は、[ADR-0010](../adr/0010-ci-cd-and-release-strategy.md) の「段階�
 | 5u | マージ済み(suchi/sucheme-zig#273)。圧力に数えられていない、という推測は外れた(計上は一定)。伸びは `smp_allocator` を裏にしたときの RSS の伸びで、`Heap.residentAllocator` の 4096 バイト以上の確保を `page_allocator` に回して、200000 回のループが一定になった。機序の仮説は未確認である。仮説と測定は 0019 の「環境の表の GC の圧力の割り当て」にある |
 | 6q | マージ済み(suchi/sucheme-zig#263)。`reader.readsAsIdentifier` を公開し、プリンタの判定をそれ1本にした(リーダの `isIdentifier`、ASCII だけを通す写しは削除)。`λ` などは縦棒なしで書き、空白や先頭に置けない文字(Nd など)を含む綴りは縦棒のまま。テストは `src/printer.zig`、`tests/scheme/0630-write.txt` |
 | 6r | マージ済み(suchi/sucheme-zig#265)。`Interpreter.fold_case` を足し、`run` が `Reader` に渡して、読み終えた状態(エラーで止まったときも)を書き戻す。WASM の `sucheme_eval_begin` も同じ入口なので、評価をまたいで効き、`sucheme_reset` で戻る(`tools/test-wasm` で固定) |
-| 6z | 準備の PR を出した。残りは、タグの打鍵と公開(ユーザー)、開発版に進める PR、振り返りの PR |
+| 6z | 準備の PR(suchi/sucheme-zig#274)はマージ済み。タグ `v1.0.0`(`5c91951`)が打たれ、2026-11-09 07:07 JST(2026-11-08 22:07 UTC)に公開された。開発版に進める PR(版を `1.1.0-dev` に、`current_stage` を 7 に)を出した。残りは振り返りの PR |

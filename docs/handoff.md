@@ -11,9 +11,9 @@
 
 ## 次にやること
 
-段階5(ポートと入出力)は、v0.5.0 で完了した(タグは `64a67c2` に打たれ、2026-11-03 08:43 JST に公開された)。段階5の計画と進捗は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である。段階4は v0.4.0 で([plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md))、段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
+段階6(準拠検証)は、v1.0.0 で完了した(タグは `5c91951` に打たれ、2026-11-09 07:07 JST に公開された)。段階6の計画と進捗は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) が正である。段階5は v0.5.0 で完了した(タグは `64a67c2`、2026-11-03 08:43 JST の公開)。段階5の計画と進捗は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である。段階4は v0.4.0 で([plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md))、段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
 
-段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。次は段階6(準拠検証)である。段階6の全体の計画書は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) で、2026-11-04 に合意された。先に進めた部分は [plans/0020-conformance-harness-early.md](plans/0020-conformance-harness-early.md) と [plans/0025-fuzzing-the-evaluator.md](plans/0025-fuzzing-the-evaluator.md) にある。段階4と段階5から送った項目は、roadmap の段階6の作業項目にある。
+段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。次は段階7(REPLの編集機能)で、計画書はまだ無い(計画書のない段階の実装は始めない)。段階6の外へ送った項目と、v1.0.0 の既知の制限は、[releases/v1.0.0.md](releases/v1.0.0.md) と roadmap の段階6の作業項目にある。
 
 - 段階のリリースの準備では、配布物に入る第三者の表示(`THIRD-PARTY-NOTICES.txt`)が、その段階で入れたデータやコードを覆っているかを確かめる。v0.4.0 の準備で、Unicode の表の表示が足りないと分かり、足した([ADR-0034](adr/0034-release-shape.md) の 2026-11-02 の追記)。
 
