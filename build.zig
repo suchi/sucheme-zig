@@ -564,13 +564,17 @@ pub fn build(b: *std.Build) void {
     const run_examples_no_argument = b.addRunArtifact(check_examples);
     run_examples_no_argument.expectExitCode(2);
     test_step.dependOn(&run_examples_no_argument.step);
-    // 実行ファイルそのもので、プログラムの組の誤り(出力の違い、終了コード、組の欠け)が
-    // 終了コード 1 になることを確かめる。本物のプログラム集に混ざらない testdata/ に置く。
-    const run_examples_bad_programs = b.addRunArtifact(check_examples);
-    run_examples_bad_programs.addArtifactArg(exe);
-    run_examples_bad_programs.setCwd(b.path("tools/check-examples/testdata/bad-programs"));
-    run_examples_bad_programs.expectExitCode(1);
-    test_step.dependOn(&run_examples_bad_programs.step);
+    // 実行ファイルそのもので、プログラムの組の誤りが終了コード 1 になることを確かめる。誤りは
+    // 1 つずつ別のディレクトリに置く。1 つのディレクトリに混ぜると、どれか 1 つが検知されれば
+    // 終了コードは 1 になり、残りの検知が壊れても気づけない。本物のプログラム集に混ざらない
+    // testdata/ に置く。
+    for ([_][]const u8{ "bad-programs", "bad-exit-code", "orphan-out" }) |name| {
+        const run_bad = b.addRunArtifact(check_examples);
+        run_bad.addArtifactArg(exe);
+        run_bad.setCwd(b.path(b.fmt("tools/check-examples/testdata/{s}", .{name})));
+        run_bad.expectExitCode(1);
+        test_step.dependOn(&run_bad.step);
+    }
     // 実行ファイルそのものに大きなリストを通す。単体テストと Scheme のテストは、実行ファイルの
     // `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられない(大きなリストを
     // 複数リストの `map` に渡すと、`SafeAllocator` の `munmap` が失敗して落ちた)。

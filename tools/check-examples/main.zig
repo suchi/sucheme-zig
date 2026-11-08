@@ -123,9 +123,12 @@ const Program = struct {
 
 /// Whether `path` is a `.scm` or `.out` file directly under `programs/`.
 fn isProgramFile(path: []const u8) bool {
-    if (!std.mem.startsWith(u8, path, programs_dir)) return false;
-    const rest = path[programs_dir.len..];
-    // Windows の歩き方は `\\` で区切る。サブディレクトリの中は、プログラムとして読まない。
+    // Windows の歩き方は `\\` で区切る(path.sep)ので、区切りは両方を受け付ける。
+    const dir_name = programs_dir[0 .. programs_dir.len - 1];
+    if (!std.mem.startsWith(u8, path, dir_name)) return false;
+    if (path.len == dir_name.len or (path[dir_name.len] != '/' and path[dir_name.len] != '\\')) return false;
+    const rest = path[dir_name.len + 1 ..];
+    // サブディレクトリの中は、プログラムとして読まない。
     if (std.mem.indexOfAny(u8, rest, "/\\") != null) return false;
     return std.mem.endsWith(u8, rest, ".scm") or std.mem.endsWith(u8, rest, ".out");
 }
@@ -746,6 +749,17 @@ const passing_doc = "```scheme\n(+ 1 2)\n```\n\n```output\n3\n```\n";
 const prog_scm: TestFile = .{ .path = "programs/p.scm", .data = "(display 1)\n" };
 const prog_out: TestFile = .{ .path = "programs/p.out", .data = "(display 1)\n" };
 
+test "a program file is recognised under either path separator, and only directly under programs" {
+    try std.testing.expect(isProgramFile("programs/tak.scm"));
+    try std.testing.expect(isProgramFile("programs\\tak.out"));
+    try std.testing.expect(!isProgramFile("programs/sub/y.scm"));
+    try std.testing.expect(!isProgramFile("programs\\sub\\y.scm"));
+    try std.testing.expect(!isProgramFile("programs/README.md"));
+    try std.testing.expect(!isProgramFile("programsx/y.scm"));
+    try std.testing.expect(!isProgramFile("other/y.scm"));
+    try std.testing.expect(!isProgramFile("programs"));
+}
+
 test "a directory of passing documents and programs passes, nested ones included" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -795,6 +809,8 @@ test "a program fails when its pair is incomplete, its output differs, or its ex
         .{ .files = &.{ doc, prog_scm }, .says = "manual/programs/p: the `.out` file of the pair is missing\n" },
         .{ .files = &.{ doc, prog_out }, .says = "manual/programs/p: the `.scm` file of the pair is missing\n" },
         .{ .files = &.{ doc, prog_scm, .{ .path = "programs/p.out", .data = "other\n" } }, .says = "manual/programs/p.scm: the output differs\n  expected: other\n\n  got:      (display 1)\n" },
+        // 長さが同じで中身が違う出力も、差として数える。
+        .{ .files = &.{ doc, .{ .path = "programs/p.scm", .data = "y\n" }, .{ .path = "programs/p.out", .data = "x\n" } }, .says = "manual/programs/p.scm: the output differs" },
         // 末尾の改行の違いも、差として数える。
         .{ .files = &.{ doc, prog_scm, .{ .path = "programs/p.out", .data = "(display 1)" } }, .says = "manual/programs/p.scm: the output differs" },
         .{ .files = &.{ doc, .{ .path = "programs/p.scm", .data = "FAIL\n" }, .{ .path = "programs/p.out", .data = "FAIL\n" } }, .says = "manual/programs/p.scm: exit code 1, expected 0\n" },
