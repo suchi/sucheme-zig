@@ -375,10 +375,12 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 | --- | --- |
 | この計画書(D0) | マージ済み(suchi/sucheme-zig#211)。合意済み(2026-10-29) |
 | D1 | 実装済み、ドラフトの PR で確認中。ブランチ `feature/l9-slice-d1-check-examples`。`tools/check-examples/`、`check-examples` の step、検証コマンドの表の行、`ci.yml` と `full.yml` の step、ADR-0048、`docs/manual/README.md`(検査を通る例3つ)、0017 のレーンの表への L9 の追加 |
+| D2 | 着手済み(ドラフトの PR)。ブランチ `docs/docs-slice-d2-tutorial-1-8`。1 から 8 章を書き終えた(例は `check-examples` を通る)。親への報告とレビュー待ち |
 | D7a | 実装済み、ドラフトの PR で確認中。ブランチ `feature/docs-slice-d7a-programs-runner`。`tools/check-examples/` にプログラム集の実行を足し、アルゴリズムとベンチマークの12本を `docs/manual/programs/` に置いた。`build.zig` の `check-examples` は、実行ファイルを引数に取る |
-| D2 から D6、D7b、D8 | 未着手 |
+| D3 から D6、D7b、D8 | 未着手 |
 
 ## 次にやること
 
-- D7a のミューテーションの査読を受け、指摘を直す。ready にするかは親が決める。
-- D7a のあと、上の「割り当ての案」の順1の残り(D2)と、順2(D3、D4、D7b)に進む。着手の時期と同時に開く PR の数は、親のセッションが決める。D2 の実績で、残りのスライスを見積る。
+- D2: 親が PR を ready にし、マージを依頼する。マージのあと、チュートリアルの各章の末尾に「関連するプログラム」の行を足すかを、D7a の README ができてから決める。
+- D7a: 敵対的レビューは収束した。親が ready にし、層2 の結果を確かめて、マージを依頼する。
+- D7a のマージのあと、順2(D3、D4、D7b)に進む。着手の時期と同時に開く PR の数は、親のセッションが決める。D2 の実績で、残りのスライスを見積る。
