@@ -1,0 +1,53 @@
+;;; 記号微分: 式をリストで表し、構造に沿って微分する。簡約も同じ形の再帰で書く。
+(import (scheme base) (scheme cxr) (scheme write))
+
+(define (variable? e) (symbol? e))
+(define (same-var? a b) (and (variable? a) (variable? b) (eq? a b)))
+(define (sum? e) (and (pair? e) (eq? (car e) '+)))
+(define (product? e) (and (pair? e) (eq? (car e) '*)))
+(define (power? e) (and (pair? e) (eq? (car e) '^)))
+
+(define (make-sum a b)
+  (cond ((and (number? a) (number? b)) (+ a b))
+        ((eqv? a 0) b)
+        ((eqv? b 0) a)
+        (else (list '+ a b))))
+
+(define (make-product a b)
+  (cond ((and (number? a) (number? b)) (* a b))
+        ((or (eqv? a 0) (eqv? b 0)) 0)
+        ((eqv? a 1) b)
+        ((eqv? b 1) a)
+        (else (list '* a b))))
+
+(define (make-power base n)
+  (cond ((eqv? n 0) 1)
+        ((eqv? n 1) base)
+        (else (list '^ base n))))
+
+(define (deriv e v)
+  (cond ((number? e) 0)
+        ((variable? e) (if (same-var? e v) 1 0))
+        ((sum? e) (make-sum (deriv (cadr e) v) (deriv (caddr e) v)))
+        ((product? e)
+         (make-sum (make-product (cadr e) (deriv (caddr e) v))
+                   (make-product (deriv (cadr e) v) (caddr e))))
+        ((power? e)
+         ;; n が数のときの冪の微分 (u^n)' = n u^(n-1) u'
+         (make-product (make-product (caddr e)
+                                     (make-power (cadr e) (- (caddr e) 1)))
+                       (deriv (cadr e) v)))
+        (else (error "unknown expression" e))))
+
+(define (show e)
+  (write e)
+  (display " => ")
+  (write (deriv e 'x))
+  (newline))
+
+(show '(+ x 3))
+(show '(* x y))
+(show '(* (* x y) (+ x 3)))
+(show '(^ x 3))
+(show '(+ (* 3 (^ x 2)) (* 5 x)))
+(show '(^ (+ x 1) 2))

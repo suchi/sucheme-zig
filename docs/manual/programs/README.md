@@ -41,6 +41,15 @@ zig-out/bin/sucheme docs/manual/programs/tak.scm
 | [factorize](factorize.scm) | 素因数分解 | 7 再帰、11 数 |
 | [harmonic](harmonic.scm) | 有理数で調和数とベルヌーイ数を正確に求める | 11 数 |
 | [newton-sqrt](newton-sqrt.scm) | ニュートン法の平方根を、正確な数と不正確な数で比べる | 2 式と前置記法、11 数 |
+| [fizzbuzz](fizzbuzz.scm) | FizzBuzz | 5 条件分岐、7 再帰 |
+| [collatz](collatz.scm) | コラッツの数列と、1000 以下で最も長い数 | 5 条件分岐、7 再帰 |
+| [beer](beer.scm) | 99 本のビールの歌詞を、単複の場合分けで出す | 5 条件分岐、7 再帰 |
+| [maze](maze.scm) | 文字の迷路を幅優先で探索し、最短の道を描く | 6 リスト、10 ベクタ |
+| [compose-curry](compose-curry.scm) | 手続きの合成とカリー化 | 4 手続き、8 高階手続き |
+| [memoize](memoize.scm) | 連想リストによるメモ化で、呼び出しの回数を比べる | 3 定義と束縛、8 高階手続き |
+| [bank-account](bank-account.scm) | クロージャとメッセージによる銀行口座 | 3 定義と束縛、4 手続き、14 エラーの扱い |
+| [deriv](deriv.scm) | 記号微分と簡約 | 6 リスト |
+| [evaluator](evaluator.scm) | 数、if、let、lambda を持つ小さな式の評価器 | 6 リスト、8 高階手続き |
 
 ## 足すときの決まり
 

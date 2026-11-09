@@ -1,0 +1,6 @@
+(+ 1 (* 2 3)) => 7
+(if (< 1 2) 10 20) => 10
+(let ((x 5) (y 7)) (* x y)) => 35
+((lambda (x) (* x x)) 9) => 81
+(let ((make-adder (lambda (n) (lambda (x) (+ x n))))) ((make-adder 10) 5)) => 15
+(let ((fact (lambda (self n) (if (= n 0) 1 (* n (self self (- n 1))))))) (fact fact 10)) => 3628800
