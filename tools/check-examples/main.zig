@@ -1299,7 +1299,7 @@ test "dots and slashes inside an argument are fine, and an exit is read from how
     try std.testing.expectEqual(@as(?u8, 0), exitCode(.{ .exited = 0 }));
     try std.testing.expectEqual(@as(?u8, 66), exitCode(.{ .exited = 66 }));
     try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .signal = .SEGV }));
-    try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .stopped = .STOP }));
+    try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .stopped = .SEGV }));
     try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .unknown = 0 }));
 }
 
