@@ -113,6 +113,14 @@ const Exec = struct {
     commandFn: *const fn (gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, args: []const []const u8) anyerror!Outcome,
 };
 
+/// The exit code of a process that ended as `term`, or null when it did not exit by itself (a signal, a stop).
+fn exitCode(term: std.process.Child.Term) ?u8 {
+    return switch (term) {
+        .exited => |c| c,
+        else => null,
+    };
+}
+
 /// Runs `shown` (the program's path from the working directory) with the real executable.
 fn runExecutable(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome {
     _ = dir;
@@ -123,10 +131,7 @@ fn runExecutable(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir
         .timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } },
     });
     return .{
-        .code = switch (result.term) {
-            .exited => |c| c,
-            else => null,
-        },
+        .code = exitCode(result.term),
         .stdout = result.stdout,
     };
 }
@@ -142,10 +147,7 @@ fn runCommand(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, a
         .timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } },
     });
     return .{
-        .code = switch (result.term) {
-            .exited => |c| c,
-            else => null,
-        },
+        .code = exitCode(result.term),
         .stdout = result.stdout,
         .stderr = result.stderr,
     };
@@ -563,12 +565,17 @@ fn parse(gpa: std.mem.Allocator, body: []const u8, problems: *std.ArrayList(Prob
     return try blocks.toOwnedSlice(gpa);
 }
 
-/// Whether `arg` may be an argument of a command: letters, digits and `._/-=+,:@%`.
+/// Whether `arg` may be an argument of a command: letters, digits and `._/-=+,:@%`, not an absolute path, with no `..` element.
+///
+/// 絶対パスと `..` は、`examples/` の外のファイルを走らせられるので断る。文書の例は、
+/// `examples/` の中だけを使う。
 ///
 /// 引数はシェルを通さずに渡すので、引用符、空白、リダイレクト、`$`、`*` などは、書いたとおりの
 /// 意味にならない。書けないようにして、読者がシェルの意味で読む例を断る。
 fn isPlainArgument(arg: []const u8) bool {
-    if (arg.len == 0) return false;
+    if (arg.len == 0 or arg[0] == '/') return false;
+    var parts = std.mem.tokenizeScalar(u8, arg, '/');
+    while (parts.next()) |part| if (std.mem.eql(u8, part, "..")) return false;
     for (arg) |ch| {
         if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "._/-=+,:@%", ch) == null) return false;
     }
@@ -1158,6 +1165,14 @@ test "a console block this tool cannot run as written is refused" {
         .{ .doc = "```console\n$ sucheme a\\ b.scm\n```\n", .line = 2 },
         .{ .doc = "```console\n$ sucheme *.scm\n```\n", .line = 2 },
         .{ .doc = "```console\n$ sucheme\ta.scm\n```\n", .line = 2 },
+        // `examples/` の外へ出る引数。
+        .{ .doc = "```console\n$ sucheme ../a.scm\n```\n", .line = 2 },
+        .{ .doc = "```console\n$ sucheme lib/../../a.scm\n```\n", .line = 2 },
+        .{ .doc = "```console\n$ sucheme /etc/hostname\n```\n", .line = 2 },
+        .{ .doc = "```console\n$ sucheme -I /tmp a.scm\n```\n", .line = 2 },
+        .{ .doc = "```console\n$ sucheme ..\n```\n", .line = 2 },
+        // `$` だけの行は、コマンドの無い呼び出しである。
+        .{ .doc = "```console\n$\n```\n", .line = 2 },
         // コマンドより前の出力、`[exit N]` のあとの出力、番号の誤り。
         .{ .doc = "```console\nHello\n$ sucheme a.scm\n```\n", .line = 2 },
         .{ .doc = "```console\n$ sucheme a.scm\n[exit 1]\nmore\n```\n", .line = 4 },
@@ -1273,4 +1288,25 @@ test "a document with a console block needs its examples directory, and inputs t
     // examples/ の下の `.md` は、入力でなく文書として検査する。
     const md = try runForTest(a, &.{ console_doc, prog_scm, prog_out, .{ .path = "g/examples/in.scm", .data = "x" }, .{ .path = "g/examples/n.md", .data = "```lisp\n1\n```\n" } });
     try std.testing.expect(std.mem.indexOf(u8, md.report, "manual/g/examples/n.md:1: this fence names a kind other than") != null);
+}
+
+test "dots and slashes inside an argument are fine, and an exit is read from how the process ended" {
+    var p = try Parsed.of("```console\n$ sucheme -I lib sub/a.b.scm ./c.scm ..d ...\n```\n");
+    defer p.deinit();
+    try std.testing.expectEqual(@as(usize, 0), p.problems.len);
+    try std.testing.expectEqual(@as(usize, 7), p.blocks[0].commands[0].args.len);
+
+    try std.testing.expectEqual(@as(?u8, 0), exitCode(.{ .exited = 0 }));
+    try std.testing.expectEqual(@as(?u8, 66), exitCode(.{ .exited = 66 }));
+    try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .signal = .SEGV }));
+    try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .stopped = .STOP }));
+    try std.testing.expectEqual(@as(?u8, null), exitCode(.{ .unknown = 0 }));
+}
+
+test "trailing spaces of an expected line are kept, and the exit line is read without them" {
+    var p = try Parsed.of("```console\n$ sucheme a\nx  \n[exit 2]  \n```\n");
+    defer p.deinit();
+    try std.testing.expectEqual(@as(usize, 0), p.problems.len);
+    try std.testing.expectEqualStrings("x  ", p.blocks[0].commands[0].expected);
+    try std.testing.expectEqual(@as(u8, 2), p.blocks[0].commands[0].code);
 }
