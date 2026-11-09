@@ -50,6 +50,14 @@ zig-out/bin/sucheme docs/manual/programs/tak.scm
 | [bank-account](bank-account.scm) | クロージャとメッセージによる銀行口座 | 3 定義と束縛、4 手続き、14 エラーの扱い |
 | [deriv](deriv.scm) | 記号微分と簡約 | 6 リスト |
 | [evaluator](evaluator.scm) | 数、if、let、lambda を持つ小さな式の評価器 | 6 リスト、8 高階手続き |
+| [swap-macro](swap-macro.scm) | `swap!` マクロと、衛生性による名前の衝突の回避 | 15 構文の定義 |
+| [while-macro](while-macro.scm) | `while` マクロ(入れ子と末尾呼び出し) | 15 構文の定義 |
+| [control-macros](control-macros.scm) | `my-unless`、`my-or`、2つの形を持つ `for` | 15 構文の定義 |
+| [generator](generator.scm) | `call/cc` による生成器 | 13 制御 |
+| [early-exit](early-exit.scm) | `call/cc` と `dynamic-wind` による早期脱出 | 13 制御 |
+| [validate](validate.scm) | `guard` と `raise` による入力の検査 | 14 エラーの扱い |
+| [recover](recover.scm) | `with-exception-handler` と `raise-continuable` による回復 | 14 エラーの扱い |
+| [parameters](parameters.scm) | `parameterize` による設定の切り替え | 16 パラメータと遅延評価 |
 
 ## 足すときの決まり
 
