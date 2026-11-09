@@ -25,9 +25,15 @@
 //! `<pre>` と `<code>` で始まる HTML のブロック。この道具は CommonMark のリストと引用の
 //! 中のフェンスを読まないので、それらを断ることで、読み違えを防ぐ。
 //!
-//! docs/manual/ の下の `.md` でないファイル、`.md` が無いこと、`scheme` のブロックが
-//! 1つも無いことも、失敗とする。引数は取らない。範囲を狭める引数は、検査を減らした
-//! まま緑にする手段になるからである(tools/test-scheme と同じ理由)。
+//! プログラム集(docs/manual/programs/)は、`名前.scm` と期待する標準出力 `名前.out` の組で
+//! 置く。`.scm` を、引数で渡された実行ファイルに、ファイルの実行として渡し、標準出力と
+//! 終了コード 0 を `.out` と比べる(利用者が実際に打つ経路を通すため、プロセスの中では
+//! 評価しない)。組になっていないファイル、プログラムが1つも無いことは、失敗とする。
+//! 入力を渡す `.in` と一時ディレクトリは、前提のスライスが無いので、まだ足していない。
+//!
+//! docs/manual/ の下の、上のどれでもないファイル、`.md` が無いこと、`scheme` のブロックが
+//! 1つも無いことも、失敗とする。引数は、実行ファイルのパスの1つだけである。範囲を狭める
+//! 引数は、検査を減らしたまま緑にする手段になるからである(tools/test-scheme と同じ理由)。
 
 const std = @import("std");
 const sucheme = @import("sucheme");
@@ -46,11 +52,12 @@ pub fn main(init: std.process.Init) !u8 {
     const err = &stderr.interface;
 
     const argv = try init.minimal.args.toSlice(gpa);
-    if (argv.len > 1) {
-        try err.print("check-examples: takes no arguments, got {s}\n", .{argv[1]});
+    if (argv.len != 2) {
+        try err.print("check-examples: takes exactly one argument, the path of the sucheme executable\n", .{});
         try err.flush();
         return 2;
     }
+    const exec: Exec = .{ .exe = argv[1], .runFn = runExecutable };
 
     var dir = std.Io.Dir.cwd().openDir(io, manual_dir, .{ .iterate = true }) catch |e| {
         try err.print("check-examples: cannot open {s} ({t})\n", .{ manual_dir, e });
@@ -58,8 +65,8 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     };
     defer dir.close(io);
-    const counts = try run(gpa, io, dir, manual_dir, err);
-    try err.print("check-examples: {d} blocks passed, {d} failed\n", .{ counts.passed, counts.failed });
+    const counts = try run(gpa, io, dir, manual_dir, exec, err);
+    try err.print("check-examples: {d} checks passed, {d} failed ({d} blocks, {d} programs)\n", .{ counts.passed, counts.failed, counts.blocks, counts.programs });
     try err.flush();
     // Why: 終了コードは `main` の戻り値で返す。`exit` の呼び出しを条件に置くと、その1行を
     // 消すだけで、失敗を報告しながら 0 で終わる形になった(D1 のミューテーションの査読)。
@@ -71,17 +78,90 @@ fn exitStatus(counts: Counts) u8 {
     return if (counts.failed != 0) 1 else 0;
 }
 
-/// Checks every document under `dir`, named `name` in the report, and writes what failed to `w`.
+/// The directory of the programs, under the documents.
+const programs_dir = "programs/";
+
+/// What running one program gave.
+const Outcome = struct {
+    /// The exit code, or null when the process did not exit by itself (a signal, a timeout).
+    code: ?u8,
+    stdout: []const u8,
+};
+
+/// How a program is run. The tests put a stand-in for the executable here.
+const Exec = struct {
+    /// The path of the executable.
+    exe: []const u8,
+    /// Runs the program at `path`, relative to the working directory, and returns what it gave.
+    runFn: *const fn (gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome,
+};
+
+/// Runs `shown` (the program's path from the working directory) with the real executable.
+fn runExecutable(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome {
+    _ = dir;
+    _ = path;
+    // 暴走するプログラムが検査を止めたままにしないよう、時間に上限を置く。
+    const result = try std.process.run(gpa, io, .{
+        .argv = &.{ exec.exe, shown },
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } },
+    });
+    return .{
+        .code = switch (result.term) {
+            .exited => |c| c,
+            else => null,
+        },
+        .stdout = result.stdout,
+    };
+}
+
+/// A program of `programs/`: the files of one name that were found.
+const Program = struct {
+    name: []const u8,
+    has_scm: bool = false,
+    has_out: bool = false,
+};
+
+/// Whether `path` is a `.scm` or `.out` file directly under `programs/`.
+fn isProgramFile(path: []const u8) bool {
+    // Windows の歩き方は `\\` で区切る(path.sep)ので、区切りは両方を受け付ける。
+    const dir_name = programs_dir[0 .. programs_dir.len - 1];
+    if (!std.mem.startsWith(u8, path, dir_name)) return false;
+    if (path.len == dir_name.len or (path[dir_name.len] != '/' and path[dir_name.len] != '\\')) return false;
+    const rest = path[dir_name.len + 1 ..];
+    // サブディレクトリの中は、プログラムとして読まない。
+    if (std.mem.indexOfAny(u8, rest, "/\\") != null) return false;
+    return std.mem.endsWith(u8, rest, ".scm") or std.mem.endsWith(u8, rest, ".out");
+}
+
+/// Checks every document and program under `dir`, named `name` in the report, and writes what failed to `w`.
 ///
-/// `.md` でないファイル、`.md` が無いこと、`scheme` のブロックが1つも走らないことも、
-/// 失敗として数える。
-fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, w: *std.Io.Writer) !Counts {
+/// 上のどれでもないファイル、`.md` が無いこと、`scheme` のブロックが1つも走らないこと、
+/// プログラムが1つも無いことも、失敗として数える。
+fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, exec: Exec, w: *std.Io.Writer) !Counts {
     var counts: Counts = .{};
     var paths: std.ArrayList([]const u8) = .empty;
+    var programs: std.ArrayList(Program) = .empty;
     var walker = try dir.walk(gpa);
     defer walker.deinit();
     while (try walker.next(io)) |entry| {
         if (entry.kind == .directory) continue;
+        if (entry.kind == .file and isProgramFile(entry.path)) {
+            const stem = entry.basename[0 .. entry.basename.len - 4];
+            const is_scm = std.mem.endsWith(u8, entry.basename, ".scm");
+            var found = false;
+            for (programs.items) |*pr| {
+                if (std.mem.eql(u8, pr.name, stem)) {
+                    if (is_scm) pr.has_scm = true else pr.has_out = true;
+                    found = true;
+                }
+            }
+            if (!found) try programs.append(gpa, .{
+                .name = try gpa.dupe(u8, stem),
+                .has_scm = is_scm,
+                .has_out = !is_scm,
+            });
+            continue;
+        }
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".md")) {
             try w.print("{s}/{s}: not a `.md` file, so nothing here checks it\n", .{ name, entry.path });
             counts.failed += 1;
@@ -95,6 +175,13 @@ fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, w:
         try w.print("check-examples: no `.md` file under {s}\n", .{name});
         counts.failed += 1;
     }
+
+    std.mem.sort(Program, programs.items, {}, programLessThan);
+    if (programs.items.len == 0) {
+        try w.print("check-examples: no program (`.scm` and `.out` pair) under {s}/{s}\n", .{ name, programs_dir });
+        counts.failed += 1;
+    }
+    for (programs.items) |pr| try checkProgram(gpa, io, dir, name, pr, exec, w, &counts);
 
     for (paths.items) |path| {
         const shown = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ name, path });
@@ -117,10 +204,58 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
+fn programLessThan(_: void, a: Program, b: Program) bool {
+    return std.mem.lessThan(u8, a.name, b.name);
+}
+
+/// Runs one program and compares its standard output with the `.out` file and its exit code with 0.
+fn checkProgram(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, pr: Program, exec: Exec, w: *std.Io.Writer, counts: *Counts) !void {
+    counts.programs += 1;
+    if (!pr.has_scm or !pr.has_out) {
+        try w.print("{s}/{s}{s}: the {s} file of the pair is missing\n", .{
+            name, programs_dir, pr.name, if (pr.has_scm) "`.out`" else "`.scm`",
+        });
+        counts.failed += 1;
+        return;
+    }
+    const rel_scm = try std.fmt.allocPrint(gpa, "{s}{s}.scm", .{ programs_dir, pr.name });
+    const rel_out = try std.fmt.allocPrint(gpa, "{s}{s}.out", .{ programs_dir, pr.name });
+    const shown = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ name, rel_scm });
+    const expected_raw = dir.readFileAlloc(io, rel_out, gpa, .unlimited) catch |e| {
+        try w.print("{s}/{s}: cannot be read ({t})\n", .{ name, rel_out, e });
+        counts.failed += 1;
+        return;
+    };
+    // Git の改行の変換でチェックアウトした `.out` も、LF のものと同じに読む。
+    const expected = try std.mem.replaceOwned(u8, gpa, expected_raw, "\r\n", "\n");
+    const outcome = exec.runFn(gpa, io, exec, dir, rel_scm, shown) catch |e| {
+        try w.print("{s}: cannot be run ({t})\n", .{ shown, e });
+        counts.failed += 1;
+        return;
+    };
+    if (outcome.code != 0) {
+        if (outcome.code) |c| {
+            try w.print("{s}: exit code {d}, expected 0\n", .{ shown, c });
+        } else {
+            try w.print("{s}: the process did not exit by itself\n", .{shown});
+        }
+        counts.failed += 1;
+        return;
+    }
+    if (!std.mem.eql(u8, outcome.stdout, expected)) {
+        try w.print("{s}: the output differs\n  expected: {s}\n  got:      {s}\n", .{ shown, expected, outcome.stdout });
+        counts.failed += 1;
+        return;
+    }
+    counts.passed += 1;
+}
+
 /// The counts of a run.
 const Counts = struct {
     /// The `scheme` blocks run, passed or not.
     blocks: usize = 0,
+    /// The programs of `programs/` run (or found incomplete), passed or not.
+    programs: usize = 0,
     passed: usize = 0,
     failed: usize = 0,
 };
@@ -587,6 +722,16 @@ test "the exit status is 1 exactly when something failed" {
 /// A file of a directory a test writes.
 const TestFile = struct { path: []const u8, data: []const u8 };
 
+/// A stand-in for the executable: the "output" of a program is its own source, and it exits
+/// with 1 when the source starts with `FAIL`, or does not exit by itself when it starts with `SIGNAL`.
+fn echoProgram(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome {
+    _ = exec;
+    _ = shown;
+    const source = try dir.readFileAlloc(io, path, gpa, .unlimited);
+    const code: ?u8 = if (std.mem.startsWith(u8, source, "SIGNAL")) null else if (std.mem.startsWith(u8, source, "FAIL")) 1 else 0;
+    return .{ .code = code, .stdout = source };
+}
+
 /// Writes `files` into a new directory, runs it, and returns the counts and the report.
 fn runForTest(arena: std.mem.Allocator, files: []const TestFile) !struct { counts: Counts, report: []const u8 } {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -596,39 +741,89 @@ fn runForTest(arena: std.mem.Allocator, files: []const TestFile) !struct { count
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = f.path, .data = f.data });
     }
     var report: std.Io.Writer.Allocating = .init(arena);
-    const counts = try run(arena, std.testing.io, tmp.dir, "manual", &report.writer);
-    return .{ .counts = counts, .report = report.written() };
+    const counts = try run(arena, std.testing.io, tmp.dir, "manual", .{ .exe = "stand-in", .runFn = echoProgram }, &report.writer);
+    // Why: walker のパスは、Windows では `\` で区切られる。報告の文字列を `/` で書いた
+    // 期待と比べるので、区切りをそろえる(Windows の層2で、この比較だけが落ちた)。
+    const written = try arena.dupe(u8, report.written());
+    std.mem.replaceScalar(u8, written, '\\', '/');
+    return .{ .counts = counts, .report = written };
 }
 
 const passing_doc = "```scheme\n(+ 1 2)\n```\n\n```output\n3\n```\n";
+const prog_scm: TestFile = .{ .path = "programs/p.scm", .data = "(display 1)\n" };
+const prog_out: TestFile = .{ .path = "programs/p.out", .data = "(display 1)\n" };
 
-test "a directory of passing documents passes, nested ones included" {
+test "a program file is recognised under either path separator, and only directly under programs" {
+    try std.testing.expect(isProgramFile("programs/tak.scm"));
+    try std.testing.expect(isProgramFile("programs\\tak.out"));
+    try std.testing.expect(!isProgramFile("programs/sub/y.scm"));
+    try std.testing.expect(!isProgramFile("programs\\sub\\y.scm"));
+    try std.testing.expect(!isProgramFile("programs/README.md"));
+    try std.testing.expect(!isProgramFile("programsx/y.scm"));
+    try std.testing.expect(!isProgramFile("other/y.scm"));
+    try std.testing.expect(!isProgramFile("programs"));
+}
+
+test "a directory of passing documents and programs passes, nested ones included" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const r = try runForTest(arena.allocator(), &.{
         .{ .path = "a.md", .data = passing_doc },
         .{ .path = "sub/b.md", .data = passing_doc },
         .{ .path = "x/y/z/c.md", .data = passing_doc },
+        .{ .path = "programs/README.md", .data = "# Programs\n" },
+        prog_scm,
+        prog_out,
+        .{ .path = "programs/q.scm", .data = "two\n" },
+        .{ .path = "programs/q.out", .data = "two\r\n" },
     });
     try std.testing.expectEqualStrings("", r.report);
-    try std.testing.expectEqual(Counts{ .blocks = 3, .passed = 3, .failed = 0 }, r.counts);
+    try std.testing.expectEqual(Counts{ .blocks = 3, .programs = 2, .passed = 5, .failed = 0 }, r.counts);
     try std.testing.expectEqual(@as(u8, 0), exitStatus(r.counts));
 }
 
-test "a run with no document, no block, a failing block or a file that is not Markdown fails" {
+test "a run with no document, no block, no program, a failing block or a stray file fails" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const cases = [_]struct { files: []const TestFile, says: []const u8 }{
-        .{ .files = &.{}, .says = "check-examples: no `.md` file under manual\n" },
-        .{ .files = &.{.{ .path = "a.md", .data = "# Only prose\n" }}, .says = "check-examples: no `scheme` block was run\n" },
-        .{ .files = &.{ .{ .path = "a.md", .data = passing_doc }, .{ .path = "x.scm", .data = "(car 1)\n" } }, .says = "manual/x.scm: not a `.md` file, so nothing here checks it\n" },
-        .{ .files = &.{.{ .path = "a.md", .data = "```scheme\n(+ 1 2)\n```\n\n```output\n4\n```\n" }}, .says = "manual/a.md:1: the output differs\n" },
-        .{ .files = &.{.{ .path = "a.md", .data = "```lisp\n1\n```\n" }}, .says = "manual/a.md:1: this fence names a kind other than" },
+        .{ .files = &.{ prog_scm, prog_out }, .says = "check-examples: no `.md` file under manual\n" },
+        .{ .files = &.{ .{ .path = "a.md", .data = "# Only prose\n" }, prog_scm, prog_out }, .says = "check-examples: no `scheme` block was run\n" },
+        .{ .files = &.{.{ .path = "a.md", .data = passing_doc }}, .says = "check-examples: no program (`.scm` and `.out` pair) under manual/programs/\n" },
+        .{ .files = &.{ .{ .path = "a.md", .data = passing_doc }, prog_scm, prog_out, .{ .path = "x.scm", .data = "(car 1)\n" } }, .says = "manual/x.scm: not a `.md` file, so nothing here checks it\n" },
+        .{ .files = &.{ .{ .path = "a.md", .data = passing_doc }, prog_scm, prog_out, .{ .path = "programs/x.txt", .data = "" } }, .says = "manual/programs/x.txt: not a `.md` file" },
+        .{ .files = &.{ .{ .path = "a.md", .data = passing_doc }, prog_scm, prog_out, .{ .path = "programs/sub/y.scm", .data = "" } }, .says = "manual/programs/sub/y.scm: not a `.md` file" },
+        .{ .files = &.{ .{ .path = "a.md", .data = "```scheme\n(+ 1 2)\n```\n\n```output\n4\n```\n" }, prog_scm, prog_out }, .says = "manual/a.md:1: the output differs\n" },
+        .{ .files = &.{ .{ .path = "a.md", .data = "```lisp\n1\n```\n" }, prog_scm, prog_out }, .says = "manual/a.md:1: this fence names a kind other than" },
     };
     for (cases) |c| {
         const r = try runForTest(a, c.files);
         try std.testing.expect(r.counts.failed >= 1);
+        try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
+        try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
+    }
+}
+
+test "a program fails when its pair is incomplete, its output differs, or its exit is not 0" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const doc: TestFile = .{ .path = "a.md", .data = passing_doc };
+    const cases = [_]struct { files: []const TestFile, says: []const u8 }{
+        .{ .files = &.{ doc, prog_scm }, .says = "manual/programs/p: the `.out` file of the pair is missing\n" },
+        .{ .files = &.{ doc, prog_out }, .says = "manual/programs/p: the `.scm` file of the pair is missing\n" },
+        .{ .files = &.{ doc, prog_scm, .{ .path = "programs/p.out", .data = "other\n" } }, .says = "manual/programs/p.scm: the output differs\n  expected: other\n\n  got:      (display 1)\n" },
+        // 長さが同じで中身が違う出力も、差として数える。
+        .{ .files = &.{ doc, .{ .path = "programs/p.scm", .data = "y\n" }, .{ .path = "programs/p.out", .data = "x\n" } }, .says = "manual/programs/p.scm: the output differs" },
+        // 末尾の改行の違いも、差として数える。
+        .{ .files = &.{ doc, prog_scm, .{ .path = "programs/p.out", .data = "(display 1)" } }, .says = "manual/programs/p.scm: the output differs" },
+        .{ .files = &.{ doc, .{ .path = "programs/p.scm", .data = "FAIL\n" }, .{ .path = "programs/p.out", .data = "FAIL\n" } }, .says = "manual/programs/p.scm: exit code 1, expected 0\n" },
+        .{ .files = &.{ doc, .{ .path = "programs/p.scm", .data = "SIGNAL\n" }, .{ .path = "programs/p.out", .data = "SIGNAL\n" } }, .says = "manual/programs/p.scm: the process did not exit by itself\n" },
+    };
+    for (cases) |c| {
+        const r = try runForTest(a, c.files);
+        try std.testing.expectEqual(@as(usize, 1), r.counts.failed);
+        try std.testing.expectEqual(@as(usize, 0), r.counts.passed - r.counts.blocks);
         try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
         try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
     }

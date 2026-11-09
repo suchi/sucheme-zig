@@ -1,0 +1,9 @@
+move disk 1 from a to c
+move disk 2 from a to b
+move disk 1 from c to b
+move disk 3 from a to c
+move disk 1 from b to a
+move disk 2 from b to c
+move disk 1 from a to c
+7 moves
+1023

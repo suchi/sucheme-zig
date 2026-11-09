@@ -23,7 +23,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
 | テスト(WASM のラウンドトリップ) | `zig build test-wasm`(Node.js 上で `sucheme.wasm` のエクスポートを呼ぶ) | 1 | 全コミット |
 | テスト(規模を試すもの) | `zig build test -Dslow=true` と `zig build test-scheme -Dslow=true` と `zig build test-wasm -Dslow=true` | 1 | PR を ready にするとき、手動 |
 | テスト(準拠スイート) | `zig build test-conformance` | 6 | 全コミット |
-| テスト(利用者向けの文書の例) | `zig build check-examples`(`docs/manual/` のコードブロックを走らせて、期待する出力と比べる。[ADR-0048](docs/adr/0048-run-the-examples-of-the-user-documentation.md)) | 4 | 全コミット |
+| テスト(利用者向けの文書の例) | `zig build check-examples`(`docs/manual/` のコードブロックを走らせて、期待する出力と比べる。`docs/manual/programs/` の `.scm` は、`zig build` の実行ファイルで走らせて、`.out` と比べる。[ADR-0048](docs/adr/0048-run-the-examples-of-the-user-documentation.md)) | 4 | 全コミット |
 | テスト(ファジング) | `zig build test --fuzz=<N> -Doptimize=ReleaseSafe`(`<N>` は実行回数の上限。値は `fuzz.yml` が持つ) | 1 | 手動と定期実行のみ |
 | リント・フォーマット | `zig fmt --check .` | 0 | 全コミット |
 | 型チェック | `zig build test`(コンパイルに含まれる) | 0 | 全コミット |
