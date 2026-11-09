@@ -338,7 +338,7 @@ const Library = struct {
 };
 
 /// Why the file of a library cannot be read for its exports.
-const LibraryError = error{ NoLibrary, NoExport, NonSymbolExport, Unbalanced };
+const LibraryError = error{ NoLibrary, NoExport, NonSymbolExport, CondExpand, Unbalanced };
 
 /// What a token of a library file is.
 const TokenKind = enum { open, close, atom };
@@ -427,8 +427,11 @@ fn parseLibrary(gpa: std.mem.Allocator, src: []const u8) (error{OutOfMemory} || 
             },
             .atom => {},
             .open => {
-                const is_export = depth == 0 and i + 1 < tokens.len and tokens[i + 1].kind == .atom and
-                    std.mem.eql(u8, tokens[i + 1].text, "export");
+                const head_atom = depth == 0 and i + 1 < tokens.len and tokens[i + 1].kind == .atom;
+                // `cond-expand` の中の `export` は、条件で輸出が変わる。ランタイムは処理するが、
+                // この道具は条件を解釈しないので、読み飛ばさず断る。
+                if (head_atom and std.mem.eql(u8, tokens[i + 1].text, "cond-expand")) return error.CondExpand;
+                const is_export = head_atom and std.mem.eql(u8, tokens[i + 1].text, "export");
                 if (!is_export) {
                     depth += 1;
                     continue;
@@ -624,6 +627,11 @@ fn checkIndexes(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []con
             },
             error.NonSymbolExport => {
                 try w.print("{s}/{s}: an `(export ...)` declaration has an element that is not an identifier (a `rename`?), which this tool does not read\n", .{ lib_dir, entry.path });
+                counts.failed += 1;
+                continue;
+            },
+            error.CondExpand => {
+                try w.print("{s}/{s}: a `cond-expand` declaration, whose exports depend on a condition this tool does not read\n", .{ lib_dir, entry.path });
                 counts.failed += 1;
                 continue;
             },
@@ -1744,6 +1752,11 @@ test "a file that is not read as a library with exports is refused" {
     // `(export` は、define-library の直下にあるものだけを読む。
     try std.testing.expectError(error.NoExport, libraryOf(a, "(define-library (x) (begin (export a)))\n"));
     try std.testing.expectError(error.NonSymbolExport, libraryOf(a, "(define-library (x) (export a (rename b c)))\n"));
+    // `cond-expand` の中の `export` は、条件を読まないので断る(輸出を黙って読み飛ばさない)。
+    try std.testing.expectError(error.CondExpand, libraryOf(a, "(define-library (x) (export a) (cond-expand (sucheme (export b))))\n"));
+    try std.testing.expectError(error.CondExpand, libraryOf(a, "(define-library (x) (cond-expand (else)) (export a))\n"));
+    // 本体の中の `cond-expand` は、輸出に関わらない。
+    _ = try libraryOf(a, "(define-library (x) (export a) (begin (cond-expand (else (define a 1)))))\n");
     try std.testing.expectError(error.Unbalanced, libraryOf(a, "(define-library (x) (export a)\n"));
     try std.testing.expectError(error.Unbalanced, libraryOf(a, "(define-library (x) (export a\n"));
 }
@@ -1908,6 +1921,8 @@ test "a library without an index, an index of no library, and an unreadable libr
         .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (import (w)))\n" } }, .says = "lib/scheme/v.sld: no `(export ...)` declaration\n" },
         .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (export (rename a b)))\n" } }, .says = "lib/scheme/v.sld: an `(export ...)` declaration has an element that is not an identifier" },
         .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (export a\n" } }, .says = "lib/scheme/v.sld: the parentheses do not balance\n" },
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (export a)\n" } }, .says = "lib/scheme/v.sld: the parentheses do not balance\n" },
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (export a) (cond-expand (x (export b))))\n" } }, .says = "lib/scheme/v.sld: a `cond-expand` declaration" },
     };
     for (cases) |c| {
         const r = try runForTestLibs(a, c.files, c.libs);

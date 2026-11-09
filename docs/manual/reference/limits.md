@@ -8,14 +8,17 @@ sucheme が、R7RS の言う「実装の制限」として持つ上限をまと�
 
 誤りは `error:` の行として出て、その式(最上位の形式)の評価だけが終わります。REPL は止まらず、ヒープは次の式から使えます。
 
+1 つの確保が、ヒープの残りに収まらないときが、最も早く確かめられる例です。
+
 ```scheme fresh
-(define (grow acc) (grow (cons 1 acc)))
-(grow '())
+(make-vector 1000000000 0)
 ```
 
 ```output
 error: heap limit exceeded
 ```
+
+小さな確保を重ねて上限に届く場合も、同じ誤りです。たとえば `(define (grow acc) (grow (cons 1 acc)))` のあとに `(grow '())` を呼ぶと、リストが伸び続けて上限に届きます。実機の例が上限に届くまでの時間は長く、この文書の検査には載せていません(下に測った時間を書きます)。
 
 誤りの後の式は、REPL では次の入力として評価されます(1 つのコードブロックは、最初の誤りで終わるので、ブロックを分けて書いています)。
 
@@ -27,7 +30,9 @@ error: heap limit exceeded
 3
 ```
 
-ファイルの実行では、実行時エラーと同じく、`error: heap limit exceeded` を標準エラーに出して、プログラムを終了コード 1 で止めます([ユーザーズガイド 2 コマンドライン](../guide/02-command-line.md))。この誤りをハンドラで受ける書き方の挙動は、この文書では確かめていません。
+ファイルの実行では、実行時エラーと同じく、`error: heap limit exceeded` を標準エラーに出して、プログラムを終了コード 1 で止めます([ユーザーズガイド 2 コマンドライン](../guide/02-command-line.md))。この誤りは、`guard` で受けられます。条件オブジェクトのメッセージが `heap limit exceeded` になります(実機で、`(guard (e (#t (error-object-message e))) (grow '()))` が `"heap limit exceeded"` を返すことを確かめました。上限に届くまで時間がかかるので、この文書の検査には載せていません)。
+
+上限に届くまでの時間は、確保の仕方で大きく違います。Linux で測った一例では、上の `grow` が上限に届くまでに、Debug のビルド(`zig build` の既定)で約 55 秒、ReleaseSafe のビルドで約 38 秒かかりました。
 
 ## 再帰の深さ
 
@@ -42,16 +47,7 @@ error: heap limit exceeded
 1000000
 ```
 
-深さが上限を超えると、スタックが溢れるのではなく、上のヒープの上限の誤りになります。
-
-```scheme fresh
-(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1)))))
-(depth 100000000)
-```
-
-```output
-error: heap limit exceeded
-```
+深さが上限を超えると、スタックが溢れるのではなく、上のヒープの上限の誤りになります(実機で、`(depth 100000000)` が `error: heap limit exceeded` になることを確かめました。上限に届くまで時間がかかるので、この文書の検査には載せていません)。
 
 末尾呼び出しは、深さを増やしません。ループは、回数に上限なく回ります(R7RS 3.5 節)。
 
@@ -62,18 +58,6 @@ error: heap limit exceeded
 
 ```output
 done
-```
-
-## 大きな確保
-
-1 つの確保が、ヒープの残りに収まらないときも、同じ `heap limit exceeded` です。
-
-```scheme fresh
-(make-vector 1000000000 0)
-```
-
-```output
-error: heap limit exceeded
 ```
 
 ## 入力の大きさ
