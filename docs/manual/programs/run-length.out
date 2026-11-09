@@ -1,0 +1,4 @@
+"aaabbc" -> "3a2b1c" (round trip ok)
+"abc" -> "1a1b1c" (round trip ok)
+"zzzzzzzzzz" -> "10z" (round trip ok)
+"" -> "" (round trip ok)
