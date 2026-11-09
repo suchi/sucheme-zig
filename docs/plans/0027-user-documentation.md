@@ -377,11 +377,13 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 | D1 | 実装済み、ドラフトの PR で確認中。ブランチ `feature/l9-slice-d1-check-examples`。`tools/check-examples/`、`check-examples` の step、検証コマンドの表の行、`ci.yml` と `full.yml` の step、ADR-0048、`docs/manual/README.md`(検査を通る例3つ)、0017 のレーンの表への L9 の追加 |
 | D2 | 着手済み(ドラフトの PR)。ブランチ `docs/docs-slice-d2-tutorial-1-8`。1 から 8 章を書き終えた(例は `check-examples` を通る)。親への報告とレビュー待ち |
 | D7a | 実装済み、ドラフトの PR で確認中。ブランチ `feature/docs-slice-d7a-programs-runner`。`tools/check-examples/` にプログラム集の実行を足し、アルゴリズムとベンチマークの12本を `docs/manual/programs/` に置いた。`build.zig` の `check-examples` は、実行ファイルを引数に取る |
+| D4 | ブランチ `docs/docs-slice-d4-tutorial-9-17`。9 から 17 章を書き終えた(例は `check-examples` を通る)。前提の機能が main に無くて書かなかった章は無い(9 章の大文字小文字の節も、`(scheme char)` が main にあるので入れた)。17 章のファイルのライブラリ(`-I`)の例は、`console` の検査が D3 で入るまで `text` のブロックで置き、実機で手で確かめた |
 | D7b | 着手済み。分野ごとに PR を分ける。1 本目はデータ処理、文字列と文字、数の12本(ブランチ `docs/docs-slice-d7b-programs-data-strings-numbers`)。2 本目はパズル、高階関数、記号処理の9本(ブランチ `docs/docs-slice-d7b-programs-puzzles-higher-order-symbolic`、1 本目の上に積む)。3 本目はマクロ、継続、エラーの扱い、パラメータの8本(ブランチ `docs/docs-slice-d7b-programs-macros-control-errors`、2 本目の上に積む)。残りは `define-library` の例の1本で、`-I` を要するので、検査の対応を待つ |
-| D3 から D6、D8 | 未着手 |
+| D3、D5、D6、D8 | 未着手 |
 
 ## 次にやること
 
 - D2: 親が PR を ready にし、マージを依頼する。マージのあと、チュートリアルの各章の末尾に「関連するプログラム」の行を足すかを、D7a の README ができてから決める。
 - D7a: 敵対的レビューは収束した。親が ready にし、層2 の結果を確かめて、マージを依頼する。
+- D4: D3 の `console` の検査が入ったら、17 章の `text` のコマンドの例を `console` に直す。18 章と 19 章は、前提の 5j から 5n のマージ状況を確かめてから、D8 以降で足す(5j から 5n は main にあるように見えるが、このスライスでは確かめていない)。
 - D7a のマージのあと、順2(D3、D4、D7b)に進む。着手の時期と同時に開く PR の数は、親のセッションが決める。D2 の実績で、残りのスライスを見積る。
