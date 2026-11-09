@@ -390,7 +390,8 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 | D4 | ブランチ `docs/docs-slice-d4-tutorial-9-17`。9 から 17 章を書き終えた(例は `check-examples` を通る)。前提の機能が main に無くて書かなかった章は無い(9 章の大文字小文字の節も、`(scheme char)` が main にあるので入れた)。17 章のファイルのライブラリ(`-I`)の例は、`console` の検査が D3 で入るまで `text` のブロックで置き、実機で手で確かめた |
 | D7b | 着手済み。分野ごとに PR を分ける。1 本目はデータ処理、文字列と文字、数の12本(ブランチ `docs/docs-slice-d7b-programs-data-strings-numbers`)。2 本目はパズル、高階関数、記号処理の9本(ブランチ `docs/docs-slice-d7b-programs-puzzles-higher-order-symbolic`、1 本目の上に積む)。3 本目はマクロ、継続、エラーの扱い、パラメータの8本(ブランチ `docs/docs-slice-d7b-programs-macros-control-errors`、2 本目の上に積む)。残りは `define-library` の例の1本で、`-I` を要するので、検査の対応を待つ |
 | D3 | 実装済み。ブランチ `feature/docs-slice-d3-console-check-and-user-guide`。`console` のブロックの検査(`tools/check-examples/`。決めたことは「D3 で決めたこと」)と、実行ファイルを通る経路の対(`testdata/console-ok` と `testdata/console-differs`)、ユーザーズガイドの1から7章(`docs/manual/guide/`)。終了コードの表は写さず、`src/main.zig` の doc コメントにリンクして、代表の例(0、1、64、66、69)を走らせた。前提の機能が main に無くて書かなかった章は無い。ただし、前提のある内容(REPL の行編集、標準入力のプログラム、Web UI の対話とエラー位置と配置した URL)は、ガイドが「まだ無い」と書くだけで、前提のスライスのあとに足す |
-| D5、D6、D8 | 未着手 |
+| D5 | 実装済み。ブランチ `feature/docs-slice-d5-reference-index`。`tools/check-examples/` に、`lib/scheme/*.sld` の `export` と `docs/manual/reference/scheme-*.md` の表を双方向に突き合わせる検査を足した(輸出されるのに行が無い、行があるのに輸出されない、行の重複、節番号の形、索引の無いライブラリ、ライブラリの無い索引、ライブラリが 0 件、読めないライブラリ。判定の関数ごとに単体テストがある)。16 ライブラリの索引の節番号は、R7RS の原文で確かめて書いた(`(scheme r5rs)` の4つは原文の 6.2.6 と 6.12 による)。固有の項目の前半として、上限、REPL とコマンドライン、誤りの文面を `docs/manual/reference/` に置いた(例は `check-examples` が走らせる)。残り: 索引の「項目」の列は空で、D6 が項目へのリンクを足す。`testdata/index-differs/` は、`build.zig` の失敗を期待する入力の一覧に足す1語の変更を待つ(`build.zig` は D5 の所有の外なので、親に依頼した)。ヒープの上限に達した式を `guard` で受けると、止まらなかった観察があり(原因は調べていない)、文書は挙動を確かめていないと書いた |
+| D6、D8 | 未着手 |
 
 ## 次にやること
 
@@ -398,4 +399,5 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 - D7a: 敵対的レビューは収束した。親が ready にし、層2 の結果を確かめて、マージを依頼する。
 - D3: 親が ready にし、層2 を手動で走らせて結果を確かめる。
 - D4: D3 の `console` の検査が入ったら、17 章の `text` のコマンドの例を `console` に直す(文書だけの PR)。18 章と 19 章は、前提の 5j から 5n のマージ状況を確かめてから、D8 以降で足す(5j から 5n は main にあるように見えるが、このスライスでは確かめていない)。
+- D5: 親がミューテーションの担当1本の敵対的レビューを走らせる。`build.zig` の `index-differs` の1語を親が足すか決める。マージのあと、D6(固有の項目の残りと、索引の「項目」の列のリンク)に進む。
 - D7a のマージのあと、順2(D3、D4、D7b)に進む。着手の時期と同時に開く PR の数は、親のセッションが決める。D2 の実績で、残りのスライスを見積る。

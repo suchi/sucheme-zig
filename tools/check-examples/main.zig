@@ -38,6 +38,11 @@
 //! 評価しない)。組になっていないファイル、プログラムが1つも無いことは、失敗とする。
 //! 入力を渡す `.in` と一時ディレクトリは、前提のスライスが無いので、まだ足していない。
 //!
+//! ライブラリの索引(docs/manual/reference/scheme-*.md)は、`lib/scheme/*.sld` の `export` と
+//! 双方向に突き合わせる。ライブラリごとに `reference/<名前をつないだもの>.md` が要り、その表の
+//! 行(`| `識別子` | R7RS の節 | 項目 |`)と輸出が一致しなければ失敗とする。ライブラリの置き場が
+//! 無いこと、ライブラリが1つも無いこと、ライブラリの無い索引も失敗である。
+//!
 //! docs/manual/ の下の、上のどれでもないファイル、`.md` が無いこと、`scheme` のブロックが
 //! 1つも無いことも、失敗とする。引数は、実行ファイルのパスの1つだけである。範囲を狭める
 //! 引数は、検査を減らしたまま緑にする手段になるからである(tools/test-scheme と同じ理由)。
@@ -47,6 +52,12 @@ const sucheme = @import("sucheme");
 
 /// Where the documents are.
 const manual_dir = "docs/manual";
+
+/// Where the libraries that a program can `import` are, from the repository root.
+const lib_dir = "lib/scheme";
+
+/// The directory of the indexes of the libraries, under the documents.
+const reference_dir = "reference";
 
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.arena.allocator();
@@ -78,8 +89,15 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     };
     defer dir.close(io);
-    const counts = try run(gpa, io, dir, manual_dir, exec, err);
-    try err.print("check-examples: {d} checks passed, {d} failed ({d} blocks, {d} commands, {d} programs)\n", .{ counts.passed, counts.failed, counts.blocks, counts.commands, counts.programs });
+    // ライブラリの置き場が開けなくても、文書の検査は続ける(索引の検査が失敗として数える)。
+    // ここで戻ると、文書の検査を減らしたまま、別の理由で赤になる。
+    var libs: ?std.Io.Dir = std.Io.Dir.cwd().openDir(io, lib_dir, .{ .iterate = true }) catch |e| blk: {
+        try err.print("check-examples: cannot open {s} ({t})\n", .{ lib_dir, e });
+        break :blk null;
+    };
+    defer if (libs) |*l| l.close(io);
+    const counts = try run(gpa, io, dir, manual_dir, libs, exec, err);
+    try err.print("check-examples: {d} checks passed, {d} failed ({d} blocks, {d} commands, {d} programs, {d} libraries)\n", .{ counts.passed, counts.failed, counts.blocks, counts.commands, counts.programs, counts.libraries });
     try err.flush();
     // Why: 終了コードは `main` の戻り値で返す。`exit` の呼び出しを条件に置くと、その1行を
     // 消すだけで、失敗を報告しながら 0 で終わる形になった(D1 のミューテーションの査読)。
@@ -197,7 +215,7 @@ const examples_dir = "examples";
 ///
 /// 上のどれでもないファイル、`.md` が無いこと、`scheme` のブロックが1つも走らないこと、
 /// プログラムが1つも無いことも、失敗として数える。
-fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, exec: Exec, w: *std.Io.Writer) !Counts {
+fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, libs: ?std.Io.Dir, exec: Exec, w: *std.Io.Writer) !Counts {
     var counts: Counts = .{};
     var paths: std.ArrayList([]const u8) = .empty;
     var programs: std.ArrayList(Program) = .empty;
@@ -243,6 +261,8 @@ fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, ex
         counts.failed += 1;
     }
     for (programs.items) |pr| try checkProgram(gpa, io, dir, name, pr, exec, w, &counts);
+
+    try checkIndexes(gpa, io, dir, name, libs, paths.items, w, &counts);
 
     for (paths.items) |path| {
         const shown = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ name, path });
@@ -311,8 +331,357 @@ fn checkProgram(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []con
     counts.passed += 1;
 }
 
+/// A library under `lib/scheme/`: its name (`scheme base`, the words joined by a space) and what it exports.
+const Library = struct {
+    name: []const u8,
+    exports: []const []const u8,
+};
+
+/// Why the file of a library cannot be read for its exports.
+const LibraryError = error{ NoLibrary, NoExport, NonSymbolExport, Unbalanced };
+
+/// What a token of a library file is.
+const TokenKind = enum { open, close, atom };
+
+const Token = struct { kind: TokenKind, text: []const u8 = "" };
+
+/// Splits `src` into parentheses and atoms, without comments.
+///
+/// 読むのは、`(define-library (名前) (export ...) ...)` の形に要る範囲だけである。行コメント、
+/// 文字列、`#\(` のような文字、`#| |#` を、括弧の数えを狂わせないよう飛ばす。
+fn tokenize(gpa: std.mem.Allocator, src: []const u8) error{OutOfMemory}![]Token {
+    var tokens: std.ArrayList(Token) = .empty;
+    var i: usize = 0;
+    while (i < src.len) {
+        const ch = src[i];
+        switch (ch) {
+            ' ', '\t', '\r', '\n' => i += 1,
+            ';' => {
+                while (i < src.len and src[i] != '\n') i += 1;
+            },
+            '(' => {
+                try tokens.append(gpa, .{ .kind = .open });
+                i += 1;
+            },
+            ')' => {
+                try tokens.append(gpa, .{ .kind = .close });
+                i += 1;
+            },
+            '"' => {
+                const start = i;
+                i += 1;
+                while (i < src.len and src[i] != '"') i += if (src[i] == '\\') 2 else 1;
+                i = @min(i + 1, src.len);
+                try tokens.append(gpa, .{ .kind = .atom, .text = src[start..i] });
+            },
+            else => {
+                if (ch == '#' and i + 1 < src.len and src[i + 1] == '|') {
+                    // 入れ子にしないブロックコメント。閉じが無ければ、残りを読み捨てる。
+                    const end = std.mem.indexOfPos(u8, src, i + 2, "|#") orelse src.len;
+                    i = @min(end + 2, src.len);
+                    continue;
+                }
+                const start = i;
+                // `#\(` のように、文字の名前の最初の1字は区切りでも atom に含める。
+                if (ch == '#' and i + 2 < src.len and src[i + 1] == '\\') i += 3;
+                while (i < src.len and std.mem.indexOfScalar(u8, " \t\r\n();\"", src[i]) == null) i += 1;
+                try tokens.append(gpa, .{ .kind = .atom, .text = src[start..i] });
+            },
+        }
+    }
+    return try tokens.toOwnedSlice(gpa);
+}
+
+/// Reads the name and the exports of the library `src` defines.
+///
+/// 輸出は、`(export ...)` の宣言のすべてから集める。`(rename a b)` のような、識別子でない要素は、
+/// この道具が読まないので誤りにする(読み飛ばすと、索引との突き合わせが黙って抜ける)。
+fn parseLibrary(gpa: std.mem.Allocator, src: []const u8) (error{OutOfMemory} || LibraryError)!Library {
+    const tokens = try tokenize(gpa, src);
+    if (tokens.len < 4 or tokens[0].kind != .open or tokens[1].kind != .atom or
+        !std.mem.eql(u8, tokens[1].text, "define-library") or tokens[2].kind != .open)
+    {
+        return error.NoLibrary;
+    }
+    var name: std.ArrayList(u8) = .empty;
+    var i: usize = 3;
+    while (i < tokens.len and tokens[i].kind == .atom) : (i += 1) {
+        if (name.items.len != 0) try name.append(gpa, ' ');
+        try name.appendSlice(gpa, tokens[i].text);
+    }
+    if (name.items.len == 0 or i >= tokens.len or tokens[i].kind != .close) return error.NoLibrary;
+    i += 1;
+    var exports: std.ArrayList([]const u8) = .empty;
+    var saw_export = false;
+    // `depth` は、define-library の中を 0 とした、いまの括弧の深さである。
+    var depth: usize = 0;
+    while (i < tokens.len) : (i += 1) {
+        const t = tokens[i];
+        switch (t.kind) {
+            .close => {
+                if (depth == 0) {
+                    if (!saw_export) return error.NoExport;
+                    return .{ .name = try name.toOwnedSlice(gpa), .exports = try exports.toOwnedSlice(gpa) };
+                }
+                depth -= 1;
+            },
+            .atom => {},
+            .open => {
+                const is_export = depth == 0 and i + 1 < tokens.len and tokens[i + 1].kind == .atom and
+                    std.mem.eql(u8, tokens[i + 1].text, "export");
+                if (!is_export) {
+                    depth += 1;
+                    continue;
+                }
+                saw_export = true;
+                i += 2;
+                while (i < tokens.len and tokens[i].kind != .close) : (i += 1) {
+                    if (tokens[i].kind == .open) return error.NonSymbolExport;
+                    try exports.append(gpa, tokens[i].text);
+                }
+                if (i >= tokens.len) return error.Unbalanced;
+            },
+        }
+    }
+    return error.Unbalanced;
+}
+
+/// A row of an index: an identifier and the section of R7RS that defines it.
+const IndexRow = struct {
+    line: usize,
+    ident: []const u8,
+    section: []const u8,
+};
+
+/// Whether `s` is a section number of R7RS: one to three groups of digits joined by dots (`6`, `6.4`, `6.13.1`).
+fn isSectionNumber(s: []const u8) bool {
+    var groups: usize = 0;
+    var parts = std.mem.splitScalar(u8, s, '.');
+    while (parts.next()) |part| {
+        if (part.len == 0) return false;
+        for (part) |ch| if (!std.ascii.isDigit(ch)) return false;
+        groups += 1;
+    }
+    return groups >= 1 and groups <= 3;
+}
+
+/// Whether `line` is the separator row of a Markdown table (`| --- | --- |`).
+fn isTableSeparator(line: []const u8) bool {
+    if (line.len == 0 or line[0] != '|') return false;
+    return std.mem.indexOf(u8, line, "---") != null and
+        std.mem.indexOfNone(u8, line, "|-: \t") == null;
+}
+
+/// Reads the rows of the table of an index document, and reports a row it cannot read.
+///
+/// 表は、区切りの行(`| --- |`)のあとの、`|` で始まる行である。区切りより前の行(見出しの行と
+/// 地の文)は読まない。1行は `| `識別子` | 節番号 | 項目 |` の形で、節番号は R7RS の節の番号である。
+/// 表のあとの空行から先に `|` で始まる行があれば、2つ目の表なので、断る。
+fn parseIndex(gpa: std.mem.Allocator, body: []const u8, problems: *std.ArrayList(Problem)) error{OutOfMemory}![]IndexRow {
+    var rows: std.ArrayList(IndexRow) = .empty;
+    const State = enum { before, inside, after };
+    var state: State = .before;
+    var lineno: usize = 0;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        lineno += 1;
+        const line = std.mem.trim(u8, raw, " \t\r");
+        switch (state) {
+            .before => if (isTableSeparator(line)) {
+                state = .inside;
+            },
+            .inside => {
+                if (line.len == 0 or line[0] != '|') {
+                    state = .after;
+                    continue;
+                }
+                var cells = std.mem.splitScalar(u8, line, '|');
+                // 先頭の `|` の前と、末尾の `|` の後ろは空で、間に3つのセルがある。
+                const first = cells.next().?;
+                const ident_cell = std.mem.trim(u8, cells.next() orelse "", " \t");
+                const section_cell = std.mem.trim(u8, cells.next() orelse "", " \t");
+                _ = cells.next();
+                const last = cells.next() orelse "x";
+                if (first.len != 0 or last.len != 0 or cells.next() != null) {
+                    try problems.append(gpa, .{ .line = lineno, .message = "this table row must have the form `| `identifier` | section | item |`, with three cells" });
+                    continue;
+                }
+                if (ident_cell.len < 3 or ident_cell[0] != '`' or ident_cell[ident_cell.len - 1] != '`' or
+                    std.mem.indexOfAny(u8, ident_cell[1 .. ident_cell.len - 1], "` \t") != null)
+                {
+                    try problems.append(gpa, .{ .line = lineno, .message = "the first cell of this row must be one identifier in backticks" });
+                    continue;
+                }
+                if (!isSectionNumber(section_cell)) {
+                    try problems.append(gpa, .{ .line = lineno, .message = "the second cell of this row must be a section number of R7RS such as `6.4` or `6.13.1`" });
+                }
+                try rows.append(gpa, .{ .line = lineno, .ident = ident_cell[1 .. ident_cell.len - 1], .section = section_cell });
+            },
+            .after => if (line.len != 0 and line[0] == '|') {
+                try problems.append(gpa, .{ .line = lineno, .message = "this table row comes after the end of the index table; keep the rows of an index in one table" });
+            },
+        }
+    }
+    if (state == .before) {
+        try problems.append(gpa, .{ .line = 1, .message = "this index has no table; it needs a table whose separator row is `| --- | --- | --- |`" });
+    }
+    return try rows.toOwnedSlice(gpa);
+}
+
+/// Compares the identifiers `library` exports with the rows of its index at `path`, and reports every difference.
+///
+/// 双方向に比べる。輸出されるのに行が無い識別子と、行があるのに輸出されない識別子と、同じ識別子の
+/// 2つ目の行を、それぞれ失敗として数える。差が1つも無く、`read_cleanly` のときに、成功を1つ数える。
+fn compareIndex(path: []const u8, library: Library, rows: []const IndexRow, read_cleanly: bool, w: *std.Io.Writer, counts: *Counts) !void {
+    // 行を読むときに断ったものがあれば、差が無くても成功にしない。
+    var clean = read_cleanly;
+    for (rows, 0..) |row, k| {
+        for (rows[0..k]) |earlier| {
+            if (std.mem.eql(u8, earlier.ident, row.ident)) {
+                try w.print("{s}:{d}: `{s}` is listed twice (first at line {d})\n", .{ path, row.line, row.ident, earlier.line });
+                counts.failed += 1;
+                clean = false;
+                break;
+            }
+        }
+        const found = for (library.exports) |id| {
+            if (std.mem.eql(u8, id, row.ident)) break true;
+        } else false;
+        if (!found) {
+            try w.print("{s}:{d}: `{s}` is not exported by ({s})\n", .{ path, row.line, row.ident, library.name });
+            counts.failed += 1;
+            clean = false;
+        }
+    }
+    for (library.exports) |id| {
+        const listed = for (rows) |row| {
+            if (std.mem.eql(u8, row.ident, id)) break true;
+        } else false;
+        if (!listed) {
+            try w.print("{s}: `{s}` is exported by ({s}) but has no row in the index\n", .{ path, id, library.name });
+            counts.failed += 1;
+            clean = false;
+        }
+    }
+    if (clean) counts.passed += 1;
+}
+
+/// The path of the index of `library`, under the documents: `reference/scheme-base.md` for `(scheme base)`.
+fn indexPath(gpa: std.mem.Allocator, library_name: []const u8) error{OutOfMemory}![]const u8 {
+    const dashed = try gpa.dupe(u8, library_name);
+    std.mem.replaceScalar(u8, dashed, ' ', '-');
+    return try std.fmt.allocPrint(gpa, "{s}/{s}.md", .{ reference_dir, dashed });
+}
+
+/// Whether the document at `path` is named like the index of a library: `reference/scheme-*.md`, directly under `reference/`.
+fn isIndexFile(path: []const u8) bool {
+    const prefix = reference_dir ++ "/scheme-";
+    // 接頭辞と `.md` の間に、ライブラリの名前の綴りが1字以上要る。
+    if (path.len < prefix.len + 4 or !std.mem.endsWith(u8, path, ".md")) return false;
+    // Windows の歩き方は `\\` で区切る。
+    for (path[0..prefix.len], prefix) |a, b| {
+        if (a != b and !(a == '\\' and b == '/')) return false;
+    }
+    return std.mem.indexOfAny(u8, path[prefix.len..], "/\\") == null;
+}
+
+/// Compares the index of every library under `lib/scheme/` with its exports.
+///
+/// ライブラリの置き場が開けないこと、ライブラリが1つも無いこと、読めないライブラリがあることは、
+/// 失敗として数える。どのライブラリの索引でもない `reference/scheme-*.md` も、失敗として数える
+/// (ライブラリを消したのに索引が残ること、名前の綴りの食い違いを黙って残さない)。
+fn checkIndexes(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, libs: ?std.Io.Dir, paths: []const []const u8, w: *std.Io.Writer, counts: *Counts) !void {
+    const lib_dir_handle = libs orelse {
+        try w.print("check-examples: no library directory {s}, so no index was compared with the exports\n", .{lib_dir});
+        counts.failed += 1;
+        return;
+    };
+    var libraries: std.ArrayList(Library) = .empty;
+    var files: usize = 0;
+    var walker = try lib_dir_handle.walk(gpa);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".sld")) continue;
+        // サブディレクトリの中は、`lib/scheme` の識別子として読まない。
+        if (std.mem.indexOfAny(u8, entry.path, "/\\") != null) continue;
+        files += 1;
+        const src = lib_dir_handle.readFileAlloc(io, entry.path, gpa, .unlimited) catch |e| {
+            try w.print("{s}/{s}: cannot be read ({t})\n", .{ lib_dir, entry.path, e });
+            counts.failed += 1;
+            continue;
+        };
+        const library = parseLibrary(gpa, src) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.NoLibrary => {
+                try w.print("{s}/{s}: not of the form `(define-library (name) ...)`\n", .{ lib_dir, entry.path });
+                counts.failed += 1;
+                continue;
+            },
+            error.NoExport => {
+                try w.print("{s}/{s}: no `(export ...)` declaration\n", .{ lib_dir, entry.path });
+                counts.failed += 1;
+                continue;
+            },
+            error.NonSymbolExport => {
+                try w.print("{s}/{s}: an `(export ...)` declaration has an element that is not an identifier (a `rename`?), which this tool does not read\n", .{ lib_dir, entry.path });
+                counts.failed += 1;
+                continue;
+            },
+            error.Unbalanced => {
+                try w.print("{s}/{s}: the parentheses do not balance\n", .{ lib_dir, entry.path });
+                counts.failed += 1;
+                continue;
+            },
+        };
+        try libraries.append(gpa, library);
+    }
+    if (files == 0) {
+        try w.print("check-examples: no `.sld` file under {s}, so no index was compared with the exports\n", .{lib_dir});
+        counts.failed += 1;
+    }
+    std.mem.sort(Library, libraries.items, {}, libraryLessThan);
+
+    var expected_paths: std.ArrayList([]const u8) = .empty;
+    for (libraries.items) |library| {
+        counts.libraries += 1;
+        const rel = try indexPath(gpa, library.name);
+        try expected_paths.append(gpa, rel);
+        const shown = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ name, rel });
+        const body = dir.readFileAlloc(io, rel, gpa, .unlimited) catch |e| {
+            try w.print("{s}: no index of ({s}) ({t})\n", .{ shown, library.name, e });
+            counts.failed += 1;
+            continue;
+        };
+        var problems: std.ArrayList(Problem) = .empty;
+        const rows = try parseIndex(gpa, body, &problems);
+        for (problems.items) |p| {
+            try w.print("{s}:{d}: {s}\n", .{ shown, p.line, p.message });
+            counts.failed += 1;
+        }
+        try compareIndex(shown, library, rows, problems.items.len == 0, w, counts);
+    }
+    for (paths) |path| {
+        if (!isIndexFile(path)) continue;
+        const normal = try gpa.dupe(u8, path);
+        std.mem.replaceScalar(u8, normal, '\\', '/');
+        const known = for (expected_paths.items) |p| {
+            if (std.mem.eql(u8, p, normal)) break true;
+        } else false;
+        if (!known) {
+            try w.print("{s}/{s}: the index of no library under {s}\n", .{ name, normal, lib_dir });
+            counts.failed += 1;
+        }
+    }
+}
+
+fn libraryLessThan(_: void, a: Library, b: Library) bool {
+    return std.mem.lessThan(u8, a.name, b.name);
+}
+
 /// The counts of a run.
 const Counts = struct {
+    /// The libraries whose index was compared with their exports, passed or not.
+    libraries: usize = 0,
     /// The `scheme` blocks run, passed or not.
     blocks: usize = 0,
     /// The commands of `console` blocks run, passed or not.
@@ -1005,21 +1374,40 @@ fn echoProgram(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, 
     return .{ .code = code, .stdout = source };
 }
 
-/// Writes `files` into a new directory, runs it, and returns the counts and the report.
-fn runForTest(arena: std.mem.Allocator, files: []const TestFile) !TestRun {
+/// Writes `files` into a new directory of documents and `libs` into a new directory of libraries,
+/// runs them, and returns the counts and the report.
+fn runForTestLibs(arena: std.mem.Allocator, files: []const TestFile, libs: []const TestFile) !TestRun {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     for (files) |f| {
         if (std.fs.path.dirname(f.path)) |d| try tmp.dir.createDirPath(std.testing.io, d);
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = f.path, .data = f.data });
     }
+    var lib_tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer lib_tmp.cleanup();
+    for (libs) |f| {
+        if (std.fs.path.dirname(f.path)) |d| try lib_tmp.dir.createDirPath(std.testing.io, d);
+        try lib_tmp.dir.writeFile(std.testing.io, .{ .sub_path = f.path, .data = f.data });
+    }
     var report: std.Io.Writer.Allocating = .init(arena);
-    const counts = try run(arena, std.testing.io, tmp.dir, "manual", stand_in, &report.writer);
+    const counts = try run(arena, std.testing.io, tmp.dir, "manual", lib_tmp.dir, stand_in, &report.writer);
     // Why: walker のパスは、Windows では `\` で区切られる。報告の文字列を `/` で書いた
     // 期待と比べるので、区切りをそろえる(Windows の層2で、この比較だけが落ちた)。
     const written = try arena.dupe(u8, report.written());
     std.mem.replaceScalar(u8, written, '\\', '/');
     return .{ .counts = counts, .report = written };
+}
+
+/// The library and the index that most tests carry along, so that the index check passes.
+const default_lib: TestFile = .{ .path = "t.sld", .data = "(define-library (scheme t) (import (sucheme core)) (export a b))\n" };
+const default_index: TestFile = .{
+    .path = "reference/scheme-t.md",
+    .data = "# index\n\n| id | section | item |\n| --- | --- | --- |\n| `a` | 6.4 | |\n| `b` | 6.13.1 | |\n",
+};
+
+/// Like `runForTestLibs` with `default_lib`, and `default_index` added to the documents.
+fn runForTest(arena: std.mem.Allocator, files: []const TestFile) !TestRun {
+    return runForTestLibs(arena, try std.mem.concat(arena, TestFile, &.{ files, &.{default_index} }), &.{default_lib});
 }
 
 const passing_doc = "```scheme\n(+ 1 2)\n```\n\n```output\n3\n```\n";
@@ -1051,7 +1439,7 @@ test "a directory of passing documents and programs passes, nested ones included
         .{ .path = "programs/q.out", .data = "two\r\n" },
     });
     try std.testing.expectEqualStrings("", r.report);
-    try std.testing.expectEqual(Counts{ .blocks = 3, .programs = 2, .passed = 5, .failed = 0 }, r.counts);
+    try std.testing.expectEqual(Counts{ .libraries = 1, .blocks = 3, .programs = 2, .passed = 6, .failed = 0 }, r.counts);
     try std.testing.expectEqual(@as(u8, 0), exitStatus(r.counts));
 }
 
@@ -1059,8 +1447,9 @@ test "a run with no document, no block, no program, a failing block or a stray f
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const cases = [_]struct { files: []const TestFile, says: []const u8 }{
-        .{ .files = &.{ prog_scm, prog_out }, .says = "check-examples: no `.md` file under manual\n" },
+    const cases = [_]struct { files: []const TestFile, says: []const u8, bare: bool = false }{
+        // 索引の `.md` も文書なので、「文書が無い」ことは、索引を足さずに試す。
+        .{ .files = &.{ prog_scm, prog_out }, .says = "check-examples: no `.md` file under manual\n", .bare = true },
         .{ .files = &.{ .{ .path = "a.md", .data = "# Only prose\n" }, prog_scm, prog_out }, .says = "check-examples: no `scheme` block was run\n" },
         .{ .files = &.{.{ .path = "a.md", .data = passing_doc }}, .says = "check-examples: no program (`.scm` and `.out` pair) under manual/programs/\n" },
         .{ .files = &.{ .{ .path = "a.md", .data = passing_doc }, prog_scm, prog_out, .{ .path = "x.scm", .data = "(car 1)\n" } }, .says = "manual/x.scm: not a `.md` file, so nothing here checks it\n" },
@@ -1070,7 +1459,7 @@ test "a run with no document, no block, no program, a failing block or a stray f
         .{ .files = &.{ .{ .path = "a.md", .data = "```lisp\n1\n```\n" }, prog_scm, prog_out }, .says = "manual/a.md:1: this fence names a kind other than" },
     };
     for (cases) |c| {
-        const r = try runForTest(a, c.files);
+        const r = if (c.bare) try runForTestLibs(a, c.files, &.{default_lib}) else try runForTest(a, c.files);
         try std.testing.expect(r.counts.failed >= 1);
         try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
         try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
@@ -1096,7 +1485,7 @@ test "a program fails when its pair is incomplete, its output differs, or its ex
     for (cases) |c| {
         const r = try runForTest(a, c.files);
         try std.testing.expectEqual(@as(usize, 1), r.counts.failed);
-        try std.testing.expectEqual(@as(usize, 0), r.counts.passed - r.counts.blocks);
+        try std.testing.expectEqual(@as(usize, 0), r.counts.passed - r.counts.blocks - r.counts.libraries);
         try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
         try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
     }
@@ -1281,7 +1670,7 @@ test "a document with a console block needs its examples directory, and inputs t
     // examples/ の入力のファイルは、`.md` でなくても、迷子として数えない。
     const ok = try runForTest(a, &.{ console_doc, prog_scm, prog_out, .{ .path = "g/examples/in.scm", .data = "x" }, .{ .path = "g/examples/lib/m/n.sld", .data = "y" } });
     try std.testing.expectEqualStrings("", ok.report);
-    try std.testing.expectEqual(Counts{ .blocks = 1, .commands = 1, .programs = 1, .passed = 3, .failed = 0 }, ok.counts);
+    try std.testing.expectEqual(Counts{ .libraries = 1, .blocks = 1, .commands = 1, .programs = 1, .passed = 4, .failed = 0 }, ok.counts);
     // examples/ の外の同じ種類のファイルは、迷子である。
     const stray = try runForTest(a, &.{ console_doc, prog_scm, prog_out, .{ .path = "g/examples/in.scm", .data = "x" }, .{ .path = "g/other/in.scm", .data = "x" } });
     try std.testing.expect(std.mem.indexOf(u8, stray.report, "manual/g/other/in.scm: not a `.md` file") != null);
@@ -1309,4 +1698,251 @@ test "trailing spaces of an expected line are kept, and the exit line is read wi
     try std.testing.expectEqual(@as(usize, 0), p.problems.len);
     try std.testing.expectEqualStrings("x  ", p.blocks[0].commands[0].expected);
     try std.testing.expectEqual(@as(u8, 2), p.blocks[0].commands[0].code);
+}
+
+/// What `parseLibrary` reads from `src`, in an arena the caller frees.
+fn libraryOf(arena: std.mem.Allocator, src: []const u8) (error{OutOfMemory} || LibraryError)!Library {
+    return parseLibrary(arena, src);
+}
+
+test "a library gives its name and the identifiers of all its export declarations" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const l = try libraryOf(arena.allocator(),
+        \\;; a comment with (parentheses and (export x)) and "quotes
+        \\(define-library (scheme base) ; (export y)
+        \\  (import (sucheme core))
+        \\  (export car cdr
+        \\          ;; (export z)
+        \\          + ... =>)
+        \\  (export set!)
+        \\  (begin (define (f) (export w) "a ) b" #\) #\( )))
+        \\
+    );
+    try std.testing.expectEqualStrings("scheme base", l.name);
+    try std.testing.expectEqual(@as(usize, 6), l.exports.len);
+    for ([_][]const u8{ "car", "cdr", "+", "...", "=>", "set!" }, l.exports) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "an export declaration may be empty, and a block comment hides what it holds" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const l = try libraryOf(arena.allocator(), "#| (export a |# (define-library (x) (export) #| ) |#)\n");
+    try std.testing.expectEqualStrings("x", l.name);
+    try std.testing.expectEqual(@as(usize, 0), l.exports.len);
+}
+
+test "a file that is not read as a library with exports is refused" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.NoLibrary, libraryOf(a, ""));
+    try std.testing.expectError(error.NoLibrary, libraryOf(a, "(define x 1)\n"));
+    try std.testing.expectError(error.NoLibrary, libraryOf(a, "(define-library () (export a))\n"));
+    try std.testing.expectError(error.NoLibrary, libraryOf(a, "(define-library x (export a))\n"));
+    try std.testing.expectError(error.NoExport, libraryOf(a, "(define-library (x) (import (y)))\n"));
+    // `(export` は、define-library の直下にあるものだけを読む。
+    try std.testing.expectError(error.NoExport, libraryOf(a, "(define-library (x) (begin (export a)))\n"));
+    try std.testing.expectError(error.NonSymbolExport, libraryOf(a, "(define-library (x) (export a (rename b c)))\n"));
+    try std.testing.expectError(error.Unbalanced, libraryOf(a, "(define-library (x) (export a)\n"));
+    try std.testing.expectError(error.Unbalanced, libraryOf(a, "(define-library (x) (export a\n"));
+}
+
+test "a section number is one to three groups of digits" {
+    for ([_][]const u8{ "6", "6.4", "6.13.1", "4.2.9", "10" }) |s| try std.testing.expect(isSectionNumber(s));
+    for ([_][]const u8{ "", ".", "6.", ".6", "6..4", "6.4.1.1", "a", "6.x", "6 4", " 6" }) |s| try std.testing.expect(!isSectionNumber(s));
+}
+
+test "a table separator is a row of pipes, dashes, colons and spaces with a dash run" {
+    try std.testing.expect(isTableSeparator("| --- | --- |"));
+    try std.testing.expect(isTableSeparator("|---|:---:|"));
+    try std.testing.expect(!isTableSeparator("| id | section |"));
+    try std.testing.expect(!isTableSeparator("--- | ---"));
+    try std.testing.expect(!isTableSeparator("| -- | -- |"));
+    try std.testing.expect(!isTableSeparator(""));
+}
+
+test "an index gives the rows after the separator, whatever the lines before it say" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var problems: std.ArrayList(Problem) = .empty;
+    const rows = try parseIndex(arena.allocator(),
+        \\# Title
+        \\
+        \\| `fake` | 1 | |
+        \\| id | section | item |
+        \\| --- | --- | --- |
+        \\| `car` | 6.4 | |
+        \\| `...` | 4.3.2 | [x](y.md) |
+        \\
+        \\prose
+        \\
+    , &problems);
+    try std.testing.expectEqual(@as(usize, 0), problems.items.len);
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    try std.testing.expectEqualStrings("car", rows[0].ident);
+    try std.testing.expectEqualStrings("6.4", rows[0].section);
+    try std.testing.expectEqual(@as(usize, 6), rows[0].line);
+    try std.testing.expectEqualStrings("...", rows[1].ident);
+}
+
+test "an index row this tool cannot read is reported with its line" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const head = "| id | s | i |\n| --- | --- | --- |\n";
+    const cases = [_]struct { doc: []const u8, line: usize }{
+        // 行の形。
+        .{ .doc = head ++ "| `a` | 6.4 |\n", .line = 3 },
+        .{ .doc = head ++ "| `a` | 6.4 | | |\n", .line = 3 },
+        .{ .doc = head ++ "| `a` | 6.4\n", .line = 3 },
+        // 識別子のセル。
+        .{ .doc = head ++ "| a | 6.4 | |\n", .line = 3 },
+        .{ .doc = head ++ "| `` | 6.4 | |\n", .line = 3 },
+        .{ .doc = head ++ "| `a b` | 6.4 | |\n", .line = 3 },
+        .{ .doc = head ++ "| `a` `b` | 6.4 | |\n", .line = 3 },
+        // 節番号のセル。
+        .{ .doc = head ++ "| `a` | | |\n", .line = 3 },
+        .{ .doc = head ++ "| `a` | 6.x | |\n", .line = 3 },
+        .{ .doc = head ++ "| `a` | 6.4.1.1 | |\n", .line = 3 },
+        // 表のあとの行。
+        .{ .doc = head ++ "| `a` | 6.4 | |\n\n| `b` | 6.4 | |\n", .line = 5 },
+        .{ .doc = head ++ "| `a` | 6.4 | |\nprose\n| `b` | 6.4 | |\n", .line = 5 },
+        // 表が無い。
+        .{ .doc = "# only prose\n", .line = 1 },
+        .{ .doc = "| id | s | i |\n| `a` | 6.4 | |\n", .line = 1 },
+    };
+    for (cases) |c| {
+        var problems: std.ArrayList(Problem) = .empty;
+        _ = try parseIndex(arena.allocator(), c.doc, &problems);
+        try std.testing.expect(problems.items.len >= 1);
+        try std.testing.expectEqual(c.line, problems.items[0].line);
+    }
+}
+
+test "an index file is named scheme-*.md directly under reference, under either separator" {
+    try std.testing.expect(isIndexFile("reference/scheme-base.md"));
+    try std.testing.expect(isIndexFile("reference\\scheme-base.md"));
+    try std.testing.expect(isIndexFile("reference/scheme-r5rs.md"));
+    try std.testing.expect(!isIndexFile("reference/README.md"));
+    try std.testing.expect(!isIndexFile("reference/scheme-base.txt"));
+    try std.testing.expect(!isIndexFile("reference/scheme-.md"));
+    try std.testing.expect(!isIndexFile("reference/sub/scheme-base.md"));
+    try std.testing.expect(!isIndexFile("reference\\sub\\scheme-base.md"));
+    try std.testing.expect(!isIndexFile("other/scheme-base.md"));
+    try std.testing.expect(!isIndexFile("scheme-base.md"));
+}
+
+/// An index document with `rows` as the rows of its table.
+fn indexDoc(comptime rows: []const u8) []const u8 {
+    return "# index\n\n| id | section | item |\n| --- | --- | --- |\n" ++ rows;
+}
+
+test "an index that matches the exports in both directions passes" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runForTestLibs(arena.allocator(), &.{
+        .{ .path = "a.md", .data = passing_doc },
+        prog_scm,
+        prog_out,
+        .{ .path = "reference/scheme-t.md", .data = indexDoc("| `b` | 6 | |\n| `a` | 6.4 | |\n") },
+    }, &.{default_lib});
+    try std.testing.expectEqualStrings("", r.report);
+    try std.testing.expectEqual(Counts{ .libraries = 1, .blocks = 1, .programs = 1, .passed = 3, .failed = 0 }, r.counts);
+}
+
+test "an index that differs from the exports fails, naming the identifier and the side" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { index: []const u8, says: []const u8 }{
+        // 輸出されるのに行が無い。
+        .{ .index = "| `a` | 6.4 | |\n", .says = "manual/reference/scheme-t.md: `b` is exported by (scheme t) but has no row in the index\n" },
+        .{ .index = "| `b` | 6.4 | |\n", .says = "manual/reference/scheme-t.md: `a` is exported by (scheme t) but has no row in the index\n" },
+        .{ .index = "", .says = "`a` is exported by (scheme t) but has no row" },
+        // 行があるのに輸出されない。
+        .{ .index = "| `a` | 6.4 | |\n| `b` | 6.4 | |\n| `c` | 6.4 | |\n", .says = "manual/reference/scheme-t.md:7: `c` is not exported by (scheme t)\n" },
+        // 綴りの違い(大文字小文字、前後の空白は無視して、中身は同じでなければならない)。
+        .{ .index = "| `a` | 6.4 | |\n| `B` | 6.4 | |\n", .says = "`B` is not exported" },
+        // 同じ識別子の2行目。
+        .{ .index = "| `a` | 6.4 | |\n| `b` | 6.4 | |\n| `a` | 6.5 | |\n", .says = "manual/reference/scheme-t.md:7: `a` is listed twice (first at line 5)\n" },
+        // 節番号の誤り。
+        .{ .index = "| `a` | 6.4 | |\n| `b` | six | |\n", .says = "manual/reference/scheme-t.md:6: the second cell of this row must be a section number" },
+        // 行が読めない。
+        .{ .index = "| `a` | 6.4 | |\n| `b` | 6.4 |\n", .says = "manual/reference/scheme-t.md:6: this table row must have the form" },
+    };
+    inline for (cases) |c| {
+        const r = try runForTestLibs(a, &.{
+            .{ .path = "a.md", .data = passing_doc },
+            prog_scm,
+            prog_out,
+            .{ .path = "reference/scheme-t.md", .data = indexDoc(c.index) },
+        }, &.{default_lib});
+        try std.testing.expect(r.counts.failed >= 1);
+        // 食い違う索引は、成功として数えない(ブロックとプログラムの 2 つだけが成功)。
+        try std.testing.expectEqual(@as(usize, 2), r.counts.passed);
+        try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
+        try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
+    }
+}
+
+test "a library without an index, an index of no library, and an unreadable library fail" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = [_]TestFile{ .{ .path = "a.md", .data = passing_doc }, prog_scm, prog_out };
+    const index: TestFile = .{ .path = "reference/scheme-t.md", .data = indexDoc("| `a` | 6.4 | |\n| `b` | 6.4 | |\n") };
+    const other_lib: TestFile = .{ .path = "u.sld", .data = "(define-library (scheme u) (export))\n" };
+    const cases = [_]struct { files: []const TestFile, libs: []const TestFile, says: []const u8 }{
+        // ライブラリの索引が無い。
+        .{ .files = &base, .libs = &.{default_lib}, .says = "manual/reference/scheme-t.md: no index of (scheme t) (FileNotFound)\n" },
+        // 2つ目のライブラリの索引だけが無い。
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, other_lib }, .says = "manual/reference/scheme-u.md: no index of (scheme u)" },
+        // ライブラリの無い索引。名前を取り違えた綴りも、ここで見つかる。
+        .{ .files = &(base ++ [_]TestFile{ index, .{ .path = "reference/scheme-x.md", .data = indexDoc("") } }), .libs = &.{default_lib}, .says = "manual/reference/scheme-x.md: the index of no library under lib/scheme\n" },
+        // ライブラリが無い。
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{}, .says = "check-examples: no `.sld` file under lib/scheme, so no index was compared with the exports\n" },
+        // `.sld` でないファイルと、サブディレクトリの中の `.sld` は、ライブラリでない。
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ .{ .path = "t.txt", .data = default_lib.data }, .{ .path = "sub/t.sld", .data = default_lib.data } }, .says = "no `.sld` file under lib/scheme" },
+        // 読めないライブラリ。
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define x 1)\n" } }, .says = "lib/scheme/v.sld: not of the form `(define-library (name) ...)`\n" },
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (import (w)))\n" } }, .says = "lib/scheme/v.sld: no `(export ...)` declaration\n" },
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (export (rename a b)))\n" } }, .says = "lib/scheme/v.sld: an `(export ...)` declaration has an element that is not an identifier" },
+        .{ .files = &(base ++ [_]TestFile{index}), .libs = &.{ default_lib, .{ .path = "v.sld", .data = "(define-library (v) (export a\n" } }, .says = "lib/scheme/v.sld: the parentheses do not balance\n" },
+    };
+    for (cases) |c| {
+        const r = try runForTestLibs(a, c.files, c.libs);
+        try std.testing.expect(r.counts.failed >= 1);
+        try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
+        try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
+    }
+}
+
+test "a missing library directory fails, and the documents are still checked" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.md", .data = "```scheme\n(+ 1 2)\n```\n\n```output\n4\n```\n" });
+    var report: std.Io.Writer.Allocating = .init(a);
+    const counts = try run(a, std.testing.io, tmp.dir, "manual", null, stand_in, &report.writer);
+    try std.testing.expect(std.mem.indexOf(u8, report.written(), "no library directory lib/scheme") != null);
+    // 文書のブロックの失敗も数える(ライブラリの置き場が無いことで、検査が止まらない)。
+    try std.testing.expect(std.mem.indexOf(u8, report.written(), "a.md:1: the output differs") != null);
+    try std.testing.expectEqual(@as(u8, 1), exitStatus(counts));
+}
+
+test "the library of one file is counted once, and every library is compared" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runForTestLibs(arena.allocator(), &.{
+        .{ .path = "a.md", .data = passing_doc },
+        prog_scm,
+        prog_out,
+        default_index,
+        .{ .path = "reference/scheme-u.md", .data = indexDoc("") },
+    }, &.{ default_lib, .{ .path = "u.sld", .data = "(define-library (scheme u) (export))\n" } });
+    try std.testing.expectEqualStrings("", r.report);
+    try std.testing.expectEqual(@as(usize, 2), r.counts.libraries);
+    try std.testing.expectEqual(@as(usize, 4), r.counts.passed);
 }
