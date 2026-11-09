@@ -970,7 +970,7 @@ const TestFile = struct { path: []const u8, data: []const u8 };
 
 /// A stand-in for the executable, for `console` blocks. It writes its arguments, joined by
 /// spaces, to standard output; `cat <file>` writes the file of the working directory instead;
-/// `fail` writes `boom` to standard error and exits with 3; `both` writes to both streams;
+/// `crlf` writes lines ending in CRLF; `fail` writes `boom` to standard error and exits with 3; `both` writes to both streams;
 /// `signal` does not exit by itself; `error` cannot be run.
 fn echoCommand(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, args: []const []const u8) anyerror!Outcome {
     _ = exec;
@@ -979,6 +979,7 @@ fn echoCommand(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, 
     }
     if (args.len > 0 and std.mem.eql(u8, args[0], "fail")) return .{ .code = 3, .stdout = "", .stderr = "boom\n" };
     if (args.len > 0 and std.mem.eql(u8, args[0], "both")) return .{ .code = 0, .stdout = "out\n", .stderr = "err\n" };
+    if (args.len > 0 and std.mem.eql(u8, args[0], "crlf")) return .{ .code = 0, .stdout = "a\r\nb\r\n", .stderr = "c\r\n" };
     if (args.len > 0 and std.mem.eql(u8, args[0], "signal")) return .{ .code = null, .stdout = "" };
     if (args.len > 0 and std.mem.eql(u8, args[0], "error")) return error.FileNotFound;
     const joined = try std.mem.join(gpa, " ", args);
@@ -1205,6 +1206,14 @@ test "console commands run in the examples directory and their standard output a
     , &.{.{ .path = "hello.scm", .data = "(display \"hi\")\n" }});
     try std.testing.expectEqualStrings("", r.report);
     try std.testing.expectEqual(Counts{ .blocks = 0, .commands = 4, .passed = 4, .failed = 0 }, r.counts);
+}
+
+test "console output with CRLF line ends reads as its LF form" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try checkForTest(arena.allocator(), "```console\n$ sucheme crlf\na\nb\nc\n```\n");
+    try std.testing.expectEqualStrings("", r.report);
+    try std.testing.expectEqual(Counts{ .blocks = 0, .commands = 1, .passed = 1, .failed = 0 }, r.counts);
 }
 
 test "a console command whose output or exit code differs fails" {
