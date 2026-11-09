@@ -1,0 +1,6 @@
+(import (scheme write))
+(display "before the error")
+(newline)
+(car '())
+(display "not reached")
+(newline)

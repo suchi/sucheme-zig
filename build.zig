@@ -568,13 +568,22 @@ pub fn build(b: *std.Build) void {
     // 1 つずつ別のディレクトリに置く。1 つのディレクトリに混ぜると、どれか 1 つが検知されれば
     // 終了コードは 1 になり、残りの検知が壊れても気づけない。本物のプログラム集に混ざらない
     // testdata/ に置く。
-    for ([_][]const u8{ "bad-programs", "bad-exit-code", "orphan-out" }) |name| {
+    // `console-differs` は、`console` のブロックの期待する出力だけが誤っている。実行ファイルを
+    // 起動する経路の誤りも、終了コード 1 になる。
+    for ([_][]const u8{ "bad-programs", "bad-exit-code", "orphan-out", "console-differs" }) |name| {
         const run_bad = b.addRunArtifact(check_examples);
         run_bad.addArtifactArg(exe);
         run_bad.setCwd(b.path(b.fmt("tools/check-examples/testdata/{s}", .{name})));
         run_bad.expectExitCode(1);
         test_step.dependOn(&run_bad.step);
     }
+    // 対照: `console-differs` と同じ形で、期待する出力が正しい入力は、終了コード 0 で終わる。
+    // これが落ちるなら、`console-differs` の 1 は、期待する出力の誤りでなく別の理由である。
+    const run_console_ok = b.addRunArtifact(check_examples);
+    run_console_ok.addArtifactArg(exe);
+    run_console_ok.setCwd(b.path("tools/check-examples/testdata/console-ok"));
+    run_console_ok.expectExitCode(0);
+    test_step.dependOn(&run_console_ok.step);
     // 実行ファイルそのものに大きなリストを通す。単体テストと Scheme のテストは、実行ファイルの
     // `main` が選ぶアロケータを通らないので、そこに起因する誤りを見つけられない(大きなリストを
     // 複数リストの `map` に渡すと、`SafeAllocator` の `munmap` が失敗して落ちた)。
