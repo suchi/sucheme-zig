@@ -378,7 +378,8 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 | D2 | 着手済み(ドラフトの PR)。ブランチ `docs/docs-slice-d2-tutorial-1-8`。1 から 8 章を書き終えた(例は `check-examples` を通る)。親への報告とレビュー待ち |
 | D7a | 実装済み、ドラフトの PR で確認中。ブランチ `feature/docs-slice-d7a-programs-runner`。`tools/check-examples/` にプログラム集の実行を足し、アルゴリズムとベンチマークの12本を `docs/manual/programs/` に置いた。`build.zig` の `check-examples` は、実行ファイルを引数に取る |
 | D4 | 着手済み(ドラフトの PR)。ブランチ `docs/docs-slice-d4-tutorial-9-17`。9 から 17 章を書き終えた(例は `check-examples` を通る)。前提の機能が main に無くて書かなかった章は無い(9 章の大文字小文字の節も、`(scheme char)` が main にあるので入れた)。17 章のファイルのライブラリ(`-I`)の例は、`console` の検査が D3 で入るまで `text` のブロックで置き、実機で手で確かめた |
-| D3、D5、D6、D7b、D8 | 未着手 |
+| D7b | 着手済み。分野ごとに PR を分ける。1 本目はデータ処理、文字列と文字、数の12本(ブランチ `docs/docs-slice-d7b-programs-data-strings-numbers`)。2 本目はパズル、高階関数、記号処理の9本(ブランチ `docs/docs-slice-d7b-programs-puzzles-higher-order-symbolic`、1 本目の上に積む)。残りは、マクロ、継続、エラーの扱い、パラメータ(`define-library` の例は `-I` を要するので、検査の対応を待つ) |
+| D3、D5、D6、D8 | 未着手 |
 
 ## 次にやること
 

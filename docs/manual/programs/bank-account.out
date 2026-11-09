@@ -1,0 +1,8 @@
+a deposit 20: 120
+a withdraw 70: 50
+a withdraw 100: insufficient funds
+b balance: 50
+a balance: 50
+b balance: 55
+a balance: 50
+error: unknown message
