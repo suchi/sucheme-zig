@@ -29,6 +29,18 @@ zig-out/bin/sucheme docs/manual/programs/tak.scm
 | [tak](tak.scm) | 竹内関数 `tak` | 7 再帰 |
 | [tarai](tarai.scm) | たらい回し関数 `tarai` の、正格版と遅延評価版の呼び出し回数の比較 | 7 再帰、16 パラメータと遅延評価 |
 | [fib](fib.scm) | `fib` のベンチマーク | 7 再帰 |
+| [phone-book](phone-book.scm) | 連想リストの電話帳で追加、検索、更新、削除を行う | 6 リスト |
+| [stack-queue](stack-queue.scm) | レコード型のスタックと、2つのリストで作るキュー | 6 リスト、12 レコード |
+| [word-count](word-count.scm) | 文字列ポートで単語に分け、出現回数を数える | 6 リスト、9 文字列と文字 |
+| [csv-split](csv-split.scm) | 引用符を含む CSV の1行を欄に分ける | 7 再帰、9 文字列と文字 |
+| [palindrome](palindrome.scm) | 英字だけを見て回文かを判定する | 9 文字列と文字 |
+| [caesar](caesar.scm) | シーザー暗号の暗号化、復号、総当たり | 9 文字列と文字 |
+| [roman](roman.scm) | ローマ数字と整数の相互変換 | 5 条件分岐、9 文字列と文字 |
+| [run-length](run-length.scm) | ランレングス符号化と復号 | 9 文字列と文字 |
+| [factorial](factorial.scm) | bignum で大きな階乗と桁数を求める | 2 式と前置記法、11 数 |
+| [factorize](factorize.scm) | 素因数分解 | 7 再帰、11 数 |
+| [harmonic](harmonic.scm) | 有理数で調和数とベルヌーイ数を正確に求める | 11 数 |
+| [newton-sqrt](newton-sqrt.scm) | ニュートン法の平方根を、正確な数と不正確な数で比べる | 2 式と前置記法、11 数 |
 
 ## 足すときの決まり
 
