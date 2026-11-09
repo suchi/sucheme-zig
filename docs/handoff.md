@@ -11,9 +11,9 @@
 
 ## 次にやること
 
-段階5(ポートと入出力)は、v0.5.0 で完了した(タグは `64a67c2` に打たれ、2026-11-03 08:43 JST に公開された)。段階5の計画と進捗は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である。段階4は v0.4.0 で([plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md))、段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
+段階6(準拠検証)は、v1.0.0 で完了した(タグは、準備の PR のマージコミット `5c91951`(コミットは 2026-11-08 06:08 JST)を指し、2026-11-09 06:53 JST に作られ、2026-11-09 07:07 JST に公開された)。段階6の計画と進捗は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) が正である。段階5は v0.5.0 で完了した(タグは `64a67c2`、2026-11-03 08:43 JST の公開)。段階5の計画と進捗は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である。段階4は v0.4.0 で([plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md))、段階3は v0.3.0 で完了した([plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md))。
 
-段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。次は段階6(準拠検証)である。段階6の全体の計画書は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) で、2026-11-04 に合意された。先に進めた部分は [plans/0020-conformance-harness-early.md](plans/0020-conformance-harness-early.md) と [plans/0025-fuzzing-the-evaluator.md](plans/0025-fuzzing-the-evaluator.md) にある。段階4と段階5から送った項目は、roadmap の段階6の作業項目にある。
+段階4から段階8までは、[plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md) のレーンに分けて並行に進める(合意済み、2026-10-20)。各レーンの実装は、そのレーンの計画書(0018 から 0021)が合意されてから始める。次は段階7(REPLの編集機能)で、計画書はまだ無い(計画書のない段階の実装は始めない)。段階6の外へ送った項目と、v1.0.0 の既知の制限は、[releases/v1.0.0.md](releases/v1.0.0.md) と roadmap の段階6の作業項目にある。
 
 - 段階のリリースの準備では、配布物に入る第三者の表示(`THIRD-PARTY-NOTICES.txt`)が、その段階で入れたデータやコードを覆っているかを確かめる。v0.4.0 の準備で、Unicode の表の表示が足りないと分かり、足した([ADR-0034](adr/0034-release-shape.md) の 2026-11-02 の追記)。
 
@@ -97,7 +97,7 @@
 - 2026-10-29: ユーザーが、不要なブランチの削除を認めた。この環境からは削除できなかったので、ユーザーが手元で、親が示した7本を削除した。内容が main に無い疑いがあった `chore/phase1-slow-tier-checks` は、残す案を示していたが、ユーザーが誤って削除した。親が、同じコミット(5cfac80)でブランチを復元した。`git cherry` では、固有のパッチが2件出る(c3be5d1 と 5cfac80)。5cfac80 は、`-Dslow` なしの実行で読まなかった `tests/scheme-slow` のケース数を `test-scheme` が出す変更を含み、AGENTS.md、build.zig、docs/plans/0007、src/tier.zig、tools/check-docs、tools/test-scheme の6ファイルを変える。どこまでが main に無いかは、確かめていない。取り込むかの判断は、決まっていない。
 - 2026-10-29: 利用者向けの文書一式(チュートリアル、ユーザーズガイド、サンプル入りのリファレンス、実用的なプログラム集)の整備を、ユーザーが頼んだ。載せるコードがすべて動くことを、機械で確かめられるようにする条件がある。レーン L9 を起動し、最初の成果物は計画書(合意を得るまで実装しない)とした。計画書は `docs/plans/` に置く。
 - 2026-10-29: ユーザーが、セッションのタイトルを実際の作業に合わせるよう求めた。規則にした([AGENTS.md](../AGENTS.md))。
-- 2026-11-08: v1.0.0 のタグを打つ前に、利用者向けの文書を先に整えることになった。ユーザーが、選択肢を3つ示された中から、第1陣だけを待つ案を採った。タグは、計画書 [0027](plans/0027-user-documentation.md) のスライス D7a(プログラム集の実行検査と最初のプログラム)と D2(チュートリアルの1から8章)が main に入ってから、そのときの main の先頭の木に対して打つ。残り(9章以降、ユーザーズガイド、リファレンス、残りのプログラム)は、v1.0.0 の後に追加する。リリース準備の PR([suchi/sucheme-zig#274](https://github.com/suchi/sucheme-zig/pull/274))のマージコミット `5c91951` は、タグの対象でなくなる。その後に main へ入るものの CI は、タグの前に親が確かめる。この間、ユーザーが動く項目は無い。
+- 2026-11-08: v1.0.0 のタグを打つ前に、利用者向けの文書を先に整えることになった。ユーザーが、選択肢を3つ示された中から、第1陣だけを待つ案を採った。タグは、計画書 [0027](plans/0027-user-documentation.md) のスライス D7a(プログラム集の実行検査と最初のプログラム)と D2(チュートリアルの1から8章)が main に入ってから、そのときの main の先頭の木に対して打つ。残り(9章以降、ユーザーズガイド、リファレンス、残りのプログラム)は、v1.0.0 の後に追加する。リリース準備の PR([suchi/sucheme-zig#274](https://github.com/suchi/sucheme-zig/pull/274))のマージコミット `5c91951` は、タグの対象でなくなる、という計画だった(結果: タグは `5c91951` に作られた。タグの木に、D2 のチュートリアルは入っていない)。その後に main へ入るものの CI は、タグの前に親が確かめる。この間、ユーザーが動く項目は無い。
 
 ## 決まった進め方
 
