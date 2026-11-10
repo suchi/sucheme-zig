@@ -32,6 +32,7 @@ sucheme で Scheme を学ぶチュートリアルです。C、Python、JavaScrip
 | [15 構文の定義](15-macros.md) | `syntax-rules` と `define-syntax`、衛生性 | あり |
 | [16 パラメータと遅延評価](16-parameters-and-promises.md) | `make-parameter` と `parameterize`、`delay` と `force`、遅延評価版の `tarai` | あり |
 | [17 ライブラリ](17-libraries.md) | `import`、`define-library`、`-I` でファイルのライブラリを読む | あり |
-| 18 と 19 | 入出力、プログラムとして動かす | 未着手 |
+| [18 入出力](18-io.md) | `write`、ポート、`read`、行や文字の読み取り、ファイルの読み書き | あり |
+| [19 プログラムとして動かす](19-running-programs.md) | コマンドライン引数、`exit`、環境変数、時間の計測 | あり |
 
-18 章以降の計画は [計画書 0027](../../plans/0027-user-documentation.md) の「構成案」にあります。
+章立ての計画は [計画書 0027](../../plans/0027-user-documentation.md) の「構成案」にあります。まとまった大きさのプログラムは [プログラム集](../programs/README.md) にあります。

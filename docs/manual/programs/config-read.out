@@ -1,0 +1,10 @@
+80
+"sample"
+(red green blue)
+default
+((a . 1) (b . #t))
+1920
+#t
+(width . 80)
+read-error
+read-error

@@ -1,0 +1,10 @@
+ring: #0=(a b c . #0#)
+self: #0=#(1 2 #0#)
+write: ((1 2) (1 2))
+write-shared: (#0=(1 2) #0#)
+write-simple: ((1 2) (1 2))
+two-cycle: (#0=(x y . #0#) (y . #0#))
+reread: #0=(a b c . #0#)
+same shape: #t
+ring is cyclic: #t
+list is cyclic: #f
