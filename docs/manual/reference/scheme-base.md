@@ -4,11 +4,11 @@
 
 | 識別子 | R7RS の節 | 項目 |
 | --- | --- | --- |
-| `*` | 6.2.6 | |
+| `*` | 6.2.6 | [食い違い](deviations.md) |
 | `+` | 6.2.6 | |
 | `-` | 6.2.6 | |
 | `...` | 4.3.2 | |
-| `/` | 6.2.6 | |
+| `/` | 6.2.6 | [食い違い](deviations.md) |
 | `<` | 6.2.6 | |
 | `<=` | 6.2.6 | |
 | `=` | 6.2.6 | |
@@ -65,9 +65,9 @@
 | `current-error-port` | 6.13.1 | |
 | `current-input-port` | 6.13.1 | |
 | `current-output-port` | 6.13.1 | |
-| `define` | 5.3 | |
+| `define` | 5.3 | [食い違い](deviations.md) |
 | `define-record-type` | 5.5 | |
-| `define-syntax` | 5.4 | |
+| `define-syntax` | 5.4 | [食い違い](deviations.md) |
 | `define-values` | 5.3.3 | |
 | `denominator` | 6.2.6 | |
 | `do` | 4.2.4 | |
@@ -78,10 +78,10 @@
 | `eq?` | 6.1 | |
 | `equal?` | 6.1 | |
 | `eqv?` | 6.1 | |
-| `error` | 6.11 | |
-| `error-object-irritants` | 6.11 | |
-| `error-object-message` | 6.11 | |
-| `error-object?` | 6.11 | |
+| `error` | 6.11 | [誤りの文面](error-messages.md)、[食い違い](deviations.md) |
+| `error-object-irritants` | 6.11 | [誤りの文面](error-messages.md) |
+| `error-object-message` | 6.11 | [誤りの文面](error-messages.md) |
+| `error-object?` | 6.11 | [誤りの文面](error-messages.md) |
 | `even?` | 6.2.6 | |
 | `exact` | 6.2.6 | |
 | `exact-integer-sqrt` | 6.2.6 | |
@@ -99,7 +99,7 @@
 | `gcd` | 6.2.6 | |
 | `get-output-bytevector` | 6.13.1 | |
 | `get-output-string` | 6.13.1 | |
-| `guard` | 4.2.7 | |
+| `guard` | 4.2.7 | [誤りの文面](error-messages.md) |
 | `if` | 4.1.5 | |
 | `include` | 4.1.7 | |
 | `include-ci` | 4.1.7 | |
@@ -144,7 +144,7 @@
 | `newline` | 6.13.3 | |
 | `not` | 6.3 | |
 | `null?` | 6.4 | |
-| `number->string` | 6.2.7 | |
+| `number->string` | 6.2.7 | [表示の書式](printing.md) |
 | `number?` | 6.2.6 | |
 | `numerator` | 6.2.6 | |
 | `odd?` | 6.2.6 | |
@@ -165,8 +165,8 @@
 | `quasiquote` | 4.2.8 | |
 | `quote` | 4.1.2 | |
 | `quotient` | 6.2.6 | |
-| `raise` | 6.11 | |
-| `raise-continuable` | 6.11 | |
+| `raise` | 6.11 | [誤りの文面](error-messages.md) |
+| `raise-continuable` | 6.11 | [誤りの文面](error-messages.md) |
 | `rational?` | 6.2.6 | |
 | `rationalize` | 6.2.6 | |
 | `read-bytevector` | 6.13.2 | |
@@ -186,7 +186,7 @@
 | `square` | 6.2.6 | |
 | `string` | 6.7 | |
 | `string->list` | 6.7 | |
-| `string->number` | 6.2.7 | |
+| `string->number` | 6.2.7 | [実装の上限](limits.md) |
 | `string->symbol` | 6.5 | |
 | `string->utf8` | 6.9 | |
 | `string->vector` | 6.8 | |
@@ -236,7 +236,7 @@
 | `vector-set!` | 6.8 | |
 | `vector?` | 6.8 | |
 | `when` | 4.2.1 | |
-| `with-exception-handler` | 6.11 | |
+| `with-exception-handler` | 6.11 | [誤りの文面](error-messages.md) |
 | `write-bytevector` | 6.13.3 | |
 | `write-char` | 6.13.3 | |
 | `write-string` | 6.13.3 | |

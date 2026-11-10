@@ -23,6 +23,6 @@
 | `string-ci=?` | 6.7 | |
 | `string-ci>=?` | 6.7 | |
 | `string-ci>?` | 6.7 | |
-| `string-downcase` | 6.7 | |
-| `string-foldcase` | 6.7 | |
-| `string-upcase` | 6.7 | |
+| `string-downcase` | 6.7 | [食い違い](deviations.md) |
+| `string-foldcase` | 6.7 | [食い違い](deviations.md) |
+| `string-upcase` | 6.7 | [食い違い](deviations.md) |

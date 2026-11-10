@@ -4,11 +4,11 @@
 
 | 識別子 | R7RS の節 | 項目 |
 | --- | --- | --- |
-| `*` | 6.2.6 | |
+| `*` | 6.2.6 | [食い違い](deviations.md) |
 | `+` | 6.2.6 | |
 | `-` | 6.2.6 | |
 | `...` | 4.3.2 | |
-| `/` | 6.2.6 | |
+| `/` | 6.2.6 | [食い違い](deviations.md) |
 | `<` | 6.2.6 | |
 | `<=` | 6.2.6 | |
 | `=` | 6.2.6 | |
@@ -93,11 +93,11 @@
 | `cos` | 6.2.6 | |
 | `current-input-port` | 6.13.1 | |
 | `current-output-port` | 6.13.1 | |
-| `define` | 5.3 | |
-| `define-syntax` | 5.4 | |
+| `define` | 5.3 | [食い違い](deviations.md) |
+| `define-syntax` | 5.4 | [食い違い](deviations.md) |
 | `delay` | 4.2.5 | |
 | `denominator` | 6.2.6 | |
-| `display` | 6.13.3 | |
+| `display` | 6.13.3 | [表示の書式](printing.md) |
 | `do` | 4.2.4 | |
 | `dynamic-wind` | 6.10 | |
 | `else` | 4.2.1 | |
@@ -109,7 +109,7 @@
 | `even?` | 6.2.6 | |
 | `exact->inexact` | 6.2.6 | |
 | `exact?` | 6.2.6 | |
-| `exp` | 6.2.6 | |
+| `exp` | 6.2.6 | [食い違い](deviations.md) |
 | `expt` | 6.2.6 | |
 | `floor` | 6.2.6 | |
 | `for-each` | 6.10 | |
@@ -156,7 +156,7 @@
 | `not` | 6.3 | |
 | `null-environment` | 6.12 | |
 | `null?` | 6.4 | |
-| `number->string` | 6.2.7 | |
+| `number->string` | 6.2.7 | [表示の書式](printing.md) |
 | `number?` | 6.2.6 | |
 | `numerator` | 6.2.6 | |
 | `odd?` | 6.2.6 | |
@@ -188,7 +188,7 @@
 | `sqrt` | 6.2.6 | |
 | `string` | 6.7 | |
 | `string->list` | 6.7 | |
-| `string->number` | 6.2.7 | |
+| `string->number` | 6.2.7 | [実装の上限](limits.md) |
 | `string->symbol` | 6.5 | |
 | `string-append` | 6.7 | |
 | `string-ci<=?` | 6.7 | |
@@ -223,6 +223,6 @@
 | `vector?` | 6.8 | |
 | `with-input-from-file` | 6.13.1 | |
 | `with-output-to-file` | 6.13.1 | |
-| `write` | 6.13.3 | |
+| `write` | 6.13.3 | [表示の書式](printing.md) |
 | `write-char` | 6.13.3 | |
 | `zero?` | 6.2.6 | |

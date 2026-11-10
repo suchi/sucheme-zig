@@ -4,7 +4,7 @@
 
 | 識別子 | R7RS の節 | 項目 |
 | --- | --- | --- |
-| `display` | 6.13.3 | |
-| `write` | 6.13.3 | |
-| `write-shared` | 6.13.3 | |
-| `write-simple` | 6.13.3 | |
+| `display` | 6.13.3 | [表示の書式](printing.md) |
+| `write` | 6.13.3 | [表示の書式](printing.md) |
+| `write-shared` | 6.13.3 | [表示の書式](printing.md) |
+| `write-simple` | 6.13.3 | [表示の書式](printing.md) |

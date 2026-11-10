@@ -10,8 +10,9 @@ sucheme を使うときに、R7RS の原文([docs/spec/](../../spec/README.md))�
 - [実装の上限](limits.md): ヒープ、再帰の深さ、入力の大きさ
 - [REPL とコマンドライン](repl-and-command-line.md): 二つの経路の違い、初期環境
 - [誤りの文面](error-messages.md): `error:` の文面の例
-
-表示の書式、まだ無い機能、R7RS と食い違う箇所は、まだありません(後の変更で足します)。
+- [表示の書式](printing.md): 値が文字になる書式(`write` と `display`)
+- [まだ無い機能](unimplemented.md): 標準入力のプログラム、行編集、エラーの位置など
+- [R7RS と食い違う、または実装に委ねられた箇所](deviations.md): 既知の制限のうち、結果が決まっているもの
 
 ## ライブラリの索引
 

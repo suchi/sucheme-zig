@@ -391,7 +391,8 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 | D7b | 着手済み。分野ごとに PR を分ける。1 本目はデータ処理、文字列と文字、数の12本(ブランチ `docs/docs-slice-d7b-programs-data-strings-numbers`)。2 本目はパズル、高階関数、記号処理の9本(ブランチ `docs/docs-slice-d7b-programs-puzzles-higher-order-symbolic`、1 本目の上に積む)。3 本目はマクロ、継続、エラーの扱い、パラメータの8本(ブランチ `docs/docs-slice-d7b-programs-macros-control-errors`、2 本目の上に積む)。残りは `define-library` の例の1本で、`-I` を要するので、検査の対応を待つ |
 | D3 | 実装済み。ブランチ `feature/docs-slice-d3-console-check-and-user-guide`。`console` のブロックの検査(`tools/check-examples/`。決めたことは「D3 で決めたこと」)と、実行ファイルを通る経路の対(`testdata/console-ok` と `testdata/console-differs`)、ユーザーズガイドの1から7章(`docs/manual/guide/`)。終了コードの表は写さず、`src/main.zig` の doc コメントにリンクして、代表の例(0、1、64、66、69)を走らせた。前提の機能が main に無くて書かなかった章は無い。ただし、前提のある内容(REPL の行編集、標準入力のプログラム、Web UI の対話とエラー位置と配置した URL)は、ガイドが「まだ無い」と書くだけで、前提のスライスのあとに足す |
 | D5 | 実装済み。ブランチ `feature/docs-slice-d5-reference-index`。`tools/check-examples/` に、`lib/scheme/*.sld` の `export` と `docs/manual/reference/scheme-*.md` の表を双方向に突き合わせる検査を足した(輸出されるのに行が無い、行があるのに輸出されない、行の重複、節番号の形、索引の無いライブラリ、ライブラリの無い索引、ライブラリが 0 件、読めないライブラリ。判定の関数ごとに単体テストがある)。16 ライブラリの索引の節番号は、R7RS の原文で確かめて書いた(`(scheme r5rs)` の4つは原文の 6.2.6 と 6.12 による)。固有の項目の前半として、上限、REPL とコマンドライン、誤りの文面を `docs/manual/reference/` に置いた(例は `check-examples` が走らせる)。残り: 索引の「項目」の列は空で、D6 が項目へのリンクを足す。`testdata/index-differs/` を `build.zig` の失敗を期待する入力の一覧に足した(`build.zig` は D5 の所有の外だが、親が1語の変更を認めた)。`define-library` の直下の `cond-expand` は、条件を読まないので断る(輸出を読み飛ばさない)。`#;` の読み飛ばしと、シンボリックリンクの `.sld` は、[open-questions.md](../design/open-questions.md) に記録した。ヒープの上限に達する小さな確保の連続は、Debug で約 55 秒、ReleaseSafe で約 38 秒かかる(Linux、1回の測定)ので、全コミットの検査には載せず、`make-vector` の大きな確保の例だけを検査に載せた。この遅さの原因は調べていない |
-| D6、D8 | 未着手 |
+| D6 | 書き終えた。ブランチ `docs/docs-slice-d6-reference-items`。`docs/manual/reference/` に、表示の書式(`printing.md`)、まだ無い機能(`unimplemented.md`)、R7RS と食い違う箇所(`deviations.md`)を置き、`limits.md` に数の綴りの大きさを足した。索引の「項目」の列に、該当する項目へのリンクを足した(表示の書式、誤りの文面、実装の上限、食い違い。リンクを足した識別子は、各項目の説明と対応するものに限る)。例はすべて `check-examples` が走らせて通る。事実は実機で確かめた。確かめていないと書いた記述は、リーダの `#!fold-case` が `ß` を畳み込まない点、埋め込みライブラリの名前を先に定義できる点、巨大な正確な数の読み書きの速度である。道具は変えていない。残り: 項目を立てていない識別子(R7RS の原文で足りるもの)の「項目」の列は空のままで、これは意図した状態である |
+| D8 | 未着手 |
 
 ## 次にやること
 
@@ -399,5 +400,5 @@ D3、D5、D7a は、どれも `tools/check-examples/main.zig` を変える(`cons
 - D7a: 敵対的レビューは収束した。親が ready にし、層2 の結果を確かめて、マージを依頼する。
 - D3: 親が ready にし、層2 を手動で走らせて結果を確かめる。
 - D4: 18 章と 19 章は、前提の 5j から 5n のマージ状況を確かめてから、D8 以降で足す(5j から 5n は main にあるように見えるが、このスライスでは確かめていない)。
-- D5: 敵対的レビューは収束した。次は D6(固有の項目の残りと、索引の「項目」の列のリンク)に進む。
+- D6: 親が PR を ready にし、マージを依頼する。マージのあと、リファレンスマニュアルは、後のスライスが識別子や機能を足したときに、索引の行(検査が要求する)と、固有の項目を直す。
 - D7a のマージのあと、順2(D3、D4、D7b)に進む。着手の時期と同時に開く PR の数は、親のセッションが決める。D2 の実績で、残りのスライスを見積る。
