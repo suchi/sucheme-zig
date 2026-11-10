@@ -13,7 +13,7 @@ zig-out/bin/sucheme docs/manual/programs/tak.scm
 
 ## 一覧
 
-チュートリアルの章は [計画書 0027](../../plans/0027-user-documentation.md) の章立てによる。章はまだ書かれていないものがある。
+チュートリアルの章は [計画書 0027](../../plans/0027-user-documentation.md) の章立てによる。各章は [チュートリアル](../tutorial/README.md) にある。
 
 | プログラム | 内容 | 対応する章 |
 | --- | --- | --- |
@@ -58,9 +58,14 @@ zig-out/bin/sucheme docs/manual/programs/tak.scm
 | [validate](validate.scm) | `guard` と `raise` による入力の検査 | 14 エラーの扱い |
 | [recover](recover.scm) | `with-exception-handler` と `raise-continuable` による回復 | 14 エラーの扱い |
 | [parameters](parameters.scm) | `parameterize` による設定の切り替え | 16 パラメータと遅延評価 |
+| [wc](wc.scm) | 行数、語数、文字数を数える `wc` 相当(入力は文字列ポート) | 9 文字列と文字、18 入出力 |
+| [csv-totals](csv-totals.scm) | 複数行の CSV を読み、分類ごとの件数と合計と平均を出す | 6 リスト、18 入出力 |
+| [config-read](config-read.scm) | `read` で設定のデータを読み込み、`read-error?` で誤りを見分ける | 14 エラーの扱い、18 入出力 |
+| [timing](timing.scm) | `current-jiffy` で処理時間を測る(時間の値は出さず、性質だけを確かめる) | 13 制御、19 プログラムとして動かす |
+| [write-cycle](write-cycle.scm) | `write`、`write-shared`、`write-simple` による循環構造と共有の表示 | 6 リスト、18 入出力 |
 
 ## 足すときの決まり
 
 - `名前.scm` と `名前.out` を組で置く。組になっていないファイル、`.scm` と `.out` と `.md` 以外のファイルは、検査が失敗にする。
-- 入力を読むもの(`.in`)と、ファイルを書くものは、前提のスライスがマージされてから、検査に足す。
+- 入力を読むもの(`.in`)と、ファイルを書くものは、検査の対応を足してから置く。実行の仕組みは、プログラムを引数なし、`-I` なし、標準入力なし、一時ディレクトリなしで起動するだけなので、いまは、ファイルを読み書きする例と、`-I` で読む `define-library` の例を置けない。入出力のプログラムは、入力を文字列ポートで渡し、ファイルを読むときの差し替え方をコメントに書いた。ファイルを実際に読み書きする例は、[チュートリアルの18章](../tutorial/18-io.md)にある。
 - Debug ビルドの実行ファイルで、1 本あたり 1 秒前後に収める。

@@ -1,0 +1,6 @@
+recursive: 12502500
+iterative: 12502500
+same result: #t
+times are exact and non-negative: #t
+best of 5 is non-negative: #t
+jiffies per second is a positive integer: #t
