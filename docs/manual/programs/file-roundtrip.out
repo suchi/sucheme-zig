@@ -1,0 +1,10 @@
+before: #f
+README.md here: #f
+after writing: #t
+datum: (1 "two" #\3 (4 . 5) #(6 7))
+rest of line: ""
+next line: "plain second line"
+end: #t
+overwritten: "overwritten"
+after deleting: #f
+opening a deleted file: file-error

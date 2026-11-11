@@ -1,0 +1,5 @@
+0: (width . 80)
+1: (title . "sample")
+2: (colors red green blue)
+3: (nested (a . 1) (b . #t))
+stopped by read-error after 4 data
