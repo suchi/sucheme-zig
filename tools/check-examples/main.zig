@@ -311,12 +311,6 @@ fn programFilesStem(path: []const u8) ?[]const u8 {
     return first[0 .. first.len - files_suffix.len];
 }
 
-/// Whether `path` is inside a directory `programs/<name>.files` (not the directory itself).
-fn isInProgramFilesDir(path: []const u8) bool {
-    const rest = belowPrograms(path) orelse return false;
-    return programFilesStem(path) != null and std.mem.indexOfAny(u8, rest, "/\\") != null;
-}
-
 /// What `buildArgs` refuses.
 const ArgsError = error{
     /// The line has no `@prog`.
@@ -1768,12 +1762,6 @@ test "the directory of auxiliary files and what is in it belong to the program o
     try std.testing.expect(programFilesStem("programs/wc.txt") == null);
     try std.testing.expect(programFilesStem("programs/sub/wc.files") == null);
     try std.testing.expect(programFilesStem("other/wc.files") == null);
-    try std.testing.expect(isInProgramFilesDir("programs/wc.files/a.txt"));
-    try std.testing.expect(isInProgramFilesDir("programs\\wc.files\\lib\\a.sld"));
-    // ディレクトリそのものは、中ではない。
-    try std.testing.expect(!isInProgramFilesDir("programs/wc.files"));
-    try std.testing.expect(!isInProgramFilesDir("programs/wc.scm"));
-    try std.testing.expect(!isInProgramFilesDir("other/wc.files/a.txt"));
 }
 
 test "an args line becomes the arguments, with the program and the auxiliary directory put in" {

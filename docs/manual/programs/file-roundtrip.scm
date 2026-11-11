@@ -13,6 +13,9 @@
 
 (show "before" (file-exists? name))
 
+;; 作業ディレクトリは、文書のディレクトリではない(そこには `README.md` がある)。
+(show "README.md here" (file-exists? "README.md"))
+
 ;; データと文字列の行を書く。`write` で書いたデータは、`read` で読み戻せる。
 (call-with-output-file name
   (lambda (out)
