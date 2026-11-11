@@ -36,7 +36,21 @@
 //! 置く。`.scm` を、引数で渡された実行ファイルに、ファイルの実行として渡し、標準出力と
 //! 終了コード 0 を `.out` と比べる(利用者が実際に打つ経路を通すため、プロセスの中では
 //! 評価しない)。組になっていないファイル、プログラムが1つも無いことは、失敗とする。
-//! 入力を渡す `.in` と一時ディレクトリは、前提のスライスが無いので、まだ足していない。
+//! プログラムは、実行ごとに作る空の一時ディレクトリ(`.zig-cache/tmp/` の下)を作業
+//! ディレクトリにして起動し、終わったら、標準ライブラリの API で消す。補助のファイルは、
+//! 同名で隣に置く(計画書 0027 の「D9 で決めること」)。
+//!
+//! - `名前.args`: 実行ファイルへの引数を、1行に空白で区切って書く。無ければ、`@prog` だけと
+//!   同じである。`@prog` は `名前.scm` の絶対パスで、ちょうど1回書く。`@files/` で始まる
+//!   引数は、`名前.files/` の絶対パスに置き換わる。文字の規則は `console` のブロックの引数と同じ。
+//! - `名前.in`: 標準入力に渡す。無ければ、標準入力は空である。
+//! - `名前.files/`: `.args` が `@files/` で指す、補助のファイル(`-I` で読む `.sld` と、
+//!   プログラムが読む入力)を置く。
+//! - `名前.out` の最後の行が `[exit N]` なら、終了コード N を求め、その行は標準出力の比べから
+//!   外す。無ければ 0 を求める。
+//!
+//! `.in` と `.args` と `.files/` は、同名の `.scm` が無ければ失敗とする。`.files/` は、`.args`
+//! が使わなければ失敗とし、`.args` が `@files/` を使うのに `.files/` が無いことも失敗とする。
 //!
 //! ライブラリの索引(docs/manual/reference/scheme-*.md)は、`lib/scheme/*.sld` の `export` と
 //! 双方向に突き合わせる。ライブラリごとに `reference/<名前をつないだもの>.md` が要り、その表の
@@ -176,18 +190,129 @@ const Program = struct {
     name: []const u8,
     has_scm: bool = false,
     has_out: bool = false,
+    has_in: bool = false,
+    has_args: bool = false,
+    /// Whether the directory `名前.files/` (or something in it) was found.
+    has_files: bool = false,
 };
 
-/// Whether `path` is a `.scm` or `.out` file directly under `programs/`.
-fn isProgramFile(path: []const u8) bool {
+/// The part of `path` below `programs/`, or null when `path` is not under it.
+fn belowPrograms(path: []const u8) ?[]const u8 {
     // Windows の歩き方は `\\` で区切る(path.sep)ので、区切りは両方を受け付ける。
     const dir_name = programs_dir[0 .. programs_dir.len - 1];
-    if (!std.mem.startsWith(u8, path, dir_name)) return false;
-    if (path.len == dir_name.len or (path[dir_name.len] != '/' and path[dir_name.len] != '\\')) return false;
-    const rest = path[dir_name.len + 1 ..];
+    if (!std.mem.startsWith(u8, path, dir_name)) return null;
+    if (path.len == dir_name.len or (path[dir_name.len] != '/' and path[dir_name.len] != '\\')) return null;
+    return path[dir_name.len + 1 ..];
+}
+
+/// The extensions of the files of a program, directly under `programs/`.
+const program_exts = [_][]const u8{ ".scm", ".out", ".in", ".args" };
+
+/// The suffix of the directory of the auxiliary files of a program.
+const files_suffix = ".files";
+
+/// The extension of `name` when it is `<stem><ext>` with a stem and one of `program_exts`.
+fn programExt(name: []const u8) ?[]const u8 {
+    for (program_exts) |ext| {
+        if (name.len > ext.len and std.mem.endsWith(u8, name, ext)) return ext;
+    }
+    return null;
+}
+
+/// Whether `path` is a `.scm`, `.out`, `.in` or `.args` file directly under `programs/`.
+fn isProgramFile(path: []const u8) bool {
+    const rest = belowPrograms(path) orelse return false;
     // サブディレクトリの中は、プログラムとして読まない。
     if (std.mem.indexOfAny(u8, rest, "/\\") != null) return false;
-    return std.mem.endsWith(u8, rest, ".scm") or std.mem.endsWith(u8, rest, ".out");
+    return programExt(rest) != null;
+}
+
+/// The name of the program when `path` is the directory `programs/<name>.files`, or something in it.
+fn programFilesStem(path: []const u8) ?[]const u8 {
+    const rest = belowPrograms(path) orelse return null;
+    const first = rest[0 .. std.mem.indexOfAny(u8, rest, "/\\") orelse rest.len];
+    if (first.len <= files_suffix.len or !std.mem.endsWith(u8, first, files_suffix)) return null;
+    return first[0 .. first.len - files_suffix.len];
+}
+
+/// Whether `path` is inside a directory `programs/<name>.files` (not the directory itself).
+fn isInProgramFilesDir(path: []const u8) bool {
+    const rest = belowPrograms(path) orelse return false;
+    return programFilesStem(path) != null and std.mem.indexOfAny(u8, rest, "/\\") != null;
+}
+
+/// What `buildArgs` refuses.
+const ArgsError = error{
+    /// The line has no `@prog`.
+    NoProgram,
+    /// The line has `@prog` more than once.
+    ManyPrograms,
+    /// The text is more than one line.
+    MoreThanOneLine,
+    /// An argument has a character this tool does not run as written, is an absolute path, or has `..`.
+    NotPlain,
+    /// An argument starts with `@` and is neither `@prog` nor `@files/...`.
+    UnknownPlaceholder,
+    OutOfMemory,
+};
+
+/// The arguments of a program's run, read from the line of its `.args` file.
+const BuiltArgs = struct {
+    args: []const []const u8,
+    /// Whether an argument names something in the directory of auxiliary files.
+    uses_files: bool,
+};
+
+/// Reads the line `text` of a `.args` file into the arguments of the executable.
+///
+/// `text` が null(`.args` が無い)なら、引数は `prog` だけである。`@prog` は `prog`、
+/// `@files/<x>` は `files` と `/` と `<x>` に置き換える。置き換えの前の綴りで、`console` の
+/// ブロックと同じ文字の規則(`isPlainArgument`)を検査する。`@files/../x` は `..` で断られる。
+fn buildArgs(gpa: std.mem.Allocator, text: ?[]const u8, prog: []const u8, files: []const u8) ArgsError!BuiltArgs {
+    const line = text orelse return .{ .args = try gpa.dupe([]const u8, &.{prog}), .uses_files = false };
+    // 末尾の改行(と CRLF の CR)は許す。途中の改行は、複数の行である。
+    const trimmed = std.mem.trimEnd(u8, line, " \r\n");
+    if (std.mem.indexOfScalar(u8, trimmed, '\n') != null) return error.MoreThanOneLine;
+    var args: std.ArrayList([]const u8) = .empty;
+    var progs: usize = 0;
+    var uses_files = false;
+    var words = std.mem.tokenizeScalar(u8, trimmed, ' ');
+    while (words.next()) |word| {
+        if (!isPlainArgument(word)) return error.NotPlain;
+        if (std.mem.eql(u8, word, "@prog")) {
+            progs += 1;
+            try args.append(gpa, prog);
+        } else if (std.mem.startsWith(u8, word, "@files/")) {
+            uses_files = true;
+            try args.append(gpa, try std.fmt.allocPrint(gpa, "{s}/{s}", .{ files, word["@files/".len..] }));
+        } else if (word[0] == '@') {
+            return error.UnknownPlaceholder;
+        } else {
+            try args.append(gpa, word);
+        }
+    }
+    if (progs == 0) return error.NoProgram;
+    if (progs > 1) return error.ManyPrograms;
+    return .{ .args = try args.toOwnedSlice(gpa), .uses_files = uses_files };
+}
+
+/// An expected output of a program, split into the standard output and the exit code.
+const ExpectedOutput = struct {
+    stdout: []const u8,
+    code: u8,
+};
+
+/// Splits the text of a `.out` file at its last line, when that line is `[exit N]`.
+///
+/// 最後の行が `[exit` で始まるのに `[exit N]` の形でなければ、`error.BadExitLine` である。
+/// 行は、標準出力の比べから外す。無ければ、終了コードは 0 である(`console` のブロックと同じ)。
+fn splitExitMarker(text: []const u8) error{BadExitLine}!ExpectedOutput {
+    const body = if (std.mem.endsWith(u8, text, "\n")) text[0 .. text.len - 1] else text;
+    const line_start = if (std.mem.lastIndexOfScalar(u8, body, '\n')) |i| i + 1 else 0;
+    const line = std.mem.trimEnd(u8, body[line_start..], " \t");
+    if (!std.mem.startsWith(u8, line, "[exit")) return .{ .stdout = text, .code = 0 };
+    const code = parseExit(line) orelse return error.BadExitLine;
+    return .{ .stdout = text[0..line_start], .code = code };
 }
 
 /// Whether `path` is a file other than a `.md` under a directory named `examples`.
@@ -1431,6 +1556,108 @@ test "a program file is recognised under either path separator, and only directl
     try std.testing.expect(!isProgramFile("programsx/y.scm"));
     try std.testing.expect(!isProgramFile("other/y.scm"));
     try std.testing.expect(!isProgramFile("programs"));
+    // 補助のファイルも、直下にあれば、プログラムの一部である。名前のない拡張子だけのものは違う。
+    try std.testing.expect(isProgramFile("programs/wc.in"));
+    try std.testing.expect(isProgramFile("programs\\wc.args"));
+    try std.testing.expect(!isProgramFile("programs/.in"));
+    try std.testing.expect(!isProgramFile("programs/.args"));
+    try std.testing.expect(!isProgramFile("programs/wc.files/a.in"));
+}
+
+test "the directory of auxiliary files and what is in it belong to the program of that name" {
+    try std.testing.expectEqualStrings("wc", programFilesStem("programs/wc.files").?);
+    try std.testing.expectEqualStrings("wc", programFilesStem("programs/wc.files/lib/a.sld").?);
+    try std.testing.expectEqualStrings("wc", programFilesStem("programs\\wc.files\\a.txt").?);
+    try std.testing.expect(programFilesStem("programs/.files") == null);
+    try std.testing.expect(programFilesStem("programs/wc.txt") == null);
+    try std.testing.expect(programFilesStem("programs/sub/wc.files") == null);
+    try std.testing.expect(programFilesStem("other/wc.files") == null);
+    try std.testing.expect(isInProgramFilesDir("programs/wc.files/a.txt"));
+    try std.testing.expect(isInProgramFilesDir("programs\\wc.files\\lib\\a.sld"));
+    // ディレクトリそのものは、中ではない。
+    try std.testing.expect(!isInProgramFilesDir("programs/wc.files"));
+    try std.testing.expect(!isInProgramFilesDir("programs/wc.scm"));
+    try std.testing.expect(!isInProgramFilesDir("other/wc.files/a.txt"));
+}
+
+test "an args line becomes the arguments, with the program and the auxiliary directory put in" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const prog = "/m/programs/p.scm";
+    const files = "/m/programs/p.files";
+    // `.args` が無ければ、プログラムのパスだけである。
+    const none = try buildArgs(a, null, prog, files);
+    try std.testing.expectEqual(@as(usize, 1), none.args.len);
+    try std.testing.expectEqualStrings(prog, none.args[0]);
+    try std.testing.expect(!none.uses_files);
+    // `-I` の後ろの補助ディレクトリと、プログラムへの引数。
+    const lib = try buildArgs(a, "-I @files/lib @prog 3 -x\n", prog, files);
+    try std.testing.expectEqual(@as(usize, 5), lib.args.len);
+    try std.testing.expectEqualStrings("-I", lib.args[0]);
+    try std.testing.expectEqualStrings("/m/programs/p.files/lib", lib.args[1]);
+    try std.testing.expectEqualStrings(prog, lib.args[2]);
+    try std.testing.expectEqualStrings("3", lib.args[3]);
+    try std.testing.expectEqualStrings("-x", lib.args[4]);
+    try std.testing.expect(lib.uses_files);
+    // CRLF の行末と、続く空白も読める。補助のファイルを使わなければ、`uses_files` は偽である。
+    const crlf = try buildArgs(a, "@prog a.txt  \r\n", prog, files);
+    try std.testing.expectEqual(@as(usize, 2), crlf.args.len);
+    try std.testing.expect(!crlf.uses_files);
+    // 補助ディレクトリそのもの(`@files/` だけ)も指せる。
+    const dirarg = try buildArgs(a, "@prog @files/", prog, files);
+    try std.testing.expectEqualStrings("/m/programs/p.files/", dirarg.args[1]);
+    try std.testing.expect(dirarg.uses_files);
+}
+
+test "an args line this tool cannot run as written is refused" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { text: []const u8, err: ArgsError }{
+        .{ .text = "", .err = error.NoProgram },
+        .{ .text = "-I @files/lib\n", .err = error.NoProgram },
+        .{ .text = "@prog @prog\n", .err = error.ManyPrograms },
+        .{ .text = "@prog\n@prog\n", .err = error.MoreThanOneLine },
+        .{ .text = "@prog a\nb\n", .err = error.MoreThanOneLine },
+        .{ .text = "@prog \"a b\"", .err = error.NotPlain },
+        .{ .text = "@prog a|b", .err = error.NotPlain },
+        .{ .text = "@prog $HOME", .err = error.NotPlain },
+        .{ .text = "@prog\ta", .err = error.NotPlain },
+        .{ .text = "@prog /etc/passwd", .err = error.NotPlain },
+        .{ .text = "@prog ../x", .err = error.NotPlain },
+        .{ .text = "@prog @files/../x", .err = error.NotPlain },
+        .{ .text = "@prog @file/x", .err = error.UnknownPlaceholder },
+        .{ .text = "@prog @progx", .err = error.UnknownPlaceholder },
+        .{ .text = "@prog @files", .err = error.UnknownPlaceholder },
+    };
+    for (cases) |c| {
+        try std.testing.expectError(c.err, buildArgs(a, c.text, "/p.scm", "/p.files"));
+    }
+}
+
+test "an exit line at the end of an expected output gives the exit code and is not part of the output" {
+    const plain = try splitExitMarker("a\nb\n");
+    try std.testing.expectEqualStrings("a\nb\n", plain.stdout);
+    try std.testing.expectEqual(@as(u8, 0), plain.code);
+    const with_code = try splitExitMarker("a\n[exit 3]\n");
+    try std.testing.expectEqualStrings("a\n", with_code.stdout);
+    try std.testing.expectEqual(@as(u8, 3), with_code.code);
+    // 標準出力が空で、終了コードだけを期待するときも、書ける。末尾の改行が無くてもよい。
+    const alone = try splitExitMarker("[exit 255]");
+    try std.testing.expectEqualStrings("", alone.stdout);
+    try std.testing.expectEqual(@as(u8, 255), alone.code);
+    const spaces = try splitExitMarker("x\n[exit 1]  \n");
+    try std.testing.expectEqual(@as(u8, 1), spaces.code);
+    // 最後の行でない `[exit N]` は、出力の一部である。
+    const middle = try splitExitMarker("[exit 2]\nafter\n");
+    try std.testing.expectEqualStrings("[exit 2]\nafter\n", middle.stdout);
+    try std.testing.expectEqual(@as(u8, 0), middle.code);
+    // `[exit` で始まるのに、形が違う最後の行は、誤りである。
+    try std.testing.expectError(error.BadExitLine, splitExitMarker("a\n[exit]\n"));
+    try std.testing.expectError(error.BadExitLine, splitExitMarker("a\n[exit 256]\n"));
+    try std.testing.expectError(error.BadExitLine, splitExitMarker("a\n[exit x]\n"));
+    try std.testing.expectError(error.BadExitLine, splitExitMarker("a\n[exit 1] more\n"));
 }
 
 test "a directory of passing documents and programs passes, nested ones included" {
