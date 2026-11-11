@@ -570,7 +570,7 @@ pub fn build(b: *std.Build) void {
     // testdata/ に置く。
     // `console-differs` は、`console` のブロックの期待する出力だけが誤っている。実行ファイルを
     // 起動する経路の誤りも、終了コード 1 になる。
-    for ([_][]const u8{ "bad-programs", "bad-exit-code", "orphan-out", "console-differs", "index-differs" }) |name| {
+    for ([_][]const u8{ "bad-programs", "bad-exit-code", "orphan-out", "console-differs", "index-differs", "orphan-sidecar", "bad-args", "unused-files", "stdin-differs" }) |name| {
         const run_bad = b.addRunArtifact(check_examples);
         run_bad.addArtifactArg(exe);
         run_bad.setCwd(b.path(b.fmt("tools/check-examples/testdata/{s}", .{name})));
