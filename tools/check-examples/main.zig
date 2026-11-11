@@ -139,10 +139,24 @@ const Outcome = struct {
 const Exec = struct {
     /// The path of the executable.
     exe: []const u8,
-    /// Runs the program at `path`, relative to the working directory, and returns what it gave.
-    runFn: *const fn (gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome,
+    /// Runs a program as `launch` says, and returns what it gave. `dir` is the directory of the documents.
+    runFn: *const fn (gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, launch: Launch) anyerror!Outcome,
     /// Runs the executable with `args` (without the program name), with `dir` as the working directory.
     commandFn: *const fn (gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, args: []const []const u8) anyerror!Outcome,
+};
+
+/// How one program is run.
+const Launch = struct {
+    /// The program's `.scm`, relative to the directory of the documents (a stand-in reads the source from it).
+    rel_scm: []const u8,
+    /// The arguments of the executable, without its name. The paths in them are absolute.
+    args: []const []const u8,
+    /// The file to give as standard input, relative to the directory of the documents, or null for none.
+    stdin: ?[]const u8,
+    /// The working directory: a new empty directory that the caller removes after the run.
+    cwd: std.Io.Dir,
+    /// The program's name in the report.
+    shown: []const u8,
 };
 
 /// The exit code of a process that ended as `term`, or null when it did not exit by itself (a signal, a stop).
@@ -153,19 +167,81 @@ fn exitCode(term: std.process.Child.Term) ?u8 {
     };
 }
 
-/// Runs `shown` (the program's path from the working directory) with the real executable.
-fn runExecutable(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome {
-    _ = dir;
-    _ = path;
-    // 暴走するプログラムが検査を止めたままにしないよう、時間に上限を置く。
-    const result = try std.process.run(gpa, io, .{
-        .argv = &.{ exec.exe, shown },
-        .timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } },
+/// Runs the real executable as `launch` says.
+fn runExecutable(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, launch: Launch) anyerror!Outcome {
+    const argv = try gpa.alloc([]const u8, launch.args.len + 1);
+    argv[0] = exec.exe;
+    @memcpy(argv[1..], launch.args);
+    // 標準入力は、パイプに書かず、開いたファイルをそのまま渡す。パイプに書くと、子が入力を
+    // 読み切る前に出力で詰まったときに、こちらも書き込みで止まる。
+    var stdin_file: ?std.Io.File = null;
+    defer if (stdin_file) |f| f.close(io);
+    if (launch.stdin) |p| stdin_file = try dir.openFile(io, p, .{});
+    return runProcess(gpa, io, argv, launch.cwd, stdin_file);
+}
+
+/// Runs `argv` in `cwd` with `stdin` as its standard input (none when null), and collects its output.
+///
+/// `std.process.run` の写しである。`run` は標準入力を無視に固定するので、ファイルを渡せない。
+fn runProcess(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: std.Io.Dir, stdin: ?std.Io.File) anyerror!Outcome {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .dir = cwd },
+        .stdin = if (stdin) |f| .{ .file = f } else .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
+    defer child.kill(io);
+
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(gpa, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer multi_reader.deinit();
+
+    // 暴走するプログラムが検査を止めたままにしないよう、時間に上限を置く。
+    const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } };
+    while (multi_reader.fill(64, timeout)) |_| {} else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |e| return e,
+    }
+    try multi_reader.checkAnyError();
+    const term = try child.wait(io);
     return .{
-        .code = exitCode(result.term),
-        .stdout = result.stdout,
+        .code = exitCode(term),
+        .stdout = try multi_reader.toOwnedSlice(0),
+        .stderr = try multi_reader.toOwnedSlice(1),
     };
+}
+
+/// Where the working directories of the programs are made, under the working directory of this process.
+const temp_root = ".zig-cache/tmp";
+
+/// A new empty directory under `temp_root`.
+const TempDir = struct {
+    dir: std.Io.Dir,
+    /// The path from the working directory of this process, to remove it.
+    sub_path: []const u8,
+};
+
+/// Makes a new empty directory with a random name. It fails when the name is taken.
+fn makeTempDir(gpa: std.mem.Allocator, io: std.Io) !TempDir {
+    var bytes: [8]u8 = undefined;
+    io.random(&bytes);
+    const hex = std.fmt.bytesToHex(bytes, .lower);
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, temp_root);
+    const sub_path = try std.fmt.allocPrint(gpa, "{s}/check-examples-{s}", .{ temp_root, hex });
+    try cwd.createDir(io, sub_path, .default_dir);
+    return .{ .dir = try cwd.openDir(io, sub_path, .{ .iterate = true }), .sub_path = sub_path };
+}
+
+/// Closes `temp` and removes it with what is in it.
+///
+/// Why: 開いたままのディレクトリは Windows で消せないので、先に閉じる。消せなければ、
+/// 残骸を黙って残さず、呼び出し側が失敗として数える。
+fn removeTempDir(io: std.Io, temp: TempDir) !void {
+    temp.dir.close(io);
+    try std.Io.Dir.cwd().deleteTree(io, temp.sub_path);
 }
 
 /// Runs the executable with `args` in `dir`, without a shell.
@@ -347,22 +423,20 @@ fn run(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, li
     var walker = try dir.walk(gpa);
     defer walker.deinit();
     while (try walker.next(io)) |entry| {
+        // `名前.files/` は、ディレクトリそのものと、その中のすべてが、その名前のプログラムの
+        // 補助のファイルである。中は種類を問わず受け付ける(`examples/` と同じ)。
+        if (programFilesStem(entry.path)) |stem| {
+            (try programNamed(gpa, &programs, stem)).has_files = true;
+            continue;
+        }
         if (entry.kind == .directory) continue;
         if (entry.kind == .file and isProgramFile(entry.path)) {
-            const stem = entry.basename[0 .. entry.basename.len - 4];
-            const is_scm = std.mem.endsWith(u8, entry.basename, ".scm");
-            var found = false;
-            for (programs.items) |*pr| {
-                if (std.mem.eql(u8, pr.name, stem)) {
-                    if (is_scm) pr.has_scm = true else pr.has_out = true;
-                    found = true;
-                }
-            }
-            if (!found) try programs.append(gpa, .{
-                .name = try gpa.dupe(u8, stem),
-                .has_scm = is_scm,
-                .has_out = !is_scm,
-            });
+            const ext = programExt(entry.basename).?;
+            const pr = try programNamed(gpa, &programs, entry.basename[0 .. entry.basename.len - ext.len]);
+            if (std.mem.eql(u8, ext, ".scm")) pr.has_scm = true;
+            if (std.mem.eql(u8, ext, ".out")) pr.has_out = true;
+            if (std.mem.eql(u8, ext, ".in")) pr.has_in = true;
+            if (std.mem.eql(u8, ext, ".args")) pr.has_args = true;
             continue;
         }
         if (entry.kind == .file and isExampleInput(entry.path)) continue;
@@ -414,7 +488,37 @@ fn programLessThan(_: void, a: Program, b: Program) bool {
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
-/// Runs one program and compares its standard output with the `.out` file and its exit code with 0.
+/// The entry of `programs` named `name`, added when there is none.
+fn programNamed(gpa: std.mem.Allocator, programs: *std.ArrayList(Program), name: []const u8) error{OutOfMemory}!*Program {
+    for (programs.items) |*pr| {
+        if (std.mem.eql(u8, pr.name, name)) return pr;
+    }
+    try programs.append(gpa, .{ .name = try gpa.dupe(u8, name) });
+    return &programs.items[programs.items.len - 1];
+}
+
+/// What running a program in a temporary directory gave, and whether removing the directory failed.
+const TempRun = struct {
+    outcome: anyerror!Outcome,
+    removed: ?anyerror,
+};
+
+/// Makes the working directory of a program, runs it there, and removes the directory.
+///
+/// 失敗しても、タイムアウトで止められても、ディレクトリは消す。
+fn runInTempDir(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, launch: Launch) !TempRun {
+    const temp = try makeTempDir(gpa, io);
+    var with_cwd = launch;
+    with_cwd.cwd = temp.dir;
+    const outcome = exec.runFn(gpa, io, exec, dir, with_cwd);
+    const removed: ?anyerror = if (removeTempDir(io, temp)) |_| null else |e| e;
+    return .{ .outcome = outcome, .removed = removed };
+}
+
+/// Runs one program and compares its standard output and exit code with its `.out` file (the exit code is 0 unless the file ends with `[exit N]`).
+///
+/// 引数は `.args`、標準入力は `.in`、補助のファイルは `.files/` から取り、作業ディレクトリは、
+/// 実行ごとに作る空の一時ディレクトリにする。
 fn checkProgram(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8, pr: Program, exec: Exec, w: *std.Io.Writer, counts: *Counts) !void {
     counts.programs += 1;
     if (!pr.has_scm or !pr.has_out) {
@@ -426,6 +530,9 @@ fn checkProgram(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []con
     }
     const rel_scm = try std.fmt.allocPrint(gpa, "{s}{s}.scm", .{ programs_dir, pr.name });
     const rel_out = try std.fmt.allocPrint(gpa, "{s}{s}.out", .{ programs_dir, pr.name });
+    const rel_args = try std.fmt.allocPrint(gpa, "{s}{s}.args", .{ programs_dir, pr.name });
+    const rel_in = try std.fmt.allocPrint(gpa, "{s}{s}.in", .{ programs_dir, pr.name });
+    const rel_files = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ programs_dir, pr.name, files_suffix });
     const shown = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ name, rel_scm });
     const expected_raw = dir.readFileAlloc(io, rel_out, gpa, .unlimited) catch |e| {
         try w.print("{s}/{s}: cannot be read ({t})\n", .{ name, rel_out, e });
@@ -433,27 +540,82 @@ fn checkProgram(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []con
         return;
     };
     // Git の改行の変換でチェックアウトした `.out` も、LF のものと同じに読む。
-    const expected = try std.mem.replaceOwned(u8, gpa, expected_raw, "\r\n", "\n");
-    const outcome = exec.runFn(gpa, io, exec, dir, rel_scm, shown) catch |e| {
+    const expected_text = try std.mem.replaceOwned(u8, gpa, expected_raw, "\r\n", "\n");
+    const expected = splitExitMarker(expected_text) catch {
+        try w.print("{s}/{s}: the last line starts with `[exit` but is not `[exit N]` with N from 0 to 255\n", .{ name, rel_out });
+        counts.failed += 1;
+        return;
+    };
+
+    // 実行ファイルへの引数。`.args` の中の `@prog` と `@files/` を、絶対パスに置き換える。
+    const prog_path = try dir.realPathFileAlloc(io, rel_scm, gpa);
+    const files_path: []const u8 = if (pr.has_files) try dir.realPathFileAlloc(io, rel_files, gpa) else "";
+    var args_text: ?[]const u8 = null;
+    if (pr.has_args) {
+        const raw = dir.readFileAlloc(io, rel_args, gpa, .unlimited) catch |e| {
+            try w.print("{s}/{s}: cannot be read ({t})\n", .{ name, rel_args, e });
+            counts.failed += 1;
+            return;
+        };
+        args_text = try std.mem.replaceOwned(u8, gpa, raw, "\r\n", "\n");
+    }
+    const built = buildArgs(gpa, args_text, prog_path, files_path) catch |e| {
+        const why = switch (e) {
+            error.NoProgram => "it needs `@prog`, the program itself, exactly once",
+            error.ManyPrograms => "it has `@prog` more than once",
+            error.MoreThanOneLine => "it must be one line",
+            error.NotPlain => "an argument has a character a shell would read, is an absolute path, or has `..`",
+            error.UnknownPlaceholder => "an argument starts with `@` but is neither `@prog` nor `@files/...`",
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        try w.print("{s}/{s}: {s}\n", .{ name, rel_args, why });
+        counts.failed += 1;
+        return;
+    };
+    // 補助のディレクトリは、`.args` が使うときだけ置く(迷子も、足りないのも断る)。
+    if (built.uses_files and !pr.has_files) {
+        try w.print("{s}/{s}: it names `@files/`, but the directory {s}{s} does not exist\n", .{ name, rel_args, pr.name, files_suffix });
+        counts.failed += 1;
+        return;
+    }
+    if (pr.has_files and !built.uses_files) {
+        try w.print("{s}/{s}{s}{s}: no `.args` argument names it with `@files/`, so nothing here checks it\n", .{ name, programs_dir, pr.name, files_suffix });
+        counts.failed += 1;
+        return;
+    }
+
+    const launch: Launch = .{
+        .rel_scm = rel_scm,
+        .args = built.args,
+        .stdin = if (pr.has_in) rel_in else null,
+        .cwd = undefined, // runInTempDir が、実行ごとの一時ディレクトリを入れる。
+        .shown = shown,
+    };
+    const ran = try runInTempDir(gpa, io, exec, dir, launch);
+    if (ran.removed) |e| {
+        try w.print("{s}: cannot remove its temporary directory ({t})\n", .{ shown, e });
+        counts.failed += 1;
+    }
+    const outcome = ran.outcome catch |e| {
         try w.print("{s}: cannot be run ({t})\n", .{ shown, e });
         counts.failed += 1;
         return;
     };
-    if (outcome.code != 0) {
+    if (outcome.code != expected.code) {
         if (outcome.code) |c| {
-            try w.print("{s}: exit code {d}, expected 0\n", .{ shown, c });
+            try w.print("{s}: exit code {d}, expected {d}\n", .{ shown, c, expected.code });
         } else {
             try w.print("{s}: the process did not exit by itself\n", .{shown});
         }
         counts.failed += 1;
         return;
     }
-    if (!std.mem.eql(u8, outcome.stdout, expected)) {
-        try w.print("{s}: the output differs\n  expected: {s}\n  got:      {s}\n", .{ shown, expected, outcome.stdout });
+    if (!std.mem.eql(u8, outcome.stdout, expected.stdout)) {
+        try w.print("{s}: the output differs\n  expected: {s}\n  got:      {s}\n", .{ shown, expected.stdout, outcome.stdout });
         counts.failed += 1;
         return;
     }
-    counts.passed += 1;
+    if (ran.removed == null) counts.passed += 1;
 }
 
 /// A library under `lib/scheme/`: its name (`scheme base`, the words joined by a space) and what it exports.
@@ -1497,13 +1659,47 @@ fn echoCommand(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, 
 
 const stand_in: Exec = .{ .exe = "stand-in", .runFn = echoProgram, .commandFn = echoCommand };
 
+/// The working directory the last `CWD` program of `echoProgram` ran in (a path), for the tests that look at it afterwards.
+var seen_cwd: []const u8 = "";
+
 /// A stand-in for the executable: the "output" of a program is its own source, and it exits
-/// with 1 when the source starts with `FAIL`, or does not exit by itself when it starts with `SIGNAL`.
-fn echoProgram(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, path: []const u8, shown: []const u8) anyerror!Outcome {
+/// with 1 when the source starts with `FAIL`, with N when it starts with `EXIT N`, or does not exit by itself when it starts with `SIGNAL`.
+///
+/// `STDIN` で始まるソースは、標準入力の中身(無ければ `none`)を出す。`ARGS` で始まるものは、
+/// 引数を空白で区切って出す(絶対パスは、`<` と基本名と `>` にする)。`CWD` で始まるものは、
+/// 作業ディレクトリの中の項目の数を出し、`scratch.txt` を書く。`ERROR` で始まるものは、実行できない。
+fn echoProgram(gpa: std.mem.Allocator, io: std.Io, exec: Exec, dir: std.Io.Dir, launch: Launch) anyerror!Outcome {
     _ = exec;
-    _ = shown;
-    const source = try dir.readFileAlloc(io, path, gpa, .unlimited);
-    const code: ?u8 = if (std.mem.startsWith(u8, source, "SIGNAL")) null else if (std.mem.startsWith(u8, source, "FAIL")) 1 else 0;
+    const source = try dir.readFileAlloc(io, launch.rel_scm, gpa, .unlimited);
+    if (std.mem.startsWith(u8, source, "ERROR")) return error.FileNotFound;
+    if (std.mem.startsWith(u8, source, "STDIN")) {
+        const text = if (launch.stdin) |p| try dir.readFileAlloc(io, p, gpa, .unlimited) else "none\n";
+        return .{ .code = 0, .stdout = text };
+    }
+    if (std.mem.startsWith(u8, source, "ARGS")) {
+        var shown_args: std.ArrayList([]const u8) = .empty;
+        for (launch.args) |arg| {
+            try shown_args.append(gpa, if (std.fs.path.isAbsolute(arg))
+                try std.fmt.allocPrint(gpa, "<{s}>", .{std.fs.path.basename(arg)})
+            else
+                arg);
+        }
+        return .{ .code = 0, .stdout = try std.fmt.allocPrint(gpa, "{s}\n", .{try std.mem.join(gpa, " ", shown_args.items)}) };
+    }
+    if (std.mem.startsWith(u8, source, "CWD")) {
+        var entries: usize = 0;
+        var it = launch.cwd.iterate();
+        while (try it.next(io)) |_| entries += 1;
+        try launch.cwd.writeFile(io, .{ .sub_path = "scratch.txt", .data = "written by the program\n" });
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try launch.cwd.realPath(io, &buf);
+        seen_cwd = try std.heap.page_allocator.dupe(u8, buf[0..n]);
+        return .{ .code = 0, .stdout = try std.fmt.allocPrint(gpa, "entries {d}\n", .{entries}) };
+    }
+    var code: ?u8 = 0;
+    if (std.mem.startsWith(u8, source, "SIGNAL")) code = null;
+    if (std.mem.startsWith(u8, source, "FAIL")) code = 1;
+    if (std.mem.startsWith(u8, source, "EXIT ")) code = try std.fmt.parseInt(u8, std.mem.trimEnd(u8, source["EXIT ".len..], "\n"), 10);
     return .{ .code = code, .stdout = source };
 }
 
@@ -1721,6 +1917,99 @@ test "a program fails when its pair is incomplete, its output differs, or its ex
         const r = try runForTest(a, c.files);
         try std.testing.expectEqual(@as(usize, 1), r.counts.failed);
         try std.testing.expectEqual(@as(usize, 0), r.counts.passed - r.counts.blocks - r.counts.libraries);
+        try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
+        try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
+    }
+}
+
+test "a program gets its arguments, its standard input and an empty working directory that is removed afterwards" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const r = try runForTest(arena.allocator(), &.{
+        .{ .path = "a.md", .data = passing_doc },
+        // 引数: `@prog` と `@files/` は絶対パスになり、ほかの語はそのまま渡る。
+        .{ .path = "programs/a.scm", .data = "ARGS\n" },
+        .{ .path = "programs/a.args", .data = "-I @files/lib @prog 3 -x\r\n" },
+        .{ .path = "programs/a.files/lib/x.sld", .data = "" },
+        .{ .path = "programs/a.out", .data = "-I <lib> <a.scm> 3 -x\n" },
+        // 標準入力: `.in` の中身が渡り、無ければ空(ここでは `none`)である。
+        .{ .path = "programs/b.scm", .data = "STDIN\n" },
+        .{ .path = "programs/b.in", .data = "line one\nline two\n" },
+        .{ .path = "programs/b.out", .data = "line one\nline two\n" },
+        .{ .path = "programs/c.scm", .data = "STDIN\n" },
+        .{ .path = "programs/c.out", .data = "none\n" },
+        // 作業ディレクトリ: 空で渡り、プログラムが書いたファイルごと、実行のあとに消える。
+        .{ .path = "programs/d.scm", .data = "CWD\n" },
+        .{ .path = "programs/d.out", .data = "entries 0\n" },
+    });
+    try std.testing.expectEqualStrings("", r.report);
+    try std.testing.expectEqual(Counts{ .libraries = 1, .blocks = 1, .programs = 4, .passed = 6, .failed = 0 }, r.counts);
+    try std.testing.expect(seen_cwd.len != 0);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openDir(std.testing.io, seen_cwd, .{}));
+}
+
+test "a program is run in a new working directory each time" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // 前の実行が書いた `scratch.txt` が残っていれば、2つ目の `entries` は 1 になる。
+    const r = try runForTest(arena.allocator(), &.{
+        .{ .path = "a.md", .data = passing_doc },
+        .{ .path = "programs/d1.scm", .data = "CWD\n" },
+        .{ .path = "programs/d1.out", .data = "entries 0\n" },
+        .{ .path = "programs/d2.scm", .data = "CWD\n" },
+        .{ .path = "programs/d2.out", .data = "entries 0\n" },
+    });
+    try std.testing.expectEqualStrings("", r.report);
+    try std.testing.expectEqual(@as(usize, 0), r.counts.failed);
+}
+
+test "an exit line of the expected output sets the exit code that is expected" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const doc: TestFile = .{ .path = "a.md", .data = passing_doc };
+    const exit3: TestFile = .{ .path = "programs/p.scm", .data = "EXIT 3\n" };
+    const ok = try runForTest(a, &.{ doc, exit3, .{ .path = "programs/p.out", .data = "EXIT 3\n[exit 3]\n" } });
+    try std.testing.expectEqualStrings("", ok.report);
+    try std.testing.expectEqual(@as(usize, 0), ok.counts.failed);
+    const cases = [_]struct { out: []const u8, says: []const u8 }{
+        .{ .out = "EXIT 3\n", .says = "manual/programs/p.scm: exit code 3, expected 0\n" },
+        .{ .out = "EXIT 3\n[exit 4]\n", .says = "manual/programs/p.scm: exit code 3, expected 4\n" },
+        .{ .out = "EXIT 3\n[exit x]\n", .says = "manual/programs/p.out: the last line starts with `[exit` but is not `[exit N]`" },
+        // 終了コードが合っても、標準出力が違えば失敗である。
+        .{ .out = "other\n[exit 3]\n", .says = "manual/programs/p.scm: the output differs\n  expected: other\n\n  got:      EXIT 3\n" },
+    };
+    for (cases) |c| {
+        const r = try runForTest(a, &.{ doc, exit3, .{ .path = "programs/p.out", .data = c.out } });
+        try std.testing.expectEqual(@as(usize, 1), r.counts.failed);
+        try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
+    }
+}
+
+test "sidecar files without their program, an unused or missing auxiliary directory and a bad args line fail" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const doc: TestFile = .{ .path = "a.md", .data = passing_doc };
+    const cases = [_]struct { files: []const TestFile, says: []const u8 }{
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/q.in", .data = "x\n" } }, .says = "manual/programs/q: the `.scm` file of the pair is missing\n" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/q.args", .data = "@prog\n" } }, .says = "manual/programs/q: the `.scm` file of the pair is missing\n" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/q.files/x.txt", .data = "x\n" } }, .says = "manual/programs/q: the `.scm` file of the pair is missing\n" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.files/x.txt", .data = "x\n" } }, .says = "manual/programs/p.files: no `.args` argument names it with `@files/`" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog\n" }, .{ .path = "programs/p.files/x.txt", .data = "x\n" } }, .says = "manual/programs/p.files: no `.args` argument names it" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog @files/x.txt\n" } }, .says = "manual/programs/p.args: it names `@files/`, but the directory p.files does not exist\n" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "-I x\n" } }, .says = "manual/programs/p.args: it needs `@prog`" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog @prog\n" } }, .says = "manual/programs/p.args: it has `@prog` more than once\n" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog\n@prog\n" } }, .says = "manual/programs/p.args: it must be one line\n" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog $HOME\n" } }, .says = "manual/programs/p.args: an argument has a character a shell would read" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog @files/../x\n" } }, .says = "manual/programs/p.args: an argument has a character a shell would read" },
+        .{ .files = &.{ doc, prog_scm, prog_out, .{ .path = "programs/p.args", .data = "@prog @other\n" } }, .says = "manual/programs/p.args: an argument starts with `@` but is neither" },
+        // 実行できないプログラムも、失敗として数える。
+        .{ .files = &.{ doc, .{ .path = "programs/p.scm", .data = "ERROR\n" }, .{ .path = "programs/p.out", .data = "ERROR\n" } }, .says = "manual/programs/p.scm: cannot be run (FileNotFound)\n" },
+    };
+    for (cases) |c| {
+        const r = try runForTest(a, c.files);
+        try std.testing.expectEqual(@as(usize, 1), r.counts.failed);
         try std.testing.expectEqual(@as(u8, 1), exitStatus(r.counts));
         try std.testing.expect(std.mem.indexOf(u8, r.report, c.says) != null);
     }
