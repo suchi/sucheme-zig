@@ -1,0 +1,7 @@
+pass addition
+pass string order
+FAIL exact division
+FAIL list length
+pass vector fill
+2 of 5 checks failed
+[exit 2]

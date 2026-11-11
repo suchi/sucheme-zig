@@ -1,0 +1,6 @@
+; 画面の設定
+(width . 80)
+(title . "sample")
+(colors red green blue)
+(nested (a . 1) (b . #t))
+(unterminated . 80

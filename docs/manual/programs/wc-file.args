@@ -1,0 +1,1 @@
+@prog @files/sample.txt @files/japanese.txt @files/empty.txt @files/missing.txt
