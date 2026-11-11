@@ -240,7 +240,7 @@
 - 段階の完了時に、確定したことを設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す。
 - 1コミット=1論理変更を守る。コミットは節目ごとに作り、push はまとめる(`AGENTS.md` の進め方の「Actions の分数」の規則)。
 
-- [ ] ヒープの上限に届くまでの時間(小さなセルを重ねる入力で 40 秒を超える)の調査と対策。計画書 [0029](plans/0029-heap-limit-slow-exhaustion.md) のスライス H1(再測定と仮説)と H2(内訳の計測)は書いた。残りは H3(対策の実装。案の選択はユーザーの判断で、計画書の「判断を求める点」にある)。Issue は [suchi/sucheme-zig#291](https://github.com/suchi/sucheme-zig/issues/291)
+- [ ] ヒープの上限に届くまでの時間(小さなセルを重ねる入力で 40 秒を超える)の調査と対策。計画書 [0029](plans/0029-heap-limit-slow-exhaustion.md) のスライス H1(再測定と仮説)と H2(内訳の計測)は書いた。残りは H3(案 B、回収 1 回の費用の削減。2026-11-11 に進めると決まった。最初は効果の見積りの計測で、案 A の判断は B の結果のあと)。Issue は [suchi/sucheme-zig#291](https://github.com/suchi/sucheme-zig/issues/291)
 
 ## 未確定の事項
 
