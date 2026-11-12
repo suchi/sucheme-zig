@@ -427,6 +427,52 @@ test "record accepts an edit made without the wrappers" {
     try expectMarked("abc|", &b);
 }
 
+test "dropping the oldest record frees its removed text" {
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    var u: UndoStack = .init(testing.allocator, 2);
+    defer u.deinit();
+    _ = try b.insertSlice("abcdef");
+    _ = try u.deleteRange(&b, .{ .start = 0, .end = 2 });
+    _ = try u.deleteRange(&b, .{ .start = 0, .end = 1 });
+    _ = try u.deleteRange(&b, .{ .start = 0, .end = 1 });
+    try testing.expectEqual(@as(usize, 2), u.len());
+}
+
+test "a failed replaceRange frees the copy of the removed text" {
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    var u: UndoStack = .init(testing.allocator, 10);
+    defer u.deinit();
+    _ = try b.insertSlice("abcd");
+    try testing.expectError(error.LineBreak, u.replaceRange(&b, .{ .start = 0, .end = 2 }, "x\ny"));
+    try testing.expectEqual(@as(usize, 0), u.len());
+    try expectMarked("abcd|", &b);
+}
+
+test "an undo whose cursor cannot be restored clears the stack" {
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    var u: UndoStack = .init(testing.allocator, 10);
+    defer u.deinit();
+    const e = try b.insertSlice("a");
+    try u.record(.{ .pos = e.pos, .removed_len = 0, .inserted_len = 1, .cursor_before = 99 }, "");
+    try testing.expectError(error.InvalidRange, u.undo(&b));
+    try testing.expectEqual(@as(usize, 0), u.len());
+}
+
+test "transpose as the first record on a fresh stack" {
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    var u: UndoStack = .init(testing.allocator, 10);
+    defer u.deinit();
+    _ = try b.insertSlice("abc");
+    try testing.expect((try u.transpose(&b)) != null);
+    try testing.expectEqual(@as(usize, 1), u.len());
+    _ = try u.undo(&b);
+    try expectMarked("abc|", &b);
+}
+
 test "record ignores an empty edit and closes the typed group" {
     var b: Buffer = .init(testing.allocator);
     defer b.deinit();
