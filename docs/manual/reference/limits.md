@@ -32,7 +32,7 @@ error: heap limit exceeded
 
 ファイルの実行では、実行時エラーと同じく、`error: heap limit exceeded` を標準エラーに出して、プログラムを終了コード 1 で止めます([ユーザーズガイド 2 コマンドライン](../guide/02-command-line.md))。この誤りは、`guard` で受けられます。条件オブジェクトのメッセージが `heap limit exceeded` になります(実機で、`(guard (e (#t (error-object-message e))) (grow '()))` が `"heap limit exceeded"` を返すことを確かめました。上限に届くまで時間がかかるので、この文書の検査には載せていません)。
 
-上限に届くまでの時間は、確保の仕方で大きく違います。Linux で測った一例では、上の `grow` が上限に届くまでに、Debug のビルド(`zig build` の既定)で約 55 秒、ReleaseSafe のビルドで約 38 秒かかりました。
+上限に届くまでの時間は、確保の仕方で大きく違います。Linux で測った一例では、上の `grow` が上限に届くまでに、Debug のビルド(`zig build` の既定)で約 37 秒、ReleaseSafe のビルドで約 22 秒かかりました。
 
 ## 再帰の深さ
 
