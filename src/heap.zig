@@ -2164,9 +2164,16 @@ test "countOf counts the objects of one type" {
     try std.testing.expectEqual(0, heap.countOf(Vector));
 }
 
+/// The bytes of a chunk the tests of the pools use: room for several pairs, so that a chunk
+/// with one live cell has more than one free slot to chain, and few enough to fill quickly.
+/// Why: 最小のチャンク(`chunk_bytes = 1` は、1 スロットと自分の項目が入る大きさに引き上げられる)
+/// には、ペアが 2 個ほどしか入らない。空きスロットが 1 個だと、チャンクの空きスロットの列のつなぎ
+/// 違い(`tail` の取り違え)が、挙動の違いに出ない(ミューテーションで見つかった)。
+const test_chunk_bytes = 512;
+
 test "cells fill a chunk and then take another, and every one of them is counted and freed" {
-    // 1 つのチャンクに収まる数より多くのペアを作る。最小のチャンクを使うので、数は少なくて済む。
-    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = 1 });
+    // 1 つのチャンクに収まる数より多くのペアを作る。小さなチャンクを使うので、数は少なくて済む。
+    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = test_chunk_bytes });
     defer heap.deinit();
     const capacity = heap.options.chunk_bytes - slots_offset;
     const per_chunk = capacity / shapeOf(Pair).bytes;
@@ -2186,7 +2193,7 @@ test "cells fill a chunk and then take another, and every one of them is counted
 test "a collection gives a cell back to its pool, and the next one of that shape takes it, with no new chunk" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
     // 最小のチャンクを使い、チャンクをいくつか使う数のペアを作る。
-    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = 1 });
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = test_chunk_bytes });
     defer heap.deinit();
     const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
     const n = 3 * per_chunk;
@@ -2209,7 +2216,7 @@ test "a collection gives a cell back to its pool, and the next one of that shape
 
 test "a collection takes the chunks that hold nothing live off the pool, so a sweep follows what is live and not what the heap once held, and gives back those past the spares" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
-    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = 1 });
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = test_chunk_bytes });
     defer heap.deinit();
     const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
     const chunk_count = max_spare_chunks + 4;
@@ -2232,7 +2239,7 @@ test "a collection takes the chunks that hold nothing live off the pool, so a sw
 
 test "the empty chunks a pool kept are taken before the allocator is asked, and start empty" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
-    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = 1 });
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = test_chunk_bytes });
     defer heap.deinit();
     const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
     var keep: Value = .empty_list_value;
@@ -2254,8 +2261,39 @@ test "the empty chunks a pool kept are taken before the allocator is asked, and 
     try std.testing.expectEqual(1, heap.countOf(Pair));
 }
 
+test "a second collection that takes a chunk off the pool leaves none of its free slots to be handed out" {
+    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
+    // 2 つのチャンクに、ペアを作る。各チャンクの最初のペアだけを、残す。
+    var older_keep: Value = .empty_list_value;
+    var newer_keep: Value = .empty_list_value;
+    for (0..2 * per_chunk) |i| {
+        const pair = try heap.cons(.fromFixnum(-1), .empty_list_value);
+        if (i == 0) older_keep = pair;
+        if (i == per_chunk) newer_keep = pair;
+    }
+    // 1 回目の回収は、両方のチャンクを残し、空きスロットを空きリストにつなぐ。
+    heap.collect(TestRoots{ .values = &.{ older_keep, newer_keep } });
+    try std.testing.expectEqual(2, heap.countOf(Pair));
+    // 2 回目の回収は、新しいほうのチャンクを空にして、プールから外す。外したチャンクの空きスロットは、
+    // 空きリストに残ってはならない(1 回目のつなぎを、2 回目が捨てずに引きずると、残る)。
+    heap.collect(TestRoots{ .values = &.{older_keep} });
+    try std.testing.expectEqual(1, heap.countOf(Pair));
+    // 同じ数を作って、それぞれの値を書き込む。同じスロットが 2 回配られると、値が上書きされる。
+    var made: [64]Value = undefined;
+    const n = 2 * per_chunk;
+    try std.testing.expect(n <= made.len);
+    for (0..n) |i| made[i] = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+    for (0..n) |i| {
+        const got = made[i].asPair().?.car.asFixnum().?;
+        try std.testing.expect(got == @as(@TypeOf(got), @intCast(i)));
+    }
+    try std.testing.expectEqual(n + 1, heap.countOf(Pair));
+}
+
 test "a heap with slots given back in a chunk that stays is freed whole, chunk and all" {
-    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = 1 });
+    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = test_chunk_bytes });
     defer heap.deinit();
     const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
     var keep: Value = .empty_list_value;
