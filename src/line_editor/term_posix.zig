@@ -366,8 +366,9 @@ test "enter installs the signal handlers and leave puts the previous ones back" 
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const pty = try Pty.open();
     defer pty.close();
-    var before: posix.Sigaction = undefined;
-    posix.sigaction(.TERM, null, &before);
+    // 前のテストの影響を受けないよう、既定の動作に揃えてから始める。
+    const dfl: posix.Sigaction = .{ .handler = .{ .handler = posix.SIG.DFL }, .mask = posix.sigemptyset(), .flags = 0 };
+    posix.sigaction(.TERM, &dfl, null);
     var raw = try RawMode.enter(pty.slave);
     var during: posix.Sigaction = undefined;
     posix.sigaction(.TERM, null, &during);
@@ -375,5 +376,5 @@ test "enter installs the signal handlers and leave puts the previous ones back" 
     raw.leave();
     var after: posix.Sigaction = undefined;
     posix.sigaction(.TERM, null, &after);
-    try testing.expect(after.handler.handler == before.handler.handler);
+    try testing.expect(after.handler.handler == posix.SIG.DFL);
 }
