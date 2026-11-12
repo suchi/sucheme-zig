@@ -17,9 +17,10 @@ pub const default_max_items: usize = 1000;
 /// Whether the core editor can bring an entry back to the edit line.
 ///
 /// Why: 核の再描画は単一行である(ADR-0049)。改行を含む項目は、記録はするが、7m まで
-/// 呼び出さない。上下の移動と逐次検索が、同じこの判定を使う。
+/// 呼び出さない。行の途中の `\r` を含む項目も、端末でカーソルが行頭へ戻るので呼び出さない。
+/// 上下の移動と逐次検索が、同じこの判定を使う。
 pub fn isRecallable(entry: []const u8) bool {
-    return std.mem.findScalar(u8, entry, '\n') == null;
+    return std.mem.findAny(u8, entry, "\r\n") == null;
 }
 
 pub const History = struct {
@@ -79,7 +80,7 @@ pub const History = struct {
 /// Moves up and down the history for one prompt (the Up and Down keys, Ctrl-P and Ctrl-N).
 ///
 /// 1回のプロンプトごとに作り、プロンプトの間に `History` が変わる前に捨てる(位置は項目の
-/// 番号で、`History.add` のあとは、どの項目を指すかが変わりうる)。最初に上へ動いた時点の
+/// 番号で、`History.add` のあとは、どの項目を指すかが変わりうる)。履歴の外から上へ動いた時点の
 /// 編集中の行を覚えておき、下へ動いて新しい側の端に戻ったときに、それを返す。呼び出した項目を
 /// 編集してから動くと、その編集は捨てる(覚えるのは、履歴に入る前の行だけである)。
 pub const Browser = struct {
@@ -87,8 +88,10 @@ pub const Browser = struct {
     gpa: Allocator,
     /// 現在の位置。`history.len()` は、履歴の外(編集中の行)を指す。
     pos: usize,
-    /// 履歴に入る前の編集中の行。最初に上へ動いたときに複製する。
+    /// 履歴に入る前の編集中の行。履歴の外から上へ動くたびに、複製し直す。
     draft: ?[]u8 = null,
+    /// `draft` が、いまの編集中の行を表しているか。履歴の外へ戻ったら false にする。
+    drafted: bool = false,
 
     pub fn init(gpa: Allocator, history: *const History) Browser {
         return .{ .history = history, .gpa = gpa, .pos = history.len() };
@@ -107,7 +110,12 @@ pub const Browser = struct {
         while (i > 0) {
             i -= 1;
             if (!isRecallable(self.history.get(i))) continue;
-            if (self.draft == null) self.draft = try self.gpa.dupe(u8, current);
+            if (!self.drafted) {
+                const copy = try self.gpa.dupe(u8, current);
+                if (self.draft) |d| self.gpa.free(d);
+                self.draft = copy;
+                self.drafted = true;
+            }
             self.pos = i;
             return self.history.get(i);
         }
@@ -126,6 +134,8 @@ pub const Browser = struct {
             return self.history.get(i);
         }
         self.pos = self.history.len();
+        // 履歴の外へ戻った。次に上へ動くときは、そのときの編集中の行を覚え直す。
+        self.drafted = false;
         return self.draft orelse "";
     }
 };
@@ -134,6 +144,8 @@ pub const Browser = struct {
 ///
 /// 検索語は、バイト列の部分一致で、大文字と小文字を区別する(Scheme が区別するため)。
 /// 検索語が空のときは、何にも一致しない。新しい項目から古い項目へ向かう。
+/// `Browser` と同じく、1回の検索ごとに作り、検索の間に `History.add` を呼ばない
+/// (位置は項目の番号で、上限での追い出しのあとは、別の項目を指す)。
 pub const Search = struct {
     history: *const History,
     gpa: Allocator,
@@ -506,4 +518,44 @@ test "Search: olderMatch and newerMatch do nothing when nothing matches" {
     s.olderMatch();
     s.newerMatch();
     try testing.expectEqual(@as(?[]const u8, null), s.current());
+}
+
+test "Browser: the draft is kept again after coming back out of the history" {
+    var h = try filled(testing.allocator, &.{ "a", "b" });
+    defer h.deinit();
+    var b = Browser.init(testing.allocator, &h);
+    defer b.deinit();
+    _ = try b.older("first");
+    try testing.expectEqualStrings("first", b.newer().?);
+    // 利用者が打ち直してから、もう一度上へ動く。
+    _ = try b.older("second");
+    try testing.expectEqualStrings("second", b.newer().?);
+}
+
+test "isRecallable refuses an entry with a carriage return in it" {
+    try testing.expect(isRecallable("(f 1)"));
+    try testing.expect(!isRecallable("a\rb"));
+    try testing.expect(!isRecallable("a\nb"));
+}
+
+test "Search: matchOffset is where the query first occurs in the entry" {
+    var h = try filled(testing.allocator, &.{"(f (f 1))"});
+    defer h.deinit();
+    var s = Search.init(testing.allocator, &h);
+    defer s.deinit();
+    try s.append("(f");
+    try testing.expectEqual(@as(?usize, 0), s.matchOffset());
+}
+
+test "Search: a longer query stays on the older match the search had moved to" {
+    var h = try filled(testing.allocator, &.{ "ab1", "ab2" });
+    defer h.deinit();
+    var s = Search.init(testing.allocator, &h);
+    defer s.deinit();
+    try s.append("a");
+    try testing.expectEqualStrings("ab2", s.current().?);
+    s.olderMatch();
+    try testing.expectEqualStrings("ab1", s.current().?);
+    try s.append("b");
+    try testing.expectEqualStrings("ab1", s.current().?);
 }
