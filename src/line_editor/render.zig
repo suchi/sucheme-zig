@@ -9,7 +9,8 @@
 //!   `CR`、`CSI n C`(カーソルを右へ n 桁)の順に出す。前回の描画の内容は要らない。
 //! - 折り返さない。プロンプトとテキストが幅に収まらないときは、テキストを横にずらして
 //!   表示する。カーソルを上へ戻す操作(`CSI A`)は使わない。複数行と折り返しは 7m が足す。
-//! - 描く桁数は `cols - 1` までにして、最後の桁に文字を置かない。最後の桁に書いたあとの
+//! - 描く桁数は `cols - 1` までにして、最後の桁に文字を置かない(`cols` が 2 未満の退化した
+//!   場合だけは、1桁を描く)。最後の桁に書いたあとの
 //!   「次の文字で折り返す」状態は、端末ごとに挙動が違うためである。カーソルは最後の桁まで
 //!   行ける。
 //!
@@ -109,10 +110,17 @@ fn emit(w: *std.Io.Writer, s: []const u8, i: usize, g: Glyph) std.Io.Writer.Erro
 }
 
 /// `i` の1つ前の文字の境界。`i > 0` でなければならない。
-fn prevBoundary(s: []const u8, i: usize) usize {
-    var j = i - 1;
-    while (j > 0 and (s[j] & 0xC0) == 0x80) j -= 1;
-    return j;
+/// 前向きの `glyphAt` が区切る文字と一致させる。継続バイトを遡って、`glyphAt` が
+/// ちょうど `i` まで進む位置があればそこを、無ければ(不正なバイト)1バイト前を返す。
+fn prevBoundary(comptime widthFn: fn (u21) u2, s: []const u8, i: usize) usize {
+    var back: usize = 1;
+    while (back <= 4 and back <= i) : (back += 1) {
+        const j = i - back;
+        if ((s[j] & 0xC0) == 0x80) continue;
+        if (glyphAt(widthFn, s, j).len == back) return j;
+        break;
+    }
+    return i - 1;
 }
 
 /// `s[a..b]` の表示の桁数。
@@ -160,7 +168,8 @@ fn renderWith(
         var i: usize = 0;
         while (i < p.len) {
             const g = glyphAt(widthFn, p, i);
-            if (skipped < skip) {
+            // 切った直後の幅0の文字(結合文字)は、基底の文字を失っているので捨てる。
+            if (skipped < skip or (skipped > 0 and pw == 0 and g.cells == 0)) {
                 skipped += g.cells;
             } else {
                 try emit(w, p, i, g);
@@ -190,12 +199,18 @@ fn renderWith(
     // 末尾までが余裕をもって収まるなら、左の隠れた部分を引き戻す。
     var tail = before + span(widthFn, text, view.cursor, text.len);
     while (s > 0) {
-        const p = prevBoundary(text, s);
+        const p = prevBoundary(widthFn, text, s);
         const g = glyphAt(widthFn, text, p);
         if (tail + g.cells > tw) break;
         tail += g.cells;
         before += g.cells;
         s = p;
+    }
+    // 窓の先頭が、基底の文字を失った幅0の文字(結合文字)なら、飛ばす。
+    while (s < view.cursor) {
+        const g = glyphAt(widthFn, text, s);
+        if (g.cells != 0) break;
+        s += g.len;
     }
 
     var used: usize = 0;
@@ -244,6 +259,8 @@ const Screen = struct {
     last: usize = 0,
     col: usize = 0,
     wrapped: bool = false,
+    /// 行頭に、基底の文字を持たない結合文字が置かれたとき。
+    orphan: bool = false,
 
     fn init(cols: usize) Screen {
         return .{ .cols = cols };
@@ -282,6 +299,7 @@ const Screen = struct {
                 i += len;
                 const cw = testWidth(cp);
                 if (cw == 0) {
+                    if (self.col == 0) self.orphan = true;
                     self.marks[self.last] = cp; // 結合文字は、直前の文字に重なり、桁を進めない。
                     continue;
                 }
@@ -328,6 +346,7 @@ fn expectDraw(
     try testing.expectEqualStrings(std.mem.trimEnd(u8, expected_line, " "), got.items);
     try testing.expectEqual(expected_col, screen.col);
     try testing.expect(!screen.wrapped);
+    try testing.expect(!screen.orphan);
     return next;
 }
 
@@ -585,4 +604,48 @@ test "random edits never wrap, never overflow the line, and keep the cursor visi
         try testing.expect(!screen.wrapped);
         try testing.expect(screen.col <= cols - 1);
     }
+}
+
+test "control character 0x1f is drawn as a caret" {
+    try draw(20, "> ", "a\x1fb", 0, "> a^_b", 2);
+}
+
+test "lone continuation byte and invalid sequences in the prompt are replaced" {
+    try draw(20, "\x80> ", "", 0, "\u{FFFD}> ", 3);
+    // 先頭は正しいが復号できない列は、1バイトずつ置き換え、後続の文字を飲み込まない。
+    try draw(20, "\xe3az> ", "", 0, "\u{FFFD}az> ", 5);
+}
+
+test "pulling the window back counts wide characters by their width" {
+    // tw は 7。"ああああ" の4つ目から始めて、あと2つ(計6桁)だけ引き戻せる。
+    var screen = Screen.init(10);
+    const st = try expectDraw(&screen, .{ .prompt = "> ", .text = "ああああ", .cursor = 12, .cols = 10 }, .{ .start = 9 }, "> あああ", 8);
+    try testing.expectEqual(@as(usize, 3), st.start);
+}
+
+test "pulling the window back over invalid bytes keeps the cursor column" {
+    // 前向きの描画は不正なバイトを1つずつ1桁で描く。引き戻しも同じ単位で数える。
+    var screen = Screen.init(20);
+    _ = try expectDraw(&screen, .{ .prompt = "> ", .text = "a\x81bc", .cursor = 4, .cols = 20 }, .{ .start = 2 }, "> a\u{FFFD}bc", 6);
+    var s2 = Screen.init(20);
+    _ = try expectDraw(&s2, .{ .prompt = "", .text = "\x80\x80a", .cursor = 3, .cols = 20 }, .{ .start = 2 }, "\u{FFFD}\u{FFFD}a", 3);
+}
+
+test "window never starts with a combining character whose base was scrolled out" {
+    try draw(10, "> ", "e\u{301}bcdefgh", 10, "> bcdefgh", 9);
+}
+
+test "prompt cut never starts with a combining character" {
+    // "yye\u{301}cd> " は 7 桁。上限 4 に合わせて 3 桁を落とすと、結合文字が先頭に残る。
+    try draw(10, "yye\u{301}cd> ", "x", 1, "cd> x", 5);
+}
+
+test "one-column terminal draws one column" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    _ = try renderWith(testWidth, &aw.writer, .{ .prompt = "> ", .text = "abc", .cursor = 3, .cols = 1 }, .{});
+    try testing.expectEqualStrings("\rc\x1b[K\r\x1b[1C", aw.written());
+    aw.clearRetainingCapacity();
+    _ = try renderWith(testWidth, &aw.writer, .{ .prompt = "> ", .text = "abc", .cursor = 3, .cols = 0 }, .{});
+    try testing.expectEqualStrings("\rc\x1b[K\r\x1b[1C", aw.written());
 }
