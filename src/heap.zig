@@ -2121,18 +2121,20 @@ test "cells fill a chunk and then take another, and every one of them is counted
 
 test "a collection gives a cell back to its pool, and the next one of that shape takes it, with no new chunk" {
     var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
-    var heap: Heap = .init(failing.allocator(), .{});
+    // 最小のチャンクを使い、チャンクをいくつか使う数のペアを作る。
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = 1 });
     defer heap.deinit();
-    for (0..100) |_| _ = try heap.cons(.empty_list_value, .empty_list_value);
+    const n = 3 * ((heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes);
+    for (0..n) |_| _ = try heap.cons(.empty_list_value, .empty_list_value);
     heap.collect(TestRoots{});
     try std.testing.expectEqual(0, heap.countOf(Pair));
     try std.testing.expectEqual(0, heap.count);
     // 回収は、マークの作業リストを確保する。数えるのは、その後からにする。
     const taken = failing.allocations;
-    // 回収で空いた100個を、同じ数だけ作り直す。チャンクは増えない。
-    for (0..100) |_| _ = try heap.cons(.empty_list_value, .empty_list_value);
+    // 回収で空いた分を、同じ数だけ作り直す。チャンクは増えない。
+    for (0..n) |_| _ = try heap.cons(.empty_list_value, .empty_list_value);
     try std.testing.expectEqual(taken, failing.allocations);
-    try std.testing.expectEqual(100, heap.countOf(Pair));
+    try std.testing.expectEqual(n, heap.countOf(Pair));
 }
 
 test "a given-back slot is skipped by the sweep and the count, and what is made in it is a whole new object" {
