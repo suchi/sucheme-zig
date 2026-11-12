@@ -10,7 +10,8 @@
 //! - 折り返さない。プロンプトとテキストが幅に収まらないときは、テキストを横にずらして
 //!   表示する。カーソルを上へ戻す操作(`CSI A`)は使わない。複数行と折り返しは 7m が足す。
 //! - 描く桁数は `cols - 1` までにして、最後の桁に文字を置かない(`cols` が 2 未満の退化した
-//!   場合だけは、1桁を描く)。最後の桁に書いたあとの
+//!   場合だけは、1桁を描く)。桁数が 3 以下の極端に狭い端末では、カーソルの下の2桁の文字が描けず、
+//!   カーソルが空白の上に置かれることがある。最後の桁に書いたあとの
 //!   「次の文字で折り返す」状態は、端末ごとに挙動が違うためである。カーソルは最後の桁まで
 //!   行ける。
 //!
@@ -648,4 +649,28 @@ test "one-column terminal draws one column" {
     aw.clearRetainingCapacity();
     _ = try renderWith(testWidth, &aw.writer, .{ .prompt = "> ", .text = "abc", .cursor = 3, .cols = 0 }, .{});
     try testing.expectEqualStrings("\rc\x1b[K\r\x1b[1C", aw.written());
+}
+
+test "prompt cut keeps a combining character that follows a kept base" {
+    // "yyyyye\u{301}> " は 8 桁。上限 4 に合わせて 4 桁を落とすと、途中の結合文字は残る。
+    try draw(10, "yyyyye\u{301}> ", "x", 1, "ye\u{301}> x", 5);
+}
+
+test "window start on a combining character at the cursor is kept" {
+    // 基底の "あ"(2桁)は引き戻せない。窓の先頭は、カーソルの下の結合文字のままにする。
+    var screen = Screen.init(10);
+    const text = "abcdefあ\u{301}xxxxxx";
+    _ = try expectDraw(&screen, .{ .prompt = "> ", .text = text, .cursor = 9, .cols = 10 }, .{ .start = 9 }, "> \u{301}xxxxxx", 2);
+}
+
+test "four-byte characters are stepped over as one" {
+    var screen = Screen.init(20);
+    const st = try expectDraw(&screen, .{ .prompt = "> ", .text = "\u{1F600}\u{1F600}", .cursor = 8, .cols = 20 }, .{ .start = 4 }, "> \u{1F600}\u{1F600}", 4);
+    try testing.expectEqual(@as(usize, 0), st.start);
+}
+
+test "previous start inside a leading four-byte character is repaired" {
+    var screen = Screen.init(20);
+    const st = try expectDraw(&screen, .{ .prompt = "> ", .text = "\u{1F600}a", .cursor = 5, .cols = 20 }, .{ .start = 1 }, "> \u{1F600}a", 4);
+    try testing.expectEqual(@as(usize, 0), st.start);
 }
