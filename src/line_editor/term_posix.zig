@@ -200,17 +200,37 @@ pub const RawMode = struct {
     }
 };
 
+/// どの信号に、このファイルのハンドラを入れたか。`leave` が戻す対象である。
+var installed: [fatal_signals.len]bool = @splat(false);
+
+/// Installs the handlers, except for a signal the process was told to ignore.
+///
+/// Why: `nohup` や、シェルのバックグラウンド実行は、`SIGHUP` や `SIGINT` を無視にして起動する。
+/// 無視を上書きすると、利用者が頼んだ振る舞い(端末が閉じても死なない)を、行編集が壊す。
+/// 無視されている信号は、そのままにする(端末は、通常の終了では `leave` が戻す)。
 fn installHandlers() void {
     const act: posix.Sigaction = .{
         .handler = .{ .handler = onFatalSignal },
         .mask = posix.sigemptyset(),
         .flags = 0,
     };
-    for (fatal_signals, 0..) |sig, i| posix.sigaction(sig, &act, &previous_actions[i]);
+    for (fatal_signals, 0..) |sig, i| {
+        posix.sigaction(sig, null, &previous_actions[i]);
+        if (previous_actions[i].handler.handler == posix.SIG.IGN) {
+            installed[i] = false;
+            continue;
+        }
+        posix.sigaction(sig, &act, null);
+        installed[i] = true;
+    }
 }
 
 fn removeHandlers() void {
-    for (fatal_signals, 0..) |sig, i| posix.sigaction(sig, &previous_actions[i], null);
+    for (fatal_signals, 0..) |sig, i| {
+        if (!installed[i]) continue;
+        posix.sigaction(sig, &previous_actions[i], null);
+        installed[i] = false;
+    }
 }
 
 // ---- tests ----
@@ -377,4 +397,49 @@ test "enter installs the signal handlers and leave puts the previous ones back" 
     var after: posix.Sigaction = undefined;
     posix.sigaction(.TERM, null, &after);
     try testing.expect(after.handler.handler == posix.SIG.DFL);
+}
+
+test "a signal that was ignored when raw mode began stays ignored, during and after" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const pty = try Pty.open();
+    defer pty.close();
+    const ign: posix.Sigaction = .{ .handler = .{ .handler = posix.SIG.IGN }, .mask = posix.sigemptyset(), .flags = 0 };
+    const dfl: posix.Sigaction = .{ .handler = .{ .handler = posix.SIG.DFL }, .mask = posix.sigemptyset(), .flags = 0 };
+    posix.sigaction(.HUP, &ign, null);
+    defer posix.sigaction(.HUP, &dfl, null);
+    var raw = try RawMode.enter(pty.slave);
+    var during: posix.Sigaction = undefined;
+    posix.sigaction(.HUP, null, &during);
+    try testing.expect(during.handler.handler == posix.SIG.IGN);
+    raw.leave();
+    var after: posix.Sigaction = undefined;
+    posix.sigaction(.HUP, null, &after);
+    try testing.expect(after.handler.handler == posix.SIG.IGN);
+}
+
+test "a fatal signal puts the terminal back and then ends the process by that signal" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const linux = std.os.linux;
+    // 一覧を `fatal_signals` から取らない(一覧から信号が落ちたときに、このテストが落ちるように)。
+    for ([_]posix.SIG{ .INT, .TERM, .HUP, .QUIT }) |sig| {
+        const pty = try Pty.open();
+        defer pty.close();
+        const before = try posix.tcgetattr(pty.slave);
+        const rc = linux.fork();
+        if (posix.errno(rc) != .SUCCESS) return error.SkipZigTest;
+        if (rc == 0) {
+            // 子: 生モードに入り、自分に信号を送る。ハンドラが戻して、同じ信号で死ぬはずである。
+            // 何かが違えば、信号で死なずに、終了の状態 99 で終わる。
+            _ = RawMode.enter(pty.slave) catch linux.exit_group(98);
+            _ = linux.kill(linux.getpid(), sig);
+            linux.exit_group(99);
+        }
+        var status: i32 = 0;
+        try testing.expectEqual(rc, linux.waitpid(@intCast(rc), &status, 0));
+        const st: u32 = @bitCast(status);
+        try testing.expect(linux.W.IFSIGNALED(st));
+        try testing.expectEqual(sig, linux.W.TERMSIG(st));
+        const after = try posix.tcgetattr(pty.slave);
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&after));
+    }
 }
