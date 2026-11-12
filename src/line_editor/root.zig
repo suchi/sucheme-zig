@@ -7,6 +7,7 @@
 const std = @import("std");
 
 pub const keys = @import("keys.zig");
+pub const buffer = @import("buffer.zig");
 
 test {
     std.testing.refAllDecls(@This());
