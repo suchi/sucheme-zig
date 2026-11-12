@@ -82,3 +82,4 @@
 | [0046](0046-skip-slow-tier-for-docs-only-prs.md) | 文書だけの PR では、層2 と Preview を起動しない | 採用 | 2026-10-24 |
 | [0047](0047-slow-unit-tests-default-to-releasesafe.md) | 規模を試す層の単体テストは、既定で ReleaseSafe で走らせる | 採用 | 2026-10-24 |
 | [0048](0048-run-the-examples-of-the-user-documentation.md) | 利用者向けの文書のコードを全コミットで走らせ、出力を変える PR が例を直す | 採用 | 2026-10-29 |
+| [0049](0049-line-editor-in-zig-minimal-core-first.md) | 行編集は Zig で自前に作り、最小の核から先に組み込む | 採用 | 2026-11-12 |

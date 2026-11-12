@@ -98,7 +98,7 @@ flowchart TB
 - `number/*.zig` と `unicode.zig`: 数値塔と Unicode のテーブルが入る段階4で置く。
 - `port.zig`: ポートが入る段階5で置く。
 - `platform/native.zig` と `platform/wasm.zig`: 置いていない。ネイティブの入口は `main.zig`、WASM の入口は `wasm.zig` が、それぞれ直接ホストと話す。プラットフォームの違いを1つのモジュール境界に集める整理は、まだしていない([platform-and-web.md](platform-and-web.md) のプラットフォーム抽象は、この境界の設計である)。
-- `repl/*.zig`: ネイティブの REPL は `main.zig` の `repl` で、`repl/` ディレクトリは無い。行編集は段階7である([ADR-0014](../adr/0014-repl-line-editor-boundary.md))。
+- `repl/*.zig`: ネイティブの REPL は `main.zig` の `repl` で、`repl/` ディレクトリは無い。行編集は段階7で `src/line_editor/` に自前で作る([ADR-0014](../adr/0014-repl-line-editor-boundary.md)、[ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md))。
 
 逆に、図に無いが `src/` にあるモジュールがある。`context.zig`(`Context`。展開器と機械が共有する状態)、`trace.zig`(GC の走査関数の生成)、`resolve.zig`(ソースファイルを開く経路)、`features.zig`、`char_syntax.zig`、`string_syntax.zig`、`tier.zig`(テストの層)、`syntax/cond_expand.zig`、`syntax/env.zig`、`syntax/source.zig` である。実際の構成は `src/` が正である。
 

@@ -387,7 +387,7 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 最終的に複数行編集と Emacs バインディングを要件とする。段階1では素朴な行読み取りで始めるため、境界を先に定めておく。
 
-段階2までの実装は、次の `union` をまだ置いていない。境界として保っているのは、完結判定の共有だけである。REPL(`src/main.zig` の `repl`)は `*std.Io.Reader` から行を読み、リーダが提供する `isIncomplete` が偽になるまで継続行として保留に足す。`union` は `rich` が入る段階7で作る([ADR-0014](../adr/0014-repl-line-editor-boundary.md) の追記、[plans/0010-slices-1k-1l-primitives-and-repl-continuation.md](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の合意を求める点の7)。下の型は、そのときの設計の形である。
+段階6までの実装は、次の `union` をまだ置いていない。境界として保っているのは、完結判定の共有だけである。REPL(`src/main.zig` の `repl`)は `*std.Io.Reader` から行を読み、リーダが提供する `isIncomplete` が偽になるまで継続行として保留に足す。`union` は `rich` が入る段階7で作る(最小の核の 7j。[ADR-0014](../adr/0014-repl-line-editor-boundary.md) の追記、[plans/0010-slices-1k-1l-primitives-and-repl-continuation.md](../plans/0010-slices-1k-1l-primitives-and-repl-continuation.md) の合意を求める点の7)。下の型は、そのときの設計の形である。
 
 ```zig
 pub const LineReader = union(enum) {
@@ -400,7 +400,7 @@ pub const LineReader = union(enum) {
 
 入力が完結したかどうかの判定はリーダに委ねる。括弧の数を数える方式は、文字列やブロックコメントの中の括弧で誤判定するため使わない。この判定は `dumb` と `rich` の両方が同じ関数を使う。
 
-段階7で実装する要件は次のとおり。
+段階7で実装する要件は次のとおり。実装は Zig で自前に行い、最小の核を先に組み込む([ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md))。核に入るのは、POSIX の生モード、Emacs の標準のキー割り当て、1行の編集、記憶上の履歴だけで、残りは核のあとに足す([plans/0021-stage7-8-early-parts.md](../plans/0021-stage7-8-early-parts.md) の「L6 の最小の核」)。核の間、Windows では `dumb` のままである。
 
 - カーソル移動、削除、キルリングと貼り付け、単語単位の操作、入れ替え、取り消しの Emacs 標準のキー割り当て
 - 複数行の式の編集。論理行をまたぐカーソル移動と再描画
@@ -409,4 +409,4 @@ pub const LineReader = union(enum) {
 - 識別子の補完
 - 端末の生モード。POSIX では termios、Windows では仮想端末シーケンスの有効化
 
-自前実装にするか既存の C ライブラリを取り込むかは段階7で判断する。段階1から段階6では `dumb` に当たる行読み取り(`repl` が `*std.Io.Reader` を直接読む形)のみを使い、`rich` の有無が他の部分に影響しない構造を保つ。
+自前実装にすると決まった([ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md))。段階1から段階6では `dumb` に当たる行読み取り(`repl` が `*std.Io.Reader` を直接読む形)のみを使い、`rich` の有無が他の部分に影響しない構造を保つ。
