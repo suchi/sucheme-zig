@@ -464,6 +464,20 @@ test "a kill after a yank or a rotation disables Alt-Y and starts a new entry" {
     try testing.expect((try r.yankPop(&b, null)) == null);
 }
 
+test "a kill right after a yank disables Alt-Y even when the cursor stays put" {
+    var r: KillRing = .init(testing.allocator, 8);
+    defer r.deinit();
+    try ringWith(&r, &.{ "one", "two" });
+    var b = try fromMarked("[|]");
+    defer b.deinit();
+    _ = try r.yank(&b, null);
+    try expectMarked("[two|]", &b);
+    _ = try r.killToEnd(&b, null); // カーソルは、貼り付けの直後のまま
+    try expectMarked("[two|", &b);
+    try testing.expect((try r.yankPop(&b, null)) == null);
+    try expectMarked("[two|", &b);
+}
+
 test "Alt-Y with a single entry does nothing" {
     var r: KillRing = .init(testing.allocator, 8);
     defer r.deinit();

@@ -84,8 +84,11 @@ pub const UndoStack = struct {
         };
         if (edit.isNoop()) return edit;
         if (self.typing and self.entries.items.len > 0) {
+            // `typing` が真のとき、最後の項目は、`insertTyped` が積んだ挿入だけの項目である
+            // (他の項目を積む操作は、`typing` を偽にする)。
             const last = &self.entries.items[self.entries.items.len - 1];
-            if (last.edit.removed_len == 0 and last.edit.pos + last.edit.inserted_len == edit.pos) {
+            std.debug.assert(last.edit.removed_len == 0);
+            if (last.edit.pos + last.edit.inserted_len == edit.pos) {
                 last.edit.inserted_len += edit.inserted_len;
                 return edit;
             }
@@ -422,6 +425,23 @@ test "record accepts an edit made without the wrappers" {
     try u.record(e, removed);
     _ = try u.undo(&b);
     try expectMarked("abc|", &b);
+}
+
+test "record ignores an empty edit and closes the typed group" {
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    var u: UndoStack = .init(testing.allocator, 10);
+    defer u.deinit();
+    try u.record(.{ .pos = 0, .removed_len = 0, .inserted_len = 0, .cursor_before = 0 }, "");
+    try testing.expectEqual(@as(usize, 0), u.len());
+    try typeString(&u, &b, "ab");
+    // 記録の通らない挿入を、直後に記録する。そのあとの入力は、この記録にまとめない。
+    const e = try b.insertSlice("X");
+    try u.record(e, "");
+    try typeString(&u, &b, "c");
+    try testing.expectEqual(@as(usize, 3), u.len());
+    _ = try u.undo(&b);
+    try expectMarked("abX|", &b);
 }
 
 test "an inconsistent record clears the stack and reports InvalidRange" {
