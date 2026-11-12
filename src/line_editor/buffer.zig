@@ -45,8 +45,9 @@ pub const Range = struct {
 /// `text()[range.start..range.end]` を写す。`Ctrl-T` の `transpose` は、`transposeRange`
 /// が返す範囲を同じように写す。
 ///
-/// `removed_len` と `inserted_len` がともに 0 の `Edit` は、何も変えなかった操作である。
-/// 取り消しの記録に積まなくてよい。
+/// `removed_len` と `inserted_len` がともに 0 の `Edit` は、テキストを変えなかった操作である。
+/// テキストの取り消しの記録には積まなくてよい。カーソルだけは動いていることがある
+/// (空の範囲 `.{ .start = 2, .end = 2 }` の削除など)ので、戻したいときは `cursor_before` を使う。
 pub const Edit = struct {
     pos: usize,
     removed_len: usize,
@@ -112,12 +113,25 @@ pub const Buffer = struct {
     /// Replaces `range` with `new_text`, and puts the cursor after the new text.
     ///
     /// 挿入(空の範囲)、削除(空の `new_text`)、取り消しと貼り付けの基本の操作である。
-    /// 失敗したときは、バッファを変えない。
+    /// 失敗したときは、バッファを変えない。`new_text` は、このバッファ自身の `text()` の
+    /// 一部でもよい(重なるときは、内部で複製してから置き換える)。
+    ///
+    /// 空の範囲に空の文字列を入れる操作(何も変えない操作)でも、カーソルは `range.start` に
+    /// 動く。返す `Edit` は `isNoop` だが、`cursor_before` が元の位置を持つ。
     pub fn replaceRange(self: *Buffer, range: Range, new_text: []const u8) (InsertError || RangeError)!Edit {
         if (range.start > range.end or !self.isBoundary(range.start) or !self.isBoundary(range.end))
             return error.InvalidRange;
         if (!std.unicode.utf8ValidateSlice(new_text)) return error.InvalidUtf8;
         if (std.mem.indexOfAny(u8, new_text, "\n\r") != null) return error.LineBreak;
+        const items = self.bytes.items;
+        const lo = @intFromPtr(items.ptr);
+        const at = @intFromPtr(new_text.ptr);
+        if (new_text.len > 0 and at < lo + items.len and at + new_text.len > lo) {
+            // Why: 置き換えの途中で自分の領域を読むと、再確保や移動で壊れる。
+            const copy = try self.gpa.dupe(u8, new_text);
+            defer self.gpa.free(copy);
+            return self.replaceRange(range, copy);
+        }
         const edit: Edit = .{
             .pos = range.start,
             .removed_len = range.len(),
@@ -549,6 +563,55 @@ test "digits belong to words" {
     try expectMarked("a1 22| b", &b);
     b.moveBackwardWord();
     try expectMarked("a1 |22 b", &b);
+}
+
+test "the space word skips trailing tabs" {
+    var b = try fromMarked("foo\t|");
+    defer b.deinit();
+    const r = b.rangeBackwardSpaceWord();
+    try testing.expectEqualStrings("foo\t", b.text()[r.start..r.end]);
+}
+
+test "an underscore separates words" {
+    var b = try fromMarked("|foo_bar");
+    defer b.deinit();
+    b.moveForwardWord();
+    try expectMarked("foo|_bar", &b);
+}
+
+test "transpose of two 4-byte characters at the end" {
+    var b = try fromMarked("😀😁|");
+    defer b.deinit();
+    const e = b.transpose().?;
+    try testing.expectEqual(8, e.removed_len);
+    try expectMarked("😁😀|", &b);
+}
+
+test "isNoop is false for a deletion and an insertion" {
+    var b = try fromMarked("ab|");
+    defer b.deinit();
+    try testing.expect(!(try b.deleteRange(b.rangeBackwardChar())).isNoop());
+    try testing.expect(!(try b.insertSlice("x")).isNoop());
+}
+
+test "an empty deletion elsewhere is a no-op edit that still reports the old cursor" {
+    var b = try fromMarked("|abc");
+    defer b.deinit();
+    const e = try b.deleteRange(.{ .start = 2, .end = 2 });
+    try testing.expect(e.isNoop());
+    try testing.expectEqual(0, e.cursor_before);
+    try testing.expectEqual(2, b.cursor);
+}
+
+test "inserting a slice of the buffer's own text works, even when it must grow" {
+    var b = try fromMarked("abcd|");
+    defer b.deinit();
+    _ = try b.insertSlice(b.text()[0..4]);
+    try expectMarked("abcdabcd|", &b);
+    // 容量を超えるまで繰り返しても壊れない。
+    for (0..8) |_| _ = try b.insertSlice(b.text());
+    try testing.expectEqual(8 * 256, b.text().len);
+    try expectInvariants(&b);
 }
 
 test "kill ranges to the line start and end" {

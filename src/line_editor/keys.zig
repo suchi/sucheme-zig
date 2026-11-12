@@ -407,8 +407,34 @@ test "a malformed CSI is discarded up to the offending byte" {
     try expectInvalid(3, "\x1B[1\x7F");
     try expectInvalid(3, "\x1B[1\xC3");
     try expectInvalid(2, "\x1B[\x1B[A");
-    // 中間のバイトのあとにパラメータのバイトは来ない。
+    // 中間のバイトのあとのパラメータのバイトは、ECMA-48 の文法には合わないが、受理して
+    // `.unknown` にする(厳密に弾くと、捨てる範囲の判断が増えるだけで、利点が無い)。
     try expectKey(.unknown, 5, "\x1B[ 1A");
+}
+
+test "bytes after the first event are never consumed" {
+    try expectKey(.{ .arrow = .up }, 3, "\x1BOAx");
+    try expectKey(.{ .ctrl = 0x01 }, 1, "\x01a");
+    try expectKey(.{ .alt = 'b' }, 2, "\x1Bbc");
+    try expectKey(.unknown, 3, "\x1BOPx");
+    try expectKey(.delete, 4, "\x1B[3~a");
+}
+
+test "CSI byte class boundaries" {
+    try expectKey(.unknown, 3, "\x1B[@"); // 終端の下限
+    try expectKey(.unknown, 3, "\x1B[~"); // 終端の上限
+    try expectInvalid(2, "\x1B[\x1F"); // 制御バイトの上限
+    try expectKey(.unknown, 6, "\x1B[?25h"); // 0x3F はパラメータのバイト
+    try expectKey(.unknown, 9, "\x1B[<0;1;1M"); // 0x3C
+    try expectKey(.unknown, 10, "\x1B[1;2;3;4~"); // max_csi_len より十分短い列
+    try expectInvalid(2, "\x1B[\x7F"); // 0x7F は終端でもパラメータでもない
+}
+
+test "UTF-8 second-byte ranges accept both ends" {
+    try expectKey(.{ .insert = 0xD000 }, 3, "\xED\x80\x80");
+    try expectKey(.{ .insert = 0x100000 }, 4, "\xF4\x80\x80\x80");
+    try expectKey(.{ .insert = 0x0FFF }, 3, "\xE0\xBF\xBF");
+    try expectKey(.{ .insert = 0x3FFFF }, 4, "\xF0\xBF\xBF\xBF");
 }
 
 test "an unterminated CSI does not grow without bound" {
