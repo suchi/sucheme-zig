@@ -256,6 +256,22 @@ test "typed insertions that are not adjacent do not merge even without breakGrou
     try expectMarked("|ab", &b);
 }
 
+test "typing after an undo does not merge into the earlier group" {
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    var u: UndoStack = .init(testing.allocator, 10);
+    defer u.deinit();
+    try typeString(&u, &b, "ab");
+    u.breakGroup();
+    try typeString(&u, &b, "cd");
+    _ = try u.undo(&b);
+    try expectMarked("ab|", &b);
+    try typeString(&u, &b, "e");
+    try testing.expectEqual(@as(usize, 2), u.len());
+    _ = try u.undo(&b);
+    try expectMarked("ab|", &b);
+}
+
 test "typing after a delete or a paste starts a new group" {
     var b: Buffer = .init(testing.allocator);
     defer b.deinit();

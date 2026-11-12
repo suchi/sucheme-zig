@@ -325,6 +325,23 @@ test "a kill in the other direction joins on the matching side" {
     try testing.expectEqual(@as(usize, 1), r.len());
 }
 
+test "Ctrl-K and Ctrl-U join on the side they cut from" {
+    var r: KillRing = .init(testing.allocator, 4);
+    defer r.deinit();
+    var b = try fromMarked("ab|cd");
+    defer b.deinit();
+    _ = try r.killToEnd(&b, null);
+    _ = try r.killToStart(&b, null);
+    try expectTop("abcd", &r);
+    try expectMarked("|", &b);
+    r.breakChain();
+    var c = try fromMarked("ab|cd");
+    defer c.deinit();
+    _ = try r.killToStart(&c, null);
+    _ = try r.killToEnd(&c, null);
+    try expectTop("abcd", &r);
+}
+
 test "breakChain starts a new entry" {
     var b = try fromMarked("|foo bar baz");
     defer b.deinit();
@@ -427,6 +444,23 @@ test "Alt-Y only works right after a yank" {
     try expectMarked("[two|]", &b);
     _ = try r.yank(&b, null);
     b.moveBackwardChar(); // カーソルを動かすと、貼り付けの直後ではなくなる
+    try testing.expect((try r.yankPop(&b, null)) == null);
+}
+
+test "a kill after a yank or a rotation disables Alt-Y and starts a new entry" {
+    var r: KillRing = .init(testing.allocator, 8);
+    defer r.deinit();
+    try ringWith(&r, &.{ "one", "two" });
+    var b = try fromMarked("|");
+    defer b.deinit();
+    _ = try r.yank(&b, null);
+    _ = try r.killBackwardSpaceWord(&b, null); // 貼り付けた "two" を切り取る
+    _ = try r.yank(&b, null);
+    try testing.expectEqual(@as(usize, 3), r.len());
+    _ = try r.yankPop(&b, null);
+    // 回転のあとの切り取りは、先頭の項目に連結せず、新しい項目になる。
+    _ = try r.killBackwardSpaceWord(&b, null);
+    try testing.expectEqual(@as(usize, 4), r.len());
     try testing.expect((try r.yankPop(&b, null)) == null);
 }
 
