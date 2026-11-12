@@ -508,6 +508,14 @@ pub fn build(b: *std.Build) void {
     var targets: std.ArrayList(TestTarget) = .empty;
     targets.append(b.allocator, .of(b, sucheme)) catch @panic("OOM");
     targets.append(b.allocator, .of(b, exe.root_module)) catch @panic("OOM");
+    // 行編集の部品(ADR-0049)。7j が `src/main.zig` から取り込むまでは、どのルートからも
+    // 到達できないので、専用のテストの根を置く。7j のあとも、部品の単体テストの根として残す。
+    const line_editor = b.createModule(.{
+        .root_source_file = b.path("src/line_editor/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    targets.append(b.allocator, .of(b, line_editor)) catch @panic("OOM");
     // ツールは検証のコードである。test step に自分のテストがなければ、ツールの中の
     // 失敗するアサーションは走らない。段階0では、新しいロジックの大半がここにある。
     for (tools) |t| {
