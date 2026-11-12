@@ -291,7 +291,6 @@ flowchart TD
 
 | ファイル | 責務 | スライス |
 | --- | --- | --- |
-| `src/line_editor.zig` | 部品を束ねる名前空間。`build.zig` のテスト対象の根(部品を足したら1行足す) | 7h から |
 | `src/line_editor/keys.zig` | バイト列からキーの事象への解読 | 7a |
 | `src/line_editor/buffer.zig` | 編集バッファとカーソル | 7b |
 | `src/line_editor/kill_ring.zig` | キルリング | 7c |
@@ -365,8 +364,8 @@ export function describeStatus(status, output); // { text, kind }
 | スライス | 状態 | PR |
 | --- | --- | --- |
 | この計画書 | 合意済み(2026-10-20) | - |
-| 7a キー列の解読 | 未着手(順序は、2026-11-12 に最小の核が先に改めた。「L6 の最小の核」) | - |
-| 7b 編集バッファ | 未着手 | - |
+| 7a キー列の解読 | `decode` が、文字の挿入、制御バイト、`Alt` との組、CSI と SS3 の矢印と `Home` `End` `Delete`、括弧つき貼り付けの印を解読する。途中で切れた列は `need_more`、不正な UTF-8 と終端のない CSI は捨てるバイト数つきの `invalid` を返す。署名は上の案から変えていない(`Arrow` を足し、`Key.ctrl` は制御バイトそのもの)。単独の `ESC` は `need_more` で、時間切れの扱いは呼び出し側(7j)に任せる。確かめたこと: 単体テスト、全切り詰めの `need_more`、乱数と全探索に近い列で止まらないこと | 7b と同じ PR |
+| 7b 編集バッファ | `Buffer` が、挿入、範囲の置き換えと削除、文字と単語と行頭行末の移動、入れ替えを持つ。変更は `Edit` を返し、削除や切り取りの範囲は操作の前に `rangeBackwardWord` などで問い合わせる(7c が使う)。不変条件(正しい UTF-8、改行なし、カーソルは文字の境界)を乱数の操作列で確かめた。単語は ASCII の英数字と ASCII でない文字の並びで、仮の実装である | 7a と同じ PR |
 | 7c キルリングと取り消し | 未着手 | - |
 | 7d 履歴 | 未着手 | - |
 | 7e 括弧の対応 | 未着手(核のあと) | - |
@@ -384,5 +383,5 @@ export function describeStatus(status, output); // { text, kind }
 ## 次にやること
 
 1. 行編集を自前で作る決定は、[ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md) に記録した。[design/open-questions.md](../design/open-questions.md) の「段階7までに決める」の行は消した。配置先(合意を求める点の2)の結果は 8h の計画に反映し、配置を終えたら「段階8までに決める」の行を消す。
-2. L6 は、核の 7h、7a、7f、7b、7d から始める(上の「L6 の最小の核」)。7h は実装した。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
-3. 7j(REPL への組み込み)で、`src/main.zig` の panic ハンドラから `term_posix.restoreActive` を呼ぶ。`build.zig` には、`src/line_editor.zig` を根とするモジュール `line_editor` を、`zig build test` の対象として足した(7h)。7j は、そのモジュールを `exe` の `imports` に足して使う。部品のファイルは、`src/line_editor.zig` に `pub const` で1行足す(足さないとテストが走らない)。
+2. L6 は、核の 7h、7f、7d を並行に進める(7a と 7b は済み)。7c と 7g は、7b のマージのあとに始められる。7j は核の最後である(上の「L6 の最小の核」)。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
+3. 7j(REPL への組み込み)で、`src/main.zig` の panic ハンドラから `term_posix.restoreActive` を呼ぶ。部品のファイルは、`src/line_editor/root.zig` に `pub const` で1行足す(足さないとテストが走らない)。
