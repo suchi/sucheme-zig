@@ -172,7 +172,7 @@ fn renderWith(
 
     // テキストの窓。`s` から始め、`tw` 桁に収める。
     const tw = avail - pw;
-    var s: usize = @min(prev.start, text.len);
+    var s: usize = prev.start;
     while (s > 0 and s < text.len and (text[s] & 0xC0) == 0x80) s -= 1;
     s = @min(s, view.cursor);
 
@@ -478,6 +478,31 @@ test "control characters and invalid bytes are drawn safely" {
     try draw(20, "> ", "a\u{85}b", 0, "> a\u{FFFD}b", 2);
     // プロンプトにも不正な UTF-8 が入りうる。
     try draw(20, "\xff> ", "", 0, "\u{FFFD}> ", 3);
+}
+
+test "wide characters scrolled out of the window are subtracted by their width" {
+    // tw は 7。"あいうえお"(10桁)の末尾にカーソルがあると、あ と い を落として 6 桁にする。
+    try draw(10, "> ", "あいうえお", 15, "> うえお", 8);
+}
+
+test "window is pulled back across multi-byte characters" {
+    var screen = Screen.init(20);
+    const st = try expectDraw(&screen, .{ .prompt = "> ", .text = "あいうえお", .cursor = 15, .cols = 20 }, .{ .start = 9 }, "> あいうえお", 12);
+    try testing.expectEqual(@as(usize, 0), st.start);
+}
+
+test "wide characters in a long prompt are cut by their width" {
+    // "あいうえお> " は 12 桁。上限は 4 なので、8 桁ぶん(あいうえ)を落として "お> " を残す。
+    try draw(10, "あいうえお> ", "x", 1, "お> x", 5);
+}
+
+test "truncated UTF-8 at the end of the prompt is drawn as a replacement" {
+    try draw(20, "> \xe3\x81", "", 0, "> \u{FFFD}\u{FFFD}", 4);
+}
+
+test "C1 control character at the upper bound is replaced" {
+    try draw(20, "> ", "\u{9f}", 0, "> \u{FFFD}", 2);
+    try draw(20, "> ", "\u{a0}", 0, "> \u{a0}", 2);
 }
 
 test "incremental search replaces the prompt with a label" {
