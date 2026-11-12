@@ -2,7 +2,10 @@
 //! (docs/design/runtime.md, ADR-0003).
 //!
 //! すべてのオブジェクトは `Cell` である。ヘッダの後ろにオブジェクト本体が続く。
-//! ヘッダは1本のリストにつながれていて、スイープはこのリストをたどる。ヒープは、
+//! セルは、大きさの階級ごとに、64 KiB のチャンクから切り出される。スイープは、チャンクを
+//! メモリの順に走査する(連結したリストをたどると、散らばったメモリの待ちが時間を決める。
+//! docs/plans/0029-heap-limit-slow-exhaustion.md)。解放したセルは、階級ごとの空きリストに
+//! つながれて、次の確保で再利用される。ヒープは、
 //! セルと、セルが所有するペイロードのバイト数を計上し、計上量が上限を超える確保を
 //! 拒否する。ただし送出のための確保(`Budget.raise_reserve`)は、上限を予約の分だけ
 //! 超えてよい(ADR-0035)。シンボルの名前も、このヒープが持ち、計上する(`Heap.intern`)。
@@ -71,6 +74,11 @@ pub const Options = struct {
     /// How many bytes past the limit an allocation for raising may take (see
     /// `Budget.raise_reserve`).
     raise_reserve: usize = default_raise_reserve,
+    /// The bytes of each chunk the cells are taken in. Less than one slot of the
+    /// largest cell and the chunk's own fields is raised to that.
+    /// ふつうは変えない。確保の失敗を仕掛けるテスト(ファジング)は、小さくして、セルの確保が
+    /// 下の割り当て器に届く回数を増やす。
+    chunk_bytes: usize = default_chunk_bytes,
 };
 
 /// The reserve for raising: 4 KiB.
@@ -529,8 +537,10 @@ const stress_ramp = 4096;
 const stress_objects_per_step = 16;
 
 const Header = struct {
+    /// The next free slot of the pool, while the slot is free; null otherwise.
+    /// 生きているセルでは使わない。
     next: ?*Header,
-    /// An index into `object_types`.
+    /// An index into `object_types`, or `free_kind` for a slot that holds no object.
     kind: u8,
     /// Set by the marking, cleared by the sweep.
     marked: bool,
@@ -558,6 +568,126 @@ fn kindOf(comptime T: type) u8 {
     }
     @compileError("not a heap object type: " ++ @typeName(T));
 }
+
+/// The `kind` of a slot that holds no object: never handed out yet, or given back.
+const free_kind: u8 = std.math.maxInt(u8);
+
+/// The bytes of one chunk, the unit the heap takes cells in, unless the options say
+/// otherwise (`Options.chunk_bytes`).
+/// Why: 64 KiB 以上にする。実行ファイルの割り当て器を替える案は、確保の数が
+/// `vm.max_map_count` を超えて異常終了した(`large_resident_bytes` の Why)。256 MiB の上限でも、
+/// チャンクは数千個で、その数の `mmap` に収まる。
+pub const default_chunk_bytes: usize = 64 * 1024;
+
+/// What a slot's start and size are multiples of.
+const slot_align: usize = 16;
+
+/// Where the first slot of a chunk starts: after the chunk's own fields.
+const slots_offset: usize = 32;
+
+/// The least a chunk may be: its fields, and one slot of the largest shape.
+const min_chunk_bytes: usize = blk: {
+    var largest: usize = 0;
+    for (shapes) |s| largest = @max(largest, s.bytes);
+    break :blk slots_offset + largest;
+};
+
+comptime {
+    std.debug.assert(object_types.len < free_kind);
+    std.debug.assert(@sizeOf(Chunk) <= slots_offset);
+    std.debug.assert(min_chunk_bytes <= default_chunk_bytes);
+    for (object_types) |T| {
+        std.debug.assert(@alignOf(Cell(T)) <= slot_align);
+    }
+}
+
+/// What a pool's slots look like: their size, and where in a slot the header is.
+/// Why: `Cell` は自動の並びの構造体なので、ヘッダがセルの先頭に来るとは限らない(wasm32 では、
+/// 型によって先頭に来ない)。スイープは、型を知らずにスロットからヘッダを取るので、ヘッダの
+/// オフセットが同じセルだけを、1つのプールに入れる。
+const Shape = struct {
+    bytes: usize,
+    header_offset: usize,
+};
+
+fn shapeOf(comptime T: type) Shape {
+    return .{
+        .bytes = std.mem.alignForward(usize, @sizeOf(Cell(T)), slot_align),
+        .header_offset = @offsetOf(Cell(T), "header"),
+    };
+}
+
+/// The distinct shapes: the heap keeps one pool of chunks for each.
+const shapes = blk: {
+    var found: [object_types.len]Shape = undefined;
+    var n: usize = 0;
+    for (object_types) |T| {
+        const shape = shapeOf(T);
+        var seen = false;
+        for (found[0..n]) |s| {
+            if (s.bytes == shape.bytes and s.header_offset == shape.header_offset) seen = true;
+        }
+        if (!seen) {
+            found[n] = shape;
+            n += 1;
+        }
+    }
+    const result: [n]Shape = found[0..n].*;
+    break :blk result;
+};
+
+const class_count = shapes.len;
+
+/// The pool that holds cells of `T`.
+fn classOf(comptime T: type) usize {
+    const shape = shapeOf(T);
+    for (shapes, 0..) |s, i| {
+        if (s.bytes == shape.bytes and s.header_offset == shape.header_offset) return i;
+    }
+    unreachable;
+}
+
+/// A run of slots of one shape, taken from the allocator whole.
+const Chunk = struct {
+    /// The next older chunk of the pool.
+    older: ?*Chunk,
+    /// How many slots have been handed out; the ones after are untouched.
+    used: usize,
+    /// How many slots the chunk holds.
+    capacity: usize,
+    /// The bytes the chunk was taken with, which it is given back with.
+    bytes: usize,
+
+    /// The start of slot `index`.
+    fn slotStart(self: *Chunk, comptime class: usize, index: usize) [*]u8 {
+        const base: [*]u8 = @ptrCast(self);
+        return base + slots_offset + index * shapes[class].bytes;
+    }
+
+    /// The header of the cell in slot `index`.
+    fn slot(self: *Chunk, comptime class: usize, index: usize) *Header {
+        return @ptrCast(@alignCast(self.slotStart(class, index) + shapes[class].header_offset));
+    }
+};
+
+/// The chunks that hold cells of one slot size, and the slots given back.
+const Pool = struct {
+    /// Newest first.
+    chunks: ?*Chunk = null,
+    /// A slot to hand out again, with the rest on its `next`.
+    free: ?*Header = null,
+    /// Chunks that hold nothing, kept to take cells in again before asking the allocator,
+    /// and how many there are.
+    spare: ?*Chunk = null,
+    spares: usize = 0,
+};
+
+/// The most empty chunks a pool keeps (`Pool.spare`).
+/// Why: 回収のたびに、空になったチャンクを返しては取り直すと、短い寿命のオブジェクトを作り
+/// 続けるループで、`mmap` と `munmap` の往復が時間に出る(計画書 0029)。16 個は、64 KiB の
+/// チャンクで 1 MiB である。掃除は手元のチャンクを走査しないので、持つ数は、費用でなく、
+/// 常駐するメモリの上限になる。
+const max_spare_chunks: usize = 16;
 
 /// The header of the cell that holds `object`.
 /// 指す先は必ずセルの中なので、整列を表明してよい(`Marker.object` と同じ)。
@@ -681,13 +811,13 @@ pub const Heap = struct {
     /// 単体テストは、回した確保を数えるために置き換える。
     large: std.mem.Allocator = std.heap.page_allocator,
     options: Options,
-    /// Every object, newest first.
-    objects: ?*Header = null,
-    /// The bytes of the cells and payloads that are in `objects`.
+    /// The chunks that hold the objects, one pool for each slot size.
+    pools: [class_count]Pool = @splat(.{}),
+    /// The bytes of the cells and payloads of the objects.
     accounted: usize = 0,
     /// The most `accounted` has been.
     peak: usize = 0,
-    /// The number of objects in `objects`.
+    /// The number of objects.
     count: usize = 0,
     /// The account at which `shouldCollect` says yes.
     threshold: usize,
@@ -789,21 +919,38 @@ pub const Heap = struct {
     };
 
     pub fn init(backing: std.mem.Allocator, options: Options) Heap {
+        var adjusted = options;
+        adjusted.chunk_bytes = @max(options.chunk_bytes, min_chunk_bytes);
         return .{
             .backing = backing,
-            .options = options,
+            .options = adjusted,
             .threshold = @min(softLimit(options.limit), options.min_threshold),
         };
     }
 
-    /// Frees every object, reachable or not.
+    /// Frees every object, reachable or not, and the chunks.
     pub fn deinit(self: *Heap) void {
-        var it = self.objects;
-        while (it) |header| {
-            it = header.next;
-            self.free(header);
+        inline for (0..class_count) |class| {
+            var chunk = self.pools[class].chunks;
+            while (chunk) |c| {
+                var i = c.used;
+                while (i > 0) {
+                    i -= 1;
+                    const header = c.slot(class, i);
+                    if (header.kind != free_kind) self.free(header);
+                }
+                chunk = c.older;
+                const memory: [*]align(slot_align) u8 = @ptrCast(@alignCast(c));
+                self.backing.free(memory[0..c.bytes]);
+            }
+            var spare = self.pools[class].spare;
+            while (spare) |c| {
+                spare = c.older;
+                const memory: [*]align(slot_align) u8 = @ptrCast(@alignCast(c));
+                self.backing.free(memory[0..c.bytes]);
+            }
+            self.pools[class] = .{};
         }
-        self.objects = null;
         self.accounted = 0;
         self.count = 0;
         if (self.work.len != 0) self.backing.free(self.work);
@@ -845,7 +992,7 @@ pub const Heap = struct {
         // コンパイル時に断る。
         comptime std.debug.assert(!ownsPayload(T));
         try self.reserve(budget, cellBytes(T));
-        const cell = try self.backing.create(Cell(T));
+        const cell = try self.allocCell(T);
         cell.value = value;
         self.link(T, cell, cellBytes(T));
         return &cell.value;
@@ -866,7 +1013,7 @@ pub const Heap = struct {
         const bytes = try self.reserveWithPayload(budget, Frame, size, @sizeOf(Value));
         const values = try self.backing.alloc(Value, size);
         errdefer self.backing.free(values);
-        const cell = try self.backing.create(Cell(Frame));
+        const cell = try self.allocCell(Frame);
         @memset(values, Value.uninitialized_value);
         cell.value = .{ .values = values, .parent = parent };
         self.link(Frame, cell, bytes);
@@ -945,7 +1092,7 @@ pub const Heap = struct {
     /// セルを確保できなければ、呼び出し側の `errdefer` がペイロードを返す。
     fn linkString(self: *Heap, bytes: []u8, total: usize) Error!*String {
         std.debug.assert(std.unicode.utf8ValidateSlice(bytes));
-        const cell = try self.backing.create(Cell(String));
+        const cell = try self.allocCell(String);
         // 文字列を作る経路はすべてここを通るので、フラグの計算はここだけにある。
         // 作ったあとに内容が変わる経路は `replaceStringBytes` で、そこでも計算し直す。
         cell.value = .{ .bytes = bytes, .is_ascii = value_mod.allAscii(bytes) };
@@ -959,7 +1106,7 @@ pub const Heap = struct {
         const total = try self.reserveWithPayload(.limit, Vector, items.len, @sizeOf(Value));
         const copy = try self.backing.dupe(Value, items);
         errdefer self.backing.free(copy);
-        const cell = try self.backing.create(Cell(Vector));
+        const cell = try self.allocCell(Vector);
         cell.value = .{ .items = copy };
         self.link(Vector, cell, total);
         return &cell.value;
@@ -975,7 +1122,7 @@ pub const Heap = struct {
         const items = try self.backing.alloc(Value, len);
         errdefer self.backing.free(items);
         filler.fill(items);
-        const cell = try self.backing.create(Cell(Vector));
+        const cell = try self.allocCell(Vector);
         cell.value = .{ .items = items };
         self.link(Vector, cell, total);
         return &cell.value;
@@ -1010,7 +1157,7 @@ pub const Heap = struct {
         const total = try self.reserveWithPayload(.limit, Bignum, n.limbs.len, @sizeOf(Limb));
         const copy = try self.backing.dupe(Limb, n.limbs);
         errdefer self.backing.free(copy);
-        const cell = try self.backing.create(Cell(Bignum));
+        const cell = try self.allocCell(Bignum);
         cell.value = .{ .limbs = copy, .positive = n.positive };
         self.link(Bignum, cell, total);
         return &cell.value;
@@ -1026,7 +1173,7 @@ pub const Heap = struct {
         const total = try self.reserveWithPayload(.limit, Port, contents.len, 1);
         const copy = try self.backing.dupe(u8, contents);
         errdefer self.backing.free(copy);
-        const cell = try self.backing.create(Cell(Port));
+        const cell = try self.allocCell(Port);
         cell.value = .{ .direction = direction, .element = element, .backing = .{ .memory = .{ .bytes = copy, .len = copy.len } } };
         self.link(Port, cell, total);
         return &cell.value;
@@ -1041,7 +1188,7 @@ pub const Heap = struct {
         const total = try self.reserveWithPayload(.limit, Port, size, 1);
         const buffer = try self.backing.alloc(u8, size);
         errdefer self.backing.free(buffer);
-        const cell = try self.backing.create(Cell(Port));
+        const cell = try self.allocCell(Port);
         cell.value = .{ .direction = direction, .element = element, .open = false, .backing = .{ .file = .{ .id = 0, .buffer = buffer } } };
         self.link(Port, cell, total);
         return &cell.value;
@@ -1074,7 +1221,7 @@ pub const Heap = struct {
     /// ペイロードを持たないので、計上はセルだけである。
     pub fn createConsolePort(self: *Heap, stream: Port.Stream) Error!*Port {
         const total = try self.reserveWithPayload(.limit, Port, 0, 1);
-        const cell = try self.backing.create(Cell(Port));
+        const cell = try self.allocCell(Port);
         const direction: Port.Direction = if (stream == .input) .input else .output;
         cell.value = .{ .direction = direction, .element = .textual, .backing = .{ .console = stream } };
         self.link(Port, cell, total);
@@ -1106,7 +1253,7 @@ pub const Heap = struct {
     /// Puts `bytes`, which the bytevector will own, in a new cell.
     /// セルを確保できなければ、呼び出し側の `errdefer` がペイロードを返す。
     fn linkBytevector(self: *Heap, bytes: []u8, total: usize) Error!*Bytevector {
-        const cell = try self.backing.create(Cell(Bytevector));
+        const cell = try self.allocCell(Bytevector);
         cell.value = .{ .bytes = bytes };
         self.link(Bytevector, cell, total);
         return &cell.value;
@@ -1120,7 +1267,7 @@ pub const Heap = struct {
         const total = try self.reserveWithPayload(.limit, Record, fields.len, @sizeOf(Value));
         const copy = try self.backing.dupe(Value, fields);
         errdefer self.backing.free(copy);
-        const cell = try self.backing.create(Cell(Record));
+        const cell = try self.allocCell(Record);
         cell.value = .{ .record_type = record_type, .fields = copy };
         self.link(Record, cell, total);
         return &cell.value;
@@ -1134,7 +1281,7 @@ pub const Heap = struct {
         const total = try self.reserveWithPayload(budget, MultipleValues, items.len, @sizeOf(Value));
         const copy = try self.backing.dupe(Value, items);
         errdefer self.backing.free(copy);
-        const cell = try self.backing.create(Cell(MultipleValues));
+        const cell = try self.allocCell(MultipleValues);
         cell.value = .{ .items = copy };
         self.link(MultipleValues, cell, total);
         return &cell.value;
@@ -1334,18 +1481,64 @@ pub const Heap = struct {
         self.work = self.backing.alloc(*Header, self.options.work_capacity) catch &no_work;
     }
 
-    /// Frees the objects the marking did not reach, and clears the mark of the
-    /// rest.
+    /// Frees the objects the marking did not reach, clears the mark of the rest, and
+    /// takes the chunks that hold no object off the pool: a few are kept (`max_spare_chunks`),
+    /// the rest given back.
     fn sweep(self: *Heap) void {
-        var slot: *?*Header = &self.objects;
-        while (slot.*) |header| {
-            if (header.marked) {
-                header.marked = false;
-                slot = &header.next;
-            } else {
-                slot.* = header.next;
-                self.free(header);
+        inline for (0..class_count) |class| self.sweepPool(class);
+    }
+
+    /// The sweep of one pool.
+    /// チャンクを、新しいほうから、チャンクの中では高いアドレスから走査する。空きリストは、
+    /// 掃除のたびに、生きたセルのあるチャンクの空きスロットから作り直す。チャンクの中では、
+    /// 低いアドレスが先頭に来る。チャンクをつなぐときは、古いチャンクを前に置くので、次の確保は、
+    /// 古いチャンクの低いアドレスから使い、新しいチャンクが空になりやすくする。
+    /// Why: 生きたセルが1つもないチャンクは、空きスロットを走査するだけの費用を毎回払わせる。
+    /// プールにつないだまま持ち続けると、一時的にヒープが大きくなったあと、掃除の費用が、
+    /// 生きている量でなく過去の最大量に比例して、変更前(連結リスト)より遅くなった(計画書 0029)。
+    /// そこで、プールから外す。外したうちの少数は、`spare` に残して次の確保で使い、超えた分は返す。
+    fn sweepPool(self: *Heap, comptime class: usize) void {
+        const pool = &self.pools[class];
+        pool.free = null;
+        var slot_of_chunk: *?*Chunk = &pool.chunks;
+        while (slot_of_chunk.*) |c| {
+            var live: usize = 0;
+            // このチャンクの空きスロットの列。先頭は走査で最後に積んだ(最も低いアドレスの)もの。
+            var head: ?*Header = null;
+            var tail: ?*Header = null;
+            var i = c.used;
+            while (i > 0) {
+                i -= 1;
+                const header = c.slot(class, i);
+                if (header.kind != free_kind) {
+                    if (header.marked) {
+                        header.marked = false;
+                        live += 1;
+                        continue;
+                    }
+                    self.free(header);
+                }
+                header.next = head;
+                if (head == null) tail = header;
+                head = header;
             }
+            if (live == 0) {
+                slot_of_chunk.* = c.older;
+                if (pool.spares < max_spare_chunks) {
+                    c.older = pool.spare;
+                    pool.spare = c;
+                    pool.spares += 1;
+                } else {
+                    const memory: [*]align(slot_align) u8 = @ptrCast(@alignCast(c));
+                    self.backing.free(memory[0..c.bytes]);
+                }
+                continue;
+            }
+            if (head) |first| {
+                tail.?.next = pool.free;
+                pool.free = first;
+            }
+            slot_of_chunk = &c.older;
         }
     }
 
@@ -1412,17 +1605,62 @@ pub const Heap = struct {
     /// テストが、ある種類のオブジェクトが回収されたか残っているかを、そのオブジェクトの
     /// 中身を読まずに確かめるためにある。
     pub fn countOf(self: *const Heap, comptime T: type) usize {
+        const class = comptime classOf(T);
         var n: usize = 0;
-        var it = self.objects;
-        while (it) |header| : (it = header.next) {
-            if (header.kind == kindOf(T)) n += 1;
+        var chunk = self.pools[class].chunks;
+        while (chunk) |c| : (chunk = c.older) {
+            for (0..c.used) |i| {
+                if (c.slot(class, i).kind == kindOf(T)) n += 1;
+            }
         }
         return n;
     }
 
+    /// A slot for a cell of `T`: one given back, or else the next of the newest chunk
+    /// of its pool, taking a new chunk when that one is full.
+    /// 返すセルのヘッダは「空き」の印で、`link` が実際の種類を書く。呼び出し元は、すべて、
+    /// 確保の直後に `link` を呼ぶ。
+    fn allocCell(self: *Heap, comptime T: type) error{OutOfMemory}!*Cell(T) {
+        const class = comptime classOf(T);
+        const pool = &self.pools[class];
+        if (pool.free) |header| {
+            pool.free = header.next;
+            header.next = null;
+            return @alignCast(@fieldParentPtr("header", header));
+        }
+        var chunk = pool.chunks;
+        if (chunk == null or chunk.?.used == chunk.?.capacity) {
+            if (pool.spare) |kept| {
+                // 空のチャンクは、同じヒープの同じ大きさなので、そのまま、最初から使える。
+                pool.spare = kept.older;
+                pool.spares -= 1;
+                kept.older = pool.chunks;
+                kept.used = 0;
+                pool.chunks = kept;
+                chunk = kept;
+            } else {
+                const bytes = self.options.chunk_bytes;
+                const memory = try self.backing.alignedAlloc(u8, .@"16", bytes);
+                const fresh: *Chunk = @ptrCast(@alignCast(memory.ptr));
+                fresh.* = .{
+                    .older = pool.chunks,
+                    .used = 0,
+                    .capacity = (bytes - slots_offset) / shapes[class].bytes,
+                    .bytes = bytes,
+                };
+                pool.chunks = fresh;
+                chunk = fresh;
+            }
+        }
+        const c = chunk.?;
+        const cell: *Cell(T) = @ptrCast(@alignCast(c.slotStart(class, c.used)));
+        c.used += 1;
+        cell.header = .{ .next = null, .kind = free_kind, .marked = false, .immutable = false };
+        return cell;
+    }
+
     fn link(self: *Heap, comptime T: type, cell: *Cell(T), bytes: usize) void {
-        cell.header = .{ .next = self.objects, .kind = kindOf(T), .marked = false, .immutable = false };
-        self.objects = &cell.header;
+        cell.header = .{ .next = null, .kind = kindOf(T), .marked = false, .immutable = false };
         self.accounted += bytes;
         self.count += 1;
         if (self.accounted > self.peak) self.peak = self.accounted;
@@ -1442,9 +1680,9 @@ pub const Heap = struct {
         port.open = false;
     }
 
-    /// Gives an object and its payload back to the allocator, and takes them
-    /// off the account.
-    /// ヘッダは、呼ぶ前にリストから外しておくこと。
+    /// Gives an object's payload back to the allocator, leaves its cell free, and takes
+    /// them off the account.
+    /// セルを空きリストにつなぐのは、掃除(`sweepPool`)である。`deinit` はつながない。
     fn free(self: *Heap, header: *Header) void {
         inline for (object_types, 0..) |T, i| {
             if (header.kind == i) {
@@ -1475,7 +1713,7 @@ pub const Heap = struct {
                     Parameterize => self.backing.free(cell.value.bindings),
                     else => {},
                 }
-                self.backing.destroy(cell);
+                cell.header = .{ .next = null, .kind = free_kind, .marked = false, .immutable = false };
                 return;
             }
         }
@@ -1508,7 +1746,10 @@ pub const Weak = struct {
 /// 全オブジェクトを走査し直す。マーク済みのオブジェクトは、リストに載れば順に、
 /// 載らなければ再走査で走査されるので、漏れるものはない。リストの大きさが変えるのは、
 /// マークにかかる時間であって、マークする対象ではない。
-/// Why: 再走査の1回は、オブジェクトの一覧を新しい順に1回なめるだけなので、参照が
+/// Why: 再走査の1回は、チャンクを新しいほうから、チャンクの中を高いアドレスから、1回なめる
+/// だけである。新しいチャンクのセルは、確保の順にアドレスが上がるので、これは確保が新しい順
+/// に近い(掃除の空きリストは低いアドレスから再利用するので、再利用したセルでは、順は
+/// 近似にとどまる)。参照が
 /// 新しいオブジェクトの方向へ伸びる鎖では、1回で進む深さがリストの大きさ程度になり、
 /// 再走査の回数が鎖の長さに比例する。展開器は親の節点を子より先に作るので、深く
 /// 入れ子になったコードがこの形になる(3o-3)。伸ばせば、確保が成功する限り再走査は
@@ -1596,9 +1837,17 @@ pub const Marker = struct {
         while (self.lost) {
             self.lost = false;
             self.heap.rescans += 1;
-            var it = self.heap.objects;
-            while (it) |header| : (it = header.next) {
-                if (header.marked) self.scan(header);
+            // 掃除と同じ順で、マーク済みの生きたセルを走査する。
+            inline for (0..class_count) |class| {
+                var chunk = self.heap.pools[class].chunks;
+                while (chunk) |c| : (chunk = c.older) {
+                    var i = c.used;
+                    while (i > 0) {
+                        i -= 1;
+                        const header = c.slot(class, i);
+                        if (header.kind != free_kind and header.marked) self.scan(header);
+                    }
+                }
             }
             self.drain();
         }
@@ -1692,7 +1941,7 @@ test "when the cell cannot be allocated the slots are given back" {
     try std.testing.expectError(error.OutOfMemory, heap.createFrame(4, null));
     try std.testing.expectEqual(0, heap.accounted);
     try std.testing.expectEqual(0, heap.count);
-    try std.testing.expect(heap.objects == null);
+    try std.testing.expectEqual(0, heap.countOf(Frame));
     // スロットは確保されて返された。リーク検査に残るものはない。
     try std.testing.expectEqual(1, failing.allocations);
     try std.testing.expectEqual(1, failing.deallocations);
@@ -1913,6 +2162,174 @@ test "countOf counts the objects of one type" {
     try std.testing.expectEqual(2, heap.countOf(Pair));
     try std.testing.expectEqual(1, heap.countOf(String));
     try std.testing.expectEqual(0, heap.countOf(Vector));
+}
+
+/// The bytes of a chunk the tests of the pools use: room for several pairs, so that a chunk
+/// with one live cell has more than one free slot to chain, and few enough to fill quickly.
+/// Why: 最小のチャンク(`chunk_bytes = 1` は、1 スロットと自分の項目が入る大きさに引き上げられる)
+/// には、ペアが 2 個ほどしか入らない。空きスロットが 1 個だと、チャンクの空きスロットの列のつなぎ
+/// 違い(`tail` の取り違え)が、挙動の違いに出ない(ミューテーションで見つかった)。
+const test_chunk_bytes = 512;
+
+test "cells fill a chunk and then take another, and every one of them is counted and freed" {
+    // 1 つのチャンクに収まる数より多くのペアを作る。小さなチャンクを使うので、数は少なくて済む。
+    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const capacity = heap.options.chunk_bytes - slots_offset;
+    const per_chunk = capacity / shapeOf(Pair).bytes;
+    const n = per_chunk * 3 + 1;
+    var head: Value = .empty_list_value;
+    for (0..n) |i| head = try heap.cons(.fromFixnum(@intCast(i)), head);
+    try std.testing.expectEqual(n, heap.countOf(Pair));
+    try std.testing.expectEqual(n, heap.count);
+    var chunks: usize = 0;
+    var chunk = heap.pools[comptime classOf(Pair)].chunks;
+    while (chunk) |c| : (chunk = c.older) chunks += 1;
+    try std.testing.expectEqual(4, chunks);
+    heap.collect(TestRoots{ .values = &.{head} });
+    try std.testing.expectEqual(n, heap.countOf(Pair));
+}
+
+test "a collection gives a cell back to its pool, and the next one of that shape takes it, with no new chunk" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    // 最小のチャンクを使い、チャンクをいくつか使う数のペアを作る。
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
+    const n = 3 * per_chunk;
+    // 各チャンクに、生きたペアを1つずつ残す(生きたセルのないチャンクは返されるので)。
+    var kept: [3]Value = undefined;
+    for (0..n) |i| {
+        const pair = try heap.cons(.empty_list_value, .empty_list_value);
+        if (i % per_chunk == 0) kept[i / per_chunk] = pair;
+    }
+    heap.collect(TestRoots{ .values = &kept });
+    try std.testing.expectEqual(3, heap.countOf(Pair));
+    try std.testing.expectEqual(3, heap.count);
+    // 回収は、マークの作業リストを確保する。数えるのは、その後からにする。
+    const taken = failing.allocations;
+    // 回収で空いた分を、同じ数だけ作り直す。チャンクは増えない。
+    for (0..n - 3) |_| _ = try heap.cons(.empty_list_value, .empty_list_value);
+    try std.testing.expectEqual(taken, failing.allocations);
+    try std.testing.expectEqual(n, heap.countOf(Pair));
+}
+
+test "a collection takes the chunks that hold nothing live off the pool, so a sweep follows what is live and not what the heap once held, and gives back those past the spares" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
+    const chunk_count = max_spare_chunks + 4;
+    var keep: Value = .empty_list_value;
+    for (0..chunk_count * per_chunk) |i| {
+        const pair = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+        if (i == 0) keep = pair;
+    }
+    heap.collect(TestRoots{ .values = &.{keep} });
+    try std.testing.expectEqual(1, heap.count);
+    const pool = &heap.pools[comptime classOf(Pair)];
+    var chunks: usize = 0;
+    var chunk = pool.chunks;
+    while (chunk) |c| : (chunk = c.older) chunks += 1;
+    try std.testing.expectEqual(1, chunks);
+    // 空のチャンクのうち、`max_spare_chunks` 個を手元に残し、残りの 3 個を返した。
+    try std.testing.expectEqual(max_spare_chunks, pool.spares);
+    try std.testing.expectEqual(3, failing.deallocations);
+}
+
+test "the empty chunks a pool kept are taken before the allocator is asked, and start empty" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{});
+    var heap: Heap = .init(failing.allocator(), .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
+    var keep: Value = .empty_list_value;
+    for (0..5 * per_chunk) |i| {
+        const pair = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+        if (i == 0) keep = pair;
+    }
+    heap.collect(TestRoots{ .values = &.{keep} });
+    const pool = &heap.pools[comptime classOf(Pair)];
+    try std.testing.expectEqual(4, pool.spares);
+    const taken = failing.allocations;
+    // 残ったチャンクの空きスロットと、手元の 4 個で、`5 * per_chunk - 1` 個が収まる。
+    for (0..5 * per_chunk - 1) |_| _ = try heap.cons(.empty_list_value, .empty_list_value);
+    try std.testing.expectEqual(taken, failing.allocations);
+    try std.testing.expectEqual(0, pool.spares);
+    try std.testing.expectEqual(5 * per_chunk, heap.countOf(Pair));
+    // 手元から取ったチャンクの中に、前のペアが残っていない。
+    heap.collect(TestRoots{ .values = &.{keep} });
+    try std.testing.expectEqual(1, heap.countOf(Pair));
+}
+
+test "a second collection that takes a chunk off the pool leaves none of its free slots to be handed out" {
+    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
+    // 2 つのチャンクに、ペアを作る。各チャンクの最初のペアだけを、残す。
+    var older_keep: Value = .empty_list_value;
+    var newer_keep: Value = .empty_list_value;
+    for (0..2 * per_chunk) |i| {
+        const pair = try heap.cons(.fromFixnum(-1), .empty_list_value);
+        if (i == 0) older_keep = pair;
+        if (i == per_chunk) newer_keep = pair;
+    }
+    // 1 回目の回収は、両方のチャンクを残し、空きスロットを空きリストにつなぐ。
+    heap.collect(TestRoots{ .values = &.{ older_keep, newer_keep } });
+    try std.testing.expectEqual(2, heap.countOf(Pair));
+    // 2 回目の回収は、新しいほうのチャンクを空にして、プールから外す。外したチャンクの空きスロットは、
+    // 空きリストに残ってはならない(1 回目のつなぎを、2 回目が捨てずに引きずると、残る)。
+    heap.collect(TestRoots{ .values = &.{older_keep} });
+    try std.testing.expectEqual(1, heap.countOf(Pair));
+    // 同じ数を作って、それぞれの値を書き込む。同じスロットが 2 回配られると、値が上書きされる。
+    var made: [64]Value = undefined;
+    const n = 2 * per_chunk;
+    try std.testing.expect(n <= made.len);
+    for (0..n) |i| made[i] = try heap.cons(.fromFixnum(@intCast(i)), .empty_list_value);
+    for (0..n) |i| {
+        const got = made[i].asPair().?.car.asFixnum().?;
+        try std.testing.expect(got == @as(@TypeOf(got), @intCast(i)));
+    }
+    try std.testing.expectEqual(n + 1, heap.countOf(Pair));
+}
+
+test "a heap with slots given back in a chunk that stays is freed whole, chunk and all" {
+    var heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = test_chunk_bytes });
+    defer heap.deinit();
+    const per_chunk = (heap.options.chunk_bytes - slots_offset) / shapeOf(Pair).bytes;
+    var keep: Value = .empty_list_value;
+    for (0..2 * per_chunk) |i| {
+        const pair = try heap.cons(.empty_list_value, .empty_list_value);
+        if (i == 0) keep = pair;
+    }
+    heap.collect(TestRoots{ .values = &.{keep} });
+    // 残ったチャンクには、空きスロットがある。`deinit` は、それを解放済みのオブジェクトとして
+    // 扱ってはならない。
+    try std.testing.expectEqual(1, heap.countOf(Pair));
+}
+
+test "a given-back slot is skipped by the sweep and the count, and what is made in it is a whole new object" {
+    var heap: Heap = .init(std.testing.allocator, .{});
+    defer heap.deinit();
+    const dropped = try heap.cons(.fromFixnum(1), .empty_list_value);
+    makeImmutable(dropped);
+    const kept = try heap.cons(.fromFixnum(2), .empty_list_value);
+    heap.collect(TestRoots{ .values = &.{kept} });
+    try std.testing.expectEqual(1, heap.countOf(Pair));
+    // 空いたスロットを使って作ったペアは、前のオブジェクトの「不変の印」を引き継がない。
+    const again = try heap.cons(.fromFixnum(3), .empty_list_value);
+    try std.testing.expectEqual(2, heap.countOf(Pair));
+    try std.testing.expect(!isImmutable(again));
+    heap.collect(TestRoots{ .values = &.{ kept, again } });
+    try std.testing.expectEqual(2, heap.countOf(Pair));
+    try std.testing.expectEqual(2, kept.asPair().?.car.asFixnum().?);
+    try std.testing.expectEqual(3, again.asPair().?.car.asFixnum().?);
+}
+
+test "a chunk smaller than one slot is raised to hold one" {
+    const heap: Heap = .init(std.testing.allocator, .{ .chunk_bytes = 1 });
+    try std.testing.expectEqual(min_chunk_bytes, heap.options.chunk_bytes);
+    const big: Heap = .init(std.testing.allocator, .{ .chunk_bytes = 1 << 20 });
+    try std.testing.expectEqual(1 << 20, big.options.chunk_bytes);
 }
 
 test "a collection frees a string and a vector the roots do not reach, payload included" {
