@@ -508,6 +508,17 @@ pub fn build(b: *std.Build) void {
     var targets: std.ArrayList(TestTarget) = .empty;
     targets.append(b.allocator, .of(b, sucheme)) catch @panic("OOM");
     targets.append(b.allocator, .of(b, exe.root_module)) catch @panic("OOM");
+    // REPL の行編集(スライス 7h から。計画書 0021)。`src/line_editor.zig` が部品を1つに束ね、
+    // そこから届かないファイルのテストは走らない。`zig build test` は、`sucheme` と
+    // `src/main.zig` の根から届くファイルしか拾わないので、別の対象にする。
+    // 7j で `src/main.zig` が使うときは、このモジュールを `exe` の `imports` に足す
+    // (ファイルのパスで読むと、同じファイルが2つのモジュールに属する誤りになる)。
+    const line_editor = b.createModule(.{
+        .root_source_file = b.path("src/line_editor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    targets.append(b.allocator, .of(b, line_editor)) catch @panic("OOM");
     // ツールは検証のコードである。test step に自分のテストがなければ、ツールの中の
     // 失敗するアサーションは走らない。段階0では、新しいロジックの大半がここにある。
     for (tools) |t| {
