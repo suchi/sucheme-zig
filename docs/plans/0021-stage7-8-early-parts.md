@@ -291,6 +291,7 @@ flowchart TD
 
 | ファイル | 責務 | スライス |
 | --- | --- | --- |
+| `src/line_editor.zig` | 部品を束ねる名前空間。`build.zig` のテスト対象の根(部品を足したら1行足す) | 7h から |
 | `src/line_editor/keys.zig` | バイト列からキーの事象への解読 | 7a |
 | `src/line_editor/buffer.zig` | 編集バッファとカーソル | 7b |
 | `src/line_editor/kill_ring.zig` | キルリング | 7c |
@@ -364,11 +365,24 @@ export function describeStatus(status, output); // { text, kind }
 | スライス | 状態 | PR |
 | --- | --- | --- |
 | この計画書 | 合意済み(2026-10-20) | - |
-| 7a から 7n | 未着手(順序は、2026-11-12 に最小の核が先に改めた。「L6 の最小の核」) | - |
+| 7a キー列の解読 | 未着手(順序は、2026-11-12 に最小の核が先に改めた。「L6 の最小の核」) | - |
+| 7b 編集バッファ | 未着手 | - |
+| 7c キルリングと取り消し | 未着手 | - |
+| 7d 履歴 | 未着手 | - |
+| 7e 括弧の対応 | 未着手(核のあと) | - |
+| 7f 文字幅 | 未着手 | - |
+| 7g 再描画 | 未着手 | - |
+| 7h POSIX の生モード | 実装した。境界は `RawMode.enter` `RawMode.leave` `RawMode.read`、`columns`、`isInteractive`、`restoreActive` の `src/line_editor/term_posix.zig` に閉じた。復元の経路は、`leave`(`defer`)、`SIGINT` `SIGTERM` `SIGHUP` `SIGQUIT` のハンドラ、panic の中の `restoreActive` の3つである。Linux の疑似端末で、実際の信号と panic のあとに、端末が戻ることを確かめた(確かめた範囲は PR 本文)。残り: panic ハンドラからの `restoreActive` の呼び出しは、`src/main.zig` を変える 7j で入れる。Windows と macOS の実機での実行は、未確認である | - |
+| 7i Windows の生モード | 未着手(核のあと) | - |
+| 7j REPL への組み込み | 未着手 | - |
+| 7k 識別子の補完 | 未着手(核のあと) | - |
+| 7l 差分読み取り | 未着手(核のあと) | - |
+| 7m 複数行の編集と再描画 | 未着手(核のあと) | - |
+| 7n 履歴の保存 | 未着手(核のあと) | - |
 | 8a から 8h | 未着手 | - |
 
 ## 次にやること
 
 1. 行編集を自前で作る決定は、[ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md) に記録した。[design/open-questions.md](../design/open-questions.md) の「段階7までに決める」の行は消した。配置先(合意を求める点の2)の結果は 8h の計画に反映し、配置を終えたら「段階8までに決める」の行を消す。
-2. L6 は、核の 7h、7a、7f、7b、7d から始める(上の「L6 の最小の核」)。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
-3. 核の最初のスライスの PR で、7a から 7n のスライスの進捗の表を、スライスごとの行に分ける。
+2. L6 は、核の 7h、7a、7f、7b、7d から始める(上の「L6 の最小の核」)。7h は実装した。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
+3. 7j(REPL への組み込み)で、`src/main.zig` の panic ハンドラから `term_posix.restoreActive` を呼ぶ。`build.zig` には、`src/line_editor.zig` を根とするモジュール `line_editor` を、`zig build test` の対象として足した(7h)。7j は、そのモジュールを `exe` の `imports` に足して使う。部品のファイルは、`src/line_editor.zig` に `pub const` で1行足す(足さないとテストが走らない)。
