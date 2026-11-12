@@ -348,3 +348,32 @@ test "restoreActive puts the terminal back, as the signal handler and a panic ho
 test "restoreActive does nothing when raw mode is not active" {
     restoreActive();
 }
+
+test "a second leave on a finished RawMode does not disturb the raw mode that is active now" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const pty = try Pty.open();
+    defer pty.close();
+    var first = try RawMode.enter(pty.slave);
+    first.leave();
+    var second = try RawMode.enter(pty.slave);
+    defer second.leave();
+    first.leave();
+    try testing.expect(active_fd.load(.acquire) >= 0);
+    try testing.expect(!(try posix.tcgetattr(pty.slave)).lflag.ICANON);
+}
+
+test "enter installs the signal handlers and leave puts the previous ones back" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const pty = try Pty.open();
+    defer pty.close();
+    var before: posix.Sigaction = undefined;
+    posix.sigaction(.TERM, null, &before);
+    var raw = try RawMode.enter(pty.slave);
+    var during: posix.Sigaction = undefined;
+    posix.sigaction(.TERM, null, &during);
+    try testing.expect(during.handler.handler == onFatalSignal);
+    raw.leave();
+    var after: posix.Sigaction = undefined;
+    posix.sigaction(.TERM, null, &after);
+    try testing.expect(after.handler.handler == before.handler.handler);
+}
