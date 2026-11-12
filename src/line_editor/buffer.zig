@@ -533,6 +533,24 @@ test "the space word (Ctrl-W) stops only at spaces and tabs" {
     try expectMarked("|", &b);
 }
 
+test "the space word treats a tab as a separator" {
+    var b = try fromMarked("a\tb|");
+    defer b.deinit();
+    const r = b.rangeBackwardSpaceWord();
+    try testing.expectEqualStrings("b", b.text()[r.start..r.end]);
+}
+
+test "digits belong to words" {
+    var b = try fromMarked("|a1 22 b");
+    defer b.deinit();
+    b.moveForwardWord();
+    try expectMarked("a1| 22 b", &b);
+    b.moveForwardWord();
+    try expectMarked("a1 22| b", &b);
+    b.moveBackwardWord();
+    try expectMarked("a1 |22 b", &b);
+}
+
 test "kill ranges to the line start and end" {
     var b = try fromMarked("ab|cd");
     defer b.deinit();

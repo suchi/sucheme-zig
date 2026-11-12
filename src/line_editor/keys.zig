@@ -133,8 +133,8 @@ fn decodeCsi(bytes: []const u8) Decoded {
 }
 
 fn csiKey(params: []const u8, final: u8) Key {
-    // 中間のバイト(0x20-0x2F)を含む列は、割り当てを持たない。
-    for (params) |p| if (p < 0x30) return .unknown;
+    // 割り当てがあるのは、パラメータが空の列と、数字だけの決まった列である。中間のバイト
+    // (0x20-0x2F)を含む列は、どの比較にも一致しないので、`.unknown` になる。
     switch (final) {
         'A' => return if (params.len == 0) .{ .arrow = .up } else .unknown,
         'B' => return if (params.len == 0) .{ .arrow = .down } else .unknown,
@@ -379,7 +379,11 @@ test "CSI with modifiers or other parameters is unknown but consumed whole" {
     try expectKey(.unknown, 4, "\x1B[5~"); // PageUp
     try expectKey(.unknown, 4, "\x1B[6~"); // PageDown
     try expectKey(.unknown, 5, "\x1B[15~"); // F5
-    try expectKey(.unknown, 4, "\x1B[1A"); // パラメータつきの矢印
+    // パラメータつきの矢印、Home、End は、修飾キーつきの列として扱い、割り当てない。
+    inline for (.{ 'A', 'B', 'C', 'D', 'H', 'F' }) |f| {
+        try expectKey(.unknown, 4, std.fmt.comptimePrint("\x1B[1{c}", .{f}));
+        try expectKey(.unknown, 4, std.fmt.comptimePrint("\x1B[ {c}", .{f})); // 中間のバイト
+    }
     try expectKey(.unknown, 3, "\x1B[Z"); // Shift-Tab
     try expectKey(.unknown, 4, "\x1B[ q"); // 中間のバイトを含む
     try expectKey(.unknown, 7, "\x1B[2000~"); // 200 と 2000 を取り違えない
