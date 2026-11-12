@@ -502,6 +502,7 @@ test "truncated UTF-8 at the end of the prompt is drawn as a replacement" {
 
 test "C1 control character at the upper bound is replaced" {
     try draw(20, "> ", "\u{9f}", 0, "> \u{FFFD}", 2);
+    try draw(20, "> ", "\u{80}", 0, "> \u{FFFD}", 2);
     try draw(20, "> ", "\u{a0}", 0, "> \u{a0}", 2);
 }
 
