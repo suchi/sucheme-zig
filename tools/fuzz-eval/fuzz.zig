@@ -25,6 +25,12 @@ const step_limit = 100_000;
 /// (`(scheme base)`)の読み込みも上限に数えるので(ADR-0039)、それが収まる大きさにする。
 const heap_limit = 8 * 1024 * 1024;
 
+/// The bytes of a chunk of cells.
+/// Why: 確保の失敗を仕掛ける対象は、下の割り当て器への確保である。セルは大きなチャンクから
+/// 切り出すので、既定の大きさでは、1 回の実行で下に届く確保が少なく、仕掛けた番号に届かない。
+/// 最小の大きさ(ヒープが引き上げる)にして、セルの確保を、以前に近い頻度で下に届かせる。
+const heap_chunk_bytes = 1;
+
 /// How many bytes of results one fuzz run may write.
 /// 書き出し先が満ちると `error.WriteFailed` になる。循環するデータの印字は、ここで止まる
 /// (計画書 0024 の「残っていること」)。
@@ -252,7 +258,7 @@ fn run(record: ?*Record, smith: *std.testing.Smith) anyerror!void {
 fn evalOnce(record: ?*Record, src: []const u8, fail_at: u16, backing: std.mem.Allocator) anyerror!Outcome {
     var failing: OneShotFailure = .{ .backing = backing };
     var interp: sucheme.Interpreter = undefined;
-    try interp.initWithFiles(failing.allocator(), .{ .limit = heap_limit }, null);
+    try interp.initWithFiles(failing.allocator(), .{ .limit = heap_limit, .chunk_bytes = heap_chunk_bytes }, null);
     defer interp.deinit();
     interp.setStepLimit(step_limit);
 
