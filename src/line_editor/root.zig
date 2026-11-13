@@ -8,6 +8,9 @@ const std = @import("std");
 
 pub const keys = @import("keys.zig");
 pub const buffer = @import("buffer.zig");
+pub const term_posix = @import("term_posix.zig");
+pub const kill_ring = @import("kill_ring.zig");
+pub const undo = @import("undo.zig");
 pub const history = @import("history.zig");
 pub const width = @import("width.zig");
 
