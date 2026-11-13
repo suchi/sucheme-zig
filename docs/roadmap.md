@@ -241,7 +241,7 @@
 - 段階の完了時に、確定したことを設計ドキュメントまたはコードのコメントに書き、[design/open-questions.md](design/open-questions.md) から該当する行を消す。
 - 1コミット=1論理変更を守る。コミットは節目ごとに作り、push はまとめる(`AGENTS.md` の進め方の「Actions の分数」の規則)。
 
-- [ ] ヒープの上限に届くまでの時間(小さなセルを重ねる入力で 40 秒を超える)の調査と対策。計画書 [0029](plans/0029-heap-limit-slow-exhaustion.md) のスライス H1(再測定と仮説)、H2(内訳の計測)、H3(案 B、回収 1 回の費用の削減。セルをチャンクから切り出し、掃除をメモリの順の走査にした)は終えた。`grow` が上限に届くまでの時間は、ReleaseSafe で約 43 秒から約 22 秒、Debug で約 60 秒から約 37 秒になった。残りは、案 A(待ち時間の上限を、挙動の変更で設ける)の判断で、B1 のあとの待ち時間を許容するかを、ユーザーに諮る(未決)。Issue は [suchi/sucheme-zig#291](https://github.com/suchi/sucheme-zig/issues/291)
+- [x] ヒープの上限に届くまでの時間(小さなセルを重ねる入力で 40 秒を超える)の調査と対策。計画書 [0029](plans/0029-heap-limit-slow-exhaustion.md) のスライス H1(再測定と仮説)、H2(内訳の計測)、H3(案 B、回収 1 回の費用の削減。セルをチャンクから切り出し、掃除をメモリの順の走査にした)は終えた。`grow` が上限に届くまでの時間は、ReleaseSafe で約 43 秒から約 22 秒、Debug で約 60 秒から約 37 秒になった。案 A(待ち時間の上限を、挙動の変更で設ける)は、B1 で待ち時間が縮み、挙動の変更を伴うため、見送りと決まった。Issue は [suchi/sucheme-zig#291](https://github.com/suchi/sucheme-zig/issues/291)
 
 ## 未確定の事項
 
