@@ -24,6 +24,7 @@
 //!   を描く。テキストは、呼び出し側(履歴の部品)が渡す、見つかった履歴の項目である。
 
 const std = @import("std");
+const width = @import("width.zig").width;
 
 /// The state kept between redraws. 窓の先頭を安定させるために使う(横ずらしの量を最小に保つ)。
 pub const State = struct {
@@ -228,14 +229,6 @@ fn renderWith(
     const col = pw + before;
     if (col > 0) try w.print("\x1b[{d}C", .{col});
     return .{ .start = s };
-}
-
-// Why: 文字幅の仮の実装。符号位置が制御文字なら 0、それ以外は 1 を返す。表(東アジアの
-// 全角を2、結合文字を0)は L4 の `src/unicode/` に入ってから引く。7f(`width.zig`)が
-// main に入ったら、この定義を消して `@import("width.zig").width` に差し替える(計画書 0021)。
-fn width(cp: u21) u2 {
-    if (cp < 0x20 or (cp >= 0x7f and cp < 0xa0)) return 0;
-    return 1;
 }
 
 // ---- テスト ----
