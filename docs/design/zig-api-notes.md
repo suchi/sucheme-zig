@@ -203,6 +203,17 @@ defer gpa.free(s);
 
 `std.Io.Terminal` は色付き出力のための書き込み側の抽象であり、入力の生モードは提供しない。段階7の行編集では `file.isTty(io)` と `file.enableAnsiEscapeCodes(io)` を使い、生モードの設定は自前のプラットフォーム別コードで行う。
 
+POSIX の生モード(スライス 7h。使っているのは `src/line_editor/term_posix.zig`)は、Zig 0.17.0 の標準ライブラリのソース(`std/posix.zig`、`std/os/linux.zig`、`std/c.zig`、`std/Io/File.zig`)を読んで書き、Linux(カーネル 6.18)の疑似端末で動かして確かめた。
+
+- 端末かの判定: `std.Io.File.stdin().isTty(io)`(`Io.Cancelable!bool`)。取り消されたときのエラーは、端末でないとみなす。
+- 端末の属性: `std.posix.tcgetattr(fd)` と `std.posix.tcsetattr(fd, .DRAIN, termios)`。エラーは `error.NotATerminal`(と `tcsetattr` の `error.ProcessOrphaned`)である。`.FLUSH` は未読の入力を捨てるので、元に戻すときは `.DRAIN` を使う。
+- `termios` のフラグは、`iflag.ICRNL`、`lflag.ECHO` のような `packed struct` の bool の欄である(Linux と macOS で同じ綴り。macOS はコンパイルだけを確かめ、実行は未確認)。`cflag.CSIZE` は `.CS8` を取る。制御文字は `cc[@intFromEnum(std.posix.V.MIN)]` と `V.TIME` である。
+- 幅: `std.posix.winsize`(`row`、`col`、`xpixel`、`ypixel`)と、`std.posix.T.IOCGWINSZ` の `ioctl` である。標準ライブラリに `ioctl` の包みは無い。libc を使わない Linux(`*-linux-musl`)では `std.os.linux.ioctl(fd, request: u32, arg: usize) usize` で、戻り値は errno を含む(`std.posix.errno(rc)` で読む)。libc を使う OS では `std.posix.system.ioctl(fd, request: c_int, ...)` で、失敗は -1 である。`std.posix.T.IOCSWINSZ` は Linux にだけあり、macOS の `T` には無い(テストの疑似端末は Linux だけで走らせる)。
+- 信号: `std.posix.sigaction(sig, &act, &old)` の `act` は `std.posix.Sigaction{ .handler = .{ .handler = fn }, .mask = std.posix.sigemptyset(), .flags = 0 }`。ハンドラは `fn (std.posix.SIG) callconv(.c) void` である。既定の動作に戻すには `std.posix.SIG.DFL` を `handler` に入れる。自分への送り直しは `std.posix.raise(sig)` である。
+- 読み取り: `std.posix.read(fd, buf)`。`EINTR` は中で再試行する。入力の終わりは 0 を返す。
+- 0.17.0 に無いもの: `std.posix.openZ`(`std.posix.openatZ(std.posix.AT.FDCWD, path, flags, mode)` を使う)、`std.posix.write`(Linux のテストでは `std.os.linux.write` を使う)、`std.fmt.bufPrintZ`(`std.fmt.bufPrintSentinel(buf, fmt, args, 0)` を使う)、`std.posix.getenv`。
+- 試した範囲: `x86_64-linux`、`aarch64-linux-musl`(コンパイルのみ)、libc ありの Linux(`-lc`)で、単体テストを実行した。`x86_64-windows`、`aarch64-windows`、`x86_64-macos`、`aarch64-macos` は、コンパイルだけを確かめた(実行は未確認)。Windows では、生モードは何もせず `error.Unsupported` を返す。
+
 ## 時刻
 
 Zig 0.17.0 の標準ライブラリのソース(`std/Io.zig` の `Clock` と `Timestamp`)を読んで確かめた(スライス 5n。使っているのは `src/platform/clock.zig`)。
