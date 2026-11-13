@@ -235,6 +235,11 @@ fn renderWith(
 
 const testing = std.testing;
 
+test {
+    // 他のファイルを読み込むファイルは、自分の宣言のテストを走らせる(`check-docs` の規則)。
+    std.testing.refAllDecls(@This());
+}
+
 /// テスト用の幅: U+0300 から U+036F は 0、U+3000 から U+9FFF と U+FF00 から U+FF60 は 2、
 /// それ以外は 1。
 fn testWidth(cp: u21) u2 {
