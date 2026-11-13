@@ -367,9 +367,9 @@ export function describeStatus(status, output); // { text, kind }
 | 7a キー列の解読 | `decode` が、文字の挿入、制御バイト、`Alt` との組、CSI と SS3 の矢印と `Home` `End` `Delete`、括弧つき貼り付けの印を解読する。途中で切れた列は `need_more`、不正な UTF-8 と終端のない CSI は捨てるバイト数つきの `invalid` を返す。署名は上の案から変えていない(`Arrow` を足し、`Key.ctrl` は制御バイトそのもの)。単独の `ESC` は `need_more` で、時間切れの扱いは呼び出し側(7j)に任せる。確かめたこと: 単体テスト、全切り詰めの `need_more`、乱数と全探索に近い列で止まらないこと | 7b と同じ PR |
 | 7b 編集バッファ | `Buffer` が、挿入、範囲の置き換えと削除、文字と単語と行頭行末の移動、入れ替えを持つ。変更は `Edit` を返し、削除や切り取りの範囲は操作の前に `rangeBackwardWord` などで問い合わせる(7c が使う)。不変条件(正しい UTF-8、改行なし、カーソルは文字の境界)を乱数の操作列で確かめた。単語は ASCII の英数字と ASCII でない文字の並びで、仮の実装である | 7a と同じ PR |
 | 7c キルリングと取り消し | `KillRing` が、4つの切り取り(`killToEnd` `killToStart` `killBackwardSpaceWord` `killForwardWord`)、`yank`、`yankPop` を持つ。続けた切り取りは1項目にまとめ、向きが前なら後ろに、後ろなら前に足す。リングは項目数に上限を置く。`UndoStack` が、`Edit` と取り除いたテキストの複製を記録し、`undo` で1つずつ戻す。`insertTyped` で入れた隣り合う文字の挿入は1項目にまとめる。やり直しは入れていない。どちらも入出力に触れず、`Buffer` を受け取って操作する。切り取りや貼り付けの取り消しは、各操作に `UndoStack` を渡すと記録される。確保の失敗でバッファと記録が変わらないことを、確保を失敗させるテストで確かめた。キー割り当てと、連なりを切る呼び出し(`breakChain` と `breakGroup`)は 7j の担当である | 7c の PR |
-| 7d 履歴 | 未着手 | - |
+| 7d 履歴 | 実装した(`src/line_editor/history.zig`)。`History`(追加、重複と空の項目の除外、上限、`addLines` による複数行の項目)、`Browser`(上下の移動、最初の編集中の行を覚える)、`Search`(Ctrl-R の逐次検索)。改行を含む項目は記録するが、移動と検索は返さない(`isRecallable` が1か所で決める。7m で直す)。残り: ファイル保存は 7n | - |
 | 7e 括弧の対応 | 未着手(核のあと) | - |
-| 7f 文字幅 | 未着手 | - |
+| 7f 文字幅 | 仮の実装を入れた(`src/line_editor/width.zig`、`width(cp: u21) u2`)。全角と結合文字で幅がずれる。L4 の表に幅の情報が入ったら差し替える | - |
 | 7g 再描画 | 未着手 | - |
 | 7h POSIX の生モード | 実装した。境界は `RawMode.enter` `RawMode.leave` `RawMode.read`、`columns`、`isInteractive`、`restoreActive` の `src/line_editor/term_posix.zig` に閉じた。復元の経路は、`leave`(`defer`)、`SIGINT` `SIGTERM` `SIGHUP` `SIGQUIT` のハンドラ、panic の中の `restoreActive` の3つである。Linux の疑似端末で、実際の信号と panic のあとに、端末が戻ることを確かめた(確かめた範囲は PR 本文)。残り: panic ハンドラからの `restoreActive` の呼び出しは、`src/main.zig` を変える 7j で入れる。Windows と macOS の実機での実行は、未確認である | - |
 | 7i Windows の生モード | 未着手(核のあと) | - |
