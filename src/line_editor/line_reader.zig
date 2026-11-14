@@ -851,3 +851,41 @@ test "PosixTerminal reads the bytes buffered in the reader before the terminal" 
     try testing.expectEqual(@as(?u8, null), try t.readByte());
     try testing.expectEqual(@as(usize, term_posix.default_columns), t.columns());
 }
+
+test "Ctrl-D on a line of one character deletes it, and does not end the input" {
+    try expectLines("a\x01\x04\r", &.{""});
+}
+
+test "Enter in the middle of the line leaves the cursor after the whole line" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "abc\x01\r", 1);
+    defer run.deinit();
+    // プロンプト "> " の2桁と "abc" の3桁のあと(5桁目)に、カーソルを置いてから改行する。
+    try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r\x1b[5C\n"));
+}
+
+test "the search with an empty query is not shown as failed" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "x\r\x12\x07\r", 2);
+    defer run.deinit();
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "(reverse-i-search)`': ") != null);
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "failed") == null);
+}
+
+test "ESC then Ctrl-C drops the line too" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "ab\x1b\x03", 1);
+    defer run.deinit();
+    try testing.expect(run.results.items[0] == .interrupted);
+}
+
+test "Ctrl-C in the search draws the line, not the search, before it is dropped" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "x\r\x12x\x03", 2);
+    defer run.deinit();
+    try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r> \x1b[K\r\x1b[2C^C\n"));
+}
