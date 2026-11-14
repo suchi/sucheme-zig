@@ -65,7 +65,9 @@
 //! (ADR-0049、`src/line_editor/line_reader.zig`)。1行を読む間だけ端末を生モードにし、
 //! 評価の間は元に戻す。プロンプトと行は、再描画のエスケープシーケンスつきで stdout に書く。
 //! 空の行の `Ctrl-D` は入力の終わりで、`Ctrl-C` は編集中の行と保留を捨てて、新しい
-//! プロンプトに戻る(終了ステータスは変わらない)。閉じた式は、継続行を改行でつないだ1項目
+//! プロンプトに戻る(終了ステータスは変わらない)。評価中の `Ctrl-C` は、これまでどおり信号で
+//! sucheme を終える。評価の出力が改行で終わらなかったときは、改行を足してからプロンプトを
+//! 描く(出力を上書きしないため)。閉じた式は、継続行を改行でつないだ1項目
 //! として、記憶上の履歴に残る。それ以外(Windows、パイプ、ファイル)は、行をそのまま読む。
 //!
 //! 構文エラー(`)` だけの行、`(a . )`、`#z`)は、続きを足しても直らないので、
@@ -202,13 +204,22 @@ pub fn main(init: std.process.Init) !void {
                 .in_fd = std.Io.File.stdin().handle,
                 .out_fd = std.Io.File.stdout().handle,
             };
-            var reader: LineReader = if (line_editor.term_posix.isInteractive(io)) .{ .rich = .{
+            // `rich` は、端末への書き込みが行の途中で終わったかを覚えるため、stdout と stderr を
+            // `LineTracker` に通す(`line_reader.LineStart` の Why)。
+            const interactive = line_editor.term_posix.isInteractive(io);
+            var line_start: line_editor.line_reader.LineStart = .{};
+            var out_tracker: line_editor.line_reader.LineTracker = .init(out, &line_start);
+            var err_tracker: line_editor.line_reader.LineTracker = .init(err, &line_start);
+            var reader: LineReader = if (interactive) .{ .rich = .{
                 .editor = .init(std.heap.smp_allocator),
                 .terminal = terminal.terminal(),
                 .fallback = .{ .in = &stdin.interface },
+                .line_start = &line_start,
             } } else .{ .dumb = .{ .in = &stdin.interface } };
             defer reader.deinit();
-            const status = try replLines(std.heap.smp_allocator, .{ .io = io, .roots = roots }, .{ .variables = init.environ_map }, &reader, &stdin.interface, out, err);
+            const repl_out = if (interactive) &out_tracker.interface else out;
+            const repl_err = if (interactive) &err_tracker.interface else err;
+            const status = try replLines(std.heap.smp_allocator, .{ .io = io, .roots = roots }, .{ .variables = init.environ_map }, &reader, &stdin.interface, repl_out, repl_err);
             if (status != 0) std.process.exit(status);
         },
         .run_file => |index| {
@@ -1448,6 +1459,27 @@ test "the editing repl recalls the previous expression with Up" {
     _ = try replRich("(define x 1)\r(set! x (+ x 1))\r\x1b[A\rx\r\x04", &out, &err);
     // set! を2回評価したので 3 になる。
     try std.testing.expect(std.mem.endsWith(u8, out.written(), "\n3\n\r> \x1b[K\r\x1b[2C\n"));
+}
+
+test "the editing repl keeps output that does not end a line, by starting the prompt on a new line" {
+    var sink: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer sink.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    var line_start: line_editor.line_reader.LineStart = .{};
+    var out: line_editor.line_reader.LineTracker = .init(&sink.writer, &line_start);
+    var script: line_editor.line_reader.Script = .{ .bytes = "(import (scheme write))\r(display \"tail\")\r\x04" };
+    var in: std.Io.Reader = .fixed("");
+    var reader: LineReader = .{ .rich = .{
+        .editor = .init(std.testing.allocator),
+        .terminal = script.terminal(),
+        .fallback = .{ .in = &in },
+        .line_start = &line_start,
+    } };
+    defer reader.deinit();
+    _ = try replLines(std.testing.allocator, null, .{}, &reader, &in, &out.interface, &err.writer);
+    // "tail" のあとに改行が入ってから、次のプロンプトが行頭から描かれる。
+    try std.testing.expect(std.mem.indexOf(u8, sink.written(), "tail\n\r> ") != null);
 }
 
 test {

@@ -12,7 +12,8 @@
 //! 次の行を読む。確定した前の行には戻れない(複数行の編集は 7m)。
 //!
 //! 生モードは、1行を読む間だけ有効にする。評価の間は元の端末の設定に戻すので、プログラムの
-//! 出力と `read` は、これまでどおりの端末で動き、`Ctrl-C` は評価を止める信号になる。
+//! 出力と `read` は、これまでどおりの端末で動く。評価中の `Ctrl-C` は、これまでどおり
+//! `SIGINT` になり、sucheme を終える(評価だけを止める仕組みは無い)。
 //!
 //! 単独の `ESC` に時間切れを置かない。`ESC` は、次のキーと組で `Alt` の列として読む
 //! (`ESC b` は `Alt-B` と同じ)。Emacs の `ESC` の前置と同じ振る舞いである。
@@ -360,8 +361,9 @@ pub const Editor = struct {
             'd' => try check(self.kill.killForwardWord(&self.buf, &self.undo)),
             'y' => try check(self.kill.yankPop(&self.buf, &self.undo)),
             0x7F, 0x08 => try check(self.kill.kill(&self.buf, self.buf.rangeBackwardWord(), .backward, &self.undo)), // Alt-Backspace
-            // `ESC` のあとの `Ctrl-C` も、行を捨てる操作として効かせる(`ESC` に時間切れが無いため)。
-            0x03 => return .interrupt,
+            // `ESC` のあとの制御キー(`Enter`、`Ctrl-C` など)は、そのキーとして効かせる。
+            // Why: `ESC` に時間切れが無いので、`Esc` を押したあとの次のキーが消えないようにする。
+            0...0x07, 0x09...0x1A, 0x1C...0x1F => return self.handleCtrl(@intCast(c)),
             else => return .none,
         }
         return .redraw;
@@ -461,16 +463,72 @@ fn check(result: anytype) Allocator.Error!void {
     };
 }
 
+/// Whether the last byte written to the terminal ended a line.
+///
+/// Why: 再描画は行頭(`CR`)から描き直すので、改行で終わらない出力(`(display "a")`)のあとに
+/// そのまま描くと、その出力を上書きして消す。`rich` は、端末への書き込み(stdout と stderr)を
+/// `LineTracker` に通して、行の途中で終わっていたら、改行を足してからプロンプトを描く。
+pub const LineStart = struct {
+    at_start: bool = true,
+};
+
+/// A writer that passes bytes to `inner` and records in `state` whether the last one was `\n`.
+///
+/// 自分の緩衝は持たない(書いた順に `inner` へ渡すので、最後のバイトが正しく決まる)。
+/// `flush` は `inner` を書き出す。`interface` は動かさずに使う(`@fieldParentPtr` で戻るため)。
+pub const LineTracker = struct {
+    inner: *std.Io.Writer,
+    state: *LineStart,
+    interface: std.Io.Writer,
+
+    pub fn init(inner: *std.Io.Writer, state: *LineStart) LineTracker {
+        return .{ .inner = inner, .state = state, .interface = .{ .buffer = &.{}, .vtable = &vtable } };
+    }
+
+    const vtable: std.Io.Writer.VTable = .{ .drain = drain, .flush = flush };
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *LineTracker = @fieldParentPtr("interface", w);
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |d| {
+            try self.inner.writeAll(d);
+            self.note(d);
+            n += d.len;
+        }
+        const last = data[data.len - 1];
+        for (0..splat) |_| {
+            try self.inner.writeAll(last);
+            self.note(last);
+            n += last.len;
+        }
+        return n;
+    }
+
+    fn flush(w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const self: *LineTracker = @fieldParentPtr("interface", w);
+        try self.inner.flush();
+    }
+
+    fn note(self: *LineTracker, d: []const u8) void {
+        if (d.len > 0) self.state.at_start = d[d.len - 1] == '\n';
+    }
+};
+
 /// The editing reader: the editor, the terminal, and the plain reader to fall back on.
 pub const Rich = struct {
     editor: Editor,
     terminal: Terminal,
     /// 生モードに入れなかったときに使う。
     fallback: Dumb,
+    /// 端末への書き込みが行の途中で終わっているか。null なら調べない(改行を足さない)。
+    line_start: ?*const LineStart = null,
 
     pub fn read(self: *Rich, out: *std.Io.Writer, prompt: []const u8) ReadError!Result {
         self.terminal.begin() catch return self.fallback.read(out, prompt);
         defer self.terminal.finish();
+        if (self.line_start) |ls| {
+            if (!ls.at_start) try out.writeAll("\n");
+        }
         return self.editor.read(self.terminal, out, prompt);
     }
 };
@@ -946,6 +1004,53 @@ test "Ctrl-C puts the cursor after the line before it writes ^C" {
     var run = try runScript(&editor, "abc\x01\x03", 1);
     defer run.deinit();
     try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r\x1b[5C^C\n"));
+}
+
+test "ESC then a control key works as that key, so Enter after Esc still ends the line" {
+    try expectLines("ab\x1b\r", &.{"ab"});
+    try expectLines("ab\x1b\x01x\r", &.{"xab"});
+}
+
+test "LineTracker passes the bytes on and records whether the last one ended a line" {
+    var sink: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer sink.deinit();
+    var state: LineStart = .{};
+    var t: LineTracker = .init(&sink.writer, &state);
+    const w = &t.interface;
+    try w.writeAll("tail");
+    try testing.expect(!state.at_start);
+    try w.print("{d}\n", .{42});
+    try testing.expect(state.at_start);
+    try w.writeAll("");
+    try testing.expect(state.at_start);
+    try w.splatByteAll('x', 3);
+    try testing.expect(!state.at_start);
+    try w.flush();
+    try testing.expectEqualStrings("tail42\nxxx", sink.written());
+}
+
+test "Rich starts a new line before the prompt when the output so far ends inside a line" {
+    var script: Script = .{ .bytes = "a\rb\r" };
+    var in: std.Io.Reader = .fixed("");
+    var state: LineStart = .{};
+    var lr: LineReader = .{ .rich = .{ .editor = .init(testing.allocator), .terminal = script.terminal(), .fallback = .{ .in = &in }, .line_start = &state } };
+    defer lr.deinit();
+    var sink: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer sink.deinit();
+    var t: LineTracker = .init(&sink.writer, &state);
+    _ = try lr.read(&t.interface, "> ");
+    // 行の確定は改行で終わるので、次のプロンプトの前には何も足さない。
+    try t.interface.writeAll("out\n");
+    const before = sink.written().len;
+    _ = try lr.read(&t.interface, "> ");
+    try testing.expect(std.mem.startsWith(u8, sink.written()[before..], "\r> "));
+    // 改行で終わらない出力のあとは、改行を足してから描く。
+    try t.interface.writeAll("tail");
+    script.bytes = "c\r";
+    script.pos = 0;
+    const before2 = sink.written().len;
+    _ = try lr.read(&t.interface, "> ");
+    try testing.expect(std.mem.startsWith(u8, sink.written()[before2..], "\n\r> "));
 }
 
 test {
