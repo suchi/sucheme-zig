@@ -370,7 +370,7 @@ export function describeStatus(status, output); // { text, kind }
 | 7d 履歴 | 実装した(`src/line_editor/history.zig`)。`History`(追加、重複と空の項目の除外、上限、`addLines` による複数行の項目)、`Browser`(上下の移動、最初の編集中の行を覚える)、`Search`(Ctrl-R の逐次検索)。改行を含む項目は記録するが、移動と検索は返さない(`isRecallable` が1か所で決める。7m で直す)。残り: ファイル保存は 7n | - |
 | 7e 括弧の対応 | 未着手(核のあと) | - |
 | 7f 文字幅 | 仮の実装を入れた(`src/line_editor/width.zig`、`width(cp: u21) u2`)。全角と結合文字で幅がずれる。L4 の表に幅の情報が入ったら差し替える | - |
-| 7g 再描画 | 未着手 | - |
+| 7g 再描画 | `render` が、プロンプト、編集バッファのテキストとカーソル、端末の幅から、1行を描くシーケンス(`CR`、プロンプト、窓、`CSI K`、`CR`、`CSI n C`)を `std.Io.Writer` に書く。毎回、行全体を書き直す。描く桁数は `cols - 1` までで、折り返さず、カーソルを上へ戻さない。幅を超える行は、前回の窓の先頭(`State.start`)から、カーソルとその下の文字が入る最小の量だけ右へずらす。逐次検索は、`View.search` で、プロンプトの代わりに `(reverse-i-search)` のラベルを描く(テキストは呼び出し側が渡す)。プロンプトが `cols - 1` の半分を超えるときは末尾の側だけを描く。制御文字は `^A`、不正な UTF-8 と C1 は U+FFFD で描く。仮想の画面に適用するテストで、行の内容とカーソルの桁を確かめた。幅は `width.zig`(7f)の `width` を使う。今は仮の実装なので、全角の文字を含む行で、カーソルの位置が実際の画面とずれる。テストは、幅の関数を差し替える内部関数で、全角と結合文字を試した。確かめていないこと: 実際の端末での見え方(7j の組み込みのあと) | 7g の PR |
 | 7h POSIX の生モード | 実装した。境界は `RawMode.enter` `RawMode.leave` `RawMode.read`、`columns`、`isInteractive`、`restoreActive` の `src/line_editor/term_posix.zig` に閉じた。復元の経路は、`leave`(`defer`)、`SIGINT` `SIGTERM` `SIGHUP` `SIGQUIT` のハンドラ、panic の中の `restoreActive` の3つである。Linux の疑似端末で、実際の信号と panic のあとに、端末が戻ることを確かめた(確かめた範囲は PR 本文)。残り: panic ハンドラからの `restoreActive` の呼び出しは、`src/main.zig` を変える 7j で入れる。Windows と macOS の実機での実行は、未確認である | - |
 | 7i Windows の生モード | 未着手(核のあと) | - |
 | 7j REPL への組み込み | 未着手 | - |
@@ -383,6 +383,6 @@ export function describeStatus(status, output); // { text, kind }
 ## 次にやること
 
 1. 行編集を自前で作る決定は、[ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md) に記録した。[design/open-questions.md](../design/open-questions.md) の「段階7までに決める」の行は消した。配置先(合意を求める点の2)の結果は 8h の計画に反映し、配置を終えたら「段階8までに決める」の行を消す。
-2. L6 は、核の 7h、7f、7d を並行に進める(7a と 7b は済み)。7g は、7b のマージのあとに始められる。7j は核の最後である(上の「L6 の最小の核」)。7j は、7c の部品に対して、文字の挿入のあとは `KillRing.breakChain` を、移動や履歴の呼び出しなど、2つの部品を通らない操作のあとは `breakChain` と `UndoStack.breakGroup` の両方を呼ぶ。切り取りと貼り付けは、`UndoStack` を渡せば、取り消しのまとまりを自分で閉じる。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
+2. L6 は、核の 7a から 7d と 7f から 7h を実装した。残りの核は 7j である。7g の幅は、7f の表を引く実装に差し替わると、`render.zig` を変えずに正しくなる。7j は核の最後である(上の「L6 の最小の核」)。7j は、7c の部品に対して、文字の挿入のあとは `KillRing.breakChain` を、移動や履歴の呼び出しなど、2つの部品を通らない操作のあとは `breakChain` と `UndoStack.breakGroup` の両方を呼ぶ。切り取りと貼り付けは、`UndoStack` を渡せば、取り消しのまとまりを自分で閉じる。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
 3. 7a と 7b の PR で、進捗の表をスライスごとの行に分けた。残りの 7d から 7n は、着手するスライスの PR で、行を分ける。
 4. 7j(REPL への組み込み)で、`src/main.zig` の panic ハンドラから `term_posix.restoreActive` を呼ぶ。部品のファイルは、`src/line_editor/root.zig` に `pub const` で1行足す(足さないとテストが走らない)。

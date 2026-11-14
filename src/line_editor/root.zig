@@ -13,6 +13,7 @@ pub const kill_ring = @import("kill_ring.zig");
 pub const undo = @import("undo.zig");
 pub const history = @import("history.zig");
 pub const width = @import("width.zig");
+pub const render = @import("render.zig");
 
 test {
     std.testing.refAllDecls(@This());
