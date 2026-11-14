@@ -508,8 +508,10 @@ pub const LineReader = union(enum) {
 
 const testing = std.testing;
 
-/// テストの台本の端末。打つバイト列を先頭から1つずつ返し、幅は固定である。
-const Script = struct {
+/// A scripted terminal for the tests.
+///
+/// 打つバイト列を先頭から1つずつ返し、幅は固定である。`src/main.zig` の REPL のテストも使う。
+pub const Script = struct {
     bytes: []const u8,
     pos: usize = 0,
     cols: usize = 80,
@@ -517,7 +519,7 @@ const Script = struct {
     finished: usize = 0,
     refuse: bool = false,
 
-    fn terminal(self: *Script) Terminal {
+    pub fn terminal(self: *Script) Terminal {
         return .{ .ctx = self, .vtable = &vtable };
     }
 
