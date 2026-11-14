@@ -889,3 +889,7 @@ test "Ctrl-C in the search draws the line, not the search, before it is dropped"
     defer run.deinit();
     try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r> \x1b[K\r\x1b[2C^C\n"));
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
