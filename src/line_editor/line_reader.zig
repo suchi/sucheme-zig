@@ -902,7 +902,9 @@ test "Dumb skips a line too long for its buffer, and ends without a prompt when 
 test "PosixTerminal reads the bytes buffered in the reader before the terminal" {
     var in: std.Io.Reader = .fixed("xy");
     try in.fill(2);
-    var pt: PosixTerminal = .{ .in = &in, .in_fd = -1, .out_fd = -1 };
+    // 開いていない fd。Windows の `fd_t` はハンドルなので、整数の -1 は書けない。
+    const no_fd: std.posix.fd_t = if (@import("builtin").os.tag == .windows) std.os.windows.INVALID_HANDLE_VALUE else -1;
+    var pt: PosixTerminal = .{ .in = &in, .in_fd = no_fd, .out_fd = no_fd };
     const t = pt.terminal();
     try testing.expectEqual(@as(?u8, 'x'), try t.readByte());
     try testing.expectEqual(@as(?u8, 'y'), try t.readByte());
