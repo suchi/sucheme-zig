@@ -14,6 +14,7 @@ pub const undo = @import("undo.zig");
 pub const history = @import("history.zig");
 pub const width = @import("width.zig");
 pub const render = @import("render.zig");
+pub const line_reader = @import("line_reader.zig");
 
 test {
     std.testing.refAllDecls(@This());

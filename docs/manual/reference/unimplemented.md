@@ -19,7 +19,7 @@ Run with --help for the options available now.
 
 ## REPL の行編集
 
-カーソルの移動、履歴、補完などの行編集は、まだありません。[roadmap](../../roadmap.md) の段階 7 の項目です。
+POSIX の端末では、1行の編集と、終了で消える履歴があります([ユーザーズガイド 3 REPL](../guide/03-repl.md) の「行の編集」)。複数行の編集、履歴のファイルへの保存、補完、括弧の対応の表示、Windows での編集は、まだありません。[roadmap](../../roadmap.md) の段階 7 の項目です。
 
 ## エラーの位置
 

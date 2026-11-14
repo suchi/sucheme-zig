@@ -59,7 +59,16 @@
 //! `... ` で、次の行が、保留している入力の続きとして足される。足すとき改行を
 //! 戻すので、複数行の文字列リテラルは改行を含む。式が閉じたところで、保留の全体を
 //! 評価する。複数の式を含む行は、最後の式が閉じるまで評価されない。閉じた先頭の
-//! 式の出力も、そのときまで遅れる。継続を取り消す手段は無い。
+//! 式の出力も、そのときまで遅れる。端末でない入力では、継続を取り消す手段は無い。
+//!
+//! 標準入力と標準出力の両方が POSIX の端末のときは、行を編集できる読み手で読む
+//! (ADR-0049、`src/line_editor/line_reader.zig`)。1行を読む間だけ端末を生モードにし、
+//! 評価の間は元に戻す。プロンプトと行は、再描画のエスケープシーケンスつきで stdout に書く。
+//! 空の行の `Ctrl-D` は入力の終わりで、`Ctrl-C` は編集中の行と保留を捨てて、新しい
+//! プロンプトに戻る(終了ステータスは変わらない)。評価中の `Ctrl-C` は、これまでどおり信号で
+//! sucheme を終える。評価の出力が改行で終わらなかったときは、改行を足してからプロンプトを
+//! 描く(出力を上書きしないため)。閉じた式は、継続行を改行でつないだ1項目
+//! として、記憶上の履歴に残る。それ以外(Windows、パイプ、ファイル)は、行をそのまま読む。
 //!
 //! 構文エラー(`)` だけの行、`(a . )`、`#z`)は、続きを足しても直らないので、
 //! 継続行にならずにその行で報告される。
@@ -95,6 +104,18 @@
 
 const std = @import("std");
 const sucheme = @import("sucheme");
+const line_editor = @import("line_editor/root.zig");
+const LineReader = line_editor.line_reader.LineReader;
+
+/// The panic handler: puts the terminal back from raw mode, then panics as usual.
+///
+/// 行の編集中(生モードの間)に panic すると、端末が生モードのまま残る(7h の残り)。
+pub const panic = std.debug.FullPanic(panicRestoringTerminal);
+
+fn panicRestoringTerminal(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    line_editor.term_posix.restoreActive();
+    std.debug.defaultPanic(msg, first_trace_addr);
+}
 
 /// What the command line asked for.
 pub const Request = union(enum) {
@@ -177,7 +198,28 @@ pub fn main(init: std.process.Init) !void {
             // (単体テストは `std.testing.allocator` のままなので、リーク検査は残る)。
             // `smp_allocator` は複数スレッドのターゲットだけで使える。WASI のような単一
             // スレッドのターゲットは、この実行ファイルの対象ではない(docs/adr/0009)。
-            const status = try repl(std.heap.smp_allocator, .{ .io = io, .roots = roots }, .{ .variables = init.environ_map }, &stdin.interface, out, err);
+            // 入力と出力の両方が POSIX の端末なら、行を編集できる読み手を使う(ADR-0049)。
+            var terminal: line_editor.line_reader.PosixTerminal = .{
+                .in = &stdin.interface,
+                .in_fd = std.Io.File.stdin().handle,
+                .out_fd = std.Io.File.stdout().handle,
+            };
+            // `rich` は、端末への書き込みが行の途中で終わったかを覚えるため、stdout と stderr を
+            // `LineTracker` に通す(`line_reader.LineStart` の Why)。
+            const interactive = line_editor.term_posix.isInteractive(io);
+            var line_start: line_editor.line_reader.LineStart = .{};
+            var out_tracker: line_editor.line_reader.LineTracker = .init(out, &line_start);
+            var err_tracker: line_editor.line_reader.LineTracker = .init(err, &line_start);
+            var reader: LineReader = if (interactive) .{ .rich = .{
+                .editor = .init(std.heap.smp_allocator),
+                .terminal = terminal.terminal(),
+                .fallback = .{ .in = &stdin.interface },
+                .line_start = &line_start,
+            } } else .{ .dumb = .{ .in = &stdin.interface } };
+            defer reader.deinit();
+            const repl_out = if (interactive) &out_tracker.interface else out;
+            const repl_err = if (interactive) &err_tracker.interface else err;
+            const status = try replLines(std.heap.smp_allocator, .{ .io = io, .roots = roots }, .{ .variables = init.environ_map }, &reader, &stdin.interface, repl_out, repl_err);
             if (status != 0) std.process.exit(status);
         },
         .run_file => |index| {
@@ -341,6 +383,16 @@ pub const continuation_prompt = "... ";
 /// インタプリタの中でセッションの終わりまで生きる。
 /// 返すのは終了ステータスで、`exit` で終わったときのほかは 0 である。
 pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Process, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
+    var reader: LineReader = .{ .dumb = .{ .in = in } };
+    defer reader.deinit();
+    return replLines(gpa, files, process, &reader, in, out, err);
+}
+
+/// Runs the REPL over the lines `reader` gives; `in` is what the program's `read` reads.
+///
+/// `reader` が `rich` のときは、閉じた式を、行を改行でつないだ1項目として履歴に記録する。
+/// `Ctrl-C`(`interrupted`)は、保留を捨てて新しいプロンプトに戻る。
+pub fn replLines(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Process, reader: *LineReader, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var interp: sucheme.Interpreter = undefined;
@@ -355,22 +407,21 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Proc
     var pending: [max_line]u8 = undefined;
     var kept: usize = 0;
     while (true) {
-        try out.writeAll(if (kept == 0) prompt else continuation_prompt);
-        try out.flush();
-        const line = in.takeDelimiter('\n') catch |e| switch (e) {
-            error.StreamTooLong => {
+        const line = switch (try reader.read(out, if (kept == 0) prompt else continuation_prompt)) {
+            .line => |l| l,
+            .end => break,
+            .interrupted => {
+                kept = 0;
+                continue;
+            },
+            .too_long => {
                 try err.print("error: the line does not fit in {d} bytes, newline included\n", .{max_line});
                 try err.flush();
                 // 続きを読んでも、保留していた式の残りが分からない。保留も捨てる。
                 kept = 0;
-                _ = in.discardDelimiterInclusive('\n') catch |d| switch (d) {
-                    error.EndOfStream => break,
-                    error.ReadFailed => return d,
-                };
                 continue;
             },
-            error.ReadFailed => return e,
-        } orelse break;
+        };
         // `takeDelimiter` は改行を落とす。複数行の文字列リテラルが改行を含むように戻す。
         if (kept + line.len + 1 > max_line) {
             try err.print("error: the input does not fit in {d} bytes, newline included\n", .{max_line});
@@ -383,6 +434,7 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Proc
         kept += line.len + 1;
         // 足すたびに保留の全体を読み直す。費用は上限の2乗に抑えられる。
         if (try sucheme.isIncomplete(gpa, pending[0..kept])) continue;
+        try reader.addHistory(pending[0..kept]);
         _ = arena.reset(.retain_capacity);
         interp.evalPrint(arena.allocator(), pending[0..kept], out) catch |e| switch (e) {
             error.WriteFailed => return e,
@@ -1343,4 +1395,93 @@ test "runFile returns 66 for a file larger than the limit, and runs one at the l
         var out: std.Io.Writer.Discarding = .init(&.{});
         try std.testing.expectEqual(c.want, try runFile(std.testing.allocator, files, path, .{}, &out.writer, &err));
     }
+}
+
+/// 編集できる読み手で、台本の打鍵を REPL に通す。返すのは、REPL の出力(再描画の列を含む)と診断と、
+/// 終わったあとの履歴の項目数である。
+fn replRich(typed: []const u8, out: *std.Io.Writer.Allocating, err: *std.Io.Writer.Allocating) !usize {
+    var script: line_editor.line_reader.Script = .{ .bytes = typed };
+    var in: std.Io.Reader = .fixed("");
+    var reader: LineReader = .{ .rich = .{
+        .editor = .init(std.testing.allocator),
+        .terminal = script.terminal(),
+        .fallback = .{ .in = &in },
+    } };
+    defer reader.deinit();
+    _ = try replLines(std.testing.allocator, null, .{}, &reader, &in, &out.writer, &err.writer);
+    // 生モードは、読んだ行ごとに入って出る。
+    try std.testing.expectEqual(script.began, script.finished);
+    return reader.rich.editor.history.len();
+}
+
+test "the editing repl evaluates an edited line, and continues an open expression on the next line" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    // "(+ 1 2)" の 2 を Backspace で消して 3 にし、続く行で式を閉じる。
+    const n = try replRich("(+ 1 2\x7f3\r)\r\x04", &out, &err);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "... ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n4\n") != null);
+    try std.testing.expectEqualStrings("", err.written());
+    // 閉じた式は、2行をつないだ1項目として記録される。
+    try std.testing.expectEqual(@as(usize, 1), n);
+}
+
+test "Ctrl-C in the editing repl drops what it kept, and the next expression starts afresh" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    // "(+ 1" の保留は Ctrl-C で捨てられるので、"5" は継続でなく新しい式として評価される。
+    const n = try replRich("(+ 1\r\x03" ++ "5\r\x04", &out, &err);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "^C\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n5\n") != null);
+    try std.testing.expectEqualStrings("", err.written());
+    try std.testing.expectEqual(@as(usize, 1), n);
+}
+
+test "Ctrl-D on an empty continuation line in the editing repl ends the input with the open expression reported" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    // Ctrl-D のあとの打鍵は読まれない(台本の終わりで止まったのではないことを示す)。
+    _ = try replRich("(+ 1\r\x04" ++ "1)\r", &out, &err);
+    try std.testing.expectEqualStrings("error: unexpected end of input\n", err.written());
+}
+
+test "the editing repl recalls the previous expression with Up" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    _ = try replRich("(define x 1)\r(set! x (+ x 1))\r\x1b[A\rx\r\x04", &out, &err);
+    // set! を2回評価したので 3 になる。
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\n3\n\r> \x1b[K\r\x1b[2C\n"));
+}
+
+test "the editing repl keeps output that does not end a line, by starting the prompt on a new line" {
+    var sink: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer sink.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    var line_start: line_editor.line_reader.LineStart = .{};
+    var out: line_editor.line_reader.LineTracker = .init(&sink.writer, &line_start);
+    var script: line_editor.line_reader.Script = .{ .bytes = "(import (scheme write))\r(display \"tail\")\r\x04" };
+    var in: std.Io.Reader = .fixed("");
+    var reader: LineReader = .{ .rich = .{
+        .editor = .init(std.testing.allocator),
+        .terminal = script.terminal(),
+        .fallback = .{ .in = &in },
+        .line_start = &line_start,
+    } };
+    defer reader.deinit();
+    _ = try replLines(std.testing.allocator, null, .{}, &reader, &in, &out.interface, &err.writer);
+    // "tail" のあとに改行が入ってから、次のプロンプトが行頭から描かれる。
+    try std.testing.expect(std.mem.indexOf(u8, sink.written(), "tail\n\r> ") != null);
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

@@ -371,9 +371,9 @@ export function describeStatus(status, output); // { text, kind }
 | 7e 括弧の対応 | 未着手(核のあと) | - |
 | 7f 文字幅 | 仮の実装を入れた(`src/line_editor/width.zig`、`width(cp: u21) u2`)。全角と結合文字で幅がずれる。L4 の表に幅の情報が入ったら差し替える | - |
 | 7g 再描画 | `render` が、プロンプト、編集バッファのテキストとカーソル、端末の幅から、1行を描くシーケンス(`CR`、プロンプト、窓、`CSI K`、`CR`、`CSI n C`)を `std.Io.Writer` に書く。毎回、行全体を書き直す。描く桁数は `cols - 1` までで、折り返さず、カーソルを上へ戻さない。幅を超える行は、前回の窓の先頭(`State.start`)から、カーソルとその下の文字が入る最小の量だけ右へずらす。逐次検索は、`View.search` で、プロンプトの代わりに `(reverse-i-search)` のラベルを描く(テキストは呼び出し側が渡す)。プロンプトが `cols - 1` の半分を超えるときは末尾の側だけを描く。制御文字は `^A`、不正な UTF-8 と C1 は U+FFFD で描く。仮想の画面に適用するテストで、行の内容とカーソルの桁を確かめた。幅は `width.zig`(7f)の `width` を使う。今は仮の実装なので、全角の文字を含む行で、カーソルの位置が実際の画面とずれる。テストは、幅の関数を差し替える内部関数で、全角と結合文字を試した。確かめていないこと: 実際の端末での見え方(7j の組み込みのあと) | 7g の PR |
-| 7h POSIX の生モード | 実装した。境界は `RawMode.enter` `RawMode.leave` `RawMode.read`、`columns`、`isInteractive`、`restoreActive` の `src/line_editor/term_posix.zig` に閉じた。復元の経路は、`leave`(`defer`)、`SIGINT` `SIGTERM` `SIGHUP` `SIGQUIT` のハンドラ、panic の中の `restoreActive` の3つである。Linux の疑似端末で、実際の信号と panic のあとに、端末が戻ることを確かめた(確かめた範囲は PR 本文)。残り: panic ハンドラからの `restoreActive` の呼び出しは、`src/main.zig` を変える 7j で入れる。Windows と macOS の実機での実行は、未確認である | - |
+| 7h POSIX の生モード | 実装した。境界は `RawMode.enter` `RawMode.leave` `RawMode.read`、`columns`、`isInteractive`、`restoreActive` の `src/line_editor/term_posix.zig` に閉じた。復元の経路は、`leave`(`defer`)、`SIGINT` `SIGTERM` `SIGHUP` `SIGQUIT` のハンドラ、panic の中の `restoreActive` の3つである。Linux の疑似端末で、実際の信号と panic のあとに、端末が戻ることを確かめた(確かめた範囲は PR 本文)。panic ハンドラからの `restoreActive` の呼び出しは、7j で `src/main.zig` に入れた。Windows と macOS の実機での実行は、未確認である | - |
 | 7i Windows の生モード | 未着手(核のあと) | - |
-| 7j REPL への組み込み | 未着手 | - |
+| 7j REPL への組み込み | `src/line_editor/line_reader.zig` に `LineReader`(`dumb` と `rich`)を置いた。`rich` は、入力と出力の両方が POSIX の端末のとき(`term_posix.isInteractive`)に使い、1行を読む間だけ生モードにする(評価の間は元の端末に戻すので、プログラムの `read` と評価中の `Ctrl-C` の信号は今までどおり)。生モードに入れない行は `dumb` で読む。キーの処理は `Editor` に閉じ、端末は `Terminal` の vtable の向こうに置いて、テストは台本の端末で走らせる。`repl` は `dumb` を作って `replLines` に渡す形にし、既存の REPL のテストは変えずに通した。決めたこと: 単独の `ESC` に時間切れを置かず、次のキーと組で `Alt` として読む(時間切れには `term_posix.zig` の外の OS の呼び出しが要るため。`ESC` のあとの `Ctrl-C` も行を捨てる)。端末からは1バイトずつ読み、`Enter` のあとのバイトを端末に残す。`Tab` は補完(7k)までは文字として入れる。`ESC` のあとの制御キー(`Enter` など)は、そのキーとして効かせる。改行で終わらない評価の出力を、次のプロンプトの描画で消さないよう、端末への書き込み(stdout と stderr)を `LineTracker` に通し、行の途中で終わっていたら改行を足してから描く。評価中の `Ctrl-C` は、これまでどおり sucheme を終える。逐次検索の中の `Ctrl-G` は検索をやめ、ほかのキーは見つかった項目を行に入れてから通常の割り当てで処理する。panic ハンドラから `term_posix.restoreActive` を呼ぶ(7h の残り)。確かめたこと: 単体テスト、ミューテーション、Linux の疑似端末での実行(PR 本文)。敵対的レビューで直さなかった任意の指摘は [review/stage7-slice-7j.md](../review/stage7-slice-7j.md) にある。確かめていないこと: macOS と実機の端末エミュレータでの見え方、panic ハンドラの復元(自動のテストは無い) | 7j の PR |
 | 7k 識別子の補完 | 未着手(核のあと) | - |
 | 7l 差分読み取り | 未着手(核のあと) | - |
 | 7m 複数行の編集と再描画 | 未着手(核のあと) | - |
@@ -383,6 +383,6 @@ export function describeStatus(status, output); // { text, kind }
 ## 次にやること
 
 1. 行編集を自前で作る決定は、[ADR-0049](../adr/0049-line-editor-in-zig-minimal-core-first.md) に記録した。[design/open-questions.md](../design/open-questions.md) の「段階7までに決める」の行は消した。配置先(合意を求める点の2)の結果は 8h の計画に反映し、配置を終えたら「段階8までに決める」の行を消す。
-2. L6 は、核の 7a から 7d と 7f から 7h を実装した。残りの核は 7j である。7g の幅は、7f の表を引く実装に差し替わると、`render.zig` を変えずに正しくなる。7j は核の最後である(上の「L6 の最小の核」)。7j は、7c の部品に対して、文字の挿入のあとは `KillRing.breakChain` を、移動や履歴の呼び出しなど、2つの部品を通らない操作のあとは `breakChain` と `UndoStack.breakGroup` の両方を呼ぶ。切り取りと貼り付けは、`UndoStack` を渡せば、取り消しのまとまりを自分で閉じる。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
+2. L6 は、核の 7a から 7d、7f から 7h、7j を実装した。核のあとは、7e、7m、7n、7i を、それぞれのスライスの PR で `rich`(`src/line_editor/line_reader.zig` の `Editor`)に組み込む。7g の幅は、7f の表を引く実装に差し替わると、`render.zig` を変えずに正しくなる。L7 の 8a から 8d は、L6 と独立に始められる。着手の順と時期は、子セッションの上限に合わせて親のセッションが決める。
 3. 7a と 7b の PR で、進捗の表をスライスごとの行に分けた。残りの 7d から 7n は、着手するスライスの PR で、行を分ける。
-4. 7j(REPL への組み込み)で、`src/main.zig` の panic ハンドラから `term_posix.restoreActive` を呼ぶ。部品のファイルは、`src/line_editor/root.zig` に `pub const` で1行足す(足さないとテストが走らない)。
+4. 部品の新しいファイルは、`src/line_editor/root.zig` に `pub const` で1行足す(足さないとテストが走らない)。`src/main.zig` は `line_editor/root.zig` を相対のパスで取り込むので、`build.zig` の行編集のテストの根(`line_editor` のモジュール)は、部品の単体テストの根として残る。
