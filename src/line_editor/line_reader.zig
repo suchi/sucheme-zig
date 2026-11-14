@@ -1053,6 +1053,24 @@ test "Rich starts a new line before the prompt when the output so far ends insid
     try testing.expect(std.mem.startsWith(u8, sink.written()[before2..], "\n\r> "));
 }
 
+test "LineTracker.drain writes the last slice splat times, and an empty slice leaves the state" {
+    var sink: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer sink.deinit();
+    var state: LineStart = .{};
+    var t: LineTracker = .init(&sink.writer, &state);
+    const w = &t.interface;
+    try testing.expectEqual(@as(usize, 5), try w.vtable.drain(w, &.{ "ab", "c" }, 3));
+    try testing.expectEqualStrings("abccc", sink.written());
+    try testing.expect(!state.at_start);
+    // 最後の要素が改行で終わり、続く空の要素は状態を変えない。
+    try testing.expectEqual(@as(usize, 2), try w.vtable.drain(w, &.{ "d\n", "" }, 1));
+    try testing.expect(state.at_start);
+    // splat が 0 なら、最後の要素は書かれない。
+    try testing.expectEqual(@as(usize, 1), try w.vtable.drain(w, &.{ "e", "\n" }, 0));
+    try testing.expect(!state.at_start);
+    try testing.expectEqualStrings("abcccd\ne", sink.written());
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
