@@ -21,3 +21,13 @@
 | R5 | 評価中に、元の端末の設定で打った Ctrl-D が、次の行の編集に届かない(もう一度押せば終わる)。生モードへの切り替えで、端末の行の規律が溜めた入力の終わりの印を捨てる、という仮説がある。確かめていない | 端末の癖として、7i(Windows の生モード)の調査と一緒に確かめる |
 | R6 | 外から SIGTSTP を送って止めたときに、端末が生モードのまま残るかを確かめていない(試験のプロセスグループでは停止が起きなかった) | 7h の境界(`term_posix.zig`)で、SIGTSTP と SIGCONT の扱いを決めるときに確かめる |
 | R7 | `Dumb.read` と `Editor.draw` の `flush` を消しても、テストが落ちない(テストの writer の `flush` は何もしない)。`check` が確保の失敗を伝えることを固定するテストが無い。`PosixTerminal` の `leave` と0バイトの読み取りは、端末なしでは届かない | 緩衝と受け手を分けた writer、`std.testing.checkAllAllocationFailures` を使うテストを、`line_reader.zig` を触る次のスライス(7e か 7m)で足す |
+
+## 層2 で見つかった失敗と、再発防止の案
+
+層2(`full.yml`)の Windows のテストが、コンパイルで落ちた。原因は、`line_reader.zig` のテストが `PosixTerminal` の fd に整数の `-1` を書いていたことである。Windows の `fd_t` はハンドルの型なので、整数を書けない。同じ PR の中で直した。
+
+push の前に、Windows 向けのクロスビルド(`zig build -Dtarget=x86_64-windows`)は通していた。ただし、これは実行ファイルだけで、テストのコンパイルを含まない。そのため、層2 まで気づけなかった。
+
+| 番号 | 再発防止の案(提案。決定ではない) | 扱い |
+| --- | --- | --- |
+| P1 | OS に触れるコードを変えるときは、push の前の検証に、他の OS 向けのテストのコンパイルを入れる。コマンドは `zig build test -Dtarget=x86_64-windows` と `zig build test -Dtarget=aarch64-macos` で、テストのバイナリは実行できないので、コンパイルの誤りが出ないことだけを見る | AGENTS.md の検証コマンドの表と process-lessons.md への反映は、所有の外なので、親のセッションが別に扱う |
