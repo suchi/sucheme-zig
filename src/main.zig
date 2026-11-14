@@ -1435,7 +1435,8 @@ test "Ctrl-D on an empty continuation line in the editing repl ends the input wi
     defer out.deinit();
     var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer err.deinit();
-    _ = try replRich("(+ 1\r\x04", &out, &err);
+    // Ctrl-D のあとの打鍵は読まれない(台本の終わりで止まったのではないことを示す)。
+    _ = try replRich("(+ 1\r\x04" ++ "1)\r", &out, &err);
     try std.testing.expectEqualStrings("error: unexpected end of input\n", err.written());
 }
 

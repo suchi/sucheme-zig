@@ -637,7 +637,8 @@ test "Ctrl-D deletes the character at the cursor on a line with text" {
 test "Ctrl-D on an empty line ends the input, and at the end of a line with text does nothing" {
     var editor: Editor = .init(testing.allocator);
     defer editor.deinit();
-    var run = try runScript(&editor, "ab\x04\r\x04", 5);
+    // Ctrl-D のあとにも打鍵を残す。台本の終わりで止まったのと区別するため。
+    var run = try runScript(&editor, "ab\x04\r\x04x\r", 5);
     defer run.deinit();
     try testing.expectEqual(@as(usize, 2), run.results.items.len);
     try testing.expectEqualStrings("ab", run.line(0));
@@ -888,6 +889,63 @@ test "Ctrl-C in the search draws the line, not the search, before it is dropped"
     var run = try runScript(&editor, "x\r\x12x\x03", 2);
     defer run.deinit();
     try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r> \x1b[K\r\x1b[2C^C\n"));
+}
+
+test "every edit that is not a kill or a yank ends the run of kills" {
+    try expectLines("ab cd\x17\x12\x07\x17\x19\r", &.{"ab "}); // Ctrl-R と Ctrl-G
+    try expectLines("ab cd\x17\x14\x17\x19\r", &.{"a b"}); // Ctrl-T
+    try expectLines("ab cd\x17\x1f\x17\x19\r", &.{"ab cd"}); // Ctrl-_
+    try expectLines("ab cd\x17\t\x17\x19\r", &.{"ab \t"}); // Tab
+    try expectLines("ab cd\x17\x7f\x17\x19\r", &.{"ab"}); // Backspace
+    try expectLines("ab cd\x17\x1b[3~\x17\x19\r", &.{"ab "}); // Delete
+    try expectLines("xy z\rab\x17\x1b[A\x17\x19\r", &.{ "xy z", "xy z" }); // Up
+    try expectLines("one\rab\x1b[A\x17\x1b[B\x17\x19\r", &.{ "one", "ab" }); // Down
+}
+
+test "Ctrl-W cuts back to a space, past other punctuation" {
+    try expectLines("a foo-bar\x17\r", &.{"a "});
+}
+
+test "Alt-Backspace also comes as ESC 0x08, and repeated ones join backwards" {
+    try expectLines("foo bar\x1b\x08\r", &.{"foo "});
+    try expectLines("foo bar\x1b\x7f\x1b\x7f\x19\r", &.{"foo bar"});
+}
+
+test "Backspace as 0x08 shortens the search query too" {
+    try expectLines("(car x)\r(cdr x)\r\x12ca\x08\x08cd\r", &.{ "(car x)", "(cdr x)", "(cdr x)" });
+}
+
+test "leaving the search puts the cursor where the query matched" {
+    try expectLines("(cdr x)\r\x12x\x06Z\r", &.{ "(cdr x)", "(cdr xZ)" });
+}
+
+test "the search draws the cursor at the match" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "(cdr x)\r\x12x\x07\r", 2);
+    defer run.deinit();
+    // ラベル "(reverse-i-search)`x': " の23桁に、一致の位置5を足した28桁。
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\x1b[28C") != null);
+}
+
+test "recalling an entry drops the undo records of the line typed before" {
+    try expectLines("one\rabc\x1b[A\x1f\r", &.{ "one", "one" });
+}
+
+test "an invalid CSI is dropped up to the offending byte, which is then read as a key" {
+    try expectLines("a\x1b[1\x01b\r", &.{"ba"});
+}
+
+test "after ESC ESC, the second ESC starts the next key" {
+    try expectLines("foo bar\x1b\x1bbx\r", &.{"foo xbar"});
+}
+
+test "Ctrl-C puts the cursor after the line before it writes ^C" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "abc\x01\x03", 1);
+    defer run.deinit();
+    try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r\x1b[5C^C\n"));
 }
 
 test {
