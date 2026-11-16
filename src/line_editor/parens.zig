@@ -343,12 +343,21 @@ test "a character literal hides its own parenthesis" {
     try std.testing.expectEqual(@as(?usize, null), matching("#\\)", 3));
     // 本体の無い `#\` は、入力の終わりまでを覆う。
     try std.testing.expectEqual(@as(?usize, null), matching("(a #\\", 0));
+    // 文字の続きは、区切り文字まで文字の一部である。`#|` は、トークンの途中ではコメントを始めない。
+    try expectPair("(#\\a#| ) | )", 0, 11);
+    // タブも空白で、文字の名前を終える。
+    try expectPair("(#\\a\t(b))", 0, 8);
     // `#\;` の `;` は行コメントを始めない。
     try expectPair("(a #\\; b)", 0, 8);
     // `#\"` の `"` は文字列を始めない。
     try expectPair("(a #\\\" b)", 0, 8);
     // `#\|` の `|` は識別子を始めない。
     try expectPair("(a #\\| b)", 0, 8);
+}
+
+test "a tab separates tokens like a space" {
+    try expectPair("(a\t)", 0, 3);
+    try expectPair("(a\t(b)\t)", 0, 7);
 }
 
 test "a parenthesis inside a line comment is not counted" {
