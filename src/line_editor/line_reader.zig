@@ -33,6 +33,7 @@ const undo_mod = @import("undo.zig");
 const UndoStack = undo_mod.UndoStack;
 const history_mod = @import("history.zig");
 const History = history_mod.History;
+const parens = @import("parens.zig");
 const render = @import("render.zig");
 const term_posix = @import("term_posix.zig");
 
@@ -276,6 +277,9 @@ pub const Editor = struct {
                 v.cursor = s.matchOffset() orelse 0;
             }
             v.search = .{ .query = query, .failed = query.len > 0 and s.current() == null };
+        } else {
+            // 対応する括弧を反転する(7e)。逐次検索の間は、見つかった項目を見せるだけなので強調しない。
+            v.highlight = parens.matching(v.text, v.cursor);
         }
         self.view = try render.render(out, v, self.view);
         try out.flush();
@@ -986,6 +990,34 @@ test "the search draws the cursor at the match" {
     defer run.deinit();
     // ラベル "(reverse-i-search)`x': " の23桁に、一致の位置5を足した28桁。
     try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\x1b[28C") != null);
+}
+
+test "the parenthesis that matches the one next to the cursor is drawn in reverse video" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    // `(a b)` を打つと、カーソルは `)` の直後にあり、相手の `(` を反転する。
+    var run = try runScript(&editor, "(a b)\x03", 1);
+    defer run.deinit();
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r> \x1b[7m(\x1b[27ma b)\x1b[K\r\x1b[7C") != null);
+}
+
+test "no parenthesis is highlighted when the cursor is not next to one, or the match has no partner" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "(a b\x03", 1);
+    defer run.deinit();
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\x1b[7m") == null);
+}
+
+test "the search shows the entry without highlighting a parenthesis" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    // 検索の間は、見つかった項目のカーソルが `(` の上にあっても、強調しない。
+    var run = try runScript(&editor, "(cdr x)\r\x12(\x03", 2);
+    defer run.deinit();
+    const out = run.out.written();
+    const label = std.mem.indexOf(u8, out, "(reverse-i-search)`(") orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, out[label..], "\x1b[7m") == null);
 }
 
 test "recalling an entry drops the undo records of the line typed before" {

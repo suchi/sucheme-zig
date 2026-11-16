@@ -49,6 +49,9 @@ pub const View = struct {
     /// 端末の桁数。
     cols: usize,
     search: ?Search = null,
+    /// 反転表示する文字の `text` の中のバイト位置(対応する括弧。7e)。文字の先頭でなければ、
+    /// 何も強調しない。窓の外にあれば、描かない。
+    highlight: ?usize = null,
 };
 
 /// Writes the escape sequence that redraws the line, and returns the state for the next call.
@@ -220,7 +223,12 @@ fn renderWith(
     while (i < text.len) {
         const g = glyphAt(widthFn, text, i);
         if (used + g.cells > tw) break;
+        // Why: 反転と解除は、1文字を挟むだけで、桁を進めない。解除は `27`(反転だけを戻す)にして、
+        // ほかの属性に触れない。
+        const lit = view.highlight == i;
+        if (lit) try w.writeAll("\x1b[7m");
         try emit(w, text, i, g);
+        if (lit) try w.writeAll("\x1b[27m");
         used += g.cells;
         i += g.len;
     }
@@ -260,6 +268,9 @@ const Screen = struct {
     wrapped: bool = false,
     /// 行頭に、基底の文字を持たない結合文字が置かれたとき。
     orphan: bool = false,
+    /// 反転表示の中に置かれた桁。
+    inverse: [256]bool = @splat(false),
+    reverse_on: bool = false,
 
     fn init(cols: usize) Screen {
         return .{ .cols = cols };
@@ -288,6 +299,11 @@ const Screen = struct {
                         while (c < self.cols) : (c += 1) self.cells[c] = ' ';
                     },
                     'C' => self.col = @min(self.col + (if (has_n and n > 0) n else 1), self.cols - 1),
+                    'm' => switch (n) {
+                        7 => self.reverse_on = true,
+                        27 => self.reverse_on = false,
+                        else => return error.UnsupportedSequence,
+                    },
                     else => return error.UnsupportedSequence,
                 }
                 i = j + 1;
@@ -304,6 +320,7 @@ const Screen = struct {
                 }
                 if (self.col + cw > self.cols) self.wrapped = true;
                 self.cells[self.col] = cp;
+                self.inverse[self.col] = self.reverse_on;
                 self.marks[self.col] = 0;
                 self.last = self.col;
                 if (cw == 2) self.cells[self.col + 1] = 0; // 全角の2桁目
@@ -380,6 +397,33 @@ test "sequence does not move up or wrap" {
     aw.clearRetainingCapacity();
     _ = try render(&aw.writer, .{ .prompt = "", .text = "abc", .cursor = 0, .cols = 80 }, .{});
     try testing.expectEqualStrings("\rabc\x1b[K\r", aw.written());
+}
+
+test "the highlighted character is wrapped in reverse video and takes no column of its own" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    _ = try render(&aw.writer, .{ .prompt = "> ", .text = "(a)", .cursor = 0, .cols = 80, .highlight = 2 }, .{});
+    try testing.expectEqualStrings("\r> (a\x1b[7m)\x1b[27m\x1b[K\r\x1b[2C", aw.written());
+    // 仮想の画面で、反転した桁を見る。内容と、カーソルの桁は変わらない。
+    var screen = Screen.init(20);
+    _ = try expectDraw(&screen, .{ .prompt = "> ", .text = "(a (b))", .cursor = 7, .cols = 20, .highlight = 0 }, .{}, "> (a (b))", 9);
+    for (screen.inverse[0..12], 0..) |on, col| try testing.expectEqual(col == 2, on);
+}
+
+test "a highlight outside the window or inside a character is not drawn" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // 窓は "defghij"(位置3から)。位置0は窓の外にある。
+    _ = try render(&aw.writer, .{ .prompt = "> ", .text = "abcdefghij", .cursor = 10, .cols = 10, .highlight = 0 }, .{});
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "\x1b[7m") == null);
+    // 「あ」の2バイト目(継続バイト)は、文字の先頭ではない。
+    aw.clearRetainingCapacity();
+    _ = try render(&aw.writer, .{ .prompt = "> ", .text = "あい", .cursor = 0, .cols = 20, .highlight = 1 }, .{});
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "\x1b[7m") == null);
+    // 全角の文字も、そのまま反転する。
+    aw.clearRetainingCapacity();
+    _ = try render(&aw.writer, .{ .prompt = "", .text = "あい", .cursor = 0, .cols = 20, .highlight = 3 }, .{});
+    try testing.expectEqualStrings("\rあ\x1b[7mい\x1b[27m\x1b[K\r", aw.written());
 }
 
 test "width boundary: exactly fits, and one more" {
