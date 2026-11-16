@@ -358,6 +358,10 @@ test "a character literal hides its own parenthesis" {
 test "a tab separates tokens like a space" {
     try expectPair("(a\t)", 0, 3);
     try expectPair("(a\t(b)\t)", 0, 7);
+    // タブが区切りなら、`#|` はトークンの先頭なのでコメントを始め、閉じないまま入力が尽きる。
+    // 区切りでなければ、`a\t#` が1つのトークンになり、縦棒の識別子が `) |` を覆って、`)` が閉じる。
+    try std.testing.expectEqual(@as(?usize, null), matching("(a\t#| ) | )", 0));
+    try std.testing.expectEqual(@as(?usize, null), matching("(a #| ) | )", 0));
 }
 
 test "a parenthesis inside a line comment is not counted" {
