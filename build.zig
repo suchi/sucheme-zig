@@ -514,6 +514,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/line_editor/root.zig"),
         .target = target,
         .optimize = optimize,
+        // Why: 括弧の対応(parens.zig)のテストが、`isIncomplete` と同じ入力で照合する。
+        .imports = &.{.{ .name = "sucheme", .module = sucheme }},
     });
     targets.append(b.allocator, .of(b, line_editor)) catch @panic("OOM");
     // ツールは検証のコードである。test step に自分のテストがなければ、ツールの中の
