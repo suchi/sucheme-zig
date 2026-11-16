@@ -269,7 +269,7 @@ pub const Buffer = struct {
     }
 
     /// From the start of the previous run of non-space characters to the cursor (`Ctrl-W`).
-    /// 区切りは空白(ASCII の空白とタブ)だけである。`Alt-Backspace` の単語より広い。
+    /// 区切りは ASCII の空白、タブ、改行だけである。`Alt-Backspace` の単語より広い。
     pub fn rangeBackwardSpaceWord(self: *const Buffer) Range {
         const t = self.bytes.items;
         var i = self.cursor;
@@ -312,21 +312,6 @@ pub const Buffer = struct {
         var i = self.lineStart(pos);
         while (i < pos) : (i = nextEnd(self.bytes.items, i)) n += 1;
         return n;
-    }
-
-    /// The number of logical lines (1 for an empty buffer).
-    pub fn lineCount(self: *const Buffer) usize {
-        return std.mem.count(u8, self.bytes.items, "\n") + 1;
-    }
-
-    /// Whether the cursor is on the first logical line.
-    pub fn onFirstLine(self: *const Buffer) bool {
-        return self.lineStart(self.cursor) == 0;
-    }
-
-    /// Whether the cursor is on the last logical line.
-    pub fn onLastLine(self: *const Buffer) bool {
-        return self.lineEnd(self.cursor) == self.bytes.items.len;
     }
 
     // -----------------------------------------------------------------------
@@ -422,7 +407,8 @@ fn splitAfterFirstChar(t: []const u8, r: Range) usize {
     return nextEnd(t, r.start);
 }
 
-/// `Ctrl-W` の区切り。改行も区切りに数える(行をまたいで、前の行の語まで切らない)。
+/// `Ctrl-W` の区切り: 空白、タブ、改行。改行は空白と同じに数えるので、行頭の `Ctrl-W` は、
+/// 直前の改行と、その前の語までを切る。
 fn isSpace(b: u8) bool {
     return b == ' ' or b == '\t' or b == '\n';
 }
@@ -844,13 +830,11 @@ test "a newline is an ordinary character: it splits lines and joins them again" 
     defer b.deinit();
     _ = try b.insertSlice("\n");
     try expectMarked("ab\n|cd", &b);
-    try testing.expectEqual(2, b.lineCount());
     // 行頭の Backspace は、直前の改行を消して、行を結合する。
     const r = b.rangeBackwardChar();
     try testing.expectEqualStrings("\n", b.text()[r.start..r.end]);
     _ = try b.deleteRange(r);
     try expectMarked("ab|cd", &b);
-    try testing.expectEqual(1, b.lineCount());
     // 行末の Delete も、次の行を結合する。
     var c = try fromMarked("ab|\ncd");
     defer c.deinit();
@@ -869,8 +853,6 @@ test "line start, end and column are per logical line" {
     try testing.expectEqual(3, b.lineStart(b.cursor));
     try testing.expectEqual(12, b.lineEnd(b.cursor));
     try testing.expectEqual(2, b.column(b.cursor));
-    try testing.expectEqual(3, b.lineCount());
-    try testing.expect(!b.onFirstLine() and !b.onLastLine());
     b.moveToLineStart();
     try expectMarked("ab\n|あいう\nxyz", &b);
     b.moveToLineEnd();
@@ -879,10 +861,8 @@ test "line start, end and column are per logical line" {
     try b.setCursor(2);
     try testing.expectEqual(0, b.lineStart(2));
     try testing.expectEqual(2, b.lineEnd(2));
-    try testing.expect(b.onFirstLine());
     b.moveToStart();
     b.moveToEnd();
-    try testing.expect(b.onLastLine());
 }
 
 test "up and down keep the column, clamp on short lines and report the edges" {
@@ -956,7 +936,7 @@ test "kill to the start stops at the line start and takes nothing there" {
     try testing.expectEqualStrings("\n", b.text()[r.start..r.end]);
 }
 
-test "the space word does not look past a newline for a word, but takes the newline as a space" {
+test "the space word takes a newline as a space" {
     var b = try fromMarked("foo\nbar|");
     defer b.deinit();
     var r = b.rangeBackwardSpaceWord();
@@ -1023,6 +1003,13 @@ test "random edits with newlines keep the invariants" {
         const le = b.lineEnd(b.cursor);
         try testing.expect(ls <= b.cursor and b.cursor <= le);
         try testing.expect(std.mem.indexOfScalar(u8, b.text()[ls..le], '\n') == null);
-        try testing.expect(b.onFirstLine() == (std.mem.indexOfScalar(u8, b.text()[0..b.cursor], '\n') == null));
     }
+}
+
+test "down onto an empty last line moves, and down from it does not" {
+    var b = try fromMarked("ab|\n");
+    defer b.deinit();
+    try testing.expect(b.moveDownLine(2));
+    try expectMarked("ab\n|", &b);
+    try testing.expect(!b.moveDownLine(2));
 }

@@ -1256,6 +1256,22 @@ test "up and down keep the column through a short line" {
     try expectMultiLines("(abcdef\rx\rabcdef\x1b[A\x02\x1b[A!\x05)\r", &.{"!(abcdef)\nx\nabcdef"});
 }
 
+test "the column is kept through Down and Ctrl-P and Ctrl-N, not only Up" {
+    try expectMultiLines("(abcdef\rx\rabcdef\x1b[A\x1b[A\x1b[B\x1b[B!)\r", &.{"(abcdef\nx\nabcdef!)"});
+    try expectMultiLines("(abcdef\rx\rabcdef\x10\x10\x0e\x0e!)\r", &.{"(abcdef\nx\nabcdef!)"});
+}
+
+test "End goes to the end of its own line, not of the text" {
+    try expectMultiLines("(ab\rcd\x10\x1b[F)\r", &.{"(ab)\ncd"});
+}
+
+test "the newline that Enter inserts, and a move between lines, end a run of kills" {
+    // Ctrl-W で "b" を切り、Enter で改行を入れてから Ctrl-W。2つは1項目にならない。
+    try expectMultiLines("(a b\x17\r\x17\x19)\r", &.{"(a \n)"});
+    // 行をまたぐ移動のあとの切り取りも、前の切り取りとは別の項目である。
+    try expectMultiLines("(x\ry z\x17\x1b[A\x17\x19)\r", &.{"(x)\ny "});
+}
+
 test "Ctrl-A and Ctrl-E, Home and End go to the start and end of the line" {
     try expectMultiLines("(ab\rcd\x01!\x05?\x1b[H<\x1b[F>\x1b[A\x1b[A)\r", &.{"(ab)\n<!cd?>"});
 }

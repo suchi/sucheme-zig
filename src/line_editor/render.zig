@@ -486,6 +486,11 @@ test "a logical line that fills the row exactly is followed by the next one with
     try draw(10, "> ", "abcdefgh\nx", 8, &.{ "> abcdefgh", "", "... x" }, 1, 0);
 }
 
+test "the cursor at the end of a line counts one column, not the width of a newline" {
+    // "> abcdefg" は 9 桁。行末の位置(改行の上)は 1 桁で、行に収まる。
+    try draw(10, "> ", "abcdefg\nx", 7, &.{ "> abcdefg", "... x" }, 0, 9);
+}
+
 test "a wrapped logical line and the continuation prompt together" {
     try draw(10, "> ", "ab\ncdefghijklmn", 15, &.{ "> ab", "... cdefgh", "ijklmn" }, 2, 6);
 }

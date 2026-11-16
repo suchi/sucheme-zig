@@ -418,6 +418,8 @@ pub fn replLines(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process:
     // 編集できる読み手には、`Enter` で式が閉じたかを、保留と同じ関数で判定させる。閉じていない
     // 式は、読み手の編集バッファの中で続き(複数行の編集)、閉じたときに全体が1つの行として返る。
     // 返った全体は、下で `dumb` の1行と同じに保留へ足し、同じ `isIncomplete` を通る。
+    // 注意: `incomplete_ctx` はこの関数のスタックにあり、読み手は関数を出たあとも指したままである。
+    // 戻ったあとに同じ読み手を使う呼び出しを足すときは、判定を外す(または作り直す)こと。
     var incomplete_ctx: IncompleteCheck = .{ .gpa = gpa };
     reader.setIncomplete(.{ .ctx = &incomplete_ctx, .func = IncompleteCheck.isIncomplete });
     reader.setContinuationPrompt(continuation_prompt);
