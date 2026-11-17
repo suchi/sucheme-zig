@@ -33,6 +33,7 @@ const undo_mod = @import("undo.zig");
 const UndoStack = undo_mod.UndoStack;
 const history_mod = @import("history.zig");
 const History = history_mod.History;
+const parens = @import("parens.zig");
 const render = @import("render.zig");
 const term_posix = @import("term_posix.zig");
 
@@ -215,7 +216,7 @@ pub const Editor = struct {
         // 解読の途中のバイト。`keys.decode` は、`max_csi_len` を超える前に必ず決着する。
         var pending: [keys.max_csi_len]u8 = undefined;
         var n: usize = 0;
-        try self.draw(term, out, prompt);
+        try self.draw(term, out, prompt, true);
         while (true) {
             const byte = try term.readByte() orelse {
                 // 入力が尽きた(端末が切れた)。編集中の行は捨てて終わる。
@@ -231,10 +232,10 @@ pub const Editor = struct {
                         shift(&pending, &n, d.consumed);
                         switch (try self.handleKey(d.key)) {
                             .none => {},
-                            .redraw => try self.draw(term, out, prompt),
+                            .redraw => try self.draw(term, out, prompt, true),
                             .accept => {
                                 self.buf.moveToEnd();
-                                try self.draw(term, out, prompt);
+                                try self.draw(term, out, prompt, false);
                                 try out.writeAll("\n");
                                 try out.flush();
                                 return .{ .line = self.buf.text() };
@@ -243,7 +244,7 @@ pub const Editor = struct {
                             .interrupt => {
                                 self.endSearch();
                                 self.buf.moveToEnd();
-                                try self.draw(term, out, prompt);
+                                try self.draw(term, out, prompt, false);
                                 try out.writeAll("^C\n");
                                 try out.flush();
                                 return .interrupted;
@@ -262,7 +263,9 @@ pub const Editor = struct {
         n.* -= k;
     }
 
-    fn draw(self: *Editor, term: Terminal, out: *std.Io.Writer, prompt: []const u8) std.Io.Writer.Error!void {
+    /// `mark` が偽なら、対応する括弧を反転しない。行を確定するか捨てる最後の描画に使う。
+    /// 端末の画面に残る行に、反転した括弧を残さないためである。
+    fn draw(self: *Editor, term: Terminal, out: *std.Io.Writer, prompt: []const u8, mark: bool) std.Io.Writer.Error!void {
         var v: render.View = .{
             .prompt = prompt,
             .text = self.buf.text(),
@@ -276,6 +279,9 @@ pub const Editor = struct {
                 v.cursor = s.matchOffset() orelse 0;
             }
             v.search = .{ .query = query, .failed = query.len > 0 and s.current() == null };
+        } else {
+            // 対応する括弧を反転する(7e)。逐次検索の間は、見つかった項目を見せるだけなので強調しない。
+            if (mark) v.highlight = parens.matching(v.text, v.cursor);
         }
         self.view = try render.render(out, v, self.view);
         try out.flush();
@@ -986,6 +992,52 @@ test "the search draws the cursor at the match" {
     defer run.deinit();
     // ラベル "(reverse-i-search)`x': " の23桁に、一致の位置5を足した28桁。
     try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\x1b[28C") != null);
+}
+
+test "the parenthesis that matches the one next to the cursor is drawn in reverse video" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    // `(a b)` を打つと、カーソルは `)` の直後にあり、相手の `(` を反転する。
+    var run = try runScript(&editor, "(a b)\x03", 1);
+    defer run.deinit();
+    // 打っている途中の描画には、反転がある。
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r> \x1b[7m(\x1b[27ma b)\x1b[K\r\x1b[7C") != null);
+}
+
+test "the last drawing of a line that Enter accepts or Ctrl-C drops has no reverse video" {
+    // 確定した行と捨てた行は、端末の画面に残る。反転した括弧を残さない。
+    for ([_][]const u8{ "(a b)\r", "(a b)\x03" }) |script| {
+        var editor: Editor = .init(testing.allocator);
+        defer editor.deinit();
+        var run = try runScript(&editor, script, 1);
+        defer run.deinit();
+        const out = run.out.written();
+        // 最後の描画は、最後の `\r>` から末尾まで。
+        const last = std.mem.lastIndexOf(u8, out, "\r> ") orelse return error.TestUnexpectedResult;
+        try testing.expect(std.mem.indexOf(u8, out[last..], "\x1b[7m") == null);
+        try testing.expect(std.mem.indexOf(u8, out[last..], "a b)") != null);
+        // その前の描画(`)` を打った直後)には、反転がある。
+        try testing.expect(std.mem.indexOf(u8, out[0..last], "\x1b[7m") != null);
+    }
+}
+
+test "no parenthesis is highlighted when the cursor is not next to one, or the match has no partner" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var run = try runScript(&editor, "(a b\x03", 1);
+    defer run.deinit();
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\x1b[7m") == null);
+}
+
+test "the search shows the entry without highlighting a parenthesis" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    // 検索の間は、見つかった項目のカーソルが `(` の上にあっても、強調しない。
+    var run = try runScript(&editor, "(cdr x)\r\x12(\x03", 2);
+    defer run.deinit();
+    const out = run.out.written();
+    const label = std.mem.indexOf(u8, out, "(reverse-i-search)`(") orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, out[label..], "\x1b[7m") == null);
 }
 
 test "recalling an entry drops the undo records of the line typed before" {
