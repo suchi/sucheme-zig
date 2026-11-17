@@ -461,3 +461,19 @@ v1.0.0 の準備の PR(suchi/sucheme-zig#274)のリリースノートに、閉�
 
 対処は、運用の規則として次を守ることである。リリースノートに、既定の設定での挙動を書くときは、`zig build dist` か `zig build` で作った実行ファイルを既定の設定で走らせて、その結果を書く。テストのコメントや、前の文書の記述を、確かめずに写さない。確かめていない記述は、「未確認」と書く。仕組みとしての検査は足さない(文書の書き方についての検査は、[ADR-0026](../adr/0026-verify-facts-about-code-not-prose.md) の線引きの外にある)。リリースノートの例のうち、`docs/manual/` に載るものは `zig build check-examples` が走らせるが、リリースノートの文章は対象外である。
 
+
+## 他の OS 向けのテストのコンパイルを、push の前に確かめなかった(段階7、スライス 7j)
+
+スライス 7j の PR(suchi/sucheme-zig#302)で、層2 の `tests (windows-latest)` が、`zig build test` のコンパイルで失敗した。`src/line_editor/line_reader.zig` のテストが、端末の記述子に整数の -1 を渡していた。Windows の `fd_t` はハンドル(ポインタ)で、`expected type '*anyopaque', found 'comptime_int'` という誤りになった。Linux と macOS では通る。
+
+復旧は、子のセッションが、テストの記述子を `std.posix.fd_t` に合う値(Windows では `INVALID_HANDLE_VALUE`)に直したことである。
+
+原因は、push の前の検証に、他の OS 向けのテストのコンパイルが無かったことである。子のセッションは `zig build -Dtarget=x86_64-windows`(実行ファイルのクロスビルド)を通していたが、これはテストのコードを含まない。層1 は Linux だけで、Windows のテストが走るのは層2 である(AGENTS.md の層の規則)。draft の間の push では見えず、ready にしたあとの層2 まで気づけなかった。
+
+対処は、AGENTS.md の層の規則に、OS に触れるコードを変えたときの、push の前の確認を足したことである。`zig build test -Dtarget=x86_64-windows` と `zig build test -Dtarget=aarch64-macos` を走らせ、出力の `error:` の行を見る。確かめたことは次のとおりである。
+
+- Linux 上では、どちらも終了コード 1 で終わる。テストのバイナリを実行できないためである。そのため、終了コードで緑と読めない。検証コマンドの表には入れない。
+- 実行できないことの表示(「unable to spawn foreign binary」、「unable to execute binaries from the target」、「process exited with code」)を除いた `error:` の行が、コンパイルの誤りである。
+- 失敗した層2 の修正前のコミット(`db2fbdd`)で走らせると、`line_reader.zig` の `expected type '*anyopaque'` が出る。修正後の先頭では、その種類の行は出ない。
+
+仕組みとしての検査(CI や `build.zig` の step)は足していない。層2 の `windows` ジョブが同じ誤りを、ready にしたあとに必ず見つけるためである。この確認は、層2 での手戻りを減らすための、push 前の手順である。

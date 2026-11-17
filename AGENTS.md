@@ -66,6 +66,7 @@ sucheme-zig は、Zigで R7RS-small 準拠の Scheme インタプリタを作る
     - 文書だけの PR では、ready にしても層2 と Preview は起動しない(`full.yml` と `preview.yml` の `paths-ignore` による)。層2 を手動で走らせず、層2 の結果の確認も求めない。この節と「PR・レビュー・マージ」の節で、層2 を走らせる、待つ、確かめる、と書いた規則は、文書だけの PR には当てはまらない。層1(`ci.yml`)は、文書だけの PR でも走る。
     - 文書だけでない PR で、ready にしても層2 が起動しないときは、`paths-ignore` の一覧が上の定義から外れている。手動で層2 を走らせ、一覧の食い違いを報告する。
   - Windows のテストは、全 push の CI(`ci.yml`)でなく、層2(`full.yml` の `windows` ジョブ)で走る。draft の間の push では、Windows の不具合は見えない。
+  - OS に触れるコード(端末、ファイル記述子、シグナル、プロセスの周り)を変えたときは、push の前に、他の OS 向けのテストのコンパイルを確かめる(スライス 7j で、Windows のテストのコンパイルの誤りが層2 まで見えなかった。経緯は [docs/review/stage7-slice-7j.md](docs/review/stage7-slice-7j.md))。`zig build test -Dtarget=x86_64-windows` と `zig build test -Dtarget=aarch64-macos` を走らせる。Linux ではテストのバイナリを実行できず、終了コードは 1 になる。そこで終了コードでなく、出力の `error:` の行を見る。「unable to spawn foreign binary」、「unable to execute binaries from the target」、「process exited with code」の行は、実行できないことの表示で、コンパイルの誤りではない。それ以外の `error:` の行(`expected type` など)が、コンパイルの誤りである。この見方でコンパイルの誤りを検出できることは、スライス 7j の修正前のコミットで確かめた。検証コマンドの表には入れない(終了コードで緑と読めないため)。
 - 定期: ファジングなど。待たない。
 
 規模を試すテスト(深さ・個数・上限に比例して壊れる種類の誤りを見るもの)は、小さい規模で同じ論理を通す縮小版を層1 に残したうえで、`tier.slow()`(単体テスト)か `tests/scheme-slow/`(Scheme のテスト)に置く。検証が目標より遅いときは、待つ前に、並行にする前に、1 件あたりの時間を測る。
