@@ -1,8 +1,8 @@
 //! POSIX terminal boundary of the line editor: raw mode, byte input, terminal width.
 //!
 //! 行編集(docs/plans/0021-stage7-8-early-parts.md の 7h、ADR-0049)の中で、OS に触れる
-//! コードはこのファイルに閉じる。境界は次の4つである。7i の Windows 版(`term_windows.zig`)は、
-//! 同じ形の関数で後から作る。
+//! コードはこのファイルに閉じる。境界は次の4つである。Windows 版(7i の `term_windows.zig`)は、
+//! 同じ形の関数を持つ(`RawMode.enter` だけ、入力と出力の2つのハンドルを取る)。
 //!
 //! - `isInteractive`: 入力と出力の両方が端末か。端末でなければ、呼び出し側は `dumb` を使う。
 //! - `RawMode.enter` と `RawMode.leave`: 生モードに入る、元に戻す。
@@ -29,7 +29,7 @@ const posix = std.posix;
 
 /// Whether this OS has a raw mode implementation here.
 ///
-/// Why: Windows のコンソールは termios を持たない。7i が別のファイルで受け持つので、ここでは
+/// Why: Windows のコンソールは termios を持たない。`term_windows.zig`(7i)が受け持つので、ここでは
 /// コンパイルだけを通す。wasm の実行ファイルはこのファイルに届かないが、届いても通るようにしておく。
 pub const supported = switch (builtin.os.tag) {
     .windows, .wasi, .freestanding => false,

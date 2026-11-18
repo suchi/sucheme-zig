@@ -113,7 +113,7 @@ const LineReader = line_editor.line_reader.LineReader;
 pub const panic = std.debug.FullPanic(panicRestoringTerminal);
 
 fn panicRestoringTerminal(msg: []const u8, first_trace_addr: ?usize) noreturn {
-    line_editor.term_posix.restoreActive();
+    line_editor.line_reader.term_os.restoreActive();
     std.debug.defaultPanic(msg, first_trace_addr);
 }
 
@@ -198,15 +198,15 @@ pub fn main(init: std.process.Init) !void {
             // (単体テストは `std.testing.allocator` のままなので、リーク検査は残る)。
             // `smp_allocator` は複数スレッドのターゲットだけで使える。WASI のような単一
             // スレッドのターゲットは、この実行ファイルの対象ではない(docs/adr/0009)。
-            // 入力と出力の両方が POSIX の端末なら、行を編集できる読み手を使う(ADR-0049)。
-            var terminal: line_editor.line_reader.PosixTerminal = .{
+            // 入力と出力の両方が端末(POSIX の端末か、Windows のコンソール)なら、行を編集できる読み手を使う(ADR-0049)。
+            var terminal: line_editor.line_reader.OsTerminal = .{
                 .in = &stdin.interface,
                 .in_fd = std.Io.File.stdin().handle,
                 .out_fd = std.Io.File.stdout().handle,
             };
             // `rich` は、端末への書き込みが行の途中で終わったかを覚えるため、stdout と stderr を
             // `LineTracker` に通す(`line_reader.LineStart` の Why)。
-            const interactive = line_editor.term_posix.isInteractive(io);
+            const interactive = line_editor.line_reader.term_os.isInteractive(io);
             var line_start: line_editor.line_reader.LineStart = .{};
             var out_tracker: line_editor.line_reader.LineTracker = .init(out, &line_start);
             var err_tracker: line_editor.line_reader.LineTracker = .init(err, &line_start);
