@@ -85,10 +85,9 @@ pub const History = struct {
         defer decoded.deinit(self.gpa);
         var lines = std.mem.splitScalar(u8, bytes, '\n');
         while (lines.next()) |raw| {
-            // CRLF の改行で書き直されたファイルを、そのまま読めるようにする。
-            const line = std.mem.trimEnd(u8, raw, "\r");
+            // CRLF の改行で書き直されたファイルの行末の `\r` は、`add` が項目の末尾から落とす。
             decoded.clearRetainingCapacity();
-            if (!try decodeLine(self.gpa, &decoded, line)) continue;
+            if (!try decodeLine(self.gpa, &decoded, raw)) continue;
             _ = try self.add(decoded.items);
         }
     }
@@ -672,7 +671,7 @@ test "loadBytes reads back what encodeEntry wrote, entry for entry" {
         "\\\\n",
         "(string \"あい\")",
         "x\ry",
-        "\n\n(trailing blank lines are dropped by add)",
+        "\n\n(an entry that starts with blank lines)",
     };
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();

@@ -1584,3 +1584,16 @@ test "an editor with no history file, or one that cannot be written, goes on" {
     try editor.addHistory("(a)");
     try testing.expectEqual(@as(usize, 1), editor.history.len());
 }
+
+test "an entry with a trailing newline is saved as one correct line" {
+    var t = try TempHistory.init();
+    defer t.deinit();
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    try editor.attachHistoryFile(testing.io, t.path);
+    try editor.addHistory("(f\n 1)\n");
+    try editor.addHistory("(g)\r\n");
+    const bytes = try t.contents();
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualStrings("(f\\n 1)\n(g)\n", bytes);
+}

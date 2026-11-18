@@ -51,13 +51,16 @@ pub fn load(gpa: Allocator, io: std.Io, path: []const u8, h: *history.History) A
     defer file.close(io);
     const size = file.length(io) catch return;
     const offset = size -| max_read_bytes;
-    const buffer = try gpa.alloc(u8, @intCast(size - offset));
+    // 読み始めの1つ前のバイトも読む。それが改行なら、読み始めが行頭で、最初の行は完全である。
+    const start = offset -| 1;
+    const buffer = try gpa.alloc(u8, @intCast(size - start));
     defer gpa.free(buffer);
-    const n = file.readPositionalAll(io, buffer, offset) catch return;
+    const n = file.readPositionalAll(io, buffer, start) catch return;
     var bytes = buffer[0..n];
     if (offset > 0) {
         // 読み始めが行の途中なら、最初の行は半端なので捨てる。
-        bytes = if (std.mem.findScalar(u8, bytes, '\n')) |i| bytes[i + 1 ..] else &.{};
+        const cut = std.mem.findScalar(u8, bytes[1..], '\n');
+        bytes = if (bytes.len > 0 and bytes[0] == '\n') bytes[1..] else if (cut) |i| bytes[i + 2 ..] else &.{};
     }
     try h.loadBytes(bytes);
 }
@@ -71,9 +74,20 @@ pub fn append(gpa: Allocator, io: std.Io, path: []const u8, entry: []const u8) v
     var line: std.Io.Writer.Allocating = .init(gpa);
     defer line.deinit();
     history.encodeEntry(&line.writer, entry) catch return;
-    const file = Dir.cwd().createFile(io, path, .{ .truncate = false, .permissions = file_permissions }) catch return;
+    const file = Dir.cwd().createFile(io, path, .{ .read = true, .truncate = false, .permissions = file_permissions }) catch return;
     defer file.close(io);
     const end = file.length(io) catch return;
+    // 末尾が改行で終わらないファイル(手で編集したもの、書き込みの途中で切れたもの)には、
+    // 改行を足してから書く。足さないと、新しい項目が最後の行に連結される。
+    if (end > 0) {
+        var last: [1]u8 = undefined;
+        const got = file.readPositionalAll(io, &last, end - 1) catch return;
+        if (got == 1 and last[0] != '\n') {
+            file.writePositionalAll(io, "\n", end) catch return;
+            file.writePositionalAll(io, line.written(), end + 1) catch return;
+            return;
+        }
+    }
     file.writePositionalAll(io, line.written(), end) catch return;
 }
 
@@ -235,4 +249,73 @@ test "load reads only the tail of a file over the limit, and drops the cut first
     const want = try std.fmt.bufPrint(&last, "entry-{d:0>4}", .{(i - 1) % 10000});
     try testing.expectEqualStrings(want, h.get(h.len() - 1));
     for (0..h.len()) |k| try testing.expect(std.mem.startsWith(u8, h.get(k), "entry-"));
+}
+
+test "append puts a newline first when the file does not end with one" {
+    var t = try Temp.init("h");
+    defer t.deinit();
+    try t.tmp.dir.writeFile(testing.io, .{ .sub_path = "h", .data = "(old)" });
+    append(testing.allocator, testing.io, t.path, "(new)");
+    const bytes = try t.read("h");
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualStrings("(old)\n(new)\n", bytes);
+    var h = history.History.init(testing.allocator, 10);
+    defer h.deinit();
+    try load(testing.allocator, testing.io, t.path, &h);
+    try testing.expectEqual(@as(usize, 2), h.len());
+    try testing.expectEqualStrings("(old)", h.get(0));
+    try testing.expectEqualStrings("(new)", h.get(1));
+}
+
+/// 16 バイトの行(`entry-NNNNNNNNN` と改行)を、`max_read_bytes` ちょうど並べたもの。
+fn exactTail(gpa: Allocator) !std.ArrayList(u8) {
+    var content: std.ArrayList(u8) = .empty;
+    errdefer content.deinit(gpa);
+    var i: usize = 0;
+    while (content.items.len < max_read_bytes) : (i += 1) {
+        try content.print(gpa, "entry-{d:0>9}\n", .{i});
+    }
+    try testing.expectEqual(@as(usize, max_read_bytes), content.items.len);
+    return content;
+}
+
+fn loadWithPrefix(t: *Temp, prefix: []const u8, h: *history.History) !void {
+    var tail = try exactTail(testing.allocator);
+    defer tail.deinit(testing.allocator);
+    const all = try std.mem.concat(testing.allocator, u8, &.{ prefix, tail.items });
+    defer testing.allocator.free(all);
+    try t.tmp.dir.writeFile(testing.io, .{ .sub_path = "h", .data = all });
+    try load(testing.allocator, testing.io, t.path, h);
+}
+
+test "load at the limit: a file of exactly the limit is read whole" {
+    var t = try Temp.init("h");
+    defer t.deinit();
+    var h = history.History.init(testing.allocator, 1_000_000);
+    defer h.deinit();
+    try loadWithPrefix(&t, "", &h);
+    try testing.expectEqual(@as(usize, max_read_bytes / 16), h.len());
+    try testing.expectEqualStrings("entry-000000000", h.get(0));
+}
+
+test "load over the limit: a read that starts at the start of a line keeps that line" {
+    var t = try Temp.init("h");
+    defer t.deinit();
+    var h = history.History.init(testing.allocator, 1_000_000);
+    defer h.deinit();
+    // 読み始めの1つ前のバイトが改行なので、最初の行は完全である。
+    try loadWithPrefix(&t, "dropped\n", &h);
+    try testing.expectEqual(@as(usize, max_read_bytes / 16), h.len());
+    try testing.expectEqualStrings("entry-000000000", h.get(0));
+}
+
+test "load over the limit: a read that starts in the middle of a line drops that line" {
+    var t = try Temp.init("h");
+    defer t.deinit();
+    var h = history.History.init(testing.allocator, 1_000_000);
+    defer h.deinit();
+    // 読み始めの1つ前のバイトが改行でないので、最初の行は半端な行の続きとして捨てる。
+    try loadWithPrefix(&t, "dropped", &h);
+    try testing.expectEqual(@as(usize, max_read_bytes / 16 - 1), h.len());
+    try testing.expectEqualStrings("entry-000000001", h.get(0));
 }
