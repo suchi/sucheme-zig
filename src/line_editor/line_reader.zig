@@ -15,7 +15,8 @@
 //! 判定(`Incomplete`、`LineReader.setIncomplete`)に問い合わせる。判定は REPL が `repl` の保留に
 //! 使うのと同じ関数(`sucheme.isIncomplete`)を、同じ形(全体と末尾の改行)で呼ぶ。判定を渡さない
 //! ときは、`Enter` はいつも行を確定し、`dumb` と同じく REPL が続きを読む。返す `Result.line` は、
-//! 閉じた式の全体で、論理行の間に `\n` を含みうる(末尾の改行は含まない)。REPL は、`dumb` の1行と
+//! 閉じた式の全体で、論理行の間に `\n` を含みうる。末尾にも `\n` が残りうる(空の最終行を残したまま
+//! `Enter` で確定したとき。`(a` の `Enter` のあとに、1行目へ戻って `)` を打つ、など)。REPL は、`dumb` の1行と
 //! 同じに保留へ足し、`isIncomplete` を呼ぶ。判定が同じなので、閉じていないと返ることは無い。
 //!
 //! 生モードは、1行を読む間だけ有効にする。評価の間は元の端末の設定に戻すので、プログラムの
@@ -46,7 +47,8 @@ const term_posix = @import("term_posix.zig");
 
 /// What one call of `read` gives.
 pub const Result = union(enum) {
-    /// 末尾の改行を除いた入力。`rich` では、閉じた式の全体で、論理行の間に `\n` を含みうる。
+    /// `dumb` では、改行を除いた1行。`rich` では、閉じた式の全体で、論理行の間と、末尾にも `\n` を
+    /// 含みうる(空の最終行を残したまま `Enter` で確定したとき)。
     /// 次の `read` まで有効である。
     line: []const u8,
     /// 入力の終わり(`dumb` で入力が尽きた、`rich` で空の行の `Ctrl-D`)。
@@ -1091,6 +1093,18 @@ test "the parenthesis that matches the one next to the cursor is drawn in revers
     defer run.deinit();
     // 打っている途中の描画には、反転がある。
     try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\x1b[J> \x1b[7m(\x1b[27ma b)\r\x1b[7C") != null);
+}
+
+test "an empty last line left in the buffer comes back as a trailing newline" {
+    // `(a` の Enter で空の2行目ができ、1行目へ戻って `)` で閉じてから Enter で確定する。
+    try expectMultiLines("(a\r\x10\x05)\r", &.{"(a)\n"});
+}
+
+test "up and down go on from where the cursor is, not from the column kept before a history recall" {
+    // 先に1行目へ動いて列(5)を覚え、先頭の行の上で履歴を呼び出す。呼び出した項目の中の上矢印は、
+    // 呼び出した直後のカーソルの列(3)から始まる。覚えていた列(5)を引き継がない。
+    const entry = "(xxxxxxx\nyyyyyyy\nzz)";
+    try expectMultiLines("(xxxxxxx\ryyyyyyy\rzz)\r(a\rbcdef\x1b[A\x1b[A\x1b[A!\r", &.{ entry, "(xxxxxxx\nyyy!yyyy\nzz)" });
 }
 
 test "the matching parenthesis is found across lines, and drawn on its own row" {
