@@ -41,6 +41,7 @@ const undo_mod = @import("undo.zig");
 const UndoStack = undo_mod.UndoStack;
 const history_mod = @import("history.zig");
 const History = history_mod.History;
+const history_file = @import("history_file.zig");
 const parens = @import("parens.zig");
 const render = @import("render.zig");
 const term_posix = @import("term_posix.zig");
@@ -200,6 +201,12 @@ pub const Incomplete = struct {
     }
 };
 
+/// Where `Editor` saves its history: the file, and the `std.Io` to reach it.
+pub const HistoryStore = struct {
+    io: std.Io,
+    path: []const u8,
+};
+
 /// The editing state that lives across lines: the history and the kill ring.
 pub const Editor = struct {
     gpa: Allocator,
@@ -217,6 +224,8 @@ pub const Editor = struct {
     continuation_prompt: []const u8 = "... ",
     /// 上下の移動を続けるあいだ保つ列(文字数)。ほかのキーで捨てる。
     goal_col: ?usize = null,
+    /// 履歴の保存先(7n)。null なら保存しない。
+    store: ?HistoryStore = null,
 
     pub fn init(gpa: Allocator) Editor {
         return .{
@@ -239,8 +248,18 @@ pub const Editor = struct {
     }
 
     /// Records one closed expression in the history. 行を改行でつないだ全体を1項目にする。
+    ///
+    /// 保存先があれば、記録した項目を1つだけファイルへ追記する(失敗は無視する)。
     pub fn addHistory(self: *Editor, text: []const u8) Allocator.Error!void {
-        _ = try self.history.add(text);
+        if (!try self.history.add(text)) return;
+        if (self.store) |s| history_file.append(self.gpa, s.io, s.path, self.history.get(self.history.len() - 1));
+    }
+
+    /// Loads the history file at `path` and saves the entries recorded from now on to it (7n).
+    /// `path` は、このエディタより長く生きるものを渡す(複製しない)。
+    pub fn attachHistoryFile(self: *Editor, io: std.Io, path: []const u8) Allocator.Error!void {
+        try history_file.load(self.gpa, io, path, &self.history);
+        self.store = .{ .io = io, .path = path };
     }
 
     /// Reads one line from `term`, which is already in raw mode, drawing on `out`.
@@ -658,6 +677,14 @@ pub const LineReader = union(enum) {
         switch (self.*) {
             .dumb => {},
             .rich => |*r| r.editor.continuation_prompt = prompt,
+        }
+    }
+
+    /// Loads the history file at `path`, and saves to it from now on. `dumb` keeps no history.
+    pub fn attachHistoryFile(self: *LineReader, io: std.Io, path: []const u8) Allocator.Error!void {
+        switch (self.*) {
+            .dumb => {},
+            .rich => |*r| try r.editor.attachHistoryFile(io, path),
         }
     }
 
@@ -1465,4 +1492,95 @@ test "random keys keep the buffer valid and the editor away from crashing" {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+/// 一時のディレクトリの中の履歴ファイルのパス。ユーザーの履歴には触れない。
+const TempHistory = struct {
+    tmp: testing.TmpDir,
+    path: []u8,
+
+    fn init() !TempHistory {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(dir);
+        const path = try std.Io.Dir.path.join(testing.allocator, &.{ dir, "history" });
+        return .{ .tmp = tmp, .path = path };
+    }
+
+    fn deinit(self: *TempHistory) void {
+        testing.allocator.free(self.path);
+        self.tmp.cleanup();
+    }
+
+    fn contents(self: *TempHistory) ![]u8 {
+        return self.tmp.dir.readFileAlloc(testing.io, "history", testing.allocator, .limited(1 << 20));
+    }
+};
+
+test "an entry the editor records is appended to the history file, one line each" {
+    var t = try TempHistory.init();
+    defer t.deinit();
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    try editor.attachHistoryFile(testing.io, t.path);
+    try editor.addHistory("(a)");
+    try editor.addHistory("(f\n 1)");
+    // 空の項目と、直前と同じ項目は、記録されないので、ファイルにも足されない。
+    try editor.addHistory("  ");
+    try editor.addHistory("(f\n 1)");
+    const bytes = try t.contents();
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualStrings("(a)\n(f\\n 1)\n", bytes);
+}
+
+test "an editor that attaches the history file starts with its entries, and does not write them back" {
+    var t = try TempHistory.init();
+    defer t.deinit();
+    try t.tmp.dir.writeFile(testing.io, .{ .sub_path = "history", .data = "(old)\n(f\\n 1)\n" });
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    try editor.attachHistoryFile(testing.io, t.path);
+    try testing.expectEqual(@as(usize, 2), editor.history.len());
+    // 上矢印で、読み込んだ項目(複数行を含む)を呼び出せる。
+    var run = try runScript(&editor, "\x1b[A\r", 1);
+    defer run.deinit();
+    try testing.expectEqualStrings("(f\n 1)", run.line(0));
+    // 読み込んだだけでは、ファイルは変わらない(`runScript` が返した行は、履歴に1項目足すが、
+    // 同じ項目なので記録されない)。
+    const bytes = try t.contents();
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualStrings("(old)\n(f\\n 1)\n", bytes);
+}
+
+test "the lines the editor reads are saved by a later editor" {
+    var t = try TempHistory.init();
+    defer t.deinit();
+    {
+        var first: Editor = .init(testing.allocator);
+        defer first.deinit();
+        try first.attachHistoryFile(testing.io, t.path);
+        var run = try runScript(&first, "(a)\r(b)\r", 2);
+        defer run.deinit();
+        for (0..2) |i| try first.addHistory(run.line(i));
+    }
+    var second: Editor = .init(testing.allocator);
+    defer second.deinit();
+    try second.attachHistoryFile(testing.io, t.path);
+    var run = try runScript(&second, "\x1b[A\x1b[A\r", 1);
+    defer run.deinit();
+    try testing.expectEqualStrings("(a)", run.line(0));
+}
+
+test "an editor with no history file, or one that cannot be written, goes on" {
+    var t = try TempHistory.init();
+    defer t.deinit();
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    // 親のディレクトリが無いパス。読み込みも書き込みも失敗するが、止まらない。
+    const missing = try std.Io.Dir.path.join(testing.allocator, &.{ t.path, "no", "history" });
+    defer testing.allocator.free(missing);
+    try editor.attachHistoryFile(testing.io, missing);
+    try editor.addHistory("(a)");
+    try testing.expectEqual(@as(usize, 1), editor.history.len());
 }

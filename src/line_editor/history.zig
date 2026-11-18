@@ -75,7 +75,74 @@ pub const History = struct {
         defer self.gpa.free(joined);
         return self.add(joined);
     }
+
+    /// Adds the entries of a history file's contents, oldest first (7n).
+    ///
+    /// 壊れた入力で止まらない。`add` の規則(空の項目と直前と同じ項目の除外、上限での追い出し)に
+    /// 従うので、上限を超えた古い項目は、読み込みで捨てる。確保の失敗だけを返す。
+    pub fn loadBytes(self: *History, bytes: []const u8) Allocator.Error!void {
+        var decoded: std.ArrayList(u8) = .empty;
+        defer decoded.deinit(self.gpa);
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        while (lines.next()) |raw| {
+            // CRLF の改行で書き直されたファイルを、そのまま読めるようにする。
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            decoded.clearRetainingCapacity();
+            if (!try decodeLine(self.gpa, &decoded, line)) continue;
+            _ = try self.add(decoded.items);
+        }
+    }
 };
+
+/// Writes one entry as a line of the history file: `\` becomes `\\`, a newline becomes `\n`.
+///
+/// Why: 1行1項目にして、複数行の項目も1行で持つ。`\r` は変えずに書く(`add` が項目の中の `\r` を
+/// 残すため、書き戻しても同じ項目になる)。
+pub fn encodeEntry(w: *std.Io.Writer, entry: []const u8) std.Io.Writer.Error!void {
+    var start: usize = 0;
+    for (entry, 0..) |c, i| {
+        const esc: []const u8 = switch (c) {
+            '\\' => "\\\\",
+            '\n' => "\\n",
+            else => continue,
+        };
+        try w.writeAll(entry[start..i]);
+        try w.writeAll(esc);
+        start = i + 1;
+    }
+    try w.writeAll(entry[start..]);
+    try w.writeByte('\n');
+}
+
+/// Decodes one line of the history file into `out`. Returns false when the line is dropped.
+///
+/// `\\` は `\`、`\n` は改行になる。未知のエスケープ(`\t` など)と、行末の1個の `\` は、読めないので、
+/// そのまま(バックスラッシュも残して)読む。UTF-8 として正しくない行は、編集バッファが
+/// 持てないので捨てる(壊れた行を直さない)。
+fn decodeLine(gpa: Allocator, out: *std.ArrayList(u8), line: []const u8) Allocator.Error!bool {
+    if (!std.unicode.utf8ValidateSlice(line)) return false;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (c == '\\' and i + 1 < line.len) {
+            switch (line[i + 1]) {
+                '\\' => {
+                    try out.append(gpa, '\\');
+                    i += 1;
+                    continue;
+                },
+                'n' => {
+                    try out.append(gpa, '\n');
+                    i += 1;
+                    continue;
+                },
+                else => {},
+            }
+        }
+        try out.append(gpa, c);
+    }
+    return true;
+}
 
 /// Moves up and down the history for one prompt (the Up and Down keys, Ctrl-P and Ctrl-N).
 ///
@@ -581,4 +648,93 @@ test "Search: a longer query stays on the older match the search had moved to" {
     try testing.expectEqualStrings("ab1", s.current().?);
     try s.append("b");
     try testing.expectEqualStrings("ab1", s.current().?);
+}
+
+test "encodeEntry escapes the backslash and the newline, and ends the line" {
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try encodeEntry(&w, "(f 1)");
+    try encodeEntry(&w, "(define (f x)\n  (* x 2))");
+    try encodeEntry(&w, "(display \"a\\nb\")");
+    try testing.expectEqualStrings(
+        "(f 1)\n(define (f x)\\n  (* x 2))\n(display \"a\\\\nb\")\n",
+        w.buffered(),
+    );
+}
+
+test "loadBytes reads back what encodeEntry wrote, entry for entry" {
+    const entries = [_][]const u8{
+        "(f 1)",
+        "(define (f x)\n  (* x 2))",
+        "(display \"a\\nb\")",
+        "\\",
+        "a\\",
+        "\\\\n",
+        "(string \"あい\")",
+        "x\ry",
+        "\n\n(trailing blank lines are dropped by add)",
+    };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    for (entries) |e| try encodeEntry(&aw.writer, e);
+    var h = History.init(testing.allocator, 100);
+    defer h.deinit();
+    try h.loadBytes(aw.written());
+    try testing.expectEqual(entries.len, h.len());
+    for (entries, 0..) |e, i| try testing.expectEqualStrings(e, h.get(i));
+}
+
+test "loadBytes keeps an unknown escape as it is, and a backslash at the end of a line" {
+    var h = History.init(testing.allocator, 10);
+    defer h.deinit();
+    try h.loadBytes("(display \"a\\tb\")\nend\\\n\\q\\\\\\n\\");
+    try testing.expectEqual(@as(usize, 3), h.len());
+    try testing.expectEqualStrings("(display \"a\\tb\")", h.get(0));
+    try testing.expectEqualStrings("end\\", h.get(1));
+    // `\q` はそのまま、`\\` は `\` 1つ、`\n` は改行、行末の `\` はそのまま。
+    try testing.expectEqualStrings("\\q\\\n\\", h.get(2));
+}
+
+test "loadBytes drops a line that is not valid UTF-8, and goes on" {
+    var h = History.init(testing.allocator, 10);
+    defer h.deinit();
+    try h.loadBytes("one\ntw\xffo\n\xc3\nthree\n");
+    try testing.expectEqual(@as(usize, 2), h.len());
+    try testing.expectEqualStrings("one", h.get(0));
+    try testing.expectEqualStrings("three", h.get(1));
+}
+
+test "loadBytes skips blank lines and repeats, and reads CRLF lines and a last line without a newline" {
+    var h = History.init(testing.allocator, 10);
+    defer h.deinit();
+    try h.loadBytes("a\r\n\r\n   \na\nb\r\nc");
+    try testing.expectEqual(@as(usize, 3), h.len());
+    try testing.expectEqualStrings("a", h.get(0));
+    try testing.expectEqualStrings("b", h.get(1));
+    try testing.expectEqualStrings("c", h.get(2));
+}
+
+test "loadBytes drops what is over the limit, oldest first, and adds to what is already there" {
+    var h = History.init(testing.allocator, 3);
+    defer h.deinit();
+    _ = try h.add("old");
+    try h.loadBytes("1\n2\n3\n4\n");
+    try testing.expectEqual(@as(usize, 3), h.len());
+    try testing.expectEqualStrings("2", h.get(0));
+    try testing.expectEqualStrings("4", h.get(2));
+}
+
+test "loadBytes on empty or arbitrary bytes does not stop, and does not leak when allocation fails" {
+    var h = History.init(testing.allocator, 4);
+    defer h.deinit();
+    try h.loadBytes("");
+    try h.loadBytes("\n\n\\\\\n\\x");
+    try testing.expectEqual(@as(usize, 2), h.len());
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(gpa: Allocator) !void {
+            var hh = History.init(gpa, 2);
+            defer hh.deinit();
+            try hh.loadBytes("a\\nb\nc\nd\n");
+        }
+    }.run, .{});
 }
