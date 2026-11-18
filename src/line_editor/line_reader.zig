@@ -2,10 +2,10 @@
 //!
 //! REPL が1行ずつ読む入口(7j、ADR-0014、ADR-0049)。`LineReader` は2つの形を持つ。
 //!
-//! - `dumb`: これまでの素朴な読み取り。プロンプトを書き、改行までを読む。Windows と、端末で
-//!   ない入力(パイプ、ファイル)はこちらである。
+//! - `dumb`: これまでの素朴な読み取り。プロンプトを書き、改行までを読む。端末でない入力
+//!   (パイプ、ファイル)はこちらである。
 //! - `rich`: 端末の生モードで1バイトずつ読み、Emacs の標準のキー割り当てで1行を編集する。
-//!   入力と出力の両方が POSIX の端末のときに使う。
+//!   入力と出力の両方が端末(POSIX の端末、または Windows のコンソール)のときに使う。
 //!
 //! 完結判定(`sucheme.isIncomplete`)の呼び出しは、どちらの形でも REPL が持つ。`dumb` は1行を
 //! 返し、式が閉じていないときは、REPL が継続行のプロンプトで次の行を読む。
@@ -44,6 +44,8 @@ const History = history_mod.History;
 const parens = @import("parens.zig");
 const render = @import("render.zig");
 const term_posix = @import("term_posix.zig");
+const term_windows = @import("term_windows.zig");
+const builtin = @import("builtin");
 
 /// What one call of `read` gives.
 pub const Result = union(enum) {
@@ -88,7 +90,7 @@ pub const Dumb = struct {
 
 /// The terminal under the editing reader. 生モードの出入り、1バイトの読み取り、幅を受け持つ。
 ///
-/// 本物の端末(`PosixTerminal`)と、テストの台本の端末の、2つの実装がある。
+/// 本物の端末(`OsTerminal`)と、テストの台本の端末の、2つの実装がある。
 pub const Terminal = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
@@ -118,16 +120,22 @@ pub const Terminal = struct {
     }
 };
 
-/// The POSIX terminal behind stdin and stdout.
-pub const PosixTerminal = struct {
+/// The OS-specific terminal module: `term_windows` on Windows, `term_posix` elsewhere.
+///
+/// Why: 2つのモジュールは、同じ形の境界(`RawMode`、`columns`、`default_columns`)を持つ。違いは
+/// `RawMode.enter` の引数だけで、Windows は入力と出力のハンドルを取る。
+pub const term_os = if (builtin.os.tag == .windows) term_windows else term_posix;
+
+/// The terminal behind stdin and stdout (a POSIX terminal, or a Windows console).
+pub const OsTerminal = struct {
     /// REPL の標準入力の読み手。評価中のプログラムの `read` がここに読み溜めたバイトを、
     /// 端末から読む前に使う(先に打たれた入力を失わないため)。
     in: *std.Io.Reader,
     in_fd: std.posix.fd_t,
     out_fd: std.posix.fd_t,
-    raw: ?term_posix.RawMode = null,
+    raw: ?term_os.RawMode = null,
 
-    pub fn terminal(self: *PosixTerminal) Terminal {
+    pub fn terminal(self: *OsTerminal) Terminal {
         return .{ .ctx = self, .vtable = &vtable };
     }
 
@@ -139,18 +147,21 @@ pub const PosixTerminal = struct {
     };
 
     fn beginFn(ctx: *anyopaque) error{Unavailable}!void {
-        const self: *PosixTerminal = @ptrCast(@alignCast(ctx));
-        self.raw = term_posix.RawMode.enter(self.in_fd) catch return error.Unavailable;
+        const self: *OsTerminal = @ptrCast(@alignCast(ctx));
+        self.raw = (if (builtin.os.tag == .windows)
+            term_os.RawMode.enter(self.in_fd, self.out_fd)
+        else
+            term_os.RawMode.enter(self.in_fd)) catch return error.Unavailable;
     }
 
     fn finishFn(ctx: *anyopaque) void {
-        const self: *PosixTerminal = @ptrCast(@alignCast(ctx));
+        const self: *OsTerminal = @ptrCast(@alignCast(ctx));
         if (self.raw) |*r| r.leave();
         self.raw = null;
     }
 
     fn readByteFn(ctx: *anyopaque) error{ReadFailed}!?u8 {
-        const self: *PosixTerminal = @ptrCast(@alignCast(ctx));
+        const self: *OsTerminal = @ptrCast(@alignCast(ctx));
         if (self.in.bufferedLen() > 0) {
             const b = self.in.buffered()[0];
             self.in.toss(1);
@@ -170,8 +181,8 @@ pub const PosixTerminal = struct {
     }
 
     fn columnsFn(ctx: *anyopaque) usize {
-        const self: *PosixTerminal = @ptrCast(@alignCast(ctx));
-        return term_posix.columns(self.out_fd) orelse term_posix.default_columns;
+        const self: *OsTerminal = @ptrCast(@alignCast(ctx));
+        return term_os.columns(self.out_fd) orelse term_os.default_columns;
     }
 };
 
@@ -996,18 +1007,18 @@ test "Dumb skips a line too long for its buffer, and ends without a prompt when 
     try testing.expectEqualStrings("> > > ", out.written());
 }
 
-test "PosixTerminal reads the bytes buffered in the reader before the terminal" {
+test "OsTerminal reads the bytes buffered in the reader before the terminal" {
     var in: std.Io.Reader = .fixed("xy");
     try in.fill(2);
     // 開いていない fd。Windows の `fd_t` はハンドルなので、整数の -1 は書けない。
     const no_fd: std.posix.fd_t = if (@import("builtin").os.tag == .windows) std.os.windows.INVALID_HANDLE_VALUE else -1;
-    var pt: PosixTerminal = .{ .in = &in, .in_fd = no_fd, .out_fd = no_fd };
+    var pt: OsTerminal = .{ .in = &in, .in_fd = no_fd, .out_fd = no_fd };
     const t = pt.terminal();
     try testing.expectEqual(@as(?u8, 'x'), try t.readByte());
     try testing.expectEqual(@as(?u8, 'y'), try t.readByte());
     // 生モードでないとき(端末を読まない)は、入力の終わりである。
     try testing.expectEqual(@as(?u8, null), try t.readByte());
-    try testing.expectEqual(@as(usize, term_posix.default_columns), t.columns());
+    try testing.expectEqual(@as(usize, term_os.default_columns), t.columns());
 }
 
 test "Ctrl-D on a line of one character deletes it, and does not end the input" {
