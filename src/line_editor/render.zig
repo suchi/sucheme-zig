@@ -56,6 +56,9 @@ pub const View = struct {
     /// 端末の桁数。
     cols: usize,
     search: ?Search = null,
+    /// 反転表示する文字の `text` の中のバイト位置(対応する括弧。7e)。文字の先頭でなければ、
+    /// 何も強調しない。窓の外にあれば、描かない。
+    highlight: ?usize = null,
 };
 
 /// Writes the escape sequence that redraws the lines, and returns the state for the next call.
@@ -135,9 +138,14 @@ const Pen = struct {
     }
 
     /// 1文字を描く。幅 0 の文字(結合文字)は、桁を進めず、折り返しも起こさない。
-    fn put(self: *Pen, s: []const u8, i: usize, g: Glyph) std.Io.Writer.Error!void {
+    ///
+    /// Why: 反転と解除は、1文字を挟むだけで、桁を進めない。折り返しの `CR LF` のあとに入れて、
+    /// 前の行の末尾を反転のまま残さない。解除は `27`(反転だけを戻す)にして、ほかの属性に触れない。
+    fn put(self: *Pen, s: []const u8, i: usize, g: Glyph, lit: bool) std.Io.Writer.Error!void {
         if (g.cells > 0) try self.reserve(g.cells);
+        if (lit) try self.w.writeAll("\x1b[7m");
         try emit(self.w, s, i, g);
+        if (lit) try self.w.writeAll("\x1b[27m");
         if (g.cells > 0) self.advance(g.cells);
     }
 
@@ -146,7 +154,7 @@ const Pen = struct {
         var i: usize = 0;
         while (i < s.len) {
             const g = glyphAt(widthFn, s, i);
-            try self.put(s, i, g);
+            try self.put(s, i, g, false);
             i += g.len;
         }
     }
@@ -201,7 +209,7 @@ fn renderWith(
             continue;
         }
         const g = glyphAt(widthFn, text, i);
-        try pen.put(text, i, g);
+        try pen.put(text, i, g, view.highlight == i);
         i += g.len;
     }
 
@@ -247,6 +255,9 @@ const Screen = struct {
     last_col: usize = 0,
     pending: bool = false,
     bad: bool = false,
+    /// 反転して描かれた桁(`CSI 7 m` から `CSI 27 m` まで)。
+    inverse: [screen_rows][screen_cols]bool = @splat(@splat(false)),
+    reverse_on: bool = false,
     /// 行頭に、基底の文字を持たない結合文字が置かれたとき。
     orphan: bool = false,
 
@@ -298,6 +309,11 @@ const Screen = struct {
                         self.col = @min(self.col + count, self.cols - 1);
                         self.pending = false;
                     },
+                    'm' => switch (n) {
+                        7 => self.reverse_on = true,
+                        27 => self.reverse_on = false,
+                        else => return error.UnsupportedSequence,
+                    },
                     else => return error.UnsupportedSequence,
                 }
                 i = j + 1;
@@ -322,6 +338,7 @@ const Screen = struct {
                 // 幅が桁数より広い(桁数 1 の全角)ときだけは、行の先頭に置く。
                 if (self.col + cw > self.cols and self.col > 0) self.bad = true;
                 self.cells[self.row][self.col] = cp;
+                self.inverse[self.row][self.col] = self.reverse_on;
                 self.marks[self.row][self.col] = 0;
                 self.last_row = self.row;
                 self.last_col = self.col;
@@ -430,6 +447,43 @@ test "a line longer than the width wraps onto the next row" {
     try draw(10, "> ", "abcdefghijkl", 12, &.{ "> abcdefgh", "ijkl" }, 1, 4);
     try draw(10, "> ", "abcdefghijkl", 3, &.{ "> abcdefgh", "ijkl" }, 0, 5);
     try draw(10, "> ", "abcdefghijkl", 8, &.{ "> abcdefgh", "ijkl" }, 1, 0);
+}
+
+test "the highlighted character is wrapped in reverse video and takes no column of its own" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    _ = try render(&aw.writer, .{ .prompt = "> ", .text = "(a)", .cursor = 0, .cols = 80, .highlight = 2 }, .{});
+    try testing.expectEqualStrings("\r\x1b[J> (a\x1b[7m)\x1b[27m\r\x1b[2C", aw.written());
+    // 仮想の画面で、反転した桁を見る。内容と、カーソルの桁は変わらない。
+    var screen = Screen.init(20);
+    _ = try expectDraw(&screen, .{ .prompt = "> ", .text = "(a (b))", .cursor = 7, .cols = 20, .highlight = 0 }, .{}, &.{"> (a (b))"}, 0, 9);
+    for (screen.inverse[0][0..12], 0..) |on, col| try testing.expectEqual(col == 2, on);
+}
+
+test "a highlight inside a character is not drawn, and a wide character is reversed whole" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // 「あ」の2バイト目(継続バイト)は、文字の先頭ではない。
+    _ = try render(&aw.writer, .{ .prompt = "> ", .text = "あい", .cursor = 0, .cols = 20, .highlight = 1 }, .{});
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "\x1b[7m") == null);
+    aw.clearRetainingCapacity();
+    _ = try render(&aw.writer, .{ .prompt = "", .text = "あい", .cursor = 0, .cols = 20, .highlight = 3 }, .{});
+    try testing.expectEqualStrings("\r\x1b[Jあ\x1b[7mい\x1b[27m\r", aw.written());
+}
+
+test "the highlight is drawn on a wrapped row and on a later logical line, after the wrap" {
+    // 折り返したあとの行の文字を反転する。反転は、折り返しの `CR LF` の後ろに入る(行頭の桁を汚さない)。
+    var screen = Screen.init(10);
+    _ = try expectDraw(&screen, .{ .prompt = "> ", .text = "abcdefghijkl", .cursor = 0, .cols = 10, .highlight = 8 }, .{}, &.{ "> abcdefgh", "ijkl" }, 0, 2);
+    try testing.expect(screen.inverse[1][0] and !screen.inverse[0][9] and !screen.inverse[1][1]);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    _ = try render(&aw.writer, .{ .prompt = "> ", .continuation = "... ", .text = "(a\n b)", .cursor = 0, .cols = 80, .highlight = 5 }, .{});
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "\r\n...  b\x1b[7m)\x1b[27m") != null);
+    // 行をまたいで対応する括弧どうしを、続けて強調できる(1回に1つずつ描く)。
+    var screen2 = Screen.init(20);
+    _ = try expectDraw(&screen2, .{ .prompt = "> ", .continuation = "... ", .text = "(a\n b)", .cursor = 6, .cols = 20, .highlight = 0 }, .{}, &.{ "> (a", "...  b)" }, 1, 7);
+    try testing.expect(screen2.inverse[0][2]);
 }
 
 test "a row filled to the last column does not add a row unless the cursor is after it" {

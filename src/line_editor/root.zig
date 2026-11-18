@@ -12,6 +12,7 @@ pub const term_posix = @import("term_posix.zig");
 pub const kill_ring = @import("kill_ring.zig");
 pub const undo = @import("undo.zig");
 pub const history = @import("history.zig");
+pub const parens = @import("parens.zig");
 pub const width = @import("width.zig");
 pub const render = @import("render.zig");
 pub const line_reader = @import("line_reader.zig");
