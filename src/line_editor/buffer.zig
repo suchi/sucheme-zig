@@ -1,13 +1,19 @@
 //! Edit buffer for the line editor.
 //!
-//! UTF-8 の文字列とカーソルを持つ、改行を含まない1行の編集バッファ(7b)。入出力にも
+//! UTF-8 の文字列とカーソルを持つ編集バッファ(7b、複数行は 7m)。入出力にも
 //! 端末にも触れない。キー割り当て(7j)、キルリングと取り消し(7c)、再描画(7g)が使う。
 //!
 //! 不変条件(どの操作の前後でも成り立つ):
 //! - `text()` は正しい UTF-8 である。不正なバイト列を挿入する操作は、バッファを変えずに
 //!   `error.InvalidUtf8` を返す。
-//! - `text()` は `\n` も `\r` も含まない。複数行の編集は 7m で入る。
+//! - `text()` は `\r` を含まない。論理行の区切りは `\n` だけである(7m)。`\r` を含む文字列の
+//!   挿入は、バッファを変えずに `error.CarriageReturn` を返す。
 //! - `cursor` は、`0` から `text().len` までの、文字の境界である(文字の途中にならない)。
+//!
+//! 論理行は、`\n` で区切られた部分である(`\n` は直前の行に属さず、行の外にある)。行頭と
+//! 行末の移動、行をまたぐ上下の移動(`moveUpLine` と `moveDownLine`)は、論理行で動く。
+//! 上下の移動の「列」は、行頭からの文字数(符号位置の数)である。全角の文字を含む行で、
+//! 画面の桁とずれる(表示の幅は 7g が `width.zig` から求め、ここは使わない)。
 //!
 //! カーソルと範囲は、すべてバイト位置である。表示の列(文字幅)は 7g が `width.zig` から求める。
 //! 「文字」は符号位置1つである。結合文字は、基底の文字と別の文字として動く。
@@ -64,8 +70,9 @@ pub const InsertError = error{
     OutOfMemory,
     /// 挿入する文字列が正しい UTF-8 でない、または符号位置が不正(サロゲート、U+10FFFF 超)。
     InvalidUtf8,
-    /// 挿入する文字列が `\n` か `\r` を含む。核の編集バッファは1行である。
-    LineBreak,
+    /// 挿入する文字列が `\r` を含む。行の区切りは `\n` だけで、`\r` は端末でカーソルを行頭へ
+    /// 戻すので、バッファに入れない。
+    CarriageReturn,
 };
 
 pub const RangeError = error{
@@ -122,7 +129,7 @@ pub const Buffer = struct {
         if (range.start > range.end or !self.isBoundary(range.start) or !self.isBoundary(range.end))
             return error.InvalidRange;
         if (!std.unicode.utf8ValidateSlice(new_text)) return error.InvalidUtf8;
-        if (std.mem.indexOfAny(u8, new_text, "\n\r") != null) return error.LineBreak;
+        if (std.mem.indexOfScalar(u8, new_text, '\r') != null) return error.CarriageReturn;
         const items = self.bytes.items;
         const lo = @intFromPtr(items.ptr);
         const at = @intFromPtr(new_text.ptr);
@@ -163,23 +170,24 @@ pub const Buffer = struct {
     pub fn deleteRange(self: *Buffer, range: Range) RangeError!Edit {
         return self.replaceRange(range, "") catch |e| switch (e) {
             // 空の文字列の挿入は、確保も検査も要らない。
-            error.OutOfMemory, error.InvalidUtf8, error.LineBreak => unreachable,
+            error.OutOfMemory, error.InvalidUtf8, error.CarriageReturn => unreachable,
             error.InvalidRange => error.InvalidRange,
         };
     }
 
     /// The two characters that `transpose` swaps, as one range, or null when it does nothing.
     ///
-    /// `Ctrl-T` の意味(GNU Readline と同じ)。カーソルが行末にあるときは、最後の2文字。
-    /// それ以外は、カーソルの前の文字と、カーソルの位置の文字。カーソルが行頭か、
-    /// 文字が2つ未満のときは、何もしない。
+    /// `Ctrl-T` の意味(GNU Readline と同じ)。カーソルが論理行の末尾にあるときは、その行の
+    /// 最後の2文字。それ以外は、カーソルの前の文字と、カーソルの位置の文字。カーソルが行頭か、
+    /// 行の文字が2つ未満のときは、何もしない。改行は入れ替えない(行の区切りが動くため)。
     pub fn transposeRange(self: *const Buffer) ?Range {
         const t = self.bytes.items;
-        if (self.cursor == 0 or t.len == 0) return null;
-        if (self.cursor == t.len) {
-            const second = prevStart(t, t.len);
-            if (second == 0) return null;
-            return .{ .start = prevStart(t, second), .end = t.len };
+        const at_line_end = self.cursor == t.len or t[self.cursor] == '\n';
+        if (self.cursor == 0 or t[self.cursor - 1] == '\n') return null;
+        if (at_line_end) {
+            const second = prevStart(t, self.cursor);
+            if (second == 0 or t[second - 1] == '\n') return null;
+            return .{ .start = prevStart(t, second), .end = self.cursor };
         }
         const first = prevStart(t, self.cursor);
         return .{ .start = first, .end = nextEnd(t, self.cursor) };
@@ -261,7 +269,7 @@ pub const Buffer = struct {
     }
 
     /// From the start of the previous run of non-space characters to the cursor (`Ctrl-W`).
-    /// 区切りは空白(ASCII の空白とタブ)だけである。`Alt-Backspace` の単語より広い。
+    /// 区切りは ASCII の空白、タブ、改行だけである。`Alt-Backspace` の単語より広い。
     pub fn rangeBackwardSpaceWord(self: *const Buffer) Range {
         const t = self.bytes.items;
         var i = self.cursor;
@@ -270,14 +278,40 @@ pub const Buffer = struct {
         return .{ .start = i, .end = self.cursor };
     }
 
-    /// From the start of the line to the cursor (`Ctrl-U`).
+    /// From the start of the logical line to the cursor (`Ctrl-U`).
     pub fn rangeToStart(self: *const Buffer) Range {
-        return .{ .start = 0, .end = self.cursor };
+        return .{ .start = self.lineStart(self.cursor), .end = self.cursor };
     }
 
-    /// From the cursor to the end of the line (`Ctrl-K`).
+    /// From the cursor to the end of the logical line (`Ctrl-K`).
+    ///
+    /// 行末にいて、次の行があるときは、その改行1つの範囲を返す(Emacs と同じ。行が結合する)。
     pub fn rangeToEnd(self: *const Buffer) Range {
-        return .{ .start = self.cursor, .end = self.bytes.items.len };
+        const end = self.lineEnd(self.cursor);
+        if (end == self.cursor and end < self.bytes.items.len) return .{ .start = end, .end = end + 1 };
+        return .{ .start = self.cursor, .end = end };
+    }
+
+    // -----------------------------------------------------------------------
+    // 論理行(`\n` で区切られた部分)
+    // -----------------------------------------------------------------------
+
+    /// The start of the logical line that contains `pos` (just after the previous `\n`, or 0).
+    pub fn lineStart(self: *const Buffer, pos: usize) usize {
+        return if (std.mem.lastIndexOfScalar(u8, self.bytes.items[0..pos], '\n')) |i| i + 1 else 0;
+    }
+
+    /// The end of the logical line that contains `pos` (the next `\n`, or the end of the text).
+    pub fn lineEnd(self: *const Buffer, pos: usize) usize {
+        return std.mem.indexOfScalarPos(u8, self.bytes.items, pos, '\n') orelse self.bytes.items.len;
+    }
+
+    /// The number of characters between the start of the line and `pos`.
+    pub fn column(self: *const Buffer, pos: usize) usize {
+        var n: usize = 0;
+        var i = self.lineStart(pos);
+        while (i < pos) : (i = nextEnd(self.bytes.items, i)) n += 1;
+        return n;
     }
 
     // -----------------------------------------------------------------------
@@ -300,12 +334,52 @@ pub const Buffer = struct {
         self.cursor = self.rangeForwardWord().end;
     }
 
+    /// Moves to the start of the whole text.
     pub fn moveToStart(self: *Buffer) void {
         self.cursor = 0;
     }
 
+    /// Moves to the end of the whole text.
     pub fn moveToEnd(self: *Buffer) void {
         self.cursor = self.bytes.items.len;
+    }
+
+    /// Moves to the start of the logical line (`Ctrl-A`, `Home`).
+    pub fn moveToLineStart(self: *Buffer) void {
+        self.cursor = self.lineStart(self.cursor);
+    }
+
+    /// Moves to the end of the logical line (`Ctrl-E`, `End`).
+    pub fn moveToLineEnd(self: *Buffer) void {
+        self.cursor = self.lineEnd(self.cursor);
+    }
+
+    /// Moves to the previous logical line, to character column `goal` or the end of that line if it
+    /// is shorter. Returns false, and does not move, on the first line.
+    ///
+    /// 呼び出し側が、上下の移動を続けるあいだ `goal` を保つ(短い行を通っても、元の列に戻れる)。
+    pub fn moveUpLine(self: *Buffer, goal: usize) bool {
+        const start = self.lineStart(self.cursor);
+        if (start == 0) return false;
+        // 前の行は `start - 1`(`\n`)で終わる。
+        self.cursor = self.columnPos(self.lineStart(start - 1), start - 1, goal);
+        return true;
+    }
+
+    /// Moves to the next logical line; see `moveUpLine`. Returns false on the last line.
+    pub fn moveDownLine(self: *Buffer, goal: usize) bool {
+        const end = self.lineEnd(self.cursor);
+        if (end == self.bytes.items.len) return false;
+        self.cursor = self.columnPos(end + 1, self.lineEnd(end + 1), goal);
+        return true;
+    }
+
+    /// The position `goal` characters after `start`, but not past `end`.
+    fn columnPos(self: *const Buffer, start: usize, end: usize, goal: usize) usize {
+        var i = start;
+        var n: usize = 0;
+        while (n < goal and i < end) : (n += 1) i = nextEnd(self.bytes.items, i);
+        return i;
     }
 };
 
@@ -333,8 +407,10 @@ fn splitAfterFirstChar(t: []const u8, r: Range) usize {
     return nextEnd(t, r.start);
 }
 
+/// `Ctrl-W` の区切り: 空白、タブ、改行。改行は空白と同じに数えるので、行頭の `Ctrl-W` は、
+/// 直前の改行と、その前の語までを切る。
 fn isSpace(b: u8) bool {
-    return b == ' ' or b == '\t';
+    return b == ' ' or b == '\t' or b == '\n';
 }
 
 /// ASCII の英数字と、ASCII でない文字を、単語の文字とする。
@@ -377,7 +453,7 @@ fn expectMarked(expected: []const u8, b: *const Buffer) !void {
 
 fn expectInvariants(b: *const Buffer) !void {
     try testing.expect(std.unicode.utf8ValidateSlice(b.text()));
-    try testing.expect(std.mem.indexOfAny(u8, b.text(), "\n\r") == null);
+    try testing.expect(std.mem.indexOfScalar(u8, b.text(), '\r') == null);
     try testing.expect(b.isBoundary(b.cursor));
 }
 
@@ -405,7 +481,7 @@ test "inserting nothing is a no-op edit" {
     try expectMarked("a|b", &b);
 }
 
-test "insert rejects invalid UTF-8, bad code points and line breaks without changing the buffer" {
+test "insert rejects invalid UTF-8, bad code points and carriage returns without changing the buffer" {
     var b = try fromMarked("ab|c");
     defer b.deinit();
     try testing.expectError(error.InvalidUtf8, b.insertSlice("\xFF"));
@@ -414,9 +490,9 @@ test "insert rejects invalid UTF-8, bad code points and line breaks without chan
     try testing.expectError(error.InvalidUtf8, b.insertSlice("\xED\xA0\x80")); // サロゲート
     try testing.expectError(error.InvalidUtf8, b.insertCodepoint(0xD800));
     try testing.expectError(error.InvalidUtf8, b.insertCodepoint(0x110000));
-    try testing.expectError(error.LineBreak, b.insertSlice("x\ny"));
-    try testing.expectError(error.LineBreak, b.insertSlice("\r"));
-    try testing.expectError(error.LineBreak, b.insertCodepoint('\n'));
+    try testing.expectError(error.CarriageReturn, b.insertSlice("x\ry"));
+    try testing.expectError(error.CarriageReturn, b.insertSlice("\r"));
+    try testing.expectError(error.CarriageReturn, b.insertCodepoint('\r'));
     try expectMarked("ab|c", &b);
     try expectInvariants(&b);
 }
@@ -747,4 +823,193 @@ test "random edits keep the invariants" {
             try testing.expect(r.start == b.cursor or r.end == b.cursor);
         }
     }
+}
+
+test "a newline is an ordinary character: it splits lines and joins them again" {
+    var b = try fromMarked("ab|cd");
+    defer b.deinit();
+    _ = try b.insertSlice("\n");
+    try expectMarked("ab\n|cd", &b);
+    // 行頭の Backspace は、直前の改行を消して、行を結合する。
+    const r = b.rangeBackwardChar();
+    try testing.expectEqualStrings("\n", b.text()[r.start..r.end]);
+    _ = try b.deleteRange(r);
+    try expectMarked("ab|cd", &b);
+    // 行末の Delete も、次の行を結合する。
+    var c = try fromMarked("ab|\ncd");
+    defer c.deinit();
+    _ = try c.deleteRange(c.rangeForwardChar());
+    try expectMarked("ab|cd", &c);
+}
+
+test "line start, end and column are per logical line" {
+    // "ab\n" は 0..3、"あいう\n" は 3..13(あ3 い6 う9、改行12)、"xyz" は 13..16。
+    var b = try fromMarked("ab\nあいう\n|xyz");
+    defer b.deinit();
+    try testing.expectEqual(13, b.lineStart(b.cursor));
+    try testing.expectEqual(16, b.lineEnd(b.cursor));
+    try testing.expectEqual(0, b.column(b.cursor));
+    try b.setCursor(9); // 'う' の手前
+    try testing.expectEqual(3, b.lineStart(b.cursor));
+    try testing.expectEqual(12, b.lineEnd(b.cursor));
+    try testing.expectEqual(2, b.column(b.cursor));
+    b.moveToLineStart();
+    try expectMarked("ab\n|あいう\nxyz", &b);
+    b.moveToLineEnd();
+    try expectMarked("ab\nあいう|\nxyz", &b);
+    // 改行の位置は、直前の行の末尾である。
+    try b.setCursor(2);
+    try testing.expectEqual(0, b.lineStart(2));
+    try testing.expectEqual(2, b.lineEnd(2));
+    b.moveToStart();
+    b.moveToEnd();
+}
+
+test "up and down keep the column, clamp on short lines and report the edges" {
+    var b = try fromMarked("abcd\nx\nabcdef|");
+    defer b.deinit();
+    const goal = b.column(b.cursor);
+    try testing.expectEqual(6, goal);
+    try testing.expect(b.moveUpLine(goal));
+    try expectMarked("abcd\nx|\nabcdef", &b); // 短い行の末尾で止まる
+    try testing.expect(b.moveUpLine(goal));
+    try expectMarked("abcd|\nx\nabcdef", &b);
+    try testing.expect(!b.moveUpLine(goal)); // 先頭の行では動かない
+    try expectMarked("abcd|\nx\nabcdef", &b);
+    try testing.expect(b.moveDownLine(2));
+    try expectMarked("abcd\nx|\nabcdef", &b);
+    try testing.expect(b.moveDownLine(2));
+    try expectMarked("abcd\nx\nab|cdef", &b);
+    try testing.expect(!b.moveDownLine(2));
+    try expectMarked("abcd\nx\nab|cdef", &b);
+}
+
+test "up and down count characters, not bytes, and land on character boundaries" {
+    var b = try fromMarked("あいう\nabcdef|");
+    defer b.deinit();
+    try testing.expect(b.moveUpLine(6));
+    try expectMarked("あいう|\nabcdef", &b);
+    try testing.expect(b.moveDownLine(1));
+    try expectMarked("あいう\na|bcdef", &b);
+    try testing.expect(b.moveUpLine(1));
+    try expectMarked("あ|いう\nabcdef", &b);
+    try expectInvariants(&b);
+}
+
+test "up and down onto an empty line" {
+    var b = try fromMarked("ab\n\ncd|");
+    defer b.deinit();
+    try testing.expect(b.moveUpLine(2));
+    try expectMarked("ab\n|\ncd", &b);
+    try testing.expect(b.moveUpLine(2));
+    try expectMarked("ab|\n\ncd", &b);
+    try testing.expect(b.moveDownLine(2));
+    try testing.expect(b.moveDownLine(2));
+    try expectMarked("ab\n\ncd|", &b);
+}
+
+test "kill to the end stops at the line end, and at the line end takes the newline" {
+    var b = try fromMarked("a|b\ncd");
+    defer b.deinit();
+    var r = b.rangeToEnd();
+    try testing.expectEqualStrings("b", b.text()[r.start..r.end]);
+    _ = try b.deleteRange(r);
+    try expectMarked("a|\ncd", &b);
+    r = b.rangeToEnd(); // 行末では、改行を取って次の行を結合する
+    try testing.expectEqualStrings("\n", b.text()[r.start..r.end]);
+    _ = try b.deleteRange(r);
+    try expectMarked("a|cd", &b);
+    try testing.expect(b.rangeToEnd().len() == 2);
+    b.moveToEnd();
+    try testing.expect(b.rangeToEnd().isEmpty());
+}
+
+test "kill to the start stops at the line start and takes nothing there" {
+    var b = try fromMarked("ab\ncd|e");
+    defer b.deinit();
+    var r = b.rangeToStart();
+    try testing.expectEqualStrings("cd", b.text()[r.start..r.end]);
+    _ = try b.deleteRange(r);
+    try expectMarked("ab\n|e", &b);
+    try testing.expect(b.rangeToStart().isEmpty());
+    r = b.rangeBackwardChar(); // 改行を消すのは Backspace である
+    try testing.expectEqualStrings("\n", b.text()[r.start..r.end]);
+}
+
+test "the space word takes a newline as a space" {
+    var b = try fromMarked("foo\nbar|");
+    defer b.deinit();
+    var r = b.rangeBackwardSpaceWord();
+    try testing.expectEqualStrings("bar", b.text()[r.start..r.end]);
+    _ = try b.deleteRange(r);
+    try expectMarked("foo\n|", &b);
+    r = b.rangeBackwardSpaceWord();
+    try testing.expectEqualStrings("foo\n", b.text()[r.start..r.end]);
+}
+
+test "words stop at a newline" {
+    var b = try fromMarked("|ab\ncd");
+    defer b.deinit();
+    b.moveForwardWord();
+    try expectMarked("ab|\ncd", &b);
+    b.moveForwardWord();
+    try expectMarked("ab\ncd|", &b);
+    b.moveBackwardWord();
+    try expectMarked("ab\n|cd", &b);
+}
+
+test "transpose never swaps a newline, and works on the line at the cursor" {
+    var b = try fromMarked("ab\n|cd");
+    defer b.deinit();
+    try testing.expect(b.transpose() == null); // 行頭
+    try b.setCursor(2); // 行末(改行の手前)は、その行の最後の2文字
+    _ = b.transpose();
+    try expectMarked("ba|\ncd", &b);
+    var c = try fromMarked("a|\nb");
+    defer c.deinit();
+    try testing.expect(c.transpose() == null); // 行に文字が1つ
+    var d = try fromMarked("ab\nc|");
+    defer d.deinit();
+    try testing.expect(d.transpose() == null);
+    var e = try fromMarked("x\nc|de");
+    defer e.deinit();
+    _ = e.transpose();
+    try expectMarked("x\ndc|e", &e);
+}
+
+test "random edits with newlines keep the invariants" {
+    var prng: std.Random.DefaultPrng = .init(0x7a);
+    const random = prng.random();
+    var b: Buffer = .init(testing.allocator);
+    defer b.deinit();
+    const pieces = [_][]const u8{ "a", "あ", "\n", "\n", " ", "(", "😀", "foo" };
+    var goal: usize = 0;
+    for (0..3000) |_| {
+        switch (random.uintLessThan(u8, 12)) {
+            0, 1, 2 => _ = try b.insertSlice(pieces[random.uintLessThan(usize, pieces.len)]),
+            3 => _ = b.moveUpLine(goal),
+            4 => _ = b.moveDownLine(goal),
+            5 => b.moveToLineStart(),
+            6 => b.moveToLineEnd(),
+            7 => _ = try b.deleteRange(b.rangeBackwardChar()),
+            8 => _ = try b.deleteRange(b.rangeToEnd()),
+            9 => _ = try b.deleteRange(b.rangeToStart()),
+            10 => _ = b.transpose(),
+            else => b.moveForwardChar(),
+        }
+        goal = b.column(b.cursor);
+        try expectInvariants(&b);
+        const ls = b.lineStart(b.cursor);
+        const le = b.lineEnd(b.cursor);
+        try testing.expect(ls <= b.cursor and b.cursor <= le);
+        try testing.expect(std.mem.indexOfScalar(u8, b.text()[ls..le], '\n') == null);
+    }
+}
+
+test "down onto an empty last line moves, and down from it does not" {
+    var b = try fromMarked("ab|\n");
+    defer b.deinit();
+    try testing.expect(b.moveDownLine(2));
+    try expectMarked("ab\n|", &b);
+    try testing.expect(!b.moveDownLine(2));
 }

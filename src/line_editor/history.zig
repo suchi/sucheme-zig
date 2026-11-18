@@ -4,8 +4,8 @@
 //! ファイルへの保存は 7n である。
 //!
 //! 複数行の式は、閉じたときに、行を改行でつないだ1項目として記録する(`addLines`)。
-//! 核の間は、上下の移動と逐次検索が返すのは、改行を含まない1行の項目だけである。複数行の
-//! 項目を呼び出すには複数行の再描画(7m)が要るためで、`isRecallable` を直せば、両方が変わる。
+//! 上下の移動と逐次検索は、複数行の項目も返す(複数行の再描画は 7m で入った)。呼び出せるかの
+//! 判定は `isRecallable` の1か所で、上下の移動と逐次検索が同じものを使う。
 
 const std = @import("std");
 
@@ -14,13 +14,13 @@ const Allocator = std.mem.Allocator;
 /// 項目の数の上限の既定値。上限を超えたら、いちばん古いものから捨てる。
 pub const default_max_items: usize = 1000;
 
-/// Whether the core editor can bring an entry back to the edit line.
+/// Whether the editor can bring an entry back to the edit line.
 ///
-/// Why: 核の再描画は単一行である(ADR-0049)。改行を含む項目は、記録はするが、7m まで
-/// 呼び出さない。行の途中の `\r` を含む項目も、端末でカーソルが行頭へ戻るので呼び出さない。
+/// Why: 編集バッファは `\r` を持てない(`Buffer` の不変条件)。`\r` を含む項目は、端末でカーソルが
+/// 行頭へ戻るので、呼び出さない。改行(`\n`)は、複数行の編集(7m)で扱えるので、呼び出す。
 /// 上下の移動と逐次検索が、同じこの判定を使う。
 pub fn isRecallable(entry: []const u8) bool {
-    return std.mem.findAny(u8, entry, "\r\n") == null;
+    return std.mem.findScalar(u8, entry, '\r') == null;
 }
 
 pub const History = struct {
@@ -305,7 +305,7 @@ test "addLines joins the lines of one expression with newlines, as one entry" {
     try testing.expect(try h.addLines(&.{ "(define (f x)", "  (* x 2))" }));
     try testing.expectEqual(@as(usize, 1), h.len());
     try testing.expectEqualStrings("(define (f x)\n  (* x 2))", h.get(0));
-    try testing.expect(!isRecallable(h.get(0)));
+    try testing.expect(isRecallable(h.get(0)));
 }
 
 test "add does not leak when the allocation fails" {
@@ -370,11 +370,11 @@ test "Browser: newer does nothing before the first older, and an empty history h
     try testing.expectEqual(@as(?[]const u8, null), b.newer());
 }
 
-test "Browser: an entry of several lines is not brought back, and the entries around it are" {
+test "Browser: an entry with a carriage return is not brought back, and the entries around it are" {
     var h = History.init(testing.allocator, 10);
     defer h.deinit();
     _ = try h.add("one");
-    _ = try h.addLines(&.{ "(define (f)", "  1)" });
+    _ = try h.add("(display \"a\rb\")");
     _ = try h.add("three");
     var b = Browser.init(testing.allocator, &h);
     defer b.deinit();
@@ -385,10 +385,10 @@ test "Browser: an entry of several lines is not brought back, and the entries ar
     try testing.expectEqualStrings("", b.newer().?);
 }
 
-test "Browser: a history of only several-line entries brings nothing back, and keeps no draft" {
+test "Browser: a history of only entries with a carriage return brings nothing back, and keeps no draft" {
     var h = History.init(testing.allocator, 10);
     defer h.deinit();
-    _ = try h.addLines(&.{ "a", "b" });
+    _ = try h.add("a\rb");
     var b = Browser.init(testing.allocator, &h);
     defer b.deinit();
     try testing.expectEqual(@as(?[]const u8, null), try b.older("typed"));
@@ -498,11 +498,11 @@ test "Search: the match is case sensitive, and an empty query matches nothing" {
     try testing.expectEqual(@as(?[]const u8, null), s.current());
 }
 
-test "Search: an entry of several lines is not a match" {
+test "Search: an entry with a carriage return is not a match" {
     var h = History.init(testing.allocator, 10);
     defer h.deinit();
     _ = try h.add("(f 1)");
-    _ = try h.addLines(&.{ "(define (g)", "  (f 2))" });
+    _ = try h.add("(define (g)\r  (f 2))");
     var s = Search.init(testing.allocator, &h);
     defer s.deinit();
     try s.append("(f");
@@ -532,10 +532,33 @@ test "Browser: the draft is kept again after coming back out of the history" {
     try testing.expectEqualStrings("second", b.newer().?);
 }
 
-test "isRecallable refuses an entry with a carriage return in it" {
+test "isRecallable accepts an entry with a newline, and refuses one with a carriage return" {
     try testing.expect(isRecallable("(f 1)"));
+    try testing.expect(isRecallable("a\nb"));
     try testing.expect(!isRecallable("a\rb"));
-    try testing.expect(!isRecallable("a\nb"));
+    try testing.expect(!isRecallable("a\r\nb"));
+}
+
+test "Browser: a multi-line entry is one step, whatever its number of lines" {
+    var h = try filled(testing.allocator, &.{ "(old)", "(define (f x)\n  (* x 2))", "(new)" });
+    defer h.deinit();
+    var b = Browser.init(testing.allocator, &h);
+    defer b.deinit();
+    try testing.expectEqualStrings("(new)", (try b.older("")).?);
+    try testing.expectEqualStrings("(define (f x)\n  (* x 2))", (try b.older("")).?);
+    try testing.expectEqualStrings("(old)", (try b.older("")).?);
+    try testing.expectEqualStrings("(define (f x)\n  (* x 2))", b.newer().?);
+    try testing.expectEqualStrings("(new)", b.newer().?);
+}
+
+test "Search: a multi-line entry is found, and matchOffset points into its later lines" {
+    var h = try filled(testing.allocator, &.{ "(g 1)", "(define (f x)\n  (* x 2))" });
+    defer h.deinit();
+    var s = Search.init(testing.allocator, &h);
+    defer s.deinit();
+    try s.append("* x");
+    try testing.expectEqualStrings("(define (f x)\n  (* x 2))", s.current().?);
+    try testing.expectEqual(@as(?usize, 17), s.matchOffset());
 }
 
 test "Search: matchOffset is where the query first occurs in the entry" {

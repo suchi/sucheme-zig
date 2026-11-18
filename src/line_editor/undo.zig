@@ -80,7 +80,7 @@ pub const UndoStack = struct {
     pub fn insertTyped(self: *UndoStack, buf: *Buffer, s: []const u8) EditError!Edit {
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
         const edit = buf.insertSlice(s) catch |e| switch (e) {
-            error.OutOfMemory, error.InvalidUtf8, error.LineBreak => |other| return other,
+            error.OutOfMemory, error.InvalidUtf8, error.CarriageReturn => |other| return other,
         };
         if (edit.isNoop()) return edit;
         if (self.typing and self.entries.items.len > 0) {
@@ -158,7 +158,7 @@ pub const UndoStack = struct {
             error.OutOfMemory => return error.OutOfMemory,
             // 記録は、バッファの中のテキストを写したものなので、不正な UTF-8 にも改行にもならない。
             // 起こるのは、範囲が合わないときだけである。
-            error.InvalidRange, error.InvalidUtf8, error.LineBreak => {
+            error.InvalidRange, error.InvalidUtf8, error.CarriageReturn => {
                 self.clear();
                 return error.InvalidRange;
             },
@@ -395,7 +395,7 @@ test "failed operations record nothing and leave the buffer unchanged" {
     defer u.deinit();
     _ = try u.insertSlice(&b, "ab");
     try testing.expectError(error.InvalidUtf8, u.insertTyped(&b, "\xFF"));
-    try testing.expectError(error.LineBreak, u.insertSlice(&b, "x\ny"));
+    try testing.expectError(error.CarriageReturn, u.insertSlice(&b, "x\ry"));
     try testing.expectError(error.InvalidRange, u.deleteRange(&b, .{ .start = 1, .end = 9 }));
     try testing.expectError(error.InvalidRange, u.deleteRange(&b, .{ .start = 2, .end = 1 }));
     try testing.expectEqual(@as(usize, 1), u.len());
@@ -445,7 +445,7 @@ test "a failed replaceRange frees the copy of the removed text" {
     var u: UndoStack = .init(testing.allocator, 10);
     defer u.deinit();
     _ = try b.insertSlice("abcd");
-    try testing.expectError(error.LineBreak, u.replaceRange(&b, .{ .start = 0, .end = 2 }, "x\ny"));
+    try testing.expectError(error.CarriageReturn, u.replaceRange(&b, .{ .start = 0, .end = 2 }, "x\ry"));
     try testing.expectEqual(@as(usize, 0), u.len());
     try expectMarked("abcd|", &b);
 }

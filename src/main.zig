@@ -388,9 +388,21 @@ pub fn repl(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Proc
     return replLines(gpa, files, process, &reader, in, out, err);
 }
 
+/// The check `rich` asks on `Enter`; it calls the same `sucheme.isIncomplete` as the pending text below.
+const IncompleteCheck = struct {
+    gpa: std.mem.Allocator,
+
+    /// 確保に失敗したら、閉じたとみなす。行は確定し、下の呼び出しが同じエラーを返す。
+    fn isIncomplete(ctx: *anyopaque, text: []const u8) bool {
+        const self: *IncompleteCheck = @ptrCast(@alignCast(ctx));
+        return sucheme.isIncomplete(self.gpa, text) catch false;
+    }
+};
+
 /// Runs the REPL over the lines `reader` gives; `in` is what the program's `read` reads.
 ///
-/// `reader` が `rich` のときは、閉じた式を、行を改行でつないだ1項目として履歴に記録する。
+/// `reader` が `rich` のときは、閉じていない式を読み手が編集バッファの中で続け(7m)、閉じた
+/// 式の全体を1つの行として返す。閉じた式は、行を改行でつないだ1項目として履歴に記録する。
 /// `Ctrl-C`(`interrupted`)は、保留を捨てて新しいプロンプトに戻る。
 pub fn replLines(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process: Process, reader: *LineReader, in: *std.Io.Reader, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
@@ -403,6 +415,14 @@ pub fn replLines(gpa: std.mem.Allocator, files: ?sucheme.resolve.Files, process:
     interp.console_in = in;
     // `current-error-port` への書き込みは、診断と同じ stderr に出す(スライス 5t)。
     interp.console_err = err;
+    // 編集できる読み手には、`Enter` で式が閉じたかを、保留と同じ関数で判定させる。閉じていない
+    // 式は、読み手の編集バッファの中で続き(複数行の編集)、閉じたときに全体が1つの行として返る。
+    // 返った全体は、下で `dumb` の1行と同じに保留へ足し、同じ `isIncomplete` を通る。
+    // 注意: `incomplete_ctx` はこの関数のスタックにあり、読み手は関数を出たあとも指したままである。
+    // 戻ったあとに同じ読み手を使う呼び出しを足すときは、判定を外す(または作り直す)こと。
+    var incomplete_ctx: IncompleteCheck = .{ .gpa = gpa };
+    reader.setIncomplete(.{ .ctx = &incomplete_ctx, .func = IncompleteCheck.isIncomplete });
+    reader.setContinuationPrompt(continuation_prompt);
     // 継続行の保留。エントリ層は確保を起動と終了に限るので、固定長にする。
     var pending: [max_line]u8 = undefined;
     var kept: usize = 0;
@@ -1441,14 +1461,39 @@ test "Ctrl-C in the editing repl drops what it kept, and the next expression sta
     try std.testing.expectEqual(@as(usize, 1), n);
 }
 
-test "Ctrl-D on an empty continuation line in the editing repl ends the input with the open expression reported" {
+test "Ctrl-D in an open expression of the editing repl does nothing at the end of the text, and Ctrl-C drops the expression" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer err.deinit();
-    // Ctrl-D のあとの打鍵は読まれない(台本の終わりで止まったのではないことを示す)。
-    _ = try replRich("(+ 1\r\x04" ++ "1)\r", &out, &err);
-    try std.testing.expectEqualStrings("error: unexpected end of input\n", err.written());
+    // 開いた式は編集バッファの中にあり、空でない。Ctrl-D は入力を終えず、続きを打てる。
+    // Ctrl-C で捨てたあと、空の行の Ctrl-D で終わる。
+    _ = try replRich("(+ 1\r\x04" ++ "1)\r\x03\x04", &out, &err);
+    try std.testing.expectEqualStrings("", err.written());
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n2\n") != null);
+}
+
+test "the editing repl takes a multi-line expression as one, and a string literal keeps its newline" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    // 文字列の中の Enter は、閉じていない式の中なので、文字列に改行が入る。
+    const n = try replRich("(string-length \"a\rb\")\r\x04", &out, &err);
+    try std.testing.expectEqualStrings("", err.written());
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n3\n") != null);
+    try std.testing.expectEqual(@as(usize, 1), n);
+}
+
+test "the editing repl recalls a multi-line expression with Up and evaluates it again" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer err.deinit();
+    _ = try replRich("(define (f x)\r(* x 2))\r(f 4)\r\x1b[A\x1b[A\x1b[A\r(f 5)\r\x04", &out, &err);
+    try std.testing.expectEqualStrings("", err.written());
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n8\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n10\n") != null);
 }
 
 test "the editing repl recalls the previous expression with Up" {
@@ -1458,7 +1503,7 @@ test "the editing repl recalls the previous expression with Up" {
     defer err.deinit();
     _ = try replRich("(define x 1)\r(set! x (+ x 1))\r\x1b[A\rx\r\x04", &out, &err);
     // set! を2回評価したので 3 になる。
-    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\n3\n\r> \x1b[K\r\x1b[2C\n"));
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\n3\n\r\x1b[J> \r\x1b[2C\n"));
 }
 
 test "the editing repl keeps output that does not end a line, by starting the prompt on a new line" {
@@ -1479,7 +1524,7 @@ test "the editing repl keeps output that does not end a line, by starting the pr
     defer reader.deinit();
     _ = try replLines(std.testing.allocator, null, .{}, &reader, &in, &out.interface, &err.writer);
     // "tail" のあとに改行が入ってから、次のプロンプトが行頭から描かれる。
-    try std.testing.expect(std.mem.indexOf(u8, sink.written(), "tail\n\r> ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sink.written(), "tail\n\r\x1b[J> ") != null);
 }
 
 test {

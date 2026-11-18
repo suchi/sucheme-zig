@@ -7,9 +7,17 @@
 //! - `rich`: 端末の生モードで1バイトずつ読み、Emacs の標準のキー割り当てで1行を編集する。
 //!   入力と出力の両方が POSIX の端末のときに使う。
 //!
-//! 完結判定(`sucheme.isIncomplete`)は、どちらの形でも REPL が行う。ここは1行を返すだけで
-//! ある。核の編集バッファは1行なので、式が閉じていないときは、REPL が継続行のプロンプトで
-//! 次の行を読む。確定した前の行には戻れない(複数行の編集は 7m)。
+//! 完結判定(`sucheme.isIncomplete`)の呼び出しは、どちらの形でも REPL が持つ。`dumb` は1行を
+//! 返し、式が閉じていないときは、REPL が継続行のプロンプトで次の行を読む。
+//!
+//! `rich` の編集バッファは複数行である(7m)。`Enter` で式が閉じていないときは、バッファに改行を
+//! 挿入して編集を続け、確定した前の行にもカーソルで戻れる。閉じたかどうかは、REPL が渡す
+//! 判定(`Incomplete`、`LineReader.setIncomplete`)に問い合わせる。判定は REPL が `repl` の保留に
+//! 使うのと同じ関数(`sucheme.isIncomplete`)を、同じ形(全体と末尾の改行)で呼ぶ。判定を渡さない
+//! ときは、`Enter` はいつも行を確定し、`dumb` と同じく REPL が続きを読む。返す `Result.line` は、
+//! 閉じた式の全体で、論理行の間に `\n` を含みうる。末尾にも `\n` が残りうる(空の最終行を残したまま
+//! `Enter` で確定したとき。`(a` の `Enter` のあとに、1行目へ戻って `)` を打つ、など)。REPL は、`dumb` の1行と
+//! 同じに保留へ足し、`isIncomplete` を呼ぶ。判定が同じなので、閉じていないと返ることは無い。
 //!
 //! 生モードは、1行を読む間だけ有効にする。評価の間は元の端末の設定に戻すので、プログラムの
 //! 出力と `read` は、これまでどおりの端末で動く。評価中の `Ctrl-C` は、これまでどおり
@@ -39,7 +47,9 @@ const term_posix = @import("term_posix.zig");
 
 /// What one call of `read` gives.
 pub const Result = union(enum) {
-    /// 改行を除いた1行。次の `read` まで有効である。
+    /// `dumb` では、改行を除いた1行。`rich` では、閉じた式の全体で、論理行の間と、末尾にも `\n` を
+    /// 含みうる(空の最終行を残したまま `Enter` で確定したとき)。
+    /// 次の `read` まで有効である。
     line: []const u8,
     /// 入力の終わり(`dumb` で入力が尽きた、`rich` で空の行の `Ctrl-D`)。
     end,
@@ -165,6 +175,20 @@ pub const PosixTerminal = struct {
     }
 };
 
+/// The check the editor asks on `Enter`: is the text typed so far an unfinished expression?
+///
+/// REPL が `sucheme.isIncomplete` を包んで渡す。`text` は、REPL が保留に持つ形と同じ、編集中の
+/// 全体と末尾の改行である。確保などで判定できなかったときは、偽(閉じたとみなす)を返す。
+/// そのとき行は確定し、REPL が同じ判定を行って、エラーを出す。
+pub const Incomplete = struct {
+    ctx: *anyopaque,
+    func: *const fn (ctx: *anyopaque, text: []const u8) bool,
+
+    fn isIncomplete(self: Incomplete, text: []const u8) bool {
+        return self.func(self.ctx, text);
+    }
+};
+
 /// The editing state that lives across lines: the history and the kill ring.
 pub const Editor = struct {
     gpa: Allocator,
@@ -176,6 +200,12 @@ pub const Editor = struct {
     browser: ?history_mod.Browser = null,
     search: ?history_mod.Search = null,
     view: render.State = .{},
+    /// `Enter` で、式が閉じたかを問い合わせる。null なら、いつも行を確定する。
+    incomplete: ?Incomplete = null,
+    /// 2行目以降の論理行のプロンプト。
+    continuation_prompt: []const u8 = "... ",
+    /// 上下の移動を続けるあいだ保つ列(文字数)。ほかのキーで捨てる。
+    goal_col: ?usize = null,
 
     pub fn init(gpa: Allocator) Editor {
         return .{
@@ -207,6 +237,7 @@ pub const Editor = struct {
         try self.setText("");
         self.kill.breakChain();
         self.view = .{};
+        self.goal_col = null;
         self.browser = .init(self.gpa, &self.history);
         defer {
             self.endSearch();
@@ -268,6 +299,7 @@ pub const Editor = struct {
     fn draw(self: *Editor, term: Terminal, out: *std.Io.Writer, prompt: []const u8, mark: bool) std.Io.Writer.Error!void {
         var v: render.View = .{
             .prompt = prompt,
+            .continuation = self.continuation_prompt,
             .text = self.buf.text(),
             .cursor = self.buf.cursor,
             .cols = term.columns(),
@@ -288,6 +320,12 @@ pub const Editor = struct {
     }
 
     fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
+        const vertical = switch (key) {
+            .arrow => |a| a == .up or a == .down,
+            .ctrl => |c| c == 0x0E or c == 0x10,
+            else => false,
+        };
+        if (!vertical) self.goal_col = null;
         if (self.search != null) {
             if (try self.handleSearchKey(key)) |action| return action;
         }
@@ -303,11 +341,11 @@ pub const Editor = struct {
             .arrow => |a| switch (a) {
                 .left => self.move(Buffer.moveBackwardChar),
                 .right => self.move(Buffer.moveForwardChar),
-                .up => try self.recallOlder(),
-                .down => try self.recallNewer(),
+                .up => try self.moveVertical(.up),
+                .down => try self.moveVertical(.down),
             },
-            .home => self.move(Buffer.moveToStart),
-            .end => self.move(Buffer.moveToEnd),
+            .home => self.move(Buffer.moveToLineStart),
+            .end => self.move(Buffer.moveToLineEnd),
             .delete => try self.deleteRange(self.buf.rangeForwardChar()),
             // 括弧つき貼り付けは有効にしていない。割り当ての無い列は無視する。
             .paste_begin, .paste_end, .unknown => return .none,
@@ -317,20 +355,20 @@ pub const Editor = struct {
 
     fn handleCtrl(self: *Editor, c: u8) Allocator.Error!Action {
         switch (c) {
-            0x01 => self.move(Buffer.moveToStart), // Ctrl-A
+            0x01 => self.move(Buffer.moveToLineStart), // Ctrl-A
             0x02 => self.move(Buffer.moveBackwardChar), // Ctrl-B
             0x03 => return .interrupt, // Ctrl-C
             0x04 => { // Ctrl-D
                 if (self.buf.text().len == 0) return .end;
                 try self.deleteRange(self.buf.rangeForwardChar());
             },
-            0x05 => self.move(Buffer.moveToEnd), // Ctrl-E
+            0x05 => self.move(Buffer.moveToLineEnd), // Ctrl-E
             0x06 => self.move(Buffer.moveForwardChar), // Ctrl-F
             0x08, 0x7F => try self.deleteRange(self.buf.rangeBackwardChar()), // Backspace
-            0x0A, 0x0D => return .accept, // Enter
+            0x0A, 0x0D => return self.enter(), // Enter
             0x0B => try check(self.kill.killToEnd(&self.buf, &self.undo)), // Ctrl-K
-            0x0E => try self.recallNewer(), // Ctrl-N
-            0x10 => try self.recallOlder(), // Ctrl-P
+            0x0E => try self.moveVertical(.down), // Ctrl-N
+            0x10 => try self.moveVertical(.up), // Ctrl-P
             0x12 => { // Ctrl-R
                 self.breakChains();
                 self.search = .init(self.gpa, &self.history);
@@ -419,6 +457,43 @@ pub const Editor = struct {
         self.search = null;
     }
 
+    /// `Enter`: 式が閉じていれば行を確定し、閉じていなければ、カーソルの位置に改行を入れて続ける。
+    fn enter(self: *Editor) Allocator.Error!Action {
+        const hook = self.incomplete orelse return .accept;
+        const text = self.buf.text();
+        // REPL が保留に持つ形(全体と末尾の改行)で問い合わせる。
+        const whole = try self.gpa.alloc(u8, text.len + 1);
+        defer self.gpa.free(whole);
+        @memcpy(whole[0..text.len], text);
+        whole[text.len] = '\n';
+        if (!hook.isIncomplete(whole)) return .accept;
+        try check(self.undo.insertSlice(&self.buf, "\n"));
+        self.kill.breakChain();
+        return .redraw;
+    }
+
+    const Direction = enum { up, down };
+
+    /// 上下の矢印と `Ctrl-P` `Ctrl-N`: 論理行をまたいで動く。先頭の行の上、最後の行の下では、
+    /// 履歴を呼び出す(呼び出した複数行の項目の中も、行をまたいで動ける)。
+    fn moveVertical(self: *Editor, dir: Direction) Allocator.Error!void {
+        const goal = self.goal_col orelse self.buf.column(self.buf.cursor);
+        const moved = switch (dir) {
+            .up => self.buf.moveUpLine(goal),
+            .down => self.buf.moveDownLine(goal),
+        };
+        if (moved) {
+            self.goal_col = goal;
+            self.breakChains();
+            return;
+        }
+        self.goal_col = null;
+        switch (dir) {
+            .up => try self.recallOlder(),
+            .down => try self.recallNewer(),
+        }
+    }
+
     fn recallOlder(self: *Editor) Allocator.Error!void {
         const b = &(self.browser orelse return);
         if (try b.older(self.buf.text())) |entry| try self.setText(entry);
@@ -436,8 +511,8 @@ pub const Editor = struct {
         self.undo.clear();
         _ = self.buf.replaceRange(.{ .start = 0, .end = self.buf.text().len }, s) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
-            // 履歴の項目は、呼び出せるもの(改行を含まない)だけが来る。来たら行を変えない。
-            error.InvalidUtf8, error.LineBreak, error.InvalidRange => {},
+            // 履歴の項目は、呼び出せるもの(`\r` を含まない)だけが来る。来たら行を変えない。
+            error.InvalidUtf8, error.CarriageReturn, error.InvalidRange => {},
         };
     }
 
@@ -557,6 +632,22 @@ pub const LineReader = union(enum) {
             .dumb => |*d| d.read(out, prompt),
             .rich => |*r| r.read(out, prompt),
         };
+    }
+
+    /// Sets the check `rich` asks on `Enter` (see `Incomplete`). `dumb` has no use for it.
+    pub fn setIncomplete(self: *LineReader, hook: Incomplete) void {
+        switch (self.*) {
+            .dumb => {},
+            .rich => |*r| r.editor.incomplete = hook,
+        }
+    }
+
+    /// Sets the prompt of the second and later lines of an expression that `rich` edits.
+    pub fn setContinuationPrompt(self: *LineReader, prompt: []const u8) void {
+        switch (self.*) {
+            .dumb => {},
+            .rich => |*r| r.editor.continuation_prompt = prompt,
+        }
     }
 
     /// Records a closed expression in the history. `dumb` keeps none.
@@ -791,11 +882,11 @@ test "Up with no history leaves the line as it is" {
     try expectLines("ab\x1b[A\r", &.{"ab"});
 }
 
-test "the history skips an entry with a newline, which the core cannot show" {
+test "the history skips an entry with a carriage return, which the buffer cannot hold" {
     var editor: Editor = .init(testing.allocator);
     defer editor.deinit();
     try editor.addHistory("one");
-    try editor.addHistory("(+ 1\n2)\n");
+    try editor.addHistory("(display \"a\rb\")");
     var run = try runScript(&editor, "\x1b[A\r", 1);
     defer run.deinit();
     try testing.expectEqualStrings("one", run.line(0));
@@ -954,7 +1045,7 @@ test "Ctrl-C in the search draws the line, not the search, before it is dropped"
     defer editor.deinit();
     var run = try runScript(&editor, "x\r\x12x\x03", 2);
     defer run.deinit();
-    try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r> \x1b[K\r\x1b[2C^C\n"));
+    try testing.expect(std.mem.endsWith(u8, run.out.written(), "\r\x1b[J> \r\x1b[2C^C\n"));
 }
 
 test "every edit that is not a kill or a yank ends the run of kills" {
@@ -1001,7 +1092,30 @@ test "the parenthesis that matches the one next to the cursor is drawn in revers
     var run = try runScript(&editor, "(a b)\x03", 1);
     defer run.deinit();
     // 打っている途中の描画には、反転がある。
-    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r> \x1b[7m(\x1b[27ma b)\x1b[K\r\x1b[7C") != null);
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\x1b[J> \x1b[7m(\x1b[27ma b)\r\x1b[7C") != null);
+}
+
+test "an empty last line left in the buffer comes back as a trailing newline" {
+    // `(a` の Enter で空の2行目ができ、1行目へ戻って `)` で閉じてから Enter で確定する。
+    try expectMultiLines("(a\r\x10\x05)\r", &.{"(a)\n"});
+}
+
+test "up and down go on from where the cursor is, not from the column kept before a history recall" {
+    // 先に1行目へ動いて列(5)を覚え、先頭の行の上で履歴を呼び出す。呼び出した項目の中の上矢印は、
+    // 呼び出した直後のカーソルの列(3)から始まる。覚えていた列(5)を引き継がない。
+    const entry = "(xxxxxxx\nyyyyyyy\nzz)";
+    try expectMultiLines("(xxxxxxx\ryyyyyyy\rzz)\r(a\rbcdef\x1b[A\x1b[A\x1b[A!\r", &.{ entry, "(xxxxxxx\nyyy!yyyy\nzz)" });
+}
+
+test "the matching parenthesis is found across lines, and drawn on its own row" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var paren: ParenCheck = .{};
+    editor.incomplete = paren.incomplete();
+    // `)` を打った直後、カーソルは 2 行目にあり、相手の `(` は 1 行目にある。
+    var run = try runScript(&editor, "(a\rb)\x03", 1);
+    defer run.deinit();
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\x1b[J> \x1b[7m(\x1b[27ma\r\n... b)") != null);
 }
 
 test "the last drawing of a line that Enter accepts or Ctrl-C drops has no reverse video" {
@@ -1012,8 +1126,8 @@ test "the last drawing of a line that Enter accepts or Ctrl-C drops has no rever
         var run = try runScript(&editor, script, 1);
         defer run.deinit();
         const out = run.out.written();
-        // 最後の描画は、最後の `\r>` から末尾まで。
-        const last = std.mem.lastIndexOf(u8, out, "\r> ") orelse return error.TestUnexpectedResult;
+        // 最後の描画は、最後の `\r CSI J >` から末尾まで。
+        const last = std.mem.lastIndexOf(u8, out, "\r\x1b[J> ") orelse return error.TestUnexpectedResult;
         try testing.expect(std.mem.indexOf(u8, out[last..], "\x1b[7m") == null);
         try testing.expect(std.mem.indexOf(u8, out[last..], "a b)") != null);
         // その前の描画(`)` を打った直後)には、反転がある。
@@ -1097,14 +1211,14 @@ test "Rich starts a new line before the prompt when the output so far ends insid
     try t.interface.writeAll("out\n");
     const before = sink.written().len;
     _ = try lr.read(&t.interface, "> ");
-    try testing.expect(std.mem.startsWith(u8, sink.written()[before..], "\r> "));
+    try testing.expect(std.mem.startsWith(u8, sink.written()[before..], "\r\x1b[J> "));
     // 改行で終わらない出力のあとは、改行を足してから描く。
     try t.interface.writeAll("tail");
     script.bytes = "c\r";
     script.pos = 0;
     const before2 = sink.written().len;
     _ = try lr.read(&t.interface, "> ");
-    try testing.expect(std.mem.startsWith(u8, sink.written()[before2..], "\n\r> "));
+    try testing.expect(std.mem.startsWith(u8, sink.written()[before2..], "\n\r\x1b[J> "));
 }
 
 test "LineTracker.drain writes the last slice splat times, and an empty slice leaves the state" {
@@ -1123,6 +1237,219 @@ test "LineTracker.drain writes the last slice splat times, and an empty slice le
     try testing.expectEqual(@as(usize, 1), try w.vtable.drain(w, &.{ "e", "\n" }, 0));
     try testing.expect(!state.at_start);
     try testing.expectEqualStrings("abcccd\ne", sink.written());
+}
+
+// ---- 複数行の編集(7m) ----
+
+/// テスト用の判定。開き括弧が閉じ括弧より多ければ、閉じていないとする。受け取った最後の
+/// テキストを覚える。
+const ParenCheck = struct {
+    last: [256]u8 = undefined,
+    last_len: usize = 0,
+    calls: usize = 0,
+
+    fn incomplete(self: *ParenCheck) Incomplete {
+        return .{ .ctx = self, .func = isOpen };
+    }
+
+    fn isOpen(ctx: *anyopaque, text: []const u8) bool {
+        const self: *ParenCheck = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        @memcpy(self.last[0..text.len], text);
+        self.last_len = text.len;
+        var depth: isize = 0;
+        for (text) |c| switch (c) {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            else => {},
+        };
+        return depth > 0;
+    }
+
+    fn lastText(self: *const ParenCheck) []const u8 {
+        return self.last[0..self.last_len];
+    }
+};
+
+fn expectMultiLines(bytes: []const u8, expected: []const []const u8) !void {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var paren: ParenCheck = .{};
+    editor.incomplete = paren.incomplete();
+    var run = try runScript(&editor, bytes, expected.len);
+    defer run.deinit();
+    try testing.expectEqual(expected.len, run.results.items.len);
+    for (expected, 0..) |e, i| try testing.expectEqualStrings(e, run.line(i));
+}
+
+test "Enter on an unfinished expression inserts a newline and goes on editing" {
+    try expectMultiLines("(+ 1\r2\r3)\r", &.{"(+ 1\n2\n3)"});
+    try expectMultiLines("(a)\r(b\rc)\r", &.{ "(a)", "(b\nc)" });
+}
+
+test "the check gets the whole text and a final newline, as the REPL keeps its pending text" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var paren: ParenCheck = .{};
+    editor.incomplete = paren.incomplete();
+    var run = try runScript(&editor, "(a\rb)\r", 1);
+    defer run.deinit();
+    try testing.expectEqual(@as(usize, 2), paren.calls);
+    try testing.expectEqualStrings("(a\nb)\n", paren.lastText());
+}
+
+test "Enter in the middle of an unfinished expression splits the line at the cursor" {
+    try expectMultiLines("(ab\x02\r\x05)\r", &.{"(a\nb)"});
+}
+
+test "with no check, Enter always ends the line, as for the plain reader" {
+    try expectLines("(a\rb)\r", &.{ "(a", "b)" });
+}
+
+test "the second and later lines are drawn after the continuation prompt" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var paren: ParenCheck = .{};
+    editor.incomplete = paren.incomplete();
+    var run = try runScript(&editor, "(a\rb)\r", 1);
+    defer run.deinit();
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\r\n... b") != null);
+    editor.continuation_prompt = ">> ";
+    var run2 = try runScript(&editor, "(a\rb)\r", 1);
+    defer run2.deinit();
+    try testing.expect(std.mem.indexOf(u8, run2.out.written(), "\r\n>> b") != null);
+}
+
+test "Up and Down move between the lines of the buffer, before and after the history" {
+    // 2行目から上へ動いて 1 行目の末尾に "!"、下へ戻って 2 行目の末尾に "?"。
+    try expectMultiLines("(f\rxyz\x1b[A!\x1b[B?)\r", &.{"(f!\nxyz?)"});
+    try expectMultiLines("(f\rxyz\x10!\x0e?)\r", &.{"(f!\nxyz?)"}); // Ctrl-P と Ctrl-N
+}
+
+test "up and down keep the column through a short line" {
+    // 6 列目から、1 文字の行を通って、先頭の行の同じ列へ。
+    try expectMultiLines("(abcdef\rx\rabcdef\x1b[A\x1b[A!\x05)\r", &.{"(abcde!f)\nx\nabcdef"});
+    // 列の記憶は、ほかのキーで捨てる。`Ctrl-B` のあとの上矢印は、動いた先の列(0)から始まる。
+    try expectMultiLines("(abcdef\rx\rabcdef\x1b[A\x02\x1b[A!\x05)\r", &.{"!(abcdef)\nx\nabcdef"});
+}
+
+test "the column is kept through Down and Ctrl-P and Ctrl-N, not only Up" {
+    try expectMultiLines("(abcdef\rx\rabcdef\x1b[A\x1b[A\x1b[B\x1b[B!)\r", &.{"(abcdef\nx\nabcdef!)"});
+    try expectMultiLines("(abcdef\rx\rabcdef\x10\x10\x0e\x0e!)\r", &.{"(abcdef\nx\nabcdef!)"});
+}
+
+test "End goes to the end of its own line, not of the text" {
+    try expectMultiLines("(ab\rcd\x10\x1b[F)\r", &.{"(ab)\ncd"});
+}
+
+test "the newline that Enter inserts, and a move between lines, end a run of kills" {
+    // Ctrl-W で "b" を切り、Enter で改行を入れてから Ctrl-W。2つは1項目にならない。
+    try expectMultiLines("(a b\x17\r\x17\x19)\r", &.{"(a \n)"});
+    // 行をまたぐ移動のあとの切り取りも、前の切り取りとは別の項目である。
+    try expectMultiLines("(x\ry z\x17\x1b[A\x17\x19)\r", &.{"(x)\ny "});
+}
+
+test "Ctrl-A and Ctrl-E, Home and End go to the start and end of the line" {
+    try expectMultiLines("(ab\rcd\x01!\x05?\x1b[H<\x1b[F>\x1b[A\x1b[A)\r", &.{"(ab)\n<!cd?>"});
+}
+
+test "Backspace at the start of a line joins it to the line before" {
+    try expectMultiLines("(a\rb\x01\x7f)\r", &.{"(a)b"});
+}
+
+test "Delete at the end of a line joins the next line, and Ctrl-K takes the newline there" {
+    try expectMultiLines("(a\rb\x10\x05\x1b[3~)\r", &.{"(a)b"});
+    try expectMultiLines("(a\rb\x10\x05\x0b)\r", &.{"(a)b"});
+    // 行の途中では、行末までだけを切る。
+    try expectMultiLines("(ab\rcd\x10\x01\x06\x0b)\r", &.{"()\ncd"});
+}
+
+test "Ctrl-U cuts to the start of the line only, and Ctrl-W stops at a line's words" {
+    try expectMultiLines("(f\rab cd\x15)\r", &.{"(f\n)"});
+    try expectMultiLines("(f\rab cd\x17)\r", &.{"(f\nab )"});
+}
+
+test "an entry of several lines in the history comes back whole, and can be edited line by line" {
+    try expectMultiLines("(f\r1)\r\x1b[A\r", &.{ "(f\n1)", "(f\n1)" });
+    // 呼び出した直後はカーソルが末尾にあり、次の上矢印は項目の中の前の行へ動く。
+    try expectMultiLines("(f\r1)\r\x1b[A\x1b[A!\x1b[B\r", &.{ "(f\n1)", "(f!\n1)" });
+    // 項目の先頭の行からさらに上へ動くと、1つ古い項目になる。
+    try expectMultiLines("(old)\r(f\r1)\r\x1b[A\x1b[A\x1b[A\r", &.{ "(old)", "(f\n1)", "(old)" });
+    // 下へ動くと、新しい側へ戻り、打ちかけの行に着く。
+    try expectMultiLines("(f\r1)\rx\x1b[A\x1b[B\r", &.{ "(f\n1)", "x" });
+}
+
+test "Ctrl-R finds a multi-line entry and takes it" {
+    try expectMultiLines("(f\r(g 1))\r\x12g\x05\r", &.{ "(f\n(g 1))", "(f\n(g 1))" });
+}
+
+test "Ctrl-D in a buffer of several lines deletes a character, and Ctrl-C drops all of it" {
+    try expectMultiLines("(a\rb\x10\x04)\r", &.{"()\nb"});
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var paren: ParenCheck = .{};
+    editor.incomplete = paren.incomplete();
+    var run = try runScript(&editor, "(a\rb\x03x)\r", 2);
+    defer run.deinit();
+    try testing.expect(run.results.items[0] == .interrupted);
+    try testing.expectEqualStrings("x)", run.line(1));
+}
+
+test "undo takes back the newline that Enter inserted" {
+    try expectMultiLines("(a\rb\x1f\x1f)\r", &.{"(a)"});
+}
+
+test "a recalled multi-line entry is drawn on as many rows as it has lines" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    try editor.addHistory("(f\n 1\n 2)");
+    var run = try runScript(&editor, "\x1b[A\r", 1);
+    defer run.deinit();
+    // 先頭へ戻る移動は、描いた行数に合わせる(3行を描いたあと、カーソルは 3 行目にある)。
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "> (f\r\n...  1\r\n...  2)") != null);
+}
+
+test "the redraw after moving up goes back to the first row" {
+    var editor: Editor = .init(testing.allocator);
+    defer editor.deinit();
+    var paren: ParenCheck = .{};
+    editor.incomplete = paren.incomplete();
+    var run = try runScript(&editor, "(f\r1\x1b[A", 1);
+    defer run.deinit();
+    // 上へ動いたあとの再描画は、カーソルが 2 行目にいた分(1行)だけ上へ戻ってから描く。
+    try testing.expect(std.mem.indexOf(u8, run.out.written(), "\x1b[1A\r\x1b[J> (f") != null);
+}
+
+test "random keys keep the buffer valid and the editor away from crashing" {
+    var prng: std.Random.DefaultPrng = .init(0x7e);
+    const random = prng.random();
+    const pieces = [_][]const u8{ "a", "(", ")", "あ", "\r", "\r", "\x1b[A", "\x1b[B", "\x01", "\x05", "\x0b", "\x15", "\x17", "\x19", "\x1f", "\x7f", "\x14", "\x04", "\x1b[3~", "\x02", "\x06", "\x12", "\x07" };
+    var script_bytes: std.ArrayList(u8) = .empty;
+    defer script_bytes.deinit(testing.allocator);
+    for (0..40) |_| {
+        script_bytes.clearRetainingCapacity();
+        for (0..60) |_| try script_bytes.appendSlice(testing.allocator, pieces[random.uintLessThan(usize, pieces.len)]);
+        try script_bytes.append(testing.allocator, '\x03'); // 最後は必ず終える
+        var editor: Editor = .init(testing.allocator);
+        defer editor.deinit();
+        var paren: ParenCheck = .{};
+        editor.incomplete = paren.incomplete();
+        var script: Script = .{ .bytes = script_bytes.items, .cols = random.intRangeAtMost(usize, 5, 40) };
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        while (true) {
+            const r = try editor.read(script.terminal(), &out.writer, "> ");
+            switch (r) {
+                .line => |l| {
+                    try testing.expect(std.unicode.utf8ValidateSlice(l));
+                    try testing.expect(std.mem.indexOfScalar(u8, l, '\r') == null);
+                    try editor.addHistory(l);
+                },
+                .end => break,
+                .interrupted, .too_long => {},
+            }
+        }
+    }
 }
 
 test {
