@@ -307,6 +307,26 @@ test "visibleColumns uses the window, not the buffer, and rejects an empty windo
     try testing.expectEqual(@as(?u16, null), visibleColumns(info));
 }
 
+test "the mode bits are the values the Windows documentation gives" {
+    // Why: 定数を書き間違えても、他のテストは同じ定数で比べるので気づかない。文書の値を
+    // リテラルで固定する(ENABLE_PROCESSED_INPUT など。公式文書の「SetConsoleMode」の表)。
+    try testing.expectEqual(@as(u32, 0x0001), ENABLE_PROCESSED_INPUT);
+    try testing.expectEqual(@as(u32, 0x0002), ENABLE_LINE_INPUT);
+    try testing.expectEqual(@as(u32, 0x0004), ENABLE_ECHO_INPUT);
+    try testing.expectEqual(@as(u32, 0x0200), ENABLE_VIRTUAL_TERMINAL_INPUT);
+    try testing.expectEqual(@as(u32, 0x0001), ENABLE_PROCESSED_OUTPUT);
+    try testing.expectEqual(@as(u32, 0x0004), ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    try testing.expectEqual(@as(u32, 65001), CP_UTF8);
+    try testing.expectEqual(@as(u32, 109), ERROR_BROKEN_PIPE);
+}
+
+test "visibleColumns gives 1 for a window one column wide" {
+    var info = std.mem.zeroes(ScreenBufferInfo);
+    info.window_left = 5;
+    info.window_right = 5;
+    try testing.expectEqual(@as(?u16, 1), visibleColumns(info));
+}
+
 test "ScreenBufferInfo has the layout of CONSOLE_SCREEN_BUFFER_INFO" {
     try testing.expectEqual(@as(usize, 22), @sizeOf(ScreenBufferInfo));
     try testing.expectEqual(@as(usize, 10), @offsetOf(ScreenBufferInfo, "window_left"));
