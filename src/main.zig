@@ -68,7 +68,10 @@
 //! プロンプトに戻る(終了ステータスは変わらない)。評価中の `Ctrl-C` は、これまでどおり信号で
 //! sucheme を終える。評価の出力が改行で終わらなかったときは、改行を足してからプロンプトを
 //! 描く(出力を上書きしないため)。閉じた式は、継続行を改行でつないだ1項目
-//! として、記憶上の履歴に残る。それ以外(Windows、パイプ、ファイル)は、行をそのまま読む。
+//! として、履歴に残る。履歴は、環境変数 `SUCHEME_HISTORY` のパス(無ければホームの下の
+//! `.sucheme_history`。空文字は、設定されていないものとして扱う。ホームは POSIX が `HOME`、Windows が `USERPROFILE`)のファイルへ、
+//! 1項目ずつ追記し、起動時に読む(`src/line_editor/history_file.zig`)。保存先が決まらないとき、
+//! ファイルを読み書きできないときは、保存せずに続ける。それ以外(パイプ、ファイル)は、行をそのまま読む。
 //!
 //! 構文エラー(`)` だけの行、`(a . )`、`#z`)は、続きを足しても直らないので、
 //! 継続行にならずにその行で報告される。
@@ -217,6 +220,12 @@ pub fn main(init: std.process.Init) !void {
                 .line_start = &line_start,
             } } else .{ .dumb = .{ .in = &stdin.interface } };
             defer reader.deinit();
+            // 履歴の保存先が決まれば、読み込んで、以後の項目を追記する(7n)。決まらなければ保存しない。
+            if (interactive) {
+                if (try line_editor.history_file.resolvePath(init.arena.allocator(), init.environ_map)) |history_path| {
+                    try reader.attachHistoryFile(io, history_path);
+                }
+            }
             const repl_out = if (interactive) &out_tracker.interface else out;
             const repl_err = if (interactive) &err_tracker.interface else err;
             const status = try replLines(std.heap.smp_allocator, .{ .io = io, .roots = roots }, .{ .variables = init.environ_map }, &reader, &stdin.interface, repl_out, repl_err);
