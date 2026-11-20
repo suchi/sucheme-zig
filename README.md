@@ -64,11 +64,9 @@ WebAssembly の自動テストは Node.js 上でエクスポートを呼び出�
 
 ## ライセンス
 
-ライセンスを付与していません。UNLICENSED です([ADR-0022](docs/adr/0022-unlicensed-proprietary.md))。全権利保留で、権利者以外による使用・複製・改変・再配布を許諾していません。詳細は [LICENSE](LICENSE) を参照してください。
+MIT ライセンスです([ADR-0050](docs/adr/0050-relicense-under-mit.md))。条文は [LICENSE](LICENSE) を参照してください。
 
-この宣言が適用されるのは本変更以後の版です。2026-10-04 から 2026-10-06 までリポジトリは public で MIT でした。MIT に終了条項はないので、その期間に得た複製の条件は変わりません。
-
-名前の似た Unlicense(パブリックドメインへの献呈)とは逆の意味です。取り違えないでください。
+タグ `v1.0.0` と `v1.1.0-pre.1` の木は、以前の UNLICENSED(全権利保留)の `LICENSE` を持ちます([ADR-0022](docs/adr/0022-unlicensed-proprietary.md))。この2つの成果物は、MIT として配っていません。MIT の成果物は、これより後のタグから作ります。
 
 `tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。このディレクトリは、取り込みを行う段階6で作ります(まだありません)。
 

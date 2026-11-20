@@ -376,7 +376,7 @@ export fn alloc(n: usize) ?[*]u8 { ... }
 | `.zigversion` | `build.zig` が `@embedFile(".zigversion")` で読む。欠けると依存パッケージとして取得されたときにビルドが失敗する |
 | `src`・`tools` | 実装と検証プログラム |
 | `tests` | 段階0の `zig build check-docs` が `tests/r7rs-required/*.txt` のハッシュ・ライブラリ数・識別子数を照合する。退避すると不合格になる(件数は `zig build check-docs` を実行して確かめる)。段階1の `zig build report`・`check-report` と段階6の `test-conformance` も読む |
-| `LICENSE` | 許諾の条件がパッケージとともに届くようにする([ADR-0022](../adr/0022-unlicensed-proprietary.md))。欠けても機械は何も報告しない |
+| `LICENSE` | 許諾の条件がパッケージとともに届くようにする([ADR-0050](../adr/0050-relicense-under-mit.md))。欠けても機械は何も報告しない |
 | `README.md` | 取得した側の入口。欠けても機械は何も報告しない |
 
 `lib` は段階3で Scheme のソースを置いたときに加える。存在しないパスを先に書くと、何が必要で何が未着手かが読めなくなる。
