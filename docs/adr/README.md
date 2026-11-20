@@ -55,7 +55,7 @@
 | [0019](0019-denotations-and-identifier-resolution.md) | 衛生性は構文環境と別名による改名で実現し、意味は6種とする | 採用 | 2026-10-05 |
 | [0020](0020-repository-visibility-private.md) | リポジトリを private にする | 採用 | 2026-10-06 |
 | [0021](0021-no-github-pages-defer-hosting.md) | GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない | 採用 | 2026-10-06 |
-| [0022](0022-unlicensed-proprietary.md) | ライセンスを付与せず UNLICENSED として非公開を明示する | 採用 | 2026-10-07 |
+| [0022](0022-unlicensed-proprietary.md) | ライセンスを付与せず UNLICENSED として非公開を明示する | 非推奨([0050](0050-relicense-under-mit.md)に置き換え) | 2026-10-07 |
 | [0023](0023-mandatory-zero-convergence.md) | 自前の敵対的レビューの収束条件を必須の新規指摘ゼロとする | 非推奨([0027](0027-severity-by-consequence-and-a-cost-side-stop.md)に置き換え) | 2026-10-07 |
 | [0024](0024-closed-spelling-sets.md) | 検証ツールは受理する綴りの集合を閉じ、知らない綴りを報告する | 非推奨([0026](0026-verify-facts-about-code-not-prose.md)に置き換え) | 2026-10-08 |
 | [0025](0025-permission-policy-guard-in-hooks.md) | 承認の判断はフックに置き、許可リストは日常操作まで広げる | 採用 | 2026-10-08 |
@@ -83,3 +83,4 @@
 | [0047](0047-slow-unit-tests-default-to-releasesafe.md) | 規模を試す層の単体テストは、既定で ReleaseSafe で走らせる | 採用 | 2026-10-24 |
 | [0048](0048-run-the-examples-of-the-user-documentation.md) | 利用者向けの文書のコードを全コミットで走らせ、出力を変える PR が例を直す | 採用 | 2026-10-29 |
 | [0049](0049-line-editor-in-zig-minimal-core-first.md) | 行編集は Zig で自前に作り、最小の核から先に組み込む | 採用 | 2026-11-12 |
+| [0050](0050-relicense-under-mit.md) | ライセンスを MIT にする | 採用 | 2026-11-20 |

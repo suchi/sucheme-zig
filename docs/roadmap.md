@@ -38,7 +38,7 @@
 - [x] `build.zig` と `build.zig.zon` と `.zigversion`
 - [x] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
 - [x] `AGENTS.md` の検証コマンド表を埋める
-- [x] ライセンスの決定と `LICENSE` の配置。MIT で始め、private 化の後に UNLICENSED に変えた([ADR-0022](adr/0022-unlicensed-proprietary.md))
+- [x] ライセンスの決定と `LICENSE` の配置。MIT で始め、private 化の後に UNLICENSED に変え([ADR-0022](adr/0022-unlicensed-proprietary.md))、先行版の配布に合わせて MIT に戻した([ADR-0050](adr/0050-relicense-under-mit.md))
 - [x] リポジトリの可視性の決定。public にしたのち private に戻した([ADR-0020](adr/0020-repository-visibility-private.md))
 - [x] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
 - [x] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
