@@ -1,6 +1,6 @@
 .{
     .name = .sucheme,
-    .version = "1.1.0-pre.1",
+    .version = "1.1.0-pre.2",
     .fingerprint = 0x9894d23d00f10c0d,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
