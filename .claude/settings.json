@@ -80,7 +80,8 @@
       "Bash(gh issue:*)",
       "Bash(gh release:*)",
       "Bash(rm:*)",
-      "Bash(rmdir:*)"
+      "Bash(rmdir:*)",
+      "mcp__claude-code-remote__archive_session"
     ],
     "deny": [
       "Read(./.env)",
