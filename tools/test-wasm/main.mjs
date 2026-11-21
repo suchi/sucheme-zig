@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { samples } from "../../web/samples.mjs";
 import { encodeFragment, decodeFragment, MAX_FRAGMENT_LENGTH } from "../../web/share.mjs";
+import { describeResult, splitError } from "../../web/errors.mjs";
+import { Status } from "../../web/sucheme.js";
 
 const wasmPath = process.argv[2];
 if (wasmPath === undefined) {
@@ -864,6 +866,108 @@ test("a fragment that is not a share link is read as null, and so is one that is
   assert.equal(decodeFragment(encodeFragment(longest)), longest);
   assert.equal(encodeFragment(longest + "xxxx"), null);
   assert.equal(decodeFragment("#code=" + "A".repeat(MAX_FRAGMENT_LENGTH)), null);
+});
+
+// エラーの表示(web/errors.mjs)。出力とエラーの説明を分け、エラーの前の出力を残す。
+test("splitError separates the error line from the output before it, which has no newline", () => {
+  assert.deepEqual(splitError("abcerror: boom\n"), { output: "abc", message: "boom" });
+  assert.deepEqual(splitError("abc\nerror: boom\n"), { output: "abc\n", message: "boom" });
+  assert.deepEqual(splitError("error: boom\n"), { output: "", message: "boom" });
+  // 出力が `error: ` を含んでいても、境目は最後の `error: ` である。
+  assert.deepEqual(splitError("error: shown\nerror: boom\n"), { output: "error: shown\n", message: "boom" });
+  // 取るのは末尾の改行1つだけで、説明の先頭の空白と、ほかの末尾の改行は残る。
+  assert.deepEqual(splitError("error: a\n\n\n"), { output: "", message: "a\n\n" });
+  assert.deepEqual(splitError("error:   spaced\n"), { output: "", message: "  spaced" });
+  assert.deepEqual(splitError("no error line"), { output: "no error line", message: null });
+  // 説明が改行を含んでも、末尾の1つの改行だけを取る。
+  assert.deepEqual(splitError("error: a\nb 1\n"), { output: "", message: "a\nb 1" });
+});
+
+// 限界の記録: 説明が `error: ` を含むと、境目を誤り、説明の前半が出力に回る。
+// 将来、src/wasm.zig がエラーの行の位置を渡すようになったら、このテストを正しい分割に直す。
+test("known limit: a message that contains the error prefix is split inside the message", () => {
+  const h = instantiate().init();
+  const [status, text] = h.run('(error "boom" "error: x")');
+  assert.equal(status, SCHEME_ERROR);
+  assert.equal(text, 'error: boom "error: x"\n');
+  assert.deepEqual(splitError(text), { output: 'error: boom "', message: 'x"' });
+});
+
+// 状態コードごとの見出しと次の操作を、文言ごと固定する。
+test("describeResult gives each status code its own title and hint", () => {
+  const expected = [
+    [Status.SCHEME_ERROR, "Error", null],
+    [
+      Status.UNRECOVERABLE,
+      "Unrecoverable error",
+      "The interpreter cannot go on. Press Reset to continue; definitions made so far are lost.",
+    ],
+    [Status.INVALID_UTF8, "Invalid input", "Nothing was evaluated. The input must be valid UTF-8."],
+    [
+      Status.WRONG_ORDER,
+      "The interpreter has stopped",
+      "Press Reset to start again; definitions made so far are lost.",
+    ],
+    [Status.NOT_INITIALIZED, "Not initialized", "Reload the page."],
+    [Status.OUT_OF_MEMORY, "Out of memory", "Press Reset to start again; definitions made so far are lost."],
+    [Status.BAD_REGION, "Internal error", "Reload the page."],
+    [Status.CONTINUE, "Unexpected status 1", "Press Reset, or reload the page."],
+    [Status.WAITING_INPUT, "Unexpected status 2", "Press Reset, or reload the page."],
+    [-99, "Unexpected status -99", "Press Reset, or reload the page."],
+  ];
+  for (const [status, title, hint] of expected) {
+    assert.deepEqual(
+      describeResult(status, "out" + "error: why\n"),
+      { output: "out", error: { title, message: "why", hint } },
+      String(status),
+    );
+    // エラーの行が無いときは、出力をそのまま残し、説明は空にする。
+    assert.deepEqual(
+      describeResult(status, "only output"),
+      { output: "only output", error: { title, message: "", hint } },
+      String(status),
+    );
+  }
+});
+
+test("describeResult keeps the output before an error and explains each status code", () => {
+  assert.deepEqual(describeResult(Status.OK, "3\n"), { output: "3\n", error: null });
+  assert.deepEqual(describeResult(Status.OK, ""), { output: "", error: null });
+  assert.deepEqual(describeResult(Status.SCHEME_ERROR, "1\nerror: unbound variable: x\n"), {
+    output: "1\n",
+    error: { title: "Error", message: "unbound variable: x", hint: null },
+  });
+  assert.deepEqual(describeResult(Status.EXITED, "bye", 3).error, {
+    title: "Program exited",
+    message: "exit code 3",
+    hint: "Press Reset to run again.",
+  });
+  assert.equal(describeResult(Status.EXITED, "bye", 3).output, "bye");
+  // 表にある状態コードは、すべて説明を持つ(未知のコードは、コードの値を見出しに出す)。
+  for (const [name, code] of Object.entries(Status)) {
+    if (code === Status.OK) continue;
+    const { error } = describeResult(code, "error: why\n", 0);
+    assert.ok(error !== null && error.title !== "", name);
+    if (code === Status.CONTINUE || code === Status.WAITING_INPUT) {
+      assert.match(error.title, /^Unexpected status/, name);
+    } else {
+      assert.doesNotMatch(error.title, /^Unexpected status/, name);
+    }
+  }
+  assert.equal(describeResult(-99, "").error.title, "Unexpected status -99");
+});
+
+test("a real error after output keeps that output apart from the message", () => {
+  const h = instantiate().init();
+  const [status, text] = h.run('(import (scheme base) (scheme write)) (display "abc") (car 5)');
+  assert.equal(status, SCHEME_ERROR);
+  assert.deepEqual(describeResult(status, text), {
+    output: "abc",
+    error: { title: "Error", message: "wrong type of argument to car 5", hint: null },
+  });
+  const [status2, text2] = h.run("(+ 1");
+  assert.equal(status2, SCHEME_ERROR);
+  assert.deepEqual(describeResult(status2, text2).error.message, "unexpected end of input");
 });
 
 // web/serve.mjs の自己検査(パストラバーサルなど)は、ほかの検証コマンドに結ばれていないので、
