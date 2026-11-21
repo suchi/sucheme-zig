@@ -873,6 +873,8 @@ test("splitError separates the error line from the output before it, which has n
   assert.deepEqual(splitError("abcerror: boom\n"), { output: "abc", message: "boom" });
   assert.deepEqual(splitError("abc\nerror: boom\n"), { output: "abc\n", message: "boom" });
   assert.deepEqual(splitError("error: boom\n"), { output: "", message: "boom" });
+  // 出力が `error: ` を含んでいても、境目は最後の `error: ` である。
+  assert.deepEqual(splitError("error: shown\nerror: boom\n"), { output: "error: shown\n", message: "boom" });
   assert.deepEqual(splitError("no error line"), { output: "no error line", message: null });
   // 説明が改行を含んでも、末尾の1つの改行だけを取る。
   assert.deepEqual(splitError("error: a\nb 1\n"), { output: "", message: "a\nb 1" });
