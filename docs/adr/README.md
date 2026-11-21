@@ -84,3 +84,4 @@
 | [0048](0048-run-the-examples-of-the-user-documentation.md) | 利用者向けの文書のコードを全コミットで走らせ、出力を変える PR が例を直す | 採用 | 2026-10-29 |
 | [0049](0049-line-editor-in-zig-minimal-core-first.md) | 行編集は Zig で自前に作り、最小の核から先に組み込む | 採用 | 2026-11-12 |
 | [0050](0050-relicense-under-mit.md) | ライセンスを MIT にする | 採用 | 2026-11-20 |
+| [0051](0051-narrow-stage-7-and-release-v1-1-0.md) | 段階7の範囲を改め、識別子の補完と差分読み取りを外して v1.1.0 を出す | 採用 | 2026-11-21 |

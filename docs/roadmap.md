@@ -12,8 +12,8 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| 現在の段階 | 段階7(REPLの編集機能)。段階7の計画書は [plans/0021-stage7-8-early-parts.md](plans/0021-stage7-8-early-parts.md) で、行編集の最小の核(スライス 7h、7a、7f、7b、7c、7d、7g、7j)は main に入った。端末から起動した REPL で、Emacs の標準のキー割り当てによる編集と、履歴(上下の移動と逐次検索)ができる。核のあとのスライスのうち、括弧の対応表示(7e)、複数行の編集と再描画(7m)、Windows の生モード(7i)は main に入った(Windows のコンソールでは、実機での実行は未確認である)。履歴のファイルへの保存(7n)は、計画書の進捗の表にある。補完(7k)と差分読み取り(7l)は着手していない。進捗は計画書の表が正である。段階1は v0.1.0 で、段階2は v0.2.0 で、段階3は v0.3.0 で、段階4は v0.4.0 で、段階5は v0.5.0 で、段階6は v1.0.0 で完了した(段階1のスライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md)。段階2の実装計画と進捗は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md)、段階3は [plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md)、段階4は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md)、段階5は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である)。段階6の全体の計画書は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) で、スライス 6j から 6r と 6z のリリースの準備が済み、v1.0.0 が公開された(タグは、準備の PR のマージコミット `5c91951`(コミットは 2026-11-08 06:08 JST)を指し、2026-11-09 06:53 JST に作られ、2026-11-09 07:07 JST に公開された)。段階6の一部(準拠スイートの取り込み、ファジング)は、並行のレーンで先に進めている([plans/0020-conformance-harness-early.md](plans/0020-conformance-harness-early.md)、[plans/0025-fuzzing-the-evaluator.md](plans/0025-fuzzing-the-evaluator.md)。レーンの運用は [plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md))。計画書のない段階の実装は始めない([plans/README.md](plans/README.md))。段階の数値は `build.zig` の `current_stage` が正で、直前のリリースの次の段階を表す。上げると `zig build check-docs` が新しい行をCIに要求する。`current_stage` は 7 である。検証コマンドの表に、段階7の行はまだ無いので、7 に上げても CI に要求される行は増えない。段階7の行は、その行が指す step が `build.zig` に実在するときに足す(AGENTS.md の検証コマンドの節)。段階6の行(`zig build test-conformance`)は、`ci.yml` の `test` ジョブと `full.yml` の `windows` ジョブにある(ワークフローの変更は suchi/sucheme-zig#250 で承認された) |
-| 最新リリース | [v1.1.0-pre.2](https://github.com/suchi/sucheme-zig/releases/tag/v1.1.0-pre.2)([リリースノート](releases/v1.1.0-pre.2.md))。段階7の途中までを含む先行版(pre-release)で、ライセンスは MIT である([ADR-0050](adr/0050-relicense-under-mit.md))。段階の完了を示す最新のリリースは [v1.0.0](https://github.com/suchi/sucheme-zig/releases/tag/v1.0.0)([リリースノート](releases/v1.0.0.md)) |
+| 現在の段階 | 段階7(REPLの編集機能)。段階7の計画書は [plans/0021-stage7-8-early-parts.md](plans/0021-stage7-8-early-parts.md) で、段階7の範囲は [ADR-0051](adr/0051-narrow-stage-7-and-release-v1-1-0.md) で改めた。行編集の最小の核(スライス 7h、7a、7f、7b、7c、7d、7g、7j)と、核のあとの括弧の対応表示(7e)、複数行の編集と再描画(7m)、履歴のファイルへの保存(7n)、Windows の生モード(7i)は main に入った。端末から起動した REPL で、Emacs の標準のキー割り当てによる編集、複数行の編集、履歴(上下の移動、逐次検索、ファイルへの保存)、括弧の対応の表示ができる。Windows のコンソールでは、複数行の編集、履歴、Emacs のキーを実機で確かめた(終了時のモードの復元、日本語の入力と表示、旧来のコンソールは未確認である)。識別子の補完(7k)と差分読み取り(7l)は、着手しておらず、段階7から外して「段階7の後続の作業」の節に置いた。v1.1.0 は、この状態を出すリリースで、リリースノートは [releases/v1.1.0.md](releases/v1.1.0.md) である(タグと公開は、このノートを含む PR のマージのあとに、ユーザーが行う)。進捗は計画書の表が正である。段階1は v0.1.0 で、段階2は v0.2.0 で、段階3は v0.3.0 で、段階4は v0.4.0 で、段階5は v0.5.0 で、段階6は v1.0.0 で完了した(段階1のスライスは [plans/0003-phase1-minimal-slice.md](plans/0003-phase1-minimal-slice.md)、完了の手続きは [plans/0013-stage1-completion.md](plans/0013-stage1-completion.md)。段階2の実装計画と進捗は [plans/0014-phase2-core-language.md](plans/0014-phase2-core-language.md)、段階3は [plans/0016-phase3-scheme-stdlib.md](plans/0016-phase3-scheme-stdlib.md)、段階4は [plans/0018-phase4-numeric-tower-unicode.md](plans/0018-phase4-numeric-tower-unicode.md)、段階5は [plans/0019-phase5-ports-and-io.md](plans/0019-phase5-ports-and-io.md) が正である)。段階6の全体の計画書は [plans/0028-phase6-conformance.md](plans/0028-phase6-conformance.md) で、スライス 6j から 6r と 6z のリリースの準備が済み、v1.0.0 が公開された(タグは、準備の PR のマージコミット `5c91951`(コミットは 2026-11-08 06:08 JST)を指し、2026-11-09 06:53 JST に作られ、2026-11-09 07:07 JST に公開された)。段階6の一部(準拠スイートの取り込み、ファジング)は、並行のレーンで先に進めている([plans/0020-conformance-harness-early.md](plans/0020-conformance-harness-early.md)、[plans/0025-fuzzing-the-evaluator.md](plans/0025-fuzzing-the-evaluator.md)。レーンの運用は [plans/0017-parallel-lanes.md](plans/0017-parallel-lanes.md))。計画書のない段階の実装は始めない([plans/README.md](plans/README.md))。段階の数値は `build.zig` の `current_stage` が正で、直前のリリースの次の段階を表す。上げると `zig build check-docs` が新しい行をCIに要求する。`current_stage` は 7 である。検証コマンドの表に、段階7の行はまだ無いので、7 に上げても CI に要求される行は増えない。段階7の行は、その行が指す step が `build.zig` に実在するときに足す(AGENTS.md の検証コマンドの節)。段階6の行(`zig build test-conformance`)は、`ci.yml` の `test` ジョブと `full.yml` の `windows` ジョブにある(ワークフローの変更は suchi/sucheme-zig#250 で承認された) |
+| 最新リリース | [v1.1.0-pre.2](https://github.com/suchi/sucheme-zig/releases/tag/v1.1.0-pre.2)([リリースノート](releases/v1.1.0-pre.2.md))。段階7の途中までを含む先行版(pre-release)で、ライセンスは MIT である([ADR-0050](adr/0050-relicense-under-mit.md))。段階の完了を示す最新のリリースは [v1.0.0](https://github.com/suchi/sucheme-zig/releases/tag/v1.0.0)([リリースノート](releases/v1.0.0.md))。次に出すのは通常のリリース v1.1.0 で、段階7を完了とする([リリースノート](releases/v1.1.0.md)。公開の記録は、タグを作ったあとの PR で、この行を直す) |
 | 固定 Zig バージョン | `.zigversion` を参照 |
 | R7RS 準拠マトリクス | [status/](status/)(生成されている。1つ目の表は、必須の識別子ごとに、そのライブラリを `import` したときに束縛されるかを見る。`lib/` のエクスポートはスライス 3l で入った。2つ目の表は、準拠スイートの節ごとの結果で、スライス 6f で入った) |
 
@@ -203,12 +203,24 @@
 
 - [x] 行編集の実装方式の決定。Zig で自前に作り、最小の核から先に組み込む([ADR-0049](adr/0049-line-editor-in-zig-minimal-core-first.md)。計画書 [0021](plans/0021-stage7-8-early-parts.md))
 - [x] 最小の核: POSIX の生モード、キー列の解読、編集バッファ、キルリングと取り消し、記憶上の履歴、単一行の再描画、REPL への組み込み。Emacs の標準のキー割り当てを含む(スライス 7h、7a、7f、7b、7c、7d、7g、7j。Windows では `dumb` のまま)
-- [ ] 核のあとの Emacs バインディング、複数行編集、履歴、括弧の対応表示、補完。括弧の対応表示(スライス 7e)、複数行の編集と再描画(7m)、履歴のファイルへの保存(7n)、Windows の生モード(7i)、識別子の補完(7k。L0 の束縛名の API を待つ)
-- [ ] REPL の継続行の判定を、保留を毎行読み直す方式から、読み取りの状態を保って続きから読む方式(差分読み取り)に替える。スライス 1l が入れる判定は、継続のたびに保留の全体を読み直すので、費用が保留の大きさの2乗に比例する。ユーザーは保留の上限(64 KiB)を下げず、この制約を受け入れた。再現の仕方: 閉じ忘れの `define` を1つ含み、正しい `define` を多数並べた、上限(64 KiB)に近い入力を REPL に貼り、所要時間を測る。Debug ビルドでは数分かかり、ReleaseSafe でも待たされる。数値は環境で変わるので、ここには書かない。この項目に着手するときに測り直す (スライス 7l。核と L2 のリーダの完全化のあと)
+- [x] 核のあとの Emacs バインディング、複数行編集、履歴、括弧の対応表示、Windows の生モード。括弧の対応表示(スライス 7e)、複数行の編集と再描画(7m)、履歴のファイルへの保存(7n)、Windows の生モード(7i)。識別子の補完(7k)は、段階7から外した(下の「段階7の後続の作業」。[ADR-0051](adr/0051-narrow-stage-7-and-release-v1-1-0.md))
+- [x] REPL の継続行の判定を、保留を毎行読み直す方式から、読み取りの状態を保って続きから読む方式(差分読み取り)に替える項目(スライス 7l)は、段階7から外した(下の「段階7の後続の作業」。[ADR-0051](adr/0051-narrow-stage-7-and-release-v1-1-0.md))。v1.1.0 は、保留の全体を毎行読み直す方式のまま出す。費用が保留の大きさの2乗に比例する制約は、v1.0.0 から続いており、リリースノートの既知の制限に書く
 
-完了条件: 要件どおりの編集操作ができる。リリース v1.1.0 を出す。
+完了条件: 要件どおりの編集操作ができる。ここでいう編集操作は、補完と差分読み取りを除く。リリースを出す作業は、完了条件に含めない。リリース v1.1.0 を出す(準備は、スライス 7z の PR。[plans/0021-stage7-8-early-parts.md](plans/0021-stage7-8-early-parts.md) の進捗の表)。
 
-残していること: なし。
+残していること: 「段階7の後続の作業」の節の項目。
+
+### 段階7の後続の作業
+
+段階7から外した項目と、段階7のスライスの割り当てのまま、どの段階にも属していなかった項目を置く。どの段階のリリースにも割り当てていない。着手するときに、段階またはリリースへ割り当てる PR を出す([ADR-0051](adr/0051-narrow-stage-7-and-release-v1-1-0.md))。スライスの内容は [plans/0021-stage7-8-early-parts.md](plans/0021-stage7-8-early-parts.md) が正である。
+
+- [ ] 識別子の補完(スライス 7k。スライス未割り当て)。Tab で、現在の環境の束縛名から補完する。現在の環境の束縛名を列挙する API(L0 が所有する `src/sucheme.zig`)を待つ。それまで Tab は文字として入る
+- [ ] REPL の継続行の差分読み取り(スライス 7l。スライス未割り当て)。継続のたびに保留の全体を読み直すので、費用が保留の大きさの2乗に比例する。ユーザーは保留の上限(64 KiB)を下げず、この制約を受け入れた。再現の仕方: 閉じ忘れの `define` を1つ含み、正しい `define` を多数並べた、上限(64 KiB)に近い入力を REPL に貼り、所要時間を測る。Debug ビルドでは数分かかり、ReleaseSafe でも待たされる。数値は環境で変わるので、ここには書かない。着手するときに測り直す。L2 が所有する `src/reader.zig` に及ぶ
+- [ ] 端末の高さを超える描画(スライス 7o。スライス未割り当て)。描画が端末の高さを超えると、再描画のたびに、画面の外へ出た行が重複して残る。設計の選択を含むので、着手の前に計画を示して諮る
+- [ ] 貼り付けの描画の畳み込み(スライス 7p。スライス未割り当て)。複数行の貼り付けで、描画の出力量が入力の長さの2乗で増える。設計の選択を含むので、着手の前に計画を示して諮る
+- [ ] 文字幅の表の差し替え(スライス 7f の残り。スライス未割り当て)。仮の実装のままなので、全角の文字を含む行で、カーソルの位置がずれる。L4 の Unicode の表に、幅の情報が入ってから行う
+- [ ] 評価だけを止める Ctrl-C。評価の間の Ctrl-C は、sucheme を終え、それまでの定義が失われる。スライスは割り当てていない(スライス未割り当て)。割り当てる計画を立てるときに、L0 の機械の歩数と中断の仕組み(段階8の「状態を残す中断」と共通の部分がありうる)を確かめる
+- [ ] Windows の実機での確認の残り。終了時のモードの復元、日本語の入力と表示、旧来のコンソールでの見え方。macOS の実機での確認も未実施である。確かめる手順の割り当ては無い(スライス未割り当て)
 
 ### 段階8: Web UIの本格化
 
