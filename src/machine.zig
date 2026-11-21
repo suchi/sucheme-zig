@@ -2529,6 +2529,18 @@ test "the programs give the same results when run a few steps at a time, with a 
     }
 }
 
+test "a long run stepped a thousand steps at a time gives the value of a run, and the heap stays within its limit" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 8 * 1024 * 1024 });
+    defer f.deinit();
+    var yields: usize = 0;
+    yields = 0;
+    const v = try f.evalStepped("(define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n)))) (sum 1000000 0)", 1000, &yields);
+    try std.testing.expectEqual(500000500000, v.asFixnum().?);
+    try std.testing.expect(yields > 1000);
+}
+
 test "a run stepped one step at a time takes the steps a run takes" {
     var f: Fixture = undefined;
     try f.init();

@@ -239,4 +239,5 @@ flowchart TD
 | この計画書 | 合意済み(2026-11-21。決定8点) | - |
 | 8s(版) | `build.zig.zon` の `.version` を `1.1.0` から `1.2.0-dev` に進めた。直前の開発版(`1.1.0-dev`)の前例(818e351)に倣う。roadmap の「現在地」と handoff を、段階8の開始に合わせた | - |
 | 8s(`current_stage`) | `build.zig` の `current_stage` を 7 から 8 に上げた。`zig build check-docs` が通り、CI に要求される行は増えない(表に段階8の行が無いため) | - |
-| 8a から 8z | 未着手 | - |
+| 8e-1 | `Machine.begin` と `step(budget)`、停止中のレジスタを GC のルートにする `Context.parked`、割り込みの印 `Context.interrupt`、`Interpreter.beginEval` / `stepEval` / `abortEval` を入れた。設計は [ADR-0053](../adr/0053-resumable-machine-step-budget.md)。確かめたこと: 予算 1・3・50 歩ごとの実行と `run` の結果が一致する(ストレスモード、停止のたびに GC)。歩数の上限との同時の尽き方、割り込み、誤りの終了のテスト。周回の費用は ReleaseSafe で変更前後を比べた(値は PR に書く)。残っていること: `needs_input` を返す側(8f-1)、入れ子の `run`(ライブラリの読み込み)が中断できないことの利用者向けの文書での扱い(8e-2) | - |
+| 8a から 8d、8e-2 から 8z | 未着手 | - |
