@@ -181,7 +181,7 @@ flowchart TD
 
 ## 合意した点と、検討した選択肢
 
-ユーザーの確認が要った11の点である。下の表が決定で、その下の各項は検討した選択肢の記録である(勧める案を先頭に置いた)。本文の「問い N」は、この項の番号を指す。
+確認が要った11の点である。下の表が決定で、その下の各項は検討した選択肢の記録である(勧める案を先頭に置いた)。本文の「問い N」は、この項の番号を指す。
 
 | 問い | 決定 |
 | --- | --- |
@@ -368,6 +368,6 @@ GC の閾値は、1g が「ベンチマークは未実施で、段階1の終わ�
 ## 次にやること
 
 1. 1j-3a(`dist`、アーカイブの組み立て、リハーサル)と 1j-3c(リリースのワークフロー `release.yml`、[#68](https://github.com/suchi/sucheme-zig/pull/68))はマージ済み。#68 のレビューの指摘の修正は [#70](https://github.com/suchi/sucheme-zig/pull/70)。ブランチは各 PR ごとに最新の `origin/main` から作る。
-2. 1j-4(リリース準備。版を `0.1.0` にする、リリースノート `docs/releases/v0.1.0.md`、段階1の open-questions の整理)は [#71](https://github.com/suchi/sucheme-zig/pull/71) でマージ済み。ユーザーが、そのマージコミットに注釈つきタグ `v0.1.0` を打ち、`release.yml` が下書きのリリースを作った。
-3. v0.1.0 は 2026-10-13(日本標準時)にユーザーが公開した([リリース](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0))。1j-5(リリース後。版を `0.2.0-dev` に付け替える、最新リリースの記載を更新する)は [#72](https://github.com/suchi/sucheme-zig/pull/72) でマージ済みで、1j は完了した。段階1の完了の手続きは [0013](0013-stage1-completion.md) にある。
+2. 1j-4(リリース準備。版を `0.1.0` にする、リリースノート `docs/releases/v0.1.0.md`、段階1の open-questions の整理)は [#71](https://github.com/suchi/sucheme-zig/pull/71) でマージ済み。そのマージコミットに注釈つきタグ `v0.1.0` が打たれ、`release.yml` が下書きのリリースを作った。
+3. v0.1.0 は 2026-10-13(日本標準時)に公開された([リリース](https://github.com/suchi/sucheme-zig/releases/tag/v0.1.0))。1j-5(リリース後。版を `0.2.0-dev` に付け替える、最新リリースの記載を更新する)は [#72](https://github.com/suchi/sucheme-zig/pull/72) でマージ済みで、1j は完了した。段階1の完了の手続きは [0013](0013-stage1-completion.md) にある。
 4. 実装の途中で、確かめられなかったこと(表)を順に確かめ、結果をこの計画書の表と PR に書く。

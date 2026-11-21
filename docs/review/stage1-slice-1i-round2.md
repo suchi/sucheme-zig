@@ -27,4 +27,4 @@
 
 ## やり残し
 
-- 上限に届く確認(R1 の実挙動。時間がかかる)は、`build.zig` が `-Dslow=true` のときだけ環境変数 `SUCHEME_SLOW` を渡して走らせる。`full.yml` に `zig build test-wasm -Dslow=true` の step を足した(ユーザーが 2026-10-11 に承認した)。検証コマンド表の「規模を試すもの」の行にも足した。
+- 上限に届く確認(R1 の実挙動。時間がかかる)は、`build.zig` が `-Dslow=true` のときだけ環境変数 `SUCHEME_SLOW` を渡して走らせる。`full.yml` に `zig build test-wasm -Dslow=true` の step を足した(ワークフローの変更の承認を得た)。検証コマンド表の「規模を試すもの」の行にも足した。

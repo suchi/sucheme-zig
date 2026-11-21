@@ -7,7 +7,7 @@
 
 ## 解こうとしている問題
 
-2026-10-13(JST)に、ユーザーから、Actions の月の実行分数が月の半ばで枠を超えたと知らされた。このリポジトリは private なので、標準ランナーの実行分数がプランの枠に計上される(ADR-0020)。段階2は、複数のスライスを並行して進め、PR ごとに push を重ねたため、CI が短い間隔で何度も走った。
+2026-10-13(JST)に、Actions の月の実行分数が月の半ばで枠を超えたと分かった。このリポジトリは private なので、標準ランナーの実行分数がプランの枠に計上される(ADR-0020)。段階2は、複数のスライスを並行して進め、PR ごとに push を重ねたため、CI が短い間隔で何度も走った。
 
 枠の大きさ(プランごとの含まれる分数)と、Windows の倍率は、公式文書に到達できず確かめられなかった(未確認)。以下の見積りは、Windows を Linux の 2 倍で数える。実際の内訳は、GitHub の Billing のページの使用量レポート(ワークフロー別)で確かめられる。見積りと食い違ったら、見積りを直す。
 
@@ -46,7 +46,7 @@ CI の Windows ジョブだけで約 2,900 で、合計の半分を超える。C
 
 見積り: PR 1 件あたりの層1 の実行を、約 5.4 回から約 3.5 回に減らす。どちらも推測で、5.4 回の導き方は記録していない。CI と Preview(約 3,950)の約 35% で、約 1,400 分。
 
-### 案 B: ワークフローの変更(B1 と B2 を採る。ユーザーが 2026-10-13 に承認した)
+### 案 B: ワークフローの変更(B1 と B2 を採る。2026-10-13 に承認した)
 
 B1. Windows の test ジョブを、全 push の CI から外し、`full.yml`(PR を ready にしたとき、手動。B2 を採らなければ `main` への push も)に移す。
 
@@ -120,9 +120,9 @@ Full の 1 実行は、2026-10-11 の約 4 分から、10-20 以降の約 50 分
 
 ### 案と決定
 
-- 案 1: 層2 の規模を試すテストを `-Doptimize=ReleaseSafe` で走らせる。上の伸びの主因に効く見込みの案である。計測の結果を受けて、ユーザーが 2026-10-24 に承認し、[ADR-0047](../adr/0047-slow-unit-tests-default-to-releasesafe.md) で採った(`-Dslow=true` のときの最適化の既定を ReleaseSafe にする)。上の測定の層2 の所要時間は、ADR-0047 の前の値である。
-- 案 2: 文書だけの PR では、層2 と Preview を起動しない(`full.yml` と `preview.yml` の `paths-ignore`)。ユーザーが 2026-10-24 に承認した。[ADR-0046](../adr/0046-skip-slow-tier-for-docs-only-prs.md) に記録した。`ci.yml` には絞り込みを付けない。`tools/check-docs` は、`ci.yml` が `paths-ignore` を持つと赤にする。
-- 案 3: `main` への push の CI を、日次の定期実行に変える。採らない(ユーザーが 2026-10-24 に承認した)。マージのたびの層1 が無くなり、`main` の破損に気づくのが遅れるからである。
+- 案 1: 層2 の規模を試すテストを `-Doptimize=ReleaseSafe` で走らせる。上の伸びの主因に効く見込みの案である。計測の結果を受けて、2026-10-24 に承認し、[ADR-0047](../adr/0047-slow-unit-tests-default-to-releasesafe.md) で採った(`-Dslow=true` のときの最適化の既定を ReleaseSafe にする)。上の測定の層2 の所要時間は、ADR-0047 の前の値である。
+- 案 2: 文書だけの PR では、層2 と Preview を起動しない(`full.yml` と `preview.yml` の `paths-ignore`)。2026-10-24 に承認した。[ADR-0046](../adr/0046-skip-slow-tier-for-docs-only-prs.md) に記録した。`ci.yml` には絞り込みを付けない。`tools/check-docs` は、`ci.yml` が `paths-ignore` を持つと赤にする。
+- 案 3: `main` への push の CI を、日次の定期実行に変える。採らない(2026-10-24 に承認した)。マージのたびの層1 が無くなり、`main` の破損に気づくのが遅れるからである。
 
 案 2 の見込み: 上の期間に当てはめると、`docs/` のブランチの PR の Full と Preview の分(約 1,350)が減る(見込み。文書だけでない `docs/` のブランチも含む)。層1 の分(CI の 156 実行)は残る。
 
@@ -155,7 +155,7 @@ Full の 1 実行は、2026-10-11 の約 4 分から、10-20 以降の約 50 分
 
 ## 2026-11-01 の追補: 2026-10 の使用量レポートによる実績
 
-ユーザーから、GitHub の使用量レポート(CSV、2026-10-01 から 2026-10-31、420 行)を受け取った([suchi/sucheme-zig#225](https://github.com/suchi/sucheme-zig/issues/225) のコメントに、リポジトリ `sucheme-zig` の集計を残してある)。CSV そのものは、他のリポジトリの行とユーザー名を含むので、リポジトリに置かない。以下は、`sucheme-zig` の Actions の行を `quantity`、`gross_amount`、`discount_amount`、`net_amount` で合計したものである。金額の単位は CSV に明記がなく、`applied_cost_per_quantity`(Linux 0.006、Windows 0.010)から 1 分あたりの米ドルと読んだ(推測)。
+GitHub の使用量レポート(CSV、2026-10-01 から 2026-10-31、420 行)を入手した([suchi/sucheme-zig#225](https://github.com/suchi/sucheme-zig/issues/225) のコメントに、リポジトリ `sucheme-zig` の集計を残してある)。CSV そのものは、他のリポジトリの行とユーザー名を含むので、リポジトリに置かない。以下は、`sucheme-zig` の Actions の行を `quantity`、`gross_amount`、`discount_amount`、`net_amount` で合計したものである。金額の単位は CSV に明記がなく、`applied_cost_per_quantity`(Linux 0.006、Windows 0.010)から 1 分あたりの米ドルと読んだ(推測)。
 
 | ワークフロー | 分数 | 総額 | 請求額 |
 | --- | --- | --- | --- |
@@ -198,4 +198,4 @@ OS 別の分数は、Linux が 8862.7、Windows が 2093.0 である。請求額
 | 2026-10-24 の追補の測定 | 実行とジョブの一覧からの概算を、上の追補に足した(Billing の値ではない) |
 | 案 2(文書だけの PR で層2 と Preview を起動しない) | suchi/sucheme-zig#198 で入った([ADR-0046](../adr/0046-skip-slow-tier-for-docs-only-prs.md)) |
 | 案 2 の挙動の確認 | 2026-10-26 に確かめた(上の「確かめた結果」)。`workflow_dispatch` への効き方は未確認 |
-| 案 1(層2 を ReleaseSafe で走らせる) | ユーザーが 2026-10-24 に承認し、[ADR-0047](../adr/0047-slow-unit-tests-default-to-releasesafe.md) で採った |
+| 案 1(層2 を ReleaseSafe で走らせる) | 2026-10-24 に承認し、[ADR-0047](../adr/0047-slow-unit-tests-default-to-releasesafe.md) で採った |
