@@ -53,7 +53,7 @@
 | [0017](0017-self-hosted-adversarial-review.md) | レビューは自前の敵対的レビューを主とする | 非推奨([0023](0023-mandatory-zero-convergence.md)に置き換え) | 2026-10-04 |
 | [0018](0018-incremental-vertical-slices.md) | 通しで動く縦切りを積み上げ、やり残しを明示して漸進的に進める | 採用 | 2026-10-05 |
 | [0019](0019-denotations-and-identifier-resolution.md) | 衛生性は構文環境と別名による改名で実現し、意味は6種とする | 採用 | 2026-10-05 |
-| [0020](0020-repository-visibility-private.md) | リポジトリを private にする | 採用 | 2026-10-06 |
+| [0020](0020-repository-visibility-private.md) | リポジトリを private にする | 非推奨([0052](0052-repository-visibility-public-again.md)に置き換え) | 2026-10-06 |
 | [0021](0021-no-github-pages-defer-hosting.md) | GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない | 採用 | 2026-10-06 |
 | [0022](0022-unlicensed-proprietary.md) | ライセンスを付与せず UNLICENSED として非公開を明示する | 非推奨([0050](0050-relicense-under-mit.md)に置き換え) | 2026-10-07 |
 | [0023](0023-mandatory-zero-convergence.md) | 自前の敵対的レビューの収束条件を必須の新規指摘ゼロとする | 非推奨([0027](0027-severity-by-consequence-and-a-cost-side-stop.md)に置き換え) | 2026-10-07 |
@@ -85,3 +85,4 @@
 | [0049](0049-line-editor-in-zig-minimal-core-first.md) | 行編集は Zig で自前に作り、最小の核から先に組み込む | 採用 | 2026-11-12 |
 | [0050](0050-relicense-under-mit.md) | ライセンスを MIT にする | 採用 | 2026-11-20 |
 | [0051](0051-narrow-stage-7-and-release-v1-1-0.md) | 段階7の範囲を改め、識別子の補完と差分読み取りを外して v1.1.0 を出す | 採用 | 2026-11-21 |
+| [0052](0052-repository-visibility-public-again.md) | リポジトリを public にする | 採用 | 2026-11-21 |
