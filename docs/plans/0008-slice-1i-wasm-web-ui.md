@@ -3,7 +3,7 @@
 - 対応する決定: [ADR-0009](../adr/0009-wasm-freestanding-and-zero-dependency-web-ui.md), [ADR-0010](../adr/0010-ci-cd-and-release-strategy.md), [ADR-0018](../adr/0018-incremental-vertical-slices.md), [ADR-0021](../adr/0021-no-github-pages-defer-hosting.md), [ADR-0027](../adr/0027-severity-by-consequence-and-a-cost-side-stop.md)
 - 段階: 1(スライス 1i)。スライスの全体は [0003-phase1-minimal-slice.md](0003-phase1-minimal-slice.md) が正
 - 日付: 2026-10-11
-- 状態: 合意済み(2026-10-11、「合意を求める点」の4つは、いずれも勧める案で合意した)。実装は [#36](https://github.com/suchi/sucheme-zig/pull/36) で `main` に入った。`ci.yml` の変更は、ユーザーが承認した
+- 状態: 合意済み(2026-10-11、「合意を求める点」の4つは、いずれも勧める案で合意した)。実装は [#36](https://github.com/suchi/sucheme-zig/pull/36) で `main` に入った。`ci.yml` の変更は、承認した
 
 ## 解こうとしている問題
 
