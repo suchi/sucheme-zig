@@ -3,7 +3,7 @@
 // 長い計算の間も画面が応答し、「停止」ボタンが Worker ごと捨てられるようにするために、
 // インタプリタはここで動かす。メッセージは次のとおり。
 //   受信: { type: "init", wasmUrl } / { type: "eval", id, source } / { type: "reset" }
-//   送信: { type: "ready", version } / { type: "result", id, status, output }
+//   送信: { type: "ready", version } / { type: "result", id, status, output, exitCode }
 //         { type: "reset-done", status } / { type: "error", phase, message }
 
 import { Sucheme, Status } from "./sucheme.js";
@@ -51,7 +51,9 @@ self.onmessage = async (event) => {
           break;
         }
         const { status, output } = sucheme.eval(message.source);
-        postMessage({ type: "result", id: message.id, status, output });
+        // 終了コードは、exit が呼ばれたとき(状態コード -6)にだけ意味を持つ。
+        const exitCode = status === Status.EXITED ? sucheme.exitCode() : 0;
+        postMessage({ type: "result", id: message.id, status, output, exitCode });
         break;
       }
       case "reset": {
