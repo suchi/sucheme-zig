@@ -875,9 +875,59 @@ test("splitError separates the error line from the output before it, which has n
   assert.deepEqual(splitError("error: boom\n"), { output: "", message: "boom" });
   // 出力が `error: ` を含んでいても、境目は最後の `error: ` である。
   assert.deepEqual(splitError("error: shown\nerror: boom\n"), { output: "error: shown\n", message: "boom" });
+  // 取るのは末尾の改行1つだけで、説明の先頭の空白と、ほかの末尾の改行は残る。
+  assert.deepEqual(splitError("error: a\n\n\n"), { output: "", message: "a\n\n" });
+  assert.deepEqual(splitError("error:   spaced\n"), { output: "", message: "  spaced" });
   assert.deepEqual(splitError("no error line"), { output: "no error line", message: null });
   // 説明が改行を含んでも、末尾の1つの改行だけを取る。
   assert.deepEqual(splitError("error: a\nb 1\n"), { output: "", message: "a\nb 1" });
+});
+
+// 限界の記録: 説明が `error: ` を含むと、境目を誤り、説明の前半が出力に回る。
+// 将来、src/wasm.zig がエラーの行の位置を渡すようになったら、このテストを正しい分割に直す。
+test("known limit: a message that contains the error prefix is split inside the message", () => {
+  const h = instantiate().init();
+  const [status, text] = h.run('(error "boom" "error: x")');
+  assert.equal(status, SCHEME_ERROR);
+  assert.equal(text, 'error: boom "error: x"\n');
+  assert.deepEqual(splitError(text), { output: 'error: boom "', message: 'x"' });
+});
+
+// 状態コードごとの見出しと次の操作を、文言ごと固定する。
+test("describeResult gives each status code its own title and hint", () => {
+  const expected = [
+    [Status.SCHEME_ERROR, "Error", null],
+    [
+      Status.UNRECOVERABLE,
+      "Unrecoverable error",
+      "The interpreter cannot go on. Press Reset to continue; definitions made so far are lost.",
+    ],
+    [Status.INVALID_UTF8, "Invalid input", "Nothing was evaluated. The input must be valid UTF-8."],
+    [
+      Status.WRONG_ORDER,
+      "The interpreter has stopped",
+      "Press Reset to start again; definitions made so far are lost.",
+    ],
+    [Status.NOT_INITIALIZED, "Not initialized", "Reload the page."],
+    [Status.OUT_OF_MEMORY, "Out of memory", "Press Reset to start again; definitions made so far are lost."],
+    [Status.BAD_REGION, "Internal error", "Reload the page."],
+    [Status.CONTINUE, "Unexpected status 1", "Press Reset, or reload the page."],
+    [Status.WAITING_INPUT, "Unexpected status 2", "Press Reset, or reload the page."],
+    [-99, "Unexpected status -99", "Press Reset, or reload the page."],
+  ];
+  for (const [status, title, hint] of expected) {
+    assert.deepEqual(
+      describeResult(status, "out" + "error: why\n"),
+      { output: "out", error: { title, message: "why", hint } },
+      String(status),
+    );
+    // エラーの行が無いときは、出力をそのまま残し、説明は空にする。
+    assert.deepEqual(
+      describeResult(status, "only output"),
+      { output: "only output", error: { title, message: "", hint } },
+      String(status),
+    );
+  }
 });
 
 test("describeResult keeps the output before an error and explains each status code", () => {

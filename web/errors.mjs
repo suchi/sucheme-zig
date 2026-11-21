@@ -31,11 +31,6 @@ const explanations = new Map([
   [Status.BAD_REGION, { title: "Internal error", hint: "Reload the page." }],
 ]);
 
-/** The status codes whose output carries an error line after the program's own output. */
-function hasErrorLine(status) {
-  return status !== Status.OK && status !== Status.EXITED;
-}
-
 /**
  * Splits `text` into the program's output and the error message that follows it.
  *
@@ -75,7 +70,7 @@ export function describeResult(status, text, exitCode = 0) {
     };
   }
   const known = explanations.get(status);
-  const { output, message } = hasErrorLine(status) ? splitError(text) : { output: text, message: null };
+  const { output, message } = splitError(text);
   if (known === undefined) {
     return {
       output,
