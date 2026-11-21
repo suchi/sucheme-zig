@@ -119,6 +119,16 @@ pub const Context = struct {
     /// 機械は、`Machine.run` の1回ごとに残りをこの値に戻す(src/machine.zig)。既定は上限なしで、
     /// 準拠スイートの実行器だけが置く(計画書 0024)。
     step_limit: ?u64 = null,
+    /// A request, set from outside, that the machine give control back at its next step
+    /// (`Machine.step` reports `interrupted`, and takes the request down).
+    /// Why: 割り込みはシグナルハンドラや別スレッドからも立てうるので、アトミックにする。
+    /// 機械は歩の境目で見る。`Machine.run` は見ない。
+    interrupt: std.atomic.Value(bool) = .init(false),
+    /// The registers of a machine whose run `Machine.step` has given control back from,
+    /// or null when no run is parked.
+    /// 停止中は、機械のレジスタ以外にヒープの値を持つものが無いので、これを GC のルートにする
+    /// (`mark`)。
+    parked: ?Parked = null,
 
     /// A context whose top level imports everything `(sucheme core)` exports.
     /// `persist` は、コンテキストより長生きするアリーナである。`gpa` は、ヒープが
@@ -203,6 +213,7 @@ pub const Context = struct {
         self.environments.mark(marker);
         var waiting = self.suspended;
         while (waiting) |s| : (waiting = s.next) s.mark(marker);
+        if (self.parked) |p| p.mark(marker);
         if (self.raised) |v| marker.value(v);
         if (self.raised_at) |at| marker.value(at.value);
         if (self.positions) |kept| kept.mark(marker);
@@ -210,6 +221,23 @@ pub const Context = struct {
             if (param) |p| marker.object(value_mod.Parameter, p);
         }
     }
+
+    /// What a parked machine holds (`parked`): the registers a step reads and writes.
+    pub const Parked = struct {
+        control: ?*const value_mod.Node,
+        env: ?*value_mod.Frame,
+        kont: ?*const value_mod.Kont,
+        value: Value,
+        dyn: ?*const value_mod.DynPoint,
+
+        pub fn mark(self: Parked, marker: *heap_mod.Marker) void {
+            if (self.control) |node| marker.object(value_mod.Node, node);
+            marker.value(self.value);
+            marker.frame(self.env);
+            marker.kont(self.kont);
+            marker.dynPoint(self.dyn);
+        }
+    };
 
     pub const RaisedAt = struct { value: Value, position: positions_mod.Position };
 
