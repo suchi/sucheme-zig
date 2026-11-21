@@ -858,7 +858,7 @@ const programExclusions = {
   "control-macros": "値の出力: トップレベルの式の値が出力に加わる",
   "early-exit": "値の出力: トップレベルの式の値が出力に加わる",
   memoize: "値の出力: トップレベルの式の値が出力に加わる",
-  "file-roundtrip": "ファイル: 作業ディレクトリへの書き込みができない",
+  "file-roundtrip": "ファイル: ファイルの表が無い(作業ディレクトリへの書き込みが失敗する)",
 };
 
 function programNames() {
@@ -870,7 +870,12 @@ function programNames() {
 
 test("the programs of the manual that use no files, arguments or input give their .out in wasm", () => {
   const names = programNames();
-  assert.ok(names.length > 20, `found ${names.length} programs`);
+  // 対象(`.args` `.in` `.files/` を持たない本)の下限と、除外の本数の上限。実際に走らせる本が、
+  // 検査の対象から静かに減らないようにする。本が増えても、直さずに済む形にしてある。
+  const excluded = Object.keys(programExclusions).length;
+  assert.ok(names.length >= 40, `found ${names.length} programs that qualify`);
+  assert.ok(names.length - excluded >= 35, `only ${names.length - excluded} programs are run`);
+  assert.ok(excluded * 4 <= names.length, `${excluded} exclusions out of ${names.length}`);
   for (const name of Object.keys(programExclusions)) {
     assert.ok(names.includes(name), `the exclusion ${name} names a program that does not exist or does not qualify`);
   }
@@ -881,6 +886,7 @@ test("the programs of the manual that use no files, arguments or input give thei
     if (exit) expected = expected.slice(0, exit.index);
     const h = instantiate().init();
     const [status, text] = h.run(readFileSync(new URL(`${name}.scm`, programsDir), "utf8"));
+    // 比較は厳密である(末尾の改行を含む)。`trimEnd()` などで緩めない。
     assert.equal(text, expected, name);
     assert.equal(status, exit ? EXITED : OK, name);
     if (exit) assert.equal(h.x.sucheme_exit_code(), Number(exit[1]), name);
