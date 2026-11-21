@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-for-dark-bg.svg">
-    <img alt="sucheme" src="docs/images/logo-for-light-bg.svg" width="320">
-  </picture>
+  <img alt="sucheme" src="docs/images/logo.svg" width="360">
 </p>
 
 # sucheme-zig
