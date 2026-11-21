@@ -3,7 +3,7 @@
 - ステータス: 採用
 - 日付: 2026-10-21
 
-スライス 6h-1([plans/0024-step-limit-for-the-conformance-run.md](../plans/0024-step-limit-for-the-conformance-run.md))の判断で、計画書の「合意を求める点」として 2026-10-21 にユーザーが承認した。
+スライス 6h-1([plans/0024-step-limit-for-the-conformance-run.md](../plans/0024-step-limit-for-the-conformance-run.md))の判断で、計画書の「合意を求める点」として 2026-10-21 に決めた。
 
 ## 背景
 

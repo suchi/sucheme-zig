@@ -9,7 +9,7 @@
 
 親のセッションの手元の測定(4 vCPU、2026-10-24)では、`zig build test -Dslow=true` の壁時計は、Debug で 558 秒、`-Doptimize=ReleaseSafe` で 166 秒だった。両者で、テスト名の集合と結果(全件が通る)は同じだった。
 
-層2の時間を、検査を減らさずに縮める案は、計画書 0026(`docs/plans/0026-shorten-slow-tier.md`。suchi/sucheme-zig#193 で足す)にまとめた。この ADR は、そのうちの案1を、ユーザーが 2026-10-24 に承認した決定として記録する。
+層2の時間を、検査を減らさずに縮める案は、計画書 0026(`docs/plans/0026-shorten-slow-tier.md`。suchi/sucheme-zig#193 で足す)にまとめた。この ADR は、そのうちの案1を、2026-10-24 に決めた決定として記録する。
 
 ## 決定
 
