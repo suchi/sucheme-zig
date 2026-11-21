@@ -8,7 +8,7 @@
 // テストは新しいインスタンスで行う。テストごとに新しいインスタンスを作るので、
 // テスト同士が状態を共有しない。
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -826,6 +826,11 @@ const sampleOutputs = {
   lists: "(9 1 4)\n(3 1 2 4 5)\n(2 1 3)\n(b 2)\n(1 2)\n",
   record: "3\n10\n#t\n#f\n",
   escape: '42\n4\n"boom"\n',
+  "numeric-tower": "265252859812191058636308480000000\n1267650600228229401496703205376\n1/3\n1/2\n0.3333333333333333\n4\n1.4142135623730951\n",
+  strings: '"Scheme λ"\n"HELLO"\n5\n"cba"\n"world"\n#t\n1000.0\nfoo\n',
+  "string-ports": '"sym and \\"text\\""\n(a b)\n42\n"s"\n#t\n',
+  "dynamic-wind": "escaped\n(in body out)\n",
+  library: "2\n1\n",
 };
 
 test("every sample of the page evaluates to its expected output, and the table matches the samples", () => {
@@ -837,6 +842,59 @@ test("every sample of the page evaluates to its expected output, and the table m
     // 「リセット」のあとと同じく、サンプルは何も定義していない状態から走る。
     const h = instantiate().init();
     assert.deepEqual(h.run(sample.source), [OK, sampleOutputs[sample.id]], sample.id);
+  }
+});
+
+// プログラム集(docs/manual/programs/)を、同じ WASM で走らせ、`.out` と比べる(計画書 0030 の決定6)。
+// 対象は、ファイル、コマンドライン、標準入力を使わないもの、つまり `.args` `.in` `.files/` の
+// どれも持たないもので、下の除外の一覧に無いものである。WASM の入口は、`.scm` の全体を1回の評価で
+// 走らせる。`.out` の最後の行が `[exit N]` なら、状態コードは EXITED で、終了コードは N である。
+const programsDir = new URL("../../docs/manual/programs/", import.meta.url);
+// 除外の一覧。WASM では出力が `.out` と一致しないプログラムと、その理由である。
+// 理由の2つの類型: 「値の出力」は、WASM の入口が、トップレベルの式の値を(未指定を除いて)
+// 出力に書くが、ファイルの実行は書かないこと。「ファイル」は、WASM にファイルの表が無いこと。
+const programExclusions = {
+  "bank-account": "値の出力: トップレベルの式の値が出力に加わる",
+  "control-macros": "値の出力: トップレベルの式の値が出力に加わる",
+  "early-exit": "値の出力: トップレベルの式の値が出力に加わる",
+  memoize: "値の出力: トップレベルの式の値が出力に加わる",
+  "file-roundtrip": "ファイル: 作業ディレクトリへの書き込みができない",
+};
+
+function programNames() {
+  const entries = readdirSync(programsDir);
+  const names = entries.filter((f) => f.endsWith(".scm")).map((f) => f.slice(0, -".scm".length)).sort();
+  const aux = (name) => [".args", ".in", ".files"].some((ext) => entries.includes(name + ext));
+  return names.filter((name) => !aux(name));
+}
+
+test("the programs of the manual that use no files, arguments or input give their .out in wasm", () => {
+  const names = programNames();
+  assert.ok(names.length > 20, `found ${names.length} programs`);
+  for (const name of Object.keys(programExclusions)) {
+    assert.ok(names.includes(name), `the exclusion ${name} names a program that does not exist or does not qualify`);
+  }
+  for (const name of names) {
+    if (name in programExclusions) continue;
+    let expected = readFileSync(new URL(`${name}.out`, programsDir), "utf8");
+    const exit = /\[exit (\d+)\]\n?$/.exec(expected);
+    if (exit) expected = expected.slice(0, exit.index);
+    const h = instantiate().init();
+    const [status, text] = h.run(readFileSync(new URL(`${name}.scm`, programsDir), "utf8"));
+    assert.equal(text, expected, name);
+    assert.equal(status, exit ? EXITED : OK, name);
+    if (exit) assert.equal(h.x.sucheme_exit_code(), Number(exit[1]), name);
+  }
+});
+
+test("each program excluded from the wasm run really differs there (the list holds no stale entry)", () => {
+  for (const name of Object.keys(programExclusions)) {
+    let expected = readFileSync(new URL(`${name}.out`, programsDir), "utf8");
+    const exit = /\[exit (\d+)\]\n?$/.exec(expected);
+    if (exit) expected = expected.slice(0, exit.index);
+    const h = instantiate().init();
+    const [status, text] = h.run(readFileSync(new URL(`${name}.scm`, programsDir), "utf8"));
+    assert.ok(text !== expected || status !== (exit ? EXITED : OK), `${name} now matches; remove it from programExclusions`);
   }
 });
 
