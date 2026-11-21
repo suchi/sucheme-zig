@@ -8,7 +8,7 @@
 >
 > 2026-10-21 追記: 決定6のうち、定義の途中のライブラリの表にあたる部分は、[ADR-0043: loading-library-holds-unbound-cells-strongly](0043-loading-library-holds-unbound-cells-strongly.md) が置き換えた。スライス 3o-5 の実装で、弱く持つと本体の終わりの未束縛の検査の結果が GC の時期に依存することが分かったためである。定義の途中の表は未束縛のセルを強く持ち、定義を終えたら弱く持つ。REPL の表は決定6のとおりである。
 
-スライス 3o の設計([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))とともに、2026-10-20 にユーザーが承認した。実装は、計画書の 3o-1 から 3o-5 の PR が順に行う。
+スライス 3o の設計([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))とともに、2026-10-20 に決めた。実装は、計画書の 3o-1 から 3o-5 の PR が順に行う。
 
 ## 背景
 

@@ -20,7 +20,7 @@
 - 第3条項は「The name of the author may not be used to endorse or promote products derived from this software without specific prior written permission.」である。対象は著者(the author)の名前で、寄稿者とソフトウェアの名前は挙げていない。
 - 第1条項は、ソースコードを再配布するときに、著作権表示、条項、免責の文を残すことを求める。第2条項は、バイナリを再配布するときに、同じものを配布物の文書や資料に載せることを求める。
 
-この線は、計画書 0020 の「合意を求める点」の2として、選択肢つきでユーザーに諮り、勧める案が承認された(2026-10-20)。
+この線は、計画書 0020 の「合意を求める点」の2として、選択肢つきで検討し、勧める案に決めた(2026-10-20)。
 
 ## 決定
 

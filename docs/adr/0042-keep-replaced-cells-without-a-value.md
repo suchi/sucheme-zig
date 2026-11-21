@@ -4,7 +4,7 @@
 - 日付: 2026-10-21
 - 一部置き換え: [ADR-0040: core-ir-in-the-gc-heap](0040-core-ir-in-the-gc-heap.md) の決定5のうち、`displaced_cells` をやめる部分を置き換える。値を持つセルを表が持ち続けないこと、定義に失敗したライブラリの表を手放すことは変わらない
 
-スライス 3o-4([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))の実装の中で見つかった食い違いに対する判断で、2026-10-21 にユーザーが承認した。
+スライス 3o-4([plans/0023-slice-3o-ir-to-gc-heap.md](../plans/0023-slice-3o-ir-to-gc-heap.md))の実装の中で見つかった食い違いに対する判断で、2026-10-21 に決めた。
 
 ## 背景
 
