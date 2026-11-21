@@ -34,6 +34,8 @@
 | [0028-phase6-conformance.md](0028-phase6-conformance.md) | 段階6(準拠検証)の全体の計画: 残りのスライス(6j 以降)、未割り当ての項目の行き先、終了コードの切り替え、v1.0.0 のリリース |
 | [0029-heap-limit-slow-exhaustion.md](0029-heap-limit-slow-exhaustion.md) | ヒープの上限に届くまでが遅い件の調査: 再測定、回収の時間の内訳、仮説、修正案の選択肢 |
 
+| [0030-phase8-web-ui.md](0030-phase8-web-ui.md) | 段階8(Web UI の本格化)の全体の計画: スライス、見積り、配置先の比較、合意を求める点 |
+
 段階ごとの実装計画は、その段階の実装を始める前に手順2(Opus)で作成し、`NNNN-phaseN-title.md` として追加する。計画書のない段階の実装は始めない。
 
 計画書に書くこと。
