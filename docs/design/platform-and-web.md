@@ -377,7 +377,7 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 ### 配置
 
-段階7までは配置しない。段階8で、private にアクセス制限できるクラウドに置く([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。配置先のサービスは段階8で選ぶ。
+段階7までは配置しない。段階8で配置する([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。リポジトリが public なので([ADR-0052](../adr/0052-repository-visibility-public-again.md))、GitHub Pages も候補に入る。配置先のサービスは段階8で選ぶ。
 
 段階1から段階7は、PR のたびに `.github/workflows/preview.yml` が成果物 `sucheme-web` を上げる。中身は、`web/` のファイル(`serve.mjs` を含む)と `sucheme.wasm` を1つのディレクトリに並べたもので、`actions/upload-artifact` が zip にまとめる。保持期間は7日である。レビュー担当者は zip を展開し、展開したディレクトリで `node serve.mjs` を実行して、表示された URL をブラウザで開く。Node.js だけが要り、Zig もリポジトリも要らない。
 

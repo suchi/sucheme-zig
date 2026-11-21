@@ -24,4 +24,4 @@
 
 ## 問題を見つけたら
 
-issue で知らせてください。リポジトリは private なので([ADR-0020](../../adr/0020-repository-visibility-private.md))、issue を扱えるのは、アクセス権のある方だけです。
+issue で知らせてください。

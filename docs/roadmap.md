@@ -39,7 +39,7 @@
 - [x] Zig 向けの `.gitignore` 追記と `.editorconfig` と `.gitattributes` の追補
 - [x] `AGENTS.md` の検証コマンド表を埋める
 - [x] ライセンスの決定と `LICENSE` の配置。MIT で始め、private 化の後に UNLICENSED に変え([ADR-0022](adr/0022-unlicensed-proprietary.md))、先行版の配布に合わせて MIT に戻した([ADR-0050](adr/0050-relicense-under-mit.md))
-- [x] リポジトリの可視性の決定。public にしたのち private に戻した([ADR-0020](adr/0020-repository-visibility-private.md))
+- [x] リポジトリの可視性の決定。段階0で public にし、private にしたのち([ADR-0020](adr/0020-repository-visibility-private.md))、再び public にした([ADR-0052](adr/0052-repository-visibility-public-again.md))
 - [x] CI ワークフロー(`AGENTS.md` の検証コマンド表で CI 実行が「全コミット」の行のうち、段階0で使えるもの)
 - [x] CI の雛形に、段階1で足すファジングのワークフローの置き場所を決める(定期実行と手動起動。全コミットの CI には入れない)
 - [x] `tests/r7rs-required/*.txt` を R7RS 付録Aから抽出
@@ -47,7 +47,7 @@
 
 完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。**2026-10-08 に PR #2 のマージで満たした。** `main` の CI がグリーンになったことを確認済みである。
 
-確定したこと: リポジトリは private とする(2026-10-06、[ADR-0020](adr/0020-repository-visibility-private.md))。GitHub Pages は使わず、Web UI の配置は段階8で行う([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。`build.zig` の step は既定・`run`・`test`・`check-docs`・`check-extract` である。どれが毎コミットで要るかは `AGENTS.md` の表が正で、`zig build check-docs` が表と `ci.yml` と `build.zig` の3つを突き合わせる。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、`tests/r7rs-required/` に置いた。ライブラリ数と識別子数は [extract-r7rs-required/SOURCE.md](../tools/extract-r7rs-required/SOURCE.md) の表が正で、`zig build check-docs` が実物と照合する。
+確定したこと: リポジトリは public とする(2026-11-21、[ADR-0052](adr/0052-repository-visibility-public-again.md)。2026-10-06 の [ADR-0020](adr/0020-repository-visibility-private.md) を置き換えた)。Web UI の配置は段階8で行う([ADR-0021](adr/0021-no-github-pages-defer-hosting.md)。Pages を使わない前提は、public で変わった)。`build.zig` の step は既定・`run`・`test`・`check-docs`・`check-extract` である。どれが毎コミットで要るかは `AGENTS.md` の表が正で、`zig build check-docs` が表と `ci.yml` と `build.zig` の3つを突き合わせる。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、`tests/r7rs-required/` に置いた。ライブラリ数と識別子数は [extract-r7rs-required/SOURCE.md](../tools/extract-r7rs-required/SOURCE.md) の表が正で、`zig build check-docs` が実物と照合する。
 
 残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。未着手の作業項目はチェックボックスを参照する。
 
@@ -227,7 +227,7 @@
 - [ ] `read` による対話
 - [ ] エラー位置の表示と処理の中断。段階6から、位置情報の残り(2)(コアIRの節点への位置の複写と、実行時の誤りへの位置の表示)を送った(2026-11-04 にユーザーが承認した。[計画書 0028](plans/0028-phase6-conformance.md))
 - [ ] 編集の補助とサンプルの充実
-- [ ] Web UI の配置先の選定と配置([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。private にアクセス制限でき、静的ファイルを `application/wasm` で配信できるサービスを選ぶ
+- [ ] Web UI の配置先の選定と配置([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。静的ファイルを `application/wasm` で配信できるサービスを選ぶ。リポジトリが public なので([ADR-0052](adr/0052-repository-visibility-public-again.md))、GitHub Pages も候補に入る
 
 完了条件: ブラウザで R7RS のサンプルが一通り動く。配置した URL でも動く。リリース v1.2.0 を出す。
 

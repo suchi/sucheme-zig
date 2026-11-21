@@ -1,83 +1,62 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-for-dark-bg.svg">
+    <img alt="sucheme" src="docs/images/logo-for-light-bg.svg" width="320">
+  </picture>
+</p>
+
 # sucheme-zig
 
-sucheme-zig は、Zig で実装された R7RS-small 準拠を目標とする Scheme インタプリタです。衛生的マクロ、第一級継続、適切な末尾再帰、完全な数値塔までの準拠を目指します。
-
-単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールの両方を、同一のコアから生成することを目指しています。現在の到達点は [docs/roadmap.md](docs/roadmap.md) の「現在地」にあります。
-
-名前はリポジトリオーナーに由来しています(`scheme` の打ち間違いではありません)。
+sucheme-zig は、Zig で実装された R7RS-small 準拠の Scheme インタプリタです。単体の実行ファイルと、WebAssembly を通じてブラウザ上で動くモジュールを、同一のコアから生成します。
 
 ## 状態
 
-設計フェーズが完了し、実装が進んでいます。`zig build run` で REPL が動き、Scheme の式を評価できます。どこまで動くかは [docs/roadmap.md](docs/roadmap.md) の「現在地」が正です。
+開発中です。どの段階まで実装されているかは、[docs/roadmap.md](docs/roadmap.md) の「現在地」が正です。
 
-進捗の単一のソースは [docs/roadmap.md](docs/roadmap.md) です。現在の段階、最新リリース、段階ごとのチェックリストはそこにあります。R7RS の必須識別子のうちインタプリタが束縛しているものの表(段階1の最小版の準拠マトリクス)は [docs/status/](docs/status/) にあります。固定している Zig のバージョンは `.zigversion` が正です。
+## 使い方
 
-同じ数値を README にも書くと必ず食い違うため、ここには転記しません。
+リリースの成果物は、GitHub の Releases から取得できます。各アーカイブには、実行ファイルと第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。最新のリリースは [docs/roadmap.md](docs/roadmap.md) の「現在地」から辿れます。
+
+ソースからは、`.zigversion` が指す版の Zig で、次のようにビルドして実行します。
+
+```sh
+zig build
+zig build run
+```
+
+引数なしの `zig build run` は、標準入力を読む REPL になります。
 
 ## 対応プラットフォーム
 
-| プラットフォーム | ビルド | 自動テストによる動作保証 | そろう段階 |
-| --- | --- | --- | --- |
-| Linux (x86_64) | あり | あり | 0 |
-| Windows (x86_64) | あり | あり | 0 |
-| Linux (aarch64) | あり(クロスコンパイル) | なし | 0 |
-| Windows (aarch64) | あり(クロスコンパイル) | なし | 0 |
-| macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし | 0 |
-| WebAssembly | 段階1 | 段階1(Node.js 上でのエクスポート呼び出し) | 1 |
+| プラットフォーム | ビルド | 自動テストによる動作保証 |
+| --- | --- | --- |
+| Linux (x86_64) | あり | あり |
+| Windows (x86_64) | あり | あり |
+| Linux (aarch64) | あり(クロスコンパイル) | なし |
+| Windows (aarch64) | あり(クロスコンパイル) | なし |
+| macOS (x86_64, aarch64) | あり(クロスコンパイル) | なし |
+| WebAssembly | あり | あり(Node.js 上でのエクスポート呼び出し) |
 
-クロスコンパイルは `zig build -Dtarget=<ターゲット>` で今できます。`zig build dist` は、リリース成果物のターゲットすべての実行ファイルを `zig-out/dist/<ターゲット>/` に作り、`python3 tools/release/package.py` がそこからアーカイブと `SHA256SUMS` を作ります([ADR-0034](docs/adr/0034-release-shape.md))。タグの push で下書きのリリースを作るワークフロー(`release.yml`)があり、最初のリリース v0.1.0 はこれで作りました。WebAssembly のビルドは段階1からです。進捗は [docs/roadmap.md](docs/roadmap.md) で確認してください。
-
-自動テストを実行しているのは `ubuntu-latest` と `windows-latest` のランナー、すなわち x86_64 の Linux と Windows です。aarch64 と macOS は自動テストの対象にしません([ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md)、aarch64 は [ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。
-
-macOS は GitHub Actions の課金単位が他の10倍であるためです。署名と公証も行いません。
-
-aarch64 はランナー自体は使えます。段階1の見直しで、対象に加えないと決めました([ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md))。aarch64 では、ビルドが成功することを手元で確かめただけで、実行はしていません。CI でのビルドは、`zig build dist` を `full.yml` が PR を ready にしたときと手動の起動で、`release.yml` がタグの push で走らせます(全コミットでも `main` への push でも走りません)。v0.1.0 以降のリリースで配る aarch64 の Linux と Windows の実行ファイルは、実行して確かめていないものです。実行して確かめる仕組みは、実行環境が要ると分かった時点で足します。
-
-WebAssembly の自動テストは Node.js 上でエクスポートを呼び出すラウンドトリップテストです。ブラウザ自動化は行わないため、ブラウザ固有の問題は検出されません。
-
-これらの環境で問題が出た場合は issue でお知らせください。リポジトリは private なので([ADR-0020](docs/adr/0020-repository-visibility-private.md))、issue とリリース成果物を扱えるのはアクセス権のある方だけです。
-
-リリース成果物のターゲットは [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) が定めます。WebAssembly は配置しません。PR ごとに CI が成果物(`sucheme-web`)を上げるので、展開してローカルで開いて試す形にします。配置は段階8です([ADR-0021](docs/adr/0021-no-github-pages-defer-hosting.md))。リリースの成果物には、Web UI を `sucheme-web-v<版>.zip` として別に含めます(`zig build dist` と `tools/release/package.py` が組み立て、タグの push で動く `release.yml` が下書きのリリースを作ります)。最新のリリースと成果物は [docs/roadmap.md](docs/roadmap.md) の「現在地」から辿れます。各アーカイブには、第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。
-
-## 特徴として目指すもの
-
-- R7RS-small の16ライブラリすべての実装
-- 衛生的マクロ(`syntax-rules`)、多重起動可能な第一級継続、適切な末尾再帰
-- 完全な数値塔(多倍長整数、有理数、浮動小数点数、複素数)と Unicode 対応
-- 複数行編集と Emacs バインディングを備えた REPL
-- ブラウザ上で動く Web UI
-- 依存パッケージを持たない構成(Zig 標準ライブラリのみ)
+自動テストの範囲の根拠は [ADR-0010](docs/adr/0010-ci-cd-and-release-strategy.md) と [ADR-0033](docs/adr/0033-aarch64-built-but-not-tested.md) にあります。不具合は issue でお知らせください。
 
 ## ドキュメント
 
 | 文書 | 内容 |
 | --- | --- |
-| [docs/manual/](docs/manual/README.md) | sucheme を使う人のための文書の入口(チュートリアル、ユーザーズガイド、リファレンス、プログラム集。順に足している) |
-| [docs/onboarding.md](docs/onboarding.md) | 開発に参加するときの入口。環境の整え方とリポジトリの歩き方 |
+| [docs/manual/](docs/manual/README.md) | 使う人のための文書(チュートリアル、ユーザーズガイド、リファレンス、プログラム集) |
+| [docs/onboarding.md](docs/onboarding.md) | 開発に参加するときの入口 |
 | [docs/roadmap.md](docs/roadmap.md) | 段階、完了条件、現在地 |
-| [docs/plans/0001-sow.md](docs/plans/0001-sow.md) | 作業範囲、成果物、進め方、リスク |
 | [docs/design/](docs/design/) | アーキテクチャと各領域の設計 |
 | [docs/adr/](docs/adr/) | 技術選択と設計判断の記録 |
-| [docs/status/](docs/status/) | R7RS 準拠マトリクス(生成物。段階1の最小版) |
-
-設計の中心となる判断は次の3つです。評価器は明示的な継続を持つ CEK 機械とし([ADR-0004](docs/adr/0004-cek-machine-evaluator.md))、GC は非移動型の正確なマーク・スイープとし([ADR-0003](docs/adr/0003-precise-mark-sweep-gc.md))、コア言語で表現できるものは Scheme で書きます([ADR-0006](docs/adr/0006-library-system-and-scheme-level-stdlib.md))。いずれも WebAssembly を一級の対象とする制約から導かれています。
 
 ## ライセンス
 
-MIT ライセンスです([ADR-0050](docs/adr/0050-relicense-under-mit.md))。条文は [LICENSE](LICENSE) を参照してください。
+MIT ライセンスです。条文は [LICENSE](LICENSE) を参照してください。第三者に由来するもの(R7RS の付録Aの複製と、そこから抽出したもの、取り込んだ準拠スイート、Unicode の表のもとになったデータ)は、この宣言の対象外で、それぞれの条件に従います。対象外の一覧は [LICENSE](LICENSE) が正です。
 
-タグ `v1.0.0` と `v1.1.0-pre.1` の木は、以前の UNLICENSED(全権利保留)の `LICENSE` を持ちます([ADR-0022](docs/adr/0022-unlicensed-proprietary.md))。この2つの成果物は、MIT として配っていません。MIT の成果物は、これより後のタグから作ります。
+## 開発者向け
 
-`tests/vendor/` 以下に置く外部由来のテストスイートは、それぞれの元のライセンス(BSD 3条項)に従います。このディレクトリは、取り込みを行う段階6で作ります(まだありません)。
+開発の進め方は [AGENTS.md](AGENTS.md) にまとめています。
 
-`tools/extract-r7rs-required/appendix-a.html` は R7RS の付録A の逐語コピーです。R7RS 自身が全文または一部の複製を許諾しています。出典と許諾の根拠は [tools/extract-r7rs-required/SOURCE.md](tools/extract-r7rs-required/SOURCE.md) にあります。
+## 免責
 
-`tests/r7rs-required/*.txt` はそのコピーから抽出した R7RS の内容なので、同じ許諾に依拠します。各ファイルが2行目で出典を名乗っています。
-
-`docs/` 以下には R7RS とその他の仕様の逐語引用が含まれます。引用として用いているもので、上の宣言の対象ではありません。
-
-上の宣言は sucheme-zig 自身の成果物に適用されるもので、この節で挙げた第三者由来のものには適用されません。対象外の一覧は [LICENSE](LICENSE) が正です。
-
-## AIコーディングエージェントへの指示
-
-[AGENTS.md](AGENTS.md) が単一のソースです。GitHub Copilot、Claude Code、Codex の共有スキルは [.agents/skills/](.agents/skills/) にあります。
+このソフトウェアは、AI コーディングエージェントとの協働(Agentic Coding)で作られています。コードのすべてを、人間が一行ずつ把握しているわけではありません。そのため、動作や品質は保証できず、利用の結果についても責任を負えません。この点は MIT ライセンスの条文(無保証であること、責任を負わないこと)に従うものであり、ここでも改めて明示します。ご利用は、この前提をご理解のうえでお願いします。
