@@ -86,6 +86,7 @@ fn portFailure(e: port_mod.Error) Error {
         error.PortClosed => error.PortClosed,
         error.WriteFailed => error.WriteFailed,
         error.Io => error.FileError,
+        error.WouldWait => error.WouldWait,
         error.HeapLimit, error.OutOfMemory => |heap_error| heap_error,
     };
 }
@@ -327,10 +328,19 @@ fn peekChar(services: *const Services, args: []const Value) Error!Value {
 /// Checks that the input port `p` is open, without reading past anything.
 /// 開閉の検査は、1つを覗く関数に任せる。覗くだけで位置は動かない。
 fn checkReadable(services: *const Services, p: *Port) Error!void {
+    // Why: ホストの入力を覗くと、空のときに待つ。何も読まない呼び出し(`(read-string 0)`)や
+    // `char-ready?` が待つと、待たずに答える約束(R7RS 6.13.2)に反する。開閉だけを見る。
+    if (fromHost(services, p)) return if (p.open) {} else error.PortClosed;
     switch (p.element) {
         .textual => _ = port_mod.peekChar(services.heap, p) catch |e| return portFailure(e),
         .binary => _ = port_mod.peekByte(services.heap, p) catch |e| return portFailure(e),
     }
+}
+
+/// Whether `p` is the console's input port and the console's input is the host's, which
+/// may not have what a read asks for yet.
+fn fromHost(services: *const Services, p: *const Port) bool {
+    return p.backing == .console and port_mod.consoleFromHost(services.heap);
 }
 
 /// Where the procedures that read many characters or bytes collect them before they
@@ -375,6 +385,7 @@ const Collected = struct {
 /// 読めないバイトが、検査されないまま文字列に入る。ためたものは、文字を符号化し直したもの
 /// なので、妥当な UTF-8 である(ADR-0008)。
 fn readText(services: *const Services, p: *Port, limit: usize, line: bool) Error!?Value {
+    if (fromHost(services, p)) try awaitText(services, p, limit, line);
     var collected: Collected = .init(services.heap);
     defer collected.deinit();
     var count: usize = 0;
@@ -394,6 +405,28 @@ fn readText(services: *const Services, p: *Port, limit: usize, line: bool) Error
     return .fromString(try services.heap.createString(collected.bytes.items));
 }
 
+/// Fails with `WouldWait` when `readText` with the same arguments would use up what the
+/// host's console input holds before it finished, without reading past anything.
+/// Why: 入力待ちは、何も消費しないときにだけ、機械が同じ呼び出しをやり直せる(`WouldWait`)。
+/// `readText` は文字を1つずつ読み進めるので、途中で待つと、読んだ分が失われる。読み始める前に、
+/// 渡された分で終わらせられるか(行の終わり、`limit` 文字、または終端)を、位置を動かさずに
+/// 確かめる。復帰(`\r`)は、次の文字が改行かを見てから行を終えるので、復帰が末尾なら待つ。
+fn awaitText(services: *const Services, p: *const Port, limit: usize, line: bool) Error!void {
+    if (!port_mod.consoleWaits(services.heap)) return;
+    const bytes = port_mod.pending(services.heap, p);
+    var i: usize = 0;
+    var count: usize = 0;
+    while (count < limit) : (count += 1) {
+        if (i == bytes.len) return error.WouldWait;
+        const width = std.unicode.utf8ByteSequenceLength(bytes[i]) catch 1;
+        if (i + width > bytes.len) return error.WouldWait;
+        const c = std.unicode.utf8Decode(bytes[i..][0..width]) catch port_mod.replacement_char;
+        if (line and c == '\n') return;
+        if (line and c == '\r') return if (i + width == bytes.len) error.WouldWait else {};
+        i += width;
+    }
+}
+
 /// `(read-line port)`: the characters up to the end of the line, without the end, or an
 /// end-of-file object when nothing is left (R7RS 6.13.2).
 /// 行の終わりは、改行、復帰、復帰に続く改行のどれかである。
@@ -408,6 +441,13 @@ fn readLine(services: *const Services, args: []const Value) Error!Value {
 fn isCharReady(services: *const Services, args: []const Value) Error!Value {
     const p = try argPort(services, args, 0, .input, .textual);
     try checkReadable(services, p);
+    if (fromHost(services, p) and port_mod.consoleWaits(services.heap)) {
+        // ホストの入力は、1文字が手元にそろっているときだけ、待たずに読める。
+        const bytes = port_mod.pending(services.heap, p);
+        if (bytes.len == 0) return .fromBool(false);
+        const width = std.unicode.utf8ByteSequenceLength(bytes[0]) catch 1;
+        return .fromBool(width <= bytes.len);
+    }
     return .fromBool(true);
 }
 
