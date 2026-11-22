@@ -228,7 +228,7 @@
 
 - [ ] `read` による対話
 - [ ] エラー位置の表示と処理の中断。段階6から、位置情報の残り(2)(コアIRの節点への位置の複写と、実行時の誤りへの位置の表示)を送った(2026-11-04 に承認した。[計画書 0028](plans/0028-phase6-conformance.md))
-- [ ] 編集の補助とサンプルの充実
+- [x] 編集の補助とサンプルの充実
 - [ ] Web UI の配置先の選定と配置([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。静的ファイルを `application/wasm` で配信できるサービスを選ぶ。リポジトリが public なので([ADR-0052](adr/0052-repository-visibility-public-again.md))、GitHub Pages も候補に入る
 
 完了条件: ブラウザで R7RS のサンプルが一通り動く。配置した URL でも動く。リリース v1.2.0 を出す。

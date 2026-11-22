@@ -13,6 +13,7 @@
   --danger-fg: #ffffff;
   --error-text: #b3261e;
   --focus: #0b57d0;
+  --match: #b9d2fb;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -28,6 +29,7 @@
     --danger-fg: #1a0a09;
     --error-text: #f2b8b5;
     --focus: #8ab4f8;
+    --match: #3b5483;
   }
 }
 
@@ -78,6 +80,7 @@ label {
 }
 
 textarea,
+.editor-mirror,
 pre {
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
   /* 16px 未満だと、iOS が入力欄にフォーカスしたとき拡大する。 */
@@ -85,16 +88,50 @@ pre {
   line-height: 1.5;
 }
 
-textarea {
-  display: block;
-  width: 100%;
-  min-height: 9rem;
-  padding: 0.5rem 0.75rem;
+/* 入力欄。括弧の対応の強調は、textarea の後ろに重ねた鏡の層(.editor-mirror)に描く。
+   textarea の中の文字は、部分的に色を変えられないためである。鏡の層は、textarea と同じ
+   文字と余白と折り返しにして、同じ位置に文字が並ぶようにする(文字そのものは透明で、強調の背景だけが見える)。 */
+.editor {
+  position: relative;
   background: var(--surface);
-  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+textarea,
+.editor-mirror {
+  padding: 0.5rem 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+  scrollbar-gutter: stable;
+}
+
+textarea {
+  display: block;
+  position: relative;
+  width: 100%;
+  min-height: 9rem;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  border-radius: 6px;
   resize: vertical;
+  overflow: auto;
+}
+
+.editor-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+}
+
+.editor-mirror mark {
+  color: transparent;
+  background: var(--match);
+  border-radius: 2px;
 }
 
 .actions {
