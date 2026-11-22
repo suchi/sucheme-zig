@@ -1598,6 +1598,33 @@ test("runEvaluation reports an error after an input, with the echo kept in the o
   assert.ok(result.output.startsWith("5\nerror: "), result.output);
 });
 
+test("runEvaluation does not ask for input when a stop was requested before the wait", async () => {
+  const s = await loadSucheme();
+  let checks = 0;
+  const result = await runEvaluation(s, W + '(display "q? ") (read-line)', {
+    // 歩の前の2回の確認では要求が無く、読み取りが待ってから、要求が立つ。
+    shouldStop: () => checks++ >= 2,
+    yieldControl: async () => {},
+    requestInput: async () => assert.fail("must not ask"),
+  });
+  assert.deepEqual(result, { status: OK, output: "q? ", stopped: true });
+  assert.deepEqual(s.eval("(+ 1 2)"), { status: OK, output: "3\n" });
+});
+
+test("runEvaluation ends with the status and the explanation when the machine refuses the input it was given", async () => {
+  // 入力を保持できない(-1)ときを、本物の WASM では起こしにくいので、同じ形の替え玉で試す。
+  const refused = { status: Status.SCHEME_ERROR, output: "error: heap limit exceeded\n" };
+  const fake = {
+    begin: () => ({ status: Status.CONTINUE, output: "" }),
+    step: () => ({ status: Status.WAITING_INPUT, output: "q? " }),
+    provideInput: () => refused,
+    provideEof: () => assert.fail("not the end of input"),
+    abort: () => assert.fail("the machine already dropped the evaluation"),
+  };
+  const result = await runEvaluation(fake, "x", { ...noWait, requestInput: async () => ({ text: "abc\n" }) });
+  assert.deepEqual(result, { status: Status.SCHEME_ERROR, output: "q? abc\nerror: heap limit exceeded\n", stopped: false });
+});
+
 // 実行の進め方(web/runner.mjs)。Sucheme(web/sucheme.js)を通して、本物の WASM で試す。
 async function loadSucheme() {
   const s = await Sucheme.load(readFileSync(wasmPath));
