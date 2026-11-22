@@ -86,3 +86,4 @@
 | [0050](0050-relicense-under-mit.md) | ライセンスを MIT にする | 採用 | 2026-11-20 |
 | [0051](0051-narrow-stage-7-and-release-v1-1-0.md) | 段階7の範囲を改め、識別子の補完と差分読み取りを外して v1.1.0 を出す | 採用 | 2026-11-21 |
 | [0052](0052-repository-visibility-public-again.md) | リポジトリを public にする | 採用 | 2026-11-21 |
+| [0053](0053-resumable-machine-step-budget.md) | 機械は歩数の予算で制御を戻し、停止中のレジスタを GC のルートにして再開できる | 採用 | 2026-11-21 |
