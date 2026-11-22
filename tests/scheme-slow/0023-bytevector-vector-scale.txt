@@ -8,10 +8,10 @@
 
 # 上限を超える大きさのバイトベクタとベクタ。
 (make-bytevector 100000000 0)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-vector 10000000 0)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 # 上限に収まる大きさ。
 (bytevector-length (make-bytevector 30000000 7))
@@ -25,13 +25,13 @@ error: heap limit exceeded
 30000000
 
 (define b (make-bytevector 10000000 1)) (bytevector-length (bytevector-append b b b b b b b b b b))
-error: heap limit exceeded
+error: 1:60: heap limit exceeded
 
 (define v (make-vector 500000 1)) (vector-length (vector-append v v v))
 1500000
 
 (define v (make-vector 500000 1)) (vector-length (vector-append v v v v v v v v v v))
-error: heap limit exceeded
+error: 1:50: heap limit exceeded
 
 # UTF-8 との変換。
 (string-length (utf8->string (make-bytevector 20000000 97)))

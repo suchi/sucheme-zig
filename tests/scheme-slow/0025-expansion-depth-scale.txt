@@ -9,19 +9,19 @@
 
 # 引数のある lambda。
 (define-syntax g (syntax-rules () ((_ x) (lambda (y) (g y))))) (g 1)
-error: implementation restriction: scopes are nested more than 10000 deep
+error: 1:64: implementation restriction: scopes are nested more than 10000 deep
 
 # 本体の定義の lambda。
 (define-syntax h (syntax-rules () ((_) (lambda () (define (k) (h)) k)))) (h)
-error: implementation restriction: scopes are nested more than 10000 deep
+error: 1:74: implementation restriction: scopes are nested more than 10000 deep
 
 # let-syntax の本体の定義が作るフレーム。
 (define-syntax s (syntax-rules () ((_) (let-syntax () (define x (s)) x)))) (s)
-error: implementation restriction: scopes are nested more than 10000 deep
+error: 1:76: implementation restriction: scopes are nested more than 10000 deep
 
 # フレームを作らない let-syntax と letrec-syntax。
 (define-syntax t (syntax-rules () ((_) (let-syntax () (t))))) (t)
-error: implementation restriction: scopes are nested more than 10000 deep
+error: 1:63: implementation restriction: scopes are nested more than 10000 deep
 
 (define-syntax u (syntax-rules () ((_) (letrec-syntax () (u))))) (u)
-error: implementation restriction: scopes are nested more than 10000 deep
+error: 1:66: implementation restriction: scopes are nested more than 10000 deep

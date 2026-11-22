@@ -23,7 +23,7 @@
 # 尾が () でない長い鎖。`list?` は偽、`length` は型のエラーになる。
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (define improper (build 100000 0)) (list (list? improper) (pair? improper)) (length improper)
 (#f #t)
-error: wrong type of argument to length (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 ...
+error: 1:146: wrong type of argument to length (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 ...
 
 # 深さ10万の入れ子の `equal?`。car の方向の入れ子は、比べるたびに作業スタックが
 # 1つ深くなる。Zig の再帰なら、ここでスタックを使い切る。底の文字列は内容で比べる。
