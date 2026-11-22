@@ -3,8 +3,11 @@
 // 状態は loading(WASM を読み込み中)・ready(入力を受け付ける)・running(評価中)の3つ。
 // 「停止」は Worker を捨てて作り直す(worker.terminate())。作り直した処理系は初期状態なので、
 // 定義はすべて失われる。
+//
+// 画面の文言は英語にする(AGENTS.md の言語ルール)。結果の説明は errors.mjs が作る。
 
 import { Status } from "./sucheme.js";
+import { describeResult } from "./errors.mjs";
 import { samples } from "./samples.mjs";
 import { encodeFragment, decodeFragment } from "./share.mjs";
 
@@ -14,6 +17,10 @@ const runButton = document.getElementById("run");
 const stopButton = document.getElementById("stop");
 const resetButton = document.getElementById("reset");
 const output = document.getElementById("output");
+const errorPanel = document.getElementById("error");
+const errorTitle = document.getElementById("error-title");
+const errorMessage = document.getElementById("error-message");
+const errorHint = document.getElementById("error-hint");
 const versionLabel = document.getElementById("version");
 const sampleSelect = document.getElementById("samples");
 const shareButton = document.getElementById("share");
@@ -29,9 +36,31 @@ let phase = "loading";
 let nextId = 1;
 let runningId = 0;
 
+// 状態の知らせ(読み込み中、停止など)を出力欄に出す。エラーの欄は閉じる。
 function show(text, status = "ok") {
   output.textContent = text;
   output.dataset.status = status;
+  errorPanel.hidden = true;
+}
+
+// 評価の結果を出す。プログラムの出力は出力欄に、エラーの説明は別の欄に出す。
+// エラーの前に出た出力は、出力欄に残る。
+function showResult(status, text, exitCode) {
+  const { output: out, error } = describeResult(status, text, exitCode);
+  output.textContent = out === "" && error === null ? "(no output)" : out;
+  output.dataset.status = error === null ? "ok" : "partial";
+  if (error === null) {
+    errorPanel.hidden = true;
+    return;
+  }
+  errorTitle.textContent = error.title;
+  errorMessage.textContent = error.message;
+  errorMessage.hidden = error.message === "";
+  errorHint.textContent = error.hint ?? "";
+  errorHint.hidden = error.hint === null;
+  // 終了は失敗ではないので、エラーの色にしない。
+  errorPanel.dataset.kind = status === Status.EXITED ? "exit" : "error";
+  errorPanel.hidden = false;
 }
 
 function setPhase(next) {
@@ -46,25 +75,12 @@ function openedFromFile() {
   return location.protocol === "file:";
 }
 
-const fileHint = "ローカルのサーバ経由で開いてください: node web/serve.mjs";
-
-function describeStatus(status, text) {
-  switch (status) {
-    case Status.OK:
-      return { text: text === "" ? "(出力なし)" : text, kind: "ok" };
-    case Status.SCHEME_ERROR:
-    case Status.INVALID_UTF8:
-      // 説明は出力に入っている。そのまま見せる。
-      return { text, kind: "error" };
-    default:
-      return { text: `${text}状態コード ${status}`, kind: "error" };
-  }
-}
+const fileHint = "Open this page through a local server: node web/serve.mjs";
 
 function startWorker() {
   if (worker !== null) worker.terminate();
   setPhase("loading");
-  versionLabel.textContent = "読み込み中…";
+  versionLabel.textContent = "Loading…";
   if (openedFromFile()) {
     show(fileHint, "error");
     return;
@@ -73,7 +89,7 @@ function startWorker() {
   try {
     w = new Worker(workerUrl, { type: "module" });
   } catch (e) {
-    show(`Worker を作れませんでした: ${e.message}\n${fileHint}`, "error");
+    show(`Could not create the worker: ${e.message}\n${fileHint}`, "error");
     return;
   }
   worker = w;
@@ -85,30 +101,29 @@ function startWorker() {
       case "ready":
         versionLabel.textContent = m.version;
         setPhase("ready");
-        if (output.dataset.status === "busy") show("準備ができました。");
+        if (output.dataset.status === "busy") show("Ready.");
         break;
       case "result": {
         if (m.id !== runningId) break;
-        const shown = describeStatus(m.status, m.output);
-        show(shown.text, shown.kind);
+        showResult(m.status, m.output, m.exitCode);
         setPhase("ready");
         break;
       }
       case "reset-done":
-        show(m.status === Status.OK ? "状態を初期化しました。" : `初期化に失敗しました(状態コード ${m.status})。`,
+        show(m.status === Status.OK ? "State was reset." : `Reset failed (status code ${m.status}).`,
           m.status === Status.OK ? "ok" : "error");
         setPhase("ready");
         break;
       case "error":
         if (m.phase === "init") {
-          show(`WebAssembly の読み込みに失敗しました: ${m.message}\n` +
-            "zig build wasm で sucheme.wasm を作り、web/ と同じ場所から配っているか確認してください。\n" + fileHint, "error");
-          versionLabel.textContent = "読み込み失敗";
+          show(`Failed to load WebAssembly: ${m.message}\n` +
+            "Check that sucheme.wasm was built with zig build wasm and is served from the same place as web/.\n" + fileHint, "error");
+          versionLabel.textContent = "Load failed";
           // 入力は受け付けない(loading のまま)。
         } else {
           // 評価中の異常終了。インスタンスは壊れているので、作り直す。
           startWorker();
-          show(`処理系が異常終了したため、状態を初期化しました: ${m.message}`, "error");
+          show(`The interpreter crashed, so its state was reset: ${m.message}`, "error");
         }
         break;
     }
@@ -118,16 +133,16 @@ function startWorker() {
   w.onerror = (event) => {
     if (w !== worker) return;
     event.preventDefault();
-    show(`Worker の読み込みに失敗しました: ${event.message || "原因不明"}\n${fileHint}`, "error");
-    versionLabel.textContent = "読み込み失敗";
+    show(`Failed to load the worker: ${event.message || "unknown cause"}\n${fileHint}`, "error");
+    versionLabel.textContent = "Load failed";
     setPhase("loading");
   };
   w.onmessageerror = () => {
     if (w !== worker) return;
-    show("Worker からのメッセージを読み取れませんでした。", "error");
+    show("Could not read a message from the worker.", "error");
   };
 
-  show("WebAssembly を読み込んでいます…", "busy");
+  show("Loading WebAssembly…", "busy");
   w.postMessage({ type: "init", wasmUrl });
 }
 
@@ -136,7 +151,7 @@ form.addEventListener("submit", (event) => {
   if (phase !== "ready") return;
   runningId = nextId++;
   setPhase("running");
-  show("実行中…", "busy");
+  show("Running…", "busy");
   worker.postMessage({ type: "eval", id: runningId, source: source.value });
 });
 
@@ -144,7 +159,7 @@ stopButton.addEventListener("click", () => {
   if (phase !== "running") return;
   startWorker();
   // startWorker が出す「読み込み中」より、停止の知らせを優先する。
-  show("停止しました。状態は初期化されました", "ok");
+  show("Stopped. The state was reset.", "ok");
 });
 
 resetButton.addEventListener("click", () => {
@@ -184,28 +199,28 @@ function restoreFromFragment() {
   if (location.hash === "") return;
   const restored = decodeFragment(location.hash);
   if (restored === null) {
-    shareStatus.textContent = "共有リンクを読み取れなかったので、入力欄はそのままです。";
+    shareStatus.textContent = "The share link could not be read, so the input is unchanged.";
     return;
   }
   source.value = restored;
-  shareStatus.textContent = "共有リンクから入力を戻しました。内容を確かめてから「実行」を押してください。";
+  shareStatus.textContent = "The input was restored from the share link. Check it, then press Run.";
 }
 
 shareButton.addEventListener("click", async () => {
   const fragment = encodeFragment(source.value);
   if (fragment === null) {
-    shareStatus.textContent = "入力が長すぎて、共有リンクにできません。";
+    shareStatus.textContent = "The input is too long for a share link.";
     return;
   }
   history.replaceState(null, "", fragment);
   shareUrl.value = location.href;
   try {
     await navigator.clipboard.writeText(location.href);
-    shareStatus.textContent = "リンクをコピーしました。";
+    shareStatus.textContent = "Link copied.";
   } catch {
     // クリップボードが使えない文脈では、欄を選んで、手でコピーしてもらう。
     shareUrl.select();
-    shareStatus.textContent = "欄のリンクをコピーしてください。";
+    shareStatus.textContent = "Copy the link from the field.";
   }
 });
 

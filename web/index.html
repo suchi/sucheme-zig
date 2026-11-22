@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,36 +9,41 @@
 </head>
 <body>
   <main>
-    <h1>sucheme <small id="version" aria-label="バージョン">読み込み中…</small></h1>
+    <h1>sucheme <small id="version" aria-label="Version">Loading…</small></h1>
 
     <form id="form" autocomplete="off">
       <div class="samples">
-        <label for="samples">サンプル</label>
+        <label for="samples">Samples</label>
         <select id="samples">
-          <option value="">選んでください</option>
+          <option value="">Choose a sample</option>
         </select>
       </div>
 
-      <label for="source">入力(Scheme の式)</label>
+      <label for="source">Input (Scheme expressions)</label>
       <textarea id="source" name="source" rows="8" spellcheck="false" autocapitalize="off" autocorrect="off">(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
 (fact 10)</textarea>
 
       <div class="actions">
-        <button type="submit" id="run" class="primary" disabled>実行</button>
-        <button type="button" id="stop" class="danger" disabled>停止</button>
-        <button type="button" id="reset" disabled>リセット</button>
-        <span class="hint">Ctrl+Enter(Mac は Cmd+Enter)でも実行できます</span>
+        <button type="submit" id="run" class="primary" disabled>Run</button>
+        <button type="button" id="stop" class="danger" disabled>Stop</button>
+        <button type="button" id="reset" disabled>Reset</button>
+        <span class="hint">Ctrl+Enter (Cmd+Enter on a Mac) also runs the input</span>
       </div>
 
       <div class="share">
-        <button type="button" id="share">共有リンクを作る</button>
-        <input type="text" id="share-url" readonly aria-label="共有リンク" placeholder="ここに共有リンクが出ます">
+        <button type="button" id="share">Create share link</button>
+        <input type="text" id="share-url" readonly aria-label="Share link" placeholder="The share link appears here">
         <span id="share-status" class="hint" role="status"></span>
       </div>
     </form>
 
-    <h2 id="output-label">出力</h2>
-    <pre id="output" aria-labelledby="output-label" aria-live="polite" data-status="idle">WebAssembly を読み込んでいます…</pre>
+    <h2 id="output-label">Output</h2>
+    <pre id="output" aria-labelledby="output-label" aria-live="polite" data-status="idle">Loading WebAssembly…</pre>
+    <section id="error" class="error-panel" role="alert" hidden>
+      <h2 id="error-title"></h2>
+      <pre id="error-message"></pre>
+      <p id="error-hint" class="hint"></p>
+    </section>
   </main>
 
   <script>
@@ -46,9 +51,9 @@
     // app.js が動かない場合でも案内が出るように、読み込みに頼らない classic script で書く。
     if (location.protocol === "file:") {
       var out = document.getElementById("output");
-      out.textContent = "ローカルのサーバ経由で開いてください: node web/serve.mjs";
+      out.textContent = "Open this page through a local server: node web/serve.mjs";
       out.setAttribute("data-status", "error");
-      document.getElementById("version").textContent = "未接続";
+      document.getElementById("version").textContent = "Not connected";
     }
   </script>
   <script type="module" src="./app.js"></script>

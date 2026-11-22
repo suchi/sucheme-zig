@@ -12,7 +12,7 @@
 | 項目 | 状態 |
 | --- | --- |
 | 計画書 | 合意済み(2026-11-21)。決定を、スライスの完了条件と roadmap に写した |
-| スライスの実装 | 8s の実装を終えた(2つの PR)。残りは未着手(8a から 8z) |
+| スライスの実装 | 8s の実装を終えた(2つの PR)。8a は実装を終えた(進捗の表を参照)。残りは未着手(8b から 8z) |
 
 ## 次にやること
 
@@ -85,7 +85,7 @@ v1.1.0 の時点の Web UI は、次の制約を持つ(いずれも確かめた�
 | スライス | 完了条件 | 所有するファイル | 階層 | 前提 | 並行 |
 | --- | --- | --- | --- | --- | --- |
 | 8s 段階8の開始 | 版を `1.2.0-dev` に進める PR と、`current_stage` を 8 に上げる PR(別々)。`check-docs` が新しい行を要求しないことを確かめる | `build.zig.zon`、`build.zig`(`current_stage`)、roadmap の「現在地」、handoff | T1 | この計画書の合意 | 8a から 8d と並行できる |
-| 8a エラー表示 | 出力とエラーの説明を分けて表示する。エラーの前に出た出力を残す。状態コードごとの説明を `web/errors.mjs` に持ち、Node から試せる。画面の文言を、言語の表(UI ラベルは英語)に揃える | `web/errors.mjs`(新規)、`web/app.js`、`web/style.css`、`web/index.html`、`tools/test-wasm/main.mjs` | T2 | なし | 8b から 8d と並行できる |
+| 8a エラー表示 | 出力とエラーの説明を分けて表示する。エラーの前に出た出力を残す。状態コードごとの説明を `web/errors.mjs` に持ち、Node から試せる。画面の文言を、言語の表(UI ラベルは英語)に揃える | `web/errors.mjs`(新規)、`web/app.js`、`web/style.css`、`web/index.html`、`web/worker.js`(終了コードの受け渡し)、`tools/test-wasm/main.mjs`、`docs/design/platform-and-web.md`、`docs/manual/guide/06-web-ui.md` | T2 | なし | 8b から 8d と並行できる |
 | 8b 停止の操作 | `Esc` で停止できる。経過時間を表示する。停止すると、定義が失われることを、停止の前後に明示する(8e-2 のあと、定義が残る場合の表示に差し替える) | `web/app.js`、`web/index.html` | T1 | なし | 8a、8c、8d と並行できる |
 | 8c 編集の補助 | 入力欄で、括弧の対応の強調、`Tab` の字下げ、`Ctrl-Enter` での実行(済み)、実行した入力の履歴(上下の移動)ができる。括弧の走査は `web/parens.mjs` に置き、Zig の `src/line_editor/parens.zig` と同じ入力の一覧で試す(一覧は `tests/parens/` に置き、両方が読む) | `web/parens.mjs`(新規)、`web/history.mjs`(新規)、`tests/parens/`(新規)、`web/app.js`、`web/index.html`、`web/style.css`、`tools/test-wasm/main.mjs`、`src/line_editor/parens.zig` のテスト | T2 | なし(7e は main にある) | 8a、8b、8d と並行できる |
 | 8d サンプルの充実 | R7RS-small の機能を使うサンプルを足す(段階4から6が済んだので、数値塔、文字列、ポート、`dynamic-wind`、`call/cc`、ライブラリを含められる)。各サンプルが期待どおりに評価されることを `tools/test-wasm/main.mjs` が検査する。決定6に従い、`docs/manual/programs/` のうち、ファイル、コマンドライン、標準入力を使わないものを、同じ WASM で走らせて `.out` と比べる検査を `zig build test-wasm` に足す(新しい step と表の行は足さない)。どの例が WASM で動くかは未確認で、出力が食い違う例は、除外の一覧に理由を記録する | `web/samples.mjs`、`tools/test-wasm/main.mjs` | T1(サンプル)、T2(検査) | なし | 8a から 8c と並行できる |
@@ -239,5 +239,6 @@ flowchart TD
 | この計画書 | 合意済み(2026-11-21。決定8点) | - |
 | 8s(版) | `build.zig.zon` の `.version` を `1.1.0` から `1.2.0-dev` に進めた。直前の開発版(`1.1.0-dev`)の前例(818e351)に倣う。roadmap の「現在地」と handoff を、段階8の開始に合わせた | - |
 | 8s(`current_stage`) | `build.zig` の `current_stage` を 7 から 8 に上げた。`zig build check-docs` が通り、CI に要求される行は増えない(表に段階8の行が無いため) | - |
+| 8a | 出力とエラーの説明を、別の欄に分けた(`web/errors.mjs`)。エラーの前の出力は残る。状態コードごとの見出しと次の操作を持ち、`exit` は終了コード付きで、エラーとは別の色で知らせる。画面の文言を英語にした。Node から、`splitError` と `describeResult` を、状態コードごとの文言まで固定して試す。確かめたこと: 検証コマンドの「全コミット」の行、ミューテーション(区切りの位置、状態コードごとの文言)。残っていること: 画面の見え方と操作は、手で確かめていない(決定8)。出力と説明の境目は、説明が `error: ` を含むと誤る(限界の記録のテストがある。厳密にするには `src/wasm.zig` の変更が要り、行と桁の表示を含めて 8g-2 で扱う)。`web/worker.js` の `exitCode` の受け渡しは、Node から試せず、テストで固定していない | - |
 | 8d | サンプルを5つ足した(数値塔、文字列、文字列ポート、dynamic-wind、ライブラリ)。プログラム集のうち、`.args` `.in` `.files/` を持たないものを WASM で走らせ、`.out` と比べる検査を `test-wasm` に足した。WASM で食い違う5本は `tools/test-wasm/main.mjs` の除外の一覧に理由つきで置き、一覧に古い項目が残らないことも検査する。食い違いの理由は、WASM の入口がトップレベルの式の値を出力に足すこと(4本)と、ファイルの表が無いこと(1本)である | - |
-| 8a から 8c、8e から 8z | 未着手 | - |
+| 8b、8c、8e から 8z | 未着手 | - |
