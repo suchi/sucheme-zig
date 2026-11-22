@@ -19,6 +19,7 @@ pub const version = build_options.version;
 
 /// The GC heap, and the options that bound it.
 pub const heap = @import("heap.zig");
+pub const host_input = @import("host_input.zig");
 
 const reader = @import("reader.zig");
 const positions_mod = @import("positions.zig");
@@ -118,6 +119,12 @@ pub const Interpreter = struct {
     /// REPL は、行を読むのと同じ読み手を置く(src/main.zig の `repl`)。プログラムの `read` は、
     /// REPL がまだ読んでいない行から読む。ファイルの実行は、標準入力を置く(suchi/sucheme-zig#230)。
     console_in: ?*std.Io.Reader,
+    /// What the host gave the console to read, which `provideInput` and `provideEof` add to.
+    /// 評価をまたいで残る。読まれなかった分は、次の評価が読む。終端は、`deinit` まで残る。
+    console_host: host_input.HostInput,
+    /// Whether the console's input is `console_host`, rather than `console_in`: a read that
+    /// finds it empty waits for the host (WASM; `useHostInput`).
+    console_host_attached: bool,
     /// The evaluation `beginEval` started and `stepEval` has not finished, or null.
     /// インタプリタと同じく、その場から動かさない(位置の表と機械が、この中を指す)。
     eval: ?Eval,
@@ -137,6 +144,7 @@ pub const Interpreter = struct {
         previous_sink: ?*std.Io.Writer,
         previous_error_sink: ?*std.Io.Writer,
         previous_input: ?*std.Io.Reader,
+        previous_host: ?*host_input.HostInput,
     };
 
     /// How `stepEval` gave control back.
@@ -148,7 +156,8 @@ pub const Interpreter = struct {
         /// The request in `Context.interrupt` was seen; `stepEval` goes on from here, or
         /// `abortEval` drops the evaluation.
         interrupted,
-        /// A read has no input yet (slice 8f-1; not returned yet).
+        /// A read has no input yet. `provideInput` or `provideEof` gives some, and `stepEval`
+        /// then makes the same read again (`Machine.Outcome.needs_input`, ADR-0055).
         needs_input,
     };
 
@@ -230,6 +239,8 @@ pub const Interpreter = struct {
         self.console_out = null;
         self.console_err = null;
         self.console_in = null;
+        self.console_host = .{};
+        self.console_host_attached = false;
         self.eval = null;
     }
 
@@ -258,6 +269,8 @@ pub const Interpreter = struct {
     }
 
     pub fn deinit(self: *Interpreter) void {
+        // 入力の領域は、ヒープの常駐の割り当て器から取ったので、ヒープより先に返す。
+        self.console_host.deinit(self.ctx.heap.residentAllocator());
         self.diagnostic_buffer.deinit(self.arena.child_allocator);
         self.ctx.deinit();
         self.arena.deinit();
@@ -317,12 +330,14 @@ pub const Interpreter = struct {
             .previous_sink = self.ctx.console.sink,
             .previous_error_sink = self.ctx.console.error_sink,
             .previous_input = self.ctx.heap.console_input,
+            .previous_host = self.ctx.heap.console_host,
         };
         const e = &self.eval.?;
         errdefer self.endEval();
         self.ctx.console.sink = self.console_out orelse out;
         self.ctx.console.error_sink = self.console_err;
         self.ctx.heap.console_input = self.console_in;
+        self.ctx.heap.console_host = if (self.console_host_attached) &self.console_host else null;
         e.reader.fold_case = self.fold_case;
         self.ctx.positions = &e.table;
         if (self.file_name) |file| e.recording = .{ .table = &e.table, .file = try e.table.addFile(file) };
@@ -372,6 +387,7 @@ pub const Interpreter = struct {
         self.ctx.console.sink = e.previous_sink;
         self.ctx.console.error_sink = e.previous_error_sink;
         self.ctx.heap.console_input = e.previous_input;
+        self.ctx.heap.console_host = e.previous_host;
         self.eval = null;
     }
 
@@ -414,8 +430,34 @@ pub const Interpreter = struct {
             const node = expand.expand(&self.ctx, e.arena, form) catch |err| return self.located(err, table, form);
             // 形式ごとに新しい機械で始める。`peak_depth` と呼び直しの印を、形式をまたいで残さない。
             e.machine = .init(&self.ctx, e.arena);
+            // Why: 入力待ちで制御を戻せるのは、`stepEval` のように、呼び直せる呼び出し元だけである。
+            // `evalPrint` は、完了まで回すので、待てない(待つ読み取りは Scheme の誤りになる)。
+            e.machine.suspendable = watch;
             e.machine.begin(node);
         }
+    }
+
+    /// Makes the console's input the host's: a read that finds nothing left waits for
+    /// `provideInput`, until `provideEof` says there is no more.
+    /// ブラウザ(WASM)が使う。ネイティブは、標準入力の読み手(`console_in`)を置く。
+    pub fn useHostInput(self: *Interpreter) void {
+        self.console_host_attached = true;
+    }
+
+    /// Gives the console's input `bytes`, which must be valid UTF-8 (the caller checks).
+    /// 領域はヒープの上限に数える。収まらなければ `HeapLimit` で、入力は変わらない。
+    /// 終端のあとに渡した分は捨てる(`HostInput.provide`)。
+    pub fn provideInput(self: *Interpreter, bytes: []const u8) error{ HeapLimit, OutOfMemory }!void {
+        const h = &self.ctx.heap;
+        h.external_refused = false;
+        self.console_host.provide(h.residentAllocator(), bytes) catch
+            return if (h.external_refused) error.HeapLimit else error.OutOfMemory;
+    }
+
+    /// Says that the console's input has no more: once what is held is read, every read
+    /// gets the end.
+    pub fn provideEof(self: *Interpreter) void {
+        self.console_host.end();
     }
 
     /// The message for the error the last `evalPrint` returned.
@@ -791,6 +833,281 @@ test "the step limit ends a stepped evaluation with StepLimit and a description"
         };
     }
     try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
+}
+
+// ---- 入力待ち(スライス 8f-1、ADR-0055) ----
+
+/// What the host gives when a read waits: some bytes, or the end.
+const Feed = union(enum) { text: []const u8, eof };
+
+/// One evaluation of a waiting test: its input, what the host gives each time a read waits,
+/// the output it writes, and how many times it waits.
+const Round = struct { src: []const u8, feeds: []const Feed = &.{}, out: []const u8, waits: usize };
+
+/// Evaluates `round` `budget` steps at a time, gives it `feeds` one at a time whenever a read
+/// waits, and collects at every pause, so that only the registers that the machine parked
+/// keep what the call that waited needs. Returns how many times it waited.
+fn runRound(interp: *Interpreter, arena: std.mem.Allocator, round: Round, budget: u64, out: *std.Io.Writer) !usize {
+    try interp.beginEval(arena, round.src, out);
+    var next: usize = 0;
+    var waits: usize = 0;
+    while (true) {
+        const status = interp.stepEval(budget) catch |e| {
+            std.debug.print("{s}: {s}\n", .{ round.src, interp.diagnostic() });
+            return e;
+        };
+        switch (status) {
+            .done => return waits,
+            .more => interp.ctx.collectIdle(),
+            .interrupted => return error.TestUnexpectedResult,
+            .needs_input => {
+                waits += 1;
+                interp.ctx.collectIdle();
+                if (next == round.feeds.len) return error.TestUnexpectedResult;
+                switch (round.feeds[next]) {
+                    .text => |bytes| try interp.provideInput(bytes),
+                    .eof => interp.provideEof(),
+                }
+                next += 1;
+            },
+        }
+    }
+}
+
+/// Runs the rounds in one interpreter whose console input is the host's, for each budget.
+fn expectRounds(rounds: []const Round) !void {
+    for ([_]u64{ 1, 3, 1000 }) |budget| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        var interp: Interpreter = undefined;
+        try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+        defer interp.deinit();
+        interp.useHostInput();
+        var discard: std.Io.Writer.Discarding = .init(&.{});
+        try interp.evalPrint(arena.allocator(), "(import (scheme write) (scheme read))", &discard.writer);
+        for (rounds) |round| {
+            var buf: [256]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            const waits = try runRound(&interp, arena.allocator(), round, budget, &w);
+            try std.testing.expectEqualStrings(round.out, w.buffered());
+            try std.testing.expectEqual(round.waits, waits);
+        }
+    }
+}
+
+// 入力待ちを起こす読み取りは、待つ前に何も消費しない。待ったあとにやり直す呼び出しが、結果を
+// 返すことと、読み取りが読み進めた分の入力が、そのあとの読み取りに残ることを、読み取りの種類ごとに
+// 固定する。
+
+test "read-char waits for input, and reads what arrives, a multibyte character whole" {
+    try expectRounds(&.{
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "λx" }}, .out = "#\\λ", .waits = 1 },
+        // 渡された分の残りは、次の読み取りが先に読む。待たない。
+        .{ .src = "(write (read-char))", .out = "#\\x", .waits = 0 },
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "y" }}, .out = "#\\y", .waits = 1 },
+    });
+}
+
+test "a character that arrives in pieces is waited for whole, by read-char and by read-line" {
+    // WASM は、1回に渡すバイト列を妥当な UTF-8 に限る。ここは、境界の検査に頼らない防御である。
+    try expectRounds(&.{
+        .{ .src = "(write (read-char))", .feeds = &.{ .{ .text = "\xCE" }, .{ .text = "\xBB" } }, .out = "#\\\u{3bb}", .waits = 2 },
+        .{ .src = "(write (read-line))", .feeds = &.{ .{ .text = "a\xCE" }, .{ .text = "\xBB\n" } }, .out = "\"a\u{3bb}\"", .waits = 2 },
+    });
+}
+
+test "char-ready? is false while only the start of a character has arrived" {
+    try expectRounds(&.{
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "x\xCE" }}, .out = "#\\x", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "\xBB" }}, .out = "#\\\u{3bb}", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+    });
+}
+
+test "peek-char waits, and reads past nothing" {
+    try expectRounds(&.{
+        .{ .src = "(write (peek-char)) (write (peek-char)) (write (read-char))", .feeds = &.{.{ .text = "k" }}, .out = "#\\k#\\k#\\k", .waits = 1 },
+    });
+}
+
+test "read-line waits until the end of the line arrives, and keeps what it has seen for the retry" {
+    try expectRounds(&.{
+        // 行の終わりが無い間は、何も読まない。渡された分がたまり、改行が来たところで1回で読む。
+        .{ .src = "(write (read-line))", .feeds = &.{ .{ .text = "ab" }, .{ .text = "cd\nrest" } }, .out = "\"abcd\"", .waits = 2 },
+        // 次の行の頭は、前の読み取りの残りである。終端が来れば、改行の無い最後の行になる。
+        .{ .src = "(write (read-line))", .feeds = &.{.eof}, .out = "\"rest\"", .waits = 1 },
+        .{ .src = "(write (eof-object? (read-line)))", .out = "#t", .waits = 0 },
+    });
+}
+
+test "read-line does not end a line at a carriage return until it knows whether a line feed follows" {
+    try expectRounds(&.{
+        .{ .src = "(write (read-line)) (write (read-line))", .feeds = &.{ .{ .text = "ab\r" }, .{ .text = "\ncd\n" } }, .out = "\"ab\"\"cd\"", .waits = 2 },
+        .{ .src = "(write (read-line))", .feeds = &.{ .{ .text = "x\r" }, .{ .text = "y\n" } }, .out = "\"x\"", .waits = 2 },
+        // 復帰のあとが改行でなければ、その文字は次の行の頭である。
+        .{ .src = "(write (read-line))", .out = "\"y\"", .waits = 0 },
+    });
+}
+
+test "read-string waits until k characters have arrived, or the end, and reads nothing before" {
+    try expectRounds(&.{
+        // 長さ 0 は、何も読まないので、入力が空で終端も無くても、待たない。
+        .{ .src = "(write (read-string 0))", .out = "\"\"", .waits = 0 },
+        .{ .src = "(write (read-string 3))", .feeds = &.{ .{ .text = "a" }, .{ .text = "bcde" } }, .out = "\"abc\"", .waits = 2 },
+        // 終端は、足りない分を待たずに、あるだけを返す。そのあとは終端のオブジェクトである。
+        .{ .src = "(write (read-string 5)) (write (eof-object? (read-string 5)))", .feeds = &.{.eof}, .out = "\"de\"#t", .waits = 1 },
+        // 長さ 0 は、何も読まないので、待たない。
+        .{ .src = "(write (read-string 0))", .out = "\"\"", .waits = 0 },
+    });
+}
+
+test "read waits while the datum is not complete, and while a token could go on" {
+    try expectRounds(&.{
+        .{ .src = "(write (read))", .feeds = &.{ .{ .text = "(1 2" }, .{ .text = " 3)" } }, .out = "(1 2 3)", .waits = 2 },
+        // 渡された分の終わりのトークンは、続くかもしれないので、閉じるまで待つ。
+        .{ .src = "(write (read))", .feeds = &.{ .{ .text = "abc" }, .{ .text = " " } }, .out = "abc", .waits = 2 },
+        // 先頭のデータは、後ろに続きがあれば、待たずに読める。残りは次の読み取りのものである。
+        .{ .src = "(write (list (read) (read)))", .feeds = &.{.{ .text = "1 2 3" }}, .out = "(1 2)", .waits = 1 },
+        .{ .src = "(write (read))", .feeds = &.{.{ .text = "\n" }}, .out = "3", .waits = 1 },
+        // 空白だけのときは待つ。終端が来れば、終端のオブジェクトである。
+        .{ .src = "(write (eof-object? (read)))", .feeds = &.{ .{ .text = "  ; note" }, .eof }, .out = "#t", .waits = 2 },
+    });
+}
+
+test "char-ready? answers without waiting" {
+    try expectRounds(&.{
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "q" }}, .out = "#\\q", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "rs" }}, .out = "#\\r", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#t", .waits = 0 },
+        .{ .src = "(write (read-char))", .out = "#\\s", .waits = 0 },
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+        .{ .src = "(write (read-char))", .feeds = &.{.eof}, .out = "#<eof>", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#t", .waits = 0 },
+    });
+}
+
+test "after the end every read gets the end, in every evaluation, and input given later is dropped" {
+    try expectRounds(&.{
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "a" }}, .out = "#\\a", .waits = 1 },
+        .{ .src = "(write (read-char))", .feeds = &.{.eof}, .out = "#<eof>", .waits = 1 },
+        .{ .src = "(write (list (eof-object? (read-char)) (eof-object? (peek-char)) (eof-object? (read-line)) (eof-object? (read-string 2)) (eof-object? (read))))", .out = "(#t #t #t #t #t)", .waits = 0 },
+    });
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.useHostInput();
+    interp.provideEof();
+    try interp.provideInput("late");
+    try std.testing.expectEqualStrings("", interp.console_host.pending());
+}
+
+test "the binary reads do not reach the console, which is a textual port, so they never wait" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.useHostInput();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    for ([_][]const u8{ "(read-u8)", "(peek-u8)", "(read-bytevector 1)", "(u8-ready?)" }) |src| {
+        try interp.beginEval(arena.allocator(), src, &w);
+        try std.testing.expectError(error.Raised, stepToEnd(&interp));
+        try std.testing.expect(std.mem.indexOf(u8, interp.diagnostic(), "wrong type") != null);
+    }
+}
+
+fn stepToEnd(interp: *Interpreter) !void {
+    while (true) switch (try interp.stepEval(100)) {
+        .done => return,
+        .more => {},
+        .interrupted, .needs_input => return error.TestUnexpectedResult,
+    };
+}
+
+test "a read that waits keeps what the call needs: the operands made before, the handlers and the winders" {
+    try expectRounds(&.{
+        // 引数の途中の値(文字列)は、待つ間も継続が持つ。
+        .{ .src = "(write (list (make-string 2 #\\x) (read-char) (string #\\y)))", .feeds = &.{.{ .text = "a" }}, .out = "(\"xx\" #\\a \"y\")", .waits = 1 },
+        // 末尾位置の読み取り。
+        .{ .src = "(define (f) (read-char)) (write (f))", .feeds = &.{.{ .text = "b" }}, .out = "#\\b", .waits = 1 },
+        // ハンドラの中で待つ。
+        .{ .src = "(write (with-exception-handler (lambda (e) (char->integer (read-char))) (lambda () (+ 1 (raise-continuable 'x)))))", .feeds = &.{.{ .text = "a" }}, .out = "98", .waits = 1 },
+        // `dynamic-wind` の after で待つ。巻き戻しは、待ったあとに続く。
+        .{ .src = "(write (dynamic-wind (lambda () #f) (lambda () 'body) (lambda () (write (read-char)))))", .feeds = &.{.{ .text = "z" }}, .out = "#\\zbody", .waits = 1 },
+        // 継続の脱出が呼ぶ after で待つ。
+        .{ .src = "(write (call/cc (lambda (k) (dynamic-wind (lambda () #f) (lambda () (k 'out)) (lambda () (write (read-char)))))))", .feeds = &.{.{ .text = "w" }}, .out = "#\\wout", .waits = 1 },
+        // 送出された値をハンドラに渡す経路(`raise`)でも待つ。ハンドラが戻るので、二次の誤りになる。
+        .{ .src = "(guard (c (#t (write (error-object? c)))) (with-exception-handler read-char (lambda () (raise (current-input-port)))))", .feeds = &.{.{ .text = "q" }}, .out = "#t", .waits = 1 },
+        // 待つ呼び出しは、`call/cc` で捕まえた継続のもとで、複数回やり直せる。
+        .{ .src = "(define n 0) (define k #f) (let* ((a (call/cc (lambda (c) (set! k c) 'first))) (b (read-char))) (write (list a b))) (set! n (+ n 1)) (if (< n 2) (k 'again))", .feeds = &.{ .{ .text = "a" }, .{ .text = "b" } }, .out = "(first #\\a)(again #\\b)", .waits = 2 },
+    });
+}
+
+test "an evaluation that waits can be dropped, and what it defined stays" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.useHostInput();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.beginEval(arena.allocator(), "(define z 7) (read-char)", &w);
+    try std.testing.expectEqual(.needs_input, try interp.stepEval(100));
+    try std.testing.expect(interp.ctx.parked != null);
+    // 待っている間に、もう一度呼んでも、待ちのままである(入力が届いていない)。
+    try std.testing.expectEqual(.needs_input, try interp.stepEval(100));
+    interp.abortEval();
+    try std.testing.expect(interp.eval == null);
+    try std.testing.expect(interp.ctx.parked == null);
+    try std.testing.expect(interp.ctx.heap.console_host == null);
+    try interp.evalPrint(arena.allocator(), "z", &w);
+    try std.testing.expectEqualStrings("7\n", w.buffered());
+}
+
+test "a read cannot wait where the host cannot be given control back: a library body, or evalPrint" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.useHostInput();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(read-char)", &w));
+    try std.testing.expect(std.mem.indexOf(u8, interp.diagnostic(), "cannot wait for input in read-char") != null);
+    // ライブラリの本体は、入れ子の実行で走る。ここでは待てない。誤りは `guard` が受け取れる。
+    try interp.beginEval(arena.allocator(), "(define-library (w) (import (scheme base)) (export x) (begin (define x (guard (e (#t 'could-not-wait)) (read-char))))) (import (w)) (import (scheme write)) (write x)", &w);
+    try stepToEnd(&interp);
+    try std.testing.expectEqualStrings("could-not-wait", w.buffered());
+}
+
+test "the input the host gives counts against the limit of the heap, until it is read" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.useHostInput();
+    const before = interp.ctx.heap.resident;
+    try interp.provideInput("0123456789");
+    try std.testing.expect(interp.ctx.heap.resident >= before + 10);
+    // 上限に収まらない入力は断り、持っているものは変えない。
+    const limit = interp.ctx.heap.options.limit;
+    interp.ctx.heap.options.limit = interp.ctx.heap.held() + 16;
+    const big: [4096]u8 = @splat('x');
+    try std.testing.expectError(error.HeapLimit, interp.provideInput(&big));
+    try std.testing.expectEqualStrings("0123456789", interp.console_host.pending());
+    interp.ctx.heap.options.limit = limit;
+    // 読み終えると、計上は戻る。
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.evalPrint(arena.allocator(), "(string-length (read-string 10))", &w);
+    try std.testing.expectEqual(before, interp.ctx.heap.resident);
 }
 
 test "a fold-case directive survives an error later in the same input" {

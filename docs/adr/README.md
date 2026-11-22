@@ -87,4 +87,5 @@
 | [0051](0051-narrow-stage-7-and-release-v1-1-0.md) | 段階7の範囲を改め、識別子の補完と差分読み取りを外して v1.1.0 を出す | 採用 | 2026-11-21 |
 | [0052](0052-repository-visibility-public-again.md) | リポジトリを public にする | 採用 | 2026-11-21 |
 | [0053](0053-resumable-machine-step-budget.md) | 機械は歩数の予算で制御を戻し、停止中のレジスタを GC のルートにして再開できる | 採用 | 2026-11-21 |
+| [0055](0055-input-wait-by-retrying-the-call.md) | 入力待ちは、何も消費しない読み取りを機械が保存して、入力が届いてからやり直す | 採用 | 2026-11-22 |
 | [0056](0056-deploy-web-ui-to-github-pages.md) | Web UI を GitHub Pages に、リリースの公開と手動の起動で配置する | 採用 | 2026-11-22 |

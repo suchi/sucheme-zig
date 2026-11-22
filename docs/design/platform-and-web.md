@@ -67,7 +67,9 @@ sucheme_version_len() -> u32
 - 状態コードを返すもの: `sucheme_init`、`sucheme_eval_begin`、`sucheme_step`、`sucheme_abort`、`sucheme_reset`
 - 状態コードを返さないもの: `sucheme_alloc`、`sucheme_free`、`sucheme_output_ptr`、`sucheme_output_len`、`sucheme_output_clear`、`sucheme_version_ptr`、`sucheme_version_len`、`sucheme_set_command_line`、`sucheme_exit_code`
 
-`sucheme_provide_input` と `sucheme_provide_eof` は、まだ無い。`web/sucheme.js` もこれらを呼ばない。`sucheme_eval_begin` は、入力を写して保持し、歩数を使わずに済む分(読み取り、`import` と `define-library`)を進めてから戻る。続きがあれば 1 を返し、ホストが `sucheme_step(budget)` で進める。戻す値は 1、0、-1、-2、-3、-4、-5、-6、-8 のどれかで、2(入力待ち)は戻さない(入力待ちは、段階8の「`read` による対話」で入れる)。`sucheme_step` は最大 `budget` 歩進めて戻り、`budget` が 0 なら何も進めずに 1 を返す。出力は、1歩ごとに取り出してよい。評価が続いている間に `sucheme_eval_begin` を呼ぶと、`-4` を返し、続いている評価に触れない。`sucheme_abort` は、続いている評価を捨てて 0 を返す。それまでの定義と出力は残り、次に `sucheme_eval_begin` を呼べる。続いている評価が無いときの `sucheme_step` と `sucheme_abort` は、`-4` を返して状態を変えない。ホストは、`sucheme_step` が戻ったあとにだけ `sucheme_abort` を呼べる(WASM は1つのスレッドで動く)ので、停止の要求を立てる出口(`Context.interrupt` に当たるもの)は設けない。ホストは、歩数の区切りでイベントループに制御を戻し、停止のメッセージが届いていれば `sucheme_abort` を呼ぶ(`web/runner.mjs`)。`Context.interrupt` は、評価が始まるとき(`beginEval`)と捨てるとき(`abortEval`)に降ろす。評価の無い間に立った要求が、次の評価を始まりで中断しないためである。予算 0 の `step` に要求が立っているときは、要求が先に見られる(`interrupted`)。入れ子の実行(ライブラリの `import` の本体、[ADR-0053](../adr/0053-resumable-machine-step-budget.md) の決定6)は、`sucheme_step` の1歩の中で完了まで走るので、その間はホストが制御を取り戻せない。`sucheme_set_command_line` は、評価が続いている間は 0 を返して設定を変えない(機械が `(command-line)` の行を指すため)。
+`sucheme_provide_input` と `sucheme_provide_eof` は、スライス 8f-1 で足した([ADR-0055](../adr/0055-input-wait-by-retrying-the-call.md))。`sucheme_eval_begin` は、入力を写して保持し、歩数を使わずに済む分(読み取り、`import` と `define-library`)を進めてから戻る。続きがあれば 1 を返し、ホストが `sucheme_step(budget)` で進める。`sucheme_eval_begin` が戻す値は 1、0、-1、-2、-3、-4、-5、-6、-8 のどれかで、2(入力待ち)は戻さない(読み取りは、歩数を使う機械の中で走るので、待つのは `sucheme_step` である)。`sucheme_step` は最大 `budget` 歩進めて戻り、`budget` が 0 なら何も進めずに 1 を返す。出力は、1歩ごとに取り出してよい。評価が続いている間に `sucheme_eval_begin` を呼ぶと、`-4` を返し、続いている評価に触れない。`sucheme_abort` は、続いている評価を捨てて 0 を返す。それまでの定義と出力は残り、次に `sucheme_eval_begin` を呼べる。続いている評価が無いときの `sucheme_step` と `sucheme_abort` は、`-4` を返して状態を変えない。ホストは、`sucheme_step` が戻ったあとにだけ `sucheme_abort` を呼べる(WASM は1つのスレッドで動く)ので、停止の要求を立てる出口(`Context.interrupt` に当たるもの)は設けない。ホストは、歩数の区切りでイベントループに制御を戻し、停止のメッセージが届いていれば `sucheme_abort` を呼ぶ(`web/runner.mjs`)。`Context.interrupt` は、評価が始まるとき(`beginEval`)と捨てるとき(`abortEval`)に降ろす。評価の無い間に立った要求が、次の評価を始まりで中断しないためである。予算 0 の `step` に要求が立っているときは、要求が先に見られる(`interrupted`)。入れ子の実行(ライブラリの `import` の本体、[ADR-0053](../adr/0053-resumable-machine-step-budget.md) の決定6)は、`sucheme_step` の1歩の中で完了まで走るので、その間はホストが制御を取り戻せない。`sucheme_set_command_line` は、評価が続いている間は 0 を返して設定を変えない(機械が `(command-line)` の行を指すため)。
+
+コンソールの入力は、ホストが渡す。`sucheme_init` と `sucheme_reset` が、`Interpreter.useHostInput` で、コンソールの入力ポートの読み手を、ホストの入力(`HostInput`)にする。入力が空で、終端も無いときの読み取りが、`sucheme_step` に 2 を返させる。何も消費していない読み取りをやり直す形である(下の再開可能性)。待っている間に呼べるのは、`sucheme_provide_input`、`sucheme_provide_eof`、`sucheme_step`(待っている読み取りをやり直し、入力が無ければまた 2 を返す)、`sucheme_abort`、`sucheme_reset` である。
 `sucheme_set_command_line` と `sucheme_exit_code` は、スライス 5m で足した。`sucheme_set_command_line` は、空のバイト列で、処理系の名前だけの設定に戻す。`sucheme_alloc` の領域でない (ptr, len) と、写しを確保できないときも、0 を返して設定を変えない。`-6` のあとの `sucheme_eval_begin` は、`-2` のあとと同じく `-4` を返す。以下の状態コードと再開可能性の記述は、この完全な設計の契約であり、現状で実現しているのは上の部分集合に限る。
 
 文字列はすべて UTF-8 とする。文字列表現に UTF-8 を選んだ理由の一つがこの境界である。
@@ -159,7 +161,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 | --- | --- | --- |
 | 0 | 成功。評価が完了した場合もこれを返す | `sucheme_eval_begin` `sucheme_reset` |
 | 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_abort` `sucheme_reset` |
-| 2 | 入力待ち。`sucheme_provide_input` または `sucheme_provide_eof` を待っている | `sucheme_provide_input` `sucheme_provide_eof` `sucheme_reset` |
+| 2 | 入力待ち。`sucheme_provide_input` または `sucheme_provide_eof` を待っている | `sucheme_provide_input` `sucheme_provide_eof` `sucheme_step` `sucheme_abort` `sucheme_reset` |
 | -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` |
 | -2 | 回復不能。送出のための予約領域を使い切り、送出する条件を作れなかった。出力バッファに `error: heap limit exceeded` の一行がある。段階2のスライス 2e から、このコードを返す(`src/wasm.zig`)。`sucheme_reset` の前に `sucheme_eval_begin` を呼ぶと、状態を変えず、説明の一行を出力に足して -4 を返す | `sucheme_reset` |
 | -3 | 渡されたバイト列が妥当な UTF-8 でない。状態は変わっていない | 呼び出し前の状態で呼べたものすべて |
@@ -177,7 +179,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 | `sucheme_eval_begin` | 1、0、-1、-2、-3、-4、-5、-6、-8 |
 | `sucheme_step` | 1、2、0、-1、-2、-4、-5、-6 |
 | `sucheme_abort` | 0、-4、-5 |
-| `sucheme_provide_input` | 1、-1、-2、-3、-4、-5、-6、-8 |
+| `sucheme_provide_input` | 1、-1、-3、-4、-5、-8 |
 | `sucheme_provide_eof` | 1、-4、-5 |
 | `sucheme_reset` | 0、-5、-7 |
 
@@ -187,7 +189,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 
 `sucheme_eval_begin` は通常 1 を返す。式を読んで評価を開始し、まだ終わっていない状態である。機械の歩を1つも使わずに完了する場合(入力が空、コメントだけ、`define-library` の宣言だけ)は 0 を返す(`(quote x)` のような1歩の式は、`sucheme_eval_begin` では歩を進めないので、1 を返し、`sucheme_step` で完了する)。0 を返したあとにホストが `sucheme_step` を呼ぶと -4 になるので、ホストは戻り値が 1 のときだけ `sucheme_step` のループに入る。この区別がないと、空の入力欄で実行ボタンを押しただけで「ホスト側の実装の誤り」が報告される。
 
-`sucheme_provide_input` は 2 を返さない。入力を受け取って評価を再開できる状態にするので 1 を返し、次の `read` でまた入力が必要になったときは `sucheme_step` が 2 を返す。
+`sucheme_provide_input` は 2 を返さない。入力を受け取って評価を再開できる状態にするので 1 を返し、次の `read` でまた入力が必要になったときは `sucheme_step` が 2 を返す。`-1` は、入力を保持できなかった(ヒープの上限に収まらない)ことを表し、評価は捨てられ(定義は残る)、説明が出力に入る。`-2` と `-6` は、`sucheme_step` が返したときに評価が終わっているので、読み取りが待っておらず、`-4` になる。長さ 0 の入力は、何も渡さず、1 を返す(読み取りは待ったままで、次の `sucheme_step` がまた 2 を返す。空行は、改行1つを渡す)。
 
 `-3` と `-4` は、どちらも状態を変えずに戻る。状態コードを返す7つの関数は、引数と現在の状態を先に検査し、`-3` `-4` `-8` を返す場合は何も変えない。これを ABI の不変条件とする。したがってホストは、呼び出し前の状態で呼べた関数をそのまま呼び続けられる。
 
@@ -292,13 +294,22 @@ import を増やさないのは、ホスト側が用意しなければならな�
 
 - ブラウザのメインスレッドを長時間占有しない。
 - 実行の中断(停止ボタン)を実現できる。
-- ブラウザで `read` が実装できる。入力が必要になった時点で状態コード 2(入力待ち)を返し、ホストが `sucheme_provide_input` で応答してから `sucheme_step` を再開する。
+- ブラウザで `read` が実装できる。入力が必要になった時点で状態コード 2(入力待ち)を返し、ホストが `sucheme_provide_input` で応答してから `sucheme_step` を再開する。実装はスライス 8f-1 である(下)。
 
 入力待ちには終端が必要である。R7RS 6.13.2 は `read-char` について「If no more characters are available, an end-of-file object is returned.」と規定しているので、ホストが「これ以上入力はない」と伝える手段がなければ `(eof-object? c)` が真になることがなく、入力を読むループが終わらない。
 
 終端は専用のエクスポート `sucheme_provide_eof()` で伝える。`sucheme_provide_input(ptr, 0)` を終端の意味にはしない。長さ0の入力(空行)と終端は別の事象であり、同じ呼び出しで表すとホストが空行を渡せなくなる。このエクスポートは状態コードを返す群に入るので、群の件数は、`sucheme_abort` を含めて7つになる。
 
-渡したバイト列が1回の読み取りより長い場合は、残りを WASM 側の入力バッファに保持し、次の読み取りが先にそこから取る。捨てない。捨てると `(list (read-char) (read-char))` に `sucheme_provide_input("ab")` を1回渡したときの結果が実装によって変わる。バッファが空になってから次の読み取りが来たときに 2 を返す。終端を受け取った後は、以降のすべての読み取りが EOF を返す。入力バッファも計上の対象に含める([runtime.md](runtime.md) の計上の対象)。入力バッファは `sucheme_provide_input` とともに入れる設計で、段階2までには無い。ホストが `sucheme_alloc` で受け取る領域は、いまは計上の外にある(下の「所有権と有効期限の契約」の入力領域)。
+渡したバイト列が1回の読み取りより長い場合は、残りを WASM 側の入力バッファに保持し、次の読み取りが先にそこから取る。捨てない。捨てると `(list (read-char) (read-char))` に `sucheme_provide_input("ab")` を1回渡したときの結果が実装によって変わる。バッファが空になってから次の読み取りが来たときに 2 を返す。終端を受け取った後は、以降のすべての読み取りが EOF を返す。入力バッファも計上の対象に含める([runtime.md](runtime.md) の計上の対象)。ホストが `sucheme_alloc` で受け取る領域は、いまは計上の外にある(下の「所有権と有効期限の契約」の入力領域)。
+
+実装は、スライス 8f-1 で入った([ADR-0055](../adr/0055-input-wait-by-retrying-the-call.md))。要点は次のとおりである。
+
+- 待つ読み取りは、何も消費せずに `WouldWait` を返す。機械は、その呼び出しを継続の先頭のフレームに載せて、`Outcome.needs_input` で戻る。再開は、同じ呼び出しのやり直しである。継続は保存しない。
+- 何も消費しない約束は、読み取りごとに守る。`read-char` と `peek-char` は、読む前に手元を見る。`read-line` と `read-string` は、読み始める前に、渡された分で終えられるかを、位置を動かさずに確かめる(行の終わり、`k` 文字、終端のどれか。復帰が末尾なら、次の文字を待つ)。`read` は、データが閉じるまで何も消費しない。`char-ready?` は、待たずに、1文字が手元にあるか終端のときだけ真を返す。バイナリの読み取り(`read-u8`、`read-bytevector` など)は、コンソールの入力ポートが textual なので、コンソールには届かず、待たない。
+- 待っている間の GC のルートは、`Context.parked` のレジスタと、`Context` の表である。待った呼び出しの引数は、継続のフレームが指す。
+- ホストの入力(`HostInput`)の領域は、ヒープの常駐の計上(`Heap.residentAllocator`)に入る。評価をまたいで残り、読み終えると手放す。
+- 入れ子の実行(ライブラリの本体)と `evalPrint` は、制御を戻せない。そこで待つ読み取りは、`cannot wait for input in <名前> here` の誤りになる。
+
 
 ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とする。配置先を段階8まで決めないので([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))、ヘッダを設定できる保証がない。ローカルで開く場合も、簡易な静的サーバがこれらのヘッダを返すとは限らない。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
 

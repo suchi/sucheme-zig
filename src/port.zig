@@ -11,7 +11,9 @@
 //!
 //! コンソールの出力ポート(標準出力と標準エラー)は、書いたバイトを、そのまま `sink` に書く。
 //! 領域を持たないので、評価の結果の表示と同じ書き手に、書いた順に並ぶ。コンソールの入力ポートは、
-//! スライス 5i では、最初から終わりにある(標準入力を読むのは 5l)。
+//! 標準入力の読み手(`Heap.console_input`。ネイティブ)か、ホストが渡した入力(`Heap.console_host`。
+//! WASM)から読む。どちらも無ければ、最初から終わりにある。ホストの入力が空で、終端も無ければ、
+//! 読み取りは `error.WouldWait` を返し、機械が待つ(ADR-0055)。
 //!
 //! `Port.Memory` の `pos <= len <= bytes.len` は、型では保証されない。ここの関数が保つ。
 //! 入力のポートは、開いたときの写しを最後まで使い、伸ばさない。出力のポートは、書くたびに
@@ -35,6 +37,11 @@ pub const Error = heap_mod.Error || error{
     WriteFailed,
     /// The host could not read from or write to the file of a file port.
     Io,
+    /// The console's input holds no more of what the host gave, and the host has not said
+    /// that there is no more: the read has to wait until it gives some (`HostInput`).
+    /// 返すのは、何も読み進めていない読み取りだけである。機械は、同じ呼び出しを、入力が
+    /// 届いてからやり直す(docs/design/platform-and-web.md の再開可能性)。
+    WouldWait,
 };
 
 /// Checks that `port` is open, flows in `direction` and carries `element`.
@@ -112,9 +119,21 @@ pub fn peekByte(heap: *Heap, port: *Port) Error!?u8 {
 pub fn pending(heap: *const Heap, port: *const Port) []const u8 {
     return switch (port.backing) {
         .memory => |*memory| memory.bytes[memory.pos..memory.len],
-        .console => if (heap.console_input) |source| source.buffered() else "",
+        .console => if (heap.console_host) |host| host.pending() else if (heap.console_input) |source| source.buffered() else "",
         .file => |*file| file.buffer[file.pos..file.len],
     };
+}
+
+/// Whether the console's input is the host's, which may still give more.
+pub fn consoleFromHost(heap: *const Heap) bool {
+    return heap.console_host != null;
+}
+
+/// Whether a read of the console's input that has used up what it holds has to wait for
+/// the host, rather than reach the end.
+pub fn consoleWaits(heap: *const Heap) bool {
+    const host = heap.console_host orelse return false;
+    return !host.ended;
 }
 
 /// Reads past `n` of the bytes `pending` gives, which for a textual port must end
@@ -125,7 +144,10 @@ pub fn consume(heap: *Heap, port: *Port, n: usize) void {
             std.debug.assert(n <= memory.len - memory.pos);
             memory.pos += n;
         },
-        .console => if (heap.console_input) |source| source.toss(n) else std.debug.assert(n == 0),
+        .console => if (heap.console_host) |host| {
+            // 渡された領域は、`Heap.residentAllocator` から取ったものである(`Interpreter.provideInput`)。
+            host.consume(heap.residentAllocator(), n);
+        } else if (heap.console_input) |source| source.toss(n) else std.debug.assert(n == 0),
         .file => |*file| {
             std.debug.assert(n <= file.len - file.pos);
             file.pos += n;
@@ -168,6 +190,8 @@ pub fn fill(heap: *Heap, port: *Port) Error!bool {
 /// 終わりではないことがあるので、足せるか終わりに着くまで繰り返す。バッファの大きさは
 /// 読み手が決めていて、伸ばせない(REPL と同じ読み手で、src/main.zig の `max_line`)。
 fn fillConsole(heap: *Heap) Error!bool {
+    // ホストの入力は、`fill` では増えない。ホストが渡すのは、入力待ちで制御を戻したあとである。
+    if (heap.console_host != null) return if (consoleWaits(heap)) error.WouldWait else false;
     const source = heap.console_input orelse return false;
     if (source.bufferedLen() == source.buffer.len) return false;
     const before = source.bufferedLen();
@@ -183,6 +207,8 @@ fn fillConsole(heap: *Heap) Error!bool {
 /// Whether the console's input holds what has not been read up to the end of the
 /// buffer of its reader, so that no more can be added before some is read.
 pub fn consoleFull(heap: *const Heap) bool {
+    // ホストの入力は、渡された分だけ伸びるので、埋まらない。
+    if (heap.console_host != null) return false;
     const source = heap.console_input orelse return false;
     return source.bufferedLen() == source.buffer.len;
 }
