@@ -2176,6 +2176,19 @@ test "an error that a guard re-raises keeps the place of the call that raised it
     try expectLineFails(&interp, "(list-ref '(a b) 5)", "argument out of range in list-ref (a b) 5");
 }
 
+test "an error a call in the body of a library raises says the place in the library file, not that of the import" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/bad.sld", "(define-library (t bad) (export) (import (sucheme core)) (begin (car 5)))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 実行したファイルの `import` の形式にも位置があるが、誤りを起こした呼び出しの位置が優先する。
+    interp.file_name = "prog.scm";
+    try expectLineFailsInTree(&interp, &tree, "\n (import (t bad))", "t/bad.sld:1:65", "wrong type of argument to car 5");
+}
+
 test "a call the reader did not read, the output of a macro, raises with no place" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});

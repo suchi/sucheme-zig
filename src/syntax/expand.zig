@@ -2211,3 +2211,24 @@ test "the place a call node keeps is counted against the limit of the heap with 
     try std.testing.expectEqual(heap_mod.cellBytes(Node), f.ctx.heap.held() - before);
     try std.testing.expect(heap_mod.cellBytes(Node) >= @sizeOf(Node));
 }
+
+test "the calls of one expansion that were read from two files each keep their own file" {
+    const reader_mod = @import("../reader.zig");
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var table: positions.Table = .init(f.arena.allocator());
+    f.ctx.positions = &table;
+    defer f.ctx.positions = null;
+    const a = try table.addFile("a.scm");
+    const b = try table.addFile("b.scm");
+    var ra: reader_mod.Reader = .init("(f 1)");
+    const outer = (try ra.next(f.arena.allocator(), .{ .heap = &f.ctx.heap, .positions = .{ .table = &table, .file = a } })).?;
+    var rb: reader_mod.Reader = .init("\n (g 2)");
+    const inner = (try rb.next(f.arena.allocator(), .{ .heap = &f.ctx.heap, .positions = .{ .table = &table, .file = b } })).?;
+    // `include` が別のファイルの形式を呼び出しの中に置くのと同じ形にする。
+    outer.asPair().?.cdr.asPair().?.car = inner;
+    const node = try expand(&f.ctx, f.arena.allocator(), outer);
+    try expectSpot(node, 1, 1, "a.scm", &f.ctx);
+    try expectSpot(node.call.operands[0], 2, 2, "b.scm", &f.ctx);
+}
