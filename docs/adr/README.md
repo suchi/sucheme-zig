@@ -54,7 +54,7 @@
 | [0018](0018-incremental-vertical-slices.md) | 通しで動く縦切りを積み上げ、やり残しを明示して漸進的に進める | 採用 | 2026-10-05 |
 | [0019](0019-denotations-and-identifier-resolution.md) | 衛生性は構文環境と別名による改名で実現し、意味は6種とする | 採用 | 2026-10-05 |
 | [0020](0020-repository-visibility-private.md) | リポジトリを private にする | 非推奨([0052](0052-repository-visibility-public-again.md)に置き換え) | 2026-10-06 |
-| [0021](0021-no-github-pages-defer-hosting.md) | GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない | 非推奨([0055](0055-deploy-web-ui-to-github-pages.md)に置き換え) | 2026-10-06 |
+| [0021](0021-no-github-pages-defer-hosting.md) | GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない | 非推奨([0056](0056-deploy-web-ui-to-github-pages.md)に置き換え) | 2026-10-06 |
 | [0022](0022-unlicensed-proprietary.md) | ライセンスを付与せず UNLICENSED として非公開を明示する | 非推奨([0050](0050-relicense-under-mit.md)に置き換え) | 2026-10-07 |
 | [0023](0023-mandatory-zero-convergence.md) | 自前の敵対的レビューの収束条件を必須の新規指摘ゼロとする | 非推奨([0027](0027-severity-by-consequence-and-a-cost-side-stop.md)に置き換え) | 2026-10-07 |
 | [0024](0024-closed-spelling-sets.md) | 検証ツールは受理する綴りの集合を閉じ、知らない綴りを報告する | 非推奨([0026](0026-verify-facts-about-code-not-prose.md)に置き換え) | 2026-10-08 |
@@ -87,4 +87,4 @@
 | [0051](0051-narrow-stage-7-and-release-v1-1-0.md) | 段階7の範囲を改め、識別子の補完と差分読み取りを外して v1.1.0 を出す | 採用 | 2026-11-21 |
 | [0052](0052-repository-visibility-public-again.md) | リポジトリを public にする | 採用 | 2026-11-21 |
 | [0053](0053-resumable-machine-step-budget.md) | 機械は歩数の予算で制御を戻し、停止中のレジスタを GC のルートにして再開できる | 採用 | 2026-11-21 |
-| [0055](0055-deploy-web-ui-to-github-pages.md) | Web UI を GitHub Pages に、リリースの公開と手動の起動で配置する | 採用 | 2026-11-22 |
+| [0056](0056-deploy-web-ui-to-github-pages.md) | Web UI を GitHub Pages に、リリースの公開と手動の起動で配置する | 採用 | 2026-11-22 |

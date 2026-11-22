@@ -1,4 +1,4 @@
-# Web UI の配置(docs/adr/0055-deploy-web-ui-to-github-pages.md、
+# Web UI の配置(docs/adr/0056-deploy-web-ui-to-github-pages.md、
 # docs/plans/0030-phase8-web-ui.md の 8h-1)。
 #
 # GitHub Pages に、GitHub Actions で配置する。起動は、リリースの公開(`release:
@@ -19,7 +19,7 @@
 # 2. 配置の先は環境 `github-pages` である。環境の保護規則(配置できるブランチやタグ)は
 #    リポジトリの設定が持ち、このファイルでは決められない。
 # 3. 外部のアクションは、公開から7日以上たった版を、コミット SHA で固定する
-#    (AGENTS.md のセキュリティの節)。タグの日付は、ADR-0055 にある。
+#    (AGENTS.md のセキュリティの節)。タグの日付は、ADR-0056 にある。
 # 4. 配置に、新しいシークレットは使わない。`GITHUB_TOKEN` と、ジョブごとの OIDC
 #    トークン(`id-token: write`)だけを使う。
 #
