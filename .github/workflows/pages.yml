@@ -1,0 +1,91 @@
+# Web UI の配置(docs/adr/0055-deploy-web-ui-to-github-pages.md、
+# docs/plans/0030-phase8-web-ui.md の 8h-1)。
+#
+# GitHub Pages に、GitHub Actions で配置する。起動は、リリースの公開(`release:
+# published`)と手動(`workflow_dispatch`)だけで、main への push や PR では
+# 起動しない(実行分数の節約。AGENTS.md の「Actions の分数」)。
+#
+# 配置する中身は、preview.yml が成果物 `sucheme-web` に上げるものと同じ並び(`web/` の
+# 中身と `sucheme.wasm`)に、`LICENSE` と `THIRD-PARTY-NOTICES.txt` を足したものである。
+# 公開された中身に、第三者の表示(Unicode のデータなど)が付くようにするためである。
+# 組み立ては preview.yml と共有しない。再利用できるワークフローに切り出すと、既存の
+# ワークフローを変えることになるので、同じ手順を写している。変えるときは両方を直す。
+#
+# 形。
+#
+# 1. 組み立て(build)と配置(deploy)を別のジョブにする。配置のジョブだけが、
+#    `pages: write` と `id-token: write` を持つ(actions/deploy-pages の README の
+#    「Security Considerations」)。ビルドのジョブは `contents: read` だけである。
+# 2. 配置の先は環境 `github-pages` である。環境の保護規則(配置できるブランチやタグ)は
+#    リポジトリの設定が持ち、このファイルでは決められない。
+# 3. 外部のアクションは、公開から7日以上たった版を、コミット SHA で固定する
+#    (AGENTS.md のセキュリティの節)。タグの日付は、ADR-0055 にある。
+# 4. 配置に、新しいシークレットは使わない。`GITHUB_TOKEN` と、ジョブごとの OIDC
+#    トークン(`id-token: write`)だけを使う。
+#
+# `run:` は1行で書く。`if:` は使わず、手順の並びで表す(tools/check-docs が見る)。
+#
+# The Zig version below is a copy; .zigversion is the source of truth.
+
+name: Pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Why: 配置が重なると、後から終わった古い版が新しい版を上書きしうる。実行中の配置を
+# 途中で取り消すと、公開の状態が中途半端になりうるので、待たせる。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Why: preview.yml と同じ作業(wasm のビルドとファイルの複製)なので、同じ10分を
+    # 使う。止まらないジョブを、既定の上限(6時間)でなく、失敗として終わらせる。
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Why: このジョブは git の操作を checkout のあとにしないので、トークンを
+          # git の設定に残す理由が無い。
+          persist-credentials: false
+      # Pinned to a commit SHA, not a tag: tags can be moved.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+          use-cache: false
+      - run: zig build wasm
+      - run: mkdir site
+      - run: cp -r web/. site
+      - run: cp zig-out/web/sucheme.wasm site
+      - run: cp LICENSE THIRD-PARTY-NOTICES.txt site
+      # Why: 上げるのは、`site` の中身である。この action は、`.` で始まる名前と
+      # `.git`、`.github` を除く(action.yml の既定の `include-hidden-files: false`)。
+      # `web/` に該当するファイルは無い。ファイルが無いときは、この action が失敗する。
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: deploy (ubuntu-latest)
+    needs: build
+    runs-on: ubuntu-latest
+    # Why: 配置の待ちの上限は、actions/deploy-pages の `timeout` の既定(10分)である。
+    # ジョブの上限は、それに余裕を足した15分にする。
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
