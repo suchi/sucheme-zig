@@ -16,7 +16,7 @@ export function createHistory(limit = MAX_ENTRIES) {
     // 実行した入力を足す。空(空白だけ)の入力と、直前と同じ入力は足さない。
     // 足すと、位置は下書きに戻る。上限を超えたら、古いものから捨てる。
     push(text) {
-      draft = "";
+      // (下書きは、下書きの位置から previous で動くたびに取り直すので、ここでは消さない。)
       if (text.trim() !== "" && entries[entries.length - 1] !== text) {
         entries.push(text);
         if (entries.length > limit) entries.shift();

@@ -186,7 +186,8 @@ export function highlightPair(text, cursor) {
   const other = matching(text, cursor);
   if (other === null) return null;
   // `matching` が相手を返したときの、こちら側の括弧。直前の `)` が先に効く(上と同じ順)。
-  const here = other < cursor && text[cursor - 1] === ")" ? cursor - 1 : cursor;
+  // 直前の `)` の相手は、カーソルより前にある。直後の `(` の相手は、カーソルより後ろにある。
+  const here = other < cursor ? cursor - 1 : cursor;
   return here < other ? [here, other] : [other, here];
 }
 
@@ -239,4 +240,12 @@ export function changeIndent(text, start, end, outdent) {
     return result;
   });
   return { text: text.slice(0, firstLineStart) + changed.join("\n") + text.slice(lineEnd), start: newStart, end: newEnd };
+}
+
+// 「次の Tab でフォーカスを動かす」状態の更新。Esc で入り(評価中の Esc は停止に使うので除く)、
+// Tab で出る。Shift、Control、Alt、Meta だけの keydown は、状態を変えない(Esc のあとの
+// Shift+Tab で、Shift 自体の keydown が状態を戻してしまうのを避ける)。それ以外のキーは、状態を戻す。
+export function nextTabMovesFocus(current, key, phase) {
+  if (key === "Shift" || key === "Control" || key === "Alt" || key === "Meta") return current;
+  return key === "Escape" && phase !== "running";
 }

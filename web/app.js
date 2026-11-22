@@ -11,7 +11,7 @@ import { Status } from "./sucheme.js";
 import { describeResult } from "./errors.mjs";
 import { samples } from "./samples.mjs";
 import { encodeFragment, decodeFragment } from "./share.mjs";
-import { highlightPair, changeIndent } from "./parens.mjs";
+import { highlightPair, changeIndent, nextTabMovesFocus } from "./parens.mjs";
 import { createHistory, onFirstLine, onLastLine } from "./history.mjs";
 import { formatElapsed, stopWarning, stoppedMessage, isStopKey } from "./stop.mjs";
 
@@ -261,7 +261,8 @@ document.addEventListener("selectionchange", () => {
 });
 
 // Tab は字下げに使う。キーボードだけの利用者が入力欄から出られなくならないよう、Esc の次の Tab は、
-// 通常どおりフォーカスを動かす(次のキーで解除される)。
+// 通常どおりフォーカスを動かす(Shift+Tab で後ろへも出られる。修飾キーだけの keydown は、状態を変えない)。
+// 次のキーで解除される。
 let tabMovesFocus = false;
 
 source.addEventListener("keydown", (event) => {
@@ -284,7 +285,7 @@ source.addEventListener("keydown", (event) => {
     renderMirror();
     return;
   }
-  tabMovesFocus = event.key === "Escape" && phase !== "running";
+  tabMovesFocus = nextTabMovesFocus(tabMovesFocus, event.key, phase);
   // 履歴: 選択が無く、最初の行の Up と最後の行の Down だけが、履歴を動く。
   // それ以外の Up と Down は、通常のカーソルの移動である。動けないときも、通常の移動に任せる。
   if (plain && !event.shiftKey && source.selectionStart === source.selectionEnd) {

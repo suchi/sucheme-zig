@@ -16,7 +16,7 @@ import { samples } from "../../web/samples.mjs";
 import { encodeFragment, decodeFragment, MAX_FRAGMENT_LENGTH } from "../../web/share.mjs";
 import { describeResult, splitError } from "../../web/errors.mjs";
 import { Status } from "../../web/sucheme.js";
-import { matching, highlightPair, changeIndent } from "../../web/parens.mjs";
+import { matching, highlightPair, changeIndent, nextTabMovesFocus } from "../../web/parens.mjs";
 import { createHistory, onFirstLine, onLastLine } from "../../web/history.mjs";
 import { formatElapsed, stoppedMessage, stopWarning, isStopKey } from "../../web/stop.mjs";
 
@@ -976,6 +976,18 @@ test("changeIndent inserts at the caret, indents and outdents whole lines, and k
   assert.deepEqual(changeIndent("  a", 1, 1, true), { text: "a", start: 0, end: 0 });
   // 取るのは INDENT 1つ分までである。
   assert.deepEqual(changeIndent("      a", 7, 7, true), { text: "    a", start: 5, end: 5 });
+});
+
+test("Esc arms the Tab that moves focus, modifier keys alone keep it, and any other key disarms it", () => {
+  assert.equal(nextTabMovesFocus(false, "Escape", "ready"), true);
+  // 評価中の Esc は停止に使う。
+  assert.equal(nextTabMovesFocus(false, "Escape", "running"), false);
+  // Esc のあとの Shift+Tab: Shift 自体の keydown は、状態を変えない。
+  for (const key of ["Shift", "Control", "Alt", "Meta"]) {
+    assert.equal(nextTabMovesFocus(true, key, "ready"), true, key);
+    assert.equal(nextTabMovesFocus(false, key, "ready"), false, key);
+  }
+  for (const key of ["a", "ArrowUp", "Enter", " "]) assert.equal(nextTabMovesFocus(true, key, "ready"), false, key);
 });
 
 test("the history walks back and forth, and keeps what was being typed", () => {
