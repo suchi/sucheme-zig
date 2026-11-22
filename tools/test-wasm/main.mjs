@@ -18,7 +18,16 @@ import { describeResult, splitError } from "../../web/errors.mjs";
 import { Status } from "../../web/sucheme.js";
 import { matching, highlightPair, changeIndent, nextTabMovesFocus } from "../../web/parens.mjs";
 import { createHistory, onFirstLine, onLastLine } from "../../web/history.mjs";
-import { formatElapsed, stoppedMessage, stopWarning, isStopKey } from "../../web/stop.mjs";
+import {
+  formatElapsed,
+  restartedMessage,
+  describeStopped,
+  stopWarning,
+  stopTimeoutMs,
+  isStopKey,
+} from "../../web/stop.mjs";
+import { runEvaluation } from "../../web/runner.mjs";
+import { Sucheme } from "../../web/sucheme.js";
 
 const wasmPath = process.argv[2];
 if (wasmPath === undefined) {
@@ -36,6 +45,7 @@ const NOT_INITIALIZED = -5;
 const EXITED = -6;
 const NO_MEMORY = -7;
 const BAD_REGION = -8;
+const CONTINUE = 1;
 
 const OUTPUT_CAPACITY = 256 * 1024;
 
@@ -79,14 +89,23 @@ function instantiate(clock = {}) {
       const len = x.sucheme_output_len();
       return decoder.decode(host.bytes(x.sucheme_output_ptr(), len));
     },
-    /** Evaluates bytes through alloc, eval_begin and free, and returns the status. */
-    evalBytes(bytes) {
+    /** Starts an evaluation through alloc, eval_begin and free, and returns the status (1 when it goes on). */
+    beginBytes(bytes) {
       const ptr = x.sucheme_alloc(bytes.length);
       assert.notEqual(ptr, 0, "sucheme_alloc failed");
       host.bytes(ptr, bytes.length).set(bytes);
       const status = x.sucheme_eval_begin(ptr, bytes.length);
       x.sucheme_free(ptr, bytes.length);
       return status;
+    },
+    /** Evaluates bytes to the end: eval_begin, then sucheme_step with the largest budget while it goes on. */
+    evalBytes(bytes) {
+      let status = host.beginBytes(bytes);
+      while (status === CONTINUE) status = x.sucheme_step(0xffffffff);
+      return status;
+    },
+    begin(source) {
+      return host.beginBytes(encoder.encode(source));
     },
     eval(source) {
       return host.evalBytes(encoder.encode(source));
@@ -816,7 +835,8 @@ test("a region allocated before reset is still the host's: it can be used and fr
   assert.notEqual(ptr, 0);
   h.bytes(ptr, source.length).set(source);
   assert.equal(h.x.sucheme_reset(), OK);
-  assert.equal(h.x.sucheme_eval_begin(ptr, source.length), OK);
+  assert.equal(h.x.sucheme_eval_begin(ptr, source.length), CONTINUE);
+  assert.equal(h.x.sucheme_step(0xffffffff), OK);
   assert.equal(h.output(), "3\n");
   // free は panic しない。リセットが領域の記録を捨てていると、ここで trap する。
   h.x.sucheme_free(ptr, source.length);
@@ -1082,10 +1102,20 @@ test("formatElapsed shows seconds below a minute, then minutes and hours", () =>
   assert.equal(formatElapsed(Infinity), "0.0 s");
 });
 
-test("the stop messages say that definitions are lost, before and after", () => {
-  assert.match(stopWarning.before, /definitions/);
-  assert.match(stopWarning.after, /definitions were lost/);
-  assert.equal(stoppedMessage(2500), `${stopWarning.after} (ran for 2.5 s)`);
+test("the stop messages say that definitions are kept, and that they are lost only when the worker was restarted", () => {
+  assert.match(stopWarning.before, /Definitions made so far are kept/);
+  assert.match(stopWarning.lost, /did not respond/);
+  assert.match(stopWarning.lost, /all definitions were lost/);
+  assert.equal(restartedMessage(2500), `${stopWarning.lost} (ran for 2.5 s)`);
+  assert.ok(stopTimeoutMs >= 1000 && stopTimeoutMs <= 10000);
+});
+
+test("describeStopped keeps the output and the time, and tells that definitions were kept", () => {
+  const d = describeStopped("abc", 1500);
+  assert.equal(d.output, "abc");
+  assert.equal(d.error.title, "Stopped");
+  assert.equal(d.error.message, "ran for 1.5 s");
+  assert.match(d.error.hint, /Definitions made so far were kept/);
 });
 
 test("isStopKey stops only on Escape while running and not while composing", () => {
@@ -1095,6 +1125,266 @@ test("isStopKey stops only on Escape while running and not while composing", () 
   assert.equal(isStopKey({ key: "Escape" }, "ready"), false);
   assert.equal(isStopKey({ key: "Escape" }, "loading"), false);
   assert.equal(isStopKey({ key: "Enter" }, "running"), false);
+});
+
+// 歩数ごとに制御を戻す評価(sucheme_step、sucheme_abort。計画書 0030 の 8e-2)。
+test("eval_begin goes on with 1, step(0) moves nothing, and step finishes with 0 and the same output as one run", () => {
+  const h = instantiate().init();
+  const program = "(define (f n) (if (= n 0) 'done (f (- n 1)))) (write-string \"a\") (f 50000)";
+  assert.equal(h.begin(program), CONTINUE);
+  assert.equal(h.x.sucheme_step(0), CONTINUE);
+  assert.equal(h.x.sucheme_step(0), CONTINUE);
+  let rounds = 0;
+  let status;
+  do {
+    status = h.x.sucheme_step(1000);
+    rounds += 1;
+  } while (status === CONTINUE);
+  assert.equal(status, OK);
+  assert.ok(rounds > 10, `the evaluation was split into ${rounds} steps`);
+  const split = h.output();
+  const whole = instantiate().init().run(program);
+  assert.deepEqual([OK, split], whole);
+});
+
+test("what needs no machine step finishes in eval_begin: an empty input, a comment, and a library declaration", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin(""), OK);
+  assert.equal(h.begin("; only a comment\n"), OK);
+  assert.equal(h.begin("(define-library (x) (import (scheme base)) (export f) (begin (define (f) 5)))"), OK);
+  assert.equal(h.x.sucheme_step(10), WRONG_ORDER);
+});
+
+test("the output of each step can be taken between steps, so a run may write more than the buffer holds", () => {
+  const h = instantiate().init();
+  // 1回の書き込みは 1000 バイト、400 回で 400000 バイトで、出力バッファ(262144 バイト)を超える。
+  const program = '(define (go n) (if (> n 0) (begin (write-string (make-string 1000 #\\x)) (go (- n 1))))) (go 400)';
+  assert.equal(h.begin(program), CONTINUE);
+  let total = 0;
+  let status;
+  do {
+    status = h.x.sucheme_step(500);
+    total += h.x.sucheme_output_len();
+    h.x.sucheme_output_clear();
+  } while (status === CONTINUE);
+  assert.equal(status, OK);
+  assert.equal(total, 400000);
+});
+
+test("steps of a few machine steps keep every value alive across the collections between them", () => {
+  const h = instantiate().init();
+  const program =
+    "(define (build n acc) (if (= n 0) acc (build (- n 1) (cons (make-vector 3 n) acc)))) " +
+    "(define big (build 3000 '())) (define (sum l a) (if (null? l) a (sum (cdr l) (+ a (vector-ref (car l) 0))))) (sum big 0)";
+  assert.equal(h.begin(program), CONTINUE);
+  let status;
+  do status = h.x.sucheme_step(37);
+  while (status === CONTINUE);
+  assert.equal(status, OK);
+  assert.equal(h.output(), "4501500\n");
+});
+
+test("abort drops the evaluation and keeps the definitions, and the next evaluation can start", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(define x 42) (write-string \"before\") (define (spin) (spin)) (spin) (define never 1)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(100000), CONTINUE);
+  // 止まらない評価の途中までの出力が残っている。
+  assert.equal(h.output(), "before");
+  h.x.sucheme_output_clear();
+  assert.equal(h.x.sucheme_abort(), OK);
+  assert.deepEqual(h.run("x"), [OK, "42\n"]);
+  // 捨てた評価の続きは、実行されていない。
+  const [status, text] = h.run("never");
+  assert.equal(status, SCHEME_ERROR);
+  assert.match(text, /^error: /);
+});
+
+test("abort and step with no evaluation return wrong_order and leave the state alone", () => {
+  const h = instantiate().init();
+  assert.equal(h.run("(define y 7)")[0], OK);
+  assert.equal(h.x.sucheme_abort(), WRONG_ORDER);
+  assert.match(h.output(), /no evaluation is in progress/);
+  h.x.sucheme_output_clear();
+  assert.equal(h.x.sucheme_step(10), WRONG_ORDER);
+  assert.match(h.output(), /no evaluation is in progress/);
+  h.x.sucheme_output_clear();
+  assert.deepEqual(h.run("y"), [OK, "7\n"]);
+  // 完了のあとの step も同じである。
+  assert.equal(h.begin("(+ 1 2)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(0xffffffff), OK);
+  assert.equal(h.x.sucheme_step(10), WRONG_ORDER);
+});
+
+test("before init, step and abort return not_initialized and say why", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_step(1), NOT_INITIALIZED);
+  assert.match(h.output(), /not initialized/);
+  h.x.sucheme_output_clear();
+  assert.equal(h.x.sucheme_abort(), NOT_INITIALIZED);
+  assert.match(h.output(), /not initialized/);
+});
+
+test("eval_begin while an evaluation goes on returns wrong_order, and that evaluation is unharmed", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(define (f n) (if (= n 0) 'ok (f (- n 1)))) (f 100000) (write-string \"end\")"), CONTINUE);
+  assert.equal(h.x.sucheme_step(10), CONTINUE);
+  h.x.sucheme_output_clear();
+  assert.equal(h.begin("(display 1)"), WRONG_ORDER);
+  assert.match(h.output(), /an evaluation is in progress/);
+  h.x.sucheme_output_clear();
+  let status;
+  do status = h.x.sucheme_step(0xffffffff);
+  while (status === CONTINUE);
+  assert.equal(status, OK);
+  assert.equal(h.output(), "ok\nend");
+});
+
+test("set_command_line is refused while an evaluation goes on, and works after it", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(import (scheme process-context)) (define (f n) (if (= n 0) (command-line) (f (- n 1)))) (f 100000)"), CONTINUE);
+  const bytes = new TextEncoder().encode("prog\nx");
+  const ptr = h.x.sucheme_alloc(bytes.length);
+  h.bytes(ptr, bytes.length).set(bytes);
+  assert.equal(h.x.sucheme_set_command_line(ptr, bytes.length), 0);
+  let status;
+  do status = h.x.sucheme_step(0xffffffff);
+  while (status === CONTINUE);
+  assert.equal(status, OK);
+  assert.equal(h.output(), "(\"sucheme\")\n");
+  assert.equal(h.x.sucheme_set_command_line(ptr, bytes.length), 1);
+  h.x.sucheme_free(ptr, bytes.length);
+});
+
+test("an error in a later step returns -1 with the line after the output so far, and evaluation can continue", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(define (f n) (if (= n 0) (car 5) (f (- n 1)))) (write-string \"x\") (f 10000)"), CONTINUE);
+  let status;
+  do status = h.x.sucheme_step(100);
+  while (status === CONTINUE);
+  assert.equal(status, SCHEME_ERROR);
+  assert.match(h.output(), /^xerror: /);
+  h.x.sucheme_output_clear();
+  // 終わった評価のあとは、ふつうに次を評価できる。
+  assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
+});
+
+test("exit in a later step returns -6, and only a reset goes on", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(import (scheme process-context)) (define (f n) (if (= n 0) (exit 3) (f (- n 1)))) (f 10000)"), CONTINUE);
+  let status;
+  do status = h.x.sucheme_step(100);
+  while (status === CONTINUE);
+  assert.equal(status, EXITED);
+  assert.equal(h.x.sucheme_exit_code(), 3);
+  assert.equal(h.begin("1"), WRONG_ORDER);
+  assert.equal(h.x.sucheme_step(1), WRONG_ORDER);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.deepEqual(h.run("1"), [OK, "1\n"]);
+});
+
+test("a reset during an evaluation drops it and the definitions", () => {
+  const h = instantiate().init();
+  assert.equal(h.run("(define z 1)")[0], OK);
+  assert.equal(h.begin("(define (spin) (spin)) (spin)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), CONTINUE);
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.equal(h.x.sucheme_step(1), WRONG_ORDER);
+  assert.equal(h.run("z")[0], SCHEME_ERROR);
+  assert.deepEqual(h.run("(+ 1 1)"), [OK, "2\n"]);
+});
+
+test("the step limit of a non-terminating input is not an issue: stop by abort leaves no leak across 200 rounds", () => {
+  // 評価ごとに入力の写しとアリーナを作って捨てる。捨て忘れは、200 回で線形メモリを膨らませる。
+  const h = instantiate().init();
+  const before = h.x.memory.buffer.byteLength;
+  for (let i = 0; i < 200; i += 1) {
+    assert.equal(h.begin("(define (spin) (spin)) (spin)"), CONTINUE);
+    assert.equal(h.x.sucheme_step(100), CONTINUE);
+    assert.equal(h.x.sucheme_abort(), OK);
+  }
+  assert.ok(h.x.memory.buffer.byteLength - before < 4 * 1024 * 1024, "the memory did not grow without bound");
+});
+
+// 実行の進め方(web/runner.mjs)。Sucheme(web/sucheme.js)を通して、本物の WASM で試す。
+async function loadSucheme() {
+  const s = await Sucheme.load(readFileSync(wasmPath));
+  assert.equal(s.init(), OK);
+  return s;
+}
+
+test("runEvaluation gives control back between slices, and gives the same result as eval", async () => {
+  const s = await loadSucheme();
+  const program = "(define (f n) (if (= n 0) 'done (f (- n 1)))) (write-string \"a\") (f 200000)";
+  let yields = 0;
+  const result = await runEvaluation(s, program, {
+    shouldStop: () => false,
+    yieldControl: async () => {
+      yields += 1;
+    },
+    budget: 1000,
+    // 時計は進めない。1スライス = 1回の step になる。
+    now: () => 0,
+    sliceMs: 0,
+  });
+  assert.equal(result.stopped, false);
+  assert.equal(result.status, OK);
+  assert.ok(yields > 50, `control came back ${yields} times`);
+  const whole = (await loadSucheme()).eval(program);
+  assert.deepEqual({ status: result.status, output: result.output }, whole);
+});
+
+test("runEvaluation stops a non-terminating evaluation at a slice, keeps the definitions and the output so far", async () => {
+  const s = await loadSucheme();
+  let yields = 0;
+  const result = await runEvaluation(s, "(define kept 99) (write-string \"hello\") (define (spin) (spin)) (spin)", {
+    shouldStop: () => yields >= 5,
+    yieldControl: async () => {
+      yields += 1;
+    },
+    budget: 1000,
+  });
+  assert.deepEqual(result, { status: OK, output: "hello", stopped: true });
+  assert.deepEqual(s.eval("kept"), { status: OK, output: "99\n" });
+  // 次の評価が始められる(前の評価が残っていない)。
+  assert.deepEqual(s.eval("(+ 1 2)"), { status: OK, output: "3\n" });
+});
+
+test("a stop that is requested before the first slice drops the evaluation without a step", async () => {
+  const s = await loadSucheme();
+  const result = await runEvaluation(s, "(define (spin) (spin)) (spin)", {
+    shouldStop: () => true,
+    yieldControl: async () => {},
+  });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(s.eval("(+ 1 2)"), { status: OK, output: "3\n" });
+});
+
+test("a stop that arrives after the evaluation finished is not a stop, and an input that needs no step is never stopped", async () => {
+  const s = await loadSucheme();
+  const done = await runEvaluation(s, "(+ 1 2)", {
+    // 最初の確認では要求が無く、評価は1スライスで終わる。
+    shouldStop: (() => {
+      let calls = 0;
+      return () => (calls++ >= 2);
+    })(),
+    yieldControl: async () => {},
+  });
+  assert.deepEqual(done, { status: OK, output: "3\n", stopped: false });
+  const empty = await runEvaluation(s, "", { shouldStop: () => true, yieldControl: async () => {} });
+  assert.deepEqual(empty, { status: OK, output: "", stopped: false });
+});
+
+test("runEvaluation reports an error and exit as eval does, and stops being asked once the evaluation ended", async () => {
+  const s = await loadSucheme();
+  const failed = await runEvaluation(s, "(write-string \"x\") (car 5)", {
+    shouldStop: () => false,
+    yieldControl: async () => {},
+  });
+  assert.equal(failed.status, SCHEME_ERROR);
+  assert.match(failed.output, /^xerror: /);
+  const exited = await runEvaluation(s, "(import (scheme process-context)) (exit 4)", { shouldStop: () => false, yieldControl: async () => {} });
+  assert.equal(exited.status, EXITED);
+  assert.equal(s.exitCode(), 4);
 });
 
 // エラーの表示(web/errors.mjs)。出力とエラーの説明を分け、エラーの前の出力を残す。
@@ -1224,7 +1514,7 @@ for (const { name, body, slow } of tests) {
     continue;
   }
   try {
-    body();
+    await body();
     passed += 1;
     console.log(`ok   ${name}`);
   } catch (e) {

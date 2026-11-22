@@ -1,7 +1,7 @@
 // A thin layer over the exports of sucheme.wasm (src/wasm.zig).
 //
 // 状態コードの値は docs/design/platform-and-web.md の表が正である。この層は
-// src/wasm.zig が公開している関数だけを呼ぶ(sucheme_step などは未実装)。
+// src/wasm.zig が公開している関数だけを呼ぶ(`sucheme_provide_input` などは未実装)。
 // 文字列はすべて UTF-8 で受け渡す。線形メモリは伸びると ArrayBuffer が差し替わるので、
 // メモリの視点(Uint8Array)は使うたびに作り直す。
 
@@ -19,6 +19,9 @@ export const Status = Object.freeze({
   OUT_OF_MEMORY: -7,
   BAD_REGION: -8,
 });
+
+/** The most steps `sucheme_step` takes at once (a `u32`). */
+export const STEP_BUDGET_MAX = 0xffffffff;
 
 const encoder = new TextEncoder();
 // fatal を付けない。出力はインタプリタが妥当な UTF-8 で書くので、置換が起きるのは異常時だけである。
@@ -78,14 +81,15 @@ export class Sucheme {
   }
 
   /**
-   * Evaluate every expression in `text`.
+   * Start evaluating every expression in `text`.
    *
-   * 戻り値は `{ status, output }`。-1(Scheme のエラー)と -3(不正な UTF-8)でも
-   * 出力に説明が入るので、呼び出し側はそのまま表示できる。-6(`Status.EXITED`)は、
+   * 戻り値は `{ status, output }`。status が 1(`Status.CONTINUE`)のとき、評価は続いていて、
+   * `step()` で進める(`abort()` で捨てられる)。0 なら歩数を使わずに完了した。-1(Scheme のエラー)と
+   * -3(不正な UTF-8)でも出力に説明が入るので、呼び出し側はそのまま表示できる。-6(`Status.EXITED`)は、
    * プログラムが `exit` を呼んだことを表し、終了コードは `exitCode()` で取る。以後は
    * `reset()` まで評価できない。
    */
-  eval(text) {
+  begin(text) {
     const e = this.#exports;
     const encoded = encoder.encode(text);
     const ptr = e.sucheme_alloc(encoded.length);
@@ -101,6 +105,43 @@ export class Sucheme {
       e.sucheme_free(ptr, encoded.length);
     }
     return { status, output: this.#takeOutput() };
+  }
+
+  /**
+   * Advance the evaluation `begin()` started by at most `budget` machine steps
+   * (`budget` は 0 から 2^32 - 1)。
+   *
+   * 戻り値は `{ status, output }`。1 なら、また呼ぶ。0 は完了、-1 は Scheme のエラーである。
+   * 出力は、この歩の分だけが入る。
+   */
+  step(budget) {
+    const status = this.#exports.sucheme_step(budget);
+    return { status, output: this.#takeOutput() };
+  }
+
+  /**
+   * Drop the evaluation `begin()` started and `step()` has not finished.
+   * それまでの定義は残る。戻り値は状態コード(0 が成功)である。
+   */
+  abort() {
+    return this.#exports.sucheme_abort();
+  }
+
+  /**
+   * Evaluate every expression in `text`, to the end.
+   *
+   * `begin()` と `step()` を、完了まで続けて呼ぶ。戻り値は `{ status, output }` で、
+   * output は全部の出力である。途中で制御を戻したいときは、`begin()` と `step()` を使う
+   * (runner.mjs)。
+   */
+  eval(text) {
+    let { status, output } = this.begin(text);
+    while (status === Status.CONTINUE) {
+      const next = this.step(STEP_BUDGET_MAX);
+      status = next.status;
+      output += next.output;
+    }
+    return { status, output };
   }
 
   /**
