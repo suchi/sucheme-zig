@@ -94,6 +94,11 @@ pub const Interpreter = struct {
     /// 名前があれば、展開時のエラーの説明に、その形式を読んだ位置を前置する。文字列は
     /// 呼び出し側が持つ。
     file_name: ?[]const u8,
+    /// Whether the places of an input that has no file name are kept, with an empty file name,
+    /// and the descriptions of its errors start with `line:column: ` (ADR-0054).
+    /// WASM が真にする。ブラウザの入力欄の行と桁を、エラーの出力から取り出すためである。
+    /// ネイティブの REPL と test-scheme は偽のままで、説明の形は変わらない。
+    place_unnamed_input: bool,
     /// Whether the next `evalPrint` reads identifiers folded to lower case.
     /// `#!fold-case` と `#!no-fold-case` は、同じポートの後続のデータに効く(R7RS 2.1)。REPL の
     /// 入力は行ごとに `evalPrint` へ渡るので、各呼び出しがこの状態で読み始め、読み終えた
@@ -225,6 +230,7 @@ pub const Interpreter = struct {
         self.diagnostic_buffer = .empty;
         self.diagnostic_text = "";
         self.file_name = null;
+        self.place_unnamed_input = false;
         self.fold_case = false;
         self.error_at = null;
         self.console_out = null;
@@ -320,7 +326,10 @@ pub const Interpreter = struct {
         self.ctx.heap.console_input = self.console_in;
         e.reader.fold_case = self.fold_case;
         self.ctx.positions = &e.table;
-        if (self.file_name) |file| e.recording = .{ .table = &e.table, .file = try e.table.addFile(file) };
+        // ファイルを持たない入力は、`place_unnamed_input` のときだけ、空の名前のファイルとして
+        // 位置を記録する。診断は、名前が空なら、ファイルを書かない(ADR-0054)。
+        const recorded: ?[]const u8 = self.file_name orelse if (self.place_unnamed_input) @as([]const u8, "") else null;
+        if (recorded) |file| e.recording = .{ .table = &e.table, .file = try e.table.addFile(file) };
     }
 
     /// Advances the evaluation `beginEval` started by at most `budget` machine steps
@@ -347,6 +356,8 @@ pub const Interpreter = struct {
         var left = budget;
         const status = self.advanceEval(e, &left, watch) catch |err| {
             self.endEval();
+            // 機械が送出した誤り(`located` を通らないもの)は、適用していた呼び出しの位置を持つ。
+            if (err == error.Raised and self.error_at == null) self.error_at = self.callSpotAt();
             self.keepDiagnostic(arena, err);
             return err;
         };
@@ -427,7 +438,13 @@ pub const Interpreter = struct {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
         const written = if (self.ctx.raised) |v| blk: {
-            if (self.error_at) |at| w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column }) catch |failed| break :blk failed;
+            if (self.error_at) |at| {
+                const printed = if (at.file.len == 0)
+                    w.writer.print("{d}:{d}: ", .{ at.location.line, at.location.column })
+                else
+                    w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column });
+                printed catch |failed| break :blk failed;
+            }
             break :blk describeRaised(&w.writer, &self.ctx.heap, v);
         } else w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
@@ -461,8 +478,20 @@ pub const Interpreter = struct {
     fn located(self: *Interpreter, e: Error, table: *const positions_mod.Table, form: value.Value) Error {
         if (e != error.Raised) return e;
         self.ctx.noteRaisedAt(table.of(form));
-        if (self.ctx.raisedPosition()) |p| self.error_at = .{ .file = table.fileName(p.file), .location = p.location };
+        // 実行した呼び出しが誤りを送出していれば(ライブラリの本体を走らせたときなど)、その位置を使う。
+        if (self.callSpotAt()) |at| {
+            self.error_at = at;
+        } else if (self.ctx.raisedPosition()) |p| {
+            self.error_at = .{ .file = table.fileName(p.file), .location = p.location };
+        }
         return e;
+    }
+
+    /// Where the call that raised the value raised is, when it has a place.
+    /// 名前はコンテキストの表にあり、インタプリタが解放されるまで有効である。
+    fn callSpotAt(self: *const Interpreter) ?ErrorAt {
+        const spot = self.ctx.raisedCallSpot() orelse return null;
+        return .{ .file = self.ctx.source_names.nameOf(spot.file), .location = .{ .line = spot.line, .column = spot.column } };
     }
 
     /// Writes `v`, a result of a form, and a newline, unless it is the
@@ -708,6 +737,36 @@ test "an error in a stepped evaluation ends it, is described as evalPrint descri
     // 誤りの前の定義は残り、次の評価は走る。
     try interp.evalPrint(arena.allocator(), "x", &w);
     try std.testing.expectEqualStrings("1\n", w.buffered());
+}
+
+test "an error in a stepped evaluation says the place of the call, whatever the budget and the collections" {
+    for ([_]bool{ false, true }) |stress| for ([_]u64{ 1, 7, 1000 }) |budget| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        var interp: Interpreter = undefined;
+        try interp.init(std.testing.allocator);
+        defer interp.deinit();
+        interp.ctx.heap.options.stress = stress;
+        interp.place_unnamed_input = true;
+        var buf: [256]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        // 止まっている間も、位置と組の値は回収されない。
+        try interp.beginEval(arena.allocator(), "(define (f x)\n  (car x))\n(f 5)", &w);
+        while (true) {
+            const status = interp.stepEval(budget) catch |e| {
+                try std.testing.expectEqual(error.Raised, e);
+                break;
+            };
+            try std.testing.expectEqual(.more, status);
+        }
+        try std.testing.expectEqualStrings("2:3: wrong type of argument to car 5", interp.diagnostic());
+        // 次の評価は、前の位置を引き継がない。
+        try interp.beginEval(arena.allocator(), "(undefined-name 1)", &w);
+        while (true) {
+            _ = interp.stepEval(budget) catch break;
+        }
+        try std.testing.expectEqualStrings("unbound variable: undefined-name", interp.diagnostic());
+    };
 }
 
 test "an interrupted evaluation goes on where it was, or is dropped with its definitions kept" {
@@ -1577,7 +1636,8 @@ test "a library is available to a requirement when its file can be opened, and t
     try expectLinePrints(&interp, "(cond-expand ((library (con)) 'yes) (else 'no))", "no\n");
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
     // 読み込みは、インポートがする。
-    try expectLineFails(&interp, "(import (foo bar))", "wrong type of argument to car 5");
+    // 本体の呼び出し `(car 5)` の位置は、ライブラリのファイルの中である(ADR-0054)。
+    try expectLineFailsInTree(&interp, &tree, "(import (foo bar))", "foo/bar.sld:1:67", "wrong type of argument to car 5");
 }
 
 test "asking whether a library is available does not leave its file open" {
@@ -1882,7 +1942,7 @@ test "a library that cannot be loaded leaves nothing behind, and an error inside
         var interp: Interpreter = undefined;
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
-        try expectLineFails(&interp, "(import (t outer))", "wrong type of argument to car 5");
+        try expectLineFailsInTree(&interp, &tree, "(import (t outer))", "t/bad.sld:1:74", "wrong type of argument to car 5");
         // 成功した依存は残り、失敗した2つは残らない。
         try std.testing.expectEqual(1, interp.ctx.libraries.list.items.len);
         try expectLinePrints(&interp, "(import (t good)) (g)", "1\n");
@@ -2057,16 +2117,75 @@ fn expectPlacesOfErrors(stress: bool) !void {
     for (cases) |c| try expectLineFails(&interp, c.line, c.message);
 }
 
-test "a runtime error, a reader error and a line of the REPL say no place" {
+test "a reader error, and an error of a node that is not a call, say no place" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     interp.file_name = "prog.scm";
-    // 実行時の誤りは、節点が位置を持たないので、位置を付けない(docs/design/frontend.md)。
-    try expectLineFails(&interp, "(define x 1)\n(car x)", "wrong type of argument to car 1");
-    // ファイルの名前が無い入力(REPL と WASM の行)は、展開時の誤りにも位置を付けない。
-    interp.file_name = null;
-    try expectLineFails(&interp, "\n  (if)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    // 変数の参照は呼び出しの節点ではないので、位置を持たない(ADR-0054)。外側の呼び出しの位置も使わない。
+    try expectLineFails(&interp, "(define x 1)\n(list 1\n  nope)", "unbound variable: nope");
+    try expectLineFails(&interp, "(set! nope 1)", "unbound variable: nope");
+    // 入力そのものの読み取りの誤りは、位置を持たない。
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.UnexpectedCloseParen, interp.evalPrint(arena.allocator(), "(define x 1)\n)", &w));
+    try std.testing.expect(std.mem.indexOf(u8, interp.diagnostic(), ":") == null);
+}
+
+test "an error a call raises says the place of the call, in a named file or in an input with no file" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCore(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        interp.file_name = "prog.scm";
+        // 型の誤り。誤りを起こした呼び出し `(car x)` の位置である。
+        try expectLineFails(&interp, "(define x 1)\n(car x)", "prog.scm:2:1: wrong type of argument to car 1");
+        // 最も内側の呼び出し。外側の `(+ 1 ...)` ではなく `(car x)` が失敗する。
+        try expectLineFails(&interp, "(define x 1)\n(+ 1\n  (car x))", "prog.scm:3:3: wrong type of argument to car 1");
+        // 引数の個数の誤りは、呼び出しの側の位置である。
+        try expectLineFails(&interp, "(define (f a) a)\n  (f 1 2)", "prog.scm:2:3: wrong number of arguments: expected 1, got 2");
+        // 手続きの本体の中の誤りは、本体の中の呼び出しの位置である。
+        try expectLineFails(&interp, "(define (g y)\n (vector-ref y 0))\n(g 5)", "prog.scm:2:2: wrong type of argument to vector-ref 5 0");
+        // `error` と `raise` は、呼び出しの位置を持つ。
+        try expectLineFails(&interp, "\n\n   (error \"boom\" 1)", "prog.scm:3:4: boom 1");
+        try expectLineFails(&interp, "(raise 'oops)", "prog.scm:1:1: oops");
+        // 位置は誤りごとに持ち、次の行の誤りには残らない。
+        try expectLineFails(&interp, "(car 1)", "prog.scm:1:1: wrong type of argument to car 1");
+        try expectLineFails(&interp, "(raise 'again)", "prog.scm:1:1: again");
+        // ファイルの名前が無い入力は、既定では位置を持たない(ネイティブの REPL の説明は変わらない)。
+        interp.file_name = null;
+        try expectLineFails(&interp, "(define x 1)\n (car x)", "wrong type of argument to car 1");
+        try expectLineFails(&interp, "\n  (if)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+        // `place_unnamed_input` のとき(WASM)は、ファイル名なしで、行と桁を書く。
+        interp.place_unnamed_input = true;
+        try expectLineFails(&interp, "\n  (if)", "2:3: bad if: expected (if test consequent) or (if test consequent alternative)");
+        try expectLineFails(&interp, "(define x 1)\n (car x)", "2:2: wrong type of argument to car 1");
+    }
+}
+
+test "an error that a guard re-raises keeps the place of the call that raised it, and one a library procedure raises has none" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // どの節にも合わない `guard` は、同じ値を、位置を持たない呼び出しで再送出する。元の位置が残る。
+    try expectLineFails(&interp, "(guard (e (#f 1)) (car 5))", "prog.scm:1:19: wrong type of argument to car 5");
+    // 標準ライブラリの手続きの中の誤りは、位置を持たない(ADR-0054)。
+    try expectLineFails(&interp, "(list-ref '(a b) 5)", "argument out of range in list-ref (a b) 5");
+}
+
+test "a call the reader did not read, the output of a macro, raises with no place" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // 展開した呼び出し `(car 1)` はテンプレートのペアで、位置を持たない。使用の側の `(m)` の位置も
+    // 引き継がない。
+    try expectLineFails(&interp, "(define-syntax m (syntax-rules () ((_) (car 1))))\n(m)", "wrong type of argument to car 1");
+    // マクロの引数として渡した呼び出しは、読んだペアのままなので、その位置を持つ。
+    try expectLineFails(&interp, "(define-syntax n (syntax-rules () ((_ e) (list e))))\n(n\n (car 1))", "prog.scm:3:2: wrong type of argument to car 1");
 }
 
 test "an error raised outside the expander says the place of the top-level form" {

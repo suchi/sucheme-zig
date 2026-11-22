@@ -1219,7 +1219,10 @@ test "runFile writes stderr out, after what the program wrote to stdout" {
     var err1: TerminalWriter = .init(&t1, &eb1);
     const s1 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out1.interface, &err1.interface);
     try std.testing.expectEqual(exit_runtime_error, s1);
-    try std.testing.expectEqualStrings("helloerror: wrong type of argument to car 1\n", t1.shown());
+    // 説明は、実行したファイルの位置(絶対パス:行:桁)から始まる(ADR-0054)。パスは OS で形が違うので、
+    // 前後だけを見る。
+    try std.testing.expect(std.mem.startsWith(u8, t1.shown(), "helloerror: "));
+    try std.testing.expect(std.mem.endsWith(u8, t1.shown(), "prog.scm:3:1: wrong type of argument to car 1\n"));
     // 標準出力に書けない: 診断は書き出されている。
     var t2: Terminal = .{};
     var ob2: [4]u8 = undefined;
@@ -1237,7 +1240,8 @@ test "runFile writes stderr out, after what the program wrote to stdout" {
     var err3: TerminalWriter = .init(&t3, &eb3);
     const s3 = try runProgramToBoth("(import (scheme base) (scheme write))\n(display \"hello\")\n(car 1)\n", &out3, &err3.interface);
     try std.testing.expectEqual(exit_runtime_error, s3);
-    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", t3.shown());
+    try std.testing.expect(std.mem.startsWith(u8, t3.shown(), "error: "));
+    try std.testing.expect(std.mem.endsWith(u8, t3.shown(), "prog.scm:3:1: wrong type of argument to car 1\nerror: cannot write to standard output\n"));
 }
 
 test "what a program writes to stdout and to the error port shows on the terminal in the order it was written" {
@@ -1293,7 +1297,8 @@ test "runFile keeps the description of a runtime error when stdout cannot be wri
     var eb: [256]u8 = undefined;
     const r = try runProgramTo("(import (scheme base) (scheme write))\n(display \"hi\")\n(car 1)\n", &out, &eb);
     try std.testing.expectEqual(exit_runtime_error, r.status);
-    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\nerror: cannot write to standard output\n", r.err);
+    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: "));
+    try std.testing.expect(std.mem.endsWith(u8, r.err, "prog.scm:3:1: wrong type of argument to car 1\nerror: cannot write to standard output\n"));
 }
 
 test "runFile writes what the program writes to the console to stdout, and not the values" {
@@ -1312,7 +1317,8 @@ test "runFile keeps what the program wrote before an error, ahead of the descrip
     const r = try runProgramWithOutput("(import (scheme base) (scheme write))\n(display \"before\")\n(car 1)\n(display \"after\")\n", &ob, &eb);
     try std.testing.expectEqual(exit_runtime_error, r.status);
     try std.testing.expectEqualStrings("before", r.out);
-    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\n", r.err);
+    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: "));
+    try std.testing.expect(std.mem.endsWith(u8, r.err, "prog.scm:3:1: wrong type of argument to car 1\n"));
 }
 
 test "runFile runs a program that starts with an import, prints nothing, and exits 0" {
@@ -1333,7 +1339,9 @@ test "runFile stops at the first error with status 1, after the effects before i
     var eb: [256]u8 = undefined;
     const r = try runProgram("(define x 1)\n(car x)\n(undefined-after-the-error)\n", &eb);
     try std.testing.expectEqual(exit_runtime_error, r.status);
-    try std.testing.expectEqualStrings("error: wrong type of argument to car 1\n", r.err);
+    // 実行時の誤りも、誤りを起こした呼び出し `(car x)` の位置を持つ。
+    try std.testing.expect(std.mem.startsWith(u8, r.err, "error: "));
+    try std.testing.expect(std.mem.endsWith(u8, r.err, "prog.scm:2:1: wrong type of argument to car 1\n"));
 }
 
 test "runFile reports an unbound variable and a syntax error with status 1" {
@@ -1390,7 +1398,8 @@ test "runFile finds a library under a search root" {
     const status = try runFile(std.testing.allocator, .{ .io = std.testing.io, .roots = &.{dir} }, path, .{}, &out.writer, &err);
     // `(f)` は 7 を返し、`(car 7)` が誤りになる。ライブラリが読めたことは、その誤りの種類で分かる。
     try std.testing.expectEqual(exit_runtime_error, status);
-    try std.testing.expectEqualStrings("error: wrong type of argument to car 7\n", err.buffered());
+    try std.testing.expect(std.mem.startsWith(u8, err.buffered(), "error: "));
+    try std.testing.expect(std.mem.endsWith(u8, err.buffered(), "prog.scm:2:1: wrong type of argument to car 7\n"));
 }
 
 test "runFile returns 66 for a file that is missing, and for a directory" {

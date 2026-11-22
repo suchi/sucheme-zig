@@ -105,6 +105,13 @@ pub const Context = struct {
     /// (src/positions.zig), or null when none are kept.
     /// 表の鍵のペアは GC のルートである(`mark`)。
     positions: ?*positions_mod.Table = null,
+    /// The names of the files that call nodes have places in (`value.Spot.file`).
+    /// インタプリタが生きている間、持つ。確保は `resident()` で、上限に数える(ADR-0054)。
+    source_names: positions_mod.Names = .{},
+    /// The place of the call that raised `raised`, with that value, or null.
+    /// 位置は、`raised` がその値であるときだけ意味を持つ(`raisedCallSpot`)。値は GC のルートに
+    /// する(`raised_at` と同じ理由)。
+    raised_call: ?RaisedCall = null,
     /// The parameters that are the current ports, and where the console writes
     /// (R7RS 6.13.1 `current-input-port` and the others).
     /// パラメータは、`%console-parameter` が最初に呼ばれたときに作り(src/prim/port.zig)、
@@ -167,6 +174,7 @@ pub const Context = struct {
         self.libraries.deinit(tables);
         self.environments.deinit(tables);
         self.sources.deinit(tables);
+        self.source_names.deinit(tables);
         self.heap.deinit();
         if (self.file_table) |t| t.deinit();
     }
@@ -216,6 +224,7 @@ pub const Context = struct {
         if (self.parked) |p| p.mark(marker);
         if (self.raised) |v| marker.value(v);
         if (self.raised_at) |at| marker.value(at.value);
+        if (self.raised_call) |at| marker.value(at.value);
         if (self.positions) |kept| kept.mark(marker);
         for ([_]?*value_mod.Parameter{ self.console.input, self.console.output, self.console.error_output }) |param| {
             if (param) |p| marker.object(value_mod.Parameter, p);
@@ -240,6 +249,8 @@ pub const Context = struct {
     };
 
     pub const RaisedAt = struct { value: Value, position: positions_mod.Position };
+
+    pub const RaisedCall = struct { value: Value, spot: value_mod.Spot };
 
     /// The registers of a machine that waits, in the middle of a step, on work that
     /// may run another machine and collect: what it continues with, where in the
@@ -324,6 +335,22 @@ pub const Context = struct {
         const v = self.raised orelse return;
         if (self.raisedPosition() != null) return;
         self.raised_at = .{ .value = v, .position = at };
+    }
+
+    /// Keeps that the value just raised was raised by the call at `spot`: the call that was
+    /// being applied, which is the innermost one. A call without a place keeps nothing, and
+    /// does not take back the place kept for the same value.
+    pub fn noteRaisedCall(self: *Context, spot: value_mod.Spot) void {
+        if (spot.isNone()) return;
+        const v = self.raised orelse return;
+        self.raised_call = .{ .value = v, .spot = spot };
+    }
+
+    /// The place of the call that raised the value raised, when it has one.
+    pub fn raisedCallSpot(self: *const Context) ?value_mod.Spot {
+        const at = self.raised_call orelse return null;
+        const v = self.raised orelse return null;
+        return if (v.isEq(at.value)) at.spot else null;
     }
 
     /// Where the value raised was raised, when it is known.
@@ -421,6 +448,7 @@ pub const Context = struct {
     pub fn clearDiagnostic(self: *Context) void {
         self.raised = null;
         self.raised_at = null;
+        self.raised_call = null;
     }
 
     /// Raises an error: makes the condition with the message and keeps it in
@@ -527,6 +555,52 @@ test "the place of a raise belongs to the value raised, and the innermost place 
     try std.testing.expectEqual(outer, ctx.raisedPosition().?);
     ctx.clearDiagnostic();
     try std.testing.expect(ctx.raised_at == null);
+}
+
+test "the place of the call that raised a value is the place of that value only, and an unplaced call keeps nothing" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    const near: value_mod.Spot = .init(0, 2, 3);
+    const far: value_mod.Spot = .init(0, 9, 1);
+    try std.testing.expectEqual(error.Raised, ctx.raise("first", .{}));
+    try std.testing.expect(ctx.raisedCallSpot() == null);
+    // 位置の無い呼び出しは、何も残さない。
+    ctx.noteRaisedCall(.none);
+    try std.testing.expect(ctx.raisedCallSpot() == null);
+    ctx.noteRaisedCall(near);
+    try std.testing.expectEqual(near, ctx.raisedCallSpot().?);
+    // 同じ値を、位置の無い呼び出しがもう一度送出しても、残した位置は消えない。別の位置の呼び出しは、置き換える。
+    ctx.noteRaisedCall(.none);
+    try std.testing.expectEqual(near, ctx.raisedCallSpot().?);
+    ctx.noteRaisedCall(far);
+    try std.testing.expectEqual(far, ctx.raisedCallSpot().?);
+    // 別の値を送出したら、前の位置はその値のものではない。
+    try std.testing.expectEqual(error.Raised, ctx.raise("second", .{}));
+    try std.testing.expect(ctx.raisedCallSpot() == null);
+    ctx.noteRaisedCall(near);
+    ctx.clearDiagnostic();
+    try std.testing.expect(ctx.raised_call == null);
+    try std.testing.expect(ctx.raisedCallSpot() == null);
+}
+
+test "the value kept with the place of a call is a root" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var ctx = try Context.init(arena.allocator(), std.testing.allocator);
+    defer ctx.deinit();
+    const kept = try ctx.heap.cons(.fromFixnum(1), .empty_list_value);
+    ctx.raised = kept;
+    ctx.noteRaisedCall(.init(0, 1, 1));
+    // `raised` を降ろしても(ハンドラに渡したあと)、位置と組の値は、次の回収で回収されない。
+    ctx.raised = null;
+    ctx.collectIdle();
+    const held = ctx.heap.count;
+    try std.testing.expectEqual(1, ctx.raised_call.?.value.asPair().?.car.asFixnum().?);
+    ctx.clearDiagnostic();
+    ctx.collectIdle();
+    try std.testing.expectEqual(held - 1, ctx.heap.count);
 }
 
 test "the pairs of the table of positions are roots while the context holds it" {

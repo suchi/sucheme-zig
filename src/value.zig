@@ -1110,6 +1110,36 @@ pub const Lambda = struct {
 pub const Call = struct {
     operator: *const Node,
     operands: []const *const Node,
+    /// Where the form of the call was read, for the message of an error the call raises.
+    at: Spot = .none,
+};
+
+/// A place in a file, packed in 8 bytes: which file, and the line and the column in it,
+/// both counted from 1 (src/positions.zig).
+/// 節点に持たせる位置である(ADR-0054)。`Node` は共用体なので、この大きさがすべての節点の
+/// 大きさに入る。ファイルは `Context.source_names` の番号である。行 0 は「位置なし」で、幅に収まらない
+/// 位置も位置なしにする(誤った位置を出さない)。
+pub const Spot = packed struct(u64) {
+    file: u16,
+    line: u24,
+    column: u24,
+
+    /// No place: what a node the reader did not read has.
+    pub const none: Spot = .{ .file = 0, .line = 0, .column = 0 };
+
+    /// The place at `line` and `column` of the file numbered `file`, or none when one of
+    /// them does not fit.
+    pub fn init(file: u32, line: u32, column: u32) Spot {
+        const f = std.math.cast(u16, file) orelse return .none;
+        const l = std.math.cast(u24, line) orelse return .none;
+        const c = std.math.cast(u24, column) orelse return .none;
+        if (l == 0) return .none;
+        return .{ .file = f, .line = l, .column = c };
+    }
+
+    pub fn isNone(self: Spot) bool {
+        return self.line == 0;
+    }
 };
 
 /// Values already evaluated for a call, most recent first.
@@ -2595,4 +2625,31 @@ test "eq? agrees with eqv? on every pair of the samples" {
     for (all) |a| {
         for (all) |b| try std.testing.expectEqual(a.isEqv(b), a.isEq(b));
     }
+}
+
+test "a spot keeps the file, the line and the column, and is none when one does not fit" {
+    const s: Spot = .init(3, 12, 7);
+    try std.testing.expect(!s.isNone());
+    try std.testing.expectEqual(3, s.file);
+    try std.testing.expectEqual(12, s.line);
+    try std.testing.expectEqual(7, s.column);
+    // 幅の最大は収まり、1つ超えると位置なしになる。
+    try std.testing.expect(!Spot.init(65535, 16777215, 16777215).isNone());
+    try std.testing.expect(Spot.init(65536, 1, 1).isNone());
+    try std.testing.expect(Spot.init(0, 16777216, 1).isNone());
+    try std.testing.expect(Spot.init(0, 1, 16777216).isNone());
+    // 行は 1 から数えるので、行 0 は位置なしの印と区別できない。
+    try std.testing.expect(Spot.init(0, 0, 5).isNone());
+    try std.testing.expect(Spot.none.isNone());
+}
+
+test "a call node without a place has none, and the spot is 8 bytes" {
+    const operator: Node = .{ .constant = .unspecified_value };
+    const call: Node = .{ .call = .{ .operator = &operator, .operands = &.{} } };
+    try std.testing.expect(call.call.at.isNone());
+    try std.testing.expectEqual(8, @sizeOf(Spot));
+    // 位置は、すべての節点の大きさに入る(共用体)。一番大きい変種は、位置を持つ `Call` と、
+    // 3つのポインタを持つ変種で、タグのぶんが足される(ADR-0054 の測定)。
+    try std.testing.expectEqual(40, @sizeOf(Node));
+    try std.testing.expectEqual(32, @sizeOf(Call));
 }

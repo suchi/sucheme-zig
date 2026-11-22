@@ -422,7 +422,13 @@ pub const Machine = struct {
                         } else {
                             // 末尾呼び出し: 本体は呼び出しの継続のもとで走る。その継続は
                             // `kont` に残っているものである。
-                            take(try self.apply(&kont, &dyn, args, received - 1, .limit), &env, &control, &value);
+                            // 適用が送出したら、この呼び出しの位置を、診断のために残す(ADR-0054)。
+                            // 手続きの本体の誤りは、本体の中の呼び出しが、後のステップで残す。
+                            const applied = self.apply(&kont, &dyn, args, received - 1, .limit) catch |e| {
+                                if (e == error.Raised) ctx.noteRaisedCall(call.at);
+                                return e;
+                            };
+                            take(applied, &env, &control, &value);
                         }
                     },
                     // 値は、そのまま次のフレームに渡る。

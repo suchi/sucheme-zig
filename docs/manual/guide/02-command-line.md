@@ -28,12 +28,12 @@ $ sucheme hello.scm
 Hello, world
 ```
 
-1 は、プログラムの実行時エラーです。それまでに書いた出力は残り、エラーは `error: ` に続けて標準エラーに出ます。そこでプログラムは止まり、あとの式は実行されません。
+1 は、プログラムの実行時エラーです。それまでに書いた出力は残り、エラーは `error: ` に続けて標準エラーに出ます。そこでプログラムは止まり、あとの式は実行されません。説明の前には、誤りを起こした呼び出しの場所が、`ファイル名:行:桁:` の形で付きます。場所が分からない誤りには付きません。
 
 ```console
 $ sucheme boom.scm
 before the error
-error: wrong type of argument to car ()
+error: boom.scm:4:1: wrong type of argument to car ()
 [exit 1]
 ```
 
