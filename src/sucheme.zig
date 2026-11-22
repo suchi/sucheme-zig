@@ -2149,8 +2149,8 @@ test "a reader error, and an error of a node that is not a call, say no place" {
     defer interp.deinit();
     interp.file_name = "prog.scm";
     // 変数の参照は呼び出しの節点ではないので、位置を持たない(ADR-0054)。外側の呼び出しの位置も使わない。
-    try expectLineFails(&interp, "(define x 1)\n(list 1\n  nope)", "unbound variable: nope");
-    try expectLineFails(&interp, "(set! nope 1)", "unbound variable: nope");
+    try expectLineFailsUnplaced(&interp, "(define x 1)\n(list 1\n  nope)", "unbound variable: nope");
+    try expectLineFailsUnplaced(&interp, "(set! nope 1)", "unbound variable: nope");
     // 入力そのものの読み取りの誤りは、位置を持たない。
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -2195,7 +2195,7 @@ test "an error that a guard re-raises keeps the place of the call that raised it
     // どの節にも合わない `guard` は、同じ値を、位置を持たない呼び出しで再送出する。元の位置が残る。
     try expectLineFails(&interp, "(guard (e (#f 1)) (car 5))", "prog.scm:1:19: wrong type of argument to car 5");
     // 標準ライブラリの手続きの中の誤りは、位置を持たない(ADR-0054)。
-    try expectLineFails(&interp, "(list-ref '(a b) 5)", "argument out of range in list-ref (a b) 5");
+    try expectLineFailsUnplaced(&interp, "(list-ref '(a b) 5)", "argument out of range in list-ref (a b) 5");
 }
 
 test "an error a call in the body of a library raises says the place in the library file, not that of the import" {
@@ -2218,7 +2218,7 @@ test "a call the reader did not read, the output of a macro, raises with no plac
     interp.file_name = "prog.scm";
     // 展開した呼び出し `(car 1)` はテンプレートのペアで、位置を持たない。使用の側の `(m)` の位置も
     // 引き継がない。
-    try expectLineFails(&interp, "(define-syntax m (syntax-rules () ((_) (car 1))))\n(m)", "wrong type of argument to car 1");
+    try expectLineFailsUnplaced(&interp, "(define-syntax m (syntax-rules () ((_) (car 1))))\n(m)", "wrong type of argument to car 1");
     // マクロの引数として渡した呼び出しは、読んだペアのままなので、その位置を持つ。
     try expectLineFails(&interp, "(define-syntax n (syntax-rules () ((_ e) (list e))))\n(n\n (car 1))", "prog.scm:3:2: wrong type of argument to car 1");
 }
@@ -2636,6 +2636,17 @@ fn expectLineFails(interp: *Interpreter, line: []const u8, message: []const u8) 
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line, &w));
     try expectDiagnostic(message, interp.diagnostic());
+}
+
+/// Evaluates `line` on `interp` and expects it to fail with exactly `message`, which has no
+/// place before it: an error with no place must not get one (ADR-0054).
+fn expectLineFailsUnplaced(interp: *Interpreter, line: []const u8, message: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line, &w));
+    try std.testing.expectEqualStrings(message, interp.diagnostic());
 }
 
 /// Evaluates `line` on `interp` and expects it to fail with `message`, raised
