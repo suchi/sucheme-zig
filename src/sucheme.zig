@@ -916,6 +916,15 @@ test "a character that arrives in pieces is waited for whole, by read-char and b
     });
 }
 
+test "char-ready? is false while only the start of a character has arrived" {
+    try expectRounds(&.{
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "x\xCE" }}, .out = "#\\x", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+        .{ .src = "(write (read-char))", .feeds = &.{.{ .text = "\xBB" }}, .out = "#\\\u{3bb}", .waits = 1 },
+        .{ .src = "(write (char-ready?))", .out = "#f", .waits = 0 },
+    });
+}
+
 test "peek-char waits, and reads past nothing" {
     try expectRounds(&.{
         .{ .src = "(write (peek-char)) (write (peek-char)) (write (read-char))", .feeds = &.{.{ .text = "k" }}, .out = "#\\k#\\k#\\k", .waits = 1 },

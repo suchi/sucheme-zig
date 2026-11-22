@@ -1362,6 +1362,22 @@ test("provide_input and provide_eof return wrong_order unless a read waits, and 
   assert.equal(provide(h, "z"), WRONG_ORDER);
 });
 
+test("provide_input is refused once the read that waited has been resumed", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin(W + "(write (read-char)) (define (f n) (if (= n 0) 'ok (f (- n 1)))) (f 100000)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "ab"), CONTINUE);
+  // 予算の小さい step は、読み取りをやり直しても、評価を終えない。もう待っていない。
+  assert.equal(h.x.sucheme_step(3), CONTINUE);
+  assert.equal(provide(h, "cd"), WRONG_ORDER);
+  assert.equal(h.x.sucheme_provide_eof(), WRONG_ORDER);
+  h.x.sucheme_output_clear();
+  let status;
+  do status = h.x.sucheme_step(100000);
+  while (status === CONTINUE);
+  assert.equal(status, OK);
+});
+
 test("before init, provide_input and provide_eof return not_initialized and say why", () => {
   const h = instantiate();
   assert.equal(h.x.sucheme_provide_input(0, 0), NOT_INITIALIZED);
