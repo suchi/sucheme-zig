@@ -70,20 +70,20 @@ apply
 
 # apply 自身の引数の個数。手続きとリストは省けない。
 (apply)
-error: wrong number of arguments to apply
+error: 1:1: wrong number of arguments to apply
 
 (apply +)
-error: wrong number of arguments to apply #<procedure +>
+error: 1:1: wrong number of arguments to apply #<procedure +>
 
 # 最後の引数が正しいリストでなければ、apply の型の誤りになる。
 (apply + 1 2)
-error: wrong type of argument to apply #<procedure +> 1 2
+error: 1:1: wrong type of argument to apply #<procedure +> 1 2
 
 (apply + '(1 . 2))
-error: wrong type of argument to apply #<procedure +> (1 . 2)
+error: 1:1: wrong type of argument to apply #<procedure +> (1 . 2)
 
 (apply list 1 2 3 4 5 6 7 8 9 10 11)
-error: wrong type of argument to apply #<procedure list> 1 2 3 4 5 6 7 8 9 10 11
+error: 1:1: wrong type of argument to apply #<procedure list> 1 2 3 4 5 6 7 8 9 10 11
 
 # 呼ばれる手続きの誤りは、その手続きの誤りとして報告される。
 (apply car '(1 2))

@@ -10,7 +10,7 @@
 
 # 固定パターンに足りないときは、照合しない。
 (define-syntax mid (syntax-rules () ((_ a b ... c d) '(a (b ...) c d)))) (mid 1 2)
-error: bad syntax: no rule of mid matches the form
+error: 1:74: bad syntax: no rule of mid matches the form
 
 # 繰り返す部分パターンが構造を持っても、後ろの固定パターンは同じように照合する。
 (define-syntax tail-pair (syntax-rules () ((_ (a b) ... (c d)) '((a ...) (b ...) c d)))) (tail-pair (1 2) (3 4) (5 6))
@@ -36,7 +36,7 @@ error: bad syntax: no rule of mid matches the form
 
 # 末尾が空リストのパターンは、非真正リストの入力に照合しない。
 (define-syntax proper (syntax-rules () ((_ a ...) '(a ...)))) (proper 1 . 2)
-error: bad syntax: no rule of proper matches the form
+error: 1:63: bad syntax: no rule of proper matches the form
 
 # 非真正リストのテンプレート。
 (define-syntax dt (syntax-rules () ((_ a b) '(a . b)))) (dt 1 2)

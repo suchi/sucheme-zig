@@ -33,22 +33,22 @@
 # 内部用の名前と、別のライブラリの名前は、エクスポートしない。`display` は `(scheme write)`、
 # `read` は `(scheme read)` の名前である。
 (import (only (scheme base) display))
-error: bad import: display is not exported by the import set
+error: 1:1: bad import: display is not exported by the import set
 
 (import (only (scheme base) read))
-error: bad import: read is not exported by the import set
+error: 1:1: bad import: read is not exported by the import set
 
 (import (only (scheme base) %make-promise))
-error: bad import: %make-promise is not exported by the import set
+error: 1:1: bad import: %make-promise is not exported by the import set
 
 (import (only (scheme base) delay))
-error: bad import: delay is not exported by the import set
+error: 1:1: bad import: delay is not exported by the import set
 
 (import (only (scheme base) force))
-error: bad import: force is not exported by the import set
+error: 1:1: bad import: force is not exported by the import set
 
 (import (only (scheme base) caddr))
-error: bad import: caddr is not exported by the import set
+error: 1:1: bad import: caddr is not exported by the import set
 
 # `(scheme cxr)`: 3回と4回の合成アクセサのすべてが、名前の読み順どおりに辿る(右の文字から先に適用する)。
 (import (scheme cxr)) (define (tree path n) (if (= n 0) (string->symbol path) (cons (tree (string-append path "a") (- n 1)) (tree (string-append path "d") (- n 1))))) (define t3 (tree "" 3)) (define t4 (tree "" 4)) (list (eq? (caaar t3) 'aaa) (eq? (caadr t3) 'daa) (eq? (cadar t3) 'ada) (eq? (caddr t3) 'dda) (eq? (cdaar t3) 'aad) (eq? (cdadr t3) 'dad) (eq? (cddar t3) 'add) (eq? (cdddr t3) 'ddd) (eq? (caaaar t4) 'aaaa) (eq? (caaadr t4) 'daaa) (eq? (caadar t4) 'adaa) (eq? (caaddr t4) 'ddaa) (eq? (cadaar t4) 'aada) (eq? (cadadr t4) 'dada) (eq? (caddar t4) 'adda) (eq? (cadddr t4) 'ddda) (eq? (cdaaar t4) 'aaad) (eq? (cdaadr t4) 'daad) (eq? (cdadar t4) 'adad) (eq? (cdaddr t4) 'ddad) (eq? (cddaar t4) 'aadd) (eq? (cddadr t4) 'dadd) (eq? (cdddar t4) 'addd) (eq? (cddddr t4) 'dddd))
@@ -56,14 +56,14 @@ error: bad import: caddr is not exported by the import set
 
 # `(scheme cxr)` は2回の合成アクセサを持たない。
 (import (only (scheme cxr) cadr))
-error: bad import: cadr is not exported by the import set
+error: 1:1: bad import: cadr is not exported by the import set
 
 # `(scheme case-lambda)`
 (import (scheme base) (scheme case-lambda)) (define f (case-lambda ((a) (list 'one a)) ((a b) (list 'two a b)) ((a . rest) (list 'many a rest)))) (list (f 1) (f 1 2) (f 1 2 3))
 ((one 1) (two 1 2) (many 1 (2 3)))
 
 (import (only (scheme case-lambda) case-lambda delay))
-error: bad import: delay is not exported by the import set
+error: 1:1: bad import: delay is not exported by the import set
 
 # `(scheme lazy)`。REPL の初期環境が `force` などを持つので、エクスポートの有無は `only` で確かめる。
 (import (only (scheme lazy) delay delay-force force make-promise promise?)) 1
@@ -85,4 +85,4 @@ done
 #t
 
 (import (only (scheme lazy) cons))
-error: bad import: cons is not exported by the import set
+error: 1:1: bad import: cons is not exported by the import set

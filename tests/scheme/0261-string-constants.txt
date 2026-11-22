@@ -14,61 +14,61 @@
 <no output>
 
 (define (f) (make-string 3 #\*)) (define (g) "***") (string-set! (g) 0 #\?)
-error: cannot modify a constant in string-set! "***" 0 #\?
+error: 1:53: cannot modify a constant in string-set! "***" 0 #\?
 
 (string-set! (symbol->string 'immutable) 0 #\?)
-error: cannot modify a constant in string-set! "immutable" 0 #\?
+error: 1:1: cannot modify a constant in string-set! "immutable" 0 #\?
 
 # リテラルは、式の中でも、データの中でも定数である。
 (string-set! "abc" 0 #\x)
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:1: cannot modify a constant in string-set! "abc" 0 #\x
 
 (string-set! (car '("abc" "def")) 0 #\x)
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:1: cannot modify a constant in string-set! "abc" 0 #\x
 
 (string-set! (vector-ref #("abc" 1) 0) 0 #\x)
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:1: cannot modify a constant in string-set! "abc" 0 #\x
 
 (string-set! (cdr '(1 . "abc")) 0 #\x)
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:1: cannot modify a constant in string-set! "abc" 0 #\x
 
 (define s "abc") (string-set! s 0 #\x)
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:18: cannot modify a constant in string-set! "abc" 0 #\x
 
 # `string-fill!` と `string-copy!` も同じである。
 (string-fill! "abc" #\x)
-error: cannot modify a constant in string-fill! "abc" #\x
+error: 1:1: cannot modify a constant in string-fill! "abc" #\x
 
 (string-copy! "abc" 0 "xy")
-error: cannot modify a constant in string-copy! "abc" 0 "xy"
+error: 1:1: cannot modify a constant in string-copy! "abc" 0 "xy"
 
 (string-fill! (symbol->string 'abc) #\x)
-error: cannot modify a constant in string-fill! "abc" #\x
+error: 1:1: cannot modify a constant in string-fill! "abc" #\x
 
 (string-copy! (symbol->string 'abc) 0 "xy")
-error: cannot modify a constant in string-copy! "abc" 0 "xy"
+error: 1:1: cannot modify a constant in string-copy! "abc" 0 "xy"
 
 # 書き込む範囲が空でも、定数への書き込みである。
 (string-fill! "" #\x)
-error: cannot modify a constant in string-fill! "" #\x
+error: 1:1: cannot modify a constant in string-fill! "" #\x
 
 (string-fill! "abc" #\x 1 1)
-error: cannot modify a constant in string-fill! "abc" #\x 1 1
+error: 1:1: cannot modify a constant in string-fill! "abc" #\x 1 1
 
 (string-copy! "abc" 3 "")
-error: cannot modify a constant in string-copy! "abc" 3 ""
+error: 1:1: cannot modify a constant in string-copy! "abc" 3 ""
 
 # 同じ文字を書く場合も、断る。
 (string-set! "abc" 0 #\a)
-error: cannot modify a constant in string-set! "abc" 0 #\a
+error: 1:1: cannot modify a constant in string-set! "abc" 0 #\a
 
 # 書き込む位置が範囲の外でも、型が正しければ、定数であることが先に報告される。
 (string-set! "abc" 10 #\x)
-error: cannot modify a constant in string-set! "abc" 10 #\x
+error: 1:1: cannot modify a constant in string-set! "abc" 10 #\x
 
 # 型の誤りは、定数の誤りより先に報告される。
 (string-set! "abc" 0 1)
-error: wrong type of argument to string-set! "abc" 0 1
+error: 1:1: wrong type of argument to string-set! "abc" 0 1
 
 # 定数の文字列を、書き込み先でなく、読む側にする手続きは、通る。
 (string-length "abc")
@@ -140,8 +140,8 @@ refused
 # 印は、GC のあとも残る。
 (define s "abc") (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (string-set! s 0 #\x)
 ok
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:81: cannot modify a constant in string-set! "abc" 0 #\x
 
 # マクロが出力する文字列のリテラルも定数である。
 (define-syntax m (syntax-rules () ((_) "abc"))) (string-set! (m) 0 #\x)
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:49: cannot modify a constant in string-set! "abc" 0 #\x

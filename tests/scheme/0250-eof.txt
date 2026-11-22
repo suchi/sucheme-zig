@@ -40,10 +40,10 @@
 
 # 引数の個数。
 (eof-object 1)
-error: wrong number of arguments to eof-object 1
+error: 1:1: wrong number of arguments to eof-object 1
 
 (eof-object?)
-error: wrong number of arguments to eof-object?
+error: 1:1: wrong number of arguments to eof-object?
 
 (eof-object? 1 2)
-error: wrong number of arguments to eof-object? 1 2
+error: 1:1: wrong number of arguments to eof-object? 1 2

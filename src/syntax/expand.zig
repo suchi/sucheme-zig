@@ -192,6 +192,9 @@ const Expander = struct {
     root: ?*SyntacticEnv,
     mode: Mode,
     stack: std.ArrayList(Task) = .empty,
+    /// The file of the table of positions that `spotOf` named last, and its number in
+    /// `Context.source_names` (null when that has no number for it).
+    last_file: ?struct { table: u32, context: ?u16 } = null,
 
     /// A new node in the heap, for a task to fill.
     /// 子が決まる前に作るので、無害な値(未規定値の定数)で始める。展開が失敗して、作りかけの
@@ -225,6 +228,28 @@ const Expander = struct {
     fn siteOf(self: *const Expander, form: Value) ?positions.Position {
         const table = self.ctx.positions orelse return null;
         return table.of(form);
+    }
+
+    /// The place for a call node made of `form`: where the reader read `form` itself, or none
+    /// when it is not a pair the reader read (the output of a macro, for one), or no positions
+    /// are kept. A place the form only inherits from the form that holds it is not used.
+    /// Why: 計画書 0030 の決定5。マクロの展開で失われる位置は、位置なしで動く。
+    fn spotOf(self: *Expander, form: Value) Error!value_mod.Spot {
+        const table = self.ctx.positions orelse return .none;
+        const at = table.of(form) orelse return .none;
+        // 実行ファイルに埋め込んだ標準ライブラリの中の呼び出しは、位置を持たない。標準ライブラリの
+        // 手続きの中で起きた誤りに、利用者が書いていない `<embedded>/...` の位置を出さない。
+        if (self.ctx.sources.getLastOrNull()) |reading| {
+            if (resolve.isEmbeddedRoot(reading.root)) return .none;
+        }
+        // 表のファイル番号は、入力ごとの表に対するものである。節点には、コンテキストの
+        // 名前の表の番号を持たせる。同じファイルが続くので、直前の対応を覚える。
+        if (self.last_file == null or self.last_file.?.table != at.file) {
+            const id = try self.ctx.source_names.intern(self.ctx.resident(), table.fileName(at.file));
+            self.last_file = .{ .table = at.file, .context = id };
+        }
+        const file = self.last_file.?.context orelse return .none;
+        return .init(file, at.location.line, at.location.column);
     }
 
     /// Keeps that `output`, the output of a macro, stands at `site`, when it is a
@@ -1287,7 +1312,7 @@ const Expander = struct {
             try self.stack.append(self.scratch, .{ .form = items[i], .env = task.env, .pos = .expression, .dest = @constCast(operands[i - 1]) });
         }
         const operator = try self.child(items[0], task.env, .expression);
-        task.dest.* = .{ .call = .{ .operator = operator, .operands = operands } };
+        task.dest.* = .{ .call = .{ .operator = operator, .operands = operands, .at = try self.spotOf(task.form) } };
     }
 };
 
@@ -2081,4 +2106,129 @@ test "a self-evaluating vector that holds an alias is stripped too" {
     const vector: Value = .fromVector(try f.ctx.heap.createVector(&.{ try testAlias(&f, "tmp"), .fromFixnum(2) }));
     const node = try expand(&f.ctx, f.arena.allocator(), vector);
     try std.testing.expectEqual(tmpSymbol(&f), node.constant.asVector().?.items[0].asSymbol().?);
+}
+
+/// The node `src` expands to, read with its places kept in `table` as those of the file `file`.
+fn expandPlaced(f: *Fixture, table: *positions.Table, file: u32, src: []const u8) !*const Node {
+    const reader_mod = @import("../reader.zig");
+    var r: reader_mod.Reader = .init(src);
+    const sink: reader_mod.Sink = .{ .heap = &f.ctx.heap, .positions = .{ .table = table, .file = file } };
+    const form = (try r.next(f.arena.allocator(), sink)).?;
+    return expand(&f.ctx, f.arena.allocator(), form);
+}
+
+fn expectSpot(node: *const Node, line: u32, column: u32, name: []const u8, ctx: *const Context) !void {
+    const at = node.call.at;
+    try std.testing.expect(!at.isNone());
+    try std.testing.expectEqual(line, at.line);
+    try std.testing.expectEqual(column, at.column);
+    try std.testing.expectEqualStrings(name, ctx.source_names.nameOf(at.file));
+}
+
+test "a call node keeps the place the reader gave its form, and no other node has one" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var table: positions.Table = .init(f.arena.allocator());
+    f.ctx.positions = &table;
+    defer f.ctx.positions = null;
+    const file = try table.addFile("a.scm");
+    const node = try expandPlaced(&f, &table, file, "(f 1\n  (g 2) '(h) (if x (k) 3))");
+    try expectSpot(node, 1, 1, "a.scm", &f.ctx);
+    const operands = node.call.operands;
+    try std.testing.expectEqual(4, operands.len);
+    try std.testing.expect(operands[0].* == .constant);
+    try expectSpot(operands[1], 2, 3, "a.scm", &f.ctx);
+    // 引用したデータの `(h)` は、呼び出しでなく定数である。
+    try std.testing.expect(operands[2].* == .constant);
+    // `if` の中の呼び出し `(k)` は、読んだ位置を持つ。
+    try expectSpot(operands[3].@"if".consequent, 2, 20, "a.scm", &f.ctx);
+}
+
+test "a call the expander makes, or makes of the output of a macro, has no place" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var table: positions.Table = .init(f.arena.allocator());
+    f.ctx.positions = &table;
+    defer f.ctx.positions = null;
+    const file = try table.addFile("a.scm");
+    _ = try expandPlaced(&f, &table, file, "(define-syntax m (syntax-rules () ((_ x) (k x))))");
+    table.by_pair.clearRetainingCapacity();
+    // テンプレートの `(k x)` は、マクロの出力のペアで、位置を持たない。引数の `(g 2)` は、読んだままである。
+    const used = try expandPlaced(&f, &table, file, "(m (g 2))");
+    try std.testing.expect(used.* == .call);
+    try std.testing.expect(used.call.at.isNone());
+    try expectSpot(used.call.operands[0], 1, 4, "a.scm", &f.ctx);
+    table.by_pair.clearRetainingCapacity();
+    // 本体の定義を持つ `let-syntax` の本体は、展開器が作る即時の呼び出しになり、位置を持たない。
+    const wrapped = try expandPlaced(&f, &table, file, "(let-syntax () (define a 1) (g a))");
+    try std.testing.expect(wrapped.* == .call);
+    try std.testing.expect(wrapped.call.at.isNone());
+    try std.testing.expect(wrapped.call.operator.* == .lambda);
+    const body = wrapped.call.operator.lambda.body.sequence;
+    try expectSpot(body[body.len - 1], 1, 29, "a.scm", &f.ctx);
+}
+
+test "the names of the files are kept once, and a call in an embedded library has no place" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var table: positions.Table = .init(f.arena.allocator());
+    f.ctx.positions = &table;
+    defer f.ctx.positions = null;
+    const a = try table.addFile("a.scm");
+    const b = try table.addFile("b.scm");
+    const first = try expandPlaced(&f, &table, a, "(f)");
+    const second = try expandPlaced(&f, &table, b, "(f)");
+    const third = try expandPlaced(&f, &table, a, "(f)");
+    try std.testing.expectEqual(first.call.at.file, third.call.at.file);
+    try std.testing.expect(first.call.at.file != second.call.at.file);
+    try std.testing.expectEqual(2, f.ctx.source_names.items.items.len);
+    // 埋め込みの標準ライブラリを読んでいる間は、位置を持たない。
+    try f.ctx.sources.append(f.ctx.resident(), .{ .root = resolve.embedded_root, .path = &.{"base.sld"} });
+    defer _ = f.ctx.sources.pop();
+    const embedded = try expandPlaced(&f, &table, a, "(f)");
+    try std.testing.expect(embedded.call.at.isNone());
+}
+
+test "a call has no place when no table of positions is kept" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const node = try expand(&f.ctx, f.arena.allocator(), try f.read("(f 1)"));
+    try std.testing.expect(node.call.at.isNone());
+    try std.testing.expectEqual(0, f.ctx.source_names.items.items.len);
+}
+
+test "the place a call node keeps is counted against the limit of the heap with the node" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const before = f.ctx.heap.held();
+    _ = try f.ctx.create(Node, .{ .call = .{ .operator = undefined, .operands = &.{}, .at = .init(0, 1, 1) } });
+    // 節点は、種類によらず、共用体の大きさのセルで数える。位置のぶんを含む(ADR-0054)。
+    try std.testing.expectEqual(heap_mod.cellBytes(Node), f.ctx.heap.held() - before);
+    try std.testing.expect(heap_mod.cellBytes(Node) >= @sizeOf(Node));
+}
+
+test "the calls of one expansion that were read from two files each keep their own file" {
+    const reader_mod = @import("../reader.zig");
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var table: positions.Table = .init(f.arena.allocator());
+    f.ctx.positions = &table;
+    defer f.ctx.positions = null;
+    const a = try table.addFile("a.scm");
+    const b = try table.addFile("b.scm");
+    var ra: reader_mod.Reader = .init("(f 1)");
+    const outer = (try ra.next(f.arena.allocator(), .{ .heap = &f.ctx.heap, .positions = .{ .table = &table, .file = a } })).?;
+    var rb: reader_mod.Reader = .init("\n (g 2)");
+    const inner = (try rb.next(f.arena.allocator(), .{ .heap = &f.ctx.heap, .positions = .{ .table = &table, .file = b } })).?;
+    // `include` が別のファイルの形式を呼び出しの中に置くのと同じ形にする。
+    outer.asPair().?.cdr.asPair().?.car = inner;
+    const node = try expand(&f.ctx, f.arena.allocator(), outer);
+    try expectSpot(node, 1, 1, "a.scm", &f.ctx);
+    try expectSpot(node.call.operands[0], 2, 2, "b.scm", &f.ctx);
 }

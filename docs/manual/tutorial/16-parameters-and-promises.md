@@ -121,7 +121,7 @@
 ```
 
 ```output
-error: must be positive: -1
+error: 3:19: must be positive: -1
 ```
 
 ## 遅延評価

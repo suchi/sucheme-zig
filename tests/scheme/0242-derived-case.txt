@@ -62,13 +62,13 @@ done
 
 # 構文の誤り。R7RS 7.3 の定義は、節が0個の `case` を受け付けない。
 (import (sucheme derived)) (case)
-error: bad syntax: no rule of case matches the form
+error: 1:28: bad syntax: no rule of case matches the form
 
 (import (sucheme derived)) (case 1)
-error: bad syntax: no rule of case matches the form
+error: 1:28: bad syntax: no rule of case matches the form
 
 (import (sucheme derived)) (case 1 (1 2))
-error: bad syntax: no rule of case matches the form
+error: 1:28: bad syntax: no rule of case matches the form
 
 # 衛生性: 展開が使う `atom-key` と `memv` と `if` は、利用側の同名の束縛と衝突しない。
 (import (sucheme derived)) (let ((atom-key 5)) (case (+ 1 1) ((2) atom-key) (else 0)))
@@ -83,7 +83,7 @@ b
 # 利用側が `else` を束縛すれば、`else` はリテラルとして照合しない。datum の並びでもないので、
 # どの規則にも当たらない。
 (import (sucheme derived)) (let ((else #f)) (case 1 (else 'x)))
-error: bad syntax: no rule of case matches the form
+error: 1:45: bad syntax: no rule of case matches the form
 
 # `=>` も、束縛すれば、式になる。
 (import (sucheme derived)) (let ((=> 1)) (case 1 ((1) => 'x)))

@@ -23,13 +23,13 @@
 
 # 基数が2、8、10、16でなければ、範囲の誤りである。
 (number->string 10 3)
-error: argument out of range in number->string 10 3
+error: 1:1: argument out of range in number->string 10 3
 
 (number->string 10 'a)
-error: wrong type of argument to number->string 10 a
+error: 1:1: wrong type of argument to number->string 10 a
 
 (number->string 'a)
-error: wrong type of argument to number->string a
+error: 1:1: wrong type of argument to number->string a
 
 # 無限大と NaN は、どの基数でも同じ綴りで書き、読み戻せる。
 (list (number->string (/ (inexact 1) (inexact 0)) 16) (number->string (/ (inexact -1) (inexact 0)) 2) (number->string (/ (inexact 0) (inexact 0)) 8))
@@ -58,10 +58,10 @@ error: wrong type of argument to number->string a
 18446744073709551616
 
 (string->number "10" 3)
-error: argument out of range in string->number "10" 3
+error: 1:1: argument out of range in string->number "10" 3
 
 (string->number 10)
-error: wrong type of argument to string->number 10
+error: 1:1: wrong type of argument to string->number 10
 
 # 綴りが長すぎる数は #f である(桁数の上限)。
 (string->number (make-string 100001 #\1))

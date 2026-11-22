@@ -53,13 +53,13 @@ third
 <no output>
 
 (call/cc 5)
-error: wrong type of argument to call/cc 5
+error: 1:1: wrong type of argument to call/cc 5
 
 (call/cc)
-error: wrong number of arguments to call/cc
+error: 1:1: wrong number of arguments to call/cc
 
 (call/cc (lambda () 1))
-error: wrong number of arguments: expected 0, got 1
+error: 1:1: wrong number of arguments: expected 0, got 1
 
 # apply で呼んでも、ハンドラとして呼ばれても、継続である。
 (+ 1 (call/cc (lambda (k) (apply k '(6)))))

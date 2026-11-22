@@ -56,25 +56,25 @@ error: unbound variable: g
 93326215443944152681699238856266700490715968264381621468592963895217599993229915608941463976156518286253697920827223758251185210916864000000000000000000000000
 
 (define (f))
-error: bad define: expected (define (name parameter ...) body ...)
+error: 1:1: bad define: expected (define (name parameter ...) body ...)
 
 (define (f x))
-error: bad define: expected (define (name parameter ...) body ...)
+error: 1:1: bad define: expected (define (name parameter ...) body ...)
 
 (define () 1)
-error: bad define: the name must be an identifier
+error: 1:1: bad define: the name must be an identifier
 
 (define (1 x) x)
-error: bad define: the name must be an identifier
+error: 1:1: bad define: the name must be an identifier
 
 (define ((f a) b) 1)
-error: bad define: the name must be an identifier
+error: 1:1: bad define: the name must be an identifier
 
 (define (f 1) 1)
-error: bad define: a parameter must be an identifier
+error: 1:1: bad define: a parameter must be an identifier
 
 (define (f x x) x)
-error: bad define: duplicate parameter: x
+error: 1:1: bad define: duplicate parameter: x
 
 (define (f if) (if 1 2)) (f +)
 3
@@ -84,4 +84,4 @@ error: bad define: duplicate parameter: x
 7
 
 (+ 1 (define (f) 1))
-error: bad define: a definition is only allowed at the top level or at the start of a body
+error: 1:6: bad define: a definition is only allowed at the top level or at the start of a body

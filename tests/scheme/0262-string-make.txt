@@ -103,56 +103,56 @@
 
 # 範囲の誤り。
 (string-copy "abc" 4)
-error: argument out of range in string-copy "abc" 4
+error: 1:1: argument out of range in string-copy "abc" 4
 
 (string-copy "abc" 2 1)
-error: argument out of range in string-copy "abc" 2 1
+error: 1:1: argument out of range in string-copy "abc" 2 1
 
 (string-copy "abc" 0 4)
-error: argument out of range in string-copy "abc" 0 4
+error: 1:1: argument out of range in string-copy "abc" 0 4
 
 (string-copy "abc" -1)
-error: argument out of range in string-copy "abc" -1
+error: 1:1: argument out of range in string-copy "abc" -1
 
 (substring "abc" 2 4)
-error: argument out of range in substring "abc" 2 4
+error: 1:1: argument out of range in substring "abc" 2 4
 
 (substring "abc" 3 2)
-error: argument out of range in substring "abc" 3 2
+error: 1:1: argument out of range in substring "abc" 3 2
 
 (make-string -1 #\a)
-error: argument out of range in make-string -1 #\a
+error: 1:1: argument out of range in make-string -1 #\a
 
 # 型の誤りは、範囲の誤りより先に報告される。
 (string-copy 'abc)
-error: wrong type of argument to string-copy abc
+error: 1:1: wrong type of argument to string-copy abc
 
 (string-copy "abc" #\a)
-error: wrong type of argument to string-copy "abc" #\a
+error: 1:1: wrong type of argument to string-copy "abc" #\a
 
 (string-copy "abc" 10 #\a)
-error: wrong type of argument to string-copy "abc" 10 #\a
+error: 1:1: wrong type of argument to string-copy "abc" 10 #\a
 
 (substring "abc" 0)
-error: wrong number of arguments to substring "abc" 0
+error: 1:1: wrong number of arguments to substring "abc" 0
 
 (make-string "3")
-error: wrong type of argument to make-string "3"
+error: 1:1: wrong type of argument to make-string "3"
 
 (make-string 3 "a")
-error: wrong type of argument to make-string 3 "a"
+error: 1:1: wrong type of argument to make-string 3 "a"
 
 (make-string)
-error: wrong number of arguments to make-string
+error: 1:1: wrong number of arguments to make-string
 
 (string 1)
-error: wrong type of argument to string 1
+error: 1:1: wrong type of argument to string 1
 
 (string #\a "b")
-error: wrong type of argument to string #\a "b"
+error: 1:1: wrong type of argument to string #\a "b"
 
 (string-append "a" 'b)
-error: wrong type of argument to string-append "a" b
+error: 1:1: wrong type of argument to string-append "a" b
 
 (string-append 1)
-error: wrong type of argument to string-append 1
+error: 1:1: wrong type of argument to string-append 1

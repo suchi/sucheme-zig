@@ -340,7 +340,9 @@ pub const Interpreter = struct {
         self.ctx.heap.console_host = if (self.console_host_attached) &self.console_host else null;
         e.reader.fold_case = self.fold_case;
         self.ctx.positions = &e.table;
-        if (self.file_name) |file| e.recording = .{ .table = &e.table, .file = try e.table.addFile(file) };
+        // ファイルを持たない入力(REPL の行、標準入力、WASM の入力)も、空の名前のファイルとして
+        // 位置を記録する。診断は、名前が空なら、ファイルを書かない(ADR-0054)。
+        e.recording = .{ .table = &e.table, .file = try e.table.addFile(self.file_name orelse "") };
     }
 
     /// Advances the evaluation `beginEval` started by at most `budget` machine steps
@@ -370,6 +372,8 @@ pub const Interpreter = struct {
         var left = budget;
         const status = self.advanceEval(e, &left, watch) catch |err| {
             self.endEval();
+            // 機械が送出した誤り(`located` を通らないもの)は、適用していた呼び出しの位置を持つ。
+            if (err == error.Raised and self.error_at == null) self.error_at = self.callSpotAt();
             self.keepDiagnostic(arena, err);
             return err;
         };
@@ -477,7 +481,13 @@ pub const Interpreter = struct {
         self.diagnostic_buffer.clearRetainingCapacity();
         var w: std.Io.Writer.Allocating = .fromArrayList(self.arena.child_allocator, &self.diagnostic_buffer);
         const written = if (self.ctx.raised) |v| blk: {
-            if (self.error_at) |at| w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column }) catch |failed| break :blk failed;
+            if (self.error_at) |at| {
+                const printed = if (at.file.len == 0)
+                    w.writer.print("{d}:{d}: ", .{ at.location.line, at.location.column })
+                else
+                    w.writer.print("{s}:{d}:{d}: ", .{ at.file, at.location.line, at.location.column });
+                printed catch |failed| break :blk failed;
+            }
             break :blk describeRaised(&w.writer, &self.ctx.heap, v);
         } else w.writer.writeAll(describe(e));
         self.diagnostic_buffer = w.toArrayList();
@@ -511,8 +521,20 @@ pub const Interpreter = struct {
     fn located(self: *Interpreter, e: Error, table: *const positions_mod.Table, form: value.Value) Error {
         if (e != error.Raised) return e;
         self.ctx.noteRaisedAt(table.of(form));
-        if (self.ctx.raisedPosition()) |p| self.error_at = .{ .file = table.fileName(p.file), .location = p.location };
+        // 実行した呼び出しが誤りを送出していれば(ライブラリの本体を走らせたときなど)、その位置を使う。
+        if (self.callSpotAt()) |at| {
+            self.error_at = at;
+        } else if (self.ctx.raisedPosition()) |p| {
+            self.error_at = .{ .file = table.fileName(p.file), .location = p.location };
+        }
         return e;
+    }
+
+    /// Where the call that raised the value raised is, when it has a place.
+    /// 名前はコンテキストの表にあり、インタプリタが解放されるまで有効である。
+    fn callSpotAt(self: *const Interpreter) ?ErrorAt {
+        const spot = self.ctx.raisedCallSpot() orelse return null;
+        return .{ .file = self.ctx.source_names.nameOf(spot.file), .location = .{ .line = spot.line, .column = spot.column } };
     }
 
     /// Writes `v`, a result of a form, and a newline, unless it is the
@@ -760,6 +782,35 @@ test "an error in a stepped evaluation ends it, is described as evalPrint descri
     try std.testing.expectEqualStrings("1\n", w.buffered());
 }
 
+test "an error in a stepped evaluation says the place of the call, whatever the budget and the collections" {
+    for ([_]bool{ false, true }) |stress| for ([_]u64{ 1, 7, 1000 }) |budget| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        var interp: Interpreter = undefined;
+        try interp.init(std.testing.allocator);
+        defer interp.deinit();
+        interp.ctx.heap.options.stress = stress;
+        var buf: [256]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        // 止まっている間も、位置と組の値は回収されない。
+        try interp.beginEval(arena.allocator(), "(define (f x)\n  (car x))\n(f 5)", &w);
+        while (true) {
+            const status = interp.stepEval(budget) catch |e| {
+                try std.testing.expectEqual(error.Raised, e);
+                break;
+            };
+            try std.testing.expectEqual(.more, status);
+        }
+        try expectDiagnostic("2:3: wrong type of argument to car 5", interp.diagnostic());
+        // 次の評価は、前の位置を引き継がない。
+        try interp.beginEval(arena.allocator(), "(undefined-name 1)", &w);
+        while (true) {
+            _ = interp.stepEval(budget) catch break;
+        }
+        try expectDiagnostic("unbound variable: undefined-name", interp.diagnostic());
+    };
+}
+
 test "an interrupted evaluation goes on where it was, or is dropped with its definitions kept" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -832,7 +883,7 @@ test "the step limit ends a stepped evaluation with StepLimit and a description"
             break;
         };
     }
-    try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
+    try expectDiagnostic("step limit exceeded", interp.diagnostic());
 }
 
 // ---- 入力待ち(スライス 8f-1、ADR-0055) ----
@@ -1093,6 +1144,10 @@ test "the input the host gives counts against the limit of the heap, until it is
     try interp.init(std.testing.allocator);
     defer interp.deinit();
     interp.useHostInput();
+    // 最初の呼び出しの展開が、位置のファイル名の表に、空の名前を1つ載せる(ADR-0054)。計上は、それを含めて数える。
+    var warm: [8]u8 = undefined;
+    var warm_out: std.Io.Writer = .fixed(&warm);
+    try interp.evalPrint(arena.allocator(), "(+ 1 1)", &warm_out);
     const before = interp.ctx.heap.resident;
     try interp.provideInput("0123456789");
     try std.testing.expect(interp.ctx.heap.resident >= before + 10);
@@ -1928,7 +1983,8 @@ test "a library is available to a requirement when its file can be opened, and t
     try expectLinePrints(&interp, "(cond-expand ((library (con)) 'yes) (else 'no))", "no\n");
     try std.testing.expectEqual(0, interp.ctx.libraries.list.items.len);
     // 読み込みは、インポートがする。
-    try expectLineFails(&interp, "(import (foo bar))", "wrong type of argument to car 5");
+    // 本体の呼び出し `(car 5)` の位置は、ライブラリのファイルの中である(ADR-0054)。
+    try expectLineFailsInTree(&interp, &tree, "(import (foo bar))", "foo/bar.sld:1:67", "wrong type of argument to car 5");
 }
 
 test "asking whether a library is available does not leave its file open" {
@@ -2233,7 +2289,7 @@ test "a library that cannot be loaded leaves nothing behind, and an error inside
         var interp: Interpreter = undefined;
         try initOnTree(&interp, &tree, stress);
         defer interp.deinit();
-        try expectLineFails(&interp, "(import (t outer))", "wrong type of argument to car 5");
+        try expectLineFailsInTree(&interp, &tree, "(import (t outer))", "t/bad.sld:1:74", "wrong type of argument to car 5");
         // 成功した依存は残り、失敗した2つは残らない。
         try std.testing.expectEqual(1, interp.ctx.libraries.list.items.len);
         try expectLinePrints(&interp, "(import (t good)) (g)", "1\n");
@@ -2356,7 +2412,7 @@ test "multiple values that reach a continuation taking one value are reported, a
     var w: std.Io.Writer = .fixed(&buf);
     // 1個を要求する継続に届いた複数値は、誤りとして報告され、次の行は影響を受けない。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(+ 1 (values 1 2))", &w));
-    try std.testing.expectEqualStrings("wrong number of values: expected 1, got 2", interp.diagnostic());
+    try expectDiagnostic("wrong number of values: expected 1, got 2", interp.diagnostic());
     try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
     try std.testing.expectEqualStrings("3\n", w.buffered());
 }
@@ -2371,7 +2427,7 @@ test "evalPrint stops at the first error and describes it" {
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "1 (foo) 2", &w));
     try std.testing.expectEqualStrings("1\n", w.buffered());
-    try std.testing.expectEqualStrings("unbound variable: foo", interp.diagnostic());
+    try expectDiagnostic("unbound variable: foo", interp.diagnostic());
 }
 
 test "an error the expander raises in a named file says where, at the innermost form read" {
@@ -2408,16 +2464,84 @@ fn expectPlacesOfErrors(stress: bool) !void {
     for (cases) |c| try expectLineFails(&interp, c.line, c.message);
 }
 
-test "a runtime error, a reader error and a line of the REPL say no place" {
+test "a reader error, and an error of a node that is not a call, say no place" {
     var interp: Interpreter = undefined;
     try interp.initCore(std.testing.allocator, .{});
     defer interp.deinit();
     interp.file_name = "prog.scm";
-    // 実行時の誤りは、節点が位置を持たないので、位置を付けない(docs/design/frontend.md)。
-    try expectLineFails(&interp, "(define x 1)\n(car x)", "wrong type of argument to car 1");
-    // ファイルの名前が無い入力(REPL と WASM の行)は、展開時の誤りにも位置を付けない。
-    interp.file_name = null;
-    try expectLineFails(&interp, "\n  (if)", "bad if: expected (if test consequent) or (if test consequent alternative)");
+    // 変数の参照は呼び出しの節点ではないので、位置を持たない(ADR-0054)。外側の呼び出しの位置も使わない。
+    try expectLineFailsUnplaced(&interp, "(define x 1)\n(list 1\n  nope)", "unbound variable: nope");
+    try expectLineFailsUnplaced(&interp, "(set! nope 1)", "unbound variable: nope");
+    // 入力そのものの読み取りの誤りは、位置を持たない。
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.UnexpectedCloseParen, interp.evalPrint(arena.allocator(), "(define x 1)\n)", &w));
+    try std.testing.expect(std.mem.indexOf(u8, interp.diagnostic(), ":") == null);
+}
+
+test "an error a call raises says the place of the call, in a named file or in an input with no file" {
+    for ([_]bool{ false, true }) |stress| {
+        var interp: Interpreter = undefined;
+        try interp.initCore(std.testing.allocator, .{ .stress = stress });
+        defer interp.deinit();
+        interp.file_name = "prog.scm";
+        // 型の誤り。誤りを起こした呼び出し `(car x)` の位置である。
+        try expectLineFails(&interp, "(define x 1)\n(car x)", "prog.scm:2:1: wrong type of argument to car 1");
+        // 最も内側の呼び出し。外側の `(+ 1 ...)` ではなく `(car x)` が失敗する。
+        try expectLineFails(&interp, "(define x 1)\n(+ 1\n  (car x))", "prog.scm:3:3: wrong type of argument to car 1");
+        // 引数の個数の誤りは、呼び出しの側の位置である。
+        try expectLineFails(&interp, "(define (f a) a)\n  (f 1 2)", "prog.scm:2:3: wrong number of arguments: expected 1, got 2");
+        // 手続きの本体の中の誤りは、本体の中の呼び出しの位置である。
+        try expectLineFails(&interp, "(define (g y)\n (vector-ref y 0))\n(g 5)", "prog.scm:2:2: wrong type of argument to vector-ref 5 0");
+        // `error` と `raise` は、呼び出しの位置を持つ。
+        try expectLineFails(&interp, "\n\n   (error \"boom\" 1)", "prog.scm:3:4: boom 1");
+        try expectLineFails(&interp, "(raise 'oops)", "prog.scm:1:1: oops");
+        // 位置は誤りごとに持ち、次の行の誤りには残らない。
+        try expectLineFails(&interp, "(car 1)", "prog.scm:1:1: wrong type of argument to car 1");
+        try expectLineFails(&interp, "(raise 'again)", "prog.scm:1:1: again");
+        // ファイルの名前が無い入力(REPL と WASM の行)は、ファイル名なしで、行と桁を書く。
+        interp.file_name = null;
+        try expectLineFails(&interp, "\n  (if)", "2:3: bad if: expected (if test consequent) or (if test consequent alternative)");
+        try expectLineFails(&interp, "(define x 1)\n (car x)", "2:2: wrong type of argument to car 1");
+    }
+}
+
+test "an error that a guard re-raises keeps the place of the call that raised it, and one a library procedure raises has none" {
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // どの節にも合わない `guard` は、同じ値を、位置を持たない呼び出しで再送出する。元の位置が残る。
+    try expectLineFails(&interp, "(guard (e (#f 1)) (car 5))", "prog.scm:1:19: wrong type of argument to car 5");
+    // 標準ライブラリの手続きの中の誤りは、位置を持たない(ADR-0054)。
+    try expectLineFailsUnplaced(&interp, "(list-ref '(a b) 5)", "argument out of range in list-ref (a b) 5");
+}
+
+test "an error a call in the body of a library raises says the place in the library file, not that of the import" {
+    var tree: resolve.Tree = undefined;
+    try tree.init(std.testing.allocator);
+    defer tree.deinit(std.testing.allocator);
+    try tree.write("t/bad.sld", "(define-library (t bad) (export) (import (sucheme core)) (begin (car 5)))");
+    var interp: Interpreter = undefined;
+    try initOnTree(&interp, &tree, false);
+    defer interp.deinit();
+    // 実行したファイルの `import` の形式にも位置があるが、誤りを起こした呼び出しの位置が優先する。
+    interp.file_name = "prog.scm";
+    try expectLineFailsInTree(&interp, &tree, "\n (import (t bad))", "t/bad.sld:1:65", "wrong type of argument to car 5");
+}
+
+test "a call the reader did not read, the output of a macro, raises with no place" {
+    var interp: Interpreter = undefined;
+    try interp.initCore(std.testing.allocator, .{});
+    defer interp.deinit();
+    interp.file_name = "prog.scm";
+    // 展開した呼び出し `(car 1)` はテンプレートのペアで、位置を持たない。使用の側の `(m)` の位置も
+    // 引き継がない。
+    try expectLineFailsUnplaced(&interp, "(define-syntax m (syntax-rules () ((_) (car 1))))\n(m)", "wrong type of argument to car 1");
+    // マクロの引数として渡した呼び出しは、読んだペアのままなので、その位置を持つ。
+    try expectLineFails(&interp, "(define-syntax n (syntax-rules () ((_ e) (list e))))\n(n\n (car 1))", "prog.scm:3:2: wrong type of argument to car 1");
 }
 
 test "an error raised outside the expander says the place of the top-level form" {
@@ -2455,9 +2579,9 @@ test "evalPrint describes a reader error, and a later success clears the message
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.Incomplete, interp.evalPrint(arena.allocator(), "(+ 1", &w));
-    try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
+    try expectDiagnostic("unexpected end of input", interp.diagnostic());
     try interp.evalPrint(arena.allocator(), "1", &w);
-    try std.testing.expectEqualStrings("", interp.diagnostic());
+    try expectDiagnostic("", interp.diagnostic());
 }
 
 test "a definition survives into the next call, and prints nothing itself" {
@@ -2486,7 +2610,7 @@ test "a failed line keeps the definitions made before it and not the one that fa
     try interp.evalPrint(arena.allocator(), "a", &w);
     try std.testing.expectEqualStrings("1\n", w.buffered());
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "b", &w));
-    try std.testing.expectEqualStrings("unbound variable: b", interp.diagnostic());
+    try expectDiagnostic("unbound variable: b", interp.diagnostic());
 }
 
 test "two interpreters do not share definitions" {
@@ -2557,12 +2681,12 @@ test "a line that ends at the limit of the heap does not end the session" {
     var w: std.Io.Writer = .fixed(&buf);
     try interp.evalPrint(arena.allocator(), "(define (forever n) (+ 1 (forever n))) (define keep 42)", &w);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(forever 0)", &w));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     // 失敗した行がヒープに残したものはゴミであり、次の行は読む前にそれを
     // 回収することから始まる。
     try interp.evalPrint(arena.allocator(), "(+ 1 2) keep", &w);
     try std.testing.expectEqualStrings("3\n42\n", w.buffered());
-    try std.testing.expectEqualStrings("", interp.diagnostic());
+    try expectDiagnostic("", interp.diagnostic());
     // もう一度。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(forever 0)", &w));
     try interp.evalPrint(arena.allocator(), "(+ 20 22)", &w);
@@ -2578,7 +2702,7 @@ test "a datum too large for the heap is refused with the same message" {
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.HeapLimit, interp.evalPrint(arena.allocator(), "'(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30)", &w));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     // 収まらなかったデータはゴミであり、小さいものなら収まる。
     try interp.evalPrint(arena.allocator(), "'(1 2)", &w);
     try std.testing.expectEqualStrings("(1 2)\n", w.buffered());
@@ -2615,7 +2739,7 @@ test "the tables of the libraries count against the limit, and one that does not
         const src = try std.fmt.allocPrint(a, "(define-library (u {d}) (export) (import (t big)))", .{i});
         interp.evalPrint(a, src, &discard.writer) catch |e| {
             try std.testing.expectEqual(error.Raised, e);
-            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            try expectDiagnostic("heap limit exceeded", interp.diagnostic());
             failed = true;
             break;
         };
@@ -2643,7 +2767,7 @@ test "the work of nested modifiers of an import counts against the limit" {
     for (0..400) |_| try spec.writer.writeAll(" p)");
     try spec.writer.writeAll(")");
     try std.testing.expectError(error.Raised, interp.evalPrint(a, spec.written(), &discard.writer));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     // 数えた作業は、行が終われば数えない。浅い入れ子は通る。
     try std.testing.expectEqual(0, interp.ctx.heap.external);
     try interp.evalPrint(a, "(import (prefix (prefix (t big) p) q))", &discard.writer);
@@ -2672,7 +2796,7 @@ fn deepestPrefix(interp: *Interpreter, a: std.mem.Allocator) !usize {
     while (depth < 4096) : (depth += 8) {
         const src = try std.fmt.allocPrint(a, "(import {s})", .{try deepPrefix(a, depth)});
         interp.evalPrint(a, src, &discard.writer) catch {
-            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            try expectDiagnostic("heap limit exceeded", interp.diagnostic());
             return depth - 8;
         };
     }
@@ -2698,7 +2822,7 @@ test "the work of all the sets of one import counts against the limit until they
     for (0..8) |_| try many.writer.print(" {s}", .{one});
     try many.writer.writeAll(")");
     try std.testing.expectError(error.Raised, interp.evalPrint(a, many.written(), &discard.writer));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     try std.testing.expectEqual(0, interp.ctx.heap.external);
 }
 
@@ -2724,7 +2848,7 @@ test "the imports of libraries that one import loads from their files count toge
     var discard: std.Io.Writer.Discarding = .init(&.{});
     try interp.evalPrint(a, "(import (t a1))", &discard.writer);
     try std.testing.expectError(error.Raised, interp.evalPrint(a, "(import (t a2) (t a3) (t a4))", &discard.writer));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     try std.testing.expectEqual(0, interp.ctx.heap.external);
 }
 
@@ -2752,7 +2876,7 @@ test "an import the limit refuses part way through binding binds none of its nam
         interp.ctx.collectIdle();
         interp.ctx.heap.options.limit = interp.ctx.heap.held() + room;
         interp.evalPrint(a, "(import (prefix (t big) p:))", &discard.writer) catch {
-            try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+            try expectDiagnostic("heap limit exceeded", interp.diagnostic());
             refused += 1;
             for (0..prefixed_import_names) |i| {
                 const prefixed = try std.fmt.allocPrint(a, "p:n{d}", .{i});
@@ -2788,7 +2912,7 @@ test "the work of nested modifiers counts against the limit when the library the
     try spec.writer.writeAll(")");
     var discard: std.Io.Writer.Discarding = .init(&.{});
     try std.testing.expectError(error.Raised, interp.evalPrint(a, spec.written(), &discard.writer));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
 }
 
 test "the data of a quoted list survives the collections between the lines that use it" {
@@ -2819,7 +2943,7 @@ test "input that is not valid UTF-8 is refused whole, and the next line is read"
     for ([_][]const u8{ "1 \x80", "\xC0\x80", "\xED\xA0\x80", "\xFF", "\xE3\x81" }) |src| {
         try std.testing.expectError(error.InvalidUtf8, interp.evalPrint(arena.allocator(), src, &w));
         try std.testing.expectEqualStrings("", w.buffered());
-        try std.testing.expectEqualStrings("invalid UTF-8 input", interp.diagnostic());
+        try expectDiagnostic("invalid UTF-8 input", interp.diagnostic());
     }
     try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
     try std.testing.expectEqualStrings("3\n", w.buffered());
@@ -2827,6 +2951,17 @@ test "input that is not valid UTF-8 is refused whole, and the next line is read"
 
 /// Evaluates `line` on `interp` and expects it to fail with `message`.
 fn expectLineFails(interp: *Interpreter, line: []const u8, message: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line, &w));
+    try expectDiagnostic(message, interp.diagnostic());
+}
+
+/// Evaluates `line` on `interp` and expects it to fail with exactly `message`, which has no
+/// place before it: an error with no place must not get one (ADR-0054).
+fn expectLineFailsUnplaced(interp: *Interpreter, line: []const u8, message: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var buf: [256]u8 = undefined;
@@ -3042,7 +3177,7 @@ test "a reader error is described without making a condition in the heap" {
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.Incomplete, interp.evalPrint(arena.allocator(), "(+ 1", &w));
-    try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
+    try expectDiagnostic("unexpected end of input", interp.diagnostic());
     // 送出された値は無く、ヒープに条件は作られていない。
     try std.testing.expect(interp.ctx.raised == null);
     try std.testing.expectEqual(0, interp.ctx.heap.countOf(@import("value.zig").Condition));
@@ -3061,7 +3196,7 @@ test "the description outlives the arena of the call and the collections after i
     }
     interp.ctx.clearDiagnostic();
     interp.ctx.collectIdle();
-    try std.testing.expectEqualStrings("wrong type of argument to car 5", interp.diagnostic());
+    try expectDiagnostic("wrong type of argument to car 5", interp.diagnostic());
 }
 
 test "a condition kept as the value raised survives the collections until the next line clears it" {
@@ -3100,24 +3235,24 @@ test "the value raised is described: a condition by its message and irritants, a
     const irritants = try ctx.heap.cons(.fromFixnum(42), try ctx.heap.cons(.fromString(text), .empty_list_value));
     ctx.raised = try ctx.makeCondition(.@"error", "bad {s}", .{"thing"}, irritants);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("bad thing 42 \"a\\\"b\"", interp.diagnostic());
+    try expectDiagnostic("bad thing 42 \"a\\\"b\"", interp.diagnostic());
     // メッセージが文字列でない条件も、停止せずに書く。
     ctx.raised = .fromCondition(try ctx.heap.create(@import("value.zig").Condition, .{ .kind = .@"error", .message = .fromFixnum(7), .irritants = .empty_list_value }));
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("7", interp.diagnostic());
+    try expectDiagnostic("7", interp.diagnostic());
     // 条件でない値は、write の形で書く。
     ctx.raised = .fromFixnum(42);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("42", interp.diagnostic());
+    try expectDiagnostic("42", interp.diagnostic());
     ctx.raised = irritants;
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("(42 \"a\\\"b\")", interp.diagnostic());
+    try expectDiagnostic("(42 \"a\\\"b\")", interp.diagnostic());
     // 何も送出されていなければ、失敗そのものを説明する。
     ctx.raised = null;
     interp.keepDiagnostic(arena.allocator(), error.ReserveExhausted);
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     interp.keepDiagnostic(arena.allocator(), error.Incomplete);
-    try std.testing.expectEqualStrings("unexpected end of input", interp.diagnostic());
+    try expectDiagnostic("unexpected end of input", interp.diagnostic());
 }
 
 test "a description whose values the printer cannot write within the limit keeps the message and cuts the values" {
@@ -3133,7 +3268,7 @@ test "a description whose values the printer cannot write within the limit keeps
     // プリンタの表の確保が上限で断られる。
     ctx.heap.options.limit = ctx.heap.held() + 16;
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("bad thing ...", interp.diagnostic());
+    try expectDiagnostic("bad thing ...", interp.diagnostic());
 }
 
 test "when the description cannot be allocated, the diagnostic says out of memory" {
@@ -3149,12 +3284,12 @@ test "when the description cannot be allocated, the diagnostic says out of memor
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("out of memory", interp.diagnostic());
+    try expectDiagnostic("out of memory", interp.diagnostic());
     // 確保できるようになれば、送出された値の説明に戻る。
     failing.fail_index = std.math.maxInt(usize);
     failing.resize_fail_index = std.math.maxInt(usize);
     interp.keepDiagnostic(arena.allocator(), error.Raised);
-    try std.testing.expectEqualStrings("bad thing", interp.diagnostic());
+    try expectDiagnostic("bad thing", interp.diagnostic());
 }
 
 test "the values a description shows are cut after a bound, and the message is kept whole" {
@@ -3168,13 +3303,13 @@ test "the values a description shows are cut after a bound, and the message is k
     try interp.evalPrint(arena.allocator(), "(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))", &w);
     // 長い引数の irritant は、上限で切って `...` を付ける。メッセージは切らない。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(length (build 1000 0))", &w));
-    const d = interp.diagnostic();
+    const d = unplaced(interp.diagnostic());
     try std.testing.expect(std.mem.startsWith(u8, d, "wrong type of argument to length (1 2 3 4 5 "));
     try std.testing.expect(std.mem.endsWith(u8, d, "..."));
     try std.testing.expectEqual("wrong type of argument to length".len + shown_value_bytes + "...".len, d.len);
     // 条件でない値も同じである。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "(raise (build 1000 '()))", &w));
-    try std.testing.expectEqual(shown_value_bytes + "...".len, interp.diagnostic().len);
+    try std.testing.expectEqual(shown_value_bytes + "...".len, unplaced(interp.diagnostic()).len);
     // 上限にちょうど収まる値は切らない。
     var line: std.ArrayList(u8) = .empty;
     defer line.deinit(std.testing.allocator);
@@ -3182,10 +3317,10 @@ test "the values a description shows are cut after a bound, and the message is k
     try line.appendNTimes(std.testing.allocator, 'x', shown_value_bytes);
     try line.append(std.testing.allocator, ')');
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line.items, &w));
-    try std.testing.expectEqual(shown_value_bytes, interp.diagnostic().len);
+    try std.testing.expectEqual(shown_value_bytes, unplaced(interp.diagnostic()).len);
     // 長いメッセージは切らない。
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), "a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", &w));
-    try std.testing.expectEqualStrings("unbound variable: a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", interp.diagnostic());
+    try expectDiagnostic("unbound variable: a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter-and-goes-on-for-a-long-while-longer-than-the-bound-on-values", interp.diagnostic());
 }
 
 test "a description cut in the middle of a character is cut before the character" {
@@ -3206,7 +3341,7 @@ test "a description cut in the middle of a character is cut before the character
         for (0..60) |_| try line.appendSlice(std.testing.allocator, "あ");
         try line.appendSlice(std.testing.allocator, "\")");
         try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), line.items, &w));
-        const d = interp.diagnostic();
+        const d = unplaced(interp.diagnostic());
         try std.testing.expect(std.unicode.utf8ValidateSlice(d));
         try std.testing.expect(std.mem.endsWith(u8, d, "あ..."));
         // 落とすのは、切れた文字の書けた分(2バイトまで)だけである。
@@ -3267,7 +3402,7 @@ fn expectBoundedExpansion(definition: []const u8, use: []const u8, limit: usize)
     var w: std.Io.Writer = .fixed(&buf);
     try interp.evalPrint(arena.allocator(), definition, &w);
     try std.testing.expectError(error.Raised, interp.evalPrint(arena.allocator(), use, &w));
-    try std.testing.expectEqualStrings("heap limit exceeded", interp.diagnostic());
+    try expectDiagnostic("heap limit exceeded", interp.diagnostic());
     const total = held(&gpa) + held(&scratch_gpa);
     if (total > limit + limit / 4) {
         std.debug.print("held {d} bytes against a limit of {d}\n", .{ total, limit });
@@ -3306,11 +3441,11 @@ test "a form that does not stop ends at the step limit, and the next form runs" 
     var buf: [64]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try std.testing.expectError(error.StepLimit, interp.evalPrint(arena.allocator(), "(let loop () (loop))", &w));
-    try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
+    try expectDiagnostic("step limit exceeded", interp.diagnostic());
     // 残りは形式ごとに戻るので、上限に達した次の形式も、上限いっぱいまで走れる。
     try interp.evalPrint(arena.allocator(), "(+ 1 2)", &w);
     try std.testing.expectEqualStrings("3\n", w.buffered());
-    try std.testing.expectEqualStrings("", interp.diagnostic());
+    try expectDiagnostic("", interp.diagnostic());
 }
 
 test "a handler does not catch the step limit" {
@@ -4112,4 +4247,30 @@ test "evalPrint writes the error port to console_err while it runs, and puts bac
     try std.testing.expectEqualStrings("1\nG2\n", out.buffered());
     try std.testing.expectEqualStrings("", outer.buffered());
     try std.testing.expectEqual(@as(?*std.Io.Writer, &outer), interp.ctx.console.error_sink);
+}
+
+/// How long the place a description starts with is, `[<file>:]<line>:<column>: `, or 0
+/// when it does not start with one.
+fn placeLength(description: []const u8) usize {
+    const end = std.mem.indexOf(u8, description, ": ") orelse return 0;
+    const head = description[0..end];
+    const column_at = std.mem.lastIndexOfScalar(u8, head, ':') orelse return 0;
+    _ = std.fmt.parseInt(u32, head[column_at + 1 ..], 10) catch return 0;
+    const rest = head[0..column_at];
+    const line = if (std.mem.lastIndexOfScalar(u8, rest, ':')) |i| rest[i + 1 ..] else rest;
+    _ = std.fmt.parseInt(u32, line, 10) catch return 0;
+    return end + 2;
+}
+
+/// `description` without the place it starts with.
+fn unplaced(description: []const u8) []const u8 {
+    return description[placeLength(description)..];
+}
+
+/// Expects `found`, a description, to be `expected`. An `expected` that starts with no place
+/// is compared with `found` after its place.
+/// Why: ほとんどのテストは誤りの種類を見る。位置は、位置を書いた期待が固定する(ADR-0054)。
+fn expectDiagnostic(expected: []const u8, found: []const u8) !void {
+    const shown = if (placeLength(expected) != 0) found else unplaced(found);
+    try std.testing.expectEqualStrings(expected, shown);
 }

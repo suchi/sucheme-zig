@@ -11,7 +11,7 @@ y
 x
 
 (import (sucheme derived)) (let ((else #f)) (guard (e (else 'x)) (raise 1)))
-error: 1
+error: 1:66: 1
 
 # 利用側のマクロが書いた `else` は、`guard` のリテラルとして照合する。
 (import (sucheme derived)) (define-syntax catch (syntax-rules () ((_ body) (guard (e ((string? e) 'string) (else 'other)) body)))) (list (catch (raise "s")) (catch (raise 1)))

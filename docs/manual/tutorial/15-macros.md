@@ -187,7 +187,7 @@ ok
 
 ```output
 10
-error: bad syntax: no rule of ten matches the form
+error: 5:1: bad syntax: no rule of ten matches the form
 ```
 
 ## 繰り返しのパターン

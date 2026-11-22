@@ -7,10 +7,10 @@
 
 # `(scheme base)` は、これらを持たない。
 (import (only (scheme base) magnitude))
-error: bad import: magnitude is not exported by the import set
+error: 1:1: bad import: magnitude is not exported by the import set
 
 (import (only (scheme base) make-rectangular))
-error: bad import: make-rectangular is not exported by the import set
+error: 1:1: bad import: make-rectangular is not exported by the import set
 
 # make-rectangular: 虚部が正確な 0 なら実数、部分の正確性はそろう。
 (import (scheme complex)) (list (make-rectangular 1 2) (make-rectangular 1 0) (make-rectangular 1/2 -3/4))
@@ -23,10 +23,10 @@ error: bad import: make-rectangular is not exported by the import set
 (#t #f #t)
 
 (import (scheme complex)) (make-rectangular 1+2i 3)
-error: wrong type of argument to make-rectangular 1+2i 3
+error: 1:27: wrong type of argument to make-rectangular 1+2i 3
 
 (import (scheme complex)) (make-rectangular 1 'a)
-error: wrong type of argument to make-rectangular 1 a
+error: 1:27: wrong type of argument to make-rectangular 1 a
 
 # real-part と imag-part: 実数の虚部は正確な 0。
 (import (scheme complex)) (list (real-part 1+2i) (imag-part 1+2i) (real-part 5) (imag-part 5) (real-part -1.5) (imag-part -1.5))
@@ -36,10 +36,10 @@ error: wrong type of argument to make-rectangular 1 a
 (1.5 2.5 1/2 1/3)
 
 (import (scheme complex)) (real-part 'a)
-error: wrong type of argument to real-part a
+error: 1:27: wrong type of argument to real-part a
 
 (import (scheme complex)) (imag-part "1")
-error: wrong type of argument to imag-part "1"
+error: 1:27: wrong type of argument to imag-part "1"
 
 # magnitude: 実数なら abs、正確な複素数の根は、平方数なら正確。
 (import (scheme complex)) (list (magnitude -5) (magnitude 5) (magnitude -1/3) (magnitude -2.5))
@@ -79,16 +79,16 @@ error: wrong type of argument to imag-part "1"
 (#t #t #t)
 
 (import (scheme complex)) (make-polar 'a 1)
-error: wrong type of argument to make-polar a 1
+error: 1:27: wrong type of argument to make-polar a 1
 
 (import (scheme complex)) (make-polar 1 +i)
-error: wrong type of argument to make-polar 1 +i
+error: 1:27: wrong type of argument to make-polar 1 +i
 
 (import (scheme complex)) (angle 'a)
-error: wrong type of argument to angle a
+error: 1:27: wrong type of argument to angle a
 
 (import (scheme complex)) (magnitude "x")
-error: wrong type of argument to magnitude "x"
+error: 1:27: wrong type of argument to magnitude "x"
 
 # 複素数の sqrt: 正確な根があれば正確。
 (import (scheme inexact)) (list (sqrt -4) (sqrt +2i) (sqrt 3+4i) (sqrt -3-4i) (sqrt -3+4i) (sqrt +1/2i))
@@ -165,16 +165,16 @@ error: wrong type of argument to magnitude "x"
 
 # 型の検査。
 (import (scheme inexact)) (exp 'a)
-error: wrong type of argument to exp a
+error: 1:27: wrong type of argument to exp a
 
 (import (scheme inexact)) (atan 1+i 2)
-error: wrong type of argument to atan 1+i 2
+error: 1:27: wrong type of argument to atan 1+i 2
 
 (import (scheme inexact)) (log 1 'a)
-error: wrong type of argument to log 1 a
+error: 1:27: wrong type of argument to log 1 a
 
 (import (scheme inexact)) (sqrt "4")
-error: wrong type of argument to sqrt "4"
+error: 1:27: wrong type of argument to sqrt "4"
 
 # expt: 複素数の指数と、複素数の底の整数でない指数は、exp と log で計算する。
 (import (scheme base) (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) 1e-14)))) (list (near? (expt 2 +i) 0.7692389013639721+0.6389612763136348i) (near? (expt +i +i) 0.20787957635076193) (near? (expt 1+2i 1+i) -0.24720004426291722+0.6964504870825432i) (near? (expt 1+2i 1/2) (sqrt 1+2i)) (near? (expt 1+2i 0.5) (sqrt 1+2i)) (near? (expt 1+2i -0.5) (/ 1 (sqrt 1+2i)))))
@@ -184,10 +184,10 @@ error: wrong type of argument to sqrt "4"
 (-3+4i 1 0)
 
 (import (scheme base)) (expt 0 -1+i)
-error: division by zero in expt 0 -1+i
+error: 1:24: division by zero in expt 0 -1+i
 
 (import (scheme base)) (expt 0 +i)
-error: division by zero in expt 0 +i
+error: 1:24: division by zero in expt 0 +i
 
 # atan: 実部が小さいか虚部が大きい引数でも、符号と有限性が保たれる(C99 の catan と同じ値)。
 (import (scheme inexact) (scheme complex)) (let ((near? (lambda (a b) (< (magnitude (- a b)) (* 1e-13 (+ 1 (magnitude b))))))) (list (near? (atan 0.0+2.0i) 1.5707963267948966+0.5493061443340549i) (near? (atan 1e-300+2.0i) 1.5707963267948966+0.5493061443340549i) (near? (atan 1.0+1e10i) 1.5707963267948966+1e-10i) (near? (atan 2+1e300i) 1.5707963267948966+1e-300i) (near? (atan -0.0+2.0i) -1.5707963267948966+0.5493061443340549i)))
@@ -331,10 +331,10 @@ error: division by zero in expt 0 +i
 (0.0 0.0 0 0.0)
 
 (import (scheme complex)) (expt 0.0 -1+i)
-error: division by zero in expt 0.0 -1+i
+error: 1:27: division by zero in expt 0.0 -1+i
 
 (import (scheme complex)) (expt 0.0 +i)
-error: division by zero in expt 0.0 +i
+error: 1:27: division by zero in expt 0.0 +i
 
 # f64 に収まらない正確な複素数の angle。同じ入力の log の実部は、suchi/sucheme-zig#221 で直す。
 (import (scheme complex)) (let ((a (angle (make-rectangular (expt 10 400) (expt 10 399))))) (list (< 0.0996 a 0.0997) (inexact? a)))

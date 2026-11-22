@@ -15,10 +15,10 @@
 
 # 定数のバイトベクタには読み込まない(R7RS 3.4)。
 (read-bytevector! #u8(0 0) (open-input-bytevector (bytevector 1)))
-error: cannot modify a constant in read-bytevector! #u8(0 0) #<port>
+error: 1:1: cannot modify a constant in read-bytevector! #u8(0 0) #<port>
 
 (write-u8 256 (open-output-bytevector))
-error: wrong type of argument to write-u8 256 #<port>
+error: 1:1: wrong type of argument to write-u8 256 #<port>
 
 (read-u8 (open-input-string "a"))
-error: wrong type of argument to read-u8 #<port>
+error: 1:1: wrong type of argument to read-u8 #<port>

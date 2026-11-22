@@ -9,13 +9,13 @@ else
 error: else is a syntactic keyword and cannot be used as a variable
 
 (list 1 =>)
-error: => is a syntactic keyword and cannot be used as a variable
+error: 1:1: => is a syntactic keyword and cannot be used as a variable
 
 (else 1)
-error: else is a syntactic keyword and cannot be used as a variable
+error: 1:1: else is a syntactic keyword and cannot be used as a variable
 
 (set! unquote 1)
-error: bad set!: unquote is a syntactic keyword and cannot be assigned
+error: 1:1: bad set!: unquote is a syntactic keyword and cannot be assigned
 
 (define else 5) else
 5

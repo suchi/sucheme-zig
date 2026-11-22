@@ -38,12 +38,12 @@ to standard error
 
 ## 実行時エラー
 
-実行時エラーが起きると、`error: ` に続けて説明を標準エラーに出して、そこでプログラムは止まります。終了コードは 1 です。エラーより前の出力は残ります。
+実行時エラーが起きると、`error: ` に続けて説明を標準エラーに出して、そこでプログラムは止まります。終了コードは 1 です。エラーより前の出力は残ります。説明の前には、誤りを起こした呼び出しの場所が、`ファイル名:行:桁:` の形で付きます。マクロが作った呼び出しや、標準ライブラリの手続きの中で起きた誤りには、付きません。
 
 ```console
 $ sucheme boom.scm
 before the error
-error: wrong type of argument to car ()
+error: boom.scm:4:1: wrong type of argument to car ()
 [exit 1]
 ```
 

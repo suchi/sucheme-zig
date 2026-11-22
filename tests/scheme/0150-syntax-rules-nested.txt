@@ -31,7 +31,7 @@
 
 # 繰り返しで駆動する変数の長さが合わないのは、展開のエラーである。
 (define-syntax zip (syntax-rules () ((_ (a ...) (b ...)) '((a b) ...)))) (zip (1 2) (3))
-error: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together
+error: 1:74: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together
 
 # 内側の長さは繰り返しごとに違ってよい。
 (define-syntax zip-rows (syntax-rules () ((_ (a b ...) ...) '((a . (b ...)) ...)))) (zip-rows (1 2) (3) (4 5 6))

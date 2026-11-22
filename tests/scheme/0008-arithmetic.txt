@@ -126,34 +126,34 @@ yes
 340282366920938463463374607431768211456
 
 (= 1 'a)
-error: wrong type of argument to = 1 a
+error: 1:1: wrong type of argument to = 1 a
 
 (< 1 2 'a)
-error: wrong type of argument to < 1 2 a
+error: 1:1: wrong type of argument to < 1 2 a
 
 (< 2 1 'a)
-error: wrong type of argument to < 2 1 a
+error: 1:1: wrong type of argument to < 2 1 a
 
 (- 'a)
-error: wrong type of argument to - a
+error: 1:1: wrong type of argument to - a
 
 (* 2 #t)
-error: wrong type of argument to * 2 #t
+error: 1:1: wrong type of argument to * 2 #t
 
 (-)
-error: wrong number of arguments to -
+error: 1:1: wrong number of arguments to -
 
 (=)
-error: wrong number of arguments to =
+error: 1:1: wrong number of arguments to =
 
 (<)
-error: wrong number of arguments to <
+error: 1:1: wrong number of arguments to <
 
 (>)
-error: wrong number of arguments to >
+error: 1:1: wrong number of arguments to >
 
 (<=)
-error: wrong number of arguments to <=
+error: 1:1: wrong number of arguments to <=
 
 (>=)
-error: wrong number of arguments to >=
+error: 1:1: wrong number of arguments to >=

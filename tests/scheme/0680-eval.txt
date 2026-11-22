@@ -12,17 +12,17 @@ error: unbound variable: null-environment
 
 # `environment` の束縛は変更できない。定義、構文の定義、インポートした束縛への代入を断る。
 (import (scheme eval)) (eval '(define foo 32) (environment '(scheme base)))
-error: bad define: cannot define foo in an immutable environment
+error: 1:24: bad define: cannot define foo in an immutable environment
 
 (import (scheme eval)) (eval '(define-syntax m (syntax-rules () ((_) 1))) (environment '(scheme base)))
-error: bad define-syntax: cannot define m in an immutable environment
+error: 1:24: bad define-syntax: cannot define m in an immutable environment
 
 (import (scheme eval)) (eval '(set! car 1) (environment '(scheme base)))
-error: bad set!: car is an imported binding and cannot be assigned
+error: 1:24: bad set!: car is an imported binding and cannot be assigned
 
 # 定義に展開されるマクロも、同じく断る。
 (import (scheme eval)) (eval '(define-record-type point (make-point x) point? (x point-x)) (environment '(scheme base)))
-error: bad define: cannot define point in an immutable environment
+error: 1:24: bad define: cannot define point in an immutable environment
 
 # 輸入集合は、修飾子つきで、いくつ並べてもよい。輸入していない名前は見えない。
 (import (scheme eval)) (eval '(cons (first-of '(1 2)) (caddr '(3 4 5))) (environment '(rename (only (scheme base) car cons quote) (car first-of)) '(scheme cxr)))
@@ -44,17 +44,17 @@ w(1 2 3)
 
 # `import` と `define-library` は、式でも定義でもないので断る。
 (import (scheme eval)) (eval '(import (scheme write)) (environment '(scheme base)))
-error: bad eval: import and define-library are not expressions or definitions
+error: 1:24: bad eval: import and define-library are not expressions or definitions
 
 # 型と個数の誤り。
 (import (scheme eval)) (eval 1 2)
-error: wrong type of argument to eval 1 2
+error: 1:24: wrong type of argument to eval 1 2
 
 (import (scheme eval)) (eval 1)
-error: wrong number of arguments to eval 1
+error: 1:24: wrong number of arguments to eval 1
 
 (import (scheme eval)) (environment '(no such library))
-error: unknown library: (no such library)
+error: 1:24: unknown library: (no such library)
 
 # 環境の指定子の外部表現。
 (import (scheme eval) (scheme repl)) (list (environment) (interaction-environment))
@@ -74,18 +74,18 @@ error: unknown library: (no such library)
 # リテラルの外の循環は、リーダと同じく断る(R7RS 2.4)。`eval` のデータはリーダを通らない
 # ので、`eval` の入口で調べる。調べないと、cdr の循環で展開器が止まらない。
 (import (scheme eval)) (eval (let ((l (list 1))) (set-cdr! l l) l) (environment '(scheme base)))
-error: bad eval: circular reference outside a literal
+error: 1:24: bad eval: circular reference outside a literal
 
 (import (scheme eval)) (eval (let ((l (list 1))) (set-cdr! l l) (cons 'begin l)) (environment '(scheme base)))
-error: bad eval: circular reference outside a literal
+error: 1:24: bad eval: circular reference outside a literal
 
 # `environment` の輸入集合も、リーダを通らないので同じく断る。断らないと、循環したライブラリの
 # 名前で止まらない。
 (import (scheme eval)) (let ((l (list 'scheme))) (set-cdr! l l) (environment l))
-error: bad environment: circular reference outside a literal
+error: 1:65: bad environment: circular reference outside a literal
 
 (import (scheme eval)) (environment (let ((l (list 'only '(scheme base) 'car))) (set-cdr! (cddr l) (cddr l)) l))
-error: bad environment: circular reference outside a literal
+error: 1:24: bad environment: circular reference outside a literal
 
 # quote の中の循環はリテラルなので、そのまま値になる。
 (import (scheme eval)) (let ((l (list 1))) (set-cdr! l l) (eq? l (eval (list 'quote l) (environment '(scheme base)))))

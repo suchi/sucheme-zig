@@ -8,10 +8,10 @@
 
 # `(scheme base)` は、これらを持たない。
 (import (only (scheme base) char-upcase))
-error: bad import: char-upcase is not exported by the import set
+error: 1:1: bad import: char-upcase is not exported by the import set
 
 (import (only (scheme base) digit-value))
-error: bad import: digit-value is not exported by the import set
+error: 1:1: bad import: digit-value is not exported by the import set
 
 # R7RS 6.6 の例: digit-value。
 (import (scheme char)) (list (digit-value #\3) (digit-value #\x0664) (digit-value #\x0AE6) (digit-value #\x0EA6))
@@ -129,23 +129,23 @@ error: bad import: digit-value is not exported by the import set
 
 # 文字でない引数は誤りである。最初の組が成り立たなくても、後ろの引数まで検査される。
 (import (scheme char)) (char-alphabetic? 97)
-error: wrong type of argument to char-alphabetic? 97
+error: 1:24: wrong type of argument to char-alphabetic? 97
 
 (import (scheme char)) (char-upcase "a")
-error: wrong type of argument to char-upcase "a"
+error: 1:24: wrong type of argument to char-upcase "a"
 
 (import (scheme char)) (digit-value 3)
-error: wrong type of argument to digit-value 3
+error: 1:24: wrong type of argument to digit-value 3
 
 (import (scheme char)) (char-ci=? #\a 97)
-error: wrong type of argument to char-ci=? #\a 97
+error: 1:24: wrong type of argument to char-ci=? #\a 97
 
 (import (scheme char)) (char-ci<? #\b #\a #\a 'c)
-error: wrong type of argument to char-ci<? #\b #\a #\a c
+error: 1:24: wrong type of argument to char-ci<? #\b #\a #\a c
 
 # 引数の数。
 (import (scheme char)) (char-upcase)
-error: wrong number of arguments to char-upcase
+error: 1:24: wrong number of arguments to char-upcase
 
 (import (scheme char)) (char-ci=?)
-error: wrong number of arguments to char-ci=?
+error: 1:24: wrong number of arguments to char-ci=?

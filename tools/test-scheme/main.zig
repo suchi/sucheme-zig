@@ -526,8 +526,18 @@ fn isMutatorName(id: []const u8) bool {
 
 /// The report of a call that must refuse to write into a constant, or null when it does.
 fn mutatorFailure(got: []const u8, name: []const u8, buf: []u8) ?[]const u8 {
-    const expected = std.fmt.bufPrint(buf, "error: cannot modify a constant in {s} ", .{name}) catch return "name too long";
-    if (std.mem.startsWith(u8, got, expected)) return null;
+    const expected = std.fmt.bufPrint(buf, "cannot modify a constant in {s} ", .{name}) catch return "name too long";
+    const prefix = "error: ";
+    if (!std.mem.startsWith(u8, got, prefix)) return got;
+    // 誤りを起こした呼び出しの位置(`line:column: `)が前置されることがある(ADR-0054)。
+    var rest = got[prefix.len..];
+    var colons: usize = 0;
+    var at: usize = 0;
+    while (at < rest.len and colons < 2) : (at += 1) {
+        if (rest[at] == ':') colons += 1 else if (rest[at] < '0' or rest[at] > '9') break;
+    }
+    if (colons == 2 and at + 1 < rest.len and rest[at] == ' ') rest = rest[at + 1 ..];
+    if (std.mem.startsWith(u8, rest, expected)) return null;
     return got;
 }
 

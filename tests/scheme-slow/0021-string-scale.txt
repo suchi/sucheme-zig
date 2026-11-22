@@ -7,7 +7,7 @@
 
 # 200万文字の文字列を、リストにする。ペア1つが数十バイトなので、上限を超える。
 (length (string->list (make-string 2000000 #\a)))
-error: heap limit exceeded
+error: 1:9: heap limit exceeded
 
 # 上限に収まる長さのリストと往復する。
 (string-length (list->string (string->list (make-string 500000 #\a))))

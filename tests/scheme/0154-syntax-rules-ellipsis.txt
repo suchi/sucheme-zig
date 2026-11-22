@@ -38,7 +38,7 @@
 
 # エスケープの形が違うのは、定義の時点のエラーである。
 (define-syntax m (syntax-rules () ((_ a) (... a b))))
-error: bad syntax-rules: an ellipsis escape must be (... template)
+error: 1:1: bad syntax-rules: an ellipsis escape must be (... template)
 
 # 利用者が指定する省略記号。`...` は、ふつうの識別子になる。
 (define-syntax my-let (syntax-rules ::: () ((_ ((n v) :::) b :::) ((lambda (n :::) b :::) v :::)))) (my-let ((x 1) (y 2)) (+ x y))

@@ -1,46 +1,46 @@
 # スライス 2l: `syntax-error`(R7RS 4.3.3)。展開のときに誤りを送出する。引数は評価しない。
 
 (syntax-error "something is wrong")
-error: something is wrong
+error: 1:1: something is wrong
 
 (syntax-error "expected an identifier but got" (x . y))
-error: expected an identifier but got (x . y)
+error: 1:1: expected an identifier but got (x . y)
 
 (syntax-error "bad things" 1 "two" #\3 (+ 1 2))
-error: bad things 1 "two" #\3 (+ 1 2)
+error: 1:1: bad things 1 "two" #\3 (+ 1 2)
 
 # マクロの規則が、利用の形が合わないことを知らせる(R7RS 4.3.3 の例)。
 (define-syntax simple-let (syntax-rules () ((_ (head ... ((x . y) val) . tail) body1 body2 ...) (syntax-error "expected an identifier but got" (x . y))) ((_ ((name val) ...) body1 body2 ...) ((lambda (name ...) body1 body2 ...) val ...)))) (simple-let ((a 3)) a)
 3
 
 (define-syntax simple-let (syntax-rules () ((_ (head ... ((x . y) val) . tail) body1 body2 ...) (syntax-error "expected an identifier but got" (x . y))) ((_ ((name val) ...) body1 body2 ...) ((lambda (name ...) body1 body2 ...) val ...)))) (simple-let ((a 3) ((b . c) 4)) a)
-error: expected an identifier but got (b . c)
+error: 1:241: expected an identifier but got (b . c)
 
 # テンプレートの中にあっても、使われなければ誤りにならない。
 (define-syntax m (syntax-rules () ((_ 1) 'one) ((_ x) (syntax-error "not one" x)))) (m 1)
 one
 
 (define-syntax m (syntax-rules () ((_ 1) 'one) ((_ x) (syntax-error "not one" x)))) (m 2)
-error: not one 2
+error: 1:85: not one 2
 
 # 引数は評価しない。マクロが導入した識別子は、元のシンボルで報告する。
 (define-syntax m (syntax-rules () ((_) (syntax-error "no" tmp (undefined-procedure)))))  (m)
-error: no tmp (undefined-procedure)
+error: 1:90: no tmp (undefined-procedure)
 
 # 展開のときに送出するので、手続きの本文の中でも、実行前に見つかる。
 (define (f) (syntax-error "found early")) 1
-error: found early
+error: 1:13: found early
 
 # 例外のハンドラでは捕まえられない(R7RS 4.3.3)。式の展開が済んでから実行するので、ハンドラは働かない。
 (with-exception-handler (lambda (e) 'caught) (lambda () (syntax-error "not caught")))
-error: not caught
+error: 1:57: not caught
 
 # 誤り。
 (syntax-error)
-error: bad syntax-error: expected (syntax-error "message" datum ...)
+error: 1:1: bad syntax-error: expected (syntax-error "message" datum ...)
 
 (syntax-error 'oops)
-error: bad syntax-error: expected (syntax-error "message" datum ...)
+error: 1:1: bad syntax-error: expected (syntax-error "message" datum ...)
 
 # 仮引数が同じ綴りを束縛すれば、変数になる。
 ((lambda (syntax-error) (syntax-error 1)) list)

@@ -46,7 +46,7 @@ read
 
 # 向きと種類の違うポート、閉じたポート。
 (import (scheme read)) (read (open-output-string))
-error: wrong type of argument to read #<port>
+error: 1:24: wrong type of argument to read #<port>
 
 (import (scheme read)) (let ((p (open-input-string "1"))) (close-port p) (guard (c (#t (error-object-message c))) (read p)))
 "port is closed in read"

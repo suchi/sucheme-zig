@@ -55,4 +55,4 @@ x
 
 # `%quasiquote` は、エクスポートしない。
 (import (only (sucheme derived) %quasiquote))
-error: bad import: %quasiquote is not exported by the import set
+error: 1:1: bad import: %quasiquote is not exported by the import set

@@ -35,38 +35,38 @@
 #u8(2 3)
 
 (bytevector-copy #u8(1 2 3) 4)
-error: argument out of range in bytevector-copy #u8(1 2 3) 4
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 4
 
 (bytevector-copy #u8(1 2 3) 0 4)
-error: argument out of range in bytevector-copy #u8(1 2 3) 0 4
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 0 4
 
 (bytevector-copy #u8(1 2 3) 2 1)
-error: argument out of range in bytevector-copy #u8(1 2 3) 2 1
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 2 1
 
 (bytevector-copy #u8(1 2 3) -1)
-error: argument out of range in bytevector-copy #u8(1 2 3) -1
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) -1
 
 (bytevector-copy #u8(1 2 3) 0 -1)
-error: argument out of range in bytevector-copy #u8(1 2 3) 0 -1
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 0 -1
 
 (bytevector-copy #u8(1 2 3) 0 9223372036854775807)
-error: argument out of range in bytevector-copy #u8(1 2 3) 0 9223372036854775807
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 0 9223372036854775807
 
 (bytevector-copy #u8(1 2 3) 4294967296 4294967296)
-error: argument out of range in bytevector-copy #u8(1 2 3) 4294967296 4294967296
+error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 4294967296 4294967296
 
 (bytevector-copy "abc")
-error: wrong type of argument to bytevector-copy "abc"
+error: 1:1: wrong type of argument to bytevector-copy "abc"
 
 (bytevector-copy #u8(1 2 3) #\a)
-error: wrong type of argument to bytevector-copy #u8(1 2 3) #\a
+error: 1:1: wrong type of argument to bytevector-copy #u8(1 2 3) #\a
 
 (bytevector-copy #u8(1 2 3) 0 #\a)
-error: wrong type of argument to bytevector-copy #u8(1 2 3) 0 #\a
+error: 1:1: wrong type of argument to bytevector-copy #u8(1 2 3) 0 #\a
 
 # 型の誤りが、範囲の誤りより先に報告される。
 (bytevector-copy #u8(1 2 3) 9 #\a)
-error: wrong type of argument to bytevector-copy #u8(1 2 3) 9 #\a
+error: 1:1: wrong type of argument to bytevector-copy #u8(1 2 3) 9 #\a
 
 # `bytevector-copy!`: 原文の例。
 (define a (bytevector 1 2 3 4 5)) (define b (bytevector 10 20 30 40 50)) (bytevector-copy! b 1 a 0 2) b
@@ -122,50 +122,50 @@ error: wrong type of argument to bytevector-copy #u8(1 2 3) 9 #\a
 
 # 写す前に断る。断られたあとの先は、元のままである。
 (define b (bytevector 1 2 3)) (bytevector-copy! b 2 #u8(7 8))
-error: argument out of range in bytevector-copy! #u8(1 2 3) 2 #u8(7 8)
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 2 #u8(7 8)
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 4 #u8())
-error: argument out of range in bytevector-copy! #u8(1 2 3) 4 #u8()
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 4 #u8()
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b -1 #u8())
-error: argument out of range in bytevector-copy! #u8(1 2 3) -1 #u8()
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) -1 #u8()
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 0 #u8(7 8) 0 3)
-error: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) 0 3
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) 0 3
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 0 #u8(7 8) 2 1)
-error: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) 2 1
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) 2 1
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 0 #u8(7 8) -1)
-error: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) -1
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) -1
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 0 #u8(1 2 3 4))
-error: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(1 2 3 4)
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(1 2 3 4)
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 4294967296 #u8())
-error: argument out of range in bytevector-copy! #u8(1 2 3) 4294967296 #u8()
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 4294967296 #u8()
 
 (define b (bytevector 1 2 3)) (bytevector-copy! b 0 #u8(7 8) 4294967296)
-error: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) 4294967296
+error: 1:31: argument out of range in bytevector-copy! #u8(1 2 3) 0 #u8(7 8) 4294967296
 
 (define b (bytevector 1 2 3)) (list (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k 'failed)) (lambda () (bytevector-copy! b 2 #u8(7 8)))))) b)
 (failed #u8(1 2 3))
 
 (bytevector-copy! "abc" 0 #u8(1))
-error: wrong type of argument to bytevector-copy! "abc" 0 #u8(1)
+error: 1:1: wrong type of argument to bytevector-copy! "abc" 0 #u8(1)
 
 (bytevector-copy! (bytevector 1) #\a #u8(1))
-error: wrong type of argument to bytevector-copy! #u8(1) #\a #u8(1)
+error: 1:1: wrong type of argument to bytevector-copy! #u8(1) #\a #u8(1)
 
 (bytevector-copy! (bytevector 1) 0 "a")
-error: wrong type of argument to bytevector-copy! #u8(1) 0 "a"
+error: 1:1: wrong type of argument to bytevector-copy! #u8(1) 0 "a"
 
 (bytevector-copy! (bytevector 1) 0 #u8(1) #\a)
-error: wrong type of argument to bytevector-copy! #u8(1) 0 #u8(1) #\a
+error: 1:1: wrong type of argument to bytevector-copy! #u8(1) 0 #u8(1) #\a
 
 (bytevector-copy! (bytevector 1) 0 #u8(1) 0 #\a)
-error: wrong type of argument to bytevector-copy! #u8(1) 0 #u8(1) 0 #\a
+error: 1:1: wrong type of argument to bytevector-copy! #u8(1) 0 #u8(1) 0 #\a
 
 # 型の誤りが、範囲の誤りより先に報告される。
 (bytevector-copy! (bytevector 1) 99 "a")
-error: wrong type of argument to bytevector-copy! #u8(1) 99 "a"
+error: 1:1: wrong type of argument to bytevector-copy! #u8(1) 99 "a"

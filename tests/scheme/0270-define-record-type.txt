@@ -111,7 +111,7 @@ error: define-record-type: not a field of the record type z
 
 # 誤り: フィールドの指定が、(名前 アクセサ) か (名前 アクセサ モディファイア) の形でない。
 (import (sucheme derived)) (define-record-type pare (kons x) pare? (x))
-error: define-record-type: a field is (name accessor) or (name accessor modifier) (x)
+error: 1:28: define-record-type: a field is (name accessor) or (name accessor modifier) (x)
 
 # `define-record-type` が定義するのは、利用者が書いた名前だけである。
 (import (sucheme derived)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (define-record-type pare (kons x y) pare? (x kar) (y kdr)) (pare? (kons 1 2))

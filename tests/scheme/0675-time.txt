@@ -19,4 +19,4 @@
 
 # 引数は取らない。
 (import (scheme time)) (current-jiffy 1)
-error: wrong number of arguments to current-jiffy 1
+error: 1:24: wrong number of arguments to current-jiffy 1

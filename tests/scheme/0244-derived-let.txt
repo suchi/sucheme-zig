@@ -100,28 +100,28 @@ outer
 
 # 構文の誤り。
 (import (sucheme derived)) (let)
-error: bad syntax: no rule of let matches the form
+error: 1:28: bad syntax: no rule of let matches the form
 
 (import (sucheme derived)) (let ((x 1)))
-error: bad syntax: no rule of let matches the form
+error: 1:28: bad syntax: no rule of let matches the form
 
 (import (sucheme derived)) (let ((x 1 2)) x)
-error: bad syntax: no rule of let matches the form
+error: 1:28: bad syntax: no rule of let matches the form
 
 (import (sucheme derived)) (let ((x)) x)
-error: bad syntax: no rule of let matches the form
+error: 1:28: bad syntax: no rule of let matches the form
 
 (import (sucheme derived)) (let ((1 2)) 3)
-error: bad lambda: a parameter must be an identifier
+error: 1:28: bad lambda: a parameter must be an identifier
 
 (import (sucheme derived)) (let* ((x 1)))
-error: bad syntax: no rule of let* matches the form
+error: 1:28: bad syntax: no rule of let* matches the form
 
 (import (sucheme derived)) (letrec ((x 1)))
-error: bad syntax: no rule of letrec matches the form
+error: 1:28: bad syntax: no rule of letrec matches the form
 
 (import (sucheme derived)) (letrec* ((x 1)))
-error: bad syntax: no rule of letrec* matches the form
+error: 1:28: bad syntax: no rule of letrec* matches the form
 
 # 衛生性: 本体の中で `lambda` や `if` を束縛しても、`let` などの展開は壊れない。
 (import (sucheme derived)) (let ((lambda 5)) (let ((x 1)) (+ x lambda)))

@@ -38,7 +38,7 @@ sucheme を使う人のための文書の入口です。開発に参加する人
 1/4
 ```
 
-`display` などで書いたものは、書いた順に値と並びます。`display` を使うには、`(scheme write)` を `import` します。誤りは `error: ` に続けて説明が出ます。
+`display` などで書いたものは、書いた順に値と並びます。`display` を使うには、`(scheme write)` を `import` します。誤りは `error: ` に続けて説明が出ます。誤りを起こした呼び出しの場所が分かるときは、説明の前に `行:桁:` が付きます(ファイルの実行では `ファイル名:行:桁:`)。
 
 ```scheme
 (import (scheme write))
@@ -49,7 +49,7 @@ sucheme を使う人のための文書の入口です。開発に参加する人
 
 ```output
 hello
-error: wrong type of argument to car ()
+error: 4:1: wrong type of argument to car ()
 ```
 
 `(car '())` のように誤りを見せる例も、出力のブロックで、どの誤りが出るかまで確かめています。

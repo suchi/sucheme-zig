@@ -145,16 +145,16 @@
 
 # 構文の誤り。
 (import (sucheme derived)) (quasiquote)
-error: bad syntax: no rule of quasiquote matches the form
+error: 1:28: bad syntax: no rule of quasiquote matches the form
 
 (import (sucheme derived)) (quasiquote 1 2)
-error: bad syntax: no rule of quasiquote matches the form
+error: 1:28: bad syntax: no rule of quasiquote matches the form
 
 (import (sucheme derived)) `,@(list 1)
-error: unquote-splicing outside a list or a vector
+error: 1:28: unquote-splicing outside a list or a vector
 
 (import (sucheme derived)) `(1 . ,@(list 2))
-error: unquote-splicing outside a list or a vector
+error: 1:28: unquote-splicing outside a list or a vector
 
 # `,@` の引数がリストでなければ誤りである。
 (import (sucheme derived)) `(,@1 2)

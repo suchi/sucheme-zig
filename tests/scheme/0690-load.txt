@@ -4,7 +4,7 @@
 
 # ファイルを開けないときは、`file-error?` が真になる条件を送出する。
 (import (scheme load)) (load "x.scm")
-error: bad load: this interpreter has no files to read: x.scm
+error: 1:24: bad load: this interpreter has no files to read: x.scm
 
 (import (scheme load)) (guard (e ((file-error? e) 'file-error)) (load "x.scm"))
 file-error
@@ -14,13 +14,13 @@ file-error
 
 # 型と個数の誤り。
 (import (scheme load)) (load 'x.scm)
-error: wrong type of argument to load x.scm
+error: 1:24: wrong type of argument to load x.scm
 
 (import (scheme load)) (load "x.scm" 1)
-error: wrong type of argument to load "x.scm" 1
+error: 1:24: wrong type of argument to load "x.scm" 1
 
 (import (scheme load)) (load)
-error: wrong number of arguments to load
+error: 1:24: wrong number of arguments to load
 
 (import (scheme load) (scheme repl)) (load "x.scm" (interaction-environment) 1)
-error: wrong number of arguments to load "x.scm" #<environment> 1
+error: 1:38: wrong number of arguments to load "x.scm" #<environment> 1

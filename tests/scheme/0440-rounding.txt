@@ -34,10 +34,10 @@
 (2.0 -2.0 0.0 -0.0)
 
 (floor 'a)
-error: wrong type of argument to floor a
+error: 1:1: wrong type of argument to floor a
 
 (round "1")
-error: wrong type of argument to round "1"
+error: 1:1: wrong type of argument to round "1"
 
 # numerator と denominator。R7RS 6.2.6 の例。
 (list (numerator (/ 6 4)) (denominator (/ 6 4)) (numerator 5) (denominator 5) (numerator 0) (denominator 0))
@@ -50,16 +50,16 @@ error: wrong type of argument to round "1"
 (1.0 2.0 1.0)
 
 (numerator 'a)
-error: wrong type of argument to numerator a
+error: 1:1: wrong type of argument to numerator a
 
 (denominator (/ (inexact 1) (inexact 0)))
-error: argument out of range in denominator +inf.0
+error: 1:1: argument out of range in denominator +inf.0
 
 (numerator (/ (inexact 0) (inexact 0)))
-error: argument out of range in numerator +nan.0
+error: 1:1: argument out of range in numerator +nan.0
 
 (denominator (/ (inexact 0) (inexact 0)))
-error: argument out of range in denominator +nan.0
+error: 1:1: argument out of range in denominator +nan.0
 
 # max と min。不正確な引数があれば、結果は不正確である。R7RS 6.2.6 の例。
 (list (max 3 4) (min 3 4) (max 5) (min 5) (max 1 2 3) (min 3 1 2))
@@ -83,10 +83,10 @@ error: argument out of range in denominator +nan.0
 (18446744073709551617 18446744073709551616 18446744073709551617)
 
 (max 1 'a)
-error: wrong type of argument to max 1 a
+error: 1:1: wrong type of argument to max 1 a
 
 (min 'a)
-error: wrong type of argument to min a
+error: 1:1: wrong type of argument to min a
 
 (max)
-error: wrong number of arguments to max
+error: 1:1: wrong number of arguments to max

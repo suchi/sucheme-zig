@@ -59,10 +59,10 @@ sym
 sym
 
 (import (sucheme derived)) (guard (e ((string? e))) (raise 'x))
-error: x
+error: 1:53: x
 
 (import (sucheme derived)) (guard (e ((string? e)) ((number? e))) (raise 'x))
-error: x
+error: 1:67: x
 
 # `else` の本体は複数の式で、最後の値が返る。
 (import (sucheme derived)) (let ((n 0)) (list (guard (e (else (set! n (+ n 1)) (set! n (+ n 10)) n)) (raise 'x)) n))
@@ -70,11 +70,11 @@ error: x
 
 # 節の test が偽の値で、どの節も当てはまらず、`else` も無いとき、`raise-continuable` で再送出する。
 (import (sucheme derived)) (guard (e ((string? e) 'string)) (raise 'sym))
-error: sym
+error: 1:61: sym
 
 # 節が0個でも、同じである。
 (import (sucheme derived)) (guard (e) (raise 'sym))
-error: sym
+error: 1:39: sym
 
 (import (sucheme derived)) (guard (outer (#t (list 'outer outer))) (guard (e) (raise 'sym)))
 (outer sym)

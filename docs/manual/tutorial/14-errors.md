@@ -11,7 +11,7 @@
 ```
 
 ```output
-error: something bad: 1 2
+error: 1:1: something bad: 1 2
 ```
 
 エラーが起きて、どこでも捕まえられなかったときは、プログラムの実行がここで止まります。REPL では、`error: ` に続けて内容が出て、次の入力を待ちます。ファイルの実行では、標準エラーに同じ内容を出して、終了コード1で終わります。
@@ -23,7 +23,7 @@ error: something bad: 1 2
 ```
 
 ```output
-error: wrong type of argument to car ()
+error: 1:1: wrong type of argument to car ()
 ```
 
 ```scheme
@@ -31,7 +31,7 @@ error: wrong type of argument to car ()
 ```
 
 ```output
-error: argument out of range in vector-ref #(1 2) 5
+error: 1:1: argument out of range in vector-ref #(1 2) 5
 ```
 
 ```scheme
@@ -51,7 +51,7 @@ error: unbound variable: undefined-variable
 ```
 
 ```output
-error: boom
+error: 1:1: boom
 ```
 
 ```scheme
@@ -59,7 +59,7 @@ error: boom
 ```
 
 ```output
-error: 42
+error: 1:1: 42
 ```
 
 `error` は、「エラーオブジェクト」を作って、それを `raise` する手続きです。エラーオブジェクトは、メッセージと irritants を持つ、特別な値です。
@@ -110,7 +110,7 @@ handled
 ```
 
 ```output
-error: unhandled
+error: 2:3: unhandled
 ```
 
 `guard` を入れ子にすると、内側で合わなかったものを、外側が受け取れます。
@@ -330,7 +330,7 @@ error: handler returned from non-continuable raise oops
 ```
 
 ```output
-error: not a number: "abc"
+error: 5:9: not a number: "abc"
 ```
 
 2 の答えです。
@@ -376,7 +376,7 @@ error: not a number: "abc"
 ```
 
 ```output
-error: a
+error: 2:3: a
 ```
 
 ## 次の章

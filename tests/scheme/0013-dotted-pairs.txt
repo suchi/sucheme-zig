@@ -36,7 +36,7 @@
 
 # A dotted pair is not a form: it is data, and evaluating it says so.
 (1 . 2)
-error: bad syntax: a form must be a proper list
+error: 1:1: bad syntax: a form must be a proper list
 
 # A dot that has no pair to end, or no datum after it, or one too many.
 ( . 1)

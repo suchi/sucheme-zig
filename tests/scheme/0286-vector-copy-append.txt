@@ -42,41 +42,41 @@
 #(2 3)
 
 (vector-copy #(1 2 3) 4)
-error: argument out of range in vector-copy #(1 2 3) 4
+error: 1:1: argument out of range in vector-copy #(1 2 3) 4
 
 (vector-copy #(1 2 3) 0 4)
-error: argument out of range in vector-copy #(1 2 3) 0 4
+error: 1:1: argument out of range in vector-copy #(1 2 3) 0 4
 
 (vector-copy #(1 2 3) 2 1)
-error: argument out of range in vector-copy #(1 2 3) 2 1
+error: 1:1: argument out of range in vector-copy #(1 2 3) 2 1
 
 (vector-copy #(1 2 3) -1)
-error: argument out of range in vector-copy #(1 2 3) -1
+error: 1:1: argument out of range in vector-copy #(1 2 3) -1
 
 (vector-copy #(1 2 3) 0 -1)
-error: argument out of range in vector-copy #(1 2 3) 0 -1
+error: 1:1: argument out of range in vector-copy #(1 2 3) 0 -1
 
 (vector-copy #(1 2 3) 0 9223372036854775807)
-error: argument out of range in vector-copy #(1 2 3) 0 9223372036854775807
+error: 1:1: argument out of range in vector-copy #(1 2 3) 0 9223372036854775807
 
 (vector-copy #(1 2 3) 4294967296 4294967296)
-error: argument out of range in vector-copy #(1 2 3) 4294967296 4294967296
+error: 1:1: argument out of range in vector-copy #(1 2 3) 4294967296 4294967296
 
 (vector-copy "abc")
-error: wrong type of argument to vector-copy "abc"
+error: 1:1: wrong type of argument to vector-copy "abc"
 
 (vector-copy '(1 2 3))
-error: wrong type of argument to vector-copy (1 2 3)
+error: 1:1: wrong type of argument to vector-copy (1 2 3)
 
 (vector-copy #(1 2 3) #\a)
-error: wrong type of argument to vector-copy #(1 2 3) #\a
+error: 1:1: wrong type of argument to vector-copy #(1 2 3) #\a
 
 (vector-copy #(1 2 3) 0 #\a)
-error: wrong type of argument to vector-copy #(1 2 3) 0 #\a
+error: 1:1: wrong type of argument to vector-copy #(1 2 3) 0 #\a
 
 # 型の誤りが、範囲の誤りより先に報告される。
 (vector-copy #(1 2 3) 9 #\a)
-error: wrong type of argument to vector-copy #(1 2 3) 9 #\a
+error: 1:1: wrong type of argument to vector-copy #(1 2 3) 9 #\a
 
 # `vector-copy!`: 原文の例。
 (define a (vector 1 2 3 4 5)) (define b (vector 10 20 30 40 50)) (vector-copy! b 1 a 0 2) b
@@ -132,53 +132,53 @@ error: wrong type of argument to vector-copy #(1 2 3) 9 #\a
 
 # 断られたあとの先は、元のままである。
 (vector-copy! (vector 1 2 3) 2 #(7 8))
-error: argument out of range in vector-copy! #(1 2 3) 2 #(7 8)
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 2 #(7 8)
 
 (vector-copy! (vector 1 2 3) 4 #())
-error: argument out of range in vector-copy! #(1 2 3) 4 #()
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 4 #()
 
 (vector-copy! (vector 1 2 3) -1 #())
-error: argument out of range in vector-copy! #(1 2 3) -1 #()
+error: 1:1: argument out of range in vector-copy! #(1 2 3) -1 #()
 
 (vector-copy! (vector 1 2 3) 0 #(7 8) 0 3)
-error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 0 3
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 0 3
 
 (vector-copy! (vector 1 2 3) 0 #(7 8) 2 1)
-error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 2 1
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 2 1
 
 (vector-copy! (vector 1 2 3) 0 #(7 8) -1)
-error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) -1
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) -1
 
 (vector-copy! (vector 1 2 3) 0 #(1 2 3 4))
-error: argument out of range in vector-copy! #(1 2 3) 0 #(1 2 3 4)
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 0 #(1 2 3 4)
 
 (vector-copy! (vector 1 2 3) 4294967296 #())
-error: argument out of range in vector-copy! #(1 2 3) 4294967296 #()
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 4294967296 #()
 
 (vector-copy! (vector 1 2 3) 0 #(7 8) 4294967296)
-error: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 4294967296
+error: 1:1: argument out of range in vector-copy! #(1 2 3) 0 #(7 8) 4294967296
 
 (define b (vector 1 2 3)) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k b)) (lambda () (vector-copy! b 2 #(7 8))))))
 #(1 2 3)
 
 (vector-copy! "abc" 0 #(1))
-error: wrong type of argument to vector-copy! "abc" 0 #(1)
+error: 1:1: wrong type of argument to vector-copy! "abc" 0 #(1)
 
 (vector-copy! (vector 1) #\a #(1))
-error: wrong type of argument to vector-copy! #(1) #\a #(1)
+error: 1:1: wrong type of argument to vector-copy! #(1) #\a #(1)
 
 (vector-copy! (vector 1) 0 "a")
-error: wrong type of argument to vector-copy! #(1) 0 "a"
+error: 1:1: wrong type of argument to vector-copy! #(1) 0 "a"
 
 (vector-copy! (vector 1) 0 #(1) #\a)
-error: wrong type of argument to vector-copy! #(1) 0 #(1) #\a
+error: 1:1: wrong type of argument to vector-copy! #(1) 0 #(1) #\a
 
 (vector-copy! (vector 1) 0 #(1) 0 #\a)
-error: wrong type of argument to vector-copy! #(1) 0 #(1) 0 #\a
+error: 1:1: wrong type of argument to vector-copy! #(1) 0 #(1) 0 #\a
 
 # 型の誤りが、範囲の誤りより先に報告される。
 (vector-copy! (vector 1) 99 "a")
-error: wrong type of argument to vector-copy! #(1) 99 "a"
+error: 1:1: wrong type of argument to vector-copy! #(1) 99 "a"
 
 # `vector-append`: 原文の例。
 (vector-append #(a b c) #(d e f))
@@ -211,10 +211,10 @@ error: wrong type of argument to vector-copy! #(1) 99 "a"
 #t
 
 (vector-append #(1) "a")
-error: wrong type of argument to vector-append #(1) "a"
+error: 1:1: wrong type of argument to vector-append #(1) "a"
 
 (vector-append '() #(1))
-error: wrong type of argument to vector-append () #(1)
+error: 1:1: wrong type of argument to vector-append () #(1)
 
 (vector-append #(1) #u8(1))
-error: wrong type of argument to vector-append #(1) #u8(1)
+error: 1:1: wrong type of argument to vector-append #(1) #u8(1)

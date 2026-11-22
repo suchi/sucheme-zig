@@ -65,13 +65,13 @@ repl
 
 # ライブラリの本体は、インポートしたマクロを `define-syntax` で再定義できない。
 (define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (scheme base) (t m)) (begin (define-syntax m (syntax-rules () ((_) 2)))))
-error: bad define-syntax: m is an imported binding and cannot be redefined
+error: 1:177: bad define-syntax: m is an imported binding and cannot be redefined
 
 (define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (scheme base) (t m)) (begin (define m 2)))
-error: bad define: m is an imported binding and cannot be redefined
+error: 1:177: bad define: m is an imported binding and cannot be redefined
 
 (define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (define-library (t n) (export) (import (scheme base) (t m)) (begin (set! m 2)))
-error: bad set!: m is a syntactic keyword and cannot be assigned
+error: 1:177: bad set!: m is a syntactic keyword and cannot be assigned
 
 # インポートしたマクロは、変数としては使えない。
 (define-library (t m) (export m) (import (scheme base)) (begin (define-syntax m (syntax-rules () ((_) 1))))) (import (t m)) m

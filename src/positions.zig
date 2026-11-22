@@ -76,6 +76,38 @@ pub const Table = struct {
     }
 };
 
+/// The names of the files that nodes of the core IR have places in, which the context
+/// holds for as long as it lives (ADR-0054).
+/// Why: 副表(`Table`)のファイル番号は、入力ごとの表に対する番号で、表と一緒に消える。節点は
+/// 入力より長く生きるので、節点の `Spot` は、こちらの番号を使う。同じ名前は1つにまとめる。
+pub const Names = struct {
+    items: std.ArrayList([]u8) = .empty,
+
+    /// The number of the file named `name`, for `Spot.file`, or null when there are too many
+    /// files for a number (the spots of a file that does not fit are none).
+    /// 名前は写して持つ。確保は、上限に数える割り当て器(`Context.resident`)で行う。
+    pub fn intern(self: *Names, alloc: std.mem.Allocator, name: []const u8) error{OutOfMemory}!?u16 {
+        for (self.items.items, 0..) |known, i| {
+            if (std.mem.eql(u8, known, name)) return @intCast(i);
+        }
+        const number = std.math.cast(u16, self.items.items.len) orelse return null;
+        const copy = try alloc.dupe(u8, name);
+        errdefer alloc.free(copy);
+        try self.items.append(alloc, copy);
+        return number;
+    }
+
+    /// The name of the file `file` numbers.
+    pub fn nameOf(self: *const Names, file: u16) []const u8 {
+        return self.items.items[file];
+    }
+
+    pub fn deinit(self: *Names, alloc: std.mem.Allocator) void {
+        for (self.items.items) |known| alloc.free(known);
+        self.items.deinit(alloc);
+    }
+};
+
 /// Counts lines and columns through a text, from its start towards its end.
 /// 読み手は位置を先頭から順に問うので、全体で1回だけ辿る。
 pub const Cursor = struct {
@@ -163,3 +195,33 @@ const TableRoots = struct {
         self.table.mark(marker);
     }
 };
+
+test "names gives one number to each name, from 0, and keeps the names" {
+    var names: Names = .{};
+    defer names.deinit(std.testing.allocator);
+    const a = (try names.intern(std.testing.allocator, "a.scm")).?;
+    const empty = (try names.intern(std.testing.allocator, "")).?;
+    const b = (try names.intern(std.testing.allocator, "b.scm")).?;
+    try std.testing.expectEqual(0, a);
+    try std.testing.expectEqual(1, empty);
+    try std.testing.expectEqual(2, b);
+    try std.testing.expectEqual(a, (try names.intern(std.testing.allocator, "a.scm")).?);
+    try std.testing.expectEqual(empty, (try names.intern(std.testing.allocator, "")).?);
+    try std.testing.expectEqualStrings("b.scm", names.nameOf(b));
+    try std.testing.expectEqualStrings("", names.nameOf(empty));
+    try std.testing.expectEqual(3, names.items.items.len);
+}
+
+test "names refuses a number for the 65537th name" {
+    var names: Names = .{};
+    defer names.deinit(std.testing.allocator);
+    // Why: `intern` は名前を線形に探すので、65536 回の `intern` は 2 乗の時間になり、CI の
+    // テストの時間切れ(60 秒)に掛かる。表を直接満たして、満杯の振る舞いだけを見る。
+    try names.items.ensureTotalCapacity(std.testing.allocator, std.math.maxInt(u16) + 1);
+    names.items.appendAssumeCapacity(try std.testing.allocator.dupe(u8, "first"));
+    while (names.items.items.len <= std.math.maxInt(u16)) names.items.appendAssumeCapacity(try std.testing.allocator.dupe(u8, "x"));
+    try std.testing.expectEqual(@as(?u16, null), try names.intern(std.testing.allocator, "one more"));
+    // 既に持つ名前は、満杯でも引ける。
+    try std.testing.expectEqual(@as(?u16, 0), try names.intern(std.testing.allocator, "first"));
+    try std.testing.expectEqual(std.math.maxInt(u16) + 1, names.items.items.len);
+}

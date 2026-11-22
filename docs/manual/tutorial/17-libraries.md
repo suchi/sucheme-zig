@@ -26,7 +26,7 @@
 ```
 
 ```output
-error: unknown library: (scheme nothing)
+error: 1:1: unknown library: (scheme nothing)
 ```
 
 `import` は、1つの式に複数のライブラリを並べて書けます。

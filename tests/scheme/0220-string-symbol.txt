@@ -67,29 +67,29 @@ round-trip
 
 # 型の誤り。
 (symbol->string "abc")
-error: wrong type of argument to symbol->string "abc"
+error: 1:1: wrong type of argument to symbol->string "abc"
 
 (symbol->string 1)
-error: wrong type of argument to symbol->string 1
+error: 1:1: wrong type of argument to symbol->string 1
 
 (string->symbol 'abc)
-error: wrong type of argument to string->symbol abc
+error: 1:1: wrong type of argument to string->symbol abc
 
 (string->symbol #\a)
-error: wrong type of argument to string->symbol #\a
+error: 1:1: wrong type of argument to string->symbol #\a
 
 # 個数の誤り。
 (symbol->string)
-error: wrong number of arguments to symbol->string
+error: 1:1: wrong number of arguments to symbol->string
 
 (symbol->string 'a 'b)
-error: wrong number of arguments to symbol->string a b
+error: 1:1: wrong number of arguments to symbol->string a b
 
 (string->symbol)
-error: wrong number of arguments to string->symbol
+error: 1:1: wrong number of arguments to string->symbol
 
 (string->symbol "a" "b")
-error: wrong number of arguments to string->symbol "a" "b"
+error: 1:1: wrong number of arguments to string->symbol "a" "b"
 
 # `symbol=?` は、すべての引数が同じシンボルなら真である。
 (symbol=? 'a 'a)
@@ -118,16 +118,16 @@ error: wrong number of arguments to string->symbol "a" "b"
 
 # 型は、最初に違いが見つかったあとの引数も検査される。エラーは値に左右されない。
 (symbol=? 'a 1)
-error: wrong type of argument to symbol=? a 1
+error: 1:1: wrong type of argument to symbol=? a 1
 
 (symbol=? 'a 'b 1)
-error: wrong type of argument to symbol=? a b 1
+error: 1:1: wrong type of argument to symbol=? a b 1
 
 (symbol=? 1)
-error: wrong type of argument to symbol=? 1
+error: 1:1: wrong type of argument to symbol=? 1
 
 (symbol=? "a" "a")
-error: wrong type of argument to symbol=? "a" "a"
+error: 1:1: wrong type of argument to symbol=? "a" "a"
 
 (symbol=?)
-error: wrong number of arguments to symbol=?
+error: 1:1: wrong number of arguments to symbol=?

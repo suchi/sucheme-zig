@@ -15,7 +15,7 @@
 # 誤りの前に出した結果は、出力に残り、誤りはそのあとに報告される。
 (define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 20) (quotient (fact 20) 0)
 2432902008176640000
-error: division by zero in quotient 2432902008176640000 0
+error: 1:65: division by zero in quotient 2432902008176640000 0
 
 # 末尾再帰は反復と同じで、深さに比例した記憶を使わない。
 (define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc n)))) (loop 100000 0)
@@ -76,7 +76,7 @@ error: division by zero in quotient 2432902008176640000 0
 c
 
 (define (list-ref2 xs k) (if (= k 0) (car xs) (list-ref2 (cdr xs) (- k 1)))) (list-ref2 (list 'a 'b 'c) 3)
-error: wrong type of argument to car ()
+error: 1:38: wrong type of argument to car ()
 
 (define (last xs) (if (null? (cdr xs)) (car xs) (last (cdr xs)))) (last (list 1 2 3))
 3

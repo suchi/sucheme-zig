@@ -115,7 +115,7 @@
 
 # A string is not a procedure.
 ("abc")
-error: not a procedure
+error: 1:1: not a procedure
 
 # A string that never closes asks for more input.
 "abc

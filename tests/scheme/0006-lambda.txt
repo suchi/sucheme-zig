@@ -56,7 +56,7 @@ a
 5
 
 (define + 5) (+ 1 2)
-error: not a procedure
+error: 1:14: not a procedure
 
 (lambda (x) x)
 #<procedure>
@@ -77,16 +77,16 @@ error: not a procedure
 1
 
 ((lambda (x) x))
-error: wrong number of arguments: expected 1, got 0
+error: 1:1: wrong number of arguments: expected 1, got 0
 
 ((lambda (x) x) 1 2)
-error: wrong number of arguments: expected 1, got 2
+error: 1:1: wrong number of arguments: expected 1, got 2
 
 ((lambda () 1) 2)
-error: wrong number of arguments: expected 0, got 1
+error: 1:1: wrong number of arguments: expected 0, got 1
 
 (define f (lambda (x y) x)) (f 1)
-error: wrong number of arguments: expected 2, got 1
+error: 1:29: wrong number of arguments: expected 2, got 1
 
 ((lambda (x) x) (foo))
 error: unbound variable: foo
@@ -95,25 +95,25 @@ error: unbound variable: foo
 error: unbound variable: y
 
 ((lambda (x) (+ x 'a)) 1)
-error: wrong type of argument to + 1 a
+error: 1:14: wrong type of argument to + 1 a
 
 (lambda)
-error: bad lambda: expected (lambda (name ...) body ...)
+error: 1:1: bad lambda: expected (lambda (name ...) body ...)
 
 (lambda (x))
-error: bad lambda: expected (lambda (name ...) body ...)
+error: 1:1: bad lambda: expected (lambda (name ...) body ...)
 
 (lambda (1) 1)
-error: bad lambda: a parameter must be an identifier
+error: 1:1: bad lambda: a parameter must be an identifier
 
 (lambda (x x) x)
-error: bad lambda: duplicate parameter: x
+error: 1:1: bad lambda: duplicate parameter: x
 
 (lambda 1 1)
-error: bad lambda: the parameters must be an identifier or a list of identifiers
+error: 1:1: bad lambda: the parameters must be an identifier or a list of identifiers
 
 (lambda #t 1)
-error: bad lambda: the parameters must be an identifier or a list of identifiers
+error: 1:1: bad lambda: the parameters must be an identifier or a list of identifiers
 
 # 特殊形式と同じ綴りの仮引数は変数で、本体ではその特殊形式を隠す(スライス 2i)。
 ((lambda (if) (if 1)) -)

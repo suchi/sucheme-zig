@@ -55,7 +55,7 @@ b
 ```
 
 ```output
-error: argument out of range in vector-ref #(1 2) 5
+error: 1:1: argument out of range in vector-ref #(1 2) 5
 ```
 
 ベクタは、第6章の `set-car!` でペアを書き換えたのと同じで、中身を変えられます。同じベクタを複数の変数が指しているときは、どれから書き換えても全員に見えます。
@@ -261,7 +261,7 @@ b
 ```
 
 ```output
-error: wrong type of argument to bytevector-u8-set! #u8(0) 0 256
+error: 1:1: wrong type of argument to bytevector-u8-set! #u8(0) 0 256
 ```
 
 `bytevector-copy`、`bytevector-append`、`bytevector-copy!` は、ベクタの対応する手続きと同じ形で使えます。

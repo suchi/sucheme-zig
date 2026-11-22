@@ -28,7 +28,7 @@ REPL とファイルの最初の環境は、`(scheme base)` だけです。ほ�
 ```
 
 ```output
-error: unknown library: (scheme nosuch)
+error: 1:1: unknown library: (scheme nosuch)
 ```
 
 1つの `import` に読めないライブラリが混じると、その `import` の全体が誤りになります。
@@ -42,7 +42,7 @@ error: unknown library: (scheme nosuch)
 ```
 
 ```output
-error: bad import: the library (sucheme core) is only for the standard libraries the executable carries
+error: 1:1: bad import: the library (sucheme core) is only for the standard libraries the executable carries
 ```
 
 `(sucheme derived)`、`(sucheme procedures)`、`(sucheme test-results)`、`(chibi test)` は `import` できますが、標準ライブラリと準拠スイートの部品で、名前と中身が予告なく変わります。使わないでください。

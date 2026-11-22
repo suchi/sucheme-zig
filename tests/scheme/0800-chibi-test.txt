@@ -73,7 +73,7 @@ pass
 
 # 期待した値の式は、テストの外で評価する。その誤りは記録されず、そのまま上がる(上流と違う)。
 (import (scheme base) (chibi test) (sucheme test-results)) (test (car 5) 1)
-error: wrong type of argument to car 5
+error: 1:66: wrong type of argument to car 5
 
 # 外側の継続でテストから脱出すると、そのテストは記録されず、ハンドラも外れて、後のテストは普通に走る。
 (import (scheme base) (chibi test) (sucheme test-results)) (define r (call/cc (lambda (out) (test 1 (out 99))))) (test-error (raise 'x)) (list r (map (lambda (r) (vector-ref r 2)) (test-results)))

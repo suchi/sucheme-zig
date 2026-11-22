@@ -173,67 +173,67 @@ list
 
 # The type is checked before anything is taken apart.
 (car '())
-error: wrong type of argument to car ()
+error: 1:1: wrong type of argument to car ()
 
 (cdr '())
-error: wrong type of argument to cdr ()
+error: 1:1: wrong type of argument to cdr ()
 
 (car 1)
-error: wrong type of argument to car 1
+error: 1:1: wrong type of argument to car 1
 
 (cdr 1)
-error: wrong type of argument to cdr 1
+error: 1:1: wrong type of argument to cdr 1
 
 (car #(1 2))
-error: wrong type of argument to car #(1 2)
+error: 1:1: wrong type of argument to car #(1 2)
 
 (cdr "ab")
-error: wrong type of argument to cdr "ab"
+error: 1:1: wrong type of argument to cdr "ab"
 
 (car (cdr '(1)))
-error: wrong type of argument to car ()
+error: 1:1: wrong type of argument to car ()
 
 (car car)
-error: wrong type of argument to car #<procedure car>
+error: 1:1: wrong type of argument to car #<procedure car>
 
 # The number of arguments is checked by the machine, for every primitive of the
 # family.
 (car)
-error: wrong number of arguments to car
+error: 1:1: wrong number of arguments to car
 
 (car '(1) '(2))
-error: wrong number of arguments to car (1) (2)
+error: 1:1: wrong number of arguments to car (1) (2)
 
 (cdr)
-error: wrong number of arguments to cdr
+error: 1:1: wrong number of arguments to cdr
 
 (cdr '(1) '(2))
-error: wrong number of arguments to cdr (1) (2)
+error: 1:1: wrong number of arguments to cdr (1) (2)
 
 (cons)
-error: wrong number of arguments to cons
+error: 1:1: wrong number of arguments to cons
 
 (cons 1)
-error: wrong number of arguments to cons 1
+error: 1:1: wrong number of arguments to cons 1
 
 (cons 1 2 3)
-error: wrong number of arguments to cons 1 2 3
+error: 1:1: wrong number of arguments to cons 1 2 3
 
 (pair?)
-error: wrong number of arguments to pair?
+error: 1:1: wrong number of arguments to pair?
 
 (pair? 1 2)
-error: wrong number of arguments to pair? 1 2
+error: 1:1: wrong number of arguments to pair? 1 2
 
 (null?)
-error: wrong number of arguments to null?
+error: 1:1: wrong number of arguments to null?
 
 (null? '() '())
-error: wrong number of arguments to null? () ()
+error: 1:1: wrong number of arguments to null? () ()
 
 # An error in an argument comes first, and the arguments of the list before it.
 (list 1 (car 1))
-error: wrong type of argument to car 1
+error: 1:9: wrong type of argument to car 1
 
 (cons 1 (foo))
 error: unbound variable: foo

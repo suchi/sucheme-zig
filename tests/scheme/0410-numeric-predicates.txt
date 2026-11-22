@@ -30,10 +30,10 @@
 (#f #f #t #t)
 
 (exact? 'a)
-error: wrong type of argument to exact? a
+error: 1:1: wrong type of argument to exact? a
 
 (inexact? "1")
-error: wrong type of argument to inexact? "1"
+error: 1:1: wrong type of argument to inexact? "1"
 
 # exact と inexact。
 (exact 5)
@@ -64,14 +64,14 @@ error: wrong type of argument to inexact? "1"
 (1 -9/2 18446744073709551616)
 
 (exact 'a)
-error: wrong type of argument to exact a
+error: 1:1: wrong type of argument to exact a
 
 (inexact "1")
-error: wrong type of argument to inexact "1"
+error: 1:1: wrong type of argument to inexact "1"
 
 # 無限大と NaN には正確な値が無い。
 (exact (/ (inexact 1) (inexact 0)))
-error: argument out of range in exact +inf.0
+error: 1:1: argument out of range in exact +inf.0
 
 (exact (/ (inexact 0) (inexact 0)))
-error: argument out of range in exact +nan.0
+error: 1:1: argument out of range in exact +nan.0

@@ -56,7 +56,7 @@ done
 5
 
 (define if 5) (if 1 2)
-error: not a procedure
+error: 1:15: not a procedure
 
 (define (f) 1) (define if f) (if)
 1
@@ -70,7 +70,7 @@ error: not a procedure
 
 # 特殊形式は変数でないので、set! の対象にはならない。
 (set! if 5)
-error: bad set!: if is a syntactic keyword and cannot be assigned
+error: 1:1: bad set!: if is a syntactic keyword and cannot be assigned
 
 (set! nope 1)
 error: unbound variable: nope

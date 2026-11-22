@@ -67,7 +67,7 @@
 
 # A vector is not a procedure.
 (#(1))
-error: not a procedure
+error: 1:1: not a procedure
 
 # A dot has no meaning in a vector.
 #(1 . 2)
