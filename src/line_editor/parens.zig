@@ -594,3 +594,56 @@ fn fuzzMatching(_: void, smith: *std.testing.Smith) anyerror!void {
 test "fuzz: matching never reads out of range and its matches are symmetric" {
     try std.testing.fuzz({}, fuzzMatching, .{});
 }
+
+// 共有の一覧(`tests/parens/cases.tsv`)との照合。JavaScript 側(`web/parens.mjs`)も同じ一覧を読む。
+
+/// Reads one text of the shared list; the escapes are `\\`, `\n`, `\t` and `\r`.
+fn unescape(allocator: std.mem.Allocator, field: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < field.len) : (i += 1) {
+        if (field[i] == '\\' and i + 1 < field.len) {
+            switch (field[i + 1]) {
+                '\\' => try out.append(allocator, '\\'),
+                'n' => try out.append(allocator, '\n'),
+                't' => try out.append(allocator, '\t'),
+                'r' => try out.append(allocator, '\r'),
+                else => {
+                    try out.append(allocator, field[i]);
+                    continue;
+                },
+            }
+            i += 1;
+        } else try out.append(allocator, field[i]);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "matching agrees with the shared list of cases for every cursor" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const data = try std.Io.Dir.cwd().readFileAlloc(io, "tests/parens/cases.tsv", allocator, .limited(1 << 20));
+    defer allocator.free(data);
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse return error.BadCaseLine;
+        const text = try unescape(allocator, line[0..tab]);
+        defer allocator.free(text);
+        var results = std.mem.splitScalar(u8, line[tab + 1 ..], ' ');
+        var cursor: usize = 0;
+        while (results.next()) |field| : (cursor += 1) {
+            const expected: ?usize = if (std.mem.eql(u8, field, "-")) null else try std.fmt.parseInt(usize, field, 10);
+            std.testing.expectEqual(expected, matching(text, cursor)) catch |e| {
+                std.debug.print("case {f} at cursor {d}\n", .{ std.zig.fmtString(text), cursor });
+                return e;
+            };
+        }
+        // 結果の数は、カーソルの位置の数(長さ + 1)と等しい。
+        try std.testing.expectEqual(text.len + 1, cursor);
+        count += 1;
+    }
+    try std.testing.expect(count > 50);
+}

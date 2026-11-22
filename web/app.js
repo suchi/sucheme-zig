@@ -13,10 +13,13 @@ import { Status } from "./sucheme.js";
 import { describeResult } from "./errors.mjs";
 import { samples } from "./samples.mjs";
 import { encodeFragment, decodeFragment } from "./share.mjs";
+import { highlightPair, changeIndent, nextTabMovesFocus } from "./parens.mjs";
+import { createHistory, onFirstLine, onLastLine } from "./history.mjs";
 import { formatElapsed, stopWarning, restartedMessage, describeStopped, stopTimeoutMs, isStopKey } from "./stop.mjs";
 
 const form = document.getElementById("form");
 const source = document.getElementById("source");
+const mirror = document.getElementById("mirror");
 const runButton = document.getElementById("run");
 const stopButton = document.getElementById("stop");
 const resetButton = document.getElementById("reset");
@@ -41,6 +44,7 @@ let worker = null;
 let phase = "loading";
 let nextId = 1;
 let runningId = 0;
+const inputHistory = createHistory();
 // 停止を要求してから、Worker の応答を待つ間のタイマー。要求していなければ null。
 let stopTimer = null;
 
@@ -197,6 +201,7 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   if (phase !== "ready") return;
   runningId = nextId++;
+  inputHistory.push(source.value);
   setPhase("running");
   startElapsed();
   show("Running…", "busy");
@@ -236,11 +241,91 @@ resetButton.addEventListener("click", () => {
   worker.postMessage({ type: "reset" });
 });
 
+// 入力欄の編集の補助。
+//
+// 括弧の対応の強調: カーソルの隣の括弧と相手を、鏡の層(style.css の .editor-mirror)で目立たせる。
+// 括弧の走査は parens.mjs(Zig の src/line_editor/parens.zig と同じ規則)である。
+function renderMirror() {
+  const text = source.value;
+  const pair = source.selectionStart === source.selectionEnd ? highlightPair(text, source.selectionStart) : null;
+  const nodes = [];
+  if (pair === null) {
+    nodes.push(text);
+  } else {
+    const [a, b] = pair;
+    const mark = (i) => {
+      const m = document.createElement("mark");
+      m.textContent = text[i];
+      return m;
+    };
+    nodes.push(text.slice(0, a), mark(a), text.slice(a + 1, b), mark(b), text.slice(b + 1));
+  }
+  // 末尾の改行の次の行にも、行の高さを持たせる。
+  nodes.push("​");
+  mirror.replaceChildren(...nodes);
+  mirror.scrollTop = source.scrollTop;
+}
+
+// 入力欄の全体を置き換える。execCommand は、ブラウザの元に戻す操作の履歴を保つ(value への代入は消す)。
+// 使えない場合は、value に代入する。
+function replaceAll(text) {
+  source.focus();
+  source.select();
+  if (!document.execCommand("insertText", false, text)) source.value = text;
+  renderMirror();
+}
+
+for (const type of ["input", "keyup", "mouseup", "focus", "select"]) source.addEventListener(type, renderMirror);
+source.addEventListener("scroll", () => {
+  mirror.scrollTop = source.scrollTop;
+});
+document.addEventListener("selectionchange", () => {
+  if (document.activeElement === source) renderMirror();
+});
+
+// Tab は字下げに使う。キーボードだけの利用者が入力欄から出られなくならないよう、Esc の次の Tab は、
+// 通常どおりフォーカスを動かす(Shift+Tab で後ろへも出られる。修飾キーだけの keydown は、状態を変えない)。
+// 次のキーで解除される。
+let tabMovesFocus = false;
+
 source.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();
     form.requestSubmit();
+    return;
   }
+  const plain = !event.ctrlKey && !event.metaKey && !event.altKey;
+  if (event.key === "Tab" && plain) {
+    if (tabMovesFocus) {
+      tabMovesFocus = false;
+      return;
+    }
+    event.preventDefault();
+    const r = changeIndent(source.value, source.selectionStart, source.selectionEnd, event.shiftKey);
+    if (r.text !== source.value) replaceAll(r.text);
+    source.setSelectionRange(r.start, r.end);
+    renderMirror();
+    return;
+  }
+  tabMovesFocus = nextTabMovesFocus(tabMovesFocus, event.key, phase);
+  // 履歴: 選択が無く、最初の行の Up と最後の行の Down だけが、履歴を動く。
+  // それ以外の Up と Down は、通常のカーソルの移動である。動けないときも、通常の移動に任せる。
+  if (plain && !event.shiftKey && source.selectionStart === source.selectionEnd) {
+    let recalled = null;
+    if (event.key === "ArrowUp" && onFirstLine(source.value, source.selectionStart)) recalled = inputHistory.previous(source.value);
+    else if (event.key === "ArrowDown" && onLastLine(source.value, source.selectionStart)) recalled = inputHistory.next();
+    if (recalled !== null) {
+      event.preventDefault();
+      replaceAll(recalled);
+      source.setSelectionRange(recalled.length, recalled.length);
+      renderMirror();
+    }
+  }
+});
+
+source.addEventListener("blur", () => {
+  tabMovesFocus = false;
 });
 
 // サンプル: 選ぶと入力欄に入る。実行はしない。選び直せるよう、選択は先頭に戻す。
@@ -256,6 +341,7 @@ sampleSelect.addEventListener("change", () => {
   sampleSelect.value = "";
   if (sample === undefined) return;
   source.value = sample.source;
+  renderMirror();
   shareStatus.textContent = "";
   source.focus();
 });
@@ -270,6 +356,7 @@ function restoreFromFragment() {
     return;
   }
   source.value = restored;
+  renderMirror();
   shareStatus.textContent = "The input was restored from the share link. Check it, then press Run.";
 }
 
@@ -293,5 +380,6 @@ shareButton.addEventListener("click", async () => {
 
 window.addEventListener("hashchange", restoreFromFragment);
 restoreFromFragment();
+renderMirror();
 
 startWorker();
