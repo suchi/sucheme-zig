@@ -180,7 +180,7 @@ Scheme の数は、正確(exact)か不正確(inexact)かのどちらかです。
 ```
 
 ```output
-error: division by zero in / 1 0
+error: 1:1: division by zero in / 1 0
 ```
 
 ## 浮動小数点数

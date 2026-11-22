@@ -129,100 +129,100 @@
 
 # 文字の位置は 0 から長さの手前まで。
 (string-ref "abc" 3)
-error: argument out of range in string-ref "abc" 3
+error: 1:1: argument out of range in string-ref "abc" 3
 
 (string-ref "abc" 100)
-error: argument out of range in string-ref "abc" 100
+error: 1:1: argument out of range in string-ref "abc" 100
 
 (string-ref "あいう" 3)
-error: argument out of range in string-ref "あいう" 3
+error: 1:1: argument out of range in string-ref "あいう" 3
 
 (string-ref "あいう" 4)
-error: argument out of range in string-ref "あいう" 4
+error: 1:1: argument out of range in string-ref "あいう" 4
 
 # バイトの数は長さを超えるが、文字の位置の範囲外である。
 (string-ref "あ" 1)
-error: argument out of range in string-ref "あ" 1
+error: 1:1: argument out of range in string-ref "あ" 1
 
 (string-ref "あ" 2)
-error: argument out of range in string-ref "あ" 2
+error: 1:1: argument out of range in string-ref "あ" 2
 
 (string-ref "" 0)
-error: argument out of range in string-ref "" 0
+error: 1:1: argument out of range in string-ref "" 0
 
 (string-ref "abc" -1)
-error: argument out of range in string-ref "abc" -1
+error: 1:1: argument out of range in string-ref "abc" -1
 
 (string-ref "あいう" -1)
-error: argument out of range in string-ref "あいう" -1
+error: 1:1: argument out of range in string-ref "あいう" -1
 
 (string-ref "abc" 9223372036854775807)
-error: argument out of range in string-ref "abc" 9223372036854775807
+error: 1:1: argument out of range in string-ref "abc" 9223372036854775807
 
 (string-ref "abc" -9223372036854775808)
-error: argument out of range in string-ref "abc" -9223372036854775808
+error: 1:1: argument out of range in string-ref "abc" -9223372036854775808
 
 (string-ref "abc" 4294967296)
-error: argument out of range in string-ref "abc" 4294967296
+error: 1:1: argument out of range in string-ref "abc" 4294967296
 
 # 型の誤り。範囲より先に調べるので、範囲外の添字でも型のエラーが先に出る。
 (string-length 1)
-error: wrong type of argument to string-length 1
+error: 1:1: wrong type of argument to string-length 1
 
 (string-length #\a)
-error: wrong type of argument to string-length #\a
+error: 1:1: wrong type of argument to string-length #\a
 
 (string-length 'abc)
-error: wrong type of argument to string-length abc
+error: 1:1: wrong type of argument to string-length abc
 
 (string-length #(1 2))
-error: wrong type of argument to string-length #(1 2)
+error: 1:1: wrong type of argument to string-length #(1 2)
 
 (string-length '())
-error: wrong type of argument to string-length ()
+error: 1:1: wrong type of argument to string-length ()
 
 (string-ref 'abc 0)
-error: wrong type of argument to string-ref abc 0
+error: 1:1: wrong type of argument to string-ref abc 0
 
 (string-ref #(1 2) 0)
-error: wrong type of argument to string-ref #(1 2) 0
+error: 1:1: wrong type of argument to string-ref #(1 2) 0
 
 (string-ref "abc" #\a)
-error: wrong type of argument to string-ref "abc" #\a
+error: 1:1: wrong type of argument to string-ref "abc" #\a
 
 (string-ref "abc" "0")
-error: wrong type of argument to string-ref "abc" "0"
+error: 1:1: wrong type of argument to string-ref "abc" "0"
 
 (string-ref "abc" '())
-error: wrong type of argument to string-ref "abc" ()
+error: 1:1: wrong type of argument to string-ref "abc" ()
 
 (string-ref 'abc 100)
-error: wrong type of argument to string-ref abc 100
+error: 1:1: wrong type of argument to string-ref abc 100
 
 (string-ref 'abc -1)
-error: wrong type of argument to string-ref abc -1
+error: 1:1: wrong type of argument to string-ref abc -1
 
 # 引数の個数は機械が検査する。
 (string?)
-error: wrong number of arguments to string?
+error: 1:1: wrong number of arguments to string?
 
 (string? "a" "b")
-error: wrong number of arguments to string? "a" "b"
+error: 1:1: wrong number of arguments to string? "a" "b"
 
 (string-length)
-error: wrong number of arguments to string-length
+error: 1:1: wrong number of arguments to string-length
 
 (string-length "a" "b")
-error: wrong number of arguments to string-length "a" "b"
+error: 1:1: wrong number of arguments to string-length "a" "b"
 
 (string-ref)
-error: wrong number of arguments to string-ref
+error: 1:1: wrong number of arguments to string-ref
 
 (string-ref "abc")
-error: wrong number of arguments to string-ref "abc"
+error: 1:1: wrong number of arguments to string-ref "abc"
 
 (string-ref "abc" 0 1)
-error: wrong number of arguments to string-ref "abc" 0 1
+error: 1:1: wrong number of arguments to string-ref "abc" 0 1
 
 # 文字列は変数に束縛され、式の中でそのまま使える。
 (define s "あいう") (string-length s) (string-ref s 2)

@@ -152,99 +152,99 @@
 0
 
 (quotient 0 0)
-error: division by zero in quotient 0 0
+error: 1:1: division by zero in quotient 0 0
 
 (quotient 1 0)
-error: division by zero in quotient 1 0
+error: 1:1: division by zero in quotient 1 0
 
 (quotient -9223372036854775808 0)
-error: division by zero in quotient -9223372036854775808 0
+error: 1:1: division by zero in quotient -9223372036854775808 0
 
 (remainder 1 0)
-error: division by zero in remainder 1 0
+error: 1:1: division by zero in remainder 1 0
 
 (remainder 0 0)
-error: division by zero in remainder 0 0
+error: 1:1: division by zero in remainder 0 0
 
 (modulo 1 0)
-error: division by zero in modulo 1 0
+error: 1:1: division by zero in modulo 1 0
 
 (modulo 0 0)
-error: division by zero in modulo 0 0
+error: 1:1: division by zero in modulo 0 0
 
 (modulo -13 0)
-error: division by zero in modulo -13 0
+error: 1:1: division by zero in modulo -13 0
 
 # 型の検査は値の検査より先である。除数が0でも、型の誤りが報告される。
 (quotient 'a 1)
-error: wrong type of argument to quotient a 1
+error: 1:1: wrong type of argument to quotient a 1
 
 (quotient 1 'a)
-error: wrong type of argument to quotient 1 a
+error: 1:1: wrong type of argument to quotient 1 a
 
 (quotient 'a 0)
-error: wrong type of argument to quotient a 0
+error: 1:1: wrong type of argument to quotient a 0
 
 (quotient 1 #t)
-error: wrong type of argument to quotient 1 #t
+error: 1:1: wrong type of argument to quotient 1 #t
 
 (remainder 'a 1)
-error: wrong type of argument to remainder a 1
+error: 1:1: wrong type of argument to remainder a 1
 
 (remainder 1 'a)
-error: wrong type of argument to remainder 1 a
+error: 1:1: wrong type of argument to remainder 1 a
 
 (remainder 'a 0)
-error: wrong type of argument to remainder a 0
+error: 1:1: wrong type of argument to remainder a 0
 
 (modulo 'a 1)
-error: wrong type of argument to modulo a 1
+error: 1:1: wrong type of argument to modulo a 1
 
 (modulo 1 "2")
-error: wrong type of argument to modulo 1 "2"
+error: 1:1: wrong type of argument to modulo 1 "2"
 
 (modulo 'a 0)
-error: wrong type of argument to modulo a 0
+error: 1:1: wrong type of argument to modulo a 0
 
 (quotient 1 '())
-error: wrong type of argument to quotient 1 ()
+error: 1:1: wrong type of argument to quotient 1 ()
 
 (quotient (quote (1)) 1)
-error: wrong type of argument to quotient (1) 1
+error: 1:1: wrong type of argument to quotient (1) 1
 
 (quotient)
-error: wrong number of arguments to quotient
+error: 1:1: wrong number of arguments to quotient
 
 (quotient 1)
-error: wrong number of arguments to quotient 1
+error: 1:1: wrong number of arguments to quotient 1
 
 (quotient 1 2 3)
-error: wrong number of arguments to quotient 1 2 3
+error: 1:1: wrong number of arguments to quotient 1 2 3
 
 (remainder)
-error: wrong number of arguments to remainder
+error: 1:1: wrong number of arguments to remainder
 
 (remainder 1)
-error: wrong number of arguments to remainder 1
+error: 1:1: wrong number of arguments to remainder 1
 
 (remainder 1 2 3)
-error: wrong number of arguments to remainder 1 2 3
+error: 1:1: wrong number of arguments to remainder 1 2 3
 
 (modulo)
-error: wrong number of arguments to modulo
+error: 1:1: wrong number of arguments to modulo
 
 (modulo 1)
-error: wrong number of arguments to modulo 1
+error: 1:1: wrong number of arguments to modulo 1
 
 (modulo 1 2 3)
-error: wrong number of arguments to modulo 1 2 3
+error: 1:1: wrong number of arguments to modulo 1 2 3
 
 # 個数の誤りは、引数の型や値より先に報告される。
 (quotient 'a)
-error: wrong number of arguments to quotient a
+error: 1:1: wrong number of arguments to quotient a
 
 (modulo 1 0 'a)
-error: wrong number of arguments to modulo 1 0 a
+error: 1:1: wrong number of arguments to modulo 1 0 a
 
 (number? 0)
 #t
@@ -298,10 +298,10 @@ error: wrong number of arguments to modulo 1 0 a
 #t
 
 (number?)
-error: wrong number of arguments to number?
+error: 1:1: wrong number of arguments to number?
 
 (number? 1 2)
-error: wrong number of arguments to number? 1 2
+error: 1:1: wrong number of arguments to number? 1 2
 
 # プリミティブは値である。名前を付けて渡せる。
 (define q quotient) (q 7 2)

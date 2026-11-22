@@ -68,7 +68,7 @@ C や JavaScript では、文(`if` や `for`)と式(`1 + 2`)が別のもので�
 ```
 
 ```output
-error: wrong type of argument to car 5
+error: 1:1: wrong type of argument to car 5
 ```
 
 数の `5` に `car`(第6章で扱います)を使ったので、誤りです。誤りのあとでも、次の式は普通に動きます。1つのブロックの中で誤りが出ると、そのブロックの残りの式は実行されないので、この文書では誤りを見せる式を単独のブロックに書きます。

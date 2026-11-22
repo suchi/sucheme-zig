@@ -35,10 +35,10 @@ flushed
 
 # コンソールの出力ポートは、書いたものを持たない。
 (get-output-string (current-output-port))
-error: wrong type of argument to get-output-string #<port>
+error: 1:1: wrong type of argument to get-output-string #<port>
 
 (write-u8 1)
-error: wrong type of argument to write-u8 1
+error: 1:1: wrong type of argument to write-u8 1
 
 (parameterize ((current-output-port 1)) (newline))
-error: wrong type of argument to newline
+error: 1:41: wrong type of argument to newline

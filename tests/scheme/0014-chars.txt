@@ -135,7 +135,7 @@
 
 # A character is not a procedure.
 (#\a)
-error: not a procedure
+error: 1:1: not a procedure
 
 # A character outside the Unicode scalar values is rejected, and the REPL goes on.
 #\xD800

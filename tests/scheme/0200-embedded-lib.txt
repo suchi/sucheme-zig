@@ -12,7 +12,7 @@
 
 # 埋め込みのライブラリは、`(sucheme derived)` という名前の1つだけである。
 (import (sucheme nope))
-error: unknown library: (sucheme nope)
+error: 1:1: unknown library: (sucheme nope)
 
 # 埋め込みのファイルの `include` が相対で引くのは、埋め込みの中である。
 (import (only (sucheme derived) when)) (when #t 5)

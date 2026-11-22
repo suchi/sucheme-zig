@@ -20,4 +20,4 @@
 
 # バイトベクタは `<pattern datum>` にない。
 (define-syntax m (syntax-rules () ((_ #u8(1)) 1)))
-error: bad syntax-rules: this datum cannot be a pattern
+error: 1:1: bad syntax-rules: this datum cannot be a pattern

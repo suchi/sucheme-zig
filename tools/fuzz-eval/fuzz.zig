@@ -64,7 +64,7 @@ const input_heap = "(make-vector 100000000)";
 const expected = [_]struct { src: []const u8, out: []const u8, diagnostic: []const u8 }{
     .{ .src = input_fact, .out = "2432902008176640000\n", .diagnostic = "" },
     .{ .src = input_assv, .out = "b\n", .diagnostic = "" },
-    .{ .src = input_heap, .out = "", .diagnostic = "heap limit exceeded" },
+    .{ .src = input_heap, .out = "", .diagnostic = "1:1: heap limit exceeded" },
 };
 
 /// The inputs `zig build test` runs, as text.

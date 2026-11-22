@@ -45,7 +45,7 @@ REPL は、値を書き出す形(`write` の形)で表示するので、文字�
 #\e
 3
 #\本
-error: argument out of range in string-ref "abc" 3
+error: 5:1: argument out of range in string-ref "abc" 3
 ```
 
 sucheme の文字列は Unicode の文字の並びで、`string-length` は文字の数を返します。バイトの数ではありません。バイトの数が必要なときは、第10章のバイトベクタを使います。
@@ -113,7 +113,7 @@ sucheme の文字列は Unicode の文字の並びで、`string-length` は文�
 "world"
 "foobarbaz"
 ""
-error: argument out of range in substring "abc" 2 1
+error: 4:1: argument out of range in substring "abc" 2 1
 ```
 
 型の違う引数を渡すと、別の誤りになります。
@@ -123,7 +123,7 @@ error: argument out of range in substring "abc" 2 1
 ```
 
 ```output
-error: wrong type of argument to string-append "a" 1
+error: 1:1: wrong type of argument to string-append "a" 1
 ```
 
 数を文字列につなぐには、先に `number->string` で変換します。
@@ -153,7 +153,7 @@ error: wrong type of argument to string-append "a" 1
 ```
 
 ```output
-error: cannot modify a constant in string-set! "abc" 0 #\x
+error: 1:1: cannot modify a constant in string-set! "abc" 0 #\x
 ```
 
 ```scheme

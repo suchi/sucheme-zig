@@ -74,17 +74,17 @@ done
 
 # `else` は最後の節にしか置けない。そこ以外では、`else` は式として評価される。
 (import (sucheme derived)) (cond (else 1) (#t 2))
-error: else is a syntactic keyword and cannot be used as a variable
+error: 1:28: else is a syntactic keyword and cannot be used as a variable
 
 # 構文の誤り。
 (import (sucheme derived)) (cond)
-error: bad syntax: no rule of cond matches the form
+error: 1:28: bad syntax: no rule of cond matches the form
 
 (import (sucheme derived)) (cond 1)
-error: bad syntax: no rule of cond matches the form
+error: 1:28: bad syntax: no rule of cond matches the form
 
 (import (sucheme derived)) (cond (else))
-error: else is a syntactic keyword and cannot be used as a variable
+error: 1:28: else is a syntactic keyword and cannot be used as a variable
 
 # 衛生性: `cond` が展開で使う `temp` と `if` は、利用側の同名の束縛と衝突しない。
 (import (sucheme derived)) (let ((temp 5)) (cond ((+ 1 1) => (lambda (x) (+ x temp)))))

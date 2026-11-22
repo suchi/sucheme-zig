@@ -57,13 +57,13 @@ error: unbound variable: foo
 error: unbound variable: foo
 
 (if)
-error: bad if: expected (if test consequent) or (if test consequent alternative)
+error: 1:1: bad if: expected (if test consequent) or (if test consequent alternative)
 
 (if 1)
-error: bad if: expected (if test consequent) or (if test consequent alternative)
+error: 1:1: bad if: expected (if test consequent) or (if test consequent alternative)
 
 (if 1 2 3 4)
-error: bad if: expected (if test consequent) or (if test consequent alternative)
+error: 1:1: bad if: expected (if test consequent) or (if test consequent alternative)
 
 if
 error: if is a syntactic keyword and cannot be used as a variable
@@ -73,7 +73,7 @@ error: if is a syntactic keyword and cannot be used as a variable
 1
 
 (if #t (define y 1) 2)
-error: bad define: a definition is only allowed at the top level or at the start of a body
+error: 1:8: bad define: a definition is only allowed at the top level or at the start of a body
 
 (+ 1 (if #f 1))
-error: wrong type of argument to + 1 #<unspecified>
+error: 1:1: wrong type of argument to + 1 #<unspecified>

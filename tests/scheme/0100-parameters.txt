@@ -35,7 +35,7 @@
 5
 
 (call/cc (make-parameter 1))
-error: wrong number of arguments: expected 0, got 1
+error: 1:1: wrong number of arguments: expected 0, got 1
 
 # parameterize は、本体の間だけ値を差し替え、出れば戻す。
 (define p (make-parameter 10)) (list (p) (parameterize ((p 20)) (p)) (p))
@@ -111,25 +111,25 @@ around
 
 # 未処理の送出で行を打ち切っても、次の行では束縛が戻っている。
 (define p (make-parameter 1)) (parameterize ((p 2)) (car 5))
-error: wrong type of argument to car 5
+error: 1:53: wrong type of argument to car 5
 
 # 生成時の変換手続きの失敗は、そのまま報告される。
 (make-parameter 1 (lambda (x) (car x)))
-error: wrong type of argument to car 1
+error: 1:31: wrong type of argument to car 1
 
 # 引数の個数。パラメータは引数なしで呼ぶ。
 ((make-parameter 1) 2)
-error: wrong number of arguments: expected 0, got 1
+error: 1:1: wrong number of arguments: expected 0, got 1
 
 (make-parameter)
-error: wrong number of arguments to make-parameter
+error: 1:1: wrong number of arguments to make-parameter
 
 (make-parameter 1 car 3)
-error: wrong number of arguments to make-parameter 1 #<procedure car> 3
+error: 1:1: wrong number of arguments to make-parameter 1 #<procedure car> 3
 
 # 変換手続きは手続きでなければならない。
 (make-parameter 1 2)
-error: wrong type of argument to make-parameter 1 2
+error: 1:1: wrong type of argument to make-parameter 1 2
 
 # parameterize の対象は、パラメータでなければならない。
 (parameterize ((5 1)) 1)
@@ -140,25 +140,25 @@ error: wrong type of argument to parameterize 7
 
 # 構文の誤り。
 (parameterize)
-error: bad parameterize: expected (parameterize ((parameter value) ...) body ...)
+error: 1:1: bad parameterize: expected (parameterize ((parameter value) ...) body ...)
 
 (parameterize ())
-error: bad parameterize: expected (parameterize ((parameter value) ...) body ...)
+error: 1:1: bad parameterize: expected (parameterize ((parameter value) ...) body ...)
 
 (parameterize 5 1)
-error: bad parameterize: the bindings must be a list
+error: 1:1: bad parameterize: the bindings must be a list
 
 (define p (make-parameter 1)) (parameterize ((p)) 1)
-error: bad parameterize: a binding must be (parameter value)
+error: 1:31: bad parameterize: a binding must be (parameter value)
 
 (define p (make-parameter 1)) (parameterize ((p 1 2)) 1)
-error: bad parameterize: a binding must be (parameter value)
+error: 1:31: bad parameterize: a binding must be (parameter value)
 
 (define p (make-parameter 1)) (parameterize ((p 1) . 5) 1)
-error: bad parameterize: the bindings must be a list
+error: 1:31: bad parameterize: the bindings must be a list
 
 (define p (make-parameter 1)) (parameterize ((p 1)) (define x 1))
-error: bad parameterize: a body needs an expression after its definitions
+error: 1:53: bad parameterize: a body needs an expression after its definitions
 
 # parameterize は特殊形式の名前であり、仮引数や定義が隠せる。
 ((lambda (parameterize) (parameterize 1 2)) list)

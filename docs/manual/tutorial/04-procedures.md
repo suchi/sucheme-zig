@@ -69,7 +69,7 @@ JavaScript の無名関数 `(x) => x * x` や、Python の `lambda x: x * x` に
 ```
 
 ```output
-error: wrong number of arguments: expected 1, got 2
+error: 1:1: wrong number of arguments: expected 1, got 2
 ```
 
 ### 本体に式が複数あるとき

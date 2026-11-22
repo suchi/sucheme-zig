@@ -70,10 +70,10 @@ a
 (c)
 
 (quote)
-error: bad quote: expected (quote datum)
+error: 1:1: bad quote: expected (quote datum)
 
 (quote a b)
-error: bad quote: expected (quote datum)
+error: 1:1: bad quote: expected (quote datum)
 
 '
 error: unexpected end of input
@@ -83,19 +83,19 @@ error: quote needs a datum
 
 (quote #t) (quote)
 #t
-error: bad quote: expected (quote datum)
+error: 1:12: bad quote: expected (quote datum)
 
 #tru
 error: unreadable token
 
 (+ 1 'a)
-error: wrong type of argument to + 1 a
+error: 1:1: wrong type of argument to + 1 a
 
 (+ #t 1)
-error: wrong type of argument to + #t 1
+error: 1:1: wrong type of argument to + #t 1
 
 (a)
 error: unbound variable: a
 
 (define x 'a) (x)
-error: not a procedure
+error: 1:15: not a procedure

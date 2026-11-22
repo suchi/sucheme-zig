@@ -7,16 +7,16 @@
 
 # 多くの GC を経たあとで送出しても、メッセージはそのまま届く。
 (define (spin n) (if (= n 0) (car 5) (spin (- n 1)))) (spin 30000)
-error: wrong type of argument to car 5
+error: 1:30: wrong type of argument to car 5
 
 # 深い再帰の底で送出すると、積んだ継続はゴミになり、条件だけが届く。
 (define (deep n) (if (= n 0) (vector-ref (vector 1) 1) (+ 1 (deep (- n 1))))) (deep 3000)
-error: argument out of range in vector-ref #(1) 1
+error: 1:30: argument out of range in vector-ref #(1) 1
 
 # 前の結果は書かれたまま、エラーでその行が終わる。
 (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (+ 1 #t) 3
 ok
-error: wrong type of argument to + 1 #t
+error: 1:64: wrong type of argument to + 1 #t
 
 # 名前を含むメッセージは、名前の全体を含む。
 a-rather-long-name-that-is-not-bound-to-anything-at-all-in-this-interpreter

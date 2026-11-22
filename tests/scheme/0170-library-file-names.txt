@@ -9,21 +9,21 @@
 
 # ファイルの無い実行器では、普通の名前の定義されていないライブラリは見つからない。
 (import (foo bar))
-error: unknown library: (foo bar)
+error: 1:1: unknown library: (foo bar)
 
 # 装置の名前は、大文字小文字にも拡張子にもよらず、ファイルの名前にならない。
 (import (CON))
-error: unknown library: (CON): a library with that name cannot be a file, because a component is the name of a device
+error: 1:1: unknown library: (CON): a library with that name cannot be a file, because a component is the name of a device
 
 (import (foo con.scm))
-error: unknown library: (foo con.scm): a library with that name cannot be a file, because a component is the name of a device
+error: 1:1: unknown library: (foo con.scm): a library with that name cannot be a file, because a component is the name of a device
 
 # 成分の先頭か末尾の点は、ファイルの名前にならない。
 (import (foo bar.))
-error: unknown library: (foo bar.): a library with that name cannot be a file, because a component starts or ends with a dot
+error: 1:1: unknown library: (foo bar.): a library with that name cannot be a file, because a component starts or ends with a dot
 
 (import (foo .bar))
-error: unknown library: (foo .bar): a library with that name cannot be a file, because a component starts or ends with a dot
+error: 1:1: unknown library: (foo .bar): a library with that name cannot be a file, because a component starts or ends with a dot
 
 # 定義したライブラリは、ファイルの名前にならない名前でも、ファイルを探さずに見つかる。
 (define-library (CON) (export f) (import (scheme base)) (begin (define (f) 1))) (import (CON)) (f)
@@ -31,7 +31,7 @@ error: unknown library: (foo .bar): a library with that name cannot be a file, b
 
 # 名前の形の誤りは、ファイルを探す前に、名前の誤りとして報告される。
 (import ())
-error: bad library name: a name is a non-empty list of identifiers and non-negative integers
+error: 1:1: bad library name: a name is a non-empty list of identifiers and non-negative integers
 
 (import (foo "bar"))
-error: bad library name: a name is a non-empty list of identifiers and non-negative integers
+error: 1:1: bad library name: a name is a non-empty list of identifiers and non-negative integers

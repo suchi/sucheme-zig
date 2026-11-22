@@ -32,7 +32,7 @@ Run with --help for the options available now.
 ```
 
 ```output
-error: wrong type of argument to car 5
+error: 2:3: wrong type of argument to car 5
 ```
 
 ## Web UI

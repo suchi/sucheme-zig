@@ -15,7 +15,7 @@ sucheme が、R7RS の言う「実装の制限」として持つ上限をまと�
 ```
 
 ```output
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 ```
 
 小さな確保を重ねて上限に届く場合も、同じ誤りです。たとえば `(define (grow acc) (grow (cons 1 acc)))` のあとに `(grow '())` を呼ぶと、リストが伸び続けて上限に届きます。実機の例が上限に届くまでの時間は長く、この文書の検査には載せていません(下に測った時間を書きます)。

@@ -106,60 +106,60 @@
 
 # length takes a list and nothing else, so the same values as above are errors.
 (length 1)
-error: wrong type of argument to length 1
+error: 1:1: wrong type of argument to length 1
 
 (length 'a)
-error: wrong type of argument to length a
+error: 1:1: wrong type of argument to length a
 
 (length #f)
-error: wrong type of argument to length #f
+error: 1:1: wrong type of argument to length #f
 
 (length "ab")
-error: wrong type of argument to length "ab"
+error: 1:1: wrong type of argument to length "ab"
 
 (length #\a)
-error: wrong type of argument to length #\a
+error: 1:1: wrong type of argument to length #\a
 
 (length #(1 2))
-error: wrong type of argument to length #(1 2)
+error: 1:1: wrong type of argument to length #(1 2)
 
 (length car)
-error: wrong type of argument to length #<procedure car>
+error: 1:1: wrong type of argument to length #<procedure car>
 
 (length (cons 1 2))
-error: wrong type of argument to length (1 . 2)
+error: 1:1: wrong type of argument to length (1 . 2)
 
 (length '(1 . 2))
-error: wrong type of argument to length (1 . 2)
+error: 1:1: wrong type of argument to length (1 . 2)
 
 (length '(1 2 . 3))
-error: wrong type of argument to length (1 2 . 3)
+error: 1:1: wrong type of argument to length (1 2 . 3)
 
 (length (cons 1 (cons 2 (cons 3 4))))
-error: wrong type of argument to length (1 2 3 . 4)
+error: 1:1: wrong type of argument to length (1 2 3 . 4)
 
 (length (cons 1 (cons 2 #f)))
-error: wrong type of argument to length (1 2 . #f)
+error: 1:1: wrong type of argument to length (1 2 . #f)
 
 # The number of arguments is checked by the machine.
 (length)
-error: wrong number of arguments to length
+error: 1:1: wrong number of arguments to length
 
 (length '() '())
-error: wrong number of arguments to length () ()
+error: 1:1: wrong number of arguments to length () ()
 
 (length '(1) '(2))
-error: wrong number of arguments to length (1) (2)
+error: 1:1: wrong number of arguments to length (1) (2)
 
 (list?)
-error: wrong number of arguments to list?
+error: 1:1: wrong number of arguments to list?
 
 (list? '() '())
-error: wrong number of arguments to list? () ()
+error: 1:1: wrong number of arguments to list? () ()
 
 # An error in the argument comes first.
 (length (car '()))
-error: wrong type of argument to car ()
+error: 1:9: wrong type of argument to car ()
 
 (list? (foo))
 error: unbound variable: foo
@@ -210,4 +210,4 @@ ok
 (#f #t)
 
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc)))) (length (build 500 0))
-error: wrong type of argument to length (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 ...
+error: 1:70: wrong type of argument to length (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 ...

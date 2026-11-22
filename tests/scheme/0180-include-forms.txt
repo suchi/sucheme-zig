@@ -7,19 +7,19 @@
 # 1ケースは1行で、エラーはその行の残りを打ち切る。
 
 (include)
-error: bad include: expected (include <file name> ...)
+error: 1:1: bad include: expected (include <file name> ...)
 
 (include 1)
-error: bad include: a file name must be a string
+error: 1:1: bad include: a file name must be a string
 
 (include "a.scm" 'b)
-error: bad include: a file name must be a string
+error: 1:1: bad include: a file name must be a string
 
 (include "a.scm")
-error: bad include: this interpreter has no files to read: a.scm
+error: 1:1: bad include: this interpreter has no files to read: a.scm
 
 (lambda () (include "a.scm"))
-error: bad include: this interpreter has no files to read: a.scm
+error: 1:12: bad include: this interpreter has no files to read: a.scm
 
 # 特殊形式の名前は予約語ではなく、局所の束縛が隠す。
 ((lambda (include) include) 5)

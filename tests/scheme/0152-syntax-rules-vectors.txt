@@ -43,4 +43,4 @@
 
 # ベクタの中の省略記号の繰り返しが長さを合わせる。
 (define-syntax vec (syntax-rules () ((_ #(a ...) #(b ...)) '((a b) ...)))) (vec #(1 2) #(3))
-error: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together
+error: 1:76: bad syntax: a and b matched different numbers of forms but an ellipsis repeats them together

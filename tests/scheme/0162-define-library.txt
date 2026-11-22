@@ -90,23 +90,23 @@ a
 
 # 本体は、インポートしたものだけを見る。
 (define-library (t a) (export f) (begin (define (f) 1)))
-error: unbound variable: define
+error: 1:1: unbound variable: define
 
 # 本体が参照して、最後まで束縛されない名前は、名前を挙げて報告される。1つなら単数形で、
 # 複数なら名前の順に並べて報告する。
 (define-library (t a) (export f) (import (only (scheme base) define)) (begin (define (f) (car 1))))
-error: unbound identifier in library (t a): car
+error: 1:1: unbound identifier in library (t a): car
 
 (define-library (t a) (export f) (import (only (scheme base) define)) (begin (define (f) (list (cdr 1) (car 2) (cdr 3)))))
-error: unbound identifiers in library (t a): car, cdr, list
+error: 1:1: unbound identifiers in library (t a): car, cdr, list
 
 # エクスポートした名前が、本体で定義されていないときも同じである。
 (define-library (t a) (export f g) (import (only (scheme base) define)) (begin (define (f) 1)))
-error: unbound identifier in library (t a): g
+error: 1:1: unbound identifier in library (t a): g
 
 # インポートの前に参照した名前は、本体の終わりに未束縛として報告される。
 (define-library (t a) (export f) (import (only (scheme base) define)) (begin (define (f) (car 1))) (import (only (scheme base) car)))
-error: unbound identifier in library (t a): car
+error: 1:1: unbound identifier in library (t a): car
 
 # 同じ形式の中で定義してから構文に置き換えた名前は、置き換えた時点では値が無くても、
 # 本体の終わりには値を持つので、未束縛と報告しない。前のコードは、その値を読む。

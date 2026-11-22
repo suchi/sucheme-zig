@@ -49,21 +49,21 @@
 
 # 本体に式が残らなければ、誤りである。
 ((lambda () (cond-expand (no-such-feature 1))))
-error: bad lambda: a body needs an expression after its definitions
+error: 1:13: bad lambda: a body needs an expression after its definitions
 
 ((lambda () (cond-expand (r7rs (define x 1)))))
-error: bad lambda: a body needs an expression after its definitions
+error: 1:32: bad lambda: a body needs an expression after its definitions
 
 # 式の後ろの定義は、cond-expand から来ても誤りである。
 ((lambda () 1 (cond-expand (r7rs (define x 1))) x))
-error: bad define: a definition is only allowed at the top level or at the start of a body
+error: 1:34: bad define: a definition is only allowed at the top level or at the start of a body
 
 ((lambda () (cond-expand (r7rs 1 (define x 1))) x))
-error: bad define: a definition is only allowed at the top level or at the start of a body
+error: 1:34: bad define: a definition is only allowed at the top level or at the start of a body
 
 # 同じ名前の2回の定義は、cond-expand をまたいでも誤りである。
 ((lambda () (define x 1) (cond-expand (r7rs (define x 2))) x))
-error: bad define: x is already defined earlier in this body
+error: 1:45: bad define: x is already defined earlier in this body
 
 # let-syntax と letrec-syntax の本体の定義。
 (let-syntax ((m (syntax-rules () ((_) 1)))) (define x (m)) x)
@@ -105,13 +105,13 @@ error: unbound variable: only-inside
 
 # 本体の定義の誤りは、lambda の本体と同じである。
 (let-syntax () (define x 1))
-error: bad let-syntax: a body needs an expression after its definitions
+error: 1:16: bad let-syntax: a body needs an expression after its definitions
 
 (letrec-syntax () (define x 1))
-error: bad letrec-syntax: a body needs an expression after its definitions
+error: 1:19: bad letrec-syntax: a body needs an expression after its definitions
 
 (let-syntax () (define x 1) (define x 2) x)
-error: bad define: x is already defined earlier in this body
+error: 1:29: bad define: x is already defined earlier in this body
 
 (let-syntax () 1 (define x 1) x)
-error: bad define: a definition is only allowed at the top level or at the start of a body
+error: 1:18: bad define: a definition is only allowed at the top level or at the start of a body

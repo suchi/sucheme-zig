@@ -42,10 +42,10 @@ none
 error: wrong number of arguments: expected 1, got 2
 
 (call-with-values (lambda (x) x) list)
-error: wrong number of arguments: expected 1, got 0
+error: 1:1: wrong number of arguments: expected 1, got 0
 
 (call-with-values (lambda () 1))
-error: wrong number of arguments to call-with-values #<procedure>
+error: 1:1: wrong number of arguments to call-with-values #<procedure>
 
 # 最上位の REPL は、複数値を1行に1つずつ出す。0個なら何も出さない。
 (values 1 2)
@@ -175,7 +175,7 @@ error: handler returned from non-continuable raise #<condition "wrong number of 
 
 # 型と個数の誤り。
 (call-with-values 5 list)
-error: wrong type of argument to call-with-values 5 #<procedure list>
+error: 1:1: wrong type of argument to call-with-values 5 #<procedure list>
 
 (call-with-values (lambda () 1) 5)
-error: wrong type of argument to call-with-values #<procedure> 5
+error: 1:1: wrong type of argument to call-with-values #<procedure> 5

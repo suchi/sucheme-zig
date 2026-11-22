@@ -33,10 +33,10 @@ error
 
 # 名前が文字列でなければ、型の誤りである。
 (import (scheme file)) (file-exists? 'a)
-error: wrong type of argument to file-exists? a
+error: 1:24: wrong type of argument to file-exists? a
 
 (import (scheme file)) (open-input-file 1)
-error: wrong type of argument to open-input-file 1
+error: 1:24: wrong type of argument to open-input-file 1
 
 (import (scheme file)) (delete-file #f)
-error: wrong type of argument to delete-file #f
+error: 1:24: wrong type of argument to delete-file #f

@@ -131,26 +131,26 @@
 
 # 引数が無いのは、個数の誤りである。
 (string=?)
-error: wrong number of arguments to string=?
+error: 1:1: wrong number of arguments to string=?
 
 # 文字列でない引数は、どの位置でも、成り立たない組があっても、型の誤りである。
 (string=? "a" #\a)
-error: wrong type of argument to string=? "a" #\a
+error: 1:1: wrong type of argument to string=? "a" #\a
 
 (string<? #\a "a")
-error: wrong type of argument to string<? #\a "a"
+error: 1:1: wrong type of argument to string<? #\a "a"
 
 (string>? 'a)
-error: wrong type of argument to string>? a
+error: 1:1: wrong type of argument to string>? a
 
 (string<? "b" "a" "a" 1)
-error: wrong type of argument to string<? "b" "a" "a" 1
+error: 1:1: wrong type of argument to string<? "b" "a" "a" 1
 
 (string<=? "a" "b" '())
-error: wrong type of argument to string<=? "a" "b" ()
+error: 1:1: wrong type of argument to string<=? "a" "b" ()
 
 (string>=? "a" 1 "b")
-error: wrong type of argument to string>=? "a" 1 "b"
+error: 1:1: wrong type of argument to string>=? "a" 1 "b"
 
 # 比べても、文字列は変わらず、結果は真偽値である。
 (define s (make-string 2 #\a)) (list (string=? s s) (string<? s s) (string<=? s s) s)

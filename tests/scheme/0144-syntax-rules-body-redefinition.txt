@@ -5,26 +5,26 @@
 
 # 後の定義が `_` をパターン変数に変える。適用は深さの検査を通っていない読み方になる。
 ((lambda () (define-syntax m (syntax-rules () ((_ _ ...) (list _)))) (define _ 0) (m 1 2)))
-error: bad define: _ is defined after a syntax definition of this body that depends on its meaning
+error: 1:70: bad define: _ is defined after a syntax definition of this body that depends on its meaning
 
 # 後の定義が省略記号をパターン変数に変える。
 ((lambda () (define-syntax m (syntax-rules () ((_ a ...) (quote (a ...))))) (define ... 0) (m 1 2)))
-error: bad define: ... is defined after a syntax definition of this body that depends on its meaning
+error: 1:77: bad define: ... is defined after a syntax definition of this body that depends on its meaning
 
 ((lambda () (define-syntax m (syntax-rules () ((_ a ...) (quote (a ...))))) (define ... 0) (m 1)))
-error: bad define: ... is defined after a syntax definition of this body that depends on its meaning
+error: 1:77: bad define: ... is defined after a syntax definition of this body that depends on its meaning
 
 # 変換子の先頭の syntax-rules。
 ((lambda () (define-syntax m (syntax-rules () ((_) 1))) (define syntax-rules 5) (m)))
-error: bad define: syntax-rules is defined after a syntax definition of this body that depends on its meaning
+error: 1:57: bad define: syntax-rules is defined after a syntax definition of this body that depends on its meaning
 
 # define-syntax で束縛し直すのも同じである。
 ((lambda () (define-syntax m (syntax-rules () ((_ _) 1))) (define-syntax _ (syntax-rules () ((k) 2))) (m 0)))
-error: bad define-syntax: _ is defined after a syntax definition of this body that depends on its meaning
+error: 1:59: bad define-syntax: _ is defined after a syntax definition of this body that depends on its meaning
 
 # 定義に展開されるマクロの適用が束縛するのも同じである。
 ((lambda () (define-syntax def (syntax-rules () ((k n v) (define n v)))) (define-syntax m (syntax-rules () ((_ _ ...) (list _)))) (def _ 0) (m 1 2)))
-error: bad define: _ is defined after a syntax definition of this body that depends on its meaning
+error: 1:131: bad define: _ is defined after a syntax definition of this body that depends on its meaning
 
 # 前の定義が `_` を束縛していれば、`_` は定義の時点からパターン変数である。
 ((lambda () (define _ 0) (define-syntax m (syntax-rules () ((_ _ ...) (list _ ...)))) (m 1 2)))

@@ -5,58 +5,58 @@
 
 # 原文(R7RS 6.8)の例: `(vector-set! '#(0 1 2) 1 "doe")` は、定数のベクタで誤りである。
 (vector-set! '#(0 1 2) 1 "doe")
-error: cannot modify a constant in vector-set! #(0 1 2) 1 "doe"
+error: 1:1: cannot modify a constant in vector-set! #(0 1 2) 1 "doe"
 
 (vector-set! #(0 1 2) 1 "doe")
-error: cannot modify a constant in vector-set! #(0 1 2) 1 "doe"
+error: 1:1: cannot modify a constant in vector-set! #(0 1 2) 1 "doe"
 
 (vector-set! (quote #(0 1 2)) 1 0)
-error: cannot modify a constant in vector-set! #(0 1 2) 1 0
+error: 1:1: cannot modify a constant in vector-set! #(0 1 2) 1 0
 
 # 変数が定数を指していても、定数である。
 (define v #(1 2 3)) (vector-set! v 0 9)
-error: cannot modify a constant in vector-set! #(1 2 3) 0 9
+error: 1:21: cannot modify a constant in vector-set! #(1 2 3) 0 9
 
 # 手続きの本体のリテラルは、呼ぶたびに同じ定数である。
 (define (g) #(1 2 3)) (vector-set! (g) 0 9)
-error: cannot modify a constant in vector-set! #(1 2 3) 0 9
+error: 1:23: cannot modify a constant in vector-set! #(1 2 3) 0 9
 
 (define (g) '#(1 2 3)) (eq? (g) (g))
 #t
 
 # 空の定数も断る。
 (vector-set! #() 0 0)
-error: cannot modify a constant in vector-set! #() 0 0
+error: 1:1: cannot modify a constant in vector-set! #() 0 0
 
 # 検査の順序は、型、定数、範囲である。
 (vector-set! #(1 2 3) 99 0)
-error: cannot modify a constant in vector-set! #(1 2 3) 99 0
+error: 1:1: cannot modify a constant in vector-set! #(1 2 3) 99 0
 
 (vector-set! #(1 2 3) -1 0)
-error: cannot modify a constant in vector-set! #(1 2 3) -1 0
+error: 1:1: cannot modify a constant in vector-set! #(1 2 3) -1 0
 
 (vector-set! #(1 2 3) #\a 0)
-error: wrong type of argument to vector-set! #(1 2 3) #\a 0
+error: 1:1: wrong type of argument to vector-set! #(1 2 3) #\a 0
 
 # 入れ子のリテラルの中のベクタも定数である。
 (vector-set! (car '(#(1))) 0 9)
-error: cannot modify a constant in vector-set! #(1) 0 9
+error: 1:1: cannot modify a constant in vector-set! #(1) 0 9
 
 (vector-set! (vector-ref #(#(1)) 0) 0 9)
-error: cannot modify a constant in vector-set! #(1) 0 9
+error: 1:1: cannot modify a constant in vector-set! #(1) 0 9
 
 (vector-set! (cdr '(1 . #(1 2))) 0 9)
-error: cannot modify a constant in vector-set! #(1 2) 0 9
+error: 1:1: cannot modify a constant in vector-set! #(1 2) 0 9
 
 (set-car! (vector-ref #((1 2)) 0) 9)
-error: cannot modify a constant in set-car! (1 2) 9
+error: 1:1: cannot modify a constant in set-car! (1 2) 9
 
 # マクロが出力するリテラルも定数である。
 (define-syntax m (syntax-rules () ((_) #(1 2)))) (vector-set! (m) 0 9)
-error: cannot modify a constant in vector-set! #(1 2) 0 9
+error: 1:50: cannot modify a constant in vector-set! #(1 2) 0 9
 
 (define-syntax m (syntax-rules () ((_) '#(1 2)))) (vector-set! (m) 0 9)
-error: cannot modify a constant in vector-set! #(1 2) 0 9
+error: 1:51: cannot modify a constant in vector-set! #(1 2) 0 9
 
 # 書き込めるのは、手続きが作ったベクタである。
 (define v (vector 1 2 3)) (vector-set! v 0 9) v
@@ -87,47 +87,47 @@ error: cannot modify a constant in vector-set! #(1 2) 0 9
 
 # `vector-fill!`: 定数なら断る。何も書かない呼び出しも断る。
 (vector-fill! #(1 2 3) 0)
-error: cannot modify a constant in vector-fill! #(1 2 3) 0
+error: 1:1: cannot modify a constant in vector-fill! #(1 2 3) 0
 
 (vector-fill! #(1 2 3) 0 1 1)
-error: cannot modify a constant in vector-fill! #(1 2 3) 0 1 1
+error: 1:1: cannot modify a constant in vector-fill! #(1 2 3) 0 1 1
 
 (vector-fill! #() 0)
-error: cannot modify a constant in vector-fill! #() 0
+error: 1:1: cannot modify a constant in vector-fill! #() 0
 
 (vector-fill! #(1 2 3) 0 9)
-error: cannot modify a constant in vector-fill! #(1 2 3) 0 9
+error: 1:1: cannot modify a constant in vector-fill! #(1 2 3) 0 9
 
 (vector-fill! #(1 2 3) 0 0 9)
-error: cannot modify a constant in vector-fill! #(1 2 3) 0 0 9
+error: 1:1: cannot modify a constant in vector-fill! #(1 2 3) 0 0 9
 
 (vector-fill! #(1 2 3) 0 #\a)
-error: wrong type of argument to vector-fill! #(1 2 3) 0 #\a
+error: 1:1: wrong type of argument to vector-fill! #(1 2 3) 0 #\a
 
 # `vector-copy!`: 先が定数なら断る。元が定数なのはかまわない。
 (vector-copy! #(1 2 3) 0 #(9))
-error: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9)
+error: 1:1: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9)
 
 (vector-copy! #(1 2 3) 0 (vector 9))
-error: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9)
+error: 1:1: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9)
 
 (vector-copy! #(1 2 3) 0 #())
-error: cannot modify a constant in vector-copy! #(1 2 3) 0 #()
+error: 1:1: cannot modify a constant in vector-copy! #(1 2 3) 0 #()
 
 (vector-copy! #(1 2 3) 0 #(9) 1 1)
-error: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9) 1 1
+error: 1:1: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9) 1 1
 
 (vector-copy! #() 0 #())
-error: cannot modify a constant in vector-copy! #() 0 #()
+error: 1:1: cannot modify a constant in vector-copy! #() 0 #()
 
 (vector-copy! #(1 2 3) 99 #(9))
-error: cannot modify a constant in vector-copy! #(1 2 3) 99 #(9)
+error: 1:1: cannot modify a constant in vector-copy! #(1 2 3) 99 #(9)
 
 (vector-copy! #(1 2 3) 0 #(9 9) 0 5)
-error: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9 9) 0 5
+error: 1:1: cannot modify a constant in vector-copy! #(1 2 3) 0 #(9 9) 0 5
 
 (vector-copy! #(1 2 3) 0 '(9))
-error: wrong type of argument to vector-copy! #(1 2 3) 0 (9)
+error: 1:1: wrong type of argument to vector-copy! #(1 2 3) 0 (9)
 
 (define v (make-vector 3 0)) (vector-copy! v 0 #(7 8 9)) v
 #(7 8 9)
@@ -138,10 +138,10 @@ error: wrong type of argument to vector-copy! #(1 2 3) 0 (9)
 
 # 先が定数でも、start と end の型が合わなければ、型の誤りが先に出る(型、不変、範囲の順)。
 (vector-copy! #(1 2 3) 0 (vector 1) 'a)
-error: wrong type of argument to vector-copy! #(1 2 3) 0 #(1) a
+error: 1:1: wrong type of argument to vector-copy! #(1 2 3) 0 #(1) a
 
 (vector-copy! #(1 2 3) 0 (vector 1) 0 'a)
-error: wrong type of argument to vector-copy! #(1 2 3) 0 #(1) 0 a
+error: 1:1: wrong type of argument to vector-copy! #(1 2 3) 0 #(1) 0 a
 
 # 書き込みを断られても、定数はそのままである。
 (define v #(1 2 3)) (call-with-current-continuation (lambda (k) (with-exception-handler (lambda (e) (k v)) (lambda () (vector-fill! v 0)))))
@@ -149,7 +149,7 @@ error: wrong type of argument to vector-copy! #(1 2 3) 0 #(1) 0 a
 
 # 定数の中のペアも、これまでどおり定数である。
 (set-car! (vector-ref #((1 2)) 0) 0)
-error: cannot modify a constant in set-car! (1 2) 0
+error: 1:1: cannot modify a constant in set-car! (1 2) 0
 
 # 手続きの `quote` を通らない `list` のペアは、ベクタに入れても書き換えられる。
 (define p (list 1 2)) (define v (vector p)) (set-car! (vector-ref v 0) 9) p

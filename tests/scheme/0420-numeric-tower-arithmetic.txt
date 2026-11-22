@@ -150,32 +150,32 @@
 
 # 正確な0で割るとエラーである。
 (/ 1 0)
-error: division by zero in / 1 0
+error: 1:1: division by zero in / 1 0
 
 (/ 0)
-error: division by zero in / 0
+error: 1:1: division by zero in / 0
 
 (/ 1 2 0)
-error: division by zero in / 1 2 0
+error: 1:1: division by zero in / 1 2 0
 
 (/ (* 4294967296 4294967296) 0)
-error: division by zero in / 18446744073709551616 0
+error: 1:1: division by zero in / 18446744073709551616 0
 
 # 型は、値によらず、すべての引数について先に検査する。
 (/ 1 0 'a)
-error: wrong type of argument to / 1 0 a
+error: 1:1: wrong type of argument to / 1 0 a
 
 (/ 'a)
-error: wrong type of argument to / a
+error: 1:1: wrong type of argument to / a
 
 (+ 1 (/ 1 2) 'a)
-error: wrong type of argument to + 1 1/2 a
+error: 1:1: wrong type of argument to + 1 1/2 a
 
 (< 1 (/ 1 2) 'a)
-error: wrong type of argument to < 1 1/2 a
+error: 1:1: wrong type of argument to < 1 1/2 a
 
 (- 'a)
-error: wrong type of argument to - a
+error: 1:1: wrong type of argument to - a
 
 (/)
-error: wrong number of arguments to /
+error: 1:1: wrong number of arguments to /

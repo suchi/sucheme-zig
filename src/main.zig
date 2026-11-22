@@ -731,7 +731,7 @@ test "a variable whose value is not UTF-8 raises from get-environment-variable" 
     var err: std.Io.Writer = .fixed(&eb);
     try std.testing.expectEqual(@as(u8, 0), try repl(std.testing.allocator, null, .{ .variables = &variables }, &in, &out, &err));
     try std.testing.expectEqualStrings("> > ((\"SUCHEME_GOOD\" . \"ok\"))\n> \n", out.buffered());
-    try std.testing.expectEqualStrings("error: value is not valid UTF-8 in get-environment-variable \"SUCHEME_BAD\"\n", err.buffered());
+    try std.testing.expectEqualStrings("error: 1:35: value is not valid UTF-8 in get-environment-variable \"SUCHEME_BAD\"\n", err.buffered());
 }
 
 test "the command line of a program is its file and every argument after it, and an argument that is not UTF-8 is found" {
@@ -1116,7 +1116,7 @@ test "repl imports a library from a file beneath the roots it is given, and repo
     var err: std.Io.Writer = .fixed(&eb);
     _ = try repl(std.testing.allocator, .{ .io = std.testing.io, .roots = &tree.roots }, .{}, &input, &out, &err);
     try std.testing.expectEqualStrings("> > 7\n> > 7\n> \n", out.buffered());
-    try std.testing.expectEqualStrings("error: unknown library: (foo baz)\n", err.buffered());
+    try std.testing.expectEqualStrings("error: 1:1: unknown library: (foo baz)\n", err.buffered());
 }
 
 /// Writes `text` to a file in a fresh directory and runs it; returns the status and stderr.

@@ -1570,7 +1570,7 @@ test "what a block writes comes before its values and its error" {
         \\
         \\```output
         \\hi1
-        \\error: wrong type of argument to car ()
+        \\error: 4:1: wrong type of argument to car ()
         \\```
         \\
     );

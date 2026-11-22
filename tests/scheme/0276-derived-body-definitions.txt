@@ -124,10 +124,10 @@ error: define-record-type: not a field of the record type z
 
 # 本体の中で、同じ名前を2回定義することは誤りである(R7RS 5.3.2)。
 (import (sucheme derived)) (let () (define-record-type pare (kons x y) pare? (x kar) (y kar)) 1)
-error: bad define: kar is already defined earlier in this body
+error: 1:36: bad define: kar is already defined earlier in this body
 
 (import (sucheme derived)) (let () (define kar 1) (define-record-type pare (kons x) pare? (x kar)) 1)
-error: bad define: kar is already defined earlier in this body
+error: 1:51: bad define: kar is already defined earlier in this body
 
 # 利用側が、展開が使う手続きの名前を局所的に隠しても、`define-record-type` は影響されない。
 (import (sucheme derived)) ((lambda (length list-ref eq? equal? apply cons error null? car cdr) (define-record-type pare (kons y) pare? (x kar) (y kdr)) (kdr (kons 2))) 0 0 0 0 0 0 0 0 0 0)

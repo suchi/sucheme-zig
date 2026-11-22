@@ -9,7 +9,7 @@
 
 # 最初の失敗するテスト。入れ子の lambda を重ねて止まらないマクロが、有界で終わる。
 (define-syntax f (syntax-rules () ((_) (lambda () (f))))) (f)
-error: implementation restriction: scopes are nested more than 10000 deep
+error: 1:59: implementation restriction: scopes are nested more than 10000 deep
 
 # 上限より浅い入れ子は、今までどおり展開できる。
 (define-syntax f2 (syntax-rules () ((_ 0) 'done) ((_ n) ((lambda () (f2 0)))))) (f2 1)

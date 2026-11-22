@@ -8,10 +8,10 @@
 
 # `(scheme base)` は、これらを持たない。
 (import (only (scheme base) sin))
-error: bad import: sin is not exported by the import set
+error: 1:1: bad import: sin is not exported by the import set
 
 (import (only (scheme base) finite?))
-error: bad import: finite? is not exported by the import set
+error: 1:1: bad import: finite? is not exported by the import set
 
 # R7RS 6.2.6 の例: 平方根。
 (import (scheme inexact)) (list (sqrt 9) (sqrt -1) (sqrt (/ 1 4)) (sqrt 0))
@@ -47,10 +47,10 @@ error: bad import: finite? is not exported by the import set
 (#f #t #t #f #f #f #t #f)
 
 (import (scheme inexact)) (finite? 'a)
-error: wrong type of argument to finite? a
+error: 1:27: wrong type of argument to finite? a
 
 (import (scheme inexact)) (nan? "1")
-error: wrong type of argument to nan? "1"
+error: 1:27: wrong type of argument to nan? "1"
 
 # 正確な引数の特別な点は、正確な結果を返す。
 (import (scheme inexact)) (list (exp 0) (log 1) (sin 0) (cos 0) (tan 0) (asin 0) (acos 1) (atan 0) (atan 0 1))
@@ -93,7 +93,7 @@ error: wrong type of argument to nan? "1"
 (#t #t #t #t)
 
 (import (scheme inexact)) (atan 0 0)
-error: argument out of range in atan 0 0
+error: 1:27: argument out of range in atan 0 0
 
 # 底つきの `log`。
 (import (scheme inexact)) (< (abs (- (log 8 2) 3)) (/ 1 1000000000000))
@@ -119,13 +119,13 @@ error: argument out of range in atan 0 0
 
 # 型。
 (import (scheme inexact)) (sin 'a)
-error: wrong type of argument to sin a
+error: 1:27: wrong type of argument to sin a
 
 (import (scheme inexact)) (atan 1 'a)
-error: wrong type of argument to atan 1 a
+error: 1:27: wrong type of argument to atan 1 a
 
 (import (scheme inexact)) (sqrt "4")
-error: wrong type of argument to sqrt "4"
+error: 1:27: wrong type of argument to sqrt "4"
 
 # 複素数の引数は取れる(スライス 4i)。
 (import (scheme inexact)) (exp (sqrt -1))
@@ -133,10 +133,10 @@ error: wrong type of argument to sqrt "4"
 
 # 個数。
 (import (scheme inexact)) (sin)
-error: wrong number of arguments to sin
+error: 1:27: wrong number of arguments to sin
 
 (import (scheme inexact)) (log 1 2 3)
-error: wrong number of arguments to log 1 2 3
+error: 1:27: wrong number of arguments to log 1 2 3
 
 # 分子も分母も f64 の範囲を大きく超える有理数の sqrt は、各部の根が f64 に収まらなくても、比の根を返す。
 (import (scheme inexact)) (list (sqrt (/ (expt 10 1000) (expt 10 998))) (sqrt (/ (+ (expt 10 1400) 1) (+ (expt 10 1398) 1))))

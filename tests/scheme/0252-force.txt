@@ -64,7 +64,7 @@ error: delay-force: the expression did not return a promise
 
 # 手続きが引数を取るとき、呼び出しの誤りである。
 (force (%make-promise #f (lambda (x) x)))
-error: wrong number of arguments: expected 1, got 0
+error: 1:1: wrong number of arguments: expected 1, got 0
 
 # 手続きが約束でない値を返した誤りは、ハンドラで受けられる。
 (define p (%make-promise #f (lambda () 5))) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'bad)) (lambda () (force p)))))

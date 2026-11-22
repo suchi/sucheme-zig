@@ -95,7 +95,7 @@ error: too many arguments to assoc
 error: wrong type of argument to boolean=? 1
 
 (import (sucheme procedures)) (boolean=? #t)
-error: wrong number of arguments: expected at least 2, got 1
+error: 1:31: wrong number of arguments: expected at least 2, got 1
 
 # `map` と `for-each`。
 (import (sucheme procedures)) (list (map (lambda (x) (* x x)) '(1 2 3)) (map + '(1 2 3) '(10 20 30)) (map list '(1 2) '(a b) '(x y)) (map car '()))

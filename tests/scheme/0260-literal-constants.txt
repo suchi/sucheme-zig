@@ -8,53 +8,53 @@
 
 # `quote` したリストは定数である。
 (set-car! '(1 2) 0)
-error: cannot modify a constant in set-car! (1 2) 0
+error: 1:1: cannot modify a constant in set-car! (1 2) 0
 
 (set-cdr! '(1 2) 0)
-error: cannot modify a constant in set-cdr! (1 2) 0
+error: 1:1: cannot modify a constant in set-cdr! (1 2) 0
 
 # 変数が定数を指していても、定数である。
 (define x '(1 2)) (set-car! x 0)
-error: cannot modify a constant in set-car! (1 2) 0
+error: 1:19: cannot modify a constant in set-car! (1 2) 0
 
 # 手続きの本体の `quote` は、呼ぶたびに同じ定数を返す。
 (define (g) '(1 2)) (set-car! (g) 0)
-error: cannot modify a constant in set-car! (1 2) 0
+error: 1:21: cannot modify a constant in set-car! (1 2) 0
 
 (define (g) '(1 2)) (eq? (g) (g))
 #t
 
 # リストの途中のペアも、入れ子のペアも定数である。
 (set-car! (cdr '(1 2 3)) 0)
-error: cannot modify a constant in set-car! (2 3) 0
+error: 1:1: cannot modify a constant in set-car! (2 3) 0
 
 (set-cdr! (cdr '(1 2 3)) 0)
-error: cannot modify a constant in set-cdr! (2 3) 0
+error: 1:1: cannot modify a constant in set-cdr! (2 3) 0
 
 (set-car! (car '((1) 2)) 0)
-error: cannot modify a constant in set-car! (1) 0
+error: 1:1: cannot modify a constant in set-car! (1) 0
 
 (set-cdr! (car (cdr '(0 (1 2) 3))) 0)
-error: cannot modify a constant in set-cdr! (1 2) 0
+error: 1:1: cannot modify a constant in set-cdr! (1 2) 0
 
 # ドット対も、`quasiquote` を使わずに書いたデータも定数である。
 (set-cdr! '(1 . 2) 0)
-error: cannot modify a constant in set-cdr! (1 . 2) 0
+error: 1:1: cannot modify a constant in set-cdr! (1 . 2) 0
 
 # 自己評価するベクタの中のリストも定数である。ベクタから取り出しても同じである。
 (set-car! (vector-ref #(1 (2 3)) 1) 0)
-error: cannot modify a constant in set-car! (2 3) 0
+error: 1:1: cannot modify a constant in set-car! (2 3) 0
 
 # マクロが出力する `quote` も、リテラルである。
 (define-syntax m (syntax-rules () ((_) '(1 2)))) (set-car! (m) 0)
-error: cannot modify a constant in set-car! (1 2) 0
+error: 1:50: cannot modify a constant in set-car! (1 2) 0
 
 # 引数にした誤りは、型の誤りが先に報告される。
 (set-car! 1 0)
-error: wrong type of argument to set-car! 1 0
+error: 1:1: wrong type of argument to set-car! 1 0
 
 (set-car! '() 0)
-error: wrong type of argument to set-car! () 0
+error: 1:1: wrong type of argument to set-car! () 0
 
 # 手続きが作るデータは定数ではない。`list` と `cons` の結果は書き換えられる。
 (define l (list 1 2)) (set-car! l 0) (set-cdr! (cdr l) '(3)) l
@@ -72,7 +72,7 @@ error: wrong type of argument to set-car! () 0
 (9 . 3)
 
 (define p (cons '(1 2) 3)) (set-car! (car p) 9)
-error: cannot modify a constant in set-car! (1 2) 9
+error: 1:28: cannot modify a constant in set-car! (1 2) 9
 
 # 定数への書き込みは、断られたあとで、何も変えない。
 (define c '(1 2)) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (set-car! c 0))))) c
@@ -86,7 +86,7 @@ refused
 # 印は、GC のあとも残る。GC が何度も走る間に、定数は定数のままである。
 (define c '(1 2)) (define (spin n) (if (= n 0) 'ok (spin (- n 1)))) (spin 20000) (set-car! c 0)
 ok
-error: cannot modify a constant in set-car! (1 2) 0
+error: 1:82: cannot modify a constant in set-car! (1 2) 0
 
 # 空リスト、数、真偽値、文字、シンボルは場所を持たない。リテラルにしても、何も起きない。
 (list '() 1 #t #\a 'x)

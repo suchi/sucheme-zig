@@ -65,4 +65,4 @@ exit 2
 (#f ())
 
 (import (scheme process-context)) (get-environment-variable 'PATH)
-error: wrong type of argument to get-environment-variable PATH
+error: 1:35: wrong type of argument to get-environment-variable PATH

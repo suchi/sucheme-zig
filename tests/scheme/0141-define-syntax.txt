@@ -43,31 +43,31 @@ error: unbound variable: m
 error: m is a syntactic keyword and cannot be used as a variable
 
 (define-syntax m (syntax-rules () ((_) 1))) (set! m 2)
-error: bad set!: m is a syntactic keyword and cannot be assigned
+error: 1:45: bad set!: m is a syntactic keyword and cannot be assigned
 
 # R7RS 5.4 が誤りとする形: 定義の判定に使ったマクロの名前を、同じ本体の後の定義が束縛する。
 # 同節の例の let-syntax を、外側の本体の define-syntax で書いた。
 ((lambda () (define-syntax foo (syntax-rules () ((_ (proc args ...) body ...) (define proc (lambda (args ...) body ...))))) ((lambda (x) (foo (plus x y) (+ x y)) (define foo x) (plus foo x)) 3)))
-error: bad define: foo is defined in a body whose definitions it begins
+error: 1:178: bad define: foo is defined in a body whose definitions it begins
 
 # 本体で同じ名前を2回定義することは、define-syntax と define の組でも誤りである(R7RS 5.3.2)。
 ((lambda () (define-syntax a (syntax-rules () ((_) 1))) (define a 2) a))
-error: bad define: a is already defined earlier in this body
+error: 1:57: bad define: a is already defined earlier in this body
 
 ((lambda () (define a 2) (define-syntax a (syntax-rules () ((_) 1))) a))
-error: bad define-syntax: a is already defined earlier in this body
+error: 1:26: bad define-syntax: a is already defined earlier in this body
 
 # 定義だけの本体には、返す値が無い。
 ((lambda () (define-syntax m (syntax-rules () ((_) 1)))))
-error: bad lambda: a body needs an expression after its definitions
+error: 1:13: bad lambda: a body needs an expression after its definitions
 
 # 式の位置と、本体の式の後ろには、define-syntax を書けない。
 (list (define-syntax m (syntax-rules () ((_) 1))))
-error: bad define-syntax: a definition is only allowed at the top level or at the start of a body
+error: 1:7: bad define-syntax: a definition is only allowed at the top level or at the start of a body
 
 ((lambda () 1 (define-syntax m (syntax-rules () ((_) 1))) 2))
-error: bad define-syntax: a definition is only allowed at the top level or at the start of a body
+error: 1:15: bad define-syntax: a definition is only allowed at the top level or at the start of a body
 
 # 変換子の先頭は、その場所で syntax-rules を意味しなければならない。
 ((lambda (syntax-rules) (define-syntax m (syntax-rules () ((_) 1))) 1) 0)
-error: bad define-syntax: the transformer must be a syntax-rules form
+error: 1:25: bad define-syntax: the transformer must be a syntax-rules form

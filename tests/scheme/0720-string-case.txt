@@ -8,10 +8,10 @@
 
 # `(scheme base)` は、これらを持たない。
 (import (only (scheme base) string-upcase))
-error: bad import: string-upcase is not exported by the import set
+error: 1:1: bad import: string-upcase is not exported by the import set
 
 (import (only (scheme base) string-ci=?))
-error: bad import: string-ci=? is not exported by the import set
+error: 1:1: bad import: string-ci=? is not exported by the import set
 
 # 大文字にする。
 (import (scheme char)) (list (string-upcase "") (string-upcase "abc dEf 123!") (string-upcase "ABC"))
@@ -119,26 +119,26 @@ error: bad import: string-ci=? is not exported by the import set
 
 # 文字列でない引数は誤りである。最初の組が成り立たなくても、後ろの引数まで検査される。
 (import (scheme char)) (string-upcase #\a)
-error: wrong type of argument to string-upcase #\a
+error: 1:24: wrong type of argument to string-upcase #\a
 
 (import (scheme char)) (string-downcase 'abc)
-error: wrong type of argument to string-downcase abc
+error: 1:24: wrong type of argument to string-downcase abc
 
 (import (scheme char)) (string-foldcase 3)
-error: wrong type of argument to string-foldcase 3
+error: 1:24: wrong type of argument to string-foldcase 3
 
 (import (scheme char)) (string-ci=? "a" 97)
-error: wrong type of argument to string-ci=? "a" 97
+error: 1:24: wrong type of argument to string-ci=? "a" 97
 
 (import (scheme char)) (string-ci<? "b" "a" "a" #t)
-error: wrong type of argument to string-ci<? "b" "a" "a" #t
+error: 1:24: wrong type of argument to string-ci<? "b" "a" "a" #t
 
 # 引数の数。
 (import (scheme char)) (string-upcase)
-error: wrong number of arguments to string-upcase
+error: 1:24: wrong number of arguments to string-upcase
 
 (import (scheme char)) (string-upcase "a" "b")
-error: wrong number of arguments to string-upcase "a" "b"
+error: 1:24: wrong number of arguments to string-upcase "a" "b"
 
 (import (scheme char)) (string-ci=?)
-error: wrong number of arguments to string-ci=?
+error: 1:24: wrong number of arguments to string-ci=?

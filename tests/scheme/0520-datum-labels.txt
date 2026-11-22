@@ -31,7 +31,7 @@ error: circular reference outside a literal
 # 循環したリテラルも定数で、変更できない。誤りの説明の irritant も、`write` の形でラベルを
 # 付けて書く(スライス 5j)。
 (set-car! '#0=(a . #0#) 1)
-error: cannot modify a constant in set-car! #0=(a . #0#) 1
+error: 1:1: cannot modify a constant in set-car! #0=(a . #0#) 1
 
 # 循環したリスト同士の `equal?` は止まる(R7RS 6.1)。
 (equal? '#0=(a . #0#) '#1=(a . #1#))
@@ -61,10 +61,10 @@ error: circular reference outside a literal
 
 # テンプレートとパターンの循環は、マクロを定義する時点で断る。
 (define-syntax q (syntax-rules () ((_) '#0=(tmp . #0#))))
-error: bad syntax-rules: circular template
+error: 1:1: bad syntax-rules: circular template
 
 (define-syntax q (syntax-rules () ((_ #(#0=(a . #0#))) 1)))
-error: bad syntax-rules: circular pattern
+error: 1:1: bad syntax-rules: circular pattern
 
 # ラベルの範囲は、最も外側のデータである(R7RS 2.4)。
 '#0=a '#0#

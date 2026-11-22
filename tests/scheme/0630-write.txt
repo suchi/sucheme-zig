@@ -79,7 +79,7 @@
 "\"a\"b#\\cd"
 
 (import (scheme write)) (let ((p (open-output-string))) (close-port p) (write 1 p))
-error: port is closed in write 1 #<port>
+error: 1:72: port is closed in write 1 #<port>
 
 (import (scheme write)) (write-shared 1 (open-input-string ""))
-error: wrong type of argument to write-shared 1 #<port>
+error: 1:25: wrong type of argument to write-shared 1 #<port>

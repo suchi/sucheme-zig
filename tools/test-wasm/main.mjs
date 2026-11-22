@@ -195,11 +195,11 @@ test("a Scheme error returns -1 with one error line, and evaluation continues", 
 // 通って、今までと同じ一行として届く。条件が回収されたあとも評価が続く。
 test("a primitive's error reaches the output through the condition in the heap", () => {
   const h = instantiate().init();
-  assert.deepEqual(h.run("(car 5)"), [SCHEME_ERROR, "error: wrong type of argument to car 5\n"]);
+  assert.deepEqual(h.run("(car 5)"), [SCHEME_ERROR, "error: 1:1: wrong type of argument to car 5\n"]);
   // 多くの GC を経たあとで送出しても、同じである。
   const [status, text] = h.run("(define (spin n) (if (= n 0) (car 5) (spin (- n 1)))) (spin 30000)");
   assert.equal(status, SCHEME_ERROR);
-  assert.equal(text, "error: wrong type of argument to car 5\n");
+  assert.equal(text, "error: 1:30: wrong type of argument to car 5\n");
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
 
@@ -208,9 +208,9 @@ test("a primitive's error reaches the output through the condition in the heap",
 // あれば、機械が検出する失敗もハンドラに届く。
 test("a raised value that is not a condition is reported as write shows it, and a handler catches what the machine finds", () => {
   const h = instantiate().init();
-  assert.deepEqual(h.run("(raise 42)"), [SCHEME_ERROR, "error: 42\n"]);
-  assert.deepEqual(h.run("(raise 'oops)"), [SCHEME_ERROR, "error: oops\n"]);
-  assert.deepEqual(h.run('(error "bad thing" 1 "two")'), [SCHEME_ERROR, 'error: bad thing 1 "two"\n']);
+  assert.deepEqual(h.run("(raise 42)"), [SCHEME_ERROR, "error: 1:1: 42\n"]);
+  assert.deepEqual(h.run("(raise 'oops)"), [SCHEME_ERROR, "error: 1:1: oops\n"]);
+  assert.deepEqual(h.run('(error "bad thing" 1 "two")'), [SCHEME_ERROR, 'error: 1:1: bad thing 1 "two"\n']);
   assert.deepEqual(h.run("(with-exception-handler (lambda (c) 42) (lambda () (raise-continuable 'oops)))"), [OK, "42\n"]);
   assert.deepEqual(
     h.run("(define got #f) (with-exception-handler (lambda (c) (set! got c) 0) (lambda () (car 5)))"),
@@ -234,7 +234,7 @@ test("a continuation escapes, and an unhandled raise runs the after of a dynamic
   // after の送出が報告されることで、after が呼ばれたことを見る。
   assert.deepEqual(
     h.run("(dynamic-wind (lambda () #f) (lambda () (car 5)) (lambda () (raise 'after-ran)))"),
-    [SCHEME_ERROR, "error: after-ran\n"],
+    [SCHEME_ERROR, "error: 1:61: after-ran\n"],
   );
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
@@ -248,22 +248,22 @@ test("a library is defined, imported and called, and a failed definition leaves 
   assert.deepEqual(h.run("(import (t a)) (f)"), [OK, "1\n"]);
   assert.deepEqual(
     h.run("(define-library (t b) (export) (import (scheme base)) (begin (define x (car 5))))"),
-    [SCHEME_ERROR, "error: wrong type of argument to car 5\n"],
+    [SCHEME_ERROR, "error: 1:72: wrong type of argument to car 5\n"],
   );
-  assert.deepEqual(h.run("(import (t b))"), [SCHEME_ERROR, "error: unknown library: (t b)\n"]);
+  assert.deepEqual(h.run("(import (t b))"), [SCHEME_ERROR, "error: 1:1: unknown library: (t b)\n"]);
   assert.deepEqual(h.run("(f)"), [OK, "1\n"]);
   assert.equal(h.x.sucheme_reset(), OK);
-  assert.deepEqual(h.run("(import (t a))"), [SCHEME_ERROR, "error: unknown library: (t a)\n"]);
+  assert.deepEqual(h.run("(import (t a))"), [SCHEME_ERROR, "error: 1:1: unknown library: (t a)\n"]);
 });
 
 // WASM にはファイルを開く手段が無いので、定義されていないライブラリは、ファイルを探さずに
 // 「見つからない」になる(スライス 2n)。ファイルの名前にならない名前は、その理由つきで断る。
 test("a library that is not defined is not found, since there is no file system", () => {
   const h = instantiate().init();
-  assert.deepEqual(h.run("(import (foo bar))"), [SCHEME_ERROR, "error: unknown library: (foo bar)\n"]);
+  assert.deepEqual(h.run("(import (foo bar))"), [SCHEME_ERROR, "error: 1:1: unknown library: (foo bar)\n"]);
   assert.deepEqual(
     h.run("(import (CON))"),
-    [SCHEME_ERROR, "error: unknown library: (CON): a library with that name cannot be a file, because a component is the name of a device\n"],
+    [SCHEME_ERROR, "error: 1:1: unknown library: (CON): a library with that name cannot be a file, because a component is the name of a device\n"],
   );
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
@@ -275,7 +275,7 @@ test("an embedded library is imported without a file system", () => {
   assert.deepEqual(h.run("(import (sucheme derived)) (list (when #t 1 2) (unless #f 3 4))"), [OK, "(2 4)\n"]);
   assert.deepEqual(h.run("(when #t 5)"), [OK, "5\n"]);
   // 埋め込みに無いライブラリは、これまでどおり見つからない。
-  assert.deepEqual(h.run("(import (sucheme nope))"), [SCHEME_ERROR, "error: unknown library: (sucheme nope)\n"]);
+  assert.deepEqual(h.run("(import (sucheme nope))"), [SCHEME_ERROR, "error: 1:1: unknown library: (sucheme nope)\n"]);
   // `cond-expand` の `(library ...)` も、埋め込みのライブラリを見つける。
   assert.deepEqual(h.run("(cond-expand ((library (sucheme derived)) 1) (else 2))"), [OK, "1\n"]);
   assert.deepEqual(h.run("(cond-expand ((library (sucheme nope)) 1) (else 2))"), [OK, "2\n"]);
@@ -347,7 +347,7 @@ test("the derived syntax of slice 3i runs in wasm", () => {
     h.run("(let ((log '())) (guard (o (#t (set! log (cons 'outer log)))) (guard (i ((string? i) 'inner)) (dynamic-wind (lambda () (set! log (cons 'in log))) (lambda () (raise 'x)) (lambda () (set! log (cons 'out log)))))) log)"),
     [OK, "(outer out in out in)\n"],
   );
-  assert.deepEqual(h.run("(guard (e ((string? e) 1)) (raise 'sym))"), [SCHEME_ERROR, "error: sym\n"]);
+  assert.deepEqual(h.run("(guard (e ((string? e) 1)) (raise 'sym))"), [SCHEME_ERROR, "error: 1:28: sym\n"]);
 });
 
 // スライス 3j のベクタと文字列の高階手続きと、約束の構文も、WASM で動く。`delay-force` の連鎖は、
@@ -377,7 +377,7 @@ test("the standard libraries of slice 3k can be imported in wasm", () => {
     h.run("(import (scheme base) (scheme cxr) (scheme lazy) (scheme case-lambda)) (list (cadr '(1 2 3)) (caddr '(1 2 3)) (force (delay 4)) ((case-lambda ((a) a) ((a b) (+ a b))) 1 2))"),
     [OK, "(2 3 4 3)\n"],
   );
-  assert.deepEqual(h.run("(import (only (scheme base) display))"), [SCHEME_ERROR, "error: bad import: display is not exported by the import set\n"]);
+  assert.deepEqual(h.run("(import (only (scheme base) display))"), [SCHEME_ERROR, "error: 1:1: bad import: display is not exported by the import set\n"]);
 });
 
 // スライス 5i: コンソールのポートは、評価の結果と同じ出力バッファに、書いた順に書く。標準エラーも
@@ -392,7 +392,7 @@ test("the console ports write to the output buffer in order with the results", (
   // 出力バッファの書き手は、書き出しで失敗しない(固定の書き手の flush は何もしない)。
   assert.deepEqual(h.run("(write-string \"y\") (flush-output-port) 2"), [OK, "y2\n"]);
   // 出力が残っていても、エラーの行はそのあとに書かれる。
-  assert.deepEqual(h.run("(write-string \"a\") (car 1)"), [SCHEME_ERROR, "aerror: wrong type of argument to car 1\n"]);
+  assert.deepEqual(h.run("(write-string \"a\") (car 1)"), [SCHEME_ERROR, "aerror: 1:20: wrong type of argument to car 1\n"]);
 });
 
 // スライス 5k: WASM はファイルの表を持たないので、`file-exists?` は誤りを送出せずに `#f` を返し、
@@ -409,12 +409,12 @@ test("an include reports that there is no file to read, and refuses a form that 
   const h = instantiate().init();
   assert.deepEqual(
     h.run('(include "a.scm")'),
-    [SCHEME_ERROR, "error: bad include: this interpreter has no files to read: a.scm\n"],
+    [SCHEME_ERROR, "error: 1:1: bad include: this interpreter has no files to read: a.scm\n"],
   );
-  assert.deepEqual(h.run("(include 1)"), [SCHEME_ERROR, "error: bad include: a file name must be a string\n"]);
+  assert.deepEqual(h.run("(include 1)"), [SCHEME_ERROR, "error: 1:1: bad include: a file name must be a string\n"]);
   assert.deepEqual(
     h.run('(include-ci "a.scm")'),
-    [SCHEME_ERROR, "error: bad include-ci: this interpreter has no files to read: a.scm\n"],
+    [SCHEME_ERROR, "error: 1:1: bad include-ci: this interpreter has no files to read: a.scm\n"],
   );
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
@@ -538,12 +538,12 @@ test("a raise that uses up the reserve is unrecoverable until a reset", () => {
 test("a diagnostic too long for the line is cut short with ..., not lost", () => {
   const h = instantiate().init();
   const long = "x".repeat(330);
-  assert.deepEqual(h.run(`(error "${long}")`), [SCHEME_ERROR, `error: ${"x".repeat(309)}...\n`]);
+  assert.deepEqual(h.run(`(error "${long}")`), [SCHEME_ERROR, `error: 1:1: ${"x".repeat(304)}...\n`]);
   // irritant を切ったあとでも、メッセージが長ければ一行に収まらない。
   const [status, text] = h.run(`(error "${"m".repeat(200)}" "${"y".repeat(300)}")`);
   assert.equal(status, SCHEME_ERROR);
   assert.equal(text.length, 320);
-  assert.ok(text.startsWith(`error: ${"m".repeat(200)} "yyy`), text);
+  assert.ok(text.startsWith(`error: 1:1: ${"m".repeat(200)} "yyy`), text);
   assert.ok(text.endsWith("...\n"), text);
   assert.deepEqual(h.run("(+ 1 2)"), [OK, "3\n"]);
 });
@@ -717,15 +717,15 @@ test("strings are made, written and compared in wasm32, and a constant is refuse
     [OK, '("あλa" 3 #t #t)\n'],
   );
   assert.deepEqual(h.run('(list->string (string->list "aλあ")) (vector->string (string->vector "xy"))'), [OK, '"aλあ"\n"xy"\n']);
-  assert.deepEqual(h.run('(string-set! "abc" 0 #\\x)'), [SCHEME_ERROR, 'error: cannot modify a constant in string-set! "abc" 0 #\\x\n']);
-  assert.deepEqual(h.run("(set-car! '(1 2) 0)"), [SCHEME_ERROR, "error: cannot modify a constant in set-car! (1 2) 0\n"]);
-  assert.deepEqual(h.run("(string-set! (symbol->string 'abc) 0 #\\x)"), [SCHEME_ERROR, 'error: cannot modify a constant in string-set! "abc" 0 #\\x\n']);
+  assert.deepEqual(h.run('(string-set! "abc" 0 #\\x)'), [SCHEME_ERROR, 'error: 1:1: cannot modify a constant in string-set! "abc" 0 #\\x\n']);
+  assert.deepEqual(h.run("(set-car! '(1 2) 0)"), [SCHEME_ERROR, "error: 1:1: cannot modify a constant in set-car! (1 2) 0\n"]);
+  assert.deepEqual(h.run("(string-set! (symbol->string 'abc) 0 #\\x)"), [SCHEME_ERROR, 'error: 1:1: cannot modify a constant in string-set! "abc" 0 #\\x\n']);
   assert.deepEqual(h.run("(define l (list 1 2)) (set-car! l 0) l"), [OK, "(0 2)\n"]);
   // 2^32 を切り捨てると 0 になる大きさと位置。
-  assert.deepEqual(h.run("(make-string 4294967296 #\\a)"), [SCHEME_ERROR, "error: heap limit exceeded\n"]);
-  assert.deepEqual(h.run('(string-copy "abc" 4294967296)'), [SCHEME_ERROR, 'error: argument out of range in string-copy "abc" 4294967296\n']);
-  assert.deepEqual(h.run('(string-set! (make-string 3 #\\a) 4294967296 #\\b)'), [SCHEME_ERROR, 'error: argument out of range in string-set! "aaa" 4294967296 #\\b\n']);
-  assert.deepEqual(h.run('(string-copy! (make-string 3 #\\a) 4294967296 "x")'), [SCHEME_ERROR, 'error: argument out of range in string-copy! "aaa" 4294967296 "x"\n']);
+  assert.deepEqual(h.run("(make-string 4294967296 #\\a)"), [SCHEME_ERROR, "error: 1:1: heap limit exceeded\n"]);
+  assert.deepEqual(h.run('(string-copy "abc" 4294967296)'), [SCHEME_ERROR, 'error: 1:1: argument out of range in string-copy "abc" 4294967296\n']);
+  assert.deepEqual(h.run('(string-set! (make-string 3 #\\a) 4294967296 #\\b)'), [SCHEME_ERROR, 'error: 1:1: argument out of range in string-set! "aaa" 4294967296 #\\b\n']);
+  assert.deepEqual(h.run('(string-copy! (make-string 3 #\\a) 4294967296 "x")'), [SCHEME_ERROR, 'error: 1:1: argument out of range in string-copy! "aaa" 4294967296 "x"\n']);
   // エラーのあとも、同じインスタンスが使える。
   assert.deepEqual(h.run('(string-append "a" "b")'), [OK, '"ab"\n']);
 });
@@ -741,16 +741,16 @@ test("bytevectors are made, written and converted in wasm32, and a constant is r
   );
   assert.deepEqual(h.run('(string->utf8 "aλあ𐀀") (utf8->string (string->utf8 "aλあ𐀀")) (utf8->string #u8(97 206 187) 1)'), [OK, '#u8(97 206 187 227 129 130 240 144 128 128)\n"aλあ𐀀"\n"λ"\n']);
   assert.deepEqual(h.run("(equal? #u8(1 2) (bytevector 1 2)) (equal? #u8(1 2) #u8(1 3))"), [OK, "#t\n#f\n"]);
-  assert.deepEqual(h.run("(bytevector-u8-set! #u8(1 2 3) 0 9)"), [SCHEME_ERROR, "error: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9\n"]);
-  assert.deepEqual(h.run("(bytevector-copy! '#u8(1 2 3) 0 #u8())"), [SCHEME_ERROR, "error: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8()\n"]);
-  assert.deepEqual(h.run("(utf8->string #u8(237 160 128))"), [SCHEME_ERROR, "error: argument out of range in utf8->string #u8(237 160 128)\n"]);
+  assert.deepEqual(h.run("(bytevector-u8-set! #u8(1 2 3) 0 9)"), [SCHEME_ERROR, "error: 1:1: cannot modify a constant in bytevector-u8-set! #u8(1 2 3) 0 9\n"]);
+  assert.deepEqual(h.run("(bytevector-copy! '#u8(1 2 3) 0 #u8())"), [SCHEME_ERROR, "error: 1:1: cannot modify a constant in bytevector-copy! #u8(1 2 3) 0 #u8()\n"]);
+  assert.deepEqual(h.run("(utf8->string #u8(237 160 128))"), [SCHEME_ERROR, "error: 1:1: argument out of range in utf8->string #u8(237 160 128)\n"]);
   // 2^32 を切り捨てると 0 になる大きさと位置。
-  assert.deepEqual(h.run("(make-bytevector 4294967296 1)"), [SCHEME_ERROR, "error: heap limit exceeded\n"]);
-  assert.deepEqual(h.run("(bytevector-u8-ref #u8(1 2 3) 4294967296)"), [SCHEME_ERROR, "error: argument out of range in bytevector-u8-ref #u8(1 2 3) 4294967296\n"]);
-  assert.deepEqual(h.run("(bytevector-u8-set! (bytevector 1 2 3) 4294967296 0)"), [SCHEME_ERROR, "error: argument out of range in bytevector-u8-set! #u8(1 2 3) 4294967296 0\n"]);
-  assert.deepEqual(h.run("(bytevector-copy #u8(1 2 3) 4294967296)"), [SCHEME_ERROR, "error: argument out of range in bytevector-copy #u8(1 2 3) 4294967296\n"]);
-  assert.deepEqual(h.run("(bytevector-copy! (bytevector 1 2 3) 4294967296 #u8())"), [SCHEME_ERROR, "error: argument out of range in bytevector-copy! #u8(1 2 3) 4294967296 #u8()\n"]);
-  assert.deepEqual(h.run('(string->utf8 "abc" 4294967296)'), [SCHEME_ERROR, 'error: argument out of range in string->utf8 "abc" 4294967296\n']);
+  assert.deepEqual(h.run("(make-bytevector 4294967296 1)"), [SCHEME_ERROR, "error: 1:1: heap limit exceeded\n"]);
+  assert.deepEqual(h.run("(bytevector-u8-ref #u8(1 2 3) 4294967296)"), [SCHEME_ERROR, "error: 1:1: argument out of range in bytevector-u8-ref #u8(1 2 3) 4294967296\n"]);
+  assert.deepEqual(h.run("(bytevector-u8-set! (bytevector 1 2 3) 4294967296 0)"), [SCHEME_ERROR, "error: 1:1: argument out of range in bytevector-u8-set! #u8(1 2 3) 4294967296 0\n"]);
+  assert.deepEqual(h.run("(bytevector-copy #u8(1 2 3) 4294967296)"), [SCHEME_ERROR, "error: 1:1: argument out of range in bytevector-copy #u8(1 2 3) 4294967296\n"]);
+  assert.deepEqual(h.run("(bytevector-copy! (bytevector 1 2 3) 4294967296 #u8())"), [SCHEME_ERROR, "error: 1:1: argument out of range in bytevector-copy! #u8(1 2 3) 4294967296 #u8()\n"]);
+  assert.deepEqual(h.run('(string->utf8 "abc" 4294967296)'), [SCHEME_ERROR, 'error: 1:1: argument out of range in string->utf8 "abc" 4294967296\n']);
   // エラーのあとも、同じインスタンスが使える。
   assert.deepEqual(h.run("(bytevector-append #u8(1) #u8(2))"), [OK, "#u8(1 2)\n"]);
 });
@@ -763,7 +763,7 @@ test("an index past 2^32 is out of range in wasm32, not truncated to a valid ind
   const h = instantiate().init();
   // 報告の後ろには、irritant として呼び出しの引数が続く。
   const rangeError = (src, name, args) =>
-    assert.deepEqual(h.run(src), [SCHEME_ERROR, `error: argument out of range in ${name} ${args}\n`], src);
+    assert.deepEqual(h.run(src), [SCHEME_ERROR, `error: 1:1: argument out of range in ${name} ${args}\n`], src);
   // 対照として、切り捨てた先の添字は有効で、値が取れる。
   assert.deepEqual(h.run('(string-ref "abc" 0) (string-ref "abc" 2)'), [OK, "#\\a\n#\\c\n"]);
   assert.deepEqual(h.run("(vector-ref (vector 5 6) 0) (vector-ref (vector 5 6) 1)"), [OK, "5\n6\n"]);
@@ -800,8 +800,8 @@ test("integer division and 128-bit arithmetic agree with the native results in w
   ]);
   // 最小の整数を -1 で割る quotient は、結果が 64 ビットに収まらず、bignum になる。
   assert.deepEqual(h.run("(quotient -9223372036854775808 -1)"), [OK, "9223372036854775808\n"]);
-  assert.deepEqual(h.run("(quotient 1 0)"), [SCHEME_ERROR, "error: division by zero in quotient 1 0\n"]);
-  assert.deepEqual(h.run("(modulo -9223372036854775808 0)"), [SCHEME_ERROR, "error: division by zero in modulo -9223372036854775808 0\n"]);
+  assert.deepEqual(h.run("(quotient 1 0)"), [SCHEME_ERROR, "error: 1:1: division by zero in quotient 1 0\n"]);
+  assert.deepEqual(h.run("(modulo -9223372036854775808 0)"), [SCHEME_ERROR, "error: 1:1: division by zero in modulo -9223372036854775808 0\n"]);
   // 128 ビットの積と和。途中の値が 64 ビットを超えても、結果が収まれば値を返す。
   assert.deepEqual(h.run("(* 4294967296 2147483647) (+ 9223372036854775807 1 -1) (- -9223372036854775808 1 -1)"), [
     OK,
@@ -818,7 +818,7 @@ test("integer division and 128-bit arithmetic agree with the native results in w
     "0\n1/3\n3/2\n2\n5/6\n",
   ]);
   assert.deepEqual(h.run("(< (/ 1 3) (/ 1 2) (+ 9223372036854775807 1)) (= (* 4294967296 4294967296) (* 4294967296 4294967296))"), [OK, "#t\n#t\n"]);
-  assert.deepEqual(h.run("(/ 1 0)"), [SCHEME_ERROR, "error: division by zero in / 1 0\n"]);
+  assert.deepEqual(h.run("(/ 1 0)"), [SCHEME_ERROR, "error: 1:1: division by zero in / 1 0\n"]);
 });
 
 test("a tail-recursive loop of 100000 iterations completes", () => {
@@ -1408,8 +1408,8 @@ test("known limit: a message that contains the error prefix is split inside the 
   const h = instantiate().init();
   const [status, text] = h.run('(error "boom" "error: x")');
   assert.equal(status, SCHEME_ERROR);
-  assert.equal(text, 'error: boom "error: x"\n');
-  assert.deepEqual(splitError(text), { output: 'error: boom "', message: 'x"' });
+  assert.equal(text, 'error: 1:1: boom "error: x"\n');
+  assert.deepEqual(splitError(text), { output: 'error: 1:1: boom "', message: 'x"' });
 });
 
 // 状態コードごとの見出しと次の操作を、文言ごと固定する。
@@ -1476,13 +1476,25 @@ test("describeResult keeps the output before an error and explains each status c
   assert.equal(describeResult(-99, "").error.title, "Unexpected status -99");
 });
 
+// 誤りを起こした呼び出しの位置(行:桁:)が、WASM の入力(ファイル名なし)でも、説明の前に出る(ADR-0054)。
+// 8g-2 が、この形から行と桁を取り出す。
+test("an error says the line and the column of the call that raised it, with no file name", () => {
+  const h = instantiate().init();
+  assert.deepEqual(h.run("(define (f x)\n  (car x))\n(f 5)"), [SCHEME_ERROR, "error: 2:3: wrong type of argument to car 5\n"]);
+  // 呼び出しでない節点の誤り(未束縛の変数)と、標準ライブラリの手続きの中の誤りには、位置が付かない。
+  assert.deepEqual(h.run("(list 1\n  nope)"), [SCHEME_ERROR, "error: unbound variable: nope\n"]);
+  assert.deepEqual(h.run("(list-ref '(a b) 5)"), [SCHEME_ERROR, "error: argument out of range in list-ref (a b) 5\n"]);
+  // 前の誤りの位置は、次の誤りに残らない。
+  assert.deepEqual(h.run("\n\n (vector-ref (vector 1) 3)"), [SCHEME_ERROR, "error: 3:2: argument out of range in vector-ref #(1) 3\n"]);
+});
+
 test("a real error after output keeps that output apart from the message", () => {
   const h = instantiate().init();
   const [status, text] = h.run('(import (scheme base) (scheme write)) (display "abc") (car 5)');
   assert.equal(status, SCHEME_ERROR);
   assert.deepEqual(describeResult(status, text), {
     output: "abc",
-    error: { title: "Error", message: "wrong type of argument to car 5", hint: null },
+    error: { title: "Error", message: "1:55: wrong type of argument to car 5", hint: null },
   });
   const [status2, text2] = h.run("(+ 1");
   assert.equal(status2, SCHEME_ERROR);

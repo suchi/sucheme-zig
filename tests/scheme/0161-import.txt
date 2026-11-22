@@ -54,53 +54,53 @@
 
 # 1つの `import` の中の誤りは、その `import` のどの集合も束縛しない。
 (import (rename (only (scheme base) car) (car kar)) (only (scheme base) no-such-name))
-error: bad import: no-such-name is not exported by the import set
+error: 1:1: bad import: no-such-name is not exported by the import set
 
 # 誤り。
 (import)
-error: bad import: expected (import <import set> ...)
+error: 1:1: bad import: expected (import <import set> ...)
 
 (import (foo bar))
-error: unknown library: (foo bar)
+error: 1:1: unknown library: (foo bar)
 
 (import (sucheme))
-error: unknown library: (sucheme)
+error: 1:1: unknown library: (sucheme)
 
 (import 5)
-error: bad library name: a name is a non-empty list of identifiers and non-negative integers
+error: 1:1: bad library name: a name is a non-empty list of identifiers and non-negative integers
 
 (import ())
-error: bad library name: a name is a non-empty list of identifiers and non-negative integers
+error: 1:1: bad library name: a name is a non-empty list of identifiers and non-negative integers
 
 (import (foo "bar"))
-error: bad library name: a name is a non-empty list of identifiers and non-negative integers
+error: 1:1: bad library name: a name is a non-empty list of identifiers and non-negative integers
 
 (import (only (scheme base) nope))
-error: bad import: nope is not exported by the import set
+error: 1:1: bad import: nope is not exported by the import set
 
 (import (except (scheme base) nope))
-error: bad import: nope is not exported by the import set
+error: 1:1: bad import: nope is not exported by the import set
 
 (import (rename (scheme base) (nope x)))
-error: bad import: nope is not exported by the import set
+error: 1:1: bad import: nope is not exported by the import set
 
 (import (rename (scheme base) (car cdr)))
-error: bad import: cdr is the name of more than one identifier
+error: 1:1: bad import: cdr is the name of more than one identifier
 
 (import (only (scheme base) 1))
-error: bad import: only expects identifiers
+error: 1:1: bad import: only expects identifiers
 
 (import (prefix (scheme base)))
-error: bad import: prefix expects one identifier
+error: 1:1: bad import: prefix expects one identifier
 
 (import (prefix (scheme base) a b))
-error: bad import: prefix expects one identifier
+error: 1:1: bad import: prefix expects one identifier
 
 (import (rename (scheme base) (car)))
-error: bad import: rename expects (from to) pairs
+error: 1:1: bad import: rename expects (from to) pairs
 
 (import (only))
-error: bad import: only needs an import set
+error: 1:1: bad import: only needs an import set
 
 (import (only (scheme base) . car))
-error: bad import: expected a proper list
+error: 1:1: bad import: expected a proper list

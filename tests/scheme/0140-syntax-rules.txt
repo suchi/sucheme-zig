@@ -79,4 +79,4 @@
 
 # 仮引数が ... を束縛していれば、パターンの ... もパターン変数で、繰り返しを表さない。
 ((lambda (...) (define-syntax m (syntax-rules () ((_ a ...) (list a ...)))) (m 1 2 3)) 0)
-error: bad syntax: no rule of m matches the form
+error: 1:77: bad syntax: no rule of m matches the form

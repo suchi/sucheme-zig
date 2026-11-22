@@ -20,65 +20,65 @@
 
 # 上限を超える大きさは、確保の前に断る。
 (make-vector 100000000 0)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-vector 100000000)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-bytevector 100000000 0)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-bytevector 100000000)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 # 桁あふれする大きさも、回り込まない。
 (make-vector 4611686018427387904 0)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-vector 9223372036854775807)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-bytevector 9223372036854775807)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (make-bytevector 9223372036854775807 255)
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 # 2つの引数は収まるが、結果が収まらない。
 (define v (make-vector 3000000 0)) (vector-append v v)
-error: heap limit exceeded
+error: 1:36: heap limit exceeded
 
 (define b (make-bytevector 40000000 0)) (bytevector-append b b)
-error: heap limit exceeded
+error: 1:41: heap limit exceeded
 
 (define b (make-bytevector 40000000 0)) (bytevector-copy b)
-error: heap limit exceeded
+error: 1:41: heap limit exceeded
 
 (define v (make-vector 3000000 0)) (vector-copy v)
-error: heap limit exceeded
+error: 1:36: heap limit exceeded
 
 (define b (make-bytevector 40000000 0)) (utf8->string b)
-error: heap limit exceeded
+error: 1:41: heap limit exceeded
 
 (define s (make-string 40000000 #\a)) (string->utf8 s)
-error: heap limit exceeded
+error: 1:39: heap limit exceeded
 
 (define l (make-vector 3000000 0)) (vector->list l)
-error: heap limit exceeded
+error: 1:36: heap limit exceeded
 
 # 倍々に伸ばし続けると、いつか上限に当たる。
 (define (grow v n) (if (= n 0) v (grow (vector-append v v) (- n 1)))) (vector-length (grow (vector 1 2 3 4) 30))
-error: heap limit exceeded
+error: 1:40: heap limit exceeded
 
 (define (grow b n) (if (= n 0) b (grow (bytevector-append b b) (- n 1)))) (bytevector-length (grow (bytevector 1 2 3 4) 30))
-error: heap limit exceeded
+error: 1:40: heap limit exceeded
 
 # 2つ目の確保が、1つ目と合わせて上限を超える。
 (define a (make-bytevector 40000000 0)) (define b (make-bytevector 40000000 0)) 0
-error: heap limit exceeded
+error: 1:51: heap limit exceeded
 
 (define a (make-vector 3000000 0)) (define b (make-vector 3000000 0)) 0
-error: heap limit exceeded
+error: 1:46: heap limit exceeded
 
 # 上限の誤りは、ほかの誤りと同じように、ハンドラが捕まえられる。
 (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'caught)) (lambda () (make-vector 100000000 0)))))

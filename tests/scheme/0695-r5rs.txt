@@ -24,7 +24,7 @@ error: unbound variable: exact
 
 # どちらの環境も変更できない。
 (import (scheme r5rs)) (eval '(define x 1) (scheme-report-environment 5))
-error: bad define: cannot define x in an immutable environment
+error: 1:24: bad define: cannot define x in an immutable environment
 
 # 版は 5 だけを受け付ける。
 (import (scheme r5rs)) (scheme-report-environment 7)

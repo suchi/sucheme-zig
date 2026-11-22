@@ -35,15 +35,15 @@ out
 # 行の残りの式は走らない。after が呼ばれたことは、after 自身の送出が報告されることで見る
 # (呼ばれた回数は src/machine.zig の単体テストが確かめる)。
 (dynamic-wind (lambda () #f) (lambda () (car '())) (lambda () (raise 'after-ran))) 'not-reached
-error: after-ran
+error: 1:63: after-ran
 
 # after の中の未処理例外は、その点の外から脱出を続ける。報告するのは最後に送出された値で、
 # 外側の after も、内側の after の後に呼ばれる。
 (dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (raise 'boom)) (lambda () (raise 'inner-after)))) (lambda () (raise 'outer-after)))
-error: outer-after
+error: 1:142: outer-after
 
 (dynamic-wind (lambda () #f) (lambda () (dynamic-wind (lambda () #f) (lambda () (raise 'boom)) (lambda () (raise 'inner-after)))) (lambda () #f))
-error: inner-after
+error: 1:107: inner-after
 
 # 事例1: ハンドラの中で dynamic-wind に入り、そこから継続で脱出したとき、after の中の
 # 例外は、実行中のハンドラでなく外側のハンドラに届く。
@@ -75,10 +75,10 @@ normal
 # 引数の検査。継続は手続きなので型の検査を通る。引数なしで呼ぶ `after` が継続なら、0個の値で
 # その継続へ脱出する。
 (dynamic-wind 1 (lambda () 2) (lambda () 3))
-error: wrong type of argument to dynamic-wind 1 #<procedure> #<procedure>
+error: 1:1: wrong type of argument to dynamic-wind 1 #<procedure> #<procedure>
 
 (dynamic-wind (lambda () 1) (lambda () 2))
-error: wrong number of arguments to dynamic-wind #<procedure> #<procedure>
+error: 1:1: wrong number of arguments to dynamic-wind #<procedure> #<procedure>
 
 (call-with-values (lambda () (call/cc (lambda (k) (dynamic-wind (lambda () 1) (lambda () 2) k)))) list)
 ()

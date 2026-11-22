@@ -189,7 +189,7 @@ error: argument out of range in list-ref (a b c) 10
 ```
 
 ```output
-error: wrong type of argument to car ()
+error: 1:1: wrong type of argument to car ()
 ```
 
 ### 元のリストは変わらない

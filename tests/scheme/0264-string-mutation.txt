@@ -45,28 +45,28 @@ ok
 
 # 範囲の誤りと型の誤り。型の誤りが先に報告される。
 (define s (make-string 3 #\a)) (string-set! s 3 #\x)
-error: argument out of range in string-set! "aaa" 3 #\x
+error: 1:32: argument out of range in string-set! "aaa" 3 #\x
 
 (define s (make-string 3 #\a)) (string-set! s -1 #\x)
-error: argument out of range in string-set! "aaa" -1 #\x
+error: 1:32: argument out of range in string-set! "aaa" -1 #\x
 
 (string-set! (make-string 0) 0 #\x)
-error: argument out of range in string-set! "" 0 #\x
+error: 1:1: argument out of range in string-set! "" 0 #\x
 
 (define s (make-string 3 #\a)) (string-set! s 4294967296 #\x)
-error: argument out of range in string-set! "aaa" 4294967296 #\x
+error: 1:32: argument out of range in string-set! "aaa" 4294967296 #\x
 
 (define s (make-string 3 #\a)) (string-set! s 0 "x")
-error: wrong type of argument to string-set! "aaa" 0 "x"
+error: 1:32: wrong type of argument to string-set! "aaa" 0 "x"
 
 (define s (make-string 3 #\a)) (string-set! s #\a #\x)
-error: wrong type of argument to string-set! "aaa" #\a #\x
+error: 1:32: wrong type of argument to string-set! "aaa" #\a #\x
 
 (string-set! 'abc 0 #\x)
-error: wrong type of argument to string-set! abc 0 #\x
+error: 1:1: wrong type of argument to string-set! abc 0 #\x
 
 (define s (make-string 3 #\a)) (string-set! s 100 1)
-error: wrong type of argument to string-set! "aaa" 100 1
+error: 1:32: wrong type of argument to string-set! "aaa" 100 1
 
 # 断られた書き込みは、文字列を変えない。
 (define s (make-string 3 #\a)) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (string-set! s 3 #\x))))) s
@@ -128,38 +128,38 @@ refused
 
 # 範囲の誤り。
 (define b (string-copy "abcde")) (string-copy! b 6 "x")
-error: argument out of range in string-copy! "abcde" 6 "x"
+error: 1:34: argument out of range in string-copy! "abcde" 6 "x"
 
 (define b (string-copy "abcde")) (string-copy! b -1 "x")
-error: argument out of range in string-copy! "abcde" -1 "x"
+error: 1:34: argument out of range in string-copy! "abcde" -1 "x"
 
 (define b (string-copy "abcde")) (string-copy! b 3 "XYZ")
-error: argument out of range in string-copy! "abcde" 3 "XYZ"
+error: 1:34: argument out of range in string-copy! "abcde" 3 "XYZ"
 
 (define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 4)
-error: argument out of range in string-copy! "abcde" 0 "XYZ" 4
+error: 1:34: argument out of range in string-copy! "abcde" 0 "XYZ" 4
 
 (define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 2 1)
-error: argument out of range in string-copy! "abcde" 0 "XYZ" 2 1
+error: 1:34: argument out of range in string-copy! "abcde" 0 "XYZ" 2 1
 
 (define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 0 4)
-error: argument out of range in string-copy! "abcde" 0 "XYZ" 0 4
+error: 1:34: argument out of range in string-copy! "abcde" 0 "XYZ" 0 4
 
 (define b (string-copy "abcde")) (string-copy! b 0 "XYZ" 0 -1)
-error: argument out of range in string-copy! "abcde" 0 "XYZ" 0 -1
+error: 1:34: argument out of range in string-copy! "abcde" 0 "XYZ" 0 -1
 
 # 型の誤り。
 (define b (string-copy "abcde")) (string-copy! b 0 'x)
-error: wrong type of argument to string-copy! "abcde" 0 x
+error: 1:34: wrong type of argument to string-copy! "abcde" 0 x
 
 (define b (string-copy "abcde")) (string-copy! b #\a "x")
-error: wrong type of argument to string-copy! "abcde" #\a "x"
+error: 1:34: wrong type of argument to string-copy! "abcde" #\a "x"
 
 (string-copy! 'b 0 "x")
-error: wrong type of argument to string-copy! b 0 "x"
+error: 1:1: wrong type of argument to string-copy! b 0 "x"
 
 (define b (string-copy "abcde")) (string-copy! b 100 1)
-error: wrong type of argument to string-copy! "abcde" 100 1
+error: 1:34: wrong type of argument to string-copy! "abcde" 100 1
 
 # 断られた `string-copy!` は、書き込み先を変えない。
 (define b (string-copy "abcde")) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (string-copy! b 3 "XYZ"))))) b
@@ -199,25 +199,25 @@ refused
 
 # 範囲の誤りと型の誤り。
 (define s (string-copy "abc")) (string-fill! s #\x 4)
-error: argument out of range in string-fill! "abc" #\x 4
+error: 1:32: argument out of range in string-fill! "abc" #\x 4
 
 (define s (string-copy "abc")) (string-fill! s #\x 2 1)
-error: argument out of range in string-fill! "abc" #\x 2 1
+error: 1:32: argument out of range in string-fill! "abc" #\x 2 1
 
 (define s (string-copy "abc")) (string-fill! s #\x 0 4)
-error: argument out of range in string-fill! "abc" #\x 0 4
+error: 1:32: argument out of range in string-fill! "abc" #\x 0 4
 
 (define s (string-copy "abc")) (string-fill! s #\x -1)
-error: argument out of range in string-fill! "abc" #\x -1
+error: 1:32: argument out of range in string-fill! "abc" #\x -1
 
 (define s (string-copy "abc")) (string-fill! s "x")
-error: wrong type of argument to string-fill! "abc" "x"
+error: 1:32: wrong type of argument to string-fill! "abc" "x"
 
 (define s (string-copy "abc")) (string-fill! s #\x #\a)
-error: wrong type of argument to string-fill! "abc" #\x #\a
+error: 1:32: wrong type of argument to string-fill! "abc" #\x #\a
 
 (string-fill! 'abc #\x)
-error: wrong type of argument to string-fill! abc #\x
+error: 1:1: wrong type of argument to string-fill! abc #\x
 
 (define s (string-copy "abc")) (string-fill! s 1 100)
-error: wrong type of argument to string-fill! "abc" 1 100
+error: 1:32: wrong type of argument to string-fill! "abc" 1 100

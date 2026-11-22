@@ -140,87 +140,87 @@ b
 
 # 範囲外の添字。
 (vector-ref (vector 1 2 3) 3)
-error: argument out of range in vector-ref #(1 2 3) 3
+error: 1:1: argument out of range in vector-ref #(1 2 3) 3
 
 (vector-ref (vector 1 2 3) 100)
-error: argument out of range in vector-ref #(1 2 3) 100
+error: 1:1: argument out of range in vector-ref #(1 2 3) 100
 
 (vector-ref (vector) 0)
-error: argument out of range in vector-ref #() 0
+error: 1:1: argument out of range in vector-ref #() 0
 
 (vector-ref #() 0)
-error: argument out of range in vector-ref #() 0
+error: 1:1: argument out of range in vector-ref #() 0
 
 (vector-ref (vector 1 2 3) -1)
-error: argument out of range in vector-ref #(1 2 3) -1
+error: 1:1: argument out of range in vector-ref #(1 2 3) -1
 
 (vector-ref (vector 1) -1)
-error: argument out of range in vector-ref #(1) -1
+error: 1:1: argument out of range in vector-ref #(1) -1
 
 (vector-ref (vector 1 2 3) 9223372036854775807)
-error: argument out of range in vector-ref #(1 2 3) 9223372036854775807
+error: 1:1: argument out of range in vector-ref #(1 2 3) 9223372036854775807
 
 (vector-ref (vector 1 2 3) -9223372036854775808)
-error: argument out of range in vector-ref #(1 2 3) -9223372036854775808
+error: 1:1: argument out of range in vector-ref #(1 2 3) -9223372036854775808
 
 (vector-ref (vector 1 2 3) 4294967296)
-error: argument out of range in vector-ref #(1 2 3) 4294967296
+error: 1:1: argument out of range in vector-ref #(1 2 3) 4294967296
 
 # 型の誤り。範囲より先に調べるので、範囲外の添字でも型のエラーが先に出る。
 (vector-length '(1 2))
-error: wrong type of argument to vector-length (1 2)
+error: 1:1: wrong type of argument to vector-length (1 2)
 
 (vector-length "abc")
-error: wrong type of argument to vector-length "abc"
+error: 1:1: wrong type of argument to vector-length "abc"
 
 (vector-length 3)
-error: wrong type of argument to vector-length 3
+error: 1:1: wrong type of argument to vector-length 3
 
 (vector-length '())
-error: wrong type of argument to vector-length ()
+error: 1:1: wrong type of argument to vector-length ()
 
 (vector-ref '(1 2) 0)
-error: wrong type of argument to vector-ref (1 2) 0
+error: 1:1: wrong type of argument to vector-ref (1 2) 0
 
 (vector-ref "abc" 0)
-error: wrong type of argument to vector-ref "abc" 0
+error: 1:1: wrong type of argument to vector-ref "abc" 0
 
 (vector-ref (vector 1 2) #\a)
-error: wrong type of argument to vector-ref #(1 2) #\a
+error: 1:1: wrong type of argument to vector-ref #(1 2) #\a
 
 (vector-ref (vector 1 2) "0")
-error: wrong type of argument to vector-ref #(1 2) "0"
+error: 1:1: wrong type of argument to vector-ref #(1 2) "0"
 
 (vector-ref (vector 1 2) '())
-error: wrong type of argument to vector-ref #(1 2) ()
+error: 1:1: wrong type of argument to vector-ref #(1 2) ()
 
 (vector-ref '(1 2) 100)
-error: wrong type of argument to vector-ref (1 2) 100
+error: 1:1: wrong type of argument to vector-ref (1 2) 100
 
 (vector-ref '(1 2) -1)
-error: wrong type of argument to vector-ref (1 2) -1
+error: 1:1: wrong type of argument to vector-ref (1 2) -1
 
 # 引数の個数は機械が検査する。`vector` は何個でも取るので、個数のエラーは無い。
 (vector?)
-error: wrong number of arguments to vector?
+error: 1:1: wrong number of arguments to vector?
 
 (vector? #(1) #(2))
-error: wrong number of arguments to vector? #(1) #(2)
+error: 1:1: wrong number of arguments to vector? #(1) #(2)
 
 (vector-length)
-error: wrong number of arguments to vector-length
+error: 1:1: wrong number of arguments to vector-length
 
 (vector-length #(1) #(2))
-error: wrong number of arguments to vector-length #(1) #(2)
+error: 1:1: wrong number of arguments to vector-length #(1) #(2)
 
 (vector-ref)
-error: wrong number of arguments to vector-ref
+error: 1:1: wrong number of arguments to vector-ref
 
 (vector-ref #(1 2))
-error: wrong number of arguments to vector-ref #(1 2)
+error: 1:1: wrong number of arguments to vector-ref #(1 2)
 
 (vector-ref #(1 2) 0 1)
-error: wrong number of arguments to vector-ref #(1 2) 0 1
+error: 1:1: wrong number of arguments to vector-ref #(1 2) 0 1
 
 # ベクタは変数に束縛され、式の中でそのまま使える。
 (define v (vector 10 20 30)) (vector-length v) (vector-ref v 2)

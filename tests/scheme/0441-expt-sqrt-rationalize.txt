@@ -21,7 +21,7 @@
 (1.0 #f 1.0)
 
 (expt 0 -1)
-error: division by zero in expt 0 -1
+error: 1:1: division by zero in expt 0 -1
 
 # 不正確な底や指数は、不正確な数を返す。
 (list (expt (inexact 2) 3) (expt (inexact 2) -3) (expt 2 (inexact 3)) (expt 4 (/ 1 2)))
@@ -32,10 +32,10 @@ error: division by zero in expt 0 -1
 
 # 結果が上限を超える正確なべき乗は、確保の前に断られる。
 (expt 2 (expt 10 12))
-error: heap limit exceeded
+error: 1:1: heap limit exceeded
 
 (expt 2 'a)
-error: wrong type of argument to expt 2 a
+error: 1:1: wrong type of argument to expt 2 a
 
 # exact-integer-sqrt は根と余りを返す(R7RS 6.2.6 の例)。
 (call-with-values (lambda () (exact-integer-sqrt 4)) list)
@@ -61,4 +61,4 @@ error: wrong type of argument to %exact-integer-sqrt -1
 (1/3 0 -1/3)
 
 (rationalize 'a 1)
-error: wrong type of argument to rationalize a 1
+error: 1:1: wrong type of argument to rationalize a 1

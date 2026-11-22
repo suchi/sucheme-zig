@@ -53,7 +53,7 @@ define
 ```
 
 ```output
-error: not a procedure
+error: 2:1: not a procedure
 ```
 
 ## 大文字小文字の畳み込み
@@ -137,7 +137,7 @@ foobar
 ```
 
 ```output
-error: wrong type of argument to error my-proc "msg"
+error: 1:1: wrong type of argument to error my-proc "msg"
 ```
 
 ## 埋め込みのライブラリの名前

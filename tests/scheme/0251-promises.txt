@@ -103,35 +103,35 @@ ready
 
 # 引数の個数。
 (make-promise)
-error: wrong number of arguments to make-promise
+error: 1:1: wrong number of arguments to make-promise
 
 (make-promise 1 2)
-error: wrong number of arguments to make-promise 1 2
+error: 1:1: wrong number of arguments to make-promise 1 2
 
 (promise?)
-error: wrong number of arguments to promise?
+error: 1:1: wrong number of arguments to promise?
 
 (promise? 1 2)
-error: wrong number of arguments to promise? 1 2
+error: 1:1: wrong number of arguments to promise? 1 2
 
 (force)
-error: wrong number of arguments to force
+error: 1:1: wrong number of arguments to force
 
 (force 1 2)
-error: wrong number of arguments to force 1 2
+error: 1:1: wrong number of arguments to force 1 2
 
 (%make-promise #t)
-error: wrong number of arguments to %make-promise #t
+error: 1:1: wrong number of arguments to %make-promise #t
 
 (%make-promise #t 1 2)
-error: wrong number of arguments to %make-promise #t 1 2
+error: 1:1: wrong number of arguments to %make-promise #t 1 2
 
 # `%make-promise` の型。印は真偽値で、強制していない約束の手続きは手続きである。
 (%make-promise 1 2)
-error: wrong type of argument to %make-promise 1 2
+error: 1:1: wrong type of argument to %make-promise 1 2
 
 (%make-promise #f 5)
-error: wrong type of argument to %make-promise #f 5
+error: 1:1: wrong type of argument to %make-promise #f 5
 
 (%make-promise #f (list 1))
-error: wrong type of argument to %make-promise #f (1)
+error: 1:1: wrong type of argument to %make-promise #f (1)

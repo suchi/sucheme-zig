@@ -112,69 +112,69 @@
 "c"
 
 (vector->string (vector #\a 1 #\c))
-error: wrong type of argument to vector->string #(#\a 1 #\c)
+error: 1:1: wrong type of argument to vector->string #(#\a 1 #\c)
 
 (vector->string (vector #\a 1 #\c) 1 2)
-error: wrong type of argument to vector->string #(#\a 1 #\c) 1 2
+error: 1:1: wrong type of argument to vector->string #(#\a 1 #\c) 1 2
 
 # 範囲の誤りと型の誤り。型の誤りが先に報告される。
 (string->list "abc" 4)
-error: argument out of range in string->list "abc" 4
+error: 1:1: argument out of range in string->list "abc" 4
 
 (string->list "abc" 2 1)
-error: argument out of range in string->list "abc" 2 1
+error: 1:1: argument out of range in string->list "abc" 2 1
 
 (string->list "abc" 0 4)
-error: argument out of range in string->list "abc" 0 4
+error: 1:1: argument out of range in string->list "abc" 0 4
 
 (string->list "abc" -1)
-error: argument out of range in string->list "abc" -1
+error: 1:1: argument out of range in string->list "abc" -1
 
 (string->list "abc" #\a)
-error: wrong type of argument to string->list "abc" #\a
+error: 1:1: wrong type of argument to string->list "abc" #\a
 
 (string->list 'abc)
-error: wrong type of argument to string->list abc
+error: 1:1: wrong type of argument to string->list abc
 
 (string->list '(#\a))
-error: wrong type of argument to string->list (#\a)
+error: 1:1: wrong type of argument to string->list (#\a)
 
 (string->vector "abc" 4)
-error: argument out of range in string->vector "abc" 4
+error: 1:1: argument out of range in string->vector "abc" 4
 
 (string->vector "abc" 100 #\a)
-error: wrong type of argument to string->vector "abc" 100 #\a
+error: 1:1: wrong type of argument to string->vector "abc" 100 #\a
 
 (string->vector '(#\a))
-error: wrong type of argument to string->vector (#\a)
+error: 1:1: wrong type of argument to string->vector (#\a)
 
 (vector->string #(#\a #\b) 3)
-error: argument out of range in vector->string #(#\a #\b) 3
+error: 1:1: argument out of range in vector->string #(#\a #\b) 3
 
 (vector->string #(#\a #\b) 1 0)
-error: argument out of range in vector->string #(#\a #\b) 1 0
+error: 1:1: argument out of range in vector->string #(#\a #\b) 1 0
 
 (vector->string "ab")
-error: wrong type of argument to vector->string "ab"
+error: 1:1: wrong type of argument to vector->string "ab"
 
 (vector->string #(#\a) 'x)
-error: wrong type of argument to vector->string #(#\a) x
+error: 1:1: wrong type of argument to vector->string #(#\a) x
 
 # `list->string` は、リストでないものと、文字でない要素を、型の誤りとする。
 (list->string '(#\a 1))
-error: wrong type of argument to list->string (#\a 1)
+error: 1:1: wrong type of argument to list->string (#\a 1)
 
 (list->string '(1 #\a))
-error: wrong type of argument to list->string (1 #\a)
+error: 1:1: wrong type of argument to list->string (1 #\a)
 
 (list->string "abc")
-error: wrong type of argument to list->string "abc"
+error: 1:1: wrong type of argument to list->string "abc"
 
 (list->string '(#\a . #\b))
-error: wrong type of argument to list->string (#\a . #\b)
+error: 1:1: wrong type of argument to list->string (#\a . #\b)
 
 (list->string #\a)
-error: wrong type of argument to list->string #\a
+error: 1:1: wrong type of argument to list->string #\a
 
 # 輪になったリストは、止まって、型の誤りになる。
 (define l (list #\a #\b)) (set-cdr! (cdr l) l) (call/cc (lambda (k) (with-exception-handler (lambda (e) (k 'refused)) (lambda () (list->string l)))))
