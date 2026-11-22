@@ -819,6 +819,10 @@ pub const PrimitiveError = error{
     /// 機械は、`read-error?` が真になる条件に写す(R7RS 6.11)。読めない理由の文言は、
     /// プリミティブが `Services.reason` に置く。
     Unreadable,
+    /// The console's input has nothing more to read yet, and the host may still give some.
+    /// 条件にならない。機械は、呼び出しを保存して制御を戻し、入力が届いたら、同じ呼び出しを
+    /// やり直す(`Machine.apply`)。そのため、返すプリミティブは、返す前に何も消費しない。
+    WouldWait,
     /// What the host gave is not valid UTF-8, so it cannot be a string (R7RS 6.14
     /// `get-environment-variable`).
     InvalidUtf8,

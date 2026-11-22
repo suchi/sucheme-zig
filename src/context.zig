@@ -28,7 +28,9 @@ const Value = value_mod.Value;
 /// `Exited` は、プログラムが `exit` か `emergency-exit` を呼んだことを表す(R7RS 6.14)。
 /// 終了コードは `Context.exit_code` にある。`exit` は、途中の `dynamic-wind` の `after` を
 /// すべて呼んでから返す(src/machine.zig)。
-pub const Error = error{ OutOfMemory, Raised, ReserveExhausted, StepLimit, WriteFailed, Exited };
+/// `NeedsInput` は、機械の内側の経路で、読み取りが入力待ちになったことを `Machine.step` まで
+/// 運ぶ。`step` が `Outcome.needs_input` に変えるので、機械の外には出ない。
+pub const Error = error{ OutOfMemory, Raised, ReserveExhausted, StepLimit, WriteFailed, Exited, NeedsInput };
 
 /// What the error is called when the heap cannot hold more.
 /// 1か所にまとめてあるので、どの経路で到達してもメッセージは同じになる。

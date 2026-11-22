@@ -381,14 +381,20 @@ test("the standard libraries of slice 3k can be imported in wasm", () => {
 });
 
 // スライス 5i: コンソールのポートは、評価の結果と同じ出力バッファに、書いた順に書く。標準エラーも
-// 同じバッファに書き、標準入力は最初から終わりにある(計画書 0019 の 5i の既知の制限)。
+// 同じバッファに書く。標準入力は、ホストが渡す(スライス 8f-1)。渡されるまで、読み取りは待つ。
 test("the console ports write to the output buffer in order with the results", () => {
   const h = instantiate().init();
   assert.deepEqual(
     h.run("(import (scheme write)) (display \"hi\") (newline) (write-string \"x\" (current-error-port)) 1"),
     [OK, "hi\nx1\n"],
   );
-  assert.deepEqual(h.run("(eof-object? (read-char))"), [OK, "#t\n"]);
+  // 入力は、ホストが渡すまで空で、読み取りは待つ。終端を渡すと、終端のオブジェクトが返る。
+  assert.equal(h.begin("(eof-object? (read-char))"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(h.x.sucheme_provide_eof(), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  assert.equal(h.output(), "#t\n");
+  h.x.sucheme_output_clear();
   // 出力バッファの書き手は、書き出しで失敗しない(固定の書き手の flush は何もしない)。
   assert.deepEqual(h.run("(write-string \"y\") (flush-output-port) 2"), [OK, "y2\n"]);
   // 出力が残っていても、エラーの行はそのあとに書かれる。
@@ -1303,6 +1309,185 @@ test("the step limit of a non-terminating input is not an issue: stop by abort l
     assert.equal(h.x.sucheme_abort(), OK);
   }
   assert.ok(h.x.memory.buffer.byteLength - before < 4 * 1024 * 1024, "the memory did not grow without bound");
+});
+
+// 入力待ち(スライス 8f-1、docs/design/platform-and-web.md の再開可能性)。
+const WAITING = 2;
+/** The libraries the programs of these tests import: `write` and `read` are not in the standard environment of the top level. */
+const W = "(import (scheme write) (scheme read)) ";
+
+/** Gives the waiting read `text` through alloc, provide_input and free, and returns the status. */
+function provide(h, text) {
+  const bytes = new TextEncoder().encode(text);
+  const ptr = h.x.sucheme_alloc(bytes.length);
+  assert.notEqual(ptr, 0);
+  h.bytes(ptr, bytes.length).set(bytes);
+  const status = h.x.sucheme_provide_input(ptr, bytes.length);
+  h.x.sucheme_free(ptr, bytes.length);
+  return status;
+}
+
+test("a read that finds no input stops with 2, takes the input that arrives, and the same read goes on", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin(W + '(write-string "name? ") (write (read-line))'), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  // 待つ前までの出力は取れる。
+  assert.equal(h.output(), "name? ");
+  h.x.sucheme_output_clear();
+  assert.equal(provide(h, "Ada\n"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  assert.equal(h.output(), '"Ada"');
+});
+
+test("provide_input and provide_eof return wrong_order unless a read waits, and change nothing", () => {
+  const h = instantiate().init();
+  assert.equal(provide(h, "x"), WRONG_ORDER);
+  assert.match(h.output(), /no read is waiting/);
+  h.x.sucheme_output_clear();
+  assert.equal(h.x.sucheme_provide_eof(), WRONG_ORDER);
+  h.x.sucheme_output_clear();
+  // 評価が続いていても、待っていなければ同じである。
+  assert.equal(h.begin("(define (f n) (if (= n 0) 'ok (f (- n 1)))) (f 100000) (read-char)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(10), CONTINUE);
+  assert.equal(provide(h, "x"), WRONG_ORDER);
+  h.x.sucheme_output_clear();
+  // 待つところまで進めれば、受け取る。渡した入力は、ここで捨てられていない。
+  let status;
+  do status = h.x.sucheme_step(1000);
+  while (status === CONTINUE);
+  assert.equal(status, WAITING);
+  assert.equal(provide(h, "xy"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  // 評価が終わると、また受け取らない。
+  assert.equal(provide(h, "z"), WRONG_ORDER);
+});
+
+test("provide_input is refused once the read that waited has been resumed", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin(W + "(write (read-char)) (define (f n) (if (= n 0) 'ok (f (- n 1)))) (f 100000)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "ab"), CONTINUE);
+  // 予算の小さい step は、読み取りをやり直しても、評価を終えない。もう待っていない。
+  assert.equal(h.x.sucheme_step(3), CONTINUE);
+  assert.equal(provide(h, "cd"), WRONG_ORDER);
+  assert.equal(h.x.sucheme_provide_eof(), WRONG_ORDER);
+  h.x.sucheme_output_clear();
+  let status;
+  do status = h.x.sucheme_step(100000);
+  while (status === CONTINUE);
+  assert.equal(status, OK);
+});
+
+test("before init, provide_input and provide_eof return not_initialized and say why", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_provide_input(0, 0), NOT_INITIALIZED);
+  assert.match(h.output(), /not initialized/);
+  h.x.sucheme_output_clear();
+  assert.equal(h.x.sucheme_provide_eof(), NOT_INITIALIZED);
+  assert.match(h.output(), /not initialized/);
+});
+
+test("provide_input rejects what is not UTF-8 or not a region, and the read goes on waiting", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin(W + "(write (read-char))"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  const ptr = h.x.sucheme_alloc(2);
+  h.bytes(ptr, 2).set([0xc3, 0x28]);
+  assert.equal(h.x.sucheme_provide_input(ptr, 2), INVALID_UTF8);
+  assert.match(h.output(), /invalid UTF-8 at byte 0/);
+  h.x.sucheme_output_clear();
+  assert.equal(h.x.sucheme_provide_input(ptr, 4096 * 64), BAD_REGION);
+  h.x.sucheme_output_clear();
+  h.x.sucheme_free(ptr, 2);
+  // 状態は変わっていない。待ちのままで、正しい入力を受け取れる。
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "é"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  assert.equal(h.output(), "#\\é");
+});
+
+test("input longer than one read is kept for the next, and an empty input gives nothing", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin(W + "(write (list (read-char) (read-char) (read-char)))"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, ""), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "ab"), CONTINUE);
+  // 2文字では足りない。3つ目の読み取りで、また待つ。1つ目と2つ目は、やり直されていない。
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "c"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  assert.equal(h.output(), "(#\\a #\\b #\\c)");
+});
+
+test("provide_eof ends the input for this and every later read, until reset", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(let loop ((n 0)) (let ((c (read-char))) (if (eof-object? c) n (loop (+ n 1)))))"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "xyz"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(h.x.sucheme_provide_eof(), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  assert.equal(h.output(), "3\n");
+  h.x.sucheme_output_clear();
+  // 終端のあとは、待たずに終端を返す。
+  assert.equal(h.run("(import (scheme read))")[0], OK);
+  assert.deepEqual(h.run("(list (eof-object? (read-char)) (eof-object? (read-line)) (eof-object? (read)))"), [OK, "(#t #t #t)\n"]);
+  // reset は終端を忘れる。
+  assert.equal(h.x.sucheme_reset(), OK);
+  assert.equal(h.begin("(read-char)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+});
+
+test("abort drops a waiting evaluation and keeps the definitions, and so does an evaluation that gives up on a refused input", () => {
+  const h = instantiate().init();
+  assert.equal(h.begin("(define kept 5) (read-line)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(h.x.sucheme_abort(), OK);
+  assert.deepEqual(h.run("kept"), [OK, "5\n"]);
+  // 待っている間に step を呼んでも、入力が無ければ、また 2 である。
+  assert.equal(h.begin("(read-char)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(h.x.sucheme_abort(), OK);
+  assert.equal(h.x.sucheme_abort(), WRONG_ORDER);
+});
+
+test("a long input is counted against the heap limit: provide_input refuses it with -1 and drops the evaluation", () => {
+  const h = instantiate();
+  assert.equal(h.x.sucheme_init(small_limit), OK);
+  assert.equal(h.begin("(define kept 1) (read-string 10)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "x".repeat(small_limit * 2)), SCHEME_ERROR);
+  assert.match(h.output(), /heap limit exceeded/);
+  h.x.sucheme_output_clear();
+  // 評価は捨てられ、定義は残り、次の評価は走る。
+  assert.deepEqual(h.run("kept"), [OK, "1\n"]);
+  // 入力が収まる範囲なら、受け取る。
+  assert.equal(h.begin("(read-string 3)"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), WAITING);
+  assert.equal(provide(h, "abc"), CONTINUE);
+  assert.equal(h.x.sucheme_step(1000), OK);
+  assert.equal(h.output(), '"abc"\n');
+});
+
+test("Sucheme.provideInput and provideEof drive a read through the wrapper, and runEvaluation reports the wait", async () => {
+  const s = await loadSucheme();
+  assert.equal(s.begin(W + "(write (read-line))").status, Status.CONTINUE);
+  assert.equal(s.step(1000).status, Status.WAITING_INPUT);
+  assert.equal(s.provideInput("hi there\n").status, Status.CONTINUE);
+  assert.deepEqual(s.step(1000), { status: OK, output: '"hi there"' });
+  assert.equal(s.provideInput("late").status, WRONG_ORDER);
+  assert.equal(s.begin(W + "(write (read-char))").status, Status.CONTINUE);
+  assert.equal(s.step(1000).status, Status.WAITING_INPUT);
+  assert.equal(s.provideEof().status, Status.CONTINUE);
+  assert.deepEqual(s.step(1000), { status: OK, output: "#<eof>" });
+  // runEvaluation は、待ちを終わりとして返す(画面での入力の受け取りは 8f-2)。
+  // 終端は reset まで残るので、新しいインスタンスで試す。
+  const t = await loadSucheme();
+  const result = await runEvaluation(t, "(read-char)", { shouldStop: () => false, yieldControl: async () => {} });
+  assert.equal(result.status, Status.WAITING_INPUT);
+  assert.equal(t.abort(), OK);
 });
 
 // 実行の進め方(web/runner.mjs)。Sucheme(web/sucheme.js)を通して、本物の WASM で試す。

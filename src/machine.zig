@@ -61,6 +61,12 @@ pub const Machine = struct {
     /// 純粋プリミティブを呼ぶときに下ろす。立ててから下ろすまでに境目は無いので、送出で
     /// フレームが捨てられても、印は残らない。
     retrying: bool = false,
+    /// Whether the run may give control back to wait for input (`Outcome.needs_input`).
+    /// Why: 入力待ちで制御を戻せるのは、ホストが `step` を呼び直せる最上位の実行だけである。
+    /// 入れ子の実行(ライブラリの本体、`environment` の輸入集合。ADR-0053 の決定6)は、
+    /// 呼び出し元の1歩の中で完了まで走るので、待てない。待つ読み取りは、そこでは Scheme の
+    /// 誤りにする(`waitForInput`)。
+    suspendable: bool = false,
     /// The registers of the run that `begin` started and that has not ended.
     /// 停止している間も持つ。`step` が制御を戻すたびに、そのときのレジスタを
     /// `Context.parked` に写し、GC のルートにする。
@@ -77,8 +83,9 @@ pub const Machine = struct {
         /// The request in `Context.interrupt` was seen at a step boundary; the request
         /// is taken down, and `step` goes on from here.
         interrupted,
-        /// A read primitive has no input yet (stage 8, slice 8f-1; `step` does not
-        /// return it yet). The call is kept, and `step` makes it again.
+        /// A read primitive has no input yet, and the host may give some. The call is kept
+        /// on the continuation, and `step` makes it again; the host gives input first
+        /// (`Interpreter.provideInput`, ADR-0055). Only a run that is `suspendable` gives it.
         needs_input,
     };
 
@@ -171,22 +178,40 @@ pub const Machine = struct {
             if (self.steps(&self.regs, budget, watch)) |outcome| {
                 switch (outcome) {
                     .done => self.active = false,
-                    .more, .interrupted, .needs_input => ctx.parked = .{
-                        .control = self.regs.control,
-                        .env = self.regs.env,
-                        .kont = self.regs.kont,
-                        .value = self.regs.value,
-                        .dyn = self.regs.dyn,
-                    },
+                    .more, .interrupted, .needs_input => self.park(),
                 }
                 return outcome;
-            } else |e| if (e != error.Raised) return e;
+            } else |e| {
+                if (e == error.NeedsInput) return self.parkForInput();
+                if (e != error.Raised) return e;
+            }
             // Why: 送出の地点は、ステップの中のどこでも `ctx.raise` を返せばよい。値をハンドラ
             // に渡すのは、レジスタを書き戻したここ1か所である。機械が検出する失敗(型の誤り、
             // 未束縛の変数、上限超過など)も、こうして機械の中の `raise` になる(計画 0014 の
             // 合意を求める点の2)。
-            try self.handOver(&self.regs);
+            self.handOver(&self.regs) catch |e| return if (e == error.NeedsInput) self.parkForInput() else e;
         }
+    }
+
+    /// Puts the registers in `Context.parked`, where a collection finds them.
+    fn park(self: *Machine) void {
+        self.ctx.parked = .{
+            .control = self.regs.control,
+            .env = self.regs.env,
+            .kont = self.regs.kont,
+            .value = self.regs.value,
+            .dyn = self.regs.dyn,
+        };
+    }
+
+    /// `park`, and the outcome of a run that stopped for input: the call that waited is on
+    /// the continuation, and the value register holds nothing that the call needs.
+    /// Why: 待った呼び出しは、継続の先頭の `spread` のフレームが持つ(`waitForInput`)。再開は
+    /// そのフレームを外して、呼び直す。値のレジスタに残っているものは、フレームが使わない。
+    fn parkForInput(self: *Machine) Outcome {
+        self.regs.value = .unspecified_value;
+        self.park();
+        return .needs_input;
     }
 
     /// Hands what was raised, which is in `ctx.raised`, to the current
@@ -745,6 +770,7 @@ pub const Machine = struct {
                             // フレームに載せ、次の境目で回収させてから、そのフレームが呼び直す。残りの
                             // オペランドの無い `spread` は、境目のすぐ後に、そのまま適用する。
                             error.CollectAndRetry => return self.retryAfterCollection(kont, args, count),
+                            error.WouldWait => return self.waitForInput(kont, prim, args, count),
                             else => |other| return other,
                         },
                     };
@@ -917,8 +943,8 @@ pub const Machine = struct {
     /// The value of the pure primitive `prim`, whose body is `call`, for the
     /// `count` operands in `args`; `error.CollectAndRetry` when the system had no
     /// file descriptor left and the call is not already the one made again
-    /// (`retried`).
-    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize, dyn: ?*const DynPoint, retried: bool) (Error || error{CollectAndRetry})!Value {
+    /// (`retried`); `error.WouldWait` when the primitive has to wait for input.
+    fn callPure(self: *Machine, prim: *const value_mod.Primitive, call: value_mod.Primitive.Fn, args: *const Args, count: usize, dyn: ?*const DynPoint, retried: bool) (Error || error{ CollectAndRetry, WouldWait })!Value {
         const ctx = self.ctx;
         var small: [small_operands]Value = undefined;
         const operands = if (count <= small.len) small[0..count] else try self.scratch.alloc(Value, count);
@@ -932,6 +958,7 @@ pub const Machine = struct {
         const services: value_mod.Services = .{ .heap = &ctx.heap, .scratch = self.scratch, .console = &ctx.console, .dyn = dyn, .reason = &reason };
         return call(&services, operands) catch |e| {
             if (e == error.FilesExhausted and !retried) return error.CollectAndRetry;
+            if (e == error.WouldWait) return error.WouldWait;
             if (e == error.Unreadable) return unreadable(ctx, prim, reason, args, count);
             return primitiveFailure(ctx, prim, e, args, count);
         };
@@ -1318,6 +1345,22 @@ pub const Machine = struct {
         return .{ .value = .unspecified_value };
     }
 
+    /// Puts the call of `args`, which has to wait for input, on a frame at the top of the
+    /// continuation, and gives control back (`error.NeedsInput`): the frame makes the same
+    /// call again, when `step` goes on.
+    /// Why: 待つ読み取りは何も消費していない(`PrimitiveError.WouldWait`)ので、同じ呼び出しを
+    /// やり直せば、続きの結果になる。継続として保存せず、既存の呼び直しの形(`retryAfterCollection`)
+    /// と同じ `spread` のフレームに載せる。引数の鎖はフレームが指すので、停止の間も GC のルートである。
+    /// 入れ子の実行は待てないので、Scheme の誤りにする(`Machine.suspendable`)。
+    fn waitForInput(self: *Machine, kont: *?*const Kont, prim: *const value_mod.Primitive, args: *const Args, count: usize) Error!Applied {
+        if (!self.suspendable) {
+            const irritants = try operandList(self.ctx, args, count);
+            return raiseWith(self.ctx, irritants, "cannot wait for input in {s} here", .{prim.name});
+        }
+        kont.* = try self.push(kont.*, null, .{ .spread = .{ .chain = args, .count = count, .rest = .empty_list_value, .index = 0 } });
+        return error.NeedsInput;
+    }
+
     /// Whether the multiple-values object for `count` operands, made now, would
     /// pass the limit and the call has not yet been made again after a collection.
     /// 呼び直した後は false を返し、収まらなければ `valuesOf` が上限のエラーにする。
@@ -1427,6 +1470,8 @@ pub const Machine = struct {
                 return error.Raised;
             },
             // 理由の文言を持つ `callPure` が、先に `unreadable` に写す。
+            // `callPure` が、先に待ちに写す。
+            error.WouldWait => unreachable,
             error.Unreadable, error.HeapLimit, error.OutOfMemory, error.WriteFailed => unreachable,
         };
     }
