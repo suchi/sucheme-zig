@@ -1153,6 +1153,7 @@ test("isEofKey accepts Ctrl+D only, and not while composing", () => {
   assert.equal(isEofKey({ key: "d", ctrlKey: true, metaKey: true }), false);
   assert.equal(isEofKey({ key: "c", ctrlKey: true }), false);
   assert.equal(isEofKey({ key: "Enter", ctrlKey: true }), false);
+  assert.equal(isEofKey({ ctrlKey: true }), false);
 });
 
 // 歩数ごとに制御を戻す評価(sucheme_step、sucheme_abort。計画書 0030 の 8e-2)。
