@@ -8,12 +8,14 @@
 // テストは新しいインスタンスで行う。テストごとに新しいインスタンスを作るので、
 // テスト同士が状態を共有しない。
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { samples } from "../../web/samples.mjs";
 import { encodeFragment, decodeFragment, MAX_FRAGMENT_LENGTH } from "../../web/share.mjs";
+import { describeResult, splitError } from "../../web/errors.mjs";
+import { Status } from "../../web/sucheme.js";
 
 const wasmPath = process.argv[2];
 if (wasmPath === undefined) {
@@ -826,6 +828,11 @@ const sampleOutputs = {
   lists: "(9 1 4)\n(3 1 2 4 5)\n(2 1 3)\n(b 2)\n(1 2)\n",
   record: "3\n10\n#t\n#f\n",
   escape: '42\n4\n"boom"\n',
+  "numeric-tower": "265252859812191058636308480000000\n1267650600228229401496703205376\n1/3\n1/2\n0.3333333333333333\n4\n1.4142135623730951\n",
+  strings: '"Scheme λ"\n"HELLO"\n5\n"cba"\n"world"\n#t\n1000.0\nfoo\n',
+  "string-ports": '"sym and \\"text\\""\n(a b)\n42\n"s"\n#t\n',
+  "dynamic-wind": "escaped\n(in body out)\n",
+  library: "2\n1\n",
 };
 
 test("every sample of the page evaluates to its expected output, and the table matches the samples", () => {
@@ -837,6 +844,65 @@ test("every sample of the page evaluates to its expected output, and the table m
     // 「リセット」のあとと同じく、サンプルは何も定義していない状態から走る。
     const h = instantiate().init();
     assert.deepEqual(h.run(sample.source), [OK, sampleOutputs[sample.id]], sample.id);
+  }
+});
+
+// プログラム集(docs/manual/programs/)を、同じ WASM で走らせ、`.out` と比べる(計画書 0030 の決定6)。
+// 対象は、ファイル、コマンドライン、標準入力を使わないもの、つまり `.args` `.in` `.files/` の
+// どれも持たないもので、下の除外の一覧に無いものである。WASM の入口は、`.scm` の全体を1回の評価で
+// 走らせる。`.out` の最後の行が `[exit N]` なら、状態コードは EXITED で、終了コードは N である。
+const programsDir = new URL("../../docs/manual/programs/", import.meta.url);
+// 除外の一覧。WASM では出力が `.out` と一致しないプログラムと、その理由である。
+// 理由の2つの類型: 「値の出力」は、WASM の入口が、トップレベルの式の値を(未指定を除いて)
+// 出力に書くが、ファイルの実行は書かないこと。「ファイル」は、WASM にファイルの表が無いこと。
+const programExclusions = {
+  "bank-account": "値の出力: トップレベルの式の値が出力に加わる",
+  "control-macros": "値の出力: トップレベルの式の値が出力に加わる",
+  "early-exit": "値の出力: トップレベルの式の値が出力に加わる",
+  memoize: "値の出力: トップレベルの式の値が出力に加わる",
+  "file-roundtrip": "ファイル: ファイルの表が無い(作業ディレクトリへの書き込みが失敗する)",
+};
+
+function programNames() {
+  const entries = readdirSync(programsDir);
+  const names = entries.filter((f) => f.endsWith(".scm")).map((f) => f.slice(0, -".scm".length)).sort();
+  const aux = (name) => [".args", ".in", ".files"].some((ext) => entries.includes(name + ext));
+  return names.filter((name) => !aux(name));
+}
+
+test("the programs of the manual that use no files, arguments or input give their .out in wasm", () => {
+  const names = programNames();
+  // 対象(`.args` `.in` `.files/` を持たない本)の下限と、除外の本数の上限。実際に走らせる本が、
+  // 検査の対象から静かに減らないようにする。本が増えても、直さずに済む形にしてある。
+  const excluded = Object.keys(programExclusions).length;
+  assert.ok(names.length >= 40, `found ${names.length} programs that qualify`);
+  assert.ok(names.length - excluded >= 35, `only ${names.length - excluded} programs are run`);
+  assert.ok(excluded * 4 <= names.length, `${excluded} exclusions out of ${names.length}`);
+  for (const name of Object.keys(programExclusions)) {
+    assert.ok(names.includes(name), `the exclusion ${name} names a program that does not exist or does not qualify`);
+  }
+  for (const name of names) {
+    if (name in programExclusions) continue;
+    let expected = readFileSync(new URL(`${name}.out`, programsDir), "utf8");
+    const exit = /\[exit (\d+)\]\n?$/.exec(expected);
+    if (exit) expected = expected.slice(0, exit.index);
+    const h = instantiate().init();
+    const [status, text] = h.run(readFileSync(new URL(`${name}.scm`, programsDir), "utf8"));
+    // 比較は厳密である(末尾の改行を含む)。`trimEnd()` などで緩めない。
+    assert.equal(text, expected, name);
+    assert.equal(status, exit ? EXITED : OK, name);
+    if (exit) assert.equal(h.x.sucheme_exit_code(), Number(exit[1]), name);
+  }
+});
+
+test("each program excluded from the wasm run really differs there (the list holds no stale entry)", () => {
+  for (const name of Object.keys(programExclusions)) {
+    let expected = readFileSync(new URL(`${name}.out`, programsDir), "utf8");
+    const exit = /\[exit (\d+)\]\n?$/.exec(expected);
+    if (exit) expected = expected.slice(0, exit.index);
+    const h = instantiate().init();
+    const [status, text] = h.run(readFileSync(new URL(`${name}.scm`, programsDir), "utf8"));
+    assert.ok(text !== expected || status !== (exit ? EXITED : OK), `${name} now matches; remove it from programExclusions`);
   }
 });
 
@@ -864,6 +930,108 @@ test("a fragment that is not a share link is read as null, and so is one that is
   assert.equal(decodeFragment(encodeFragment(longest)), longest);
   assert.equal(encodeFragment(longest + "xxxx"), null);
   assert.equal(decodeFragment("#code=" + "A".repeat(MAX_FRAGMENT_LENGTH)), null);
+});
+
+// エラーの表示(web/errors.mjs)。出力とエラーの説明を分け、エラーの前の出力を残す。
+test("splitError separates the error line from the output before it, which has no newline", () => {
+  assert.deepEqual(splitError("abcerror: boom\n"), { output: "abc", message: "boom" });
+  assert.deepEqual(splitError("abc\nerror: boom\n"), { output: "abc\n", message: "boom" });
+  assert.deepEqual(splitError("error: boom\n"), { output: "", message: "boom" });
+  // 出力が `error: ` を含んでいても、境目は最後の `error: ` である。
+  assert.deepEqual(splitError("error: shown\nerror: boom\n"), { output: "error: shown\n", message: "boom" });
+  // 取るのは末尾の改行1つだけで、説明の先頭の空白と、ほかの末尾の改行は残る。
+  assert.deepEqual(splitError("error: a\n\n\n"), { output: "", message: "a\n\n" });
+  assert.deepEqual(splitError("error:   spaced\n"), { output: "", message: "  spaced" });
+  assert.deepEqual(splitError("no error line"), { output: "no error line", message: null });
+  // 説明が改行を含んでも、末尾の1つの改行だけを取る。
+  assert.deepEqual(splitError("error: a\nb 1\n"), { output: "", message: "a\nb 1" });
+});
+
+// 限界の記録: 説明が `error: ` を含むと、境目を誤り、説明の前半が出力に回る。
+// 将来、src/wasm.zig がエラーの行の位置を渡すようになったら、このテストを正しい分割に直す。
+test("known limit: a message that contains the error prefix is split inside the message", () => {
+  const h = instantiate().init();
+  const [status, text] = h.run('(error "boom" "error: x")');
+  assert.equal(status, SCHEME_ERROR);
+  assert.equal(text, 'error: boom "error: x"\n');
+  assert.deepEqual(splitError(text), { output: 'error: boom "', message: 'x"' });
+});
+
+// 状態コードごとの見出しと次の操作を、文言ごと固定する。
+test("describeResult gives each status code its own title and hint", () => {
+  const expected = [
+    [Status.SCHEME_ERROR, "Error", null],
+    [
+      Status.UNRECOVERABLE,
+      "Unrecoverable error",
+      "The interpreter cannot go on. Press Reset to continue; definitions made so far are lost.",
+    ],
+    [Status.INVALID_UTF8, "Invalid input", "Nothing was evaluated. The input must be valid UTF-8."],
+    [
+      Status.WRONG_ORDER,
+      "The interpreter has stopped",
+      "Press Reset to start again; definitions made so far are lost.",
+    ],
+    [Status.NOT_INITIALIZED, "Not initialized", "Reload the page."],
+    [Status.OUT_OF_MEMORY, "Out of memory", "Press Reset to start again; definitions made so far are lost."],
+    [Status.BAD_REGION, "Internal error", "Reload the page."],
+    [Status.CONTINUE, "Unexpected status 1", "Press Reset, or reload the page."],
+    [Status.WAITING_INPUT, "Unexpected status 2", "Press Reset, or reload the page."],
+    [-99, "Unexpected status -99", "Press Reset, or reload the page."],
+  ];
+  for (const [status, title, hint] of expected) {
+    assert.deepEqual(
+      describeResult(status, "out" + "error: why\n"),
+      { output: "out", error: { title, message: "why", hint } },
+      String(status),
+    );
+    // エラーの行が無いときは、出力をそのまま残し、説明は空にする。
+    assert.deepEqual(
+      describeResult(status, "only output"),
+      { output: "only output", error: { title, message: "", hint } },
+      String(status),
+    );
+  }
+});
+
+test("describeResult keeps the output before an error and explains each status code", () => {
+  assert.deepEqual(describeResult(Status.OK, "3\n"), { output: "3\n", error: null });
+  assert.deepEqual(describeResult(Status.OK, ""), { output: "", error: null });
+  assert.deepEqual(describeResult(Status.SCHEME_ERROR, "1\nerror: unbound variable: x\n"), {
+    output: "1\n",
+    error: { title: "Error", message: "unbound variable: x", hint: null },
+  });
+  assert.deepEqual(describeResult(Status.EXITED, "bye", 3).error, {
+    title: "Program exited",
+    message: "exit code 3",
+    hint: "Press Reset to run again.",
+  });
+  assert.equal(describeResult(Status.EXITED, "bye", 3).output, "bye");
+  // 表にある状態コードは、すべて説明を持つ(未知のコードは、コードの値を見出しに出す)。
+  for (const [name, code] of Object.entries(Status)) {
+    if (code === Status.OK) continue;
+    const { error } = describeResult(code, "error: why\n", 0);
+    assert.ok(error !== null && error.title !== "", name);
+    if (code === Status.CONTINUE || code === Status.WAITING_INPUT) {
+      assert.match(error.title, /^Unexpected status/, name);
+    } else {
+      assert.doesNotMatch(error.title, /^Unexpected status/, name);
+    }
+  }
+  assert.equal(describeResult(-99, "").error.title, "Unexpected status -99");
+});
+
+test("a real error after output keeps that output apart from the message", () => {
+  const h = instantiate().init();
+  const [status, text] = h.run('(import (scheme base) (scheme write)) (display "abc") (car 5)');
+  assert.equal(status, SCHEME_ERROR);
+  assert.deepEqual(describeResult(status, text), {
+    output: "abc",
+    error: { title: "Error", message: "wrong type of argument to car 5", hint: null },
+  });
+  const [status2, text2] = h.run("(+ 1");
+  assert.equal(status2, SCHEME_ERROR);
+  assert.deepEqual(describeResult(status2, text2).error.message, "unexpected end of input");
 });
 
 // web/serve.mjs の自己検査(パストラバーサルなど)は、ほかの検証コマンドに結ばれていないので、
