@@ -18,7 +18,6 @@ import { describeResult, splitError } from "../../web/errors.mjs";
 import { Status } from "../../web/sucheme.js";
 import {
   formatElapsed,
-  stoppedMessage,
   restartedMessage,
   describeStopped,
   stopWarning,
@@ -974,10 +973,8 @@ test("formatElapsed shows seconds below a minute, then minutes and hours", () =>
 
 test("the stop messages say that definitions are kept, and that they are lost only when the worker was restarted", () => {
   assert.match(stopWarning.before, /Definitions made so far are kept/);
-  assert.match(stopWarning.kept, /Definitions made so far were kept/);
   assert.match(stopWarning.lost, /did not respond/);
   assert.match(stopWarning.lost, /all definitions were lost/);
-  assert.equal(stoppedMessage(2500), `${stopWarning.kept} (ran for 2.5 s)`);
   assert.equal(restartedMessage(2500), `${stopWarning.lost} (ran for 2.5 s)`);
   assert.ok(stopTimeoutMs >= 1000 && stopTimeoutMs <= 10000);
 });

@@ -26,19 +26,12 @@ export const stopWarning = {
   before: "Stop ends the evaluation. Definitions made so far are kept.",
   // 停止を要求してから、評価が止まるまで。
   waiting: "Stopping…",
-  // 評価を捨てて、定義が残ったとき。
-  kept: "Stopped. Definitions made so far were kept.",
   // Worker が応答せず、作り直したとき。
   lost: "Stopped. The evaluation did not respond, so the interpreter was restarted and all definitions were lost.",
 };
 
 // Worker が停止の要求に応えるのを待つ時間(ミリ秒)。これを過ぎたら、Worker を作り直す。
 export const stopTimeoutMs = 3000;
-
-// 停止の知らせ。経過時間を添える。
-export function stoppedMessage(elapsedMs) {
-  return `${stopWarning.kept} (ran for ${formatElapsed(elapsedMs)})`;
-}
 
 // Worker を作り直したときの知らせ。経過時間を添える。
 export function restartedMessage(elapsedMs) {
