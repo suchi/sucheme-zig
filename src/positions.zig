@@ -215,13 +215,13 @@ test "names gives one number to each name, from 0, and keeps the names" {
 test "names refuses a number for the 65537th name" {
     var names: Names = .{};
     defer names.deinit(std.testing.allocator);
-    var buf: [8]u8 = undefined;
-    var i: u32 = 0;
-    while (i <= std.math.maxInt(u16)) : (i += 1) {
-        const name = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
-        try std.testing.expectEqual(@as(?u16, @intCast(i)), try names.intern(std.testing.allocator, name));
-    }
+    // Why: `intern` は名前を線形に探すので、65536 回の `intern` は 2 乗の時間になり、CI の
+    // テストの時間切れ(60 秒)に掛かる。表を直接満たして、満杯の振る舞いだけを見る。
+    try names.items.ensureTotalCapacity(std.testing.allocator, std.math.maxInt(u16) + 1);
+    names.items.appendAssumeCapacity(try std.testing.allocator.dupe(u8, "first"));
+    while (names.items.items.len <= std.math.maxInt(u16)) names.items.appendAssumeCapacity(try std.testing.allocator.dupe(u8, "x"));
     try std.testing.expectEqual(@as(?u16, null), try names.intern(std.testing.allocator, "one more"));
     // 既に持つ名前は、満杯でも引ける。
-    try std.testing.expectEqual(@as(?u16, 7), try names.intern(std.testing.allocator, "7"));
+    try std.testing.expectEqual(@as(?u16, 0), try names.intern(std.testing.allocator, "first"));
+    try std.testing.expectEqual(std.math.maxInt(u16) + 1, names.items.items.len);
 }
