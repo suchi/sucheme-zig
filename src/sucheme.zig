@@ -118,6 +118,39 @@ pub const Interpreter = struct {
     /// REPL は、行を読むのと同じ読み手を置く(src/main.zig の `repl`)。プログラムの `read` は、
     /// REPL がまだ読んでいない行から読む。ファイルの実行は、標準入力を置く(suchi/sucheme-zig#230)。
     console_in: ?*std.Io.Reader,
+    /// The evaluation `beginEval` started and `stepEval` has not finished, or null.
+    /// インタプリタと同じく、その場から動かさない(位置の表と機械が、この中を指す)。
+    eval: ?Eval,
+
+    /// What an evaluation keeps between two calls of `stepEval`: the reader, the table of
+    /// positions, the machine of the form being run, and what it put in the context to
+    /// restore at the end.
+    /// Why: `evalPrint` の局所変数だったものである。評価を歩数ごとに区切って再開するために、
+    /// 呼び出しをまたいで持つ(ADR-0053)。
+    const Eval = struct {
+        arena: std.mem.Allocator,
+        out: *std.Io.Writer,
+        reader: reader.Reader,
+        table: positions_mod.Table,
+        recording: ?reader.Sink.Recording,
+        machine: machine.Machine,
+        previous_sink: ?*std.Io.Writer,
+        previous_error_sink: ?*std.Io.Writer,
+        previous_input: ?*std.Io.Reader,
+    };
+
+    /// How `stepEval` gave control back.
+    pub const EvalStatus = enum {
+        /// Every form has been evaluated, and the evaluation is over.
+        done,
+        /// The budget ran out; `stepEval` goes on from here.
+        more,
+        /// The request in `Context.interrupt` was seen; `stepEval` goes on from here, or
+        /// `abortEval` drops the evaluation.
+        interrupted,
+        /// A read has no input yet (slice 8f-1; not returned yet).
+        needs_input,
+    };
 
     const ErrorAt = struct { file: []const u8, location: positions_mod.Location };
 
@@ -197,6 +230,7 @@ pub const Interpreter = struct {
         self.console_out = null;
         self.console_err = null;
         self.console_in = null;
+        self.eval = null;
     }
 
     /// Replaces the top level that imports `(sucheme core)` with one that imports
@@ -215,7 +249,7 @@ pub const Interpreter = struct {
         var scratch: std.heap.ArenaAllocator = .init(self.arena.child_allocator);
         defer scratch.deinit();
         var discard: std.Io.Writer.Discarding = .init(&.{});
-        self.run(scratch.allocator(), "(import (scheme base))", &discard.writer) catch |e| switch (e) {
+        self.evalPrint(scratch.allocator(), "(import (scheme base))", &discard.writer) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             // 上限が小さくて読み込めない、または、埋め込みの標準ライブラリが壊れている。
             // 後者はビルドのテストが見つける。ここでは、作れないインタプリタとして報告する。
@@ -237,14 +271,143 @@ pub const Interpreter = struct {
     /// 取り、呼び出し側が丸ごと解放する。リーダが作るデータと展開器が作るコードは
     /// ヒープにあり、何かが参照している間は生きる。
     pub fn evalPrint(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
+        try self.beginEval(arena, source, out);
+        // 割り込みの要求は見ない(ネイティブの挙動と周回の費用を変えない)。予算は使い切れない。
+        while (try self.runEval(std.math.maxInt(u64), false) != .done) {}
+    }
+
+    /// Starts evaluating every datum in `source`, as `evalPrint` does, and returns
+    /// before the first step; `stepEval` runs it.
+    ///
+    /// `arena` と `source` と `out` は、評価が終わる(`stepEval` が `done` か誤りを返す、または
+    /// `abortEval` を呼ぶ)まで、呼び出し側が保持する。評価は同時に1つだけである。
+    pub fn beginEval(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
+        std.debug.assert(self.eval == null);
+        self.startEval(arena, source, out) catch |e| {
+            self.keepDiagnostic(arena, e);
+            return e;
+        };
+    }
+
+    fn startEval(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
         // 前の行が送出した値は、ここで手放す。この行の GC が回収する。
         self.ctx.clearDiagnostic();
         self.diagnostic_text = "";
         self.error_at = null;
-        self.run(arena, source, out) catch |e| {
-            self.keepDiagnostic(arena, e);
-            return e;
+        // Why: 文字列・文字・シンボル名は妥当な UTF-8 であり(ADR-0008)、プログラムの
+        // バイト列が入ってくるのはここ1か所だけである。検査は標準ライブラリのものを
+        // 使い、不正になりうる形を並べたりしない(docs/design/platform-and-web.md)。
+        if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
+        self.eval = .{
+            .arena = arena,
+            .out = out,
+            .reader = .init(source),
+            // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
+            // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
+            .table = .init(arena),
+            .recording = null,
+            .machine = .init(&self.ctx, arena),
+            // コンソールのポートは、評価の間だけ、この書き手に書く(src/port.zig)。結果の表示と
+            // 同じ書き手なので、書いた順に並ぶ。標準エラーと入力も、評価の間だけ置く。
+            .previous_sink = self.ctx.console.sink,
+            .previous_error_sink = self.ctx.console.error_sink,
+            .previous_input = self.ctx.heap.console_input,
         };
+        const e = &self.eval.?;
+        errdefer self.endEval();
+        self.ctx.console.sink = self.console_out orelse out;
+        self.ctx.console.error_sink = self.console_err;
+        self.ctx.heap.console_input = self.console_in;
+        e.reader.fold_case = self.fold_case;
+        self.ctx.positions = &e.table;
+        if (self.file_name) |file| e.recording = .{ .table = &e.table, .file = try e.table.addFile(file) };
+    }
+
+    /// Advances the evaluation `beginEval` started by at most `budget` machine steps
+    /// (`Machine.step`), and gives control back with how far it got.
+    ///
+    /// 誤りで終わるときは、`evalPrint` と同じく、`diagnostic` が説明する。`done` と誤りで
+    /// 評価は終わる。`more` と `interrupted` のあとは、もう一度呼べば続きから進む。その間の
+    /// GC は、停止した機械のレジスタを辿る(`Context.parked`)。`import` と `define-library` の
+    /// 形式は、予算を数えず、1回で済ませる。
+    pub fn stepEval(self: *Interpreter, budget: u64) Error!EvalStatus {
+        return self.runEval(budget, true);
+    }
+
+    /// Drops the evaluation `beginEval` started, which has not finished.
+    /// 停止中の機械は捨てる。それまでの定義と出力は残る。
+    pub fn abortEval(self: *Interpreter) void {
+        if (self.eval != null) self.endEval();
+    }
+
+    /// `stepEval`, with `watch` whether the request in `Context.interrupt` is looked at.
+    fn runEval(self: *Interpreter, budget: u64, comptime watch: bool) Error!EvalStatus {
+        const e = &self.eval.?;
+        const arena = e.arena;
+        var left = budget;
+        const status = self.advanceEval(e, &left, watch) catch |err| {
+            self.endEval();
+            self.keepDiagnostic(arena, err);
+            return err;
+        };
+        if (status == .done) self.endEval();
+        return status;
+    }
+
+    /// Restores what `beginEval` put in the context, and drops the evaluation.
+    fn endEval(self: *Interpreter) void {
+        const e = &self.eval.?;
+        self.ctx.parked = null;
+        // エラーで止まっても、そこまでに読んだ指令の効果は残す。
+        self.fold_case = e.reader.fold_case;
+        self.ctx.positions = null;
+        self.ctx.console.sink = e.previous_sink;
+        self.ctx.console.error_sink = e.previous_error_sink;
+        self.ctx.heap.console_input = e.previous_input;
+        self.eval = null;
+    }
+
+    fn advanceEval(self: *Interpreter, e: *Eval, left: *u64, comptime watch: bool) Error!EvalStatus {
+        const table = &e.table;
+        while (true) {
+            if (e.machine.active) switch (try e.machine.stepCounting(left, watch)) {
+                .done => |v| {
+                    // 最上位の REPL は、複数値を受け取る(docs/design/runtime.md の複数値の表)。
+                    // 値を1行に1つずつ書き、0個なら何も書かない。
+                    if (v.asMultipleValues()) |multiple| {
+                        for (multiple.items) |item| try self.printResult(e.out, item);
+                    } else try self.printResult(e.out, v);
+                },
+                .more => return .more,
+                .interrupted => return .interrupted,
+                .needs_input => return .needs_input,
+            };
+            // 前の形式の位置は、もう引かない。鍵のペアを、ルートとして持ち続けないためでもある。
+            table.by_pair.clearRetainingCapacity();
+            // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
+            // このためここもセーフポイントである。エラーで終わった行のゴミも、
+            // 次の行を読む前にここで回収される。
+            if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
+            // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
+            const sink: reader.Sink = .{ .heap = &self.ctx.heap, .positions = e.recording };
+            const form = try e.reader.next(e.arena, sink) orelse return .done;
+            // `import` と `define-library` は最上位の形式で、何も表示しない。
+            if (library.topLevelForm(&self.ctx, form)) |kind| {
+                // 表と作業領域は上限に数える(ADR-0040)。断られた確保は `OutOfMemory` に見えるので、
+                // 上限の超過に変える。
+                self.ctx.heap.external_refused = false;
+                const done = switch (kind) {
+                    .import => library.importIntoRepl(&self.ctx, e.arena, form),
+                    .define_library => library.defineLibrary(&self.ctx, e.arena, form),
+                };
+                done catch |err| return self.located(self.ctx.limitFailure(err), table, form);
+                continue;
+            }
+            const node = expand.expand(&self.ctx, e.arena, form) catch |err| return self.located(err, table, form);
+            // 形式ごとに新しい機械で始める。`peak_depth` と呼び直しの印を、形式をまたいで残さない。
+            e.machine = .init(&self.ctx, e.arena);
+            e.machine.begin(node);
+        }
     }
 
     /// The message for the error the last `evalPrint` returned.
@@ -289,67 +452,6 @@ pub const Interpreter = struct {
     pub fn isBound(self: *const Interpreter, identifier: []const u8) bool {
         const id = self.ctx.heap.symbols.lookup(identifier) orelse return false;
         return self.ctx.globals.isBound(id);
-    }
-
-    fn run(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
-        // Why: 文字列・文字・シンボル名は妥当な UTF-8 であり(ADR-0008)、プログラムの
-        // バイト列が入ってくるのはここ1か所だけである。検査は標準ライブラリのものを
-        // 使い、不正になりうる形を並べたりしない(docs/design/platform-and-web.md)。
-        if (!std.unicode.utf8ValidateSlice(source)) return error.InvalidUtf8;
-        // コンソールのポートは、実行の間だけ、この書き手に書く(src/port.zig)。結果の表示と
-        // 同じ書き手なので、書いた順に並ぶ。
-        const previous_sink = self.ctx.console.sink;
-        self.ctx.console.sink = self.console_out orelse out;
-        defer self.ctx.console.sink = previous_sink;
-        // 標準エラーのポートは、`console_err` があればそこに書く(src/prim/port.zig の `ConsoleWrite`)。
-        const previous_error_sink = self.ctx.console.error_sink;
-        self.ctx.console.error_sink = self.console_err;
-        defer self.ctx.console.error_sink = previous_error_sink;
-        // コンソールの入力ポートも、実行の間だけ、この読み手から読む。
-        const previous_input = self.ctx.heap.console_input;
-        self.ctx.heap.console_input = self.console_in;
-        defer self.ctx.heap.console_input = previous_input;
-        var r: reader.Reader = .init(source);
-        r.fold_case = self.fold_case;
-        // エラーで止まっても、そこまでに読んだ指令の効果は残す。
-        defer self.fold_case = r.fold_case;
-        // 位置の表は、1つの形式を読んでから展開し終えるまでの作業表である(docs/design/frontend.md
-        // の位置情報)。入力にファイルの名前が無くても作る。`include` が読むファイルの位置を記録する。
-        var table: positions_mod.Table = .init(arena);
-        self.ctx.positions = &table;
-        defer self.ctx.positions = null;
-        const recording: ?reader.Sink.Recording = if (self.file_name) |file| .{ .table = &table, .file = try table.addFile(file) } else null;
-        // 読んだものはその行より長生きする。`quote` が定義に渡せるからである。
-        const sink: reader.Sink = .{ .heap = &self.ctx.heap, .positions = recording };
-        while (true) {
-            // 前の形式の位置は、もう引かない。鍵のペアを、ルートとして持ち続けないためでもある。
-            table.by_pair.clearRetainingCapacity();
-            // 2つの形の間では、コンテキストが持つもの以外は何も保持していない。
-            // このためここもセーフポイントである。エラーで終わった行のゴミも、
-            // 次の行を読む前にここで回収される。
-            if (self.ctx.heap.shouldCollect()) self.ctx.collectIdle();
-            const form = try r.next(arena, sink) orelse break;
-            // `import` と `define-library` は最上位の形式で、何も表示しない。
-            if (library.topLevelForm(&self.ctx, form)) |kind| {
-                // 表と作業領域は上限に数える(ADR-0040)。断られた確保は `OutOfMemory` に見えるので、
-                // 上限の超過に変える。
-                self.ctx.heap.external_refused = false;
-                const done = switch (kind) {
-                    .import => library.importIntoRepl(&self.ctx, arena, form),
-                    .define_library => library.defineLibrary(&self.ctx, arena, form),
-                };
-                done catch |e| return self.located(self.ctx.limitFailure(e), &table, form);
-                continue;
-            }
-            const node = expand.expand(&self.ctx, arena, form) catch |e| return self.located(e, &table, form);
-            var m: machine.Machine = .init(&self.ctx, arena);
-            const v = try m.run(node);
-            // 最上位の REPL は、複数値を受け取る(docs/design/runtime.md の複数値の表)。
-            // 値を1行に1つずつ書き、0個なら何も書かない。
-            if (v.asMultipleValues()) |multiple| {
-                for (multiple.items) |item| try self.printResult(out, item);
-            } else try self.printResult(out, v);
-        }
     }
 
     /// `e`, the error that processing the top-level form `form` failed with, after
@@ -514,6 +616,147 @@ test "a fold-case directive on one line of the REPL applies to the lines after i
     try interp.evalPrint(arena.allocator(), "#!no-fold-case\n", &w);
     try interp.evalPrint(arena.allocator(), "'Abc\n", &w);
     try std.testing.expectEqualStrings("Abc\nabc\n#t\nAbc\n", w.buffered());
+}
+
+/// What `stepEval` writes for `src`, `budget` steps at a time, and how many times control
+/// came back with `more`. 制御が戻るたびに、停止した機械のレジスタだけをルートにして GC する。
+fn steppedOutput(interp: *Interpreter, arena: std.mem.Allocator, src: []const u8, budget: u64, out: *std.Io.Writer, yields: *usize) !void {
+    try interp.beginEval(arena, src, out);
+    while (true) switch (try interp.stepEval(budget)) {
+        .done => return,
+        .more => {
+            yields.* += 1;
+            interp.ctx.collectIdle();
+        },
+        .interrupted, .needs_input => return error.TestUnexpectedResult,
+    };
+}
+
+const stepped_programs = [_][]const u8{
+    "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 10) (write-string \"hi\") (values 1 2) (values)",
+    "(define k #f) (+ 1 (call/cc (lambda (c) (set! k c) 1))) (define n 0) (if (< n 2) (begin (set! n (+ n 1)) (k n)) 'end)",
+    "(import (scheme base)) (define-library (x) (import (scheme base)) (export f) (begin (define (f) 5))) (import (x)) (f)",
+    "(with-exception-handler (lambda (e) 10) (lambda () (+ 1 (raise-continuable 'oops))))",
+    "(define (loop n) (if (= n 0) 'ok (loop (- n 1)))) (loop 300) (let-values (((a b) (values 1 2))) (+ a b))",
+};
+
+test "evaluating a few steps at a time writes what evalPrint writes, however the budget cuts it, with a collection at every pause" {
+    for (stepped_programs) |src| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        var base: Interpreter = undefined;
+        try base.init(std.testing.allocator);
+        defer base.deinit();
+        var expected_buf: [512]u8 = undefined;
+        var expected: std.Io.Writer = .fixed(&expected_buf);
+        try base.evalPrint(arena.allocator(), src, &expected);
+        for ([_]u64{ 1, 2, 7, 100 }) |budget| {
+            var interp: Interpreter = undefined;
+            try interp.initWithOptions(std.testing.allocator, .{ .stress = true });
+            defer interp.deinit();
+            var buf: [512]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            var yields: usize = 0;
+            try steppedOutput(&interp, arena.allocator(), src, budget, &w, &yields);
+            try std.testing.expectEqualStrings(expected.buffered(), w.buffered());
+            if (budget <= 2) try std.testing.expect(yields > 0);
+            try std.testing.expect(interp.eval == null);
+        }
+    }
+}
+
+test "one budget is shared by the forms of a stepped evaluation, so a call gives control back inside a long input" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(std.testing.allocator);
+    for (0..100) |_| try source.appendSlice(std.testing.allocator, "(+ 1 1) ");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.beginEval(arena.allocator(), source.items, &w);
+    // 1つの形式は数歩で終わる。予算が形式をまたいで共有されなければ、最初の呼び出しが全体を走る。
+    try std.testing.expectEqual(.more, try interp.stepEval(100));
+    try std.testing.expect(w.buffered().len < 200);
+    var calls: usize = 1;
+    while (try interp.stepEval(100) != .done) calls += 1;
+    try std.testing.expect(calls >= 3);
+    try std.testing.expectEqual(200, w.buffered().len);
+}
+
+test "an error in a stepped evaluation ends it, is described as evalPrint describes it, and the next one runs" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.beginEval(arena.allocator(), "(define x 1) (car x)", &w);
+    while (true) {
+        const status = interp.stepEval(1) catch |e| {
+            try std.testing.expectEqual(error.Raised, e);
+            break;
+        };
+        try std.testing.expectEqual(.more, status);
+    }
+    try std.testing.expect(interp.eval == null);
+    try std.testing.expect(interp.ctx.parked == null);
+    try std.testing.expect(std.mem.indexOf(u8, interp.diagnostic(), "car") != null);
+    // 誤りの前の定義は残り、次の評価は走る。
+    try interp.evalPrint(arena.allocator(), "x", &w);
+    try std.testing.expectEqualStrings("1\n", w.buffered());
+}
+
+test "an interrupted evaluation goes on where it was, or is dropped with its definitions kept" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.beginEval(arena.allocator(), "(define y 5) (define (spin) (spin)) (spin)", &w);
+    // 止まらない形式の途中で、割り込みの要求を立てる。
+    var interrupted = false;
+    var rounds: usize = 0;
+    while (!interrupted) : (rounds += 1) {
+        if (rounds == 20) interp.ctx.interrupt.store(true, .monotonic);
+        switch (try interp.stepEval(100)) {
+            .more => {},
+            .interrupted => interrupted = true,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(interp.ctx.parked != null);
+    // 続けられる。
+    try std.testing.expectEqual(.more, try interp.stepEval(100));
+    interp.abortEval();
+    try std.testing.expect(interp.eval == null);
+    try std.testing.expect(interp.ctx.parked == null);
+    try interp.evalPrint(arena.allocator(), "y", &w);
+    try std.testing.expectEqualStrings("5\n", w.buffered());
+}
+
+test "the step limit ends a stepped evaluation with StepLimit and a description" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    interp.setStepLimit(1000);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.beginEval(arena.allocator(), "(let loop () (loop))", &w);
+    while (true) {
+        _ = interp.stepEval(64) catch |e| {
+            try std.testing.expectEqual(error.StepLimit, e);
+            break;
+        };
+    }
+    try std.testing.expectEqualStrings("step limit exceeded", interp.diagnostic());
 }
 
 test "a fold-case directive survives an error later in the same input" {

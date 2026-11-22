@@ -61,6 +61,26 @@ pub const Machine = struct {
     /// 純粋プリミティブを呼ぶときに下ろす。立ててから下ろすまでに境目は無いので、送出で
     /// フレームが捨てられても、印は残らない。
     retrying: bool = false,
+    /// The registers of the run that `begin` started and that has not ended.
+    /// 停止している間も持つ。`step` が制御を戻すたびに、そのときのレジスタを
+    /// `Context.parked` に写し、GC のルートにする。
+    regs: Registers = .{ .control = null },
+    /// Whether `begin` has started a run that `step` has not ended yet.
+    active: bool = false,
+
+    /// What `step` reports when it gives control back.
+    pub const Outcome = union(enum) {
+        /// The run ended, with this value.
+        done: Value,
+        /// The budget ran out; `step` goes on from here.
+        more,
+        /// The request in `Context.interrupt` was seen at a step boundary; the request
+        /// is taken down, and `step` goes on from here.
+        interrupted,
+        /// A read primitive has no input yet (stage 8, slice 8f-1; `step` does not
+        /// return it yet). The call is kept, and `step` makes it again.
+        needs_input,
+    };
 
     pub fn init(ctx: *Context, scratch: std.mem.Allocator) Machine {
         return .{ .ctx = ctx, .scratch = scratch };
@@ -68,7 +88,7 @@ pub const Machine = struct {
 
     /// What the machine holds between two steps: the registers, and whether
     /// it has reported a heap left without room.
-    const Registers = struct {
+    pub const Registers = struct {
         /// The node to run next, or null when the value goes to the
         /// continuation.
         control: ?*const Node,
@@ -101,15 +121,71 @@ pub const Machine = struct {
     /// (空の継続と空の列)へ脱出する。脱出は継続の起動と同じく巻き戻しの経路を通り、
     /// 途中の `dynamic-wind` の `after` をすべて呼ぶ。着いたら、送出された値を `ctx.raised`
     /// に置いて `error.Raised` を返す(docs/design/runtime.md の未処理例外)。
+    /// `begin` と、完了まで続ける `step` である。割り込みの要求は見ない(ネイティブの挙動と
+    /// 周回の費用を変えない。入れ子の実行も、これを通る)。
     pub fn run(self: *Machine, root: *const Node) Error!Value {
-        var regs: Registers = .{ .control = root, .steps_left = self.ctx.step_limit orelse std.math.maxInt(u64) };
+        self.begin(root);
+        var budget: u64 = std.math.maxInt(u64);
+        while (true) switch (try self.advance(&budget, false)) {
+            .done => |v| return v,
+            // 予算は使い切れない。`StepLimit` は、歩数の上限のほうが先に使い切られたときに返る。
+            .more, .interrupted, .needs_input => unreachable,
+        };
+    }
+
+    /// Starts a run of `root`, which `step` advances.
+    /// 歩数の上限(`Context.step_limit`)は、ここで残りに置く。前の実行が終わっていなければ
+    /// 捨てる。
+    pub fn begin(self: *Machine, root: *const Node) void {
+        self.ctx.parked = null;
+        self.regs = .{ .control = root, .steps_left = self.ctx.step_limit orelse std.math.maxInt(u64) };
+        self.active = true;
+    }
+
+    /// Advances the run `begin` started by at most `budget` steps, and gives control
+    /// back with how it ended: `done` with the value, `more` when the budget ran out,
+    /// or `interrupted` when `Context.interrupt` was set.
+    /// 再開は、同じ `Machine` で `step` をもう一度呼ぶだけである。`more` と `interrupted` の間、
+    /// レジスタは `Context.parked` にあり、GC のルートになる。`Raised` などの誤りと `done` で
+    /// 実行は終わる。歩数の上限(ADR-0044)は、予算とは別に数え、先に使い切ると `StepLimit` で
+    /// 終える。この間、`Machine` を動かしてはならない。
+    pub fn step(self: *Machine, budget: u64) Error!Outcome {
+        var left = budget;
+        return self.advance(&left, true);
+    }
+
+    /// `step`, with the steps taken taken off `budget`, so that a caller that runs
+    /// several runs in a row shares one budget between them.
+    pub fn stepCounting(self: *Machine, budget: *u64, comptime watch: bool) Error!Outcome {
+        return self.advance(budget, watch);
+    }
+
+    /// `step`, with the budget left in `budget` afterwards; `watch` whether the request
+    /// in `Context.interrupt` is looked at.
+    fn advance(self: *Machine, budget: *u64, comptime watch: bool) Error!Outcome {
+        std.debug.assert(self.active);
+        const ctx = self.ctx;
+        ctx.parked = null;
+        errdefer self.active = false;
         while (true) {
-            if (self.steps(&regs)) |v| return v else |e| if (e != error.Raised) return e;
+            if (self.steps(&self.regs, budget, watch)) |outcome| {
+                switch (outcome) {
+                    .done => self.active = false,
+                    .more, .interrupted, .needs_input => ctx.parked = .{
+                        .control = self.regs.control,
+                        .env = self.regs.env,
+                        .kont = self.regs.kont,
+                        .value = self.regs.value,
+                        .dyn = self.regs.dyn,
+                    },
+                }
+                return outcome;
+            } else |e| if (e != error.Raised) return e;
             // Why: 送出の地点は、ステップの中のどこでも `ctx.raise` を返せばよい。値をハンドラ
             // に渡すのは、レジスタを書き戻したここ1か所である。機械が検出する失敗(型の誤り、
             // 未束縛の変数、上限超過など)も、こうして機械の中の `raise` になる(計画 0014 の
             // 合意を求める点の2)。
-            try self.handOver(&regs);
+            try self.handOver(&self.regs);
         }
     }
 
@@ -190,29 +266,41 @@ pub const Machine = struct {
         return call;
     }
 
-    /// Runs steps from the registers in `regs` until the program ends or an
-    /// error is raised, and leaves the registers in `regs` either way.
+    /// Runs steps from the registers in `regs` until the program ends, `budget` steps
+    /// have been taken, an interrupt is seen, or an error is raised, and leaves the
+    /// registers in `regs` in every case.
     /// Why: レジスタを局所変数に置くのは、ステップの本体が `ctx.raise` を `return` する形の
-    /// まま、送出の時点のレジスタを `run` に渡すためである。`defer` はエラーで抜けるときも
-    /// 走る。
-    fn steps(self: *Machine, regs: *Registers) Error!Value {
+    /// まま、送出の時点のレジスタを `advance` に渡すためである。`defer` はエラーで抜けるときも
+    /// 走る。1周ごとに数えるのは `left` の1つだけで、予算と歩数の上限の小さいほうで始める。
+    /// 抜けるときに、使った歩数を両方から引く。
+    fn steps(self: *Machine, regs: *Registers, budget: *u64, comptime watch: bool) Error!Outcome {
         const ctx = self.ctx;
         var control = regs.control;
         var env = regs.env;
         var kont = regs.kont;
         var value = regs.value;
         var dyn = regs.dyn;
+        const limit_first = regs.steps_left <= budget.*;
+        const start = @min(regs.steps_left, budget.*);
+        var left = start;
         defer {
             regs.control = control;
             regs.env = env;
             regs.kont = kont;
             regs.value = value;
             regs.dyn = dyn;
+            regs.steps_left -= start - left;
+            budget.* -= start - left;
         }
         while (true) {
-            // 1周を1歩と数える。上限に達したら、ハンドラに渡さずに実行を終える(計画書 0024)。
-            if (regs.steps_left == 0) return error.StepLimit;
-            regs.steps_left -= 1;
+            if (watch and ctx.interrupt.load(.monotonic)) {
+                ctx.interrupt.store(false, .monotonic);
+                return .interrupted;
+            }
+            // 1周を1歩と数える。歩数の上限に達したら、ハンドラに渡さずに実行を終える(計画書 0024)。
+            // 予算を使い切ったときは、制御を戻す。両方が同時なら、上限が先である。
+            if (left == 0) return if (limit_first) error.StepLimit else .more;
+            left -= 1;
             if (ctx.heap.shouldCollect()) try self.collect(.{ .ctx = ctx, .control = control, .env = env, .kont = kont, .value = value, .dyn = dyn }, &regs.limit_reported);
             if (control) |node| {
                 control = null;
@@ -272,7 +360,7 @@ pub const Machine = struct {
             } else {
                 // 値は継続の先頭のフレームに渡す。そのフレームは先に外すので、
                 // 次に走るものは、そのフレームなしで走る。
-                const k = kont orelse return value;
+                const k = kont orelse return .{ .done = value };
                 kont = k.next;
                 env = k.env;
                 // 複数値の表の「1個を要求する」群のフレームに複数値が届いたら誤りにする。
@@ -1389,14 +1477,14 @@ pub const Machine = struct {
     }
 
     /// A new frame on top of `next`.
-    fn push(self: *Machine, next: ?*const Kont, env: ?*Frame, step: Kont.Step) Error!*const Kont {
-        return self.pushIn(.limit, next, env, step);
+    fn push(self: *Machine, next: ?*const Kont, env: ?*Frame, frame_step: Kont.Step) Error!*const Kont {
+        return self.pushIn(.limit, next, env, frame_step);
     }
 
     /// A new frame on top of `next`, held to `budget`.
-    fn pushIn(self: *Machine, budget: heap_mod.Budget, next: ?*const Kont, env: ?*Frame, step: Kont.Step) Error!*const Kont {
+    fn pushIn(self: *Machine, budget: heap_mod.Budget, next: ?*const Kont, env: ?*Frame, frame_step: Kont.Step) Error!*const Kont {
         const depth = (if (next) |n| n.depth else 0) + 1;
-        const k = try self.ctx.createIn(budget, Kont, .{ .next = next, .env = env, .depth = depth, .step = step });
+        const k = try self.ctx.createIn(budget, Kont, .{ .next = next, .env = env, .depth = depth, .step = frame_step });
         if (depth > self.peak_depth) self.peak_depth = depth;
         return k;
     }
@@ -1522,6 +1610,35 @@ const Fixture = struct {
 
     fn expectInt(self: *Fixture, expected: i64, src: []const u8) !void {
         try std.testing.expectEqual(expected, (try self.eval(src)).asFixnum().?);
+    }
+
+    /// `eval`, with each form run `budget` steps at a time.
+    /// 制御が戻るたびに、レジスタ以外のルートを持たない状態で GC する。停止中のレジスタが
+    /// `Context.parked` から辿られることを、これが確かめる。`yields` に、制御が戻った回数を足す。
+    fn evalStepped(self: *Fixture, src: []const u8, budget: u64, yields: *usize) !Value {
+        var r: reader_mod.Reader = .init(src);
+        const sink: reader_mod.Sink = .{ .heap = &self.ctx.heap };
+        var last: Value = .unspecified_value;
+        while (true) {
+            if (self.ctx.heap.shouldCollect()) {
+                self.ctx.heap.collect(Machine.Roots{ .ctx = &self.ctx, .env = null, .kont = null, .value = last, .dyn = null });
+            }
+            const form = try r.next(self.arena.allocator(), sink) orelse break;
+            const node = try expand.expand(&self.ctx, self.arena.allocator(), form);
+            self.machine.begin(node);
+            while (true) switch (try self.machine.step(budget)) {
+                .done => |v| {
+                    last = v;
+                    break;
+                },
+                .more => {
+                    yields.* += 1;
+                    self.ctx.heap.collect(Machine.Roots{ .ctx = &self.ctx, .env = null, .kont = null, .value = .unspecified_value, .dyn = null });
+                },
+                .interrupted, .needs_input => return error.TestUnexpectedResult,
+            };
+        }
+        return last;
     }
 
     /// `src` raises an error whose condition has `message`.
@@ -2395,6 +2512,132 @@ test "the programs give the same results with a collection at every step, whatev
         // 実際に GC しており、小さなプログラムでは毎ステップで GC している。
         try std.testing.expect(f.ctx.heap.collections > 1000);
     }
+}
+
+test "the programs give the same results when run a few steps at a time, with a collection at every pause" {
+    for ([_]u64{ 1, 3, 50 }) |budget| {
+        var f: Fixture = undefined;
+        try f.initWith(.{ .stress = true });
+        defer f.deinit();
+        var yields: usize = 0;
+        for (stress_programs) |p| {
+            const v = try f.evalStepped(p.src, budget, &yields);
+            try std.testing.expectEqual(p.expected, v.asFixnum().?);
+        }
+        // 実際に何度も制御が戻っている。
+        try std.testing.expect(yields > 1000 / budget);
+    }
+}
+
+test "a long run stepped a thousand steps at a time gives the value of a run, and the heap stays within its limit" {
+    try tier.slow();
+    var f: Fixture = undefined;
+    try f.initWith(.{ .limit = 8 * 1024 * 1024 });
+    defer f.deinit();
+    var yields: usize = 0;
+    yields = 0;
+    const v = try f.evalStepped("(define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n)))) (sum 1000000 0)", 1000, &yields);
+    try std.testing.expectEqual(500000500000, v.asFixnum().?);
+    try std.testing.expect(yields > 1000);
+}
+
+test "a run stepped one step at a time takes the steps a run takes" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var yields: usize = 0;
+    _ = try f.evalStepped("(define (loop n) (if (= n 0) 7 (loop (- n 1))))", 1, &yields);
+    // 歩数の上限を、ちょうど足りる値から1つ引くと、上限に達する。
+    var n: u64 = 1;
+    while (true) : (n += 1) {
+        f.ctx.step_limit = n;
+        if (f.eval("(loop 10)")) |_| break else |e| try std.testing.expectEqual(error.StepLimit, e);
+    }
+    f.ctx.step_limit = null;
+    yields = 0;
+    _ = try f.evalStepped("(loop 10)", 1, &yields);
+    // 1歩ごとに制御が戻る。最後の歩は `done` で戻るので、戻った回数は、歩数より1つ少ない。
+    try std.testing.expectEqual(n - 1, yields);
+}
+
+test "the step limit ends a stepped run with StepLimit however the budget cuts it" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    f.ctx.step_limit = 1000;
+    const node = try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, "((lambda () (define (spin) (spin)) (spin)))"));
+    f.machine.begin(node);
+    var yields: usize = 0;
+    while (true) switch (f.machine.step(64) catch |e| {
+        try std.testing.expectEqual(error.StepLimit, e);
+        break;
+    }) {
+        .more => yields += 1,
+        else => return error.TestUnexpectedResult,
+    };
+    // 64歩ずつ15回、残り40歩で上限に達する。
+    try std.testing.expectEqual(15, yields);
+    try std.testing.expect(!f.machine.active);
+}
+
+test "the step limit comes first when it runs out with the budget, and a budget one step shorter gives control back" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const spin = "((lambda () (define (spin) (spin)) (spin)))";
+    // 上限と予算が同時に尽きる: 上限が先で、`more` でなく `StepLimit` になる。
+    f.ctx.step_limit = 64;
+    f.machine.begin(try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, spin)));
+    try std.testing.expectError(error.StepLimit, f.machine.step(64));
+    // 上限が1歩多ければ、予算が先に尽きて制御が戻り、次の1歩で上限に達する。
+    f.ctx.step_limit = 65;
+    f.machine.begin(try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, spin)));
+    try std.testing.expectEqual(.more, try f.machine.step(64));
+    try std.testing.expectError(error.StepLimit, f.machine.step(64));
+}
+
+test "an interrupt request is seen at a step, taken down, and the run goes on from there" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const node = try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, "((lambda (n) (+ n 1)) 41)"));
+    f.machine.begin(node);
+    f.ctx.interrupt.store(true, .monotonic);
+    try std.testing.expectEqual(.interrupted, try f.machine.step(1000));
+    try std.testing.expect(!f.ctx.interrupt.load(.monotonic));
+    try std.testing.expect(f.ctx.parked != null);
+    // 要求は降りているので、続きは完了まで走る。
+    const done = try f.machine.step(1000);
+    try std.testing.expectEqual(42, done.done.asFixnum().?);
+    try std.testing.expect(f.ctx.parked == null);
+    // `run` は要求を見ない。要求は立ったまま残る。
+    f.ctx.interrupt.store(true, .monotonic);
+    try f.expectInt(42, "((lambda (n) (+ n 1)) 41)");
+    try std.testing.expect(f.ctx.interrupt.load(.monotonic));
+}
+
+test "an error raised in a stepped run ends it, with the handler seeing it first" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const node = try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, "(+ 1 (car '()))"));
+    f.machine.begin(node);
+    while (true) {
+        if (f.machine.step(1)) |outcome| {
+            try std.testing.expect(outcome == .more);
+        } else |e| {
+            try std.testing.expectEqual(error.Raised, e);
+            break;
+        }
+    }
+    try std.testing.expect(!f.machine.active);
+    try std.testing.expect(f.ctx.parked == null);
+}
+
+/// The first datum of `src`.
+fn readOne(f: *Fixture, src: []const u8) !Value {
+    var r: reader_mod.Reader = .init(src);
+    return (try r.next(f.arena.allocator(), .{ .heap = &f.ctx.heap })).?;
 }
 
 test "the value a run gives back is still there after the collection that follows it" {

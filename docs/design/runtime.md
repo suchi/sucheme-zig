@@ -391,7 +391,7 @@ GC オブジェクトとそのヒープ外ペイロードは2回の確保にな�
 | 継続 | 継続フレームの列。空なら実行完了 |
 | 直前の値 | 直近の評価結果 |
 | 動的状態の列 | `dynamic-wind`、ハンドラ、ハンドラ切り替え、パラメータの束縛 |
-| 歩数の残り | トップレベルの形式1つが使える周回の数(`Registers.steps_left`)。`Interpreter.setStepLimit` で上限を置いたときだけ尽き、尽きたら `error.StepLimit` で形式を打ち切る([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md)、スライス 6h-1)。既定は上限なしで、完了まで走る。WASM で制御を戻して再開する形は段階8である([platform-and-web.md](platform-and-web.md) の再開可能性) |
+| 歩数の残り | トップレベルの形式1つが使える周回の数(`Registers.steps_left`)。`Interpreter.setStepLimit` で上限を置いたときだけ尽き、尽きたら `error.StepLimit` で形式を打ち切る([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md)、スライス 6h-1)。既定は上限なしで、完了まで走る。機械は、`step(budget)` の予算(上限とは別)でも制御を戻し、レジスタを `Machine.regs` に持って再開できる([ADR-0053](../adr/0053-resumable-machine-step-budget.md)、スライス 8e-1)。WASM のエクスポートは 8e-2 で足す([platform-and-web.md](platform-and-web.md) の再開可能性) |
 
 現在の例外ハンドラは独立した状態にしない。動的状態の列から定数時間で導出する([ADR-0016](../adr/0016-exception-handler-as-dynamic-point.md))。
 
@@ -655,6 +655,6 @@ R7RS 6.1 は「Even if its arguments are circular data structures, equal? must a
 
 ブラウザではメインスレッドを長時間占有できない。機械のループは歩数の制限で制御を呼び出し元に返す。WASM のエクスポートは続きがあるかどうかを状態コードで返し、JS 側が再開する。この構造はネイティブ側でも割り込み処理に使える。
 
-これは設計の目標で、入れるのは段階8である。今の実装には、続きを返すエクスポート(`sucheme_step`)が無い。`Machine.run` は完了するまで走り、`sucheme_eval_begin` は評価を完了して戻る([platform-and-web.md](platform-and-web.md) のエクスポートと再開可能性)。歩数の上限は、スライス 6h-1 で、制御を戻さずに形式を打ち切る形だけが入った([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md))。準拠スイートのランナーだけが置き、WASM は置かない。
+機械の側は、スライス 8e-1 で入った([ADR-0053](../adr/0053-resumable-machine-step-budget.md))。`Machine.begin` と `Machine.step(budget)` が、予算の歩数まで進めて、完了、予算切れ、割り込み(`Context.interrupt`)、入力待ち(型だけ。8f-1)のいずれかで戻る。停止中のレジスタは `Context.parked` にあり、GC のルートになる。`Interpreter.beginEval` と `stepEval` が、形式の列に対して同じことをする。`Machine.run` と `evalPrint` は、完了まで進める層で、割り込みを見ない。ライブラリの読み込みなど、入れ子の `run` は中断できない。今の実装には、WASM の続きを返すエクスポート(`sucheme_step`)がまだ無い。8e-2 で足す(計画書 0030。[platform-and-web.md](platform-and-web.md) のエクスポートと再開可能性)。歩数の上限は、スライス 6h-1 で、制御を戻さずに形式を打ち切る形が入った([ADR-0044](../adr/0044-machine-step-limit-not-catchable.md))。準拠スイートのランナーだけが置き、WASM は置かない。
 
 深い再帰はヒープフレームを消費するだけなので Zig のスタックはあふれない。フレームは計上の対象なので、無限再帰は上限超過として Scheme のエラーになる。フレーム数に別の上限を設けるかどうかは実装時に決める([open-questions.md](open-questions.md))。
