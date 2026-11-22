@@ -1,8 +1,10 @@
 # ADR-0021: GitHub Pages は使わず、Web UI の配置は計画の後半まで行わない
 
-- ステータス: 採用
+- ステータス: ~~採用~~ 非推奨 → [ADR-0056: deploy-web-ui-to-github-pages](0056-deploy-web-ui-to-github-pages.md) に置き換え
 - 日付: 2026-10-06
 - 置き換え: [ADR-0011: github-pages-pr-preview](0011-github-pages-pr-preview.md) を非推奨とし、本ADRが最新の決定となる
+
+> 非推奨理由: リポジトリが public になり([ADR-0052](0052-repository-visibility-public-again.md))、Pages を使わない根拠が無くなった。配置先は GitHub Pages に決まった([ADR-0056](0056-deploy-web-ui-to-github-pages.md))。ローカルで開く手段と、PR ごとのプレビューを行わない決定は、ADR-0056 が引き継ぐ。
 
 > 2026-11-21 追記: 本ADRの前提(リポジトリが private であること)が変わった。リポジトリは public になり([ADR-0052](0052-repository-visibility-public-again.md))、GitHub Pages が使える。本ADRの決定(段階1から7では配置しない。配置は段階8で行う)は、この追記では再決定しない。配置先の選定は、roadmap の段階8の項目として残る。本文の要件のうち「private にアクセス制限できる」は、公開の前提では必須でなくなる。
 

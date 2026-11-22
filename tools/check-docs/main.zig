@@ -497,7 +497,7 @@ fn checkCiRunsTheTable(
                 );
                 continue;
             };
-            if (!keyIsAllowed(key)) {
+            if (!keyIsAllowedIn(path, key)) {
                 rep.fail(
                     "{s}:{d}: `{s}` is not a key this check knows; add it to allowed_workflow_keys after deciding what it means for the verification",
                     .{ path, lineno, key },
@@ -902,6 +902,49 @@ fn isForbiddenInPerCommit(key: []const u8) bool {
 ///
 /// このリポジトリのワークフローが定義するジョブ名。
 const allowed_job_names = [_][]const u8{ "test", "slow", "fuzz", "preview", "dist", "release", "windows" };
+
+/// The workflow that deploys the Web UI to GitHub Pages (docs/adr/0056-deploy-web-ui-to-github-pages.md).
+///
+/// Pages への配置のワークフロー。検証コマンドの表の行を走らせるものではない。
+const pages_workflow = ".github/workflows/pages.yml";
+
+/// Keys only the Pages workflow may use.
+///
+/// Pages への配置が要るキーと、そのジョブ名。`pages.yml` のファイルだけで受理し、
+/// ほかのワークフローに置くと、未知のキーとして赤になる。全体の集合
+/// (`allowed_workflow_keys`)には足さない。ci.yml と full.yml に紛れ込むと、
+/// 検証が黙って止まる穴になりうるからである。
+///
+/// - `needs`: 依存するジョブが失敗か取り消しになると、このジョブは飛ばされる。
+///   ci.yml の検査のジョブに付くと、前のジョブの失敗で `run:` の行が走らなくなる。
+///   配置のジョブが、組み立てのジョブの成功を待つために使う。
+/// - `environment`、`url`: 環境の保護規則が承認を求めると、ジョブは人の操作まで
+///   待つ。ci.yml に付くと、検査が走らないまま待ち続けうる。`url` は `environment`
+///   の下の、配置先の URL の表示である。
+/// - `pages`、`id-token`: `permissions` の下の、配置に要る権限。ci.yml が持つと、
+///   検査のジョブが要らない書き込み権限を持つ。
+/// - `id`: step の識別子。配置の step の出力(`page_url`)を、`url` が参照する。
+/// - `build`、`deploy`: ジョブ名。ほかのワークフローが同じ名前のジョブを持つと、
+///   名前だけでは何のジョブか分からなくなるので、このファイルに限る。
+const pages_only_keys = [_][]const u8{
+    "build", "deploy", "needs", "environment", "url", "pages", "id-token", "id",
+};
+
+fn isPagesOnlyKey(key: []const u8) bool {
+    for (pages_only_keys) |allowed| {
+        if (std.mem.eql(u8, key, allowed)) return true;
+    }
+    return false;
+}
+
+/// Whether `key` may appear in the workflow at `path`: the shared keys, plus the
+/// Pages-only keys in the Pages workflow.
+///
+/// 共有の集合に、Pages のワークフローの分だけを足す。
+fn keyIsAllowedIn(path: []const u8, key: []const u8) bool {
+    if (keyIsAllowed(key)) return true;
+    return std.mem.eql(u8, path, pages_workflow) and isPagesOnlyKey(key);
+}
 
 /// The key a mapping line declares, or null when the line is not `key: ...`.
 ///
@@ -2667,6 +2710,37 @@ test "keyIsAllowed: persist-credentials is known, so the release workflow can st
     try std.testing.expect(keyIsAllowed("persist-credentials"));
     try std.testing.expect(!keyIsAllowed("persist_credentials"));
     try std.testing.expect(!keyIsAllowed("fetch-depth"));
+}
+
+test "keyIsAllowedIn: the Pages-only keys are accepted in the Pages workflow and nowhere else" {
+    const pages_keys = [_][]const u8{ "build", "deploy", "needs", "environment", "url", "pages", "id-token", "id" };
+    const others = [_][]const u8{
+        ".github/workflows/ci.yml",
+        ".github/workflows/full.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/preview.yml",
+        ".github/workflows/fuzz.yml",
+        ".github/workflows/pages.yml.bak",
+        ".github/workflows/Pages.yml",
+        "pages.yml",
+    };
+    for (pages_keys) |key| {
+        // 穴のシナリオ: 検証のワークフローに紛れ込んでも、通らない。
+        for (others) |path| try std.testing.expect(!keyIsAllowedIn(path, key));
+        // 対照: Pages のワークフローでは通る。
+        try std.testing.expect(keyIsAllowedIn(pages_workflow, key));
+        // 共有の集合は広げていない。
+        try std.testing.expect(!keyIsAllowed(key));
+    }
+    // 対照: 共有のキーは、どのワークフローでも通る。
+    try std.testing.expect(keyIsAllowedIn(pages_workflow, "uses"));
+    try std.testing.expect(keyIsAllowedIn(".github/workflows/ci.yml", "uses"));
+    // Pages のワークフローでも、条件のキーと近い綴りは通らない。
+    try std.testing.expect(!keyIsAllowedIn(pages_workflow, "if"));
+    try std.testing.expect(!keyIsAllowedIn(pages_workflow, "continue-on-error"));
+    try std.testing.expect(!keyIsAllowedIn(pages_workflow, "id_token"));
+    try std.testing.expect(!keyIsAllowedIn(pages_workflow, "environments"));
+    try std.testing.expect(!keyIsAllowedIn(pages_workflow, "need"));
 }
 
 test "slow_commands: the dist command is one the slow tier's workflow has to run" {
