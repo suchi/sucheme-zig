@@ -540,7 +540,12 @@ pub fn build(b: *std.Build) void {
     for (targets.items) |*t| {
         const unit = b.addTest(.{ .root_module = t.mod });
         t.unit = unit;
-        test_step.dependOn(&b.addRunArtifact(unit).step);
+        const run_unit = b.addRunArtifact(unit);
+        // Why: 括弧の対応の共有の一覧(parens.zig のテストが実行時に読む)を、run の入力に数える。
+        // 数えないと、一覧だけを書き換えても、テストの実行が cached のまま飛ばされ、
+        // 一覧を壊しても `zig build test` が緑になる(2026-11-22 に確かめた)。
+        run_unit.addFileInput(b.path("tests/parens/cases.tsv"));
+        test_step.dependOn(&run_unit.step);
         run_check_docs.addArg("--root");
         run_check_docs.addArg(t.path);
     }

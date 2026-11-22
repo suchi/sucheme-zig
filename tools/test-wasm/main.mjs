@@ -16,6 +16,8 @@ import { samples } from "../../web/samples.mjs";
 import { encodeFragment, decodeFragment, MAX_FRAGMENT_LENGTH } from "../../web/share.mjs";
 import { describeResult, splitError } from "../../web/errors.mjs";
 import { Status } from "../../web/sucheme.js";
+import { matching, highlightPair, changeIndent, nextTabMovesFocus } from "../../web/parens.mjs";
+import { createHistory, onFirstLine, onLastLine } from "../../web/history.mjs";
 import {
   formatElapsed,
   restartedMessage,
@@ -931,6 +933,135 @@ test("each program excluded from the wasm run really differs there (the list hol
     const [status, text] = h.run(readFileSync(new URL(`${name}.scm`, programsDir), "utf8"));
     assert.ok(text !== expected || status !== (exit ? EXITED : OK), `${name} now matches; remove it from programExclusions`);
   }
+});
+
+// 編集の補助(web/parens.mjs、web/history.mjs)。DOM に触れない部分を試す。
+// 括弧の対応は、src/line_editor/parens.zig と同じ一覧(tests/parens/cases.tsv)を読む。
+function unescapeCase(field) {
+  return field.replace(/\\([\\ntr])/g, (_, c) => ({ "\\": "\\", n: "\n", t: "\t", r: "\r" })[c]);
+}
+
+test("matching agrees with the list shared with parens.zig for every cursor", () => {
+  const lines = readFileSync(new URL("../../tests/parens/cases.tsv", import.meta.url), "utf8").split("\n").filter((l) => l !== "");
+  assert.ok(lines.length > 50);
+  for (const line of lines) {
+    const tab = line.indexOf("\t");
+    const text = unescapeCase(line.slice(0, tab));
+    const expected = line.slice(tab + 1).split(" ").map((f) => (f === "-" ? null : Number(f)));
+    assert.equal(expected.length, text.length + 1, JSON.stringify(text));
+    for (let cursor = 0; cursor < expected.length; cursor++) {
+      assert.equal(matching(text, cursor), expected[cursor], `${JSON.stringify(text)} at ${cursor}`);
+    }
+  }
+});
+
+test("matching counts positions in UTF-16 units, also after a character literal outside the BMP", () => {
+  assert.equal(matching("(あ (い) う)", 0), 8);
+  assert.equal(matching("(あ)", 3), 0);
+  // 補助面の文字(サロゲートペア)が `#\` の本体のとき、その2単位を1文字として読む。
+  assert.equal(matching("(#\\𝄞 (b))", 0), 9);
+  assert.equal(matching("(#\\𝄞)", 0), 5);
+  // 上限の補助面の文字(上位サロゲートが U+DBFF)も、同じである。
+  assert.equal(matching("(#\\\u{10FFFF}(b))", 0), 8);
+  // 範囲外と、整数でない位置は、何も見つけない。
+  assert.equal(matching("(a)", 4), null);
+  assert.equal(matching("(a)", -1), null);
+  assert.equal(matching("(a)", 1.5), null);
+  assert.equal(matching("(a)", undefined), null);
+});
+
+test("highlightPair returns the pair in ascending order, from either side", () => {
+  assert.deepEqual(highlightPair("(a (b) c)", 0), [0, 8]);
+  assert.deepEqual(highlightPair("(a (b) c)", 9), [0, 8]);
+  assert.deepEqual(highlightPair("(a (b) c)", 3), [3, 5]);
+  assert.deepEqual(highlightPair("(a (b) c)", 6), [3, 5]);
+  // `)(` の間では、直前の `)` が先に効く。
+  assert.deepEqual(highlightPair("(a)(b)", 3), [0, 2]);
+  // 直前の `)` に相手が無ければ、直後の `(` を見る。
+  assert.deepEqual(highlightPair("a)(b)", 2), [2, 4]);
+  assert.equal(highlightPair("(a b)", 2), null);
+  assert.equal(highlightPair("(a", 0), null);
+});
+
+test("changeIndent inserts at the caret, indents and outdents whole lines, and keeps the selection on the same text", () => {
+  // 選択が無いときは、カーソルの位置に挿入する。
+  assert.deepEqual(changeIndent("ab", 1, 1, false), { text: "a  b", start: 3, end: 3 });
+  // 1行の中の選択は、置き換える。
+  assert.deepEqual(changeIndent("abc", 0, 2, false), { text: "  c", start: 2, end: 2 });
+  // 複数行の選択は、掛かる行すべての先頭に足す(空の行には足さない)。
+  assert.deepEqual(changeIndent("a\n\nb", 0, 4, false), { text: "  a\n\n  b", start: 0, end: 8 });
+  // 選択の終わりが行の先頭ちょうどなら、その行は含めない。
+  assert.deepEqual(changeIndent("a\nb\n", 0, 2, false), { text: "  a\nb\n", start: 0, end: 4 });
+  // 選択の途中の端は、変えた行の分だけずれる。
+  assert.deepEqual(changeIndent("ab\ncd", 1, 4, false), { text: "  ab\n  cd", start: 3, end: 8 });
+  // Shift+Tab は、カーソルだけでも、その行の字下げを取る。
+  assert.deepEqual(changeIndent("    a", 5, 5, true), { text: "  a", start: 3, end: 3 });
+  assert.deepEqual(changeIndent("\ta\n b", 0, 5, true), { text: "a\nb", start: 0, end: 3 });
+  // 字下げの無い行は、そのまま。カーソルは、行の先頭より前に戻さない。
+  assert.deepEqual(changeIndent("a", 1, 1, true), { text: "a", start: 1, end: 1 });
+  assert.deepEqual(changeIndent("  a", 1, 1, true), { text: "a", start: 0, end: 0 });
+  // 取るのは INDENT 1つ分までである。
+  assert.deepEqual(changeIndent("      a", 7, 7, true), { text: "    a", start: 5, end: 5 });
+});
+
+test("Esc arms the Tab that moves focus, modifier keys alone keep it, and any other key disarms it", () => {
+  assert.equal(nextTabMovesFocus(false, "Escape", "ready"), true);
+  // 評価中の Esc は停止に使う。
+  assert.equal(nextTabMovesFocus(false, "Escape", "running"), false);
+  // Esc のあとの Shift+Tab: Shift 自体の keydown は、状態を変えない。
+  for (const key of ["Shift", "Control", "Alt", "Meta"]) {
+    assert.equal(nextTabMovesFocus(true, key, "ready"), true, key);
+    assert.equal(nextTabMovesFocus(false, key, "ready"), false, key);
+  }
+  for (const key of ["a", "ArrowUp", "Enter", " "]) assert.equal(nextTabMovesFocus(true, key, "ready"), false, key);
+});
+
+test("the history walks back and forth, and keeps what was being typed", () => {
+  const h = createHistory();
+  assert.equal(h.previous("draft"), null);
+  assert.equal(h.next(), null);
+  h.push("(+ 1 2)");
+  h.push("(display 3)");
+  assert.equal(h.previous("typing"), "(display 3)");
+  assert.equal(h.previous("ignored"), "(+ 1 2)");
+  assert.equal(h.previous("ignored"), null); // いちばん古い
+  assert.equal(h.next(), "(display 3)");
+  assert.equal(h.next(), "typing"); // 下書きに戻る
+  assert.equal(h.next(), null);
+  // 実行すると、位置は下書きに戻り、下書きは捨てる。
+  assert.equal(h.previous("another"), "(display 3)");
+  h.push("x");
+  assert.equal(h.previous(""), "x");
+  assert.equal(h.next(), "");
+});
+
+test("the history skips an empty input and a repeat of the last input, and drops the oldest past its limit", () => {
+  const h = createHistory(3);
+  h.push("");
+  h.push("  \n");
+  assert.equal(h.length, 0);
+  h.push("a");
+  h.push("a");
+  assert.equal(h.length, 1);
+  h.push("b");
+  h.push("a"); // 直前と違えば、同じ入力でも足す
+  assert.equal(h.length, 3);
+  h.push("c");
+  assert.equal(h.length, 3);
+  assert.equal(h.previous(""), "c");
+  assert.equal(h.previous(""), "a");
+  assert.equal(h.previous(""), "b");
+  assert.equal(h.previous(""), null);
+});
+
+test("onFirstLine and onLastLine look for a newline before and after the caret", () => {
+  assert.ok(onFirstLine("a\nb", 1));
+  assert.ok(!onFirstLine("a\nb", 2));
+  assert.ok(onFirstLine("", 0));
+  assert.ok(onLastLine("a\nb", 2));
+  assert.ok(!onLastLine("a\nb", 1));
+  assert.ok(!onLastLine("a\n", 1));
+  assert.ok(onLastLine("a\n", 2));
 });
 
 // 共有リンク(web/share.mjs): `#code=<UTF-8 の base64url>`。
