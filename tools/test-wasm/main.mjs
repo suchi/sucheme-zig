@@ -27,6 +27,7 @@ import {
   isStopKey,
 } from "../../web/stop.mjs";
 import { runEvaluation } from "../../web/runner.mjs";
+import { lineToSend, isEofKey } from "../../web/stdin.mjs";
 import { Sucheme } from "../../web/sucheme.js";
 
 const wasmPath = process.argv[2];
@@ -1133,6 +1134,27 @@ test("isStopKey stops only on Escape while running and not while composing", () 
   assert.equal(isStopKey({ key: "Enter" }, "running"), false);
 });
 
+// 入力待ちの部品(web/stdin.mjs)。
+test("lineToSend ends the line with a newline, so that an empty line is not an empty input", () => {
+  assert.equal(lineToSend("abc"), "abc\n");
+  assert.equal(lineToSend(""), "\n");
+  assert.equal(lineToSend("(1 2)"), "(1 2)\n");
+});
+
+test("isEofKey accepts Ctrl+D only, and not while composing", () => {
+  assert.equal(isEofKey({ key: "d", ctrlKey: true }), true);
+  assert.equal(isEofKey({ key: "D", ctrlKey: true }), true);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, isComposing: false }), true);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, isComposing: true }), false);
+  assert.equal(isEofKey({ key: "d" }), false);
+  assert.equal(isEofKey({ key: "d", metaKey: true }), false);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, shiftKey: true }), false);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, altKey: true }), false);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, metaKey: true }), false);
+  assert.equal(isEofKey({ key: "c", ctrlKey: true }), false);
+  assert.equal(isEofKey({ key: "Enter", ctrlKey: true }), false);
+});
+
 // 歩数ごとに制御を戻す評価(sucheme_step、sucheme_abort。計画書 0030 の 8e-2)。
 test("eval_begin goes on with 1, step(0) moves nothing, and step finishes with 0 and the same output as one run", () => {
   const h = instantiate().init();
@@ -1702,7 +1724,8 @@ test("describeResult gives each status code its own title and hint", () => {
     [Status.OUT_OF_MEMORY, "Out of memory", "Press Reset to start again; definitions made so far are lost."],
     [Status.BAD_REGION, "Internal error", "Reload the page."],
     [Status.CONTINUE, "Unexpected status 1", "Press Reset, or reload the page."],
-    [Status.WAITING_INPUT, "Unexpected status 2", "Press Reset, or reload the page."],
+    // 画面は入力待ちを自分で受け取る(web/app.js)ので、結果として届くのは、受け取れなかった場合だけである。
+    [Status.WAITING_INPUT, "Waiting for input", "The page did not take the input. Press Reset, or reload the page."],
     [-99, "Unexpected status -99", "Press Reset, or reload the page."],
   ];
   for (const [status, title, hint] of expected) {
@@ -1738,7 +1761,7 @@ test("describeResult keeps the output before an error and explains each status c
     if (code === Status.OK) continue;
     const { error } = describeResult(code, "error: why\n", 0);
     assert.ok(error !== null && error.title !== "", name);
-    if (code === Status.CONTINUE || code === Status.WAITING_INPUT) {
+    if (code === Status.CONTINUE) {
       assert.match(error.title, /^Unexpected status/, name);
     } else {
       assert.doesNotMatch(error.title, /^Unexpected status/, name);

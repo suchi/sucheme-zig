@@ -7,6 +7,11 @@
 // なので、定義はすべて失われ、そのことを画面に出す(stop.mjs)。
 // 評価中は経過時間を出す。
 //
+// 評価中に `(read)` などが入力を待つと、Worker が needs-input を送り、画面は、そこまでの出力と、
+// 1行の入力欄(「Send」と「End of input」。stdin.mjs)を出す。状態は running のままで、入力欄を出すかを
+// `inputWaiting` で持つ(停止、経過時間、Run と Reset が無効なことは、評価中と同じだから)。渡した行は
+// 出力に写される(runner.mjs)。入力の終端は、Reset(か Worker の作り直し)まで残る(`inputEnded`)。
+//
 // 画面の文言は英語にする(AGENTS.md の言語ルール)。結果の説明は errors.mjs が作る。
 
 import { Status } from "./sucheme.js";
@@ -16,6 +21,7 @@ import { encodeFragment, decodeFragment } from "./share.mjs";
 import { highlightPair, changeIndent, nextTabMovesFocus } from "./parens.mjs";
 import { createHistory, onFirstLine, onLastLine } from "./history.mjs";
 import { formatElapsed, stopWarning, restartedMessage, describeStopped, stopTimeoutMs, isStopKey } from "./stop.mjs";
+import { lineToSend, isEofKey, stdinText } from "./stdin.mjs";
 
 const form = document.getElementById("form");
 const source = document.getElementById("source");
@@ -35,6 +41,12 @@ const shareUrl = document.getElementById("share-url");
 const shareStatus = document.getElementById("share-status");
 const elapsedLabel = document.getElementById("elapsed");
 const stopWarningLabel = document.getElementById("stop-warning");
+const stdinForm = document.getElementById("stdin-form");
+const stdinLabel = document.getElementById("stdin-label");
+const stdinInput = document.getElementById("stdin");
+const stdinEofButton = document.getElementById("stdin-eof");
+const stdinHint = document.getElementById("stdin-hint");
+const inputEndedLabel = document.getElementById("input-ended");
 
 // sucheme.wasm は、このファイルと同じ階層から相対パスで取る。
 const wasmUrl = new URL("./sucheme.wasm", import.meta.url).href;
@@ -47,6 +59,12 @@ let runningId = 0;
 const inputHistory = createHistory();
 // 停止を要求してから、Worker の応答を待つ間のタイマー。要求していなければ null。
 let stopTimer = null;
+// 入力欄を出しているか(読み取りが入力を待っているか)。
+let inputWaiting = false;
+// この評価で入力欄を使ったか。評価が終わったら、ソースの欄にフォーカスを戻す。
+let usedInputField = false;
+// 入力の終端を渡したか。処理系が Reset されるまで、読み取りは終端を返す。
+let inputEnded = false;
 
 // 状態の知らせ(読み込み中、停止など)を出力欄に出す。エラーの欄は閉じる。
 function show(text, status = "ok") {
@@ -102,8 +120,30 @@ function startElapsed() {
   elapsedTimer = setInterval(tick, 100);
 }
 
+// 入力欄を出す、または隠す。出すときは、フォーカスを移す。
+function setInputWaiting(on) {
+  inputWaiting = on;
+  stdinForm.hidden = !on;
+  if (!on) return;
+  usedInputField = true;
+  stdinLabel.textContent = stdinText.label;
+  stdinHint.textContent = stdinText.waiting;
+  stdinInput.value = "";
+  stdinInput.focus();
+}
+
+// 入力の終端を渡したことの表示。Reset か Worker の作り直しで消える。
+function setInputEnded(ended) {
+  inputEnded = ended;
+  inputEndedLabel.textContent = ended ? stdinText.ended : "";
+  inputEndedLabel.hidden = !ended;
+}
+
 function setPhase(next) {
   if (phase === "running" && next !== "running" && elapsedTimer !== null) stopElapsed();
+  if (next !== "running") setInputWaiting(false);
+  if (phase === "running" && next === "ready" && usedInputField) source.focus();
+  if (next !== "running") usedInputField = false;
   // 評価を離れるとき、停止の応答待ちは要らない。
   if (next !== "running" && stopTimer !== null) clearTimeout(stopTimer);
   if (next !== "running") stopTimer = null;
@@ -127,6 +167,8 @@ const fileHint = "Open this page through a local server: node web/serve.mjs";
 function startWorker() {
   if (worker !== null) worker.terminate();
   setPhase("loading");
+  // 作り直した処理系は、入力の終端を知らない。
+  setInputEnded(false);
   versionLabel.textContent = "Loading…";
   if (openedFromFile()) {
     show(fileHint, "error");
@@ -159,7 +201,16 @@ function startWorker() {
         setPhase("ready");
         break;
       }
+      case "needs-input":
+        // 停止を要求したあとは、入力欄を出さない(Worker は評価を捨てる)。
+        if (m.id !== runningId || phase !== "running" || stopTimer !== null) break;
+        output.textContent = m.output;
+        output.dataset.status = "ok";
+        errorPanel.hidden = true;
+        setInputWaiting(true);
+        break;
       case "reset-done":
+        if (m.status === Status.OK) setInputEnded(false);
         show(m.status === Status.OK ? "State was reset." : `Reset failed (status code ${m.status}).`,
           m.status === Status.OK ? "ok" : "error");
         setPhase("ready");
@@ -213,6 +264,8 @@ form.addEventListener("submit", (event) => {
 function stopEvaluation() {
   if (phase !== "running" || stopTimer !== null) return;
   stopButton.disabled = true;
+  // 入力待ちの間に止めたときは、入力欄を閉じる(渡しても、Worker は受け取らない)。
+  setInputWaiting(false);
   stopWarningLabel.textContent = stopWarning.waiting;
   worker.postMessage({ type: "stop", id: runningId });
   stopTimer = setTimeout(() => {
@@ -226,6 +279,39 @@ function stopEvaluation() {
 }
 
 stopButton.addEventListener("click", stopEvaluation);
+
+// 入力待ちの入力欄。Enter(か「Send」)で、行を改行つきで渡す。渡した行は、出力にも写す(Worker が
+// 出力に足すのと同じ文字列を、次の知らせまでの間、ここで足しておく)。
+stdinForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!inputWaiting) return;
+  const text = lineToSend(stdinInput.value);
+  setInputWaiting(false);
+  output.textContent += text;
+  worker.postMessage({ type: "input", id: runningId, text });
+});
+
+// 入力の終端を渡す。以後の読み取りは、Reset まで終端を返す。
+function sendEndOfInput() {
+  if (!inputWaiting) return;
+  setInputWaiting(false);
+  setInputEnded(true);
+  worker.postMessage({ type: "eof", id: runningId });
+}
+
+stdinEofButton.addEventListener("click", sendEndOfInput);
+
+stdinInput.addEventListener("keydown", (event) => {
+  // 変換の確定の Enter で、送らない(Safari は、確定のあとの keydown の isComposing が偽になる。keyCode 229 で見分ける)。
+  if (event.key === "Enter" && (event.isComposing || event.keyCode === 229)) {
+    event.preventDefault();
+    return;
+  }
+  if (isEofKey(event)) {
+    event.preventDefault();
+    sendEndOfInput();
+  }
+});
 
 // Esc でも停止する。評価中は入力欄が無効でなくフォーカスを持ちうるので、文書全体で受ける。
 document.addEventListener("keydown", (event) => {

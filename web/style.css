@@ -235,6 +235,41 @@ pre[data-status="busy"] {
   min-width: 0;
 }
 
+/* 入力待ちの入力欄。出力欄のすぐ下に出る。 */
+.stdin {
+  margin-top: 0.75rem;
+}
+
+.stdin-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stdin-row input {
+  flex: 1 1 14rem;
+  min-width: 0;
+  min-height: 2.75rem;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  /* 16px 未満だと、iOS が入力欄にフォーカスしたとき拡大する。 */
+  font-size: 1rem;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.75rem;
+}
+
+.stdin-row input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+#input-ended {
+  margin: 0.5rem 0 0;
+}
+
 /* 出力欄には、エラーの前に出た出力が残る。エラーの説明は、その下の別の欄に出す。 */
 .error-panel {
   margin-top: 0.75rem;
