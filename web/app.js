@@ -10,7 +10,7 @@
 // 評価中に `(read)` などが入力を待つと、Worker が needs-input を送り、画面は、そこまでの出力と、
 // 1行の入力欄(「Send」と「End of input」。stdin.mjs)を出す。状態は running のままで、入力欄を出すかを
 // `inputWaiting` で持つ(停止、経過時間、Run と Reset が無効なことは、評価中と同じだから)。渡した行は
-// 出力に写される(runner.mjs)。入力の終端は、Reset(か Worker の作り直し)まで残る(`inputEnded`)。
+// 出力に写される(runner.mjs)。入力の終端は、Reset(か Worker の作り直し)まで残り、画面に表示する。
 //
 // 画面の文言は英語にする(AGENTS.md の言語ルール)。結果の説明は errors.mjs が作る。
 
@@ -63,8 +63,6 @@ let stopTimer = null;
 let inputWaiting = false;
 // この評価で入力欄を使ったか。評価が終わったら、ソースの欄にフォーカスを戻す。
 let usedInputField = false;
-// 入力の終端を渡したか。処理系が Reset されるまで、読み取りは終端を返す。
-let inputEnded = false;
 
 // 状態の知らせ(読み込み中、停止など)を出力欄に出す。エラーの欄は閉じる。
 function show(text, status = "ok") {
@@ -134,7 +132,6 @@ function setInputWaiting(on) {
 
 // 入力の終端を渡したことの表示。Reset か Worker の作り直しで消える。
 function setInputEnded(ended) {
-  inputEnded = ended;
   inputEndedLabel.textContent = ended ? stdinText.ended : "";
   inputEndedLabel.hidden = !ended;
 }

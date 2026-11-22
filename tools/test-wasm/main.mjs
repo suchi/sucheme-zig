@@ -1599,6 +1599,68 @@ test("runEvaluation reports an error after an input, with the echo kept in the o
   assert.ok(result.output.startsWith("5\nerror: "), result.output);
 });
 
+// web/worker.js の入力待ちの経路。Worker の環境(self、postMessage、fetch)を替え玉にして import し、
+// self.onmessage に、画面と同じメッセージを渡す。
+async function loadWorker() {
+  const posted = [];
+  // モジュールは1回だけ評価される(self.onmessage は最初の self に付く)。init で処理系は作り直される。
+  globalThis.self ??= {};
+  globalThis.postMessage = (m) => posted.push(m);
+  globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => readFileSync(wasmPath) });
+  await import("../../web/worker.js");
+  const send = (data) => globalThis.self.onmessage({ data });
+  await send({ type: "init", wasmUrl: "stub" });
+  assert.equal(posted.at(-1).type, "ready");
+  // 条件が成り立つまで待つ。ハングは、時間切れの失敗にする。
+  const until = async (what, cond) => {
+    for (let i = 0; i < 500; i++) {
+      if (cond()) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  // 評価の完了を待つ。止まらないときは、時間切れの失敗にする。
+  const finished = (promise) =>
+    Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("the evaluation did not finish")), 5000))]);
+  return { posted, send, until, finished };
+}
+
+test("worker.js asks for input with the output so far, takes a line, and finishes with the echo in the output", async () => {
+  const w = await loadWorker();
+  const done = w.send({ type: "eval", id: 1, source: W + '(display "q? ") (write (read-line))' });
+  await w.until("needs-input", () => w.posted.some((m) => m.type === "needs-input"));
+  assert.deepEqual(w.posted.at(-1), { type: "needs-input", id: 1, output: "q? " });
+  // 古い id の答えは、待っている読み取りに届かない。
+  await w.send({ type: "input", id: 99, text: "stale\n" });
+  await w.send({ type: "eof", id: 99 });
+  await w.send({ type: "input", id: 1, text: "hi\n" });
+  await w.finished(done);
+  assert.deepEqual(w.posted.at(-1), { type: "result", id: 1, status: OK, output: 'q? hi\n"hi"', exitCode: 0, stopped: false });
+});
+
+test("worker.js ends a waiting read with the end of input", async () => {
+  const w = await loadWorker();
+  const done = w.send({ type: "eval", id: 1, source: W + "(write (read-char))" });
+  await w.until("needs-input", () => w.posted.some((m) => m.type === "needs-input"));
+  await w.send({ type: "eof", id: 1 });
+  await w.finished(done);
+  assert.equal(w.posted.at(-1).output, "#<eof>");
+});
+
+test("worker.js drops a waiting evaluation on stop, keeps the definitions, and does not hand a later input to it", async () => {
+  const w = await loadWorker();
+  const done = w.send({ type: "eval", id: 1, source: W + '(define kept 3) (display "q? ") (read-line) (display "never")' });
+  await w.until("needs-input", () => w.posted.some((m) => m.type === "needs-input"));
+  await w.send({ type: "stop", id: 1 });
+  await w.finished(done);
+  assert.deepEqual(w.posted.at(-1), { type: "result", id: 1, status: OK, output: "q? ", exitCode: 0, stopped: true });
+  const count = w.posted.length;
+  await w.send({ type: "input", id: 1, text: "late\n" });
+  assert.equal(w.posted.length, count);
+  await w.send({ type: "eval", id: 2, source: "kept" });
+  assert.equal(w.posted.at(-1).output, "3\n");
+});
+
 test("runEvaluation does not ask for input when a stop was requested before the wait", async () => {
   const s = await loadSucheme();
   let checks = 0;
