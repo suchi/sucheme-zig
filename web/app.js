@@ -1,8 +1,9 @@
 // The controller of the page: owns the worker and the buttons.
 //
 // 状態は loading(WASM を読み込み中)・ready(入力を受け付ける)・running(評価中)の3つ。
-// 「停止」は Worker を捨てて作り直す(worker.terminate())。作り直した処理系は初期状態なので、
-// 定義はすべて失われる。
+// 「停止」(ボタンと Esc)は Worker を捨てて作り直す(worker.terminate())。作り直した処理系は
+// 初期状態なので、定義はすべて失われる。停止の前後に、そのことを画面に出す(stop.mjs)。
+// 評価中は経過時間を出す。
 //
 // 画面の文言は英語にする(AGENTS.md の言語ルール)。結果の説明は errors.mjs が作る。
 
@@ -10,6 +11,7 @@ import { Status } from "./sucheme.js";
 import { describeResult } from "./errors.mjs";
 import { samples } from "./samples.mjs";
 import { encodeFragment, decodeFragment } from "./share.mjs";
+import { formatElapsed, stopWarning, stoppedMessage, isStopKey } from "./stop.mjs";
 
 const form = document.getElementById("form");
 const source = document.getElementById("source");
@@ -26,6 +28,8 @@ const sampleSelect = document.getElementById("samples");
 const shareButton = document.getElementById("share");
 const shareUrl = document.getElementById("share-url");
 const shareStatus = document.getElementById("share-status");
+const elapsedLabel = document.getElementById("elapsed");
+const stopWarningLabel = document.getElementById("stop-warning");
 
 // sucheme.wasm は、このファイルと同じ階層から相対パスで取る。
 const wasmUrl = new URL("./sucheme.wasm", import.meta.url).href;
@@ -63,7 +67,34 @@ function showResult(status, text, exitCode) {
   errorPanel.hidden = false;
 }
 
+// 評価中の経過時間。評価を始めたときに数え始め、結果が出る、または停止すると止まる。
+let evalStartedAt = 0;
+let elapsedTimer = null;
+
+function stopElapsed() {
+  if (elapsedTimer !== null) clearInterval(elapsedTimer);
+  elapsedTimer = null;
+  const elapsed = performance.now() - evalStartedAt;
+  elapsedLabel.hidden = true;
+  return elapsed;
+}
+
+function startElapsed() {
+  evalStartedAt = performance.now();
+  const tick = () => {
+    elapsedLabel.textContent = `Elapsed: ${formatElapsed(performance.now() - evalStartedAt)}`;
+  };
+  tick();
+  elapsedLabel.hidden = false;
+  // 評価は Worker で走るので、メインスレッドの時計は止まらない。
+  elapsedTimer = setInterval(tick, 100);
+}
+
 function setPhase(next) {
+  if (phase === "running" && next !== "running" && elapsedTimer !== null) stopElapsed();
+  // 評価中は、停止すると定義が失われることを前もって示す。
+  stopWarningLabel.textContent = next === "running" ? stopWarning.before : "";
+  stopWarningLabel.hidden = next !== "running";
   phase = next;
   runButton.disabled = next !== "ready";
   resetButton.disabled = next !== "ready";
@@ -151,15 +182,28 @@ form.addEventListener("submit", (event) => {
   if (phase !== "ready") return;
   runningId = nextId++;
   setPhase("running");
+  startElapsed();
   show("Running…", "busy");
   worker.postMessage({ type: "eval", id: runningId, source: source.value });
 });
 
-stopButton.addEventListener("click", () => {
+// 停止する。経過時間は、startWorker が時計を止める前に取る。
+function stopEvaluation() {
   if (phase !== "running") return;
+  const elapsed = performance.now() - evalStartedAt;
+  const measured = elapsedTimer !== null;
   startWorker();
   // startWorker が出す「読み込み中」より、停止の知らせを優先する。
-  show("Stopped. The state was reset.", "ok");
+  show(measured ? stoppedMessage(elapsed) : stopWarning.after, "ok");
+}
+
+stopButton.addEventListener("click", stopEvaluation);
+
+// Esc でも停止する。評価中は入力欄が無効でなくフォーカスを持ちうるので、文書全体で受ける。
+document.addEventListener("keydown", (event) => {
+  if (!isStopKey(event, phase)) return;
+  event.preventDefault();
+  stopEvaluation();
 });
 
 resetButton.addEventListener("click", () => {
