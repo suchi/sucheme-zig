@@ -943,6 +943,8 @@ test "read-line does not end a line at a carriage return until it knows whether 
 
 test "read-string waits until k characters have arrived, or the end, and reads nothing before" {
     try expectRounds(&.{
+        // 長さ 0 は、何も読まないので、入力が空で終端も無くても、待たない。
+        .{ .src = "(write (read-string 0))", .out = "\"\"", .waits = 0 },
         .{ .src = "(write (read-string 3))", .feeds = &.{ .{ .text = "a" }, .{ .text = "bcde" } }, .out = "\"abc\"", .waits = 2 },
         // 終端は、足りない分を待たずに、あるだけを返す。そのあとは終端のオブジェクトである。
         .{ .src = "(write (read-string 5)) (write (eof-object? (read-string 5)))", .feeds = &.{.eof}, .out = "\"de\"#t", .waits = 1 },
