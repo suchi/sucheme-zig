@@ -91,7 +91,9 @@ class Scanner {
     this.pos = text.length;
   }
 
-  // `#\` と、その次の1文字(サロゲートペアなら2単位)と、区切り文字までの続き。
+  // `#\` と、その次の1文字と、区切り文字までの続き。次の1文字が括弧でも、文字の一部である。
+  // Why: Zig 側は、次の1文字の長さ(UTF-8)だけ進めてから続きを読む。こちらは1単位だけ進める。
+  // 区切り文字は ASCII だけなので、サロゲートペアの2単位目は、続きとして読み飛ばされ、結果は同じである。
   skipCharacter() {
     const text = this.text;
     const start = this.pos + 2;
@@ -99,9 +101,7 @@ class Scanner {
       this.pos = text.length;
       return;
     }
-    const code = text.charCodeAt(start);
-    const firstLen = code >= 0xd800 && code <= 0xdbff && start + 1 < text.length ? 2 : 1;
-    this.pos = Math.min(start + firstLen, text.length);
+    this.pos = start + 1;
     this.skipAtom();
   }
 

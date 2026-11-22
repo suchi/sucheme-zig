@@ -929,12 +929,14 @@ test("matching agrees with the list shared with parens.zig for every cursor", ()
   }
 });
 
-test("matching counts positions in UTF-16 units and treats a character literal's first code point as one", () => {
+test("matching counts positions in UTF-16 units, also after a character literal outside the BMP", () => {
   assert.equal(matching("(あ (い) う)", 0), 8);
   assert.equal(matching("(あ)", 3), 0);
   // 補助面の文字(サロゲートペア)が `#\` の本体のとき、その2単位を1文字として読む。
   assert.equal(matching("(#\\𝄞 (b))", 0), 9);
   assert.equal(matching("(#\\𝄞)", 0), 5);
+  // 上限の補助面の文字(上位サロゲートが U+DBFF)も、同じである。
+  assert.equal(matching("(#\\\u{10FFFF}(b))", 0), 8);
   // 範囲外と、整数でない位置は、何も見つけない。
   assert.equal(matching("(a)", 4), null);
   assert.equal(matching("(a)", -1), null);
