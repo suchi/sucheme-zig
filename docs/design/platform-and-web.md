@@ -41,10 +41,11 @@ else
 ### エクスポート
 
 ```
-// 状態コードを返す(6つ)
+// 状態コードを返す(7つ)
 sucheme_init(heap_limit_bytes: u32) -> i32       インタプリタを初期化する
 sucheme_eval_begin(ptr: u32, len: u32) -> i32    入力を読み取り評価を開始する
 sucheme_step(budget: u32) -> i32                 実行を進める
+sucheme_abort() -> i32                            続いている評価を捨てる(定義は残る)
 sucheme_provide_input(ptr: u32, len: u32) -> i32 入力待ちに応答する
 sucheme_provide_eof() -> i32                     入力の終端を伝える
 sucheme_reset() -> i32                           状態を捨てて初期状態に戻す
@@ -63,10 +64,11 @@ sucheme_version_len() -> u32
 
 上の一覧は設計の目標である。段階2まで(`src/wasm.zig`)で実装しているのは、次の部分集合である。
 
-- 状態コードを返すもの: `sucheme_init`、`sucheme_eval_begin`、`sucheme_reset`
+- 状態コードを返すもの: `sucheme_init`、`sucheme_eval_begin`、`sucheme_step`、`sucheme_abort`、`sucheme_reset`
 - 状態コードを返さないもの: `sucheme_alloc`、`sucheme_free`、`sucheme_output_ptr`、`sucheme_output_len`、`sucheme_output_clear`、`sucheme_version_ptr`、`sucheme_version_len`、`sucheme_set_command_line`、`sucheme_exit_code`
 
-`sucheme_step`、`sucheme_provide_input`、`sucheme_provide_eof` は、まだ無い。`web/sucheme.js` もこれらを呼ばない。`sucheme_eval_begin` は、入力の式をすべて、完了まで同期して評価してから戻る。戻す値は 0、-1、-2、-3、-4、-5、-6、-8 のどれかで、1(継続)と 2(入力待ち)は戻さない。再開可能な機械は、段階8の「`read` による対話」と「処理の中断」で入れる([roadmap](../roadmap.md)、[plans/0008-slice-1i-wasm-web-ui.md](../plans/0008-slice-1i-wasm-web-ui.md) の合意を求める点の1)。`sucheme_set_command_line` と `sucheme_exit_code` は、スライス 5m で足した。`sucheme_set_command_line` は、空のバイト列で、処理系の名前だけの設定に戻す。`sucheme_alloc` の領域でない (ptr, len) と、写しを確保できないときも、0 を返して設定を変えない。`-6` のあとの `sucheme_eval_begin` は、`-2` のあとと同じく `-4` を返す。以下の状態コードと再開可能性の記述は、この完全な設計の契約であり、現状で実現しているのは上の部分集合に限る。
+`sucheme_provide_input` と `sucheme_provide_eof` は、まだ無い。`web/sucheme.js` もこれらを呼ばない。`sucheme_eval_begin` は、入力を写して保持し、歩数を使わずに済む分(読み取り、`import` と `define-library`)を進めてから戻る。続きがあれば 1 を返し、ホストが `sucheme_step(budget)` で進める。戻す値は 1、0、-1、-2、-3、-4、-5、-6、-8 のどれかで、2(入力待ち)は戻さない(入力待ちは、段階8の「`read` による対話」で入れる)。`sucheme_step` は最大 `budget` 歩進めて戻り、`budget` が 0 なら何も進めずに 1 を返す。出力は、1歩ごとに取り出してよい。評価が続いている間に `sucheme_eval_begin` を呼ぶと、`-4` を返し、続いている評価に触れない。`sucheme_abort` は、続いている評価を捨てて 0 を返す。それまでの定義と出力は残り、次に `sucheme_eval_begin` を呼べる。続いている評価が無いときの `sucheme_step` と `sucheme_abort` は、`-4` を返して状態を変えない。ホストは、`sucheme_step` が戻ったあとにだけ `sucheme_abort` を呼べる(WASM は1つのスレッドで動く)ので、停止の要求を立てる出口(`Context.interrupt` に当たるもの)は設けない。ホストは、歩数の区切りでイベントループに制御を戻し、停止のメッセージが届いていれば `sucheme_abort` を呼ぶ(`web/runner.mjs`)。`Context.interrupt` は、評価が始まるとき(`beginEval`)と捨てるとき(`abortEval`)に降ろす。評価の無い間に立った要求が、次の評価を始まりで中断しないためである。予算 0 の `step` に要求が立っているときは、要求が先に見られる(`interrupted`)。入れ子の実行(ライブラリの `import` の本体、[ADR-0053](../adr/0053-resumable-machine-step-budget.md) の決定6)は、`sucheme_step` の1歩の中で完了まで走るので、その間はホストが制御を取り戻せない。`sucheme_set_command_line` は、評価が続いている間は 0 を返して設定を変えない(機械が `(command-line)` の行を指すため)。
+`sucheme_set_command_line` と `sucheme_exit_code` は、スライス 5m で足した。`sucheme_set_command_line` は、空のバイト列で、処理系の名前だけの設定に戻す。`sucheme_alloc` の領域でない (ptr, len) と、写しを確保できないときも、0 を返して設定を変えない。`-6` のあとの `sucheme_eval_begin` は、`-2` のあとと同じく `-4` を返す。以下の状態コードと再開可能性の記述は、この完全な設計の契約であり、現状で実現しているのは上の部分集合に限る。
 
 文字列はすべて UTF-8 とする。文字列表現に UTF-8 を選んだ理由の一つがこの境界である。
 
@@ -119,7 +121,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 
 ### 状態コード
 
-エクスポートは2群に分かれる。状態機械の状態を遷移させる6つは共通の状態コードを `i32` で返し、残りの9つは状態コードを返さない。上のエクスポート一覧の2群がこの区別である。どちらの群に属するかは関数ごとに固定で、戻り値の意味を関数ごとに変えない。
+エクスポートは2群に分かれる。状態機械の状態を遷移させる7つは共通の状態コードを `i32` で返し、残りの9つは状態コードを返さない。上のエクスポート一覧の2群がこの区別である。どちらの群に属するかは関数ごとに固定で、戻り値の意味を関数ごとに変えない。
 
 2群に分けるのは、混ぜると成功を表す `0` がホスト側の保持する状態を上書きし、通常の手順が契約違反になるためである。
 
@@ -151,12 +153,12 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 
 状態コードの契約は2つの表で定める。1つは値から次に呼べる関数への対応、もう1つは関数から返しうる値への対応である。片方だけでは実装できない。
 
-下の表の「直後に呼べる関数」は、状態コードを返す6つのうちどれを呼べるかを示す。状態コードを返さない9つはいつでも呼べるので、この欄には挙げない。
+下の表の「直後に呼べる関数」は、状態コードを返す7つのうちどれを呼べるかを示す。状態コードを返さない9つはいつでも呼べるので、この欄には挙げない。
 
 | 値 | 意味 | 直後に呼べる関数 |
 | --- | --- | --- |
 | 0 | 成功。評価が完了した場合もこれを返す | `sucheme_eval_begin` `sucheme_reset` |
-| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_reset` |
+| 1 | 継続。`sucheme_step` に続きがある | `sucheme_step` `sucheme_abort` `sucheme_reset` |
 | 2 | 入力待ち。`sucheme_provide_input` または `sucheme_provide_eof` を待っている | `sucheme_provide_input` `sucheme_provide_eof` `sucheme_reset` |
 | -1 | Scheme のエラー。未処理例外を含む。出力バッファに整形済みの内容がある | `sucheme_eval_begin` `sucheme_reset` |
 | -2 | 回復不能。送出のための予約領域を使い切り、送出する条件を作れなかった。出力バッファに `error: heap limit exceeded` の一行がある。段階2のスライス 2e から、このコードを返す(`src/wasm.zig`)。`sucheme_reset` の前に `sucheme_eval_begin` を呼ぶと、状態を変えず、説明の一行を出力に足して -4 を返す | `sucheme_reset` |
@@ -174,6 +176,7 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 | `sucheme_init` | 0(初期化できた)、-4(すでに初期化済み)、-7(確保に失敗した) |
 | `sucheme_eval_begin` | 1、0、-1、-2、-3、-4、-5、-6、-8 |
 | `sucheme_step` | 1、2、0、-1、-2、-4、-5、-6 |
+| `sucheme_abort` | 0、-4、-5 |
 | `sucheme_provide_input` | 1、-1、-2、-3、-4、-5、-6、-8 |
 | `sucheme_provide_eof` | 1、-4、-5 |
 | `sucheme_reset` | 0、-5、-7 |
@@ -182,11 +185,11 @@ R7RS 6.11 は `read-error?` を「Returns #t if obj is an object raised by the r
 
 `sucheme_init` が成功したときに 0 を返すのは、その後に呼べるのが `sucheme_eval_begin` だからである。0 の行の「直後に呼べる関数」と一致する。
 
-`sucheme_eval_begin` は通常 1 を返す。式を読んで評価を開始し、まだ終わっていない状態である。歩数を使わずに完了する場合(入力が空、コメントだけ、`(quote x)` のような1歩の式)は 0 を返す。0 を返したあとにホストが `sucheme_step` を呼ぶと -4 になるので、ホストは戻り値が 1 のときだけ `sucheme_step` のループに入る。この区別がないと、空の入力欄で実行ボタンを押しただけで「ホスト側の実装の誤り」が報告される。
+`sucheme_eval_begin` は通常 1 を返す。式を読んで評価を開始し、まだ終わっていない状態である。機械の歩を1つも使わずに完了する場合(入力が空、コメントだけ、`define-library` の宣言だけ)は 0 を返す(`(quote x)` のような1歩の式は、`sucheme_eval_begin` では歩を進めないので、1 を返し、`sucheme_step` で完了する)。0 を返したあとにホストが `sucheme_step` を呼ぶと -4 になるので、ホストは戻り値が 1 のときだけ `sucheme_step` のループに入る。この区別がないと、空の入力欄で実行ボタンを押しただけで「ホスト側の実装の誤り」が報告される。
 
 `sucheme_provide_input` は 2 を返さない。入力を受け取って評価を再開できる状態にするので 1 を返し、次の `read` でまた入力が必要になったときは `sucheme_step` が 2 を返す。
 
-`-3` と `-4` は、どちらも状態を変えずに戻る。状態コードを返す6つの関数は、引数と現在の状態を先に検査し、`-3` `-4` `-8` を返す場合は何も変えない。これを ABI の不変条件とする。したがってホストは、呼び出し前の状態で呼べた関数をそのまま呼び続けられる。
+`-3` と `-4` は、どちらも状態を変えずに戻る。状態コードを返す7つの関数は、引数と現在の状態を先に検査し、`-3` `-4` `-8` を返す場合は何も変えない。これを ABI の不変条件とする。したがってホストは、呼び出し前の状態で呼べた関数をそのまま呼び続けられる。
 
 ここで「状態」とは状態機械の状態、すなわち上の表の値に対応する局面と、ヒープ上の定義の全体である。出力バッファの内容はこれに含まれない。`-3` `-4` `-8` を返す呼び出しは、エラーの説明を出力バッファに書くため、バッファにあった内容を失わせる。
 
@@ -293,7 +296,7 @@ import を増やさないのは、ホスト側が用意しなければならな�
 
 入力待ちには終端が必要である。R7RS 6.13.2 は `read-char` について「If no more characters are available, an end-of-file object is returned.」と規定しているので、ホストが「これ以上入力はない」と伝える手段がなければ `(eof-object? c)` が真になることがなく、入力を読むループが終わらない。
 
-終端は専用のエクスポート `sucheme_provide_eof()` で伝える。`sucheme_provide_input(ptr, 0)` を終端の意味にはしない。長さ0の入力(空行)と終端は別の事象であり、同じ呼び出しで表すとホストが空行を渡せなくなる。このエクスポートは状態コードを返す群に入るので、群の件数は6つになる。
+終端は専用のエクスポート `sucheme_provide_eof()` で伝える。`sucheme_provide_input(ptr, 0)` を終端の意味にはしない。長さ0の入力(空行)と終端は別の事象であり、同じ呼び出しで表すとホストが空行を渡せなくなる。このエクスポートは状態コードを返す群に入るので、群の件数は、`sucheme_abort` を含めて7つになる。
 
 渡したバイト列が1回の読み取りより長い場合は、残りを WASM 側の入力バッファに保持し、次の読み取りが先にそこから取る。捨てない。捨てると `(list (read-char) (read-char))` に `sucheme_provide_input("ab")` を1回渡したときの結果が実装によって変わる。バッファが空になってから次の読み取りが来たときに 2 を返す。終端を受け取った後は、以降のすべての読み取りが EOF を返す。入力バッファも計上の対象に含める([runtime.md](runtime.md) の計上の対象)。入力バッファは `sucheme_provide_input` とともに入れる設計で、段階2までには無い。ホストが `sucheme_alloc` で受け取る領域は、いまは計上の外にある(下の「所有権と有効期限の契約」の入力領域)。
 
