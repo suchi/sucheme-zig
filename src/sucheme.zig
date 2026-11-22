@@ -908,6 +908,14 @@ test "read-char waits for input, and reads what arrives, a multibyte character w
     });
 }
 
+test "a character that arrives in pieces is waited for whole, by read-char and by read-line" {
+    // WASM は、1回に渡すバイト列を妥当な UTF-8 に限る。ここは、境界の検査に頼らない防御である。
+    try expectRounds(&.{
+        .{ .src = "(write (read-char))", .feeds = &.{ .{ .text = "\xCE" }, .{ .text = "\xBB" } }, .out = "#\\\u{3bb}", .waits = 2 },
+        .{ .src = "(write (read-line))", .feeds = &.{ .{ .text = "a\xCE" }, .{ .text = "\xBB\n" } }, .out = "\"a\u{3bb}\"", .waits = 2 },
+    });
+}
+
 test "peek-char waits, and reads past nothing" {
     try expectRounds(&.{
         .{ .src = "(write (peek-char)) (write (peek-char)) (write (read-char))", .feeds = &.{.{ .text = "k" }}, .out = "#\\k#\\k#\\k", .waits = 1 },
