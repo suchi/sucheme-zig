@@ -18,6 +18,7 @@ import { describeResult, splitError } from "../../web/errors.mjs";
 import { Status } from "../../web/sucheme.js";
 import { matching, highlightPair, changeIndent } from "../../web/parens.mjs";
 import { createHistory, onFirstLine, onLastLine } from "../../web/history.mjs";
+import { formatElapsed, stoppedMessage, stopWarning, isStopKey } from "../../web/stop.mjs";
 
 const wasmPath = process.argv[2];
 if (wasmPath === undefined) {
@@ -1047,6 +1048,39 @@ test("a fragment that is not a share link is read as null, and so is one that is
   assert.equal(decodeFragment(encodeFragment(longest)), longest);
   assert.equal(encodeFragment(longest + "xxxx"), null);
   assert.equal(decodeFragment("#code=" + "A".repeat(MAX_FRAGMENT_LENGTH)), null);
+});
+
+// 停止の操作(web/stop.mjs)。
+test("formatElapsed shows seconds below a minute, then minutes and hours", () => {
+  assert.equal(formatElapsed(0), "0.0 s");
+  assert.equal(formatElapsed(99), "0.0 s");
+  assert.equal(formatElapsed(100), "0.1 s");
+  assert.equal(formatElapsed(1234), "1.2 s");
+  assert.equal(formatElapsed(59999), "59.9 s");
+  assert.equal(formatElapsed(60000), "1:00");
+  assert.equal(formatElapsed(65999), "1:05");
+  assert.equal(formatElapsed(3599999), "59:59");
+  assert.equal(formatElapsed(3600000), "1:00:00");
+  assert.equal(formatElapsed(3723000), "1:02:03");
+  // 異常な値は 0 として扱う。
+  assert.equal(formatElapsed(-5), "0.0 s");
+  assert.equal(formatElapsed(NaN), "0.0 s");
+  assert.equal(formatElapsed(Infinity), "0.0 s");
+});
+
+test("the stop messages say that definitions are lost, before and after", () => {
+  assert.match(stopWarning.before, /definitions/);
+  assert.match(stopWarning.after, /definitions were lost/);
+  assert.equal(stoppedMessage(2500), `${stopWarning.after} (ran for 2.5 s)`);
+});
+
+test("isStopKey stops only on Escape while running and not while composing", () => {
+  assert.equal(isStopKey({ key: "Escape" }, "running"), true);
+  assert.equal(isStopKey({ key: "Escape", isComposing: false }, "running"), true);
+  assert.equal(isStopKey({ key: "Escape", isComposing: true }, "running"), false);
+  assert.equal(isStopKey({ key: "Escape" }, "ready"), false);
+  assert.equal(isStopKey({ key: "Escape" }, "loading"), false);
+  assert.equal(isStopKey({ key: "Enter" }, "running"), false);
 });
 
 // エラーの表示(web/errors.mjs)。出力とエラーの説明を分け、エラーの前の出力を残す。
