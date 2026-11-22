@@ -2580,6 +2580,22 @@ test "the step limit ends a stepped run with StepLimit however the budget cuts i
     try std.testing.expect(!f.machine.active);
 }
 
+test "the step limit comes first when it runs out with the budget, and a budget one step shorter gives control back" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const spin = "((lambda () (define (spin) (spin)) (spin)))";
+    // 上限と予算が同時に尽きる: 上限が先で、`more` でなく `StepLimit` になる。
+    f.ctx.step_limit = 64;
+    f.machine.begin(try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, spin)));
+    try std.testing.expectError(error.StepLimit, f.machine.step(64));
+    // 上限が1歩多ければ、予算が先に尽きて制御が戻り、次の1歩で上限に達する。
+    f.ctx.step_limit = 65;
+    f.machine.begin(try expand.expand(&f.ctx, f.arena.allocator(), try readOne(&f, spin)));
+    try std.testing.expectEqual(.more, try f.machine.step(64));
+    try std.testing.expectError(error.StepLimit, f.machine.step(64));
+}
+
 test "an interrupt request is seen at a step, taken down, and the run goes on from there" {
     var f: Fixture = undefined;
     try f.init();

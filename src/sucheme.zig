@@ -404,6 +404,8 @@ pub const Interpreter = struct {
                 continue;
             }
             const node = expand.expand(&self.ctx, e.arena, form) catch |err| return self.located(err, table, form);
+            // 形式ごとに新しい機械で始める。`peak_depth` と呼び直しの印を、形式をまたいで残さない。
+            e.machine = .init(&self.ctx, e.arena);
             e.machine.begin(node);
         }
     }
@@ -661,6 +663,27 @@ test "evaluating a few steps at a time writes what evalPrint writes, however the
             try std.testing.expect(interp.eval == null);
         }
     }
+}
+
+test "one budget is shared by the forms of a stepped evaluation, so a call gives control back inside a long input" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(std.testing.allocator);
+    for (0..100) |_| try source.appendSlice(std.testing.allocator, "(+ 1 1) ");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try interp.beginEval(arena.allocator(), source.items, &w);
+    // 1つの形式は数歩で終わる。予算が形式をまたいで共有されなければ、最初の呼び出しが全体を走る。
+    try std.testing.expectEqual(.more, try interp.stepEval(100));
+    try std.testing.expect(w.buffered().len < 200);
+    var calls: usize = 1;
+    while (try interp.stepEval(100) != .done) calls += 1;
+    try std.testing.expect(calls >= 3);
+    try std.testing.expectEqual(200, w.buffered().len);
 }
 
 test "an error in a stepped evaluation ends it, is described as evalPrint describes it, and the next one runs" {
