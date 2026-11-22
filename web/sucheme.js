@@ -1,7 +1,7 @@
 // A thin layer over the exports of sucheme.wasm (src/wasm.zig).
 //
 // 状態コードの値は docs/design/platform-and-web.md の表が正である。この層は
-// src/wasm.zig が公開している関数だけを呼ぶ(`sucheme_provide_input` などは未実装)。
+// src/wasm.zig が公開している関数だけを呼ぶ。
 // 文字列はすべて UTF-8 で受け渡す。線形メモリは伸びると ArrayBuffer が差し替わるので、
 // メモリの視点(Uint8Array)は使うたびに作り直す。
 
@@ -111,11 +111,45 @@ export class Sucheme {
    * Advance the evaluation `begin()` started by at most `budget` machine steps
    * (`budget` は 0 から 2^32 - 1)。
    *
-   * 戻り値は `{ status, output }`。1 なら、また呼ぶ。0 は完了、-1 は Scheme のエラーである。
-   * 出力は、この歩の分だけが入る。
+   * 戻り値は `{ status, output }`。1 なら、また呼ぶ。2(`Status.WAITING_INPUT`)は、読み取りが入力を
+   * 待っていることを表し、`provideInput()` か `provideEof()` で渡してから、また呼ぶ。0 は完了、
+   * -1 は Scheme のエラーである。出力は、この歩の分だけが入る。
    */
   step(budget) {
     const status = this.#exports.sucheme_step(budget);
+    return { status, output: this.#takeOutput() };
+  }
+
+  /**
+   * Give the read that waits for input (`step()` returned `Status.WAITING_INPUT`) `text`.
+   *
+   * 戻り値は `{ status, output }`。status が 1 なら受け取った。`step()` で続ける。-1 は、入力を保持できず
+   * 評価を捨てたことを表し(定義は残る)、-4 は、読み取りが待っていないときに呼んだことを表す。
+   * 空の文字列は何も渡さない(空行は "\n" を渡す)。
+   */
+  provideInput(text) {
+    const e = this.#exports;
+    const encoded = encoder.encode(text);
+    const ptr = e.sucheme_alloc(encoded.length);
+    if (ptr === 0) {
+      return { status: Status.NOT_INITIALIZED, output: this.#takeOutput() };
+    }
+    let status;
+    try {
+      this.#bytes(ptr, encoded.length).set(encoded);
+      status = e.sucheme_provide_input(ptr, encoded.length);
+    } finally {
+      e.sucheme_free(ptr, encoded.length);
+    }
+    return { status, output: this.#takeOutput() };
+  }
+
+  /**
+   * Say that there is no more input: the read that waits, and every read after it, gets the
+   * end of file. Returns `{ status, output }`; status 1 means it was taken, and `step()` goes on.
+   */
+  provideEof() {
+    const status = this.#exports.sucheme_provide_eof();
     return { status, output: this.#takeOutput() };
   }
 
