@@ -37,4 +37,4 @@ error: 2:3: wrong type of argument to car 5
 
 ## Web UI
 
-Web UI では、ファイルを開けません(`file-error` になります)。標準入力は最初から終わりにあり、`(read-char)` はファイルの終わりを返します([ユーザーズガイド 6 Web UI](../guide/06-web-ui.md))。
+Web UI では、ファイルを開けません(`file-error` になります)。標準入力は、画面の入力欄から1行ずつ渡します。「End of input」で終わりを渡すと、続く読み取りはファイルの終わりを返します([ユーザーズガイド 6 Web UI](../guide/06-web-ui.md))。
