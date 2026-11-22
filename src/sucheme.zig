@@ -290,6 +290,11 @@ pub const Interpreter = struct {
     }
 
     fn startEval(self: *Interpreter, arena: std.mem.Allocator, source: []const u8, out: *std.Io.Writer) Error!void {
+        // Why: 割り込みの要求は、走っている評価に向けたものである。評価の無い間に立った要求
+        // (遅れて届いた停止など)が、次の評価を始まりで中断しないよう、ここで捨てる。
+        // 評価が終わったあとに立った要求も、次の始まりで捨てるので、終わりで降ろす必要は無い。
+        // `abortEval` は、捨てる評価の分を降ろす。
+        self.ctx.interrupt.store(false, .monotonic);
         // 前の行が送出した値は、ここで手放す。この行の GC が回収する。
         self.ctx.clearDiagnostic();
         self.diagnostic_text = "";
@@ -337,7 +342,10 @@ pub const Interpreter = struct {
     /// Drops the evaluation `beginEval` started, which has not finished.
     /// 停止中の機械は捨てる。それまでの定義と出力は残る。
     pub fn abortEval(self: *Interpreter) void {
-        if (self.eval != null) self.endEval();
+        if (self.eval == null) return;
+        self.endEval();
+        // 捨てた評価に向けた要求は、残さない。
+        self.ctx.interrupt.store(false, .monotonic);
     }
 
     /// `stepEval`, with `watch` whether the request in `Context.interrupt` is looked at.
@@ -738,6 +746,32 @@ test "an interrupted evaluation goes on where it was, or is dropped with its def
     try std.testing.expect(interp.ctx.parked == null);
     try interp.evalPrint(arena.allocator(), "y", &w);
     try std.testing.expectEqualStrings("5\n", w.buffered());
+}
+
+test "an interrupt request belongs to the evaluation that is running: begin and the end of one take it down" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var interp: Interpreter = undefined;
+    try interp.init(std.testing.allocator);
+    defer interp.deinit();
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 評価が無い間に立った要求は、次の評価を中断しない。
+    interp.ctx.interrupt.store(true, .monotonic);
+    try interp.beginEval(arena.allocator(), "(define (spin) (spin)) (spin)", &w);
+    try std.testing.expect(!interp.ctx.interrupt.load(.monotonic));
+    try std.testing.expectEqual(.more, try interp.stepEval(10));
+    // 予算 0 でも、要求は先に見られる(予算の尽きより前)。
+    interp.ctx.interrupt.store(true, .monotonic);
+    try std.testing.expectEqual(.interrupted, try interp.stepEval(0));
+    // 捨てるときも、要求を残さない。
+    interp.ctx.interrupt.store(true, .monotonic);
+    interp.abortEval();
+    try std.testing.expect(!interp.ctx.interrupt.load(.monotonic));
+    // 評価が終わったあとに立った要求も、次の評価の始まりで捨てる。
+    interp.ctx.interrupt.store(true, .monotonic);
+    try interp.beginEval(arena.allocator(), "2", &w);
+    try std.testing.expectEqual(.done, try interp.stepEval(10));
 }
 
 test "the step limit ends a stepped evaluation with StepLimit and a description" {

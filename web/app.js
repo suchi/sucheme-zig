@@ -1,8 +1,10 @@
 // The controller of the page: owns the worker and the buttons.
 //
 // 状態は loading(WASM を読み込み中)・ready(入力を受け付ける)・running(評価中)の3つ。
-// 「停止」(ボタンと Esc)は Worker を捨てて作り直す(worker.terminate())。作り直した処理系は
-// 初期状態なので、定義はすべて失われる。停止の前後に、そのことを画面に出す(stop.mjs)。
+// 「停止」(ボタンと Esc)は、Worker に停止を要求する。Worker は、評価を歩数の区切りで捨てる。
+// それまでの定義は残る(runner.mjs)。Worker が時間内に応えないとき(ライブラリの `import` の途中など、
+// 区切りの無い間)だけ、Worker を捨てて作り直す(worker.terminate())。作り直した処理系は初期状態
+// なので、定義はすべて失われ、そのことを画面に出す(stop.mjs)。
 // 評価中は経過時間を出す。
 //
 // 画面の文言は英語にする(AGENTS.md の言語ルール)。結果の説明は errors.mjs が作る。
@@ -11,7 +13,7 @@ import { Status } from "./sucheme.js";
 import { describeResult } from "./errors.mjs";
 import { samples } from "./samples.mjs";
 import { encodeFragment, decodeFragment } from "./share.mjs";
-import { formatElapsed, stopWarning, stoppedMessage, isStopKey } from "./stop.mjs";
+import { formatElapsed, stopWarning, restartedMessage, describeStopped, stopTimeoutMs, isStopKey } from "./stop.mjs";
 
 const form = document.getElementById("form");
 const source = document.getElementById("source");
@@ -39,6 +41,8 @@ let worker = null;
 let phase = "loading";
 let nextId = 1;
 let runningId = 0;
+// 停止を要求してから、Worker の応答を待つ間のタイマー。要求していなければ null。
+let stopTimer = null;
 
 // 状態の知らせ(読み込み中、停止など)を出力欄に出す。エラーの欄は閉じる。
 function show(text, status = "ok") {
@@ -50,7 +54,11 @@ function show(text, status = "ok") {
 // 評価の結果を出す。プログラムの出力は出力欄に、エラーの説明は別の欄に出す。
 // エラーの前に出た出力は、出力欄に残る。
 function showResult(status, text, exitCode) {
-  const { output: out, error } = describeResult(status, text, exitCode);
+  render(describeResult(status, text, exitCode), status === Status.EXITED ? "exit" : "error");
+}
+
+// `{ output, error }` を出す。`kind` は、エラーの欄の色(exit は失敗ではない)。
+function render({ output: out, error }, kind) {
   output.textContent = out === "" && error === null ? "(no output)" : out;
   output.dataset.status = error === null ? "ok" : "partial";
   if (error === null) {
@@ -63,7 +71,7 @@ function showResult(status, text, exitCode) {
   errorHint.textContent = error.hint ?? "";
   errorHint.hidden = error.hint === null;
   // 終了は失敗ではないので、エラーの色にしない。
-  errorPanel.dataset.kind = status === Status.EXITED ? "exit" : "error";
+  errorPanel.dataset.kind = kind;
   errorPanel.hidden = false;
 }
 
@@ -92,7 +100,10 @@ function startElapsed() {
 
 function setPhase(next) {
   if (phase === "running" && next !== "running" && elapsedTimer !== null) stopElapsed();
-  // 評価中は、停止すると定義が失われることを前もって示す。
+  // 評価を離れるとき、停止の応答待ちは要らない。
+  if (next !== "running" && stopTimer !== null) clearTimeout(stopTimer);
+  if (next !== "running") stopTimer = null;
+  // 評価中は、停止しても定義が残ることを、停止の近くに示す。
   stopWarningLabel.textContent = next === "running" ? stopWarning.before : "";
   stopWarningLabel.hidden = next !== "running";
   phase = next;
@@ -108,20 +119,21 @@ function openedFromFile() {
 
 const fileHint = "Open this page through a local server: node web/serve.mjs";
 
+// Worker を作り直す。作れたかを返す(作れなければ、失敗の説明を出力欄に出してある)。
 function startWorker() {
   if (worker !== null) worker.terminate();
   setPhase("loading");
   versionLabel.textContent = "Loading…";
   if (openedFromFile()) {
     show(fileHint, "error");
-    return;
+    return false;
   }
   let w;
   try {
     w = new Worker(workerUrl, { type: "module" });
   } catch (e) {
     show(`Could not create the worker: ${e.message}\n${fileHint}`, "error");
-    return;
+    return false;
   }
   worker = w;
 
@@ -136,7 +148,10 @@ function startWorker() {
         break;
       case "result": {
         if (m.id !== runningId) break;
-        showResult(m.status, m.output, m.exitCode);
+        // 経過時間は、setPhase が時計を止める前に取る。
+        const elapsed = performance.now() - evalStartedAt;
+        if (m.stopped) render(describeStopped(m.output, elapsed), "exit");
+        else showResult(m.status, m.output, m.exitCode);
         setPhase("ready");
         break;
       }
@@ -175,6 +190,7 @@ function startWorker() {
 
   show("Loading WebAssembly…", "busy");
   w.postMessage({ type: "init", wasmUrl });
+  return true;
 }
 
 form.addEventListener("submit", (event) => {
@@ -187,14 +203,21 @@ form.addEventListener("submit", (event) => {
   worker.postMessage({ type: "eval", id: runningId, source: source.value });
 });
 
-// 停止する。経過時間は、startWorker が時計を止める前に取る。
+// 停止する。Worker に要求を送り、評価が区切りで止まるのを待つ。時間内に応えなければ、
+// Worker を作り直す(定義は失われる)。経過時間は、時計を止める前に取る。
 function stopEvaluation() {
-  if (phase !== "running") return;
-  const elapsed = performance.now() - evalStartedAt;
-  const measured = elapsedTimer !== null;
-  startWorker();
-  // startWorker が出す「読み込み中」より、停止の知らせを優先する。
-  show(measured ? stoppedMessage(elapsed) : stopWarning.after, "ok");
+  if (phase !== "running" || stopTimer !== null) return;
+  stopButton.disabled = true;
+  stopWarningLabel.textContent = stopWarning.waiting;
+  worker.postMessage({ type: "stop", id: runningId });
+  stopTimer = setTimeout(() => {
+    stopTimer = null;
+    const elapsed = performance.now() - evalStartedAt;
+    const measured = elapsedTimer !== null;
+    // 作り直せなかったときは、startWorker が出した失敗の説明を、停止の知らせで上書きしない。
+    if (!startWorker()) return;
+    show(measured ? restartedMessage(elapsed) : stopWarning.lost, "ok");
+  }, stopTimeoutMs);
 }
 
 stopButton.addEventListener("click", stopEvaluation);

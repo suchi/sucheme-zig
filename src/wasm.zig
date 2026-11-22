@@ -3,7 +3,8 @@
 //! `wasm32-freestanding` 向けのビルドのルート。ホスト(ブラウザの Worker や Node.js)が
 //! 呼べる関数を `export` で公開し、設計文書の状態コードで結果を返す。
 //! スライス 1i が実装するのは、設計のエクスポートの部分集合である
-//! (docs/plans/0008-slice-1i-wasm-web-ui.md)。再開可能な機械と入力の待ちは後のスライスで足す。
+//! (docs/plans/0008-slice-1i-wasm-web-ui.md)。歩数ごとに制御を戻す評価(`sucheme_step`、
+//! `sucheme_abort`)はスライス 8e-2 で足した。入力の待ちは後のスライスで足す。
 //!
 //! ホストから受け取る文字列は `sucheme_alloc` で確保した領域に置かれ、UTF-8 として
 //! 妥当なものだけが処理系に入る。出力は固定の大きさのバッファに書き、ホストが読んで
@@ -27,6 +28,8 @@ fn wasmPanic(msg: []const u8, _: ?usize) noreturn {
 /// エクスポートした関数が返す状態コードを置く(-2 は回復不能、-4 は呼び出しの順序の誤り)。
 const Status = struct {
     const ok: i32 = 0;
+    const more: i32 = 1;
+    const waiting_input: i32 = 2;
     const scheme_error: i32 = -1;
     const unrecoverable: i32 = -2;
     const invalid_utf8: i32 = -3;
@@ -68,6 +71,14 @@ var exited = false;
 /// The exit code of the last status -6, or 0 when there has been none
 /// (`sucheme_exit_code`).
 var exit_code: i32 = 0;
+
+/// Whether an evaluation `sucheme_eval_begin` started has not finished: `sucheme_step` goes
+/// on with it, and `sucheme_abort` drops it (status 1).
+/// Why: 評価は歩数ごとに制御を戻すので、評価の間、入力の写しとアリーナをここに持つ。
+/// ホストの領域は `sucheme_eval_begin` が戻るとホストが返すので、読み手は写しを指す。
+var evaluating = false;
+var eval_arena: std.heap.ArenaAllocator = undefined;
+var eval_source: []u8 = &.{};
 
 /// The command line `sucheme_set_command_line` set: the bytes it was given, and
 /// the lines of them, or nothing for the name of the interpreter alone.
@@ -147,6 +158,7 @@ export fn sucheme_reset() i32 {
         return Status.not_initialized;
     }
     const limit = interp.ctx.heap.options.limit;
+    dropEvaluation();
     interp.deinit();
     unrecoverable = false;
     exited = false;
@@ -211,12 +223,14 @@ fn firstInvalidUtf8(bytes: []const u8) ?usize {
     return null;
 }
 
-/// Evaluates every expression of the input and writes the results to the output buffer.
+/// Starts evaluating every expression of the input, and runs what needs no machine step.
+/// 結果は出力バッファに書く。
 ///
-/// 返す値は 0(完了)、-1(Scheme のエラー。`error: ...` の一行を出力に書く)、
+/// 返す値は 1(評価が続いている。`sucheme_step` で進める)、0(完了)、-1(Scheme のエラー。`error: ...` の一行を出力に書く)、
 /// -2(回復不能。送出のための予約も尽きた。`error: ...` の一行を出力に書き、以後は
 /// `sucheme_reset` だけを受け付ける)、-3(不正な UTF-8。位置を出力に書き、状態は変えない)、
-/// -4(-2 か -6 のあとで `sucheme_reset` の前に呼ばれた。状態は変えない)、-5、
+/// -4(-2 か -6 のあとで `sucheme_reset` の前に、または前の評価が続いている間に呼ばれた。状態は
+/// 変えない)、-5、
 /// -6(プログラムが `exit` か `emergency-exit` を呼んだ。終了コードは `sucheme_exit_code` で取り、
 /// 以後は `sucheme_reset` だけを受け付ける)、-8。
 export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
@@ -242,29 +256,115 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
         appendTail(&out, output, text);
         return Status.invalid_utf8;
     }
-    var arena: std.heap.ArenaAllocator = .init(allocator);
-    defer arena.deinit();
-    interp.ctx.heap.command_line = if (command_line.items.len == 0) &.{sucheme.name} else command_line.items;
-    interp.evalPrint(arena.allocator(), source, &out) catch |e| {
-        // 終了コードは出力に書かない。`exit` が呼ぶ `after` の出力と混ざるからである
-        // (docs/design/platform-and-web.md)。
-        if (e == error.Exited) {
-            exited = true;
-            exit_code = interp.ctx.exit_code;
-            return Status.exited;
-        }
-        var buf: [320]u8 = undefined;
-        const message = switch (e) {
-            error.WriteFailed => "output buffer full",
-            else => interp.diagnostic(),
-        };
-        appendTail(&out, output, sucheme.errorLine(&buf, message));
-        if (e == error.ReserveExhausted) {
-            unrecoverable = true;
-            return Status.unrecoverable;
-        }
+    if (evaluating) {
+        appendTail(&out, output, "error: an evaluation is in progress; call sucheme_step or sucheme_abort\n");
+        return Status.wrong_order;
+    }
+    eval_source = allocator.dupe(u8, source) catch {
+        appendTail(&out, output, "error: out of memory\n");
         return Status.scheme_error;
     };
+    eval_arena = .init(allocator);
+    interp.ctx.heap.command_line = if (command_line.items.len == 0) &.{sucheme.name} else command_line.items;
+    interp.beginEval(eval_arena.allocator(), eval_source, &out) catch |e| {
+        freeEvaluation();
+        return failed(e);
+    };
+    evaluating = true;
+    // 歩数を使わずに済む入力(空、コメントだけ、ライブラリの宣言)は、ここで 0 になる。
+    return advance(0);
+}
+
+/// Releases the copy of the input and the arena of the evaluation.
+fn freeEvaluation() void {
+    eval_arena.deinit();
+    allocator.free(eval_source);
+    eval_source = &.{};
+    evaluating = false;
+}
+
+/// Drops the evaluation in progress, if there is one.
+/// 定義と、ここまでの出力は残る(`Interpreter.abortEval`)。
+fn dropEvaluation() void {
+    if (!evaluating) return;
+    interp.abortEval();
+    freeEvaluation();
+}
+
+/// The status code of an evaluation that ended with the error `e`, after it wrote the
+/// description to the output.
+fn failed(e: sucheme.Error) i32 {
+    // 終了コードは出力に書かない。`exit` が呼ぶ `after` の出力と混ざるからである
+    // (docs/design/platform-and-web.md)。
+    if (e == error.Exited) {
+        exited = true;
+        exit_code = interp.ctx.exit_code;
+        return Status.exited;
+    }
+    var buf: [320]u8 = undefined;
+    const message = switch (e) {
+        error.WriteFailed => "output buffer full",
+        else => interp.diagnostic(),
+    };
+    appendTail(&out, output, sucheme.errorLine(&buf, message));
+    if (e == error.ReserveExhausted) {
+        unrecoverable = true;
+        return Status.unrecoverable;
+    }
+    return Status.scheme_error;
+}
+
+/// Runs the evaluation in progress for at most `budget` machine steps.
+fn advance(budget: u64) i32 {
+    const status = interp.stepEval(budget) catch |e| {
+        freeEvaluation();
+        return failed(e);
+    };
+    switch (status) {
+        .done => {
+            freeEvaluation();
+            return Status.ok;
+        },
+        // 割り込みの要求は、ホストが立てる出口が無いので、ここには来ない。来ても、続きがある
+        // ことには変わらない。
+        .more, .interrupted => return Status.more,
+        // 入力待ちは、スライス 8f-1 が足す。
+        .needs_input => return Status.waiting_input,
+    }
+}
+
+/// Advances the evaluation `sucheme_eval_begin` started by at most `budget` machine steps.
+///
+/// 返す値は 1(続きがある。また呼ぶ)、0(完了)、-1(Scheme のエラー)、-2(回復不能)、
+/// -6(`exit`)、-4(評価が無いときに呼んだ。状態は変えない)、-5。予算 0 は、何も進めずに
+/// 1 を返す。出力は、1歩ごとに取り出してよい(`sucheme_output_len`)。
+export fn sucheme_step(budget: u32) i32 {
+    if (!initialized) {
+        appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
+        return Status.not_initialized;
+    }
+    if (!evaluating) {
+        appendTail(&out, output, "error: no evaluation is in progress; call sucheme_eval_begin\n");
+        return Status.wrong_order;
+    }
+    return advance(budget);
+}
+
+/// Drops the evaluation `sucheme_eval_begin` started and `sucheme_step` has not finished.
+///
+/// 返す値は 0(捨てた)、-4(評価が無い。状態は変えない)、-5。それまでの定義と出力は残り、
+/// 次に `sucheme_eval_begin` を呼べる。実行中の1歩の途中では呼べないので、ホストは
+/// `sucheme_step` が戻ったあとに呼ぶ。
+export fn sucheme_abort() i32 {
+    if (!initialized) {
+        appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
+        return Status.not_initialized;
+    }
+    if (!evaluating) {
+        appendTail(&out, output, "error: no evaluation is in progress; call sucheme_eval_begin\n");
+        return Status.wrong_order;
+    }
+    dropEvaluation();
     return Status.ok;
 }
 
@@ -277,6 +377,8 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
 /// 行は改行で区切り、末尾の改行は区切りとして扱わない(`"a\nb\n"` は2行)。
 export fn sucheme_set_command_line(ptr: u32, len: u32) u32 {
     if (!initialized) return 0;
+    // 評価の間は、機械が `(command-line)` の行を指すので、置き換えない。
+    if (evaluating) return 0;
     if (!insideRegion(ptr, len)) return 0;
     const bytes: []const u8 = if (len == 0) &.{} else blk: {
         const p: [*]const u8 = @ptrFromInt(ptr);
