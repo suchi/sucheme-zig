@@ -4,7 +4,8 @@
 //! 呼べる関数を `export` で公開し、設計文書の状態コードで結果を返す。
 //! スライス 1i が実装するのは、設計のエクスポートの部分集合である
 //! (docs/plans/0008-slice-1i-wasm-web-ui.md)。歩数ごとに制御を戻す評価(`sucheme_step`、
-//! `sucheme_abort`)はスライス 8e-2 で足した。入力の待ちは後のスライスで足す。
+//! `sucheme_abort`)はスライス 8e-2 で、入力の待ち(`sucheme_provide_input`、
+//! `sucheme_provide_eof`)はスライス 8f-1 で足した。
 //!
 //! ホストから受け取る文字列は `sucheme_alloc` で確保した領域に置かれ、UTF-8 として
 //! 妥当なものだけが処理系に入る。出力は固定の大きさのバッファに書き、ホストが読んで
@@ -77,6 +78,11 @@ var exit_code: i32 = 0;
 /// Why: 評価は歩数ごとに制御を戻すので、評価の間、入力の写しとアリーナをここに持つ。
 /// ホストの領域は `sucheme_eval_begin` が戻るとホストが返すので、読み手は写しを指す。
 var evaluating = false;
+/// Whether the evaluation stopped because a read waits for input (status 2), so that
+/// `sucheme_provide_input` and `sucheme_provide_eof` may be called.
+/// Why: 入力は、読み取りが待っているときだけ受け取る。待っていないときに渡された入力を受け取ると、
+/// ホストの呼び出しの順序の誤りが、プログラムの読み取りの結果に紛れる。
+var waiting = false;
 var eval_arena: std.heap.ArenaAllocator = undefined;
 var eval_source: []u8 = &.{};
 
@@ -137,6 +143,8 @@ export fn sucheme_init(heap_limit_bytes: u32) i32 {
         appendTail(&early, &early_buffer, "error: out of memory while initializing\n");
         return Status.out_of_memory;
     };
+    // コンソールの入力は、ホストが渡す。読み取りは、空で終端も無ければ待つ。
+    interp.useHostInput();
     output = allocator.alloc(u8, output_capacity) catch {
         interp.deinit();
         appendTail(&early, &early_buffer, "error: out of memory for the output buffer\n");
@@ -168,6 +176,7 @@ export fn sucheme_reset() i32 {
         output = &.{};
         return Status.out_of_memory;
     };
+    interp.useHostInput();
     out.end = 0;
     return Status.ok;
 }
@@ -250,12 +259,7 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
         const p: [*]const u8 = @ptrFromInt(ptr);
         break :blk p[0..len];
     };
-    if (firstInvalidUtf8(source)) |at| {
-        var buf: [96]u8 = undefined;
-        const text = std.fmt.bufPrint(&buf, "error: invalid UTF-8 at byte {d}\n", .{at}) catch unreachable;
-        appendTail(&out, output, text);
-        return Status.invalid_utf8;
-    }
+    if (rejectInvalidUtf8(source)) return Status.invalid_utf8;
     if (evaluating) {
         appendTail(&out, output, "error: an evaluation is in progress; call sucheme_step or sucheme_abort\n");
         return Status.wrong_order;
@@ -275,8 +279,18 @@ export fn sucheme_eval_begin(ptr: u32, len: u32) i32 {
     return advance(0);
 }
 
+/// Whether `bytes` is not valid UTF-8; if so, writes where to the output.
+fn rejectInvalidUtf8(bytes: []const u8) bool {
+    const at = firstInvalidUtf8(bytes) orelse return false;
+    var buf: [96]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "error: invalid UTF-8 at byte {d}\n", .{at}) catch unreachable;
+    appendTail(&out, output, text);
+    return true;
+}
+
 /// Releases the copy of the input and the arena of the evaluation.
 fn freeEvaluation() void {
+    waiting = false;
     eval_arena.deinit();
     allocator.free(eval_source);
     eval_source = &.{};
@@ -316,6 +330,8 @@ fn failed(e: sucheme.Error) i32 {
 
 /// Runs the evaluation in progress for at most `budget` machine steps.
 fn advance(budget: u64) i32 {
+    // 待っていた読み取りは、ここでやり直される。まだ入力が無ければ、また待つ。
+    waiting = false;
     const status = interp.stepEval(budget) catch |e| {
         freeEvaluation();
         return failed(e);
@@ -328,16 +344,22 @@ fn advance(budget: u64) i32 {
         // 割り込みの要求は、ホストが立てる出口が無いので、ここには来ない。来ても、続きがある
         // ことには変わらない。
         .more, .interrupted => return Status.more,
-        // 入力待ちは、スライス 8f-1 が足す。
-        .needs_input => return Status.waiting_input,
+        // 待っている読み取りは、何も消費していない。ホストが入力か終端を渡してから、`sucheme_step` が
+        // 同じ読み取りをやり直す(docs/design/platform-and-web.md の再開可能性)。
+        .needs_input => {
+            waiting = true;
+            return Status.waiting_input;
+        },
     }
 }
 
 /// Advances the evaluation `sucheme_eval_begin` started by at most `budget` machine steps.
 ///
-/// 返す値は 1(続きがある。また呼ぶ)、0(完了)、-1(Scheme のエラー)、-2(回復不能)、
+/// 返す値は 1(続きがある。また呼ぶ)、2(読み取りが入力を待っている。`sucheme_provide_input` か
+/// `sucheme_provide_eof` で渡して、また呼ぶ)、0(完了)、-1(Scheme のエラー)、-2(回復不能)、
 /// -6(`exit`)、-4(評価が無いときに呼んだ。状態は変えない)、-5。予算 0 は、何も進めずに
-/// 1 を返す。出力は、1歩ごとに取り出してよい(`sucheme_output_len`)。
+/// 1 を返す。待っているときに、入力を渡さずに呼んでも、待っている読み取りをやり直すだけで、
+/// 入力が無ければまた 2 を返す。出力は、1歩ごとに取り出してよい(`sucheme_output_len`)。
 export fn sucheme_step(budget: u32) i32 {
     if (!initialized) {
         appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
@@ -348,6 +370,60 @@ export fn sucheme_step(budget: u32) i32 {
         return Status.wrong_order;
     }
     return advance(budget);
+}
+
+/// Gives the read that waits for input (status 2) the bytes of (ptr, len), which are copied.
+///
+/// 返す値は 1(受け取った。`sucheme_step` で続ける)、-1(入力を保持できなかった。評価は捨て、
+/// 定義は残る。説明を出力に書く)、-3(不正な UTF-8。位置を出力に書き、状態は変えない)、
+/// -4(読み取りが待っていないときに呼んだ。状態は変えない)、-5、-8。長さ 0 は、何も渡さず、
+/// 読み取りは待ったままである(空行は、改行1つを渡す)。1回の読み取りより長い分は、WASM 側が
+/// 保持し、次の読み取りが先に読む。保持する領域はヒープの上限に数える。
+export fn sucheme_provide_input(ptr: u32, len: u32) i32 {
+    if (!initialized) {
+        appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
+        return Status.not_initialized;
+    }
+    if (!insideRegion(ptr, len)) {
+        appendTail(&out, output, "error: the region was not returned by sucheme_alloc\n");
+        return Status.bad_region;
+    }
+    const bytes: []const u8 = if (len == 0) &.{} else blk: {
+        const p: [*]const u8 = @ptrFromInt(ptr);
+        break :blk p[0..len];
+    };
+    if (rejectInvalidUtf8(bytes)) return Status.invalid_utf8;
+    if (!waiting) {
+        appendTail(&out, output, "error: no read is waiting for input; call sucheme_step\n");
+        return Status.wrong_order;
+    }
+    interp.provideInput(bytes) catch |e| {
+        // Why: 入力を保持できなかった読み取りは、続けられない。評価を捨てる(定義は残る)。
+        dropEvaluation();
+        var buf: [64]u8 = undefined;
+        appendTail(&out, output, sucheme.errorLine(&buf, if (e == error.HeapLimit) "heap limit exceeded" else "out of memory"));
+        return Status.scheme_error;
+    };
+    return Status.more;
+}
+
+/// Says that the console has no more input: the read that waits, and every read after it, gets
+/// the end of file.
+///
+/// 返す値は 1(受け取った。`sucheme_step` で続ける)、-4(読み取りが待っていないときに呼んだ。状態は
+/// 変えない)、-5。終端のあとに渡した入力は捨てる。終端は、`sucheme_reset` まで残り、あとの評価の
+/// 読み取りも、終端を受け取る。
+export fn sucheme_provide_eof() i32 {
+    if (!initialized) {
+        appendTail(&early, &early_buffer, "error: the interpreter is not initialized\n");
+        return Status.not_initialized;
+    }
+    if (!waiting) {
+        appendTail(&out, output, "error: no read is waiting for input; call sucheme_step\n");
+        return Status.wrong_order;
+    }
+    interp.provideEof();
+    return Status.more;
 }
 
 /// Drops the evaluation `sucheme_eval_begin` started and `sucheme_step` has not finished.

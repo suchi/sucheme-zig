@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const value_mod = @import("value.zig");
+const host_input = @import("host_input.zig");
 const Value = value_mod.Value;
 const Pair = value_mod.Pair;
 const Closure = value_mod.Closure;
@@ -877,6 +878,12 @@ pub const Heap = struct {
     /// (suchi/sucheme-zig#230 の決定)。ポートの読み書き(src/port.zig)はヒープを受け取るので、
     /// ここから届く。`Interpreter` が実行の間だけ置く。
     console_input: ?*std.Io.Reader = null,
+    /// The input the host gives the console, which stands in for `console_input` while a
+    /// program runs, or null when the console reads from `console_input` or has none.
+    /// Why: ブラウザは、標準入力を読む口を持たず、ホストが渡す(`sucheme_provide_input`)。
+    /// 空で、終端も受け取っていなければ、読み取りは待つ(`port.fill` が `WouldWait` を返す)。
+    /// `Interpreter` が実行の間だけ置く。
+    console_host: ?*host_input.HostInput = null,
     /// The command line of the program, which `command-line` gives (R7RS 6.14): the
     /// name of the program and then its arguments, each valid UTF-8.
     /// `Interpreter` が実行の間だけ置く。UTF-8 の検査は、置く側が済ませる(ネイティブは
