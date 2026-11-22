@@ -1144,6 +1144,10 @@ test "the input the host gives counts against the limit of the heap, until it is
     try interp.init(std.testing.allocator);
     defer interp.deinit();
     interp.useHostInput();
+    // 最初の呼び出しの展開が、位置のファイル名の表に、空の名前を1つ載せる(ADR-0054)。計上は、それを含めて数える。
+    var warm: [8]u8 = undefined;
+    var warm_out: std.Io.Writer = .fixed(&warm);
+    try interp.evalPrint(arena.allocator(), "(+ 1 1)", &warm_out);
     const before = interp.ctx.heap.resident;
     try interp.provideInput("0123456789");
     try std.testing.expect(interp.ctx.heap.resident >= before + 10);
