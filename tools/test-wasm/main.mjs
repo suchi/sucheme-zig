@@ -1490,6 +1490,92 @@ test("Sucheme.provideInput and provideEof drive a read through the wrapper, and 
   assert.equal(t.abort(), OK);
 });
 
+// 入力待ちの受け取り(web/runner.mjs の requestInput)。待つたびに、そこまでの出力を受け取り、
+// 行か終端を返す。渡した行は、出力に写される(端末のエコーと同じ)。
+const noWait = { shouldStop: () => false, yieldControl: async () => {} };
+
+test("runEvaluation asks requestInput at each wait with the output so far, and echoes the line it gets", async () => {
+  const s = await loadSucheme();
+  const asked = [];
+  const answers = ["bob\n", "42\n"];
+  const result = await runEvaluation(s, W + '(display "name? ") (define n (read-line)) (display "age? ") (define a (read)) (write (list n a))', {
+    ...noWait,
+    requestInput: async (output) => {
+      asked.push(output);
+      return { text: answers.shift() };
+    },
+  });
+  assert.deepEqual(asked, ["name? ", "name? bob\nage? "]);
+  assert.deepEqual(result, { status: OK, output: 'name? bob\nage? 42\n("bob" 42)', stopped: false });
+});
+
+test("runEvaluation does not ask again while the input it was given lasts, and asks again when it runs out", async () => {
+  const s = await loadSucheme();
+  let asks = 0;
+  const result = await runEvaluation(s, W + "(write (list (read-char) (read-char) (read-char)))", {
+    ...noWait,
+    requestInput: async () => {
+      asks++;
+      return { text: asks === 1 ? "ab" : "c" };
+    },
+  });
+  assert.equal(asks, 2);
+  assert.deepEqual(result, { status: OK, output: "abc(#\\a #\\b #\\c)", stopped: false });
+});
+
+test("runEvaluation passes the end of input to the read, and every later read gets it too", async () => {
+  const s = await loadSucheme();
+  let asks = 0;
+  const result = await runEvaluation(s, W + "(write (list (read-char) (read-line)))", {
+    ...noWait,
+    requestInput: async () => {
+      asks++;
+      return { eof: true };
+    },
+  });
+  assert.equal(asks, 1);
+  assert.deepEqual(result, { status: OK, output: "(#<eof> #<eof>)", stopped: false });
+  // 終端は reset まで残る。次の評価は、待たずに終端を読む。
+  const again = await runEvaluation(s, W + "(write (read-char))", { ...noWait, requestInput: async () => assert.fail("must not ask") });
+  assert.deepEqual(again, { status: OK, output: "#<eof>", stopped: false });
+  assert.equal(s.reset(), OK);
+  const afterReset = await runEvaluation(s, W + "(write (read-char))", { ...noWait, requestInput: async () => ({ text: "z" }) });
+  assert.deepEqual(afterReset, { status: OK, output: "z#\\z", stopped: false });
+});
+
+test("runEvaluation drops the evaluation when requestInput says it was stopped, and keeps the definitions and the output", async () => {
+  const s = await loadSucheme();
+  const result = await runEvaluation(s, W + '(define kept 7) (display "q? ") (read-line) (display "never")', {
+    ...noWait,
+    requestInput: async () => null,
+  });
+  assert.deepEqual(result, { status: OK, output: "q? ", stopped: true });
+  assert.deepEqual(s.eval("kept"), { status: OK, output: "7\n" });
+});
+
+test("runEvaluation checks for a stop after the input was given, before the next step", async () => {
+  const s = await loadSucheme();
+  let stop = false;
+  const result = await runEvaluation(s, W + "(read-line) (define (spin) (spin)) (spin)", {
+    shouldStop: () => stop,
+    yieldControl: async () => {},
+    requestInput: async () => {
+      stop = true;
+      return { text: "x\n" };
+    },
+  });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(s.eval("(+ 1 2)"), { status: OK, output: "3\n" });
+});
+
+test("runEvaluation reports an error after an input, with the echo kept in the output", async () => {
+  const s = await loadSucheme();
+  const result = await runEvaluation(s, W + "(car (read))", { ...noWait, requestInput: async () => ({ text: "5\n" }) });
+  assert.equal(result.status, Status.SCHEME_ERROR);
+  assert.equal(result.stopped, false);
+  assert.ok(result.output.startsWith("5\nerror: "), result.output);
+});
+
 // 実行の進め方(web/runner.mjs)。Sucheme(web/sucheme.js)を通して、本物の WASM で試す。
 async function loadSucheme() {
   const s = await Sucheme.load(readFileSync(wasmPath));
