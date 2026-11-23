@@ -45,6 +45,18 @@
 
     <h2 id="output-label">Output</h2>
     <pre id="output" aria-labelledby="output-label" aria-live="polite" data-status="idle">Loading WebAssembly…</pre>
+
+    <!-- 入力待ちの間だけ出る。`(read)` などが読む1行を渡す(app.js、stdin.mjs)。 -->
+    <form id="stdin-form" class="stdin" autocomplete="off" hidden>
+      <label for="stdin" id="stdin-label"></label>
+      <div class="stdin-row">
+        <input type="text" id="stdin" name="stdin" spellcheck="false" autocapitalize="off" autocorrect="off" aria-describedby="stdin-hint">
+        <button type="submit" id="stdin-send" class="primary">Send</button>
+        <button type="button" id="stdin-eof">End of input</button>
+      </div>
+      <p id="stdin-hint" class="hint" role="status"></p>
+    </form>
+    <p id="input-ended" class="hint" role="status" hidden></p>
     <section id="error" class="error-panel" role="alert" hidden>
       <h2 id="error-title"></h2>
       <pre id="error-message"></pre>

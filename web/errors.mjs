@@ -29,6 +29,11 @@ const explanations = new Map([
   [Status.NOT_INITIALIZED, { title: "Not initialized", hint: "Reload the page." }],
   [Status.OUT_OF_MEMORY, { title: "Out of memory", hint: "Press Reset to start again; definitions made so far are lost." }],
   [Status.BAD_REGION, { title: "Internal error", hint: "Reload the page." }],
+  // 画面は入力待ちを自分で受け取る(app.js の入力欄)。結果として届くのは、受け取れなかった場合だけである。
+  [
+    Status.WAITING_INPUT,
+    { title: "Waiting for input", hint: "The page did not take the input. Press Reset, or reload the page." },
+  ],
 ]);
 
 /**

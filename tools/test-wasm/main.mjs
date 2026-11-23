@@ -27,6 +27,7 @@ import {
   isStopKey,
 } from "../../web/stop.mjs";
 import { runEvaluation } from "../../web/runner.mjs";
+import { lineToSend, isEofKey } from "../../web/stdin.mjs";
 import { Sucheme } from "../../web/sucheme.js";
 
 const wasmPath = process.argv[2];
@@ -1133,6 +1134,28 @@ test("isStopKey stops only on Escape while running and not while composing", () 
   assert.equal(isStopKey({ key: "Enter" }, "running"), false);
 });
 
+// 入力待ちの部品(web/stdin.mjs)。
+test("lineToSend ends the line with a newline, so that an empty line is not an empty input", () => {
+  assert.equal(lineToSend("abc"), "abc\n");
+  assert.equal(lineToSend(""), "\n");
+  assert.equal(lineToSend("(1 2)"), "(1 2)\n");
+});
+
+test("isEofKey accepts Ctrl+D only, and not while composing", () => {
+  assert.equal(isEofKey({ key: "d", ctrlKey: true }), true);
+  assert.equal(isEofKey({ key: "D", ctrlKey: true }), true);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, isComposing: false }), true);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, isComposing: true }), false);
+  assert.equal(isEofKey({ key: "d" }), false);
+  assert.equal(isEofKey({ key: "d", metaKey: true }), false);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, shiftKey: true }), false);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, altKey: true }), false);
+  assert.equal(isEofKey({ key: "d", ctrlKey: true, metaKey: true }), false);
+  assert.equal(isEofKey({ key: "c", ctrlKey: true }), false);
+  assert.equal(isEofKey({ key: "Enter", ctrlKey: true }), false);
+  assert.equal(isEofKey({ ctrlKey: true }), false);
+});
+
 // 歩数ごとに制御を戻す評価(sucheme_step、sucheme_abort。計画書 0030 の 8e-2)。
 test("eval_begin goes on with 1, step(0) moves nothing, and step finishes with 0 and the same output as one run", () => {
   const h = instantiate().init();
@@ -1490,6 +1513,181 @@ test("Sucheme.provideInput and provideEof drive a read through the wrapper, and 
   assert.equal(t.abort(), OK);
 });
 
+// 入力待ちの受け取り(web/runner.mjs の requestInput)。待つたびに、そこまでの出力を受け取り、
+// 行か終端を返す。渡した行は、出力に写される(端末のエコーと同じ)。
+const noWait = { shouldStop: () => false, yieldControl: async () => {} };
+
+test("runEvaluation asks requestInput at each wait with the output so far, and echoes the line it gets", async () => {
+  const s = await loadSucheme();
+  const asked = [];
+  const answers = ["bob\n", "42\n"];
+  const result = await runEvaluation(s, W + '(display "name? ") (define n (read-line)) (display "age? ") (define a (read)) (write (list n a))', {
+    ...noWait,
+    requestInput: async (output) => {
+      asked.push(output);
+      return { text: answers.shift() };
+    },
+  });
+  assert.deepEqual(asked, ["name? ", "name? bob\nage? "]);
+  assert.deepEqual(result, { status: OK, output: 'name? bob\nage? 42\n("bob" 42)', stopped: false });
+});
+
+test("runEvaluation does not ask again while the input it was given lasts, and asks again when it runs out", async () => {
+  const s = await loadSucheme();
+  let asks = 0;
+  const result = await runEvaluation(s, W + "(write (list (read-char) (read-char) (read-char)))", {
+    ...noWait,
+    requestInput: async () => {
+      asks++;
+      return { text: asks === 1 ? "ab" : "c" };
+    },
+  });
+  assert.equal(asks, 2);
+  assert.deepEqual(result, { status: OK, output: "abc(#\\a #\\b #\\c)", stopped: false });
+});
+
+test("runEvaluation passes the end of input to the read, and every later read gets it too", async () => {
+  const s = await loadSucheme();
+  let asks = 0;
+  const result = await runEvaluation(s, W + "(write (list (read-char) (read-line)))", {
+    ...noWait,
+    requestInput: async () => {
+      asks++;
+      return { eof: true };
+    },
+  });
+  assert.equal(asks, 1);
+  assert.deepEqual(result, { status: OK, output: "(#<eof> #<eof>)", stopped: false });
+  // 終端は reset まで残る。次の評価は、待たずに終端を読む。
+  const again = await runEvaluation(s, W + "(write (read-char))", { ...noWait, requestInput: async () => assert.fail("must not ask") });
+  assert.deepEqual(again, { status: OK, output: "#<eof>", stopped: false });
+  assert.equal(s.reset(), OK);
+  const afterReset = await runEvaluation(s, W + "(write (read-char))", { ...noWait, requestInput: async () => ({ text: "z" }) });
+  assert.deepEqual(afterReset, { status: OK, output: "z#\\z", stopped: false });
+});
+
+test("runEvaluation drops the evaluation when requestInput says it was stopped, and keeps the definitions and the output", async () => {
+  const s = await loadSucheme();
+  const result = await runEvaluation(s, W + '(define kept 7) (display "q? ") (read-line) (display "never")', {
+    ...noWait,
+    requestInput: async () => null,
+  });
+  assert.deepEqual(result, { status: OK, output: "q? ", stopped: true });
+  assert.deepEqual(s.eval("kept"), { status: OK, output: "7\n" });
+});
+
+test("runEvaluation checks for a stop after the input was given, before the next step", async () => {
+  const s = await loadSucheme();
+  let stop = false;
+  const result = await runEvaluation(s, W + "(read-line) (define (spin) (spin)) (spin)", {
+    shouldStop: () => stop,
+    yieldControl: async () => {},
+    requestInput: async () => {
+      stop = true;
+      return { text: "x\n" };
+    },
+  });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(s.eval("(+ 1 2)"), { status: OK, output: "3\n" });
+});
+
+test("runEvaluation reports an error after an input, with the echo kept in the output", async () => {
+  const s = await loadSucheme();
+  const result = await runEvaluation(s, W + "(car (read))", { ...noWait, requestInput: async () => ({ text: "5\n" }) });
+  assert.equal(result.status, Status.SCHEME_ERROR);
+  assert.equal(result.stopped, false);
+  assert.ok(result.output.startsWith("5\nerror: "), result.output);
+});
+
+// web/worker.js の入力待ちの経路。Worker の環境(self、postMessage、fetch)を替え玉にして import し、
+// self.onmessage に、画面と同じメッセージを渡す。
+async function loadWorker() {
+  const posted = [];
+  // モジュールは1回だけ評価される(self.onmessage は最初の self に付く)。init で処理系は作り直される。
+  globalThis.self ??= {};
+  globalThis.postMessage = (m) => posted.push(m);
+  globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => readFileSync(wasmPath) });
+  await import("../../web/worker.js");
+  const send = (data) => globalThis.self.onmessage({ data });
+  await send({ type: "init", wasmUrl: "stub" });
+  assert.equal(posted.at(-1).type, "ready");
+  // 条件が成り立つまで待つ。ハングは、時間切れの失敗にする。
+  const until = async (what, cond) => {
+    for (let i = 0; i < 500; i++) {
+      if (cond()) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  // 評価の完了を待つ。止まらないときは、時間切れの失敗にする。
+  const finished = (promise) =>
+    Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("the evaluation did not finish")), 5000))]);
+  return { posted, send, until, finished };
+}
+
+test("worker.js asks for input with the output so far, takes a line, and finishes with the echo in the output", async () => {
+  const w = await loadWorker();
+  const done = w.send({ type: "eval", id: 1, source: W + '(display "q? ") (write (read-line))' });
+  await w.until("needs-input", () => w.posted.some((m) => m.type === "needs-input"));
+  assert.deepEqual(w.posted.at(-1), { type: "needs-input", id: 1, output: "q? " });
+  // 古い id の答えは、待っている読み取りに届かない。
+  await w.send({ type: "input", id: 99, text: "stale\n" });
+  await w.send({ type: "eof", id: 99 });
+  await w.send({ type: "input", id: 1, text: "hi\n" });
+  await w.finished(done);
+  assert.deepEqual(w.posted.at(-1), { type: "result", id: 1, status: OK, output: 'q? hi\n"hi"', exitCode: 0, stopped: false });
+});
+
+test("worker.js ends a waiting read with the end of input", async () => {
+  const w = await loadWorker();
+  const done = w.send({ type: "eval", id: 1, source: W + "(write (read-char))" });
+  await w.until("needs-input", () => w.posted.some((m) => m.type === "needs-input"));
+  await w.send({ type: "eof", id: 1 });
+  await w.finished(done);
+  assert.equal(w.posted.at(-1).output, "#<eof>");
+});
+
+test("worker.js drops a waiting evaluation on stop, keeps the definitions, and does not hand a later input to it", async () => {
+  const w = await loadWorker();
+  const done = w.send({ type: "eval", id: 1, source: W + '(define kept 3) (display "q? ") (read-line) (display "never")' });
+  await w.until("needs-input", () => w.posted.some((m) => m.type === "needs-input"));
+  await w.send({ type: "stop", id: 1 });
+  await w.finished(done);
+  assert.deepEqual(w.posted.at(-1), { type: "result", id: 1, status: OK, output: "q? ", exitCode: 0, stopped: true });
+  const count = w.posted.length;
+  await w.send({ type: "input", id: 1, text: "late\n" });
+  assert.equal(w.posted.length, count);
+  await w.send({ type: "eval", id: 2, source: "kept" });
+  assert.equal(w.posted.at(-1).output, "3\n");
+});
+
+test("runEvaluation does not ask for input when a stop was requested before the wait", async () => {
+  const s = await loadSucheme();
+  let checks = 0;
+  const result = await runEvaluation(s, W + '(display "q? ") (read-line)', {
+    // 歩の前の2回の確認では要求が無く、読み取りが待ってから、要求が立つ。
+    shouldStop: () => checks++ >= 2,
+    yieldControl: async () => {},
+    requestInput: async () => assert.fail("must not ask"),
+  });
+  assert.deepEqual(result, { status: OK, output: "q? ", stopped: true });
+  assert.deepEqual(s.eval("(+ 1 2)"), { status: OK, output: "3\n" });
+});
+
+test("runEvaluation ends with the status and the explanation when the machine refuses the input it was given", async () => {
+  // 入力を保持できない(-1)ときを、本物の WASM では起こしにくいので、同じ形の替え玉で試す。
+  const refused = { status: Status.SCHEME_ERROR, output: "error: heap limit exceeded\n" };
+  const fake = {
+    begin: () => ({ status: Status.CONTINUE, output: "" }),
+    step: () => ({ status: Status.WAITING_INPUT, output: "q? " }),
+    provideInput: () => refused,
+    provideEof: () => assert.fail("not the end of input"),
+    abort: () => assert.fail("the machine already dropped the evaluation"),
+  };
+  const result = await runEvaluation(fake, "x", { ...noWait, requestInput: async () => ({ text: "abc\n" }) });
+  assert.deepEqual(result, { status: Status.SCHEME_ERROR, output: "q? abc\nerror: heap limit exceeded\n", stopped: false });
+});
+
 // 実行の進め方(web/runner.mjs)。Sucheme(web/sucheme.js)を通して、本物の WASM で試す。
 async function loadSucheme() {
   const s = await Sucheme.load(readFileSync(wasmPath));
@@ -1616,7 +1814,8 @@ test("describeResult gives each status code its own title and hint", () => {
     [Status.OUT_OF_MEMORY, "Out of memory", "Press Reset to start again; definitions made so far are lost."],
     [Status.BAD_REGION, "Internal error", "Reload the page."],
     [Status.CONTINUE, "Unexpected status 1", "Press Reset, or reload the page."],
-    [Status.WAITING_INPUT, "Unexpected status 2", "Press Reset, or reload the page."],
+    // 画面は入力待ちを自分で受け取る(web/app.js)ので、結果として届くのは、受け取れなかった場合だけである。
+    [Status.WAITING_INPUT, "Waiting for input", "The page did not take the input. Press Reset, or reload the page."],
     [-99, "Unexpected status -99", "Press Reset, or reload the page."],
   ];
   for (const [status, title, hint] of expected) {
@@ -1652,7 +1851,7 @@ test("describeResult keeps the output before an error and explains each status c
     if (code === Status.OK) continue;
     const { error } = describeResult(code, "error: why\n", 0);
     assert.ok(error !== null && error.title !== "", name);
-    if (code === Status.CONTINUE || code === Status.WAITING_INPUT) {
+    if (code === Status.CONTINUE) {
       assert.match(error.title, /^Unexpected status/, name);
     } else {
       assert.doesNotMatch(error.title, /^Unexpected status/, name);
