@@ -1123,6 +1123,23 @@ test("describeStopped keeps the output and the time, and tells that definitions 
   assert.equal(d.error.title, "Stopped");
   assert.equal(d.error.message, "ran for 1.5 s");
   assert.match(d.error.hint, /Definitions made so far were kept/);
+  // 画面は error.spot を見て入力欄に位置を示す。停止も spot を持つ(無いと、画面が停止の表示で例外になる)。
+  assert.equal(d.error.spot, null);
+});
+
+// 画面(web/app.js)は、`error.spot` が null か位置であることを前提にする。どの経路も spot を持つ。
+test("every error description has a spot, which is null or a position", () => {
+  const errors = [
+    describeStopped("", 1).error,
+    describeResult(Status.EXITED, "", 3).error,
+    describeResult(Status.SCHEME_ERROR, "error: boom\n").error,
+    describeResult(Status.SCHEME_ERROR, "").error,
+    describeResult(-99, "error: boom\n").error,
+  ];
+  for (const e of errors) assert.ok("spot" in e && e.spot === null, JSON.stringify(e));
+  // 位置があれば、どの状態コードの経路でも取り出す(未知の状態コードも)。
+  assert.deepEqual(describeResult(-99, "error: 1:2: x\n").error.spot, { line: 1, column: 2 });
+  assert.deepEqual(describeResult(Status.UNRECOVERABLE, "error: 3:4: x\n").error.spot, { line: 3, column: 4 });
 });
 
 test("isStopKey stops only on Escape while running and not while composing", () => {
@@ -1910,6 +1927,15 @@ test("spotRange turns a line and a column into the call's range in the input", (
   assert.equal(spotRange("(a)", { line: 1, column: 4 }), null);
   assert.equal(spotRange("(a)\n(b)", { line: 1, column: 4 }), null);
   assert.equal(spotRange("", { line: 1, column: 1 }), null);
+  // 桁が行末を越えるときは、次の行の文字に当てず、null(LF でも、CR だけの行末でも)。
+  assert.equal(spotRange("(a)\n(b)", { line: 1, column: 5 }), null);
+  assert.equal(spotRange("(a)\r(b)", { line: 1, column: 4 }), null);
+  assert.equal(spotRange("(a)\r(b)", { line: 1, column: 5 }), null);
+  assert.equal(spotRange("(a)\r\n(b)", { line: 1, column: 4 }), null);
+  assert.equal(spotRange("(a)\r\n(b)", { line: 1, column: 5 }), null);
+  // 行が足りないとき(最後の行が改行で終わる場合を含む)も null。
+  assert.equal(spotRange("(a)\n", { line: 2, column: 1 }), null);
+  assert.equal(spotRange("(a)\r\n", { line: 3, column: 1 }), null);
 });
 
 test("spotRange counts columns in characters, lines with LF, CRLF and CR, and surrogate pairs as one column", () => {

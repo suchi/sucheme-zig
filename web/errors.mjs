@@ -44,7 +44,8 @@ const explanations = new Map([
  * (`(display "abc") (car 5)` の出力は `abcerror: ...` になる)。出力は1本のバッファなので、
  * 区切りは目印の文字列で探すしかなく、最後の `error: ` から後ろを説明とみなす。
  * 説明そのものが `error: ` を含むとき(`(error "error: x")`)は、後ろの `error: ` から割れる。
- * 厳密に分けるには WASM 側の変更が要る。
+ * 厳密に分けるには WASM 側の変更が要る。割れると、位置が説明の先頭から外れるので、
+ * 入力欄の強調は、出ないか、誤った場所に出る(8g-2)。
  */
 export function splitError(text) {
   const at = text.lastIndexOf(ERROR_PREFIX);

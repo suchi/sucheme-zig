@@ -73,6 +73,8 @@ let errorRange = null;
 
 // 状態の知らせ(読み込み中、停止など)を出力欄に出す。エラーの欄は閉じる。
 function show(text, status = "ok") {
+  // 状態の知らせ(実行中、リセットなど)を出すときは、前の評価の誤りの強調を消す。
+  if (errorRange !== null) setErrorRange(null);
   output.textContent = text;
   output.dataset.status = status;
   errorPanel.hidden = true;
@@ -86,7 +88,7 @@ function showResult(status, text, exitCode) {
 
 // `{ output, error }` を出す。`kind` は、エラーの欄の色(exit は失敗ではない)。
 function render({ output: out, error }, kind) {
-  setErrorRange(error === null || error.spot === null || source.value !== evaluatedSource ? null : spotRange(source.value, error.spot));
+  setErrorRange(error === null || error.spot == null || source.value !== evaluatedSource ? null : spotRange(source.value, error.spot));
   output.textContent = out === "" && error === null ? "(no output)" : out;
   output.dataset.status = error === null ? "ok" : "partial";
   if (error === null) {
@@ -201,9 +203,13 @@ function startWorker() {
         if (m.id !== runningId) break;
         // 経過時間は、setPhase が時計を止める前に取る。
         const elapsed = performance.now() - evalStartedAt;
-        if (m.stopped) render(describeStopped(m.output, elapsed), "exit");
-        else showResult(m.status, m.output, m.exitCode);
-        setPhase("ready");
+        // 表示で例外が出ても、画面が running のまま固まらないよう、必ず ready に戻す。
+        try {
+          if (m.stopped) render(describeStopped(m.output, elapsed), "exit");
+          else showResult(m.status, m.output, m.exitCode);
+        } finally {
+          setPhase("ready");
+        }
         break;
       }
       case "needs-input":
