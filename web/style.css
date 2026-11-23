@@ -14,6 +14,7 @@
   --error-text: #b3261e;
   --focus: #0b57d0;
   --match: #b9d2fb;
+  --error-spot: #f6c6c2;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,6 +31,7 @@
     --error-text: #f2b8b5;
     --focus: #8ab4f8;
     --match: #3b5483;
+    --error-spot: #6e2c28;
   }
 }
 
@@ -130,8 +132,22 @@ textarea {
 
 .editor-mirror mark {
   color: transparent;
-  background: var(--match);
   border-radius: 2px;
+}
+
+.editor-mirror mark.match {
+  background: var(--match);
+}
+
+/* 誤りを起こした呼び出し。色だけに頼らないよう、波線の下線も付ける(文字は透明でも、下線は見える)。 */
+.editor-mirror mark.error-spot {
+  background: var(--error-spot);
+  text-decoration: underline wavy var(--error-text);
+}
+
+/* 括弧の強調が誤りの範囲の中にあるときは、括弧の強調を優先する。 */
+.editor-mirror mark.match.error-spot {
+  background: var(--match);
 }
 
 .actions {
