@@ -1,7 +1,8 @@
 THIRD-PARTY NOTICES
 
-sucheme is built with Zig 0.17.0. Its executables contain code from the Zig
-standard library, which is covered by the Zig license below. The executables
+sucheme is built with Zig 0.17.0. Its executables and sucheme.wasm contain
+code from the Zig standard library, which is covered by the Zig license below.
+The executables
 for Linux do not link a C library (the build does not link libc), so the musl
 license below is kept only as a precaution, in case a future build links musl
 libc, which Zig builds from source.
