@@ -1,6 +1,6 @@
 # プラットフォーム抽象、WebAssembly、Web UI
 
-対応する決定: [ADR-0009](../adr/0009-wasm-freestanding-and-zero-dependency-web-ui.md)、[ADR-0021](../adr/0021-no-github-pages-defer-hosting.md)、[ADR-0014](../adr/0014-repl-line-editor-boundary.md)。配置についての決定は ADR-0021 が最新で、置き換えられた旧ADRは ADR-0021 が名前を挙げている。
+対応する決定: [ADR-0009](../adr/0009-wasm-freestanding-and-zero-dependency-web-ui.md)、[ADR-0056](../adr/0056-deploy-web-ui-to-github-pages.md)、[ADR-0021](../adr/0021-no-github-pages-defer-hosting.md)、[ADR-0014](../adr/0014-repl-line-editor-boundary.md)。配置についての決定は ADR-0056 が最新である。ADR-0021 は非推奨で、`file://` で開けない理由と、ローカルで開く手段の経緯を、引き続き持つ。置き換えられた旧ADRは ADR-0021 が名前を挙げている。
 
 ## プラットフォーム抽象
 
@@ -311,7 +311,7 @@ import を増やさないのは、ホスト側が用意しなければならな�
 - 入れ子の実行(ライブラリの本体)と `evalPrint` は、制御を戻せない。そこで待つ読み取りは、`cannot wait for input in <名前> here` の誤りになる。
 
 
-ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とする。配置先を段階8まで決めないので([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))、ヘッダを設定できる保証がない。ローカルで開く場合も、簡易な静的サーバがこれらのヘッダを返すとは限らない。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
+ブラウザで入力を待つために `SharedArrayBuffer` と `Atomics.wait` を使う方式は採用しない。この方式は COOP と COEP のレスポンスヘッダを必要とする。配置先は、段階8で GitHub Pages に決まった([ADR-0056](../adr/0056-deploy-web-ui-to-github-pages.md))。2026-11-23 に取得した Pages のレスポンスには、COOP と COEP のヘッダが付いていなかった。ヘッダを設定する手段は確かめていない(公式文書に届かない。記憶では、Pages は任意のヘッダを設定できない。未確認)。ヘッダを設定できる保証がない点は、配置先が決まっても変わらない。ローカルで開く場合も、簡易な静的サーバがこれらのヘッダを返すとは限らない。再開可能な機械であればヘッダ設定なしに同じ目的を達成できる。
 
 ### パニックとエラー
 
@@ -346,7 +346,7 @@ fn wasmPanic(msg: []const u8, _: ?usize) noreturn {
 | `web/errors.mjs` | 評価の結果(状態コードと出力)を、出力とエラーの説明に分ける。状態コードごとの見出しと次の操作を持つ |
 | `web/sucheme.wasm` | ビルド成果物。リポジトリにはコミットしない |
 
-依存ゼロとする理由は3つある。配置がファイルのコピーだけで済むこと、供給連鎖の面を増やさないこと、Dependabot の対象エコシステムを増やさないことである。1つ目は配置先を選ぶ自由にもつながる。静的ファイルを置ければどのサービスでもよい([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。
+依存ゼロとする理由は3つある。配置がファイルのコピーだけで済むこと、供給連鎖の面を増やさないこと、Dependabot の対象エコシステムを増やさないことである。1つ目は配置先を選ぶ自由にもつながる。静的ファイルを置ければどのサービスでもよい(配置先を選ぶときの要件で、[ADR-0056](../adr/0056-deploy-web-ui-to-github-pages.md) が GitHub Pages に決めた)。
 
 ### 構成
 
