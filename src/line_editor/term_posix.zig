@@ -430,6 +430,14 @@ test "a fatal signal puts the terminal back and then ends the process by that si
         if (rc == 0) {
             // 子: 生モードに入り、自分に信号を送る。ハンドラが戻して、同じ信号で死ぬはずである。
             // 何かが違えば、信号で死なずに、終了の状態 99 で終わる。
+            //
+            // Why: テストを動かすプロセスが、`SIGINT` や `SIGQUIT` を無視にして起動されることがある
+            // (シェルのバックグラウンド実行 `&`、`nohup` など)。無視は fork した子にも引き継がれ、
+            // `enter` は無視された信号にハンドラを入れない(上の「無視された信号はそのまま」の仕様)ので、
+            // 子は信号で死なずに 99 で終わり、このテストが落ちる。検証したいのは、ハンドラが入った
+            // ときの動作なので、子は入る前に既定の動作に揃える。無視の扱いは、別のテストが見ている。
+            const dfl: posix.Sigaction = .{ .handler = .{ .handler = posix.SIG.DFL }, .mask = posix.sigemptyset(), .flags = 0 };
+            posix.sigaction(sig, &dfl, null);
             _ = RawMode.enter(pty.slave) catch linux.exit_group(98);
             _ = linux.kill(linux.getpid(), sig);
             linux.exit_group(99);
