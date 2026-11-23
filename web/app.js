@@ -12,10 +12,14 @@
 // `inputWaiting` で持つ(停止、経過時間、Run と Reset が無効なことは、評価中と同じだから)。渡した行は
 // 出力に写される(runner.mjs)。入力の終端は、Reset(か Worker の作り直し)まで残り、画面に表示する。
 //
+// 誤りの位置: 評価の結果に行と桁があれば、入力欄の該当の呼び出しを、鏡の層で強調する(errors.mjs の
+// `spotRange`)。位置は、評価したときの入力に対するものなので、入力欄が変わったら消す(renderMirror)。
+// 評価の間に入力欄を編集したときは、示さない。
+//
 // 画面の文言は英語にする(AGENTS.md の言語ルール)。結果の説明は errors.mjs が作る。
 
 import { Status } from "./sucheme.js";
-import { describeResult } from "./errors.mjs";
+import { describeResult, spotRange } from "./errors.mjs";
 import { samples } from "./samples.mjs";
 import { encodeFragment, decodeFragment } from "./share.mjs";
 import { highlightPair, changeIndent, nextTabMovesFocus } from "./parens.mjs";
@@ -63,9 +67,14 @@ let stopTimer = null;
 let inputWaiting = false;
 // この評価で入力欄を使ったか。評価が終わったら、ソースの欄にフォーカスを戻す。
 let usedInputField = false;
+// 評価を始めたときの入力(誤りの位置は、これに対するもの)と、いま入力欄で強調している誤りの範囲(無ければ null)。
+let evaluatedSource = "";
+let errorRange = null;
 
 // 状態の知らせ(読み込み中、停止など)を出力欄に出す。エラーの欄は閉じる。
 function show(text, status = "ok") {
+  // 状態の知らせ(実行中、リセットなど)を出すときは、前の評価の誤りの強調を消す。
+  if (errorRange !== null) setErrorRange(null);
   output.textContent = text;
   output.dataset.status = status;
   errorPanel.hidden = true;
@@ -79,6 +88,7 @@ function showResult(status, text, exitCode) {
 
 // `{ output, error }` を出す。`kind` は、エラーの欄の色(exit は失敗ではない)。
 function render({ output: out, error }, kind) {
+  setErrorRange(error === null || error.spot == null || source.value !== evaluatedSource ? null : spotRange(source.value, error.spot));
   output.textContent = out === "" && error === null ? "(no output)" : out;
   output.dataset.status = error === null ? "ok" : "partial";
   if (error === null) {
@@ -193,9 +203,13 @@ function startWorker() {
         if (m.id !== runningId) break;
         // 経過時間は、setPhase が時計を止める前に取る。
         const elapsed = performance.now() - evalStartedAt;
-        if (m.stopped) render(describeStopped(m.output, elapsed), "exit");
-        else showResult(m.status, m.output, m.exitCode);
-        setPhase("ready");
+        // 表示で例外が出ても、画面が running のまま固まらないよう、必ず ready に戻す。
+        try {
+          if (m.stopped) render(describeStopped(m.output, elapsed), "exit");
+          else showResult(m.status, m.output, m.exitCode);
+        } finally {
+          setPhase("ready");
+        }
         break;
       }
       case "needs-input":
@@ -249,6 +263,8 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   if (phase !== "ready") return;
   runningId = nextId++;
+  evaluatedSource = source.value;
+  setErrorRange(null);
   inputHistory.push(source.value);
   setPhase("running");
   startElapsed();
@@ -330,23 +346,46 @@ resetButton.addEventListener("click", () => {
 // 括弧の走査は parens.mjs(Zig の src/line_editor/parens.zig と同じ規則)である。
 function renderMirror() {
   const text = source.value;
+  // 編集すると、位置がずれるので、誤りの強調を消す。value の代入(input イベントが出ない)も、ここで見つかる。
+  if (errorRange !== null && text !== evaluatedSource) errorRange = null;
   const pair = source.selectionStart === source.selectionEnd ? highlightPair(text, source.selectionStart) : null;
+  // 強調する範囲 `[始まり, 終わり, クラス]`。括弧の2文字と誤りの範囲は、重なりうる。
+  const ranges = [];
+  if (pair !== null) for (const i of pair) ranges.push([i, i + 1, "match"]);
+  if (errorRange !== null) ranges.push([errorRange.start, errorRange.end, "error-spot"]);
+  const cuts = [...new Set([0, text.length, ...ranges.flatMap(([a, b]) => [a, b])])].sort((a, b) => a - b);
   const nodes = [];
-  if (pair === null) {
-    nodes.push(text);
-  } else {
-    const [a, b] = pair;
-    const mark = (i) => {
+  for (let n = 0; n + 1 < cuts.length; n++) {
+    const [from, to] = [cuts[n], cuts[n + 1]];
+    const classes = ranges.filter(([a, b]) => a <= from && to <= b).map((r) => r[2]);
+    if (classes.length === 0) {
+      nodes.push(text.slice(from, to));
+    } else {
       const m = document.createElement("mark");
-      m.textContent = text[i];
-      return m;
-    };
-    nodes.push(text.slice(0, a), mark(a), text.slice(a + 1, b), mark(b), text.slice(b + 1));
+      m.className = classes.join(" ");
+      m.textContent = text.slice(from, to);
+      nodes.push(m);
+    }
   }
   // 末尾の改行の次の行にも、行の高さを持たせる。
   nodes.push("​");
   mirror.replaceChildren(...nodes);
   mirror.scrollTop = source.scrollTop;
+}
+
+// 誤りの範囲を、入力欄に示す(null で消す)。示した範囲が見える範囲の外なら、そこまで入力欄をスクロールする
+// (フォーカスとカーソルは動かさない)。
+function setErrorRange(range) {
+  errorRange = range;
+  renderMirror();
+  const spot = mirror.querySelector("mark.error-spot");
+  if (spot === null) return;
+  const top = spot.offsetTop;
+  const bottom = top + spot.offsetHeight;
+  if (top < source.scrollTop || bottom > source.scrollTop + source.clientHeight) {
+    source.scrollTop = Math.max(0, top - source.clientHeight / 2);
+    mirror.scrollTop = source.scrollTop;
+  }
 }
 
 // 入力欄の全体を置き換える。execCommand は、ブラウザの元に戻す操作の履歴を保つ(value への代入は消す)。

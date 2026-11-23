@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { samples } from "../../web/samples.mjs";
 import { encodeFragment, decodeFragment, MAX_FRAGMENT_LENGTH } from "../../web/share.mjs";
-import { describeResult, splitError } from "../../web/errors.mjs";
+import { describeResult, parseSpot, spotRange, splitError } from "../../web/errors.mjs";
 import { Status } from "../../web/sucheme.js";
 import { matching, highlightPair, changeIndent, nextTabMovesFocus } from "../../web/parens.mjs";
 import { createHistory, onFirstLine, onLastLine } from "../../web/history.mjs";
@@ -1123,6 +1123,23 @@ test("describeStopped keeps the output and the time, and tells that definitions 
   assert.equal(d.error.title, "Stopped");
   assert.equal(d.error.message, "ran for 1.5 s");
   assert.match(d.error.hint, /Definitions made so far were kept/);
+  // 画面は error.spot を見て入力欄に位置を示す。停止も spot を持つ(無いと、画面が停止の表示で例外になる)。
+  assert.equal(d.error.spot, null);
+});
+
+// 画面(web/app.js)は、`error.spot` が null か位置であることを前提にする。どの経路も spot を持つ。
+test("every error description has a spot, which is null or a position", () => {
+  const errors = [
+    describeStopped("", 1).error,
+    describeResult(Status.EXITED, "", 3).error,
+    describeResult(Status.SCHEME_ERROR, "error: boom\n").error,
+    describeResult(Status.SCHEME_ERROR, "").error,
+    describeResult(-99, "error: boom\n").error,
+  ];
+  for (const e of errors) assert.ok("spot" in e && e.spot === null, JSON.stringify(e));
+  // 位置があれば、どの状態コードの経路でも取り出す(未知の状態コードも)。
+  assert.deepEqual(describeResult(-99, "error: 1:2: x\n").error.spot, { line: 1, column: 2 });
+  assert.deepEqual(describeResult(Status.UNRECOVERABLE, "error: 3:4: x\n").error.spot, { line: 3, column: 4 });
 });
 
 test("isStopKey stops only on Escape while running and not while composing", () => {
@@ -1821,13 +1838,13 @@ test("describeResult gives each status code its own title and hint", () => {
   for (const [status, title, hint] of expected) {
     assert.deepEqual(
       describeResult(status, "out" + "error: why\n"),
-      { output: "out", error: { title, message: "why", hint } },
+      { output: "out", error: { title, message: "why", hint, spot: null } },
       String(status),
     );
     // エラーの行が無いときは、出力をそのまま残し、説明は空にする。
     assert.deepEqual(
       describeResult(status, "only output"),
-      { output: "only output", error: { title, message: "", hint } },
+      { output: "only output", error: { title, message: "", hint, spot: null } },
       String(status),
     );
   }
@@ -1838,12 +1855,13 @@ test("describeResult keeps the output before an error and explains each status c
   assert.deepEqual(describeResult(Status.OK, ""), { output: "", error: null });
   assert.deepEqual(describeResult(Status.SCHEME_ERROR, "1\nerror: unbound variable: x\n"), {
     output: "1\n",
-    error: { title: "Error", message: "unbound variable: x", hint: null },
+    error: { title: "Error", message: "unbound variable: x", hint: null, spot: null },
   });
   assert.deepEqual(describeResult(Status.EXITED, "bye", 3).error, {
     title: "Program exited",
     message: "exit code 3",
     hint: "Press Reset to run again.",
+    spot: null,
   });
   assert.equal(describeResult(Status.EXITED, "bye", 3).output, "bye");
   // 表にある状態コードは、すべて説明を持つ(未知のコードは、コードの値を見出しに出す)。
@@ -1872,13 +1890,106 @@ test("an error says the line and the column of the call that raised it, with no 
   assert.deepEqual(h.run("\n\n (vector-ref (vector 1) 3)"), [SCHEME_ERROR, "error: 3:2: argument out of range in vector-ref #(1) 3\n"]);
 });
 
+// エラーの位置(8g-2)。説明の先頭の `行:桁: ` を取り出し、入力欄の範囲に直す。
+test("parseSpot reads the line and the column that start an error message", () => {
+  assert.deepEqual(parseSpot("2:3: wrong type"), { line: 2, column: 3 });
+  assert.deepEqual(parseSpot("10:200: x"), { line: 10, column: 200 });
+  // 位置の無い誤り、ファイル名つき(別のファイル)、行や桁が 0 のもの、途中に現れるものは、位置としない。
+  assert.equal(parseSpot("unbound variable: nope"), null);
+  assert.equal(parseSpot("lib.scm:1:2: boom"), null);
+  assert.equal(parseSpot("0:1: x"), null);
+  assert.equal(parseSpot("1:0: x"), null);
+  assert.equal(parseSpot("wrong 1:2: x"), null);
+  assert.equal(parseSpot("1:2:x"), null);
+  assert.equal(parseSpot(""), null);
+  // 桁を数える数が、安全な整数を超えても、誤った値を作らない。
+  assert.equal(parseSpot("99999999999999999999:1: x"), null);
+});
+
+test("spotRange turns a line and a column into the call's range in the input", () => {
+  const text = "(define (f x)\n  (car x))\n(f 5)";
+  // 開き括弧から、対応する閉じ括弧まで。
+  assert.deepEqual(spotRange(text, { line: 2, column: 3 }), { start: 16, end: 23 });
+  assert.equal(text.slice(16, 23), "(car x)");
+  assert.deepEqual(spotRange(text, { line: 1, column: 1 }), { start: 0, end: 23 + 1 });
+  // 直前が `)` でも、その相手とは取り違えない。
+  const adjacent = "(a)(b c)";
+  assert.deepEqual(spotRange(adjacent, { line: 1, column: 4 }), { start: 3, end: 8 });
+  // 文字列の中の括弧は数えない。
+  const quoted = '(f ")" 1)';
+  assert.deepEqual(spotRange(quoted, { line: 1, column: 1 }), { start: 0, end: 9 });
+  // 閉じていないときは、行末まで。
+  assert.deepEqual(spotRange("(+ 1\n2", { line: 1, column: 1 }), { start: 0, end: 4 });
+  // `(` でない位置は、1文字。
+  assert.deepEqual(spotRange("ab", { line: 1, column: 2 }), { start: 1, end: 2 });
+  // 入力の外は null。
+  assert.equal(spotRange("(a)", { line: 2, column: 1 }), null);
+  assert.equal(spotRange("(a)", { line: 1, column: 4 }), null);
+  assert.equal(spotRange("(a)\n(b)", { line: 1, column: 4 }), null);
+  assert.equal(spotRange("", { line: 1, column: 1 }), null);
+  // 桁が行末を越えるときは、次の行の文字に当てず、null(LF でも、CR だけの行末でも)。
+  assert.equal(spotRange("(a)\n(b)", { line: 1, column: 5 }), null);
+  assert.equal(spotRange("(a)\r(b)", { line: 1, column: 4 }), null);
+  assert.equal(spotRange("(a)\r(b)", { line: 1, column: 5 }), null);
+  assert.equal(spotRange("(a)\r\n(b)", { line: 1, column: 4 }), null);
+  assert.equal(spotRange("(a)\r\n(b)", { line: 1, column: 5 }), null);
+  // 行が足りないとき(最後の行が改行で終わる場合を含む)も null。
+  assert.equal(spotRange("(a)\n", { line: 2, column: 1 }), null);
+  assert.equal(spotRange("(a)\r\n", { line: 3, column: 1 }), null);
+});
+
+test("spotRange counts columns in characters, lines with LF, CRLF and CR, and surrogate pairs as one column", () => {
+  // 日本語は1文字が1桁(UTF-16 でも1単位、UTF-8 では3バイト)。
+  const ja = '(display "あいう") (car 5)';
+  assert.deepEqual(spotRange(ja, { line: 1, column: 17 }), { start: 16, end: 23 });
+  assert.equal(ja.slice(16, 23), "(car 5)");
+  // サロゲートペア(UTF-16 で2単位)の文字は1桁。
+  const emoji = '(display "😀😀") (car 5)';
+  assert.deepEqual(spotRange(emoji, { line: 1, column: 16 }), { start: 17, end: 24 });
+  assert.equal(emoji.slice(17, 24), "(car 5)");
+  // 3種類の改行。
+  for (const nl of ["\n", "\r\n", "\r"]) {
+    const t = `(a)${nl}(b)${nl}  (c)`;
+    const r = spotRange(t, { line: 3, column: 3 });
+    assert.equal(t.slice(r.start, r.end), "(c)", JSON.stringify(nl));
+  }
+});
+
+test("a real error's position, in Japanese and emoji input, points at the call in the input", () => {
+  const h = instantiate().init();
+  const inputs = [
+    '(import (scheme base) (scheme write))\n(display "こんにちは、世界")\n(car 5)',
+    '(display "😀😀😀") (car 5)',
+    '(display "あ")(display "い")   (vector-ref (vector 1) 3)',
+    "(define (f x)\r\n  (car x))\r\n(f 5)",
+    "(define (f x)\r  (car x))\r(f 5)",
+  ];
+  const expected = ["(car 5)", "(car 5)", "(vector-ref (vector 1) 3)", "(car x)", "(car x)"];
+  inputs.forEach((input, n) => {
+    const [status, text] = h.run(input);
+    assert.equal(status, SCHEME_ERROR);
+    const { error } = describeResult(status, text);
+    assert.notEqual(error.spot, null, text);
+    const range = spotRange(input, error.spot);
+    assert.equal(input.slice(range.start, range.end), expected[n], text);
+  });
+  // 位置の無い誤りは、spot が null で、説明はそのまま出る。
+  const [status, text] = h.run("(list 1\n  nope)");
+  assert.deepEqual(describeResult(status, text).error, {
+    title: "Error",
+    message: "unbound variable: nope",
+    hint: null,
+    spot: null,
+  });
+});
+
 test("a real error after output keeps that output apart from the message", () => {
   const h = instantiate().init();
   const [status, text] = h.run('(import (scheme base) (scheme write)) (display "abc") (car 5)');
   assert.equal(status, SCHEME_ERROR);
   assert.deepEqual(describeResult(status, text), {
     output: "abc",
-    error: { title: "Error", message: "1:55: wrong type of argument to car 5", hint: null },
+    error: { title: "Error", message: "1:55: wrong type of argument to car 5", hint: null, spot: { line: 1, column: 55 } },
   });
   const [status2, text2] = h.run("(+ 1");
   assert.equal(status2, SCHEME_ERROR);

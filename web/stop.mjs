@@ -47,6 +47,8 @@ export function describeStopped(output, elapsedMs) {
       title: "Stopped",
       message: `ran for ${formatElapsed(elapsedMs)}`,
       hint: "The evaluation was dropped. Definitions made so far were kept.",
+      // 停止には、入力欄に示す位置が無い(`describeResult` と同じ形にそろえる)。
+      spot: null,
     },
   };
 }
