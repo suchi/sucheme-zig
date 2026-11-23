@@ -4,6 +4,17 @@
 - 日付: 2026-11-22
 - 置き換え: [ADR-0021: no-github-pages-defer-hosting](0021-no-github-pages-defer-hosting.md) を非推奨とし、本ADRが最新の決定となる
 
+> 2026-11-23 追記: 試験の配置の結果で、本ADRの「未確認」のうち配置元の設定を除く3点が確かめられた。決定は変わらない。リポジトリの設定(Pages の配置元を GitHub Actions にすること、環境 `github-pages` の保護規則)は、ユーザーが済ませた。`pages.yml` を、`main` のコミット `b65b484` に対して `workflow_dispatch` で起動した(実行 45125110732。`build` と `deploy` の2ジョブとも success)。公開の URL は `https://suchi.github.io/sucheme-zig/` である。
+>
+> - Content-Type: `sucheme.wasm` は `application/wasm`、`sucheme.js` は `application/javascript; charset=utf-8`、`index.html` は `text/html; charset=utf-8` で返る(2026-11-23 に、レスポンスのヘッダを取得して確かめた)。
+> - シークレット: 新しい設定なしで成功した。使ったのは `GITHUB_TOKEN` とジョブごとの OIDC トークンだけである。
+> - 保護規則: `main` からの手動の起動で、配置が許された。`release: published` の起動(ref がタグ)が許されるかは、まだ確かめていない。最初のリリースの公開で確かめる。
+> - 手動の起動が任意のブランチから走れることと、配置元の設定の画面の手順は、確かめていない。
+> - 公開の URL での動作: Chromium(Playwright)で、公開の URL と、同じ `main` から作った成果物をローカルで配ったものを開き、ページの全サンプル(11個)を実行して、出力と誤りの表示が一致することを確かめた。ページのエラー(例外とコンソールのエラー)は0件で、画面の版は `1.2.0-dev` だった。ほかのブラウザは確かめていない。なお、ローカルの `zig build wasm` が作った `sucheme.wasm` は 4507461 バイトで、公開のもの(後述)と 151 バイト違う。原因は調べていない(推測: ビルドの環境による差。出力は一致した)。
+> - WASM の大きさ(決定4の測定): `sucheme.wasm` は、生で 4507612 バイト、`Accept-Encoding: gzip` で 1375972 バイトで返る(`Content-Length`、2026-11-23)。brotli を求めても、圧縮されずに返る。ReleaseSafe のビルドである。Unicode の表を含む現在の値で、許容基準は決まっていない(計画書 0030 の決定4)。
+>
+> 配置の運用: サイトは、リリースの公開(`release: published`)と、手動の起動でだけ更新される。`main` への push では更新されない。このため、サイトの版は、最後の配置の時点のものである(画面のタイトルの横に版が出る)。リリース前の版が、手動の起動で載ることもある。利用者向けの文書は、[docs/manual/guide/06-web-ui.md](../manual/guide/06-web-ui.md) にある。
+
 ## 背景
 
 [ADR-0021](0021-no-github-pages-defer-hosting.md) は、リポジトリが private である間、GitHub Pages を使わず、配置先を段階8まで選ばないと決めた。根拠は、Pages のサイトが、リポジトリを private にしても公開されることだった。リポジトリは public になった([ADR-0052](0052-repository-visibility-public-again.md))。この矛盾は無くなり、配置先の選定は、段階8の作業項目([plans/0030-phase8-web-ui.md](../plans/0030-phase8-web-ui.md)の決定1、スライス 8h-1)として残っていた。

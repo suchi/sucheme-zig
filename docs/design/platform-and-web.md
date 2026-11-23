@@ -393,7 +393,7 @@ Worker 上で動かすことで、長時間の計算中も画面が応答し、�
 
 ### 配置
 
-段階7までは配置しなかった([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。配置先は GitHub Pages(GitHub Actions による配置)で、`.github/workflows/pages.yml` が、リリースの公開と手動の起動で配置する。決定と、試験の配置で確かめる未確認の点は [ADR-0056](../adr/0056-deploy-web-ui-to-github-pages.md) にある。
+段階7までは配置しなかった([ADR-0021](../adr/0021-no-github-pages-defer-hosting.md))。配置先は GitHub Pages(GitHub Actions による配置)で、`.github/workflows/pages.yml` が、リリースの公開と手動の起動で配置する。公開の URL は `https://suchi.github.io/sucheme-zig/` で、更新はリリース(タグ)の公開と手動の起動でだけ行う。決定と、試験の配置で確かめた点(Content-Type、シークレット、保護規則、WASM の大きさ)は [ADR-0056](../adr/0056-deploy-web-ui-to-github-pages.md) にある。
 
 段階1から段階7は、PR のたびに `.github/workflows/preview.yml` が成果物 `sucheme-web` を上げる。中身は、`web/` のファイル(`serve.mjs` を含む)と `sucheme.wasm` を1つのディレクトリに並べたもので、`actions/upload-artifact` が zip にまとめる。保持期間は7日である。レビュー担当者は zip を展開し、展開したディレクトリで `node serve.mjs` を実行して、表示された URL をブラウザで開く。Node.js だけが要り、Zig もリポジトリも要らない。
 

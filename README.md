@@ -14,6 +14,8 @@ sucheme-zig は、Zig で実装された R7RS-small 準拠の Scheme インタ�
 
 リリースの成果物は、GitHub の Releases から取得できます。各アーカイブには、実行ファイルと第三者の表示 `THIRD-PARTY-NOTICES.txt` が入ります。最新のリリースは [docs/roadmap.md](docs/roadmap.md) の「現在地」から辿れます。
 
+ブラウザで試すときは、<https://suchi.github.io/sucheme-zig/> を開きます。このサイトは、リリースの公開と手動の配置でだけ更新されます([Web UI の章](docs/manual/guide/06-web-ui.md))。
+
 ソースからは、`.zigversion` が指す版の Zig で、次のようにビルドして実行します。
 
 ```sh
