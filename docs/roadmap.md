@@ -47,7 +47,7 @@
 
 完了条件: CI が ubuntu と windows の両方でグリーンになり、`zig build test` がローカルでも通る。**2026-10-08 に PR #2 のマージで満たした。** `main` の CI がグリーンになったことを確認済みである。
 
-確定したこと: リポジトリは public とする(2026-11-21、[ADR-0052](adr/0052-repository-visibility-public-again.md)。2026-10-06 の [ADR-0020](adr/0020-repository-visibility-private.md) を置き換えた)。Web UI の配置は段階8で行う([ADR-0021](adr/0021-no-github-pages-defer-hosting.md)。Pages を使わない前提は、public で変わった)。`build.zig` の step は既定・`run`・`test`・`check-docs`・`check-extract` である。どれが毎コミットで要るかは `AGENTS.md` の表が正で、`zig build check-docs` が表と `ci.yml` と `build.zig` の3つを突き合わせる。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、`tests/r7rs-required/` に置いた。ライブラリ数と識別子数は [extract-r7rs-required/SOURCE.md](../tools/extract-r7rs-required/SOURCE.md) の表が正で、`zig build check-docs` が実物と照合する。
+確定したこと: リポジトリは public とする(2026-11-21、[ADR-0052](adr/0052-repository-visibility-public-again.md)。2026-10-06 の [ADR-0020](adr/0020-repository-visibility-private.md) を置き換えた)。Web UI の配置は段階8で行う([ADR-0021](adr/0021-no-github-pages-defer-hosting.md)。Pages を使わない前提は、public で変わり、配置先は GitHub Pages に決まった。[ADR-0056](adr/0056-deploy-web-ui-to-github-pages.md))。`build.zig` の step は既定・`run`・`test`・`check-docs`・`check-extract` である。どれが毎コミットで要るかは `AGENTS.md` の表が正で、`zig build check-docs` が表と `ci.yml` と `build.zig` の3つを突き合わせる。版の強制は `build.zig` が `.zigversion` と `builtin.zig_version` を比較して行う(`build.zig.zon` の `minimum_zig_version` は Zig が検査しない)。CI は `ubuntu-latest` と `windows-latest` のマトリクス1ジョブで、Zig は `mlugg/setup-zig` を SHA でピン留めして入れる。付録Aの識別子は `tools/extract-r7rs-required` で機械抽出し、`tests/r7rs-required/` に置いた。ライブラリ数と識別子数は [extract-r7rs-required/SOURCE.md](../tools/extract-r7rs-required/SOURCE.md) の表が正で、`zig build check-docs` が実物と照合する。
 
 残していること: なし。段階0で決めた3事項は open-questions.md から消し、決めた内容は上の「確定したこと」と [plans/0002-phase0-scaffolding.md](plans/0002-phase0-scaffolding.md) にある。未着手の作業項目はチェックボックスを参照する。
 
@@ -229,7 +229,7 @@
 - [x] `read` による対話
 - [x] エラー位置の表示と処理の中断。段階6から、位置情報の残り(2)(コアIRの節点への位置の複写と、実行時の誤りへの位置の表示)を送った(2026-11-04 に承認した。[計画書 0028](plans/0028-phase6-conformance.md))
 - [x] 編集の補助とサンプルの充実
-- [ ] Web UI の配置先の選定と配置([ADR-0021](adr/0021-no-github-pages-defer-hosting.md))。静的ファイルを `application/wasm` で配信できるサービスを選ぶ。リポジトリが public なので([ADR-0052](adr/0052-repository-visibility-public-again.md))、GitHub Pages も候補に入る
+- [x] Web UI の配置先の選定と配置。GitHub Pages(GitHub Actions による配置)に決め([ADR-0056](adr/0056-deploy-web-ui-to-github-pages.md)。[ADR-0021](adr/0021-no-github-pages-defer-hosting.md)を置き換えた)、`https://suchi.github.io/sucheme-zig/` に配置した(スライス 8h-1、8h-2)。更新は、リリースの公開と手動の起動でだけ行う。Unicode の表を含む WASM の大きさの許容基準は、gzip の転送量で 2 MiB の上限(仮の値)に決めた([計画書 0030](plans/0030-phase8-web-ui.md) の決定4。残る未確定事項は [design/open-questions.md](design/open-questions.md))
 
 完了条件: ブラウザで R7RS のサンプルが一通り動く。配置した URL でも動く。リリース v1.2.0 を出す。
 
