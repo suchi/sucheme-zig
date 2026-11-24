@@ -14,15 +14,15 @@
 > - WASM の大きさ(決定4の測定): `sucheme.wasm` は、生で 4507612 バイト、`Accept-Encoding: gzip` で 1375972 バイトで返る(`Content-Length`、2026-11-23)。brotli を求めても、圧縮されずに返る。ReleaseSafe のビルドである。Unicode の表を含む現在の値である。この値を受けて、許容基準は、gzip の転送量で 2 MiB の上限(仮の値)に決まった。超えたときは、表の見直しを諮る(計画書 0030 の決定4)。配置の決定そのものは変わらない。
 >
 > 2026-11-23 追記: 配置の運用。サイトは、リリースの公開(`release: published`)と、手動の起動でだけ更新される。`main` への push では更新されない。このため、サイトの版は、最後の配置の時点のものである(画面のタイトルの横に版が出る)。リリース前の版が、手動の起動で載ることもある。利用者向けの文書は、[docs/manual/guide/06-web-ui.md](../manual/guide/06-web-ui.md) にある。
-
-2026-11-24 追記: v1.2.0 の公開で、本ADRの「未確認」のうち、保護規則の残りが確かめられた。決定は変わらない。
-
-- 保護規則: タグ `v1.2.0` のリリースの公開(`release: published`)で `pages.yml` が起動し、環境 `github-pages` の保護規則は、ref がタグの起動の配置を許した(実行 45322791776、成功。head_sha は `db064a1`)。公開の時刻は、GitHub のリリースの `published_at` で 2026-11-24 03:55:18 UTC(12:55 JST)である。リリースの下書きを作った `release.yml` は、タグの push(2026-11-24 03:24 UTC)で起動し、成功した。`release: published` で配置できなかった場合の手動の配置は、不要だった。
-- 公開のサイトの版: `https://suchi.github.io/sucheme-zig/` の画面の版は `1.2.0` だった。
-- Content-Type: `sucheme.wasm` は `application/wasm` で返った。
-- 大きさ: `sucheme.wasm` は、生で 4507604 バイト、`Accept-Encoding: gzip` の `Content-Length` で 1375956 バイトだった。決定4の上限(gzip の転送量で 2097152 バイト)の約 65.6% である。
-- 公開のサイトでの動作: Chromium(Playwright)で、階乗の実行と、`(car 5)` の実行を試した。階乗は動き、`(car 5)` は誤りの表示 `5:1: wrong type of argument to car 5` と、該当箇所の強調が出た。ページのエラーは0件だった。ほかのブラウザは確かめていない。
-- 未確認のまま残るもの: 手動の起動が任意のブランチから走れること、配置元の設定の画面の手順(2026-11-23 追記のとおり)。
+>
+> 2026-11-24 追記: v1.2.0 の公開で、本ADRの「未確認」のうち、保護規則の残りが確かめられた。決定は変わらない。
+>
+> - 保護規則: タグ `v1.2.0` のリリースの公開(`release: published`)で `pages.yml` が起動し、環境 `github-pages` の保護規則は、ref がタグの起動の配置を許した(実行 45322791776、成功。head_sha は `db064a1`)。公開の時刻は、GitHub のリリースの `published_at` で 2026-11-24 03:55:18 UTC(12:55 JST)である。リリースの下書きを作った `release.yml` は、タグの push(2026-11-24 03:24 UTC)で起動し、成功した。`release: published` で配置できなかった場合の手動の配置は、不要だった。
+> - 公開のサイトの版: `https://suchi.github.io/sucheme-zig/` の画面の版は `1.2.0` だった。
+> - Content-Type: `sucheme.wasm` は `application/wasm` で返った。
+> - 大きさ: `sucheme.wasm` は、生で 4507604 バイト、`Accept-Encoding: gzip` の `Content-Length` で 1375956 バイトだった。決定4の上限(gzip の転送量で 2097152 バイト)の約 65.6% である。
+> - 公開のサイトでの動作: Chromium(Playwright)で、階乗の実行と、`(car 5)` の実行を試した。階乗は動き、`(car 5)` は誤りの表示 `5:1: wrong type of argument to car 5` と、該当箇所の強調が出た。ページのエラーは0件だった。ほかのブラウザは確かめていない。
+> - 未確認のまま残るもの: 手動の起動が任意のブランチから走れること、配置元の設定の画面の手順(2026-11-23 追記のとおり)。
 
 ## 背景
 

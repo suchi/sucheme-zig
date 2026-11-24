@@ -56,7 +56,7 @@
   3. タグを、準備の PR のマージコミットに、ハッシュで指定して打つ: `git tag -a v1.2.0 <コミット> -m "sucheme v1.2.0"` と `git push origin v1.2.0`(下の項のとおり、この環境からは打てない)。
   4. `release.yml` が走り、`docs/releases/v1.2.0.md` を本文にした下書きのリリースを作る。下書きの成果物(上の表の8個)と `SHA256SUMS` を開いて確かめる。
   5. 下書きを公開する(通常のリリース。`--prerelease` ではない)。
-  6. 公開で `pages.yml` が `release: published` で起動する。Actions の一覧で、`pages.yml` の実行が成功し、<https://suchi.github.io/sucheme-zig/> のタイトルの横の版が `1.2.0` になったことを確かめる。環境 `github-pages` の保護規則は、ref がタグの起動を許した(v1.2.0 の公開で確かめた。手動の配置は不要だった。記録は [ADR-0056](adr/0056-deploy-web-ui-to-github-pages.md) の 2026-11-24 の追記)。次のリリースでも、この手順で足りる。許されなかったときは、`pages.yml` を、`main` を選んで手動で起動して配置し(`main` からの手動の起動が許されることは、試験の配置で確かめてある)、結果を ADR-0056 に追記する。
+  6. 公開で `pages.yml` が `release: published` で起動する。Actions の一覧で、`pages.yml` の実行が成功し、<https://suchi.github.io/sucheme-zig/> のタイトルの横の版が `1.2.0` になったことを確かめる。環境 `github-pages` の保護規則は、ref がタグの起動を許した(v1.2.0 の公開で確かめた。手動の配置は不要だった。記録は [ADR-0056](adr/0056-deploy-web-ui-to-github-pages.md) の 2026-11-24 の追記)。この手順で配置できた(観測は v1.2.0 の1回だけ)。許されなかったときは、`pages.yml` を、`main` を選んで手動で起動して配置し(`main` からの手動の起動が許されることは、試験の配置で確かめてある)、結果を ADR-0056 に追記する。
   7. 公開の時刻を、[plans/0012-schedule-estimates-and-actuals.md](plans/0012-schedule-estimates-and-actuals.md) の段階8の行と、roadmap の「現在地」に書く(v1.2.0 では済んだ)。公開の時刻は、GitHub のリリースの `published_at` で確かめる。
 - タグの push は、この環境からは HTTP 403 で拒否された(2026-10-15)。ブランチの push は通る。タグはユーザーが手元で打つ。承認を得たコマンド(`git tag -a vX.Y.Z <コミット> -m "sucheme vX.Y.Z"` と `git push origin vX.Y.Z`)を示して頼む。<コミット> は、リリースの準備の PR のマージコミットを、ハッシュで指定する。並行のレーンのマージで、main の先頭が先に進んでいることがある。
 - main の push の CI は、同じ ref の古い実行を取り消す(`ci.yml` の `cancel-in-progress`)。マージが続くと、途中のマージコミットの CI は最後まで走らない。そのコミットの CI の緑が要るときは、同じ木の PR の先頭の CI を根拠にするか、取り消されたことを報告に書く。
